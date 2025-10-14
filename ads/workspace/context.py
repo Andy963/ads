@@ -175,6 +175,37 @@ class WorkflowContext:
         return workflow_context
 
     @staticmethod
+    def clear_active_workflow(workspace: Optional[Path] = None) -> bool:
+        """
+        清除当前活动的工作流。
+
+        Args:
+            workspace: 工作空间路径
+
+        Returns:
+            是否成功清除
+        """
+        context_file = WorkflowContext._get_context_file(workspace)
+        if not context_file.exists():
+            return False
+
+        try:
+            with open(context_file, 'r', encoding='utf-8') as f:
+                context = json.load(f)
+
+            # 清除活动工作流
+            if "active_workflow" in context:
+                del context["active_workflow"]
+
+            # 保存回文件
+            with open(context_file, 'w', encoding='utf-8') as f:
+                json.dump(context, f, indent=2, ensure_ascii=False)
+
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def get_workflow_step_node_id(
         step_name: str,
         workflow_context: Optional[Dict] = None,

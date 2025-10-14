@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from ...workspace.context import WorkspaceManager
+from ...workspace.detector import WorkspaceDetector
 
 
 async def read_rules(workspace_path: Optional[str] = None) -> str:
@@ -26,12 +26,7 @@ async def read_rules(workspace_path: Optional[str] = None) -> str:
         if workspace_path:
             ws_path = Path(workspace_path)
         else:
-            workspace_manager = WorkspaceManager()
-            workspace = workspace_manager.get_current_workspace()
-            if workspace:
-                ws_path = workspace.root_path
-            else:
-                ws_path = Path.cwd()
+            ws_path = WorkspaceDetector.detect()
 
         # 1. 读取工作空间规则（如果存在）
         workspace_rules_file = ws_path / ".ads" / "rules.md"

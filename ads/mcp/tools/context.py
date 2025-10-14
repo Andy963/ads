@@ -5,6 +5,8 @@
 """
 
 import json
+import shutil
+from pathlib import Path
 from typing import Optional
 
 from ...workspace.context import WorkflowContext
@@ -722,6 +724,257 @@ async def finalize_step(
 
         return "\n".join(lines)
 
+    except Exception as e:
+        import traceback
+        return f"❌ Error: {str(e)}\n\n{traceback.format_exc()}"
+
+
+async def list_workflows(workspace_path: Optional[str] = None) -> str:
+    """
+    列出所有工作流（类似 git branch）。
+    
+    显示所有工作流，标记活动工作流，显示序号便于删除操作。
+    
+    Args:
+        workspace_path: 工作空间路径
+    
+    Returns:
+        格式化的工作流列表
+    """
+    try:
+        workspace = Path(workspace_path) if workspace_path else WorkspaceDetector.detect()
+        
+        # 获取活动工作流
+        active = WorkflowContext.get_active_workflow(workspace)
+        active_id = active.get("workflow_id") if active else None
+        
+        # 查找所有工作流根节点
+        all_nodes = GraphCRUD.get_all_nodes()
+        
+        # 找出所有工作流根节点（没有入边的节点）
+        workflow_roots = []
+        for node in all_nodes:
+            incoming_edges = [e for e in GraphCRUD.get_all_edges() if e.target == node.id]
+            if not incoming_edges:
+                workflow_roots.append(node)
+        
+        if not workflow_roots:
+            return """❌ 没有工作流
+
+💡 创建新工作流: /ads.new <type> <title>
+
+可用类型:
+  - bugfix: Bug 修复工作流
+  - feature: 快速功能开发
+  - standard: 标准 DDD 开发流程"""
+        
+        # 格式化输出
+        lines = []
+        lines.append(f"📋 工作流列表 ({workspace})\n")
+        
+        for i, node in enumerate(workflow_roots, 1):
+            # 标记活动工作流
+            marker = "*" if node.id == active_id else " "
+            
+            # 统计节点信息
+            def count_nodes(root_id):
+                nodes = [root_id]
+                edges = GraphCRUD.get_edges_from_node(root_id)
+                for edge in edges:
+                    nodes.extend(count_nodes(edge.target))
+                return list(set(nodes))
+            
+            all_node_ids = count_nodes(node.id)
+            total = len(all_node_ids)
+            
+            # 统计已定稿的节点
+            finalized = 0
+            for nid in all_node_ids:
+                n = GraphCRUD.get_node_by_id(nid)
+                if n and not n.is_draft:
+                    finalized += 1
+            
+            percent = int(finalized / total * 100) if total > 0 else 0
+            status = f"({finalized}/{total} nodes, {percent}%"
+            if percent == 100:
+                status += " ✓"
+            status += ")"
+            
+            lines.append(f"  {marker} {i}. {node.label:<30} {status}")
+        
+        lines.append(f"\n✓ {len(workflow_roots)} 个工作流")
+        
+        if active_id:
+            active_node = GraphCRUD.get_node_by_id(active_id)
+            if active_node:
+                lines.append(f"* 活动: {active_node.label}")
+        
+        lines.append("\n💡 操作提示:")
+        lines.append("  /ads.branch           列出工作流")
+        lines.append("  /ads.branch -d <N>    删除工作流（已完成）")
+        lines.append("  /ads.branch -D <N>    强制删除工作流")
+        lines.append("  /ads.checkout <N>     切换工作流")
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        import traceback
+        return f"❌ Error: {str(e)}\n\n{traceback.format_exc()}"
+
+
+async def delete_workflow(workflow_id: str, workspace_path: Optional[str] = None, force: bool = False) -> str:
+    """
+    删除工作流（类似 git branch -d/-D）。
+    
+    删除工作流的所有节点、边和文件。
+    
+    Args:
+        workflow_id: 工作流序号、根节点 ID 或标题（支持模糊匹配）
+        workspace_path: 工作空间路径
+        force: 是否强制删除（-D），False 表示安全删除（-d）
+    
+    Returns:
+        格式化的删除结果
+    """
+    try:
+        workspace = Path(workspace_path) if workspace_path else WorkspaceDetector.detect()
+        
+        # 获取活动工作流
+        active = WorkflowContext.get_active_workflow(workspace)
+        active_id = active.get("workflow_id") if active else None
+        
+        # 查找所有工作流根节点
+        all_nodes = GraphCRUD.get_all_nodes()
+        
+        # 找出所有工作流根节点（没有入边的节点）
+        workflow_roots = []
+        for node in all_nodes:
+            incoming_edges = [e for e in GraphCRUD.get_all_edges() if e.target == node.id]
+            if not incoming_edges:
+                workflow_roots.append(node)
+        
+        # 查找目标工作流
+        root_node = None
+        
+        # 1. 尝试按序号查找
+        if workflow_id.isdigit():
+            index = int(workflow_id) - 1  # 序号从 1 开始
+            if 0 <= index < len(workflow_roots):
+                root_node = workflow_roots[index]
+        
+        # 2. 尝试按 ID 精确匹配
+        if not root_node:
+            root_node = GraphCRUD.get_node_by_id(workflow_id)
+        
+        # 3. 尝试按标题模糊匹配
+        if not root_node:
+            for node in workflow_roots:
+                if workflow_id.lower() in node.label.lower():
+                    root_node = node
+                    break
+        
+        if not root_node:
+            return f"❌ 工作流不存在: {workflow_id}\n\n💡 使用 /ads.branch 查看所有工作流"
+        
+        # 检查是否是活动工作流
+        is_active = (root_node.id == active_id)
+        
+        if is_active and not force:
+            return f"""❌ 无法删除活动工作流
+
+工作流 '{root_node.label}' 当前是活动工作流。
+
+💡 选项:
+  1. 切换到其他工作流: /ads.checkout <other_workflow>
+  2. 强制删除: /ads.branch -D {workflow_id}
+
+⚠️  强制删除将清除当前工作上下文！"""
+        
+        # 检查工作流是否已完成（-d 安全删除模式）
+        if not force:
+            # 获取所有相关节点
+            def get_all_downstream_nodes_temp(node_id: str) -> list:
+                nodes = [node_id]
+                edges = GraphCRUD.get_edges_from_node(node_id)
+                for edge in edges:
+                    nodes.extend(get_all_downstream_nodes_temp(edge.target))
+                return list(set(nodes))
+            
+            all_related_node_ids = get_all_downstream_nodes_temp(root_node.id)
+            
+            # 检查是否所有节点都已定稿
+            has_draft = False
+            for node_id in all_related_node_ids:
+                node = GraphCRUD.get_node_by_id(node_id)
+                if node and node.is_draft:
+                    has_draft = True
+                    break
+            
+            if has_draft:
+                return f"""❌ 工作流未完成，无法安全删除
+
+工作流 '{root_node.label}' 还有未定稿的节点。
+
+💡 选项:
+  1. 完成所有节点后删除: 使用 /ads.finalize 定稿所有步骤
+  2. 强制删除: /ads.branch -D {workflow_id}
+
+⚠️  -d (安全删除) 只能删除已完成的工作流
+⚠️  -D (强制删除) 可删除任何工作流"""
+        
+        # 获取所有相关节点（包括根节点和所有子节点）
+        def get_all_downstream_nodes(node_id: str) -> list:
+            """递归获取所有下游节点"""
+            nodes = [node_id]
+            edges = GraphCRUD.get_edges_from_node(node_id)
+            for edge in edges:
+                nodes.extend(get_all_downstream_nodes(edge.target))
+            return list(set(nodes))  # 去重
+        
+        all_node_ids = get_all_downstream_nodes(root_node.id)
+        
+        # 删除数据库中的节点和边
+        deleted_nodes = 0
+        deleted_edges = 0
+        
+        for node_id in all_node_ids:
+            # 删除相关的边
+            edges = GraphCRUD.get_edges_from_node(node_id)
+            for edge in edges:
+                if GraphCRUD.delete_edge(edge.id):
+                    deleted_edges += 1
+            
+            # 删除节点
+            if GraphCRUD.delete_node(node_id):
+                deleted_nodes += 1
+        
+        # 删除文件系统中的 spec 目录
+        specs_dir = WorkspaceDetector.get_workspace_specs_dir(workspace)
+        workflow_spec_dir = specs_dir / root_node.id
+        
+        if workflow_spec_dir.exists():
+            shutil.rmtree(workflow_spec_dir)
+            spec_deleted = True
+        else:
+            spec_deleted = False
+        
+        # 如果是活动工作流，清除 context
+        if is_active:
+            WorkflowContext.clear_active_workflow(workspace)
+        
+        return f"""✅ 工作流已删除
+
+📋 **删除信息**
+- 工作流: {root_node.label}
+- ID: {root_node.id}
+- 删除节点: {deleted_nodes} 个
+- 删除边: {deleted_edges} 个
+- 删除文件: {'是' if spec_deleted else '否'}
+{' - 已清除活动工作流' if is_active else ''}
+
+💡 **提示**: 使用 /ads.branch 查看剩余工作流
+"""
+    
     except Exception as e:
         import traceback
         return f"❌ Error: {str(e)}\n\n{traceback.format_exc()}"

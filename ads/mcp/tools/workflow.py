@@ -9,6 +9,88 @@ from ...graph.workflow_config import WorkflowRulesConfig
 from ...graph.auto_workflow import AutoWorkflowEngine
 
 
+def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
+    """
+    获取节点类型的引导信息
+    
+    返回 AI 应该如何引导用户收集需求的指令
+    """
+    guidance_templates = {
+        "bug_report": {
+            "message": f"已创建 Bug 修复工作流 '{title}'。现在需要收集详细的 Bug 信息。",
+            "questions": [
+                "1. **问题描述**：这个 bug 具体是什么？发生了什么问题？",
+                "2. **复现步骤**：如何一步步复现这个问题？请列出详细步骤。",
+                "3. **期望行为**：正常情况下应该是什么样的？",
+                "4. **实际行为**：实际发生了什么？有报错信息吗？",
+                "5. **影响范围**：这个 bug 影响哪些功能或用户？",
+                "6. **优先级**：这个问题的紧急程度？(High/Medium/Low)"
+            ],
+            "instruction": "请逐个询问用户以上问题。用户回答后，将信息整理成结构化的内容，然后展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+        },
+        "requirement": {
+            "message": f"已创建需求分析工作流 '{title}'。现在需要收集详细的功能需求。",
+            "questions": [
+                "1. **功能概述**：这个功能要解决什么问题？目标是什么？",
+                "2. **目标用户**：谁会使用这个功能？",
+                "3. **核心功能**：需要哪些核心功能？请列出主要功能点。",
+                "4. **使用场景**：用户在什么情况下会使用？请描述2-3个典型场景。",
+                "5. **约束条件**：有什么技术限制、性能要求或业务约束吗？",
+                "6. **验收标准**：如何判断这个功能做好了？"
+            ],
+            "instruction": "请逐个询问用户以上问题。收集完整后，将需求整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+        },
+        "aggregate": {
+            "message": f"已创建 DDD 设计工作流 '{title}'。现在需要明确聚合根的业务概念。",
+            "questions": [
+                "1. **业务概念**：这个聚合根代表什么业务概念？",
+                "2. **业务边界**：它负责处理哪些业务逻辑？",
+                "3. **核心属性**：有哪些关键的业务属性？",
+                "4. **业务规则**：有什么重要的业务规则或约束？",
+                "5. **关联关系**：与其他聚合根有什么关系？"
+            ],
+            "instruction": "请逐个询问用户以上问题。收集完整后，将领域概念整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+        },
+        "feature": {
+            "message": f"已创建快速功能开发工作流 '{title}'。现在需要了解功能详情。",
+            "questions": [
+                "1. **功能描述**：这个功能具体要做什么？",
+                "2. **核心需求**：最核心的需求是什么？必须实现哪些功能？",
+                "3. **使用场景**：用户如何使用这个功能？请描述主要使用流程。",
+                "4. **技术要求**：有特定的技术栈或架构要求吗？",
+                "5. **时间要求**：有截止日期或里程碑吗？"
+            ],
+            "instruction": "请逐个询问用户以上问题。收集完整后，将功能需求整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+        },
+        "design": {
+            "message": f"已创建设计工作流 '{title}'。现在需要收集设计要求。",
+            "questions": [
+                "1. **设计目标**：这次设计要达到什么目的？",
+                "2. **技术选型**：需要使用什么技术栈？",
+                "3. **架构考虑**：有什么架构层面的考虑？",
+                "4. **接口定义**：需要定义哪些接口或API？",
+                "5. **数据模型**：涉及哪些数据模型？"
+            ],
+            "instruction": "请逐个询问用户以上问题。收集完整后，将设计方案整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+        }
+    }
+    
+    # 如果有预定义的引导，返回
+    if node_type in guidance_templates:
+        return guidance_templates[node_type]
+    
+    # 默认引导
+    return {
+        "message": f"已创建工作流 '{title}'。现在需要收集详细信息。",
+        "questions": [
+            "1. **背景**：请描述一下背景和上下文？",
+            "2. **目标**：要达到什么目标？",
+            "3. **详细说明**：请详细说明具体内容。"
+        ],
+        "instruction": "请询问用户以上问题。收集完整后，将信息整理成文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+    }
+
+
 async def list_workflow_templates() -> str:
     """
     列出所有工作流模板。
@@ -210,8 +292,11 @@ async def create_workflow_from_template(
 
 """
 
+        # 方案 A: 只创建第一个节点，后续通过 finalize 自动流转
+        first_node_config = nodes_config[0:1] if nodes_config else []
+        
         result = AutoWorkflowEngine.create_workflow_from_config(
-            nodes=nodes_config,
+            nodes=first_node_config,  # 只创建第一个节点
             root_label=title,
             root_content=enhanced_description,
             position={"x": 100, "y": 100}
@@ -610,8 +695,20 @@ updated_at: {node.updated_at.isoformat() if node.updated_at else ''}
         except Exception as e:
             print(f"Warning: Failed to set active workflow: {e}")
 
+        # 获取第一个节点类型，用于生成引导信息
+        first_node = result["nodes"][0] if result["nodes"] else None
+        first_node_obj = GraphCRUD.get_node_by_id(first_node.id) if first_node else None
+        first_node_type = first_node_obj.type if first_node_obj else "requirement"
+        
+        # 获取引导信息
+        guidance = get_guidance_for_node_type(first_node_type, title)
+        
+        # 格式化问题列表
+        questions_text = "\n".join(guidance["questions"])
+        
         return json.dumps({
             "success": True,
+            "status": "requirements_collection",  # 状态：需求收集中
             "template": {
                 "id": template_id,
                 "name": template.name,
@@ -623,7 +720,12 @@ updated_at: {node.updated_at.isoformat() if node.updated_at else ''}
                 "spec_dir": str(spec_dir),
                 "nodes_created": len(result["nodes"]),
                 "edges_created": len(result["edges"]),
-                "is_active": True  # 标记为活动工作流
+                "is_active": True,
+                "current_node": {
+                    "id": first_node_obj.id if first_node_obj else None,
+                    "type": first_node_type,
+                    "label": first_node_obj.label if first_node_obj else None
+                }
             },
             "nodes": [
                 {
@@ -637,7 +739,31 @@ updated_at: {node.updated_at.isoformat() if node.updated_at else ''}
                 "synced": len(synced_files),
                 "paths": synced_files
             },
-            "message": f"成功创建工作流 '{title}'，包含 {len(result['nodes'])} 个节点，已同步 {len(synced_files)} 个文件到 {spec_dir}。\n已自动设置为活动工作流，你现在可以使用步骤名称（如 report, analysis）进行操作。"
+            "guidance": {
+                "message": guidance["message"],
+                "questions": guidance["questions"],
+                "instruction": guidance["instruction"],
+                "next_step": f"收集完需求后，使用 update_node 工具更新节点 {first_node_obj.id if first_node_obj else 'N/A'}，然后用户可以使用 finalize_node 定稿并进入下一步。"
+            },
+            "message": f"""✅ 工作流已创建
+
+📋 **工作流信息**
+- 标题: {title}
+- 模板: {template.name}
+- 节点数: {len(result['nodes'])}
+- 当前节点: {first_node_obj.label if first_node_obj else 'N/A'} ({first_node_type})
+
+🎯 **下一步：收集详细需求**
+
+{guidance["message"]}
+
+{questions_text}
+
+📝 **操作说明**
+{guidance["instruction"]}
+
+💡 **提示**: 收集完成后，你可以要求修改直到满意，然后告诉我 "确认定稿" 即可进入下一步。
+"""
         }, ensure_ascii=False, indent=2)
 
     except Exception as e:

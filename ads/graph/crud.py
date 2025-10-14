@@ -18,7 +18,7 @@ class GraphCRUD:
         - draft_content=content参数的值（草稿内容）
 
         Args:
-            workspace_id: 工作空间ID（可选）。如果不提供，节点将不关联到任何工作空间
+            workspace_id: 工作空间ID（可选，暂未使用，保留用于未来扩展）
         """
         with get_db() as db:
             node = Node(
@@ -30,8 +30,8 @@ class GraphCRUD:
                 is_draft=True,  # 新建节点默认为草稿
                 current_version=0,  # 未定稿
                 node_metadata=metadata or {},
-                position=position or {"x": 0, "y": 0},
-                workspace_id=workspace_id
+                position=position or {"x": 0, "y": 0}
+                # 注意：workspace_id 参数保留用于未来扩展，当前 Node 模型不支持
             )
             db.add(node)
             db.flush()
@@ -128,8 +128,7 @@ class GraphCRUD:
             edge = Edge(
                 id=id, source=source, target=target,
                 source_handle=source_handle, target_handle=target_handle,
-                label=label, edge_type=edge_type, animated=animated,
-                workspace_id=workspace_id
+                label=label, edge_type=edge_type, animated=animated
             )
             db.add(edge)
             db.flush()

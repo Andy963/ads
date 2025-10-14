@@ -27,7 +27,7 @@ async def list_tools() -> list[Tool]:
         # Rules tools
         Tool(
             name="read_rules",
-            description="读取项目规则。返回工作空间的开发约束和规范，AI 必须严格遵守这些规则。",
+            description="Read project rules. Returns workspace development constraints and specifications that AI must strictly follow.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -40,7 +40,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="list_rules",
-            description="列出所有规则项（解析规则文档中的各项规则）。",
+            description="List all rule items (parse individual rules from the rules document).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -59,7 +59,7 @@ async def list_tools() -> list[Tool]:
         # Workflow tools
         Tool(
             name="list_workflow_templates",
-            description="列出所有可用的工作流模板。",
+            description="List all available workflow templates.",
             inputSchema={
                 "type": "object",
                 "properties": {}
@@ -67,7 +67,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_workflow_template",
-            description="获取工作流模板的详细信息，包括节点类型、步骤和连接规则。",
+            description="Get detailed information of a workflow template, including node types, steps, and connection rules.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -81,7 +81,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_node_type_config",
-            description="获取节点类型的配置信息（颜色、图标、描述、模板）。",
+            description="Get configuration information of a node type (color, icon, description, template).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -95,7 +95,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ads.new",
-            description="从工作流模板创建完整的工作流。根据模板配置创建一系列相连的节点，组织在同一个工作流中。",
+            description="Create a complete workflow from a template. Creates a series of connected nodes organized in the same workflow based on template configuration.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -123,7 +123,7 @@ async def list_tools() -> list[Tool]:
         # Graph read tools
         Tool(
             name="get_workspace_info",
-            description="获取工作空间的基本信息和统计数据。",
+            description="Get basic information and statistics of the workspace.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -136,7 +136,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="list_nodes",
-            description="列出工作空间中的节点，支持按类型和状态筛选。",
+            description="List nodes in the workspace with filtering by type and status.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -162,7 +162,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_node",
-            description="获取节点的详细信息，包括内容、父节点和子节点。",
+            description="Get detailed information of a node, including content, parent nodes, and child nodes.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -176,7 +176,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_node_context",
-            description="获取节点的完整上下文，包括所有父节点的内容链。用于了解任务的完整背景。",
+            description="Get complete context of a node including all parent node content chains. Used to understand the full background of a task.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -192,7 +192,7 @@ async def list_tools() -> list[Tool]:
         # Graph write tools
         Tool(
             name="create_node",
-            description="创建新的图谱节点。",
+            description="Create a new graph node.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -227,7 +227,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="update_node",
-            description="更新节点的内容或状态。",
+            description="Update node content or status.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -250,7 +250,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="create_edge",
-            description=f"创建节点之间的关系边。支持的边类型：{', '.join(f'{t}({EdgeTypeConfig.get_edge_type_description(t)})' for t in get_edge_types())}",
+            description=f"Create a relationship edge between nodes. Supported edge types: {', '.join(get_edge_types())}",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -273,7 +273,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="finalize_node",
-            description="将节点标记为已定稿（finalized）。",
+            description="Mark a node as finalized.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -289,7 +289,7 @@ async def list_tools() -> list[Tool]:
         # System tools
         Tool(
             name="get_system_info",
-            description="获取系统信息，包括版本、可用工具列表等。",
+            description="Get system information including version and available tools list.",
             inputSchema={
                 "type": "object",
                 "properties": {}
@@ -297,7 +297,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="sync_all_nodes_to_files",
-            description="将所有节点同步到文件系统（docs/specs/，按工作流分组）。",
+            description="Sync all nodes to file system (docs/specs/, grouped by workflow).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -310,7 +310,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="relayout_all_workflows",
-            description="重新布局所有工作流（水平排列 + 垂直分隔）。",
+            description="Relayout all workflows (horizontal arrangement + vertical separation).",
             inputSchema={
                 "type": "object",
                 "properties": {}
@@ -320,7 +320,7 @@ async def list_tools() -> list[Tool]:
         # Workspace tools
         Tool(
             name="ads.init",
-            description="初始化当前目录为 AD 工作空间。创建 .ads/ 目录结构和配置文件。",
+            description="Initialize current directory as ADS workspace. Create .ads/ directory structure and configuration files.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -333,7 +333,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_current_workspace",
-            description="获取当前工作空间的信息（路径、配置、初始化状态等）。",
+            description="Get information of the current workspace (path, configuration, initialization status, etc.).",
             inputSchema={
                 "type": "object",
                 "properties": {}
@@ -343,20 +343,30 @@ async def list_tools() -> list[Tool]:
         # Workflow Context tools (Git-like workflow management)
         Tool(
             name="ads.branch",
-            description="获取当前活动的工作流（类似 git branch）。显示工作流信息和步骤映射。",
+            description="Workflow management (fully mimics git branch). List all workflows when no params; -d to delete completed workflows; -D to force delete any workflow.",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "operation": {
+                        "type": "string",
+                        "description": "操作类型：'list'（列出，默认）、'delete'（-d 安全删除）、'force_delete'（-D 强制删除）",
+                        "enum": ["list", "delete", "force_delete"]
+                    },
+                    "workflow": {
+                        "type": "string",
+                        "description": "工作流名称、ID 或序号（删除操作时必需）"
+                    },
                     "workspace_path": {
                         "type": "string",
                         "description": "工作空间路径（可选）"
                     }
-                }
+                },
+                "required": []
             }
         ),
         Tool(
             name="ads.status",
-            description="获取当前工作流的状态（类似 git status）。显示所有步骤的进度、当前步骤、以及每个步骤的定稿状态。",
+            description="Get current workflow status (like git status). Show progress of all steps, current step, and finalization status of each step.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -369,7 +379,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ads.list",
-            description="列出所有工作流，显示每个工作流的标题、模板类型、节点数量和完成进度。",
+            description="List all workflows showing title, template type, node count, and completion progress for each.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -382,7 +392,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ads.checkout",
-            description="切换活动工作流（类似 git checkout）。可以通过工作流 ID 或标题切换，支持模糊匹配。",
+            description="Switch active workflow (like git checkout). Can switch by workflow ID or title with fuzzy matching support.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -400,7 +410,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ads.get",
-            description="通过步骤名称获取节点信息。例如：get_step_node(\"report\") 获取 bug 报告节点。步骤名称：bugfix(report/analysis/fix/verify), standard(aggregate/requirement/design/implementation)。",
+            description="Get node information by step name. Example: get_step_node('report') to get bug report node. Step names: bugfix(report/analysis/fix/verify), standard(aggregate/requirement/design/implementation).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -418,7 +428,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ads.update",
-            description="更新工作流步骤的草稿内容。例如：update_step_draft(\"analysis\", content) 更新分析步骤的内容。",
+            description="Update draft content of workflow step. Example: update_step_draft('analysis', content) to update analysis step content.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -440,7 +450,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ads.finalize",
-            description="定稿工作流步骤并触发自动流转。例如：finalize_step(\"report\") 定稿报告步骤，系统会自动创建下一步（分析步骤）。",
+            description="Finalize workflow step and trigger automatic flow. Example: finalize_step('report') finalizes report step and system automatically creates next step (analysis).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -461,10 +471,11 @@ async def list_tools() -> list[Tool]:
             }
         ),
 
+
         # Command tools
         Tool(
             name="ads.commands",
-            description="列出所有可用的 slash commands（项目级自定义命令）。",
+            description="List all available slash commands (project-level custom commands).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -477,7 +488,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_command",
-            description="获取 slash command 的详细信息。",
+            description="Get detailed information of a slash command.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -495,7 +506,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ads.run",
-            description="执行 slash command，进行变量替换后返回展开的命令内容。",
+            description="Execute a slash command with variable substitution and return expanded content.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -517,7 +528,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="validate_command",
-            description="验证 slash command 和提供的变量是否有效。",
+            description="Validate if slash command and provided variables are valid.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -541,7 +552,7 @@ async def list_tools() -> list[Tool]:
         # Template tools
         Tool(
             name="list_templates",
-            description="列出所有可用的模板（节点模板和工作流模板）。",
+            description="List all available templates (node templates and workflow templates).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -554,7 +565,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_node_template",
-            description="获取节点模板的详细信息。",
+            description="Get detailed information of a node template.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -572,7 +583,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_workflow_template_custom",
-            description="获取自定义工作流模板的详细信息（从 .ads/templates/workflows/）。",
+            description="Get detailed information of a custom workflow template (from .ads/templates/workflows/).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -590,7 +601,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="render_template",
-            description="渲染模板（进行变量替换）。",
+            description="Render a template (perform variable substitution).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -612,7 +623,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="validate_template",
-            description="验证模板和变量。",
+            description="Validate template and variables.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -634,7 +645,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="create_node_from_template",
-            description="从模板创建节点。",
+            description="Create a node from a template.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -800,9 +811,23 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
     # Workflow Context tools
     elif name == "ads.branch":
-        result = await context.get_active_workflow(
-            workspace_path=arguments.get("workspace_path")
-        )
+        operation = arguments.get("operation", "list")
+        if operation == "list":
+            result = await context.list_workflows(
+                workspace_path=arguments.get("workspace_path")
+            )
+        elif operation == "delete":
+            result = await context.delete_workflow(
+                workflow_id=arguments["workflow"],
+                workspace_path=arguments.get("workspace_path"),
+                force=False
+            )
+        elif operation == "force_delete":
+            result = await context.delete_workflow(
+                workflow_id=arguments["workflow"],
+                workspace_path=arguments.get("workspace_path"),
+                force=True
+            )
         return [TextContent(type="text", text=result)]
 
     elif name == "ads.status":
