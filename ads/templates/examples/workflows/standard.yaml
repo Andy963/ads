@@ -1,0 +1,27 @@
+# 标准开发流程
+
+name: standard
+title: Standard Development
+description: 完整开发流程：需求→设计→实现→测试
+
+nodes:
+  - type: aggregate
+    title: Aggregate Root
+  - type: requirement
+    title: Requirements
+  - type: design
+    title: Design
+  - type: implementation
+    title: Implementation
+  - type: test
+    title: Testing
+
+edges:
+  - from: aggregate
+    to: requirement
+  - from: requirement
+    to: design
+  - from: design
+    to: implementation
+  - from: implementation
+    to: test

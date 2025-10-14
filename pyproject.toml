@@ -1,0 +1,37 @@
+[project]
+name = "ads"
+version = "0.1.0"
+description = "ADS - AI-Driven Specification"
+authors = [
+    {name = "Andy963", email = "Andy963@users.noreply.github.com"},
+]
+dependencies = [
+    "pydantic>=2.11.9",
+    "typer>=0.19.2",
+    "rich>=14.1.0",
+    "sqlalchemy>=2.0.43",
+    "alembic>=1.16.5",
+    "pyyaml>=6.0.3",
+    "mcp>=1.17.0",
+]
+requires-python = "==3.10.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+[project.scripts]
+ads = "ads.cli.main:main"
+
+[tool.pdm.scripts]
+mcp = "python -m ads.mcp.server"
+
+[tool.pdm]
+distribution = true
+
+[tool.setuptools]
+packages = ["ads"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+]

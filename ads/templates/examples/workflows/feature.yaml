@@ -1,0 +1,15 @@
+# 功能开发
+
+name: feature
+title: Feature Development
+description: 快速功能开发：需求→实现
+
+nodes:
+  - type: requirement
+    title: Feature Requirements
+  - type: implementation
+    title: Implementation
+
+edges:
+  - from: requirement
+    to: implementation

@@ -1,0 +1,338 @@
+# 工作流规则配置
+# 定义节点类型、连接规则和工作流模板
+
+# ==================== 节点类型配置 ====================
+node_types:
+  aggregate:
+    key: aggregate
+    label: 聚合根
+    prefix: agg
+    next_types:
+      - requirement
+    color: "#409eff"
+    icon: "📦"
+    description: DDD聚合根，定义业务边界
+
+  requirement:
+    key: requirement
+    label: 需求
+    prefix: req
+    next_types:
+      - design
+    color: "#67c23a"
+    icon: "📝"
+    description: 需求分析和功能定义
+
+  design:
+    key: design
+    label: 设计
+    prefix: des
+    next_types:
+      - implementation
+    color: "#e6a23c"
+    icon: "🎨"
+    description: 架构设计和技术方案
+
+  implementation:
+    key: implementation
+    label: 实现
+    prefix: imp
+    next_types:
+      - test
+      - integration_test
+      - code_review
+    color: "#909399"
+    icon: "💻"
+    description: 代码实现
+
+  test:
+    key: test
+    label: 测试
+    prefix: test
+    next_types:
+      - code_review
+      - documentation
+    color: "#10b981"
+    icon: "🧪"
+    description: 单元测试和功能测试
+
+  integration_test:
+    key: integration_test
+    label: 集成测试
+    prefix: itest
+    next_types:
+      - code_review
+      - documentation
+    color: "#06b6d4"
+    icon: "🔗"
+    description: 系统集成测试
+
+  code_review:
+    key: code_review
+    label: 代码评审
+    prefix: review
+    next_types:
+      - documentation
+    color: "#8b5cf6"
+    icon: "👁️"
+    description: 代码质量审查
+
+  documentation:
+    key: documentation
+    label: 文档
+    prefix: doc
+    next_types: []
+    color: "#f59e0b"
+    icon: "📚"
+    description: 技术文档和用户手册
+
+  bug_report:
+    key: bug_report
+    label: Bug报告
+    prefix: bug
+    next_types:
+      - bug_analysis
+    color: "#ef4444"
+    icon: "🐛"
+    description: Bug描述和复现步骤
+
+  bug_analysis:
+    key: bug_analysis
+    label: 问题分析
+    prefix: analysis
+    next_types:
+      - bug_fix
+    color: "#f59e0b"
+    icon: "🔍"
+    description: 问题根因分析
+
+  bug_fix:
+    key: bug_fix
+    label: 修复方案
+    prefix: fix
+    next_types:
+      - bug_verify
+    color: "#3b82f6"
+    icon: "🔧"
+    description: Bug修复实现
+
+  bug_verify:
+    key: bug_verify
+    label: 验证方案
+    prefix: verify
+    next_types: []
+    color: "#8b5cf6"
+    icon: "✅"
+    description: 修复验证和测试
+
+
+# ==================== 前端连接规则 ====================
+# 定义前端UI中允许的节点连接规则
+# 这些规则比后端的next_types更灵活，允许同类型节点互连和反向关联
+connection_rules:
+  aggregate:
+    - requirement
+    - bug_report
+    - aggregate
+
+  requirement:
+    - design
+    - requirement
+
+  design:
+    - implementation
+    - design
+
+  implementation:
+    - test
+    - implementation
+
+  test:
+    - test
+
+  bug_report:
+    - bug_analysis
+    - aggregate
+    - bug_report
+
+  bug_analysis:
+    - bug_fix
+    - bug_analysis
+
+  bug_fix:
+    - bug_verify
+    - bug_fix
+
+  bug_verify:
+    - bug_verify
+
+
+# ==================== 工作流模板配置 ====================
+workflow_templates:
+  standard:
+    key: standard
+    name: 标准开发流程
+    description: 完整开发流程：需求→设计→实现→测试
+    icon: "🏗️"
+    steps:
+      - step_number: 1
+        label: 聚合根
+        required: true
+        default_option: aggregate
+        options:
+          - node_type: aggregate
+            label: 聚合根
+            description: 定义领域模型和业务边界
+
+      - step_number: 2
+        label: 需求分析
+        required: true
+        default_option: requirement
+        options:
+          - node_type: requirement
+            label: 需求
+            description: 需求分析和功能定义
+
+      - step_number: 3
+        label: 设计方案
+        required: true
+        default_option: design
+        options:
+          - node_type: design
+            label: 设计
+            description: 架构设计和技术方案
+
+      - step_number: 4
+        label: 代码实现
+        required: true
+        default_option: implementation
+        options:
+          - node_type: implementation
+            label: 实现
+            description: 编码实现
+
+      - step_number: 5
+        label: 测试验证
+        required: false
+        default_option: null
+        options:
+          - node_type: test
+            label: 测试
+            description: 单元测试和功能测试
+          - node_type: integration_test
+            label: 集成测试
+            description: 系统集成测试
+
+      - step_number: 6
+        label: 代码评审
+        required: false
+        default_option: null
+        options:
+          - node_type: code_review
+            label: 代码评审
+            description: 代码质量审查
+
+      - step_number: 7
+        label: 文档编写
+        required: false
+        default_option: null
+        options:
+          - node_type: documentation
+            label: 文档
+            description: 技术文档和用户手册
+
+  bugfix:
+    key: bugfix
+    name: Bug修复流程
+    description: 从问题报告到修复验证的完整流程
+    icon: "🐛"
+    steps:
+      - step_number: 1
+        label: 问题报告
+        required: true
+        default_option: bug_report
+        options:
+          - node_type: bug_report
+            label: Bug报告
+            description: 问题描述和复现步骤
+
+      - step_number: 2
+        label: 问题分析
+        required: true
+        default_option: bug_analysis
+        options:
+          - node_type: bug_analysis
+            label: 问题分析
+            description: 根因分析和影响评估
+
+      - step_number: 3
+        label: 修复实现
+        required: true
+        default_option: bug_fix
+        options:
+          - node_type: bug_fix
+            label: 修复方案
+            description: Bug修复代码实现
+
+      - step_number: 4
+        label: 测试验证
+        required: false
+        default_option: null
+        options:
+          - node_type: test
+            label: 测试
+            description: 修复后的测试验证
+
+      - step_number: 5
+        label: 修复验证
+        required: true
+        default_option: bug_verify
+        options:
+          - node_type: bug_verify
+            label: 验证方案
+            description: 修复验证和回归测试
+
+  feature:
+    key: feature
+    name: 功能开发
+    description: 快速功能开发：需求→实现
+    icon: "⚡"
+    steps:
+      - step_number: 1
+        label: 功能需求
+        required: true
+        default_option: requirement
+        options:
+          - node_type: requirement
+            label: 需求
+            description: 功能需求描述
+
+      - step_number: 2
+        label: 快速设计
+        required: true
+        default_option: design
+        options:
+          - node_type: design
+            label: 设计
+            description: AI自动生成设计方案
+
+      - step_number: 3
+        label: 快速实现
+        required: true
+        default_option: implementation
+        options:
+          - node_type: implementation
+            label: 实现
+            description: AI自动生成代码实现
+
+      - step_number: 4
+        label: 质量保障
+        required: false
+        default_option: null
+        options:
+          - node_type: test
+            label: 测试
+            description: 基础功能测试
+          - node_type: code_review
+            label: 代码评审
+            description: 代码质量检查

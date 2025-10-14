@@ -1,0 +1,89 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# PDM
+.pdm-python
+.pdm.toml
+__pypackages__/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+*.cover
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project Specific - User Workspaces
+.ads/
+*.db
+*.sqlite
+*.sqlite3
+
+# Project Specific - Generated Files
+docs/specs/
+nul
+
+# Environment & Config
+.env
+.env.local
+.mcp.json
+.claude/
+.crypto_key
+
+# Build & Distribution
+build/
+dist/
+*.egg-info/
+wheels/
+
+# Logs
+*.log
+logs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Temporary
+*.tmp
+*.bak
+*~
+.cache/
+
+# Type Checking & Linting
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.ruff_cache/
+.pylint.d/
+
+# Alembic
+# Keep alembic.ini and migrations/ but ignore specific generated files
+# (Currently keeping all alembic files)

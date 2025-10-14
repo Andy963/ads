@@ -1,0 +1,23 @@
+# Bug 修复工作流
+
+name: bugfix
+title: Bug Fix Workflow
+description: 从 Bug 报告到修复验证的完整流程
+
+nodes:
+  - type: bug_report
+    title: Bug Report
+  - type: analysis
+    title: Root Cause Analysis
+  - type: implementation
+    title: Fix Implementation
+  - type: test
+    title: Testing
+
+edges:
+  - from: bug_report
+    to: analysis
+  - from: analysis
+    to: implementation
+  - from: implementation
+    to: test
