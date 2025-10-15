@@ -8,6 +8,15 @@ from typing import Optional, List, Dict, Any
 from ...graph.workflow_config import WorkflowRulesConfig
 from ...graph.auto_workflow import AutoWorkflowEngine
 
+# 命令名称常量 - 统一管理，避免硬编码
+CMD_INIT = "/ads.init"
+CMD_NEW = "/ads.new"
+CMD_ADD = "/ads.add"        # 命令名（Git 风格）
+CMD_COMMIT = "/ads.commit"
+CMD_STATUS = "/ads.status"
+CMD_BRANCH = "/ads.branch"
+CMD_CHECKOUT = "/ads.checkout"
+
 
 def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
     """
@@ -26,7 +35,18 @@ def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
                 "5. **影响范围**：这个 bug 影响哪些功能或用户？",
                 "6. **优先级**：这个问题的紧急程度？(High/Medium/Low)"
             ],
-            "instruction": "请逐个询问用户以上问题。用户回答后，将信息整理成结构化的内容，然后展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+            "instruction": f"请逐个询问用户以上问题。用户回答后，将信息整理成结构化的内容，然后展示给用户确认。用户满意后，使用 {CMD_ADD} 更新节点内容，然后使用 {CMD_COMMIT} 提交定稿。"
+        },
+        "bug_fix": {
+            "message": f"已创建 Bug 修复计划节点 '{title}'。这是修复实施计划文档，用于指导后续代码修复。",
+            "questions": [
+                "1. **修复方案**：如何修复这个 bug？具体思路是什么？",
+                "2. **文件清单**：需要修改哪些文件？每个文件要做什么改动？",
+                "3. **修复步骤**：按什么顺序修复？分几个步骤？",
+                "4. **测试验证**：如何验证修复有效？需要什么测试用例？",
+                "5. **回滚预案**：如果出问题如何回滚？"
+            ],
+            "instruction": f"📋 **修复计划文档格式**：\n\n这个节点是 Bug 修复计划文档，需要包含：\n\n1. **修复方案** - 说明如何解决这个 bug\n2. **文件清单** - 列出要修改的文件\n3. **TODO List** - 用任务列表格式：\n   - [ ] 步骤1：修复具体问题\n   - [ ] 步骤2：添加测试用例\n   - [ ] 步骤3：验证修复\n4. **每步详细说明** - 具体修复方案\n5. **回滚预案** - 出问题如何处理\n\n📝 **工作流程**：\n- 收集信息，整理成结构化的修复计划文档\n- 使用 {CMD_ADD} 更新文档内容\n- 展示给用户确认\n- 用户满意后，使用 {CMD_COMMIT} 提交定稿\n\n💡 **重点**：\n- 这是修复计划文档，使用 TODO list 格式\n- 执行修复时应该同步更新 TODO list 标记完成状态 [x]\n- 这样下次任何人（或 AI）读取文档都知道修复进度"
         },
         "requirement": {
             "message": f"已创建需求分析工作流 '{title}'。现在需要收集详细的功能需求。",
@@ -38,7 +58,7 @@ def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
                 "5. **约束条件**：有什么技术限制、性能要求或业务约束吗？",
                 "6. **验收标准**：如何判断这个功能做好了？"
             ],
-            "instruction": "请逐个询问用户以上问题。收集完整后，将需求整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+            "instruction": "请逐个询问用户以上问题。收集完整后，将需求整理成结构化文档，展示给用户确认。用户满意后，使用 {CMD_ADD} 更新内容，然后使用 {CMD_COMMIT} 提交定稿。"
         },
         "aggregate": {
             "message": f"已创建 DDD 设计工作流 '{title}'。现在需要明确聚合根的业务概念。",
@@ -49,7 +69,7 @@ def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
                 "4. **业务规则**：有什么重要的业务规则或约束？",
                 "5. **关联关系**：与其他聚合根有什么关系？"
             ],
-            "instruction": "请逐个询问用户以上问题。收集完整后，将领域概念整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+            "instruction": "请逐个询问用户以上问题。收集完整后，将领域概念整理成结构化文档，展示给用户确认。用户满意后，使用 {CMD_ADD} 更新内容，然后使用 {CMD_COMMIT} 提交定稿。"
         },
         "feature": {
             "message": f"已创建快速功能开发工作流 '{title}'。现在需要了解功能详情。",
@@ -60,7 +80,7 @@ def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
                 "4. **技术要求**：有特定的技术栈或架构要求吗？",
                 "5. **时间要求**：有截止日期或里程碑吗？"
             ],
-            "instruction": "请逐个询问用户以上问题。收集完整后，将功能需求整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+            "instruction": "请逐个询问用户以上问题。收集完整后，将功能需求整理成结构化文档，展示给用户确认。用户满意后，使用 {CMD_ADD} 更新内容，然后使用 {CMD_COMMIT} 提交定稿。"
         },
         "design": {
             "message": f"已创建设计工作流 '{title}'。现在需要收集设计要求。",
@@ -71,7 +91,18 @@ def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
                 "4. **接口定义**：需要定义哪些接口或API？",
                 "5. **数据模型**：涉及哪些数据模型？"
             ],
-            "instruction": "请逐个询问用户以上问题。收集完整后，将设计方案整理成结构化文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+            "instruction": "请逐个询问用户以上问题。收集完整后，将设计方案整理成结构化文档，展示给用户确认。用户满意后，使用 {CMD_ADD} 更新内容，然后使用 {CMD_COMMIT} 提交定稿。"
+        },
+        "implementation": {
+            "message": f"已创建实施计划节点 '{title}'。这是一个实施计划文档，用于指导后续代码开发。",
+            "questions": [
+                "1. **文件清单**：需要创建或修改哪些文件？每个文件的作用是什么？",
+                "2. **实施步骤**：按什么顺序实施？分几个阶段？",
+                "3. **每步详细方案**：每个步骤具体要做什么？关键逻辑是什么？",
+                "4. **依赖和配置**：需要安装什么依赖？需要修改配置吗？",
+                "5. **测试验证**：如何验证每个步骤完成了？"
+            ],
+            "instruction": f"📋 **实施计划文档格式**：\n\n这个节点是实施计划文档，需要包含：\n\n1. **文件结构** - 列出所有要创建/修改的文件\n2. **TODO List** - 用 Markdown 任务列表格式：\n   - [ ] 任务1：描述要做什么\n   - [ ] 任务2：描述要做什么\n3. **每项任务的详细说明** - 具体实施方案\n\n📝 **工作流程**：\n- 收集信息，整理成结构化的实施计划文档\n- 使用 {CMD_ADD} 更新文档内容\n- 展示给用户确认\n- 用户满意后，使用 {CMD_COMMIT} 提交定稿\n\n💡 **重点**：\n- 这是计划文档，使用 TODO list 格式\n- 执行代码时应该同步更新 TODO list 标记完成状态 [x]\n- 这样下次任何人（或 AI）读取文档都知道当前进度和剩余工作"
         }
     }
     
@@ -87,7 +118,7 @@ def get_guidance_for_node_type(node_type: str, title: str) -> Dict[str, Any]:
             "2. **目标**：要达到什么目标？",
             "3. **详细说明**：请详细说明具体内容。"
         ],
-        "instruction": "请询问用户以上问题。收集完整后，将信息整理成文档，展示给用户确认。用户满意后，使用 update_node 更新节点内容。"
+        "instruction": "请询问用户以上问题。收集完整后，将信息整理成文档，展示给用户确认。用户满意后，使用 {CMD_ADD} 更新内容，然后使用 {CMD_COMMIT} 提交定稿。"
     }
 
 
