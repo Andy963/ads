@@ -113,7 +113,7 @@ async def execute_command(
                 }, ensure_ascii=False)
 
         # 执行命令
-        expanded_content = CommandExecutor.execute(
+        expanded_content = CommandExecutor.execute_for_workspace(
             workspace,
             command_name,
             var_dict

@@ -92,6 +92,7 @@ from datetime import datetime
 from .crud import GraphCRUD
 from .models import Node, Edge
 from ..storage.database import get_db
+from sqlalchemy.orm import Session
 
 
 class WorkflowTemplate(str, Enum):
@@ -107,11 +108,14 @@ class NodeTypeConfig:
         # DDD标准流程
         "aggregate": {
             "next_type": "requirement",
+            "label_template": "{parent_label}-需求",
             "next_label_template": "{parent_label} - 需求分析",
-            "auto_generate": False  # aggregate不自动生成
+            "auto_generate": False,  # aggregate不自动生成
+            "ai_prompt_template": ""
         },
         "requirement": {
             "next_type": "design",
+            "label_template": "{parent_label}-设计",
             "next_label_template": "{parent_label} - 设计方案",
             "auto_generate": True,
             "ai_prompt_template": """请基于以下需求分析，生成详细的设计方案：
@@ -128,6 +132,7 @@ class NodeTypeConfig:
         },
         "design": {
             "next_type": "implementation",
+            "label_template": "{parent_label}-实现",
             "next_label_template": "{parent_label} - 实现方案",
             "auto_generate": True,
             "ai_prompt_template": """请基于以下设计方案，生成详细的实现方案：
@@ -147,6 +152,7 @@ class NodeTypeConfig:
         },
         "implementation": {
             "next_type": "test",
+            "label_template": "{parent_label}-测试",
             "next_label_template": "{parent_label} - 测试方案",
             "auto_generate": True,
             "ai_prompt_template": """请基于以下实现方案，生成测试方案：
@@ -168,12 +174,15 @@ class NodeTypeConfig:
 5. 验收标准"""
         },
         "test": {
-            "next_type": "integration_test",  # 继续集成测试
-            "next_label_template": "{parent_label} - 集成测试",
-            "auto_generate": False
+            "next_type": None,  # 流程在测试阶段结束
+            "label_template": None,
+            "next_label_template": None,
+            "auto_generate": False,
+            "ai_prompt_template": ""
         },
         "integration_test": {
             "next_type": "code_review",
+            "label_template": "{parent_label}-代码评审",
             "next_label_template": "{parent_label} - 代码评审",
             "auto_generate": True,
             "ai_prompt_template": """请基于以下测试结果，生成代码评审报告：
@@ -193,6 +202,7 @@ class NodeTypeConfig:
         },
         "code_review": {
             "next_type": "documentation",
+            "label_template": "{parent_label}-文档",
             "next_label_template": "{parent_label} - 文档",
             "auto_generate": True,
             "ai_prompt_template": """请基于以下内容，生成技术文档：
@@ -219,12 +229,15 @@ class NodeTypeConfig:
         "documentation": {
             "next_type": None,  # 流程结束
             "next_label_template": None,
-            "auto_generate": False
+            "label_template": None,
+            "auto_generate": False,
+            "ai_prompt_template": ""
         },
         
         # Bugfix流程
         "bug_report": {
             "next_type": "bug_analysis",
+            "label_template": "{parent_label}-分析",
             "next_label_template": "{parent_label} - 问题分析",
             "auto_generate": True,
             "ai_prompt_template": """请分析以下Bug报告：
@@ -240,6 +253,7 @@ Bug描述：
         },
         "bug_analysis": {
             "next_type": "bug_fix",
+            "label_template": "{parent_label}-修复",
             "next_label_template": "{parent_label} - 修复方案",
             "auto_generate": True,
             "ai_prompt_template": """请基于以下问题分析，提供修复方案：
@@ -258,6 +272,7 @@ Bug报告：
         },
         "bug_fix": {
             "next_type": "bug_verify",
+            "label_template": "{parent_label}-验证",
             "next_label_template": "{parent_label} - 验证方案",
             "auto_generate": True,
             "ai_prompt_template": """请为以下修复方案提供验证计划：
@@ -274,7 +289,9 @@ Bug报告：
         "bug_verify": {
             "next_type": None,  # Bugfix流程结束
             "next_label_template": None,
-            "auto_generate": False
+            "label_template": None,
+            "auto_generate": False,
+            "ai_prompt_template": ""
         }
     }
     
@@ -286,9 +303,26 @@ Bug报告：
 
 class AutoWorkflowEngine:
     """自动工作流引擎"""
-    
-    @staticmethod
-    def on_node_finalized(node_id: str, enable_ai: bool = True) -> Optional[Dict[str, Any]]:
+
+    def __init__(self, session: Optional[Session] = None):
+        self.session: Optional[Session] = session
+
+    @classmethod
+    def run(
+        cls,
+        node_id: str,
+        enable_ai: bool = True,
+        session: Optional[Session] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """向后兼容的快捷入口。"""
+
+        return cls(session).on_node_finalized(node_id, enable_ai)
+
+    def on_node_finalized(
+        self,
+        node_id: str,
+        enable_ai: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         """
         节点定稿后的自动流转处理 - 工作流引擎的核心入口
 
@@ -379,10 +413,10 @@ class AutoWorkflowEngine:
             }
 
         Example Usage:
-            # 在 finalize_node API 中调用
-            workflow_result = AutoWorkflowEngine.on_node_finalized(
+            engine = AutoWorkflowEngine()
+            workflow_result = engine.on_node_finalized(
                 node_id="agg_123",
-                enable_ai=True
+                enable_ai=True,
             )
 
             # 检查是否需要触发AI生成
@@ -399,49 +433,36 @@ class AutoWorkflowEngine:
             - 提示词构建：递归获取祖先节点内容（requirement, design, implementation等）
             - 内容验证：只有定稿内容（node.content）非空时才触发AI生成
         """
-        node = GraphCRUD.get_node_by_id(node_id)
+        node = GraphCRUD.get_node_by_id(node_id, session=self.session)
         if not node:
             return None
 
         # 获取流转规则
         flow_config = NodeTypeConfig.get_next_config(node.type)
         if not flow_config or not flow_config.get("next_type"):
-            # 工作流结束
-            return {
-                "workflow_completed": True,
-                "message": f"工作流已完成，节点 {node.label} 是最后一个节点"
-            }
+            return None
 
         # 检查下一个节点是否已存在
-        next_node = AutoWorkflowEngine._find_next_node(node_id, flow_config["next_type"])
+        next_node = self._find_next_node(node_id, flow_config["next_type"])
 
         if next_node:
-            # 节点已存在，更新状态为进行中
-            metadata = next_node.node_metadata or {}
-            metadata["status"] = "in_progress"
-            metadata["auto_started_at"] = datetime.now().isoformat()
-            GraphCRUD.update_node(next_node.id, {"metadata": metadata})
+            return None
 
-            result = {
-                "action": "activated_existing",
-                "node_id": next_node.id,
-                "node_label": next_node.label,
-                "message": f"已激活现有节点: {next_node.label}"
-            }
-        else:
-            # 创建新节点
-            next_node = AutoWorkflowEngine._create_next_node(node, flow_config)
-            result = {
-                "action": "created_new",
-                "node_id": next_node.id,
-                "node_label": next_node.label,
-                "message": f"已创建新节点: {next_node.label}"
-            }
+        # 创建新节点
+        next_node = self._create_next_node(node, flow_config)
 
-        # AI生成（只有在父节点有内容时才触发）
+        result: Dict[str, Any] = {
+            "id": next_node.id,
+            "node_id": next_node.id,
+            "type": next_node.type,
+            "label": next_node.label,
+            "node_label": next_node.label,
+        }
+
         if enable_ai and flow_config.get("auto_generate"):
-            # 检查父节点是否有内容
-            if not node.content or node.content.strip() == "":
+            has_content = node.content and node.content.strip()
+            if not has_content:
+                result["ai_prompt"] = None
                 result["ai_generation"] = {
                     "enabled": False,
                     "reason": "parent_node_empty",
@@ -449,51 +470,57 @@ class AutoWorkflowEngine:
                 }
             else:
                 try:
-                    prompt = AutoWorkflowEngine._build_ai_prompt(node, flow_config)
+                    prompt = self._build_ai_prompt(node, flow_config)
+                    result["ai_prompt"] = prompt
                     result["ai_generation"] = {
                         "enabled": True,
                         "prompt": prompt,
                         "node_id": next_node.id,
                         "message": "AI生成已触发（需要调用方异步执行）"
                     }
-                    # Note: 实际AI生成需要在调用方异步执行
-                except Exception as e:
+                except Exception as exc:
+                    result["ai_prompt"] = None
+                    result["ai_error"] = str(exc)
                     result["ai_generation"] = {
                         "enabled": False,
                         "reason": "generation_error",
-                        "error": str(e)
+                        "error": str(exc)
                     }
 
         return result
     
-    @staticmethod
-    def _find_next_node(parent_id: str, next_type: str) -> Optional[Node]:
+    def _find_next_node(self, parent_id: str, next_type: str) -> Optional[Node]:
         """查找是否已存在下一个节点"""
-        with get_db() as db:
-            # 查找从parent_id出发的边
-            edge = db.query(Edge).filter(Edge.source == parent_id).first()
-            if not edge:
-                return None
-            
-            # 获取目标节点
-            next_node = db.query(Node).filter(Node.id == edge.target).first()
-            if next_node and next_node.type == next_type:
-                return next_node
-        
+
+        session = self.session
+        if session is not None:
+            edges = session.query(Edge).filter(Edge.source == parent_id).all()
+        else:
+            edges = GraphCRUD.get_edges_from_node(parent_id)
+
+        for edge in edges:
+            if edge.target == parent_id:
+                continue
+
+            candidate = GraphCRUD.get_node_by_id(edge.target, session=self.session)
+            if candidate and candidate.type == next_type:
+                return candidate
+
         return None
-    
-    @staticmethod
-    def _create_next_node(parent_node: Node, flow_config: Dict[str, Any]) -> Node:
+
+    def _create_next_node(self, parent_node: Node, flow_config: Dict[str, Any]) -> Node:
         """创建下一个节点"""
         # 生成label（去除父节点标签中的阶段后缀）
         parent_label_clean = parent_node.label
         for suffix in [" - 需求分析", " - 设计方案", " - 实现方案", " - 测试方案", 
                        " - 问题分析", " - 修复方案", " - 验证方案"]:
             parent_label_clean = parent_label_clean.replace(suffix, "")
-        
-        next_label = flow_config["next_label_template"].format(
-            parent_label=parent_label_clean
-        )
+
+        label_template = flow_config.get("label_template") or flow_config.get("next_label_template")
+        if label_template:
+            next_label = label_template.format(parent_label=parent_label_clean)
+        else:
+            next_label = parent_label_clean
         
         # 生成位置（在父节点右侧350px，水平排列）
         parent_pos = parent_node.position or {"x": 100, "y": 100}
@@ -515,7 +542,9 @@ class AutoWorkflowEngine:
                 "parent_node_id": parent_node.id,
                 "created_at": datetime.now().isoformat()
             },
-            position=next_position
+            position=next_position,
+            is_draft=True,
+            session=self.session
         )
         
         # 创建连接边（默认从右边连到左边）
@@ -527,14 +556,17 @@ class AutoWorkflowEngine:
             source_handle="right",
             target_handle="left",
             label="自动流转",
-            edge_type="next"
+            edge_type="references",
+            session=self.session
         )
         
         return next_node
     
-    @staticmethod
-    def _build_ai_prompt(parent_node: Node, flow_config: Dict[str, Any]) -> str:
+    def _build_ai_prompt(self, parent_node: Node, flow_config: Dict[str, Any]) -> str:
         """构建AI生成提示词"""
+        if isinstance(flow_config, str):
+            flow_config = NodeTypeConfig.get_next_config(flow_config) or {}
+
         prompt_template = flow_config.get("ai_prompt_template", "")
         if not prompt_template:
             return ""
@@ -546,7 +578,8 @@ class AutoWorkflowEngine:
         }
 
         # 递归获取祖先节点的定稿内容
-        ancestors = GraphCRUD.get_parent_nodes(parent_node.id, recursive=True)
+        aggregate_content = None
+        ancestors = GraphCRUD.get_parent_nodes(parent_node.id, recursive=True, session=self.session)
         for ancestor in ancestors:
             if ancestor.type == "requirement":
                 context["requirement_content"] = ancestor.content or "无"
@@ -554,6 +587,11 @@ class AutoWorkflowEngine:
                 context["design_content"] = ancestor.content or "无"
             elif ancestor.type == "bug_report":
                 context["bug_report_content"] = ancestor.content or "无"
+            elif ancestor.type == "aggregate":
+                aggregate_content = ancestor.content or "无"
+
+        if "requirement_content" not in context and aggregate_content:
+            context["requirement_content"] = aggregate_content
 
         # 填充模板（缺失的上下文使用"无"）
         try:

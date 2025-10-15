@@ -25,7 +25,7 @@ async def list_templates(workspace_path: Optional[str] = None) -> str:
             workspace_path = str(WorkspaceDetector.detect())
 
         workspace = Path(workspace_path)
-        templates = TemplateLoader.list_templates(workspace)
+        templates = TemplateLoader.list_workspace_templates(workspace)
 
         return json.dumps({
             "workspace": str(workspace),

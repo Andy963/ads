@@ -1,6 +1,20 @@
+import uuid
+
 from sqlalchemy import Column, String, JSON, Text, Boolean, Integer, DateTime, ForeignKey, Index
 from sqlalchemy.sql import func
 from ..storage.base import BaseModel
+
+
+class _NodeMetadataProxy:
+    """Descriptor providing node_metadata alias while preserving Base.metadata."""
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return BaseModel.metadata
+        return instance.node_metadata or {}
+
+    def __set__(self, instance, value):
+        instance.node_metadata = value or {}
 
 
 class NodeType:
@@ -60,6 +74,7 @@ class Node(BaseModel):
     draft_ai_original_content = Column(Text, nullable=True)  # AI原始生成内容（用于检测人工修改）
     is_draft = Column(Boolean, default=True)  # 是否有草稿（新建节点默认为True）
     draft_updated_at = Column(DateTime, nullable=True)  # 草稿最后更新时间
+    metadata = _NodeMetadataProxy()
 
 
 class NodeVersion(BaseModel):
@@ -91,7 +106,7 @@ class Edge(BaseModel):
     """边模型"""
     __tablename__ = 'edges'
 
-    id = Column(String, primary_key=True)
+    id = Column(String, primary_key=True, default=lambda: f"edge_{uuid.uuid4().hex[:12]}")
     source = Column(String, nullable=False)
     target = Column(String, nullable=False)
     source_handle = Column(String, default='right')  # 源节点的连接点ID
@@ -99,3 +114,12 @@ class Edge(BaseModel):
     label = Column(String)
     edge_type = Column(String, default='next')
     animated = Column(Boolean, default=False)
+
+    @property
+    def type(self):
+        """为测试和旧代码提供 edge_type 的别名。"""
+        return self.edge_type
+
+    @type.setter
+    def type(self, value):
+        self.edge_type = value

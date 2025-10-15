@@ -36,7 +36,7 @@ async  def  get_active_workflow(workspace_path:  Optional[str]  =  None)  ->  st
                 workflow  =  WorkflowContext.get_active_workflow(workspace)
 
                 if  not  workflow:
-                        return  """❌  没有活动的工作流
+                        return  f"""❌  没有活动的工作流
 
 💡  开始使用：
     -  创建新工作流:  {CMD_NEW}  <type>  <title>
@@ -65,7 +65,7 @@ async  def  get_active_workflow(workspace_path:  Optional[str]  =  None)  ->  st
                                         lines.append(f"        -  {step_name}:  (not  created)")
 
                 lines.append("")
-                lines.append("💡  For  detailed  status,  use:  {CMD_STATUS}")
+                lines.append(f"💡  For  detailed  status,  use:  {CMD_STATUS}")
                 lines.append("```")
 
                 return  "\n".join(lines)
@@ -95,7 +95,7 @@ async  def  get_workflow_status(workspace_path:  Optional[str]  =  None)  ->  st
                 workflow  =  WorkflowContext.get_active_workflow(workspace)
 
                 if  not  workflow:
-                        return  """❌  No  active  workflow
+                        return  f"""❌  No  active  workflow
 
 💡  To  get  started:
     -  List  existing  workflows:  {CMD_BRANCH}
@@ -246,8 +246,8 @@ async  def  get_workflow_status(workspace_path:  Optional[str]  =  None)  ->  st
                                         lines.append(f"    -  Finalize  step:  {CMD_COMMIT}  {current_step}")
                                 else:
                                         lines.append(f"    -  Step  already  finalized,  next  step  will  be  created  automatically")
-                lines.append("    -  View  all  workflows:  {CMD_BRANCH}")
-                lines.append("    -  Switch  workflow:  {CMD_CHECKOUT}  <workflow>")
+                lines.append(f"    -  View  all  workflows:  {CMD_BRANCH}")
+                lines.append(f"    -  Switch  workflow:  {CMD_CHECKOUT}  <workflow>")
 
                 return  "\n".join(lines)
 

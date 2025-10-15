@@ -6,6 +6,7 @@
 """
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Dict, List
 from datetime import datetime
@@ -67,6 +68,87 @@ class WorkflowContext:
         return workspace / WorkflowContext.CONTEXT_FILE
 
     @staticmethod
+    def load_context(workspace: Optional[Path] = None) -> Dict:
+        """加载上下文文件，若不存在则返回默认结构。"""
+
+        context_file = WorkflowContext._get_context_file(workspace)
+        if not context_file.exists():
+            return {
+                "active_workflow_id": None,
+                "active_workflow": None,
+                "workflows": {}
+            }
+
+        try:
+            with open(context_file, 'r', encoding='utf-8') as f:
+                context = json.load(f)
+        except Exception:
+            context = {}
+
+        return WorkflowContext._normalize_context(context)
+
+    @staticmethod
+    def save_context(workspace: Path, context: Dict) -> None:
+        """保存上下文到文件。"""
+
+        context_file = WorkflowContext._get_context_file(workspace)
+        context_file.parent.mkdir(parents=True, exist_ok=True)
+
+        sanitized = WorkflowContext._normalize_context(context or {})
+
+        with open(context_file, 'w', encoding='utf-8') as f:
+            json.dump(sanitized, f, indent=2, ensure_ascii=False)
+    
+    @staticmethod
+    def _normalize_context(raw_context: Dict) -> Dict:
+        """确保上下文包含兼容的新旧字段。"""
+
+        context = deepcopy(raw_context) if raw_context else {}
+
+        active_workflow = context.get("active_workflow") if isinstance(context, dict) else None
+        workflows = context.get("workflows") if isinstance(context, dict) else None
+        active_workflow_id = context.get("active_workflow_id") if isinstance(context, dict) else None
+
+        if workflows is None or not isinstance(workflows, dict):
+            workflows = {}
+
+        # 如果 active_workflow_id 未提供但有 active_workflow 对象，则尝试推断
+        if not active_workflow_id and active_workflow and isinstance(active_workflow, dict):
+            active_workflow_id = active_workflow.get("workflow_id")
+
+        # 如果 active_workflow 对象缺失，尝试从 workflows 中构建
+        if (not active_workflow or not isinstance(active_workflow, dict)) and active_workflow_id:
+            wf_data = deepcopy(workflows.get(active_workflow_id, {}))
+            if wf_data:
+                wf_data.setdefault("workflow_id", active_workflow_id)
+                active_workflow = wf_data
+            else:
+                active_workflow = None
+
+        # 如果 workflows 中缺少当前活动工作流的信息，尽量补齐
+        if active_workflow and isinstance(active_workflow, dict):
+            workflow_id = active_workflow.get("workflow_id")
+            if workflow_id:
+                wf_copy = deepcopy(active_workflow)
+                wf_copy.pop("workflow_id", None)
+                existing = workflows.get(workflow_id, {})
+                if isinstance(existing, dict):
+                    merged = {**existing, **wf_copy}
+                else:
+                    merged = wf_copy
+                workflows[workflow_id] = merged
+                active_workflow_id = workflow_id
+
+        # 确保关键字段存在
+        normalized = {
+            "active_workflow_id": active_workflow_id,
+            "active_workflow": active_workflow,
+            "workflows": workflows,
+        }
+
+        return normalized
+
+    @staticmethod
     def auto_activate_if_single_workflow(workspace: Optional[Path] = None) -> Optional[Dict]:
         """
         如果只有一个工作流且没有活动工作流，自动激活它。
@@ -115,20 +197,16 @@ class WorkflowContext:
         if not context_file.exists():
             return None
 
-        try:
-            with open(context_file, 'r', encoding='utf-8') as f:
-                context = json.load(f)
-                return context.get("active_workflow")
-        except Exception:
-            return None
+        context = WorkflowContext.load_context(workspace)
+        return context.get("active_workflow")
 
     @staticmethod
     def set_active_workflow(
-        workflow_root_id: str,
-        template: str,
-        title: str,
-        steps: Dict[str, str],
-        workspace: Optional[Path] = None
+        workspace: Optional[Path],
+        workflow_root_id: Optional[str] = None,
+        template: Optional[str] = None,
+        title: Optional[str] = None,
+        steps: Optional[Dict[str, str]] = None,
     ) -> Dict:
         """
         设置活动工作流。
@@ -143,34 +221,47 @@ class WorkflowContext:
         Returns:
             更新后的工作流上下文
         """
-        context_file = WorkflowContext._get_context_file(workspace)
-        context_file.parent.mkdir(parents=True, exist_ok=True)
+        if workspace is None:
+            workspace = WorkspaceDetector.detect()
+
+        context = WorkflowContext.load_context(workspace)
+
+        if workflow_root_id is None:
+            raise ValueError("workflow_root_id is required to set active workflow")
+
+        steps = steps or {}
+
+        existing_workflow = deepcopy(context.get("workflows", {}).get(workflow_root_id, {}))
+        if template is not None:
+            existing_workflow["template"] = template
+        if title is not None:
+            existing_workflow["title"] = title
+        if steps:
+            existing_workflow["steps"] = steps
+
+        existing_workflow.setdefault("template", template)
+        existing_workflow.setdefault("title", title or workflow_root_id)
+        existing_workflow.setdefault("steps", steps)
+
+        context.setdefault("workflows", {})
+        context["workflows"][workflow_root_id] = existing_workflow
 
         workflow_context = {
             "workflow_id": workflow_root_id,
-            "template": template,
-            "title": title,
-            "created_at": datetime.now().isoformat(),
-            "steps": steps,
-            "current_step": list(steps.keys())[0] if steps else None
+            "template": existing_workflow.get("template"),
+            "title": existing_workflow.get("title"),
+            "created_at": existing_workflow.get("created_at", datetime.now().isoformat()),
+            "steps": existing_workflow.get("steps", {}),
+            "current_step": existing_workflow.get("current_step") or (next(iter(steps.keys())) if steps else None),
         }
 
-        # 读取现有上下文
-        if context_file.exists():
-            try:
-                with open(context_file, 'r', encoding='utf-8') as f:
-                    context = json.load(f)
-            except Exception:
-                context = {}
-        else:
-            context = {}
+        existing_workflow.setdefault("created_at", workflow_context["created_at"])
+        existing_workflow["current_step"] = workflow_context["current_step"]
 
-        # 更新活动工作流
+        context["active_workflow_id"] = workflow_root_id
         context["active_workflow"] = workflow_context
 
-        # 保存到文件
-        with open(context_file, 'w', encoding='utf-8') as f:
-            json.dump(context, f, indent=2, ensure_ascii=False)
+        WorkflowContext.save_context(workspace, context)
 
         return workflow_context
 
@@ -185,25 +276,16 @@ class WorkflowContext:
         Returns:
             是否成功清除
         """
-        context_file = WorkflowContext._get_context_file(workspace)
-        if not context_file.exists():
+        context = WorkflowContext.load_context(workspace)
+
+        if not context.get("active_workflow_id") and not context.get("active_workflow"):
             return False
 
-        try:
-            with open(context_file, 'r', encoding='utf-8') as f:
-                context = json.load(f)
+        context["active_workflow_id"] = None
+        context["active_workflow"] = None
 
-            # 清除活动工作流
-            if "active_workflow" in context:
-                del context["active_workflow"]
-
-            # 保存回文件
-            with open(context_file, 'w', encoding='utf-8') as f:
-                json.dump(context, f, indent=2, ensure_ascii=False)
-
-            return True
-        except Exception:
-            return False
+        WorkflowContext.save_context(workspace, context)
+        return True
 
     @staticmethod
     def get_workflow_step_node_id(
@@ -246,17 +328,19 @@ class WorkflowContext:
         if not context_file.exists():
             return
 
-        try:
-            with open(context_file, 'r', encoding='utf-8') as f:
-                context = json.load(f)
+        context = WorkflowContext.load_context(workspace)
 
-            if "active_workflow" in context:
-                context["active_workflow"]["current_step"] = step_name
+        active_id = context.get("active_workflow_id")
+        if not active_id:
+            return
 
-                with open(context_file, 'w', encoding='utf-8') as f:
-                    json.dump(context, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        if context.get("active_workflow"):
+            context["active_workflow"]["current_step"] = step_name
+
+        if active_id in context.get("workflows", {}):
+            context["workflows"][active_id]["current_step"] = step_name
+
+        WorkflowContext.save_context(workspace, context)
 
     @staticmethod
     def add_workflow_step(
@@ -278,24 +362,30 @@ class WorkflowContext:
         if not context_file.exists():
             return
 
-        try:
-            with open(context_file, 'r', encoding='utf-8') as f:
-                context = json.load(f)
+        context = WorkflowContext.load_context(workspace)
 
-            if "active_workflow" in context:
-                if "steps" not in context["active_workflow"]:
-                    context["active_workflow"]["steps"] = {}
-                
-                # 添加新步骤
-                context["active_workflow"]["steps"][step_name] = node_id
-                
-                # 同时更新当前步骤
-                context["active_workflow"]["current_step"] = step_name
+        active_id = context.get("active_workflow_id")
+        if not active_id:
+            return
 
-                with open(context_file, 'w', encoding='utf-8') as f:
-                    json.dump(context, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        if "active_workflow" not in context or not isinstance(context["active_workflow"], dict):
+            context["active_workflow"] = {
+                "workflow_id": active_id,
+                "steps": {}
+            }
+
+        context["active_workflow"].setdefault("steps", {})
+        context["active_workflow"]["steps"][step_name] = node_id
+        context["active_workflow"]["current_step"] = step_name
+
+        workflows = context.get("workflows", {})
+        workflows.setdefault(active_id, {})
+        workflows[active_id].setdefault("steps", {})
+        workflows[active_id]["steps"][step_name] = node_id
+        workflows[active_id]["current_step"] = step_name
+        context["workflows"] = workflows
+
+        WorkflowContext.save_context(workspace, context)
 
     @staticmethod
     def list_all_workflows(workspace: Optional[Path] = None) -> List[Dict]:

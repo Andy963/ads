@@ -1,60 +1,89 @@
-"""
-Command executor - executes slash commands with variable substitution
-"""
+"""Command executor - executes slash commands with variable substitution."""
 
 import re
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Union
 
-from .loader import Command, CommandLoader
+from .loader import CommandLoader
 
 
 class CommandExecutor:
-    """Executes slash commands with variable substitution"""
+    """Executes slash commands with variable substitution."""
 
-    @staticmethod
+    def __init__(self, loader: Union[CommandLoader, Path, str]):
+        if isinstance(loader, CommandLoader):
+            self.loader = loader
+        else:
+            self.loader = CommandLoader(loader)
+
     def execute(
-        workspace: Path,
+        self,
         command_name: str,
-        variables: Optional[Dict[str, str]] = None
-    ) -> str:
-        """
-        Execute a command with variable substitution.
+        variables: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """Execute a command using the configured loader."""
 
-        Args:
-            workspace: Workspace root path
-            command_name: Command name
-            variables: Dictionary of variable values
-
-        Returns:
-            Expanded command content
-
-        Raises:
-            ValueError: If command not found or variables missing
-        """
-        # Load command
-        command = CommandLoader.get_command(workspace, command_name)
-
+        command = self.loader.load_command(command_name)
         if not command:
-            raise ValueError(f"Command not found: {command_name}")
+            return None
 
-        # Check for missing variables
+        variables = variables or {}
+        missing_vars = [v for v in command.variables if v not in variables]
+        if missing_vars:
+            # 兼容旧实现：缺少变量时保留原模板
+            return CommandExecutor._substitute_variables(command.content, variables)
+
+        return CommandExecutor._substitute_variables(command.content, variables)
+
+    def validate(
+        self,
+        command_name: str,
+        variables: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Validate variables against a command definition."""
+
+        command = self.loader.load_command(command_name)
+        if not command:
+            return {
+                "valid": False,
+                "errors": [f"Command not found: {command_name}"],
+                "missing_variables": [],
+            }
+
         variables = variables or {}
         missing_vars = [v for v in command.variables if v not in variables]
 
+        return {
+            "valid": len(missing_vars) == 0,
+            "errors": [] if not missing_vars else [
+                f"Missing variables: {', '.join(missing_vars)}"
+            ],
+            "missing_variables": missing_vars,
+            "required_variables": command.variables,
+        }
+
+    @staticmethod
+    def execute_for_workspace(
+        workspace: Path,
+        command_name: str,
+        variables: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """Static helper retained for backwards compatibility (raises on error)."""
+
+        loader = CommandLoader(workspace)
+        command = loader.load_command(command_name)
+        if not command:
+            raise ValueError(f"Command not found: {command_name}")
+
+        variables = variables or {}
+        missing_vars = [v for v in command.variables if v not in variables]
         if missing_vars:
             raise ValueError(
                 f"Missing required variables for command '{command_name}': "
                 f"{', '.join(missing_vars)}"
             )
 
-        # Substitute variables
-        expanded = CommandExecutor._substitute_variables(
-            command.content,
-            variables
-        )
-
-        return expanded
+        return CommandExecutor._substitute_variables(command.content, variables)
 
     @staticmethod
     def _substitute_variables(content: str, variables: Dict[str, str]) -> str:
@@ -80,36 +109,8 @@ class CommandExecutor:
     def validate_command(
         workspace: Path,
         command_name: str,
-        variables: Optional[Dict[str, str]] = None
-    ) -> Dict[str, any]:
-        """
-        Validate a command and its variables.
+        variables: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Static helper retained for backwards compatibility."""
 
-        Args:
-            workspace: Workspace root path
-            command_name: Command name
-            variables: Variable values
-
-        Returns:
-            Validation result with 'valid', 'errors', 'missing_variables'
-        """
-        command = CommandLoader.get_command(workspace, command_name)
-
-        if not command:
-            return {
-                "valid": False,
-                "errors": [f"Command not found: {command_name}"],
-                "missing_variables": []
-            }
-
-        variables = variables or {}
-        missing_vars = [v for v in command.variables if v not in variables]
-
-        return {
-            "valid": len(missing_vars) == 0,
-            "errors": [] if len(missing_vars) == 0 else [
-                f"Missing variables: {', '.join(missing_vars)}"
-            ],
-            "missing_variables": missing_vars,
-            "required_variables": command.variables
-        }
+        return CommandExecutor(workspace).validate(command_name, variables)

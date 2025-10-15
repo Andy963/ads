@@ -3,7 +3,7 @@ Template renderer - renders templates with variable substitution
 """
 
 import re
-from typing import Dict, Any
+from typing import Any, Dict, List
 
 
 class TemplateRenderer:
@@ -43,7 +43,7 @@ class TemplateRenderer:
         # Handle simple {{variable}} pattern
         def replace_simple(match):
             var_name = match.group(1)
-            return str(variables.get(var_name, f"{{{{var_name}}}}"))
+            return str(variables.get(var_name, f"{{{{{var_name}}}}}"))
 
         result = re.sub(
             r'\{\{(\w+)\}\}',
@@ -80,15 +80,15 @@ class TemplateRenderer:
         return {
             "valid": len(missing) == 0,
             "missing_variables": missing,
-            "required_variables": list(set(required)),
-            "optional_variables": list(set(with_defaults)),
+            "required_variables": list(dict.fromkeys(required)),
+            "optional_variables": list(dict.fromkeys(with_defaults)),
             "errors": [] if len(missing) == 0 else [
                 f"Missing required variables: {', '.join(missing)}"
             ]
         }
 
     @staticmethod
-    def extract_variables(template: str) -> Dict[str, Any]:
+    def extract_variables(template: str) -> List[str]:
         """
         Extract all variables from template.
 
@@ -96,19 +96,8 @@ class TemplateRenderer:
             template: Template string
 
         Returns:
-            Dictionary with 'required' and 'optional' variable lists
+            List of variable names in order of appearance
         """
         # Extract all variables
         all_vars = re.findall(r'\{\{(\w+)(?:\|[^}]*)?\}\}', template)
-
-        # Extract variables with defaults (optional)
-        optional = re.findall(r'\{\{(\w+)\|[^}]*\}\}', template)
-
-        # Required are those without defaults
-        required = [v for v in all_vars if v not in optional]
-
-        return {
-            "required": list(dict.fromkeys(required)),
-            "optional": list(dict.fromkeys(optional)),
-            "all": list(dict.fromkeys(all_vars))
-        }
+        return list(dict.fromkeys(all_vars))

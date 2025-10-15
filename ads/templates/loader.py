@@ -34,6 +34,78 @@ class WorkflowTemplate:
 class TemplateLoader:
     """Loads and manages templates"""
 
+    def __init__(self, templates_root: Path | str):
+        self.templates_root = Path(templates_root)
+
+    def _candidate_directories(self) -> List[Path]:
+        roots = [self.templates_root]
+        roots.append(self.templates_root / "nodes")
+        roots.append(self.templates_root / ".ads" / "templates")
+        roots.append(self.templates_root / ".ads" / "templates" / "nodes")
+        roots.append(self.templates_root / ".ads" / "templates" / "workflows")
+        return roots
+
+    def load_template(self, template_name: str) -> Optional[Any]:
+        """Load a single template by name from common locations."""
+
+        for directory in self._candidate_directories():
+            if not directory.exists():
+                continue
+
+            yaml_path = directory / f"{template_name}.yaml"
+            if yaml_path.exists():
+                template = TemplateLoader._parse_node_template(yaml_path)
+                return {
+                    "name": template.name,
+                    "node_type": template.node_type,
+                    "title": template.title_template,
+                    "content": template.content_template,
+                    "variables": template.variables,
+                    "metadata": template.metadata,
+                    "file_path": template.file_path,
+                }
+
+            md_path = directory / f"{template_name}.md"
+            if md_path.exists():
+                return md_path.read_text(encoding='utf-8')
+
+        return None
+
+    def list_templates(self) -> List[Dict[str, Any]]:
+        """List available templates with metadata."""
+
+        templates: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for directory in self._candidate_directories():
+            if not directory.exists():
+                continue
+
+            for yaml_path in directory.glob("*.yaml"):
+                template = TemplateLoader._parse_node_template(yaml_path)
+                name = template.name or yaml_path.stem
+                if name in seen:
+                    continue
+                seen.add(name)
+                templates.append({
+                    "name": name,
+                    "type": "yaml",
+                    "path": yaml_path,
+                })
+
+            for md_path in directory.glob("*.md"):
+                name = md_path.stem
+                if name in seen:
+                    continue
+                seen.add(name)
+                templates.append({
+                    "name": name,
+                    "type": "markdown",
+                    "path": md_path,
+                })
+
+        return templates
+
     @staticmethod
     def load_node_templates(workspace: Path) -> Dict[str, NodeTemplate]:
         """
@@ -216,7 +288,7 @@ class TemplateLoader:
         return templates.get(template_name)
 
     @staticmethod
-    def list_templates(workspace: Path) -> Dict[str, List[str]]:
+    def list_workspace_templates(workspace: Path) -> Dict[str, List[str]]:
         """List all available templates"""
         node_templates = TemplateLoader.load_node_templates(workspace)
         workflow_templates = TemplateLoader.load_workflow_templates(workspace)

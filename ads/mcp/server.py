@@ -308,15 +308,6 @@ async  def  list_tools()  ->  list[Tool]:
                                 }
                         }
                 ),
-                Tool(
-                        name="relayout_all_workflows",
-                        description="Relayout  all  workflows  (horizontal  arrangement  +  vertical  separation).",
-                        inputSchema={
-                                "type":  "object",
-                                "properties":  {}
-                        }
-                ),
-
                 #  Workspace  tools
                 Tool(
                         name="ads.init",
@@ -751,7 +742,6 @@ TOOL_HANDLERS = {
         # System tools
         "get_system_info": lambda args: system.get_system_info(),
         "sync_all_nodes_to_files": lambda args: graph.sync_all_nodes_to_files(workspace_path=args.get("workspace_path")),
-        "relayout_all_workflows": lambda args: graph.relayout_all_workflows(),
         
         # Workspace tools
         "ads.init": lambda args: workspace.init_workspace(name=args.get("name")),
