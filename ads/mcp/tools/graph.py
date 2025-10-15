@@ -256,13 +256,16 @@ async def create_node(
         # 生成节点ID
         node_id = generate_node_id(node_type)
 
+        is_draft = status != "finalized"
+
         # 创建节点
         node = GraphCRUD.create_node(
             id=node_id,
             type=node_type,
             label=title,
             content=content,
-            metadata={}
+            metadata={},
+            is_draft=is_draft
         )
 
         # 如果指定了父节点，创建边

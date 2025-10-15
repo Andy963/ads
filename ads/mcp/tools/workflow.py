@@ -182,7 +182,7 @@ async def get_node_type_config(node_type: str) -> str:
     """
     try:
         config = WorkflowRulesConfig()
-        node_config = config.get_node_config(node_type)
+        node_config = config.get_node_type_config(node_type)
 
         if not node_config:
             return json.dumps(
@@ -592,7 +592,7 @@ project/
                 return templates[node_type]
 
             # 否则返回基础模板
-            node_cfg = config.get_node_config(node_type)
+            node_cfg = config.get_node_type_config(node_type)
             return f"""## 概述
 
 （待补充内容）

@@ -274,26 +274,42 @@ async  def  switch_workflow(
                 from  pathlib  import  Path
                 workspace  =  Path(workspace_path)  if  workspace_path  else  None
 
-                new_workflow  =  WorkflowContext.switch_workflow(workflow_identifier,  workspace)
+                switch_result  =  WorkflowContext.switch_workflow(workflow_identifier,  workspace)
 
-                if  not  new_workflow:
-                        #  列出可用的工作流
-                        all_workflows  =  WorkflowContext.list_all_workflows(workspace)
-
+                if  not  switch_result  or  not  switch_result.get("success"):
                         lines  =  []
-                        lines.append(f"❌  Workflow  not  found:  '{workflow_identifier}'\n")
-                        lines.append("Available  workflows:")
+                        message  =  (switch_result  or  {}).get("message")  or  f"Workflow  not  found:  '{workflow_identifier}'"
+                        lines.append(f"❌  {message}\n")
 
-                        for  i,  wf  in  enumerate(all_workflows,  1):
-                                template_name  =  {"bugfix":  "Bug修复",  "standard":  "标准开发",  "feature":  "功能开发"}.get(
-                                        wf.get("template",  ""),  wf.get("template",  "")
-                                )
-                                lines.append(f"    {i}.  {wf['title']:<30}    {template_name}")
+                        matches  =  (switch_result  or  {}).get("matches")  or  []
 
-                        lines.append("\n💡  Use  {CMD_BRANCH}  to  see  all  workflows")
-                        lines.append("💡  Try:  {CMD_CHECKOUT}  <workflow_title>")
+                        if  matches:
+                                lines.append("Possible  matches:")
+                                for  i,  wf  in  enumerate(matches,  1):
+                                        template_name  =  {"bugfix":  "Bug修复",  "standard":  "标准开发",  "feature":  "功能开发"}.get(
+                                                wf.get("template",  ""),  wf.get("template",  "")
+                                        )
+                                        lines.append(f"    {i}.  {wf['title']:<30}    {template_name}")
+                                lines.append("\n💡  指定更精确的名称或 ID 再试一次")
+                        else:
+                                all_workflows  =  WorkflowContext.list_all_workflows(workspace)
+                                if  all_workflows:
+                                        lines.append("Available  workflows:")
+                                        for  i,  wf  in  enumerate(all_workflows,  1):
+                                                template_name  =  {"bugfix":  "Bug修复",  "standard":  "标准开发",  "feature":  "功能开发"}.get(
+                                                        wf.get("template",  ""),  wf.get("template",  "")
+                                                )
+                                                lines.append(f"    {i}.  {wf['title']:<30}    {template_name}")
+
+                                lines.append("\n💡  Use  {CMD_BRANCH}  to  see  all  workflows")
+                                lines.append("💡  Try:  {CMD_CHECKOUT}  <workflow_title>")
 
                         return  "\n".join(lines)
+
+                new_workflow  =  switch_result.get("workflow")
+
+                if  not  new_workflow:
+                        return  f"❌  Unexpected  error:  missing  workflow  data"
 
                 #  切换成功，显示新工作流状态
                 lines  =  []

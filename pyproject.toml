@@ -14,7 +14,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "mcp>=1.17.0",
 ]
-requires-python = "==3.10.*"
+requires-python = ">=3.10,<3.13"
 readme = "README.md"
 license = {text = "MIT"}
 
