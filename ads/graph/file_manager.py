@@ -95,10 +95,73 @@ class WorkflowFileManager:
             workspace_path: 工作空间路径
 
         Returns:
-            docs/specs/{workflow_root_id}/{node_type}.md
+            docs/specs/{workflow_root_id}/{序号:02d}-{node_type}.md
         """
         spec_dir = WorkflowFileManager.get_spec_dir(node, workspace_path)
-        return spec_dir / f"{node.type}.md"
+        
+        # 获取节点在工作流中的序号
+        sequence_number = WorkflowFileManager._get_node_sequence(node)
+        
+        # 获取节点类型的 prefix（用于文件命名）
+        from .workflow_config import WorkflowRulesConfig
+        config = WorkflowRulesConfig()
+        node_config = config.get_node_type_config(node.type)
+        prefix = node_config.prefix if node_config else node.type
+        
+        # 文件名格式：序号-prefix.md
+        filename = f"{sequence_number:02d}-{prefix}.md"
+        return spec_dir / filename
+    
+    @staticmethod
+    def _get_node_sequence(node: Node) -> int:
+        """
+        获取节点在工作流中的序号（从1开始）。
+        
+        通过遍历从根节点开始的所有节点，按创建时间排序确定序号。
+        
+        Args:
+            node: 节点对象
+            
+        Returns:
+            节点序号（1-based）
+        """
+        # 获取工作流根节点
+        root_id = WorkflowFileManager._get_workflow_root_id(node)
+        
+        # 获取工作流中的所有节点（按创建时间排序）
+        def get_all_workflow_nodes(root_id: str) -> list:
+            """递归获取工作流中的所有节点"""
+            nodes = []
+            visited = set()
+            
+            def traverse(node_id: str):
+                if node_id in visited:
+                    return
+                visited.add(node_id)
+                
+                current_node = GraphCRUD.get_node_by_id(node_id)
+                if current_node:
+                    nodes.append(current_node)
+                    
+                    # 获取所有子节点
+                    edges = GraphCRUD.get_edges_from_node(node_id)
+                    for edge in edges:
+                        traverse(edge.target)
+            
+            traverse(root_id)
+            return nodes
+        
+        # 获取所有节点并排序
+        all_nodes = get_all_workflow_nodes(root_id)
+        all_nodes.sort(key=lambda n: n.created_at)
+        
+        # 找到当前节点的位置
+        for i, n in enumerate(all_nodes, 1):
+            if n.id == node.id:
+                return i
+        
+        # 如果没找到，返回1（不应该发生）
+        return 1
 
     @staticmethod
     def save_node_to_file(node: Node, workspace_path: Optional[str] = None) -> Path:

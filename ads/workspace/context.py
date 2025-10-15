@@ -259,6 +259,45 @@ class WorkflowContext:
             pass
 
     @staticmethod
+    def add_workflow_step(
+        step_name: str,
+        node_id: str,
+        workspace: Optional[Path] = None
+    ):
+        """
+        添加工作流步骤到 context.json。
+        
+        当自动工作流创建新节点后，需要调用此方法将新节点记录到 steps 中。
+
+        Args:
+            step_name: 步骤名称（如 "requirement", "design"）
+            node_id: 节点 ID
+            workspace: 工作空间路径
+        """
+        context_file = WorkflowContext._get_context_file(workspace)
+        if not context_file.exists():
+            return
+
+        try:
+            with open(context_file, 'r', encoding='utf-8') as f:
+                context = json.load(f)
+
+            if "active_workflow" in context:
+                if "steps" not in context["active_workflow"]:
+                    context["active_workflow"]["steps"] = {}
+                
+                # 添加新步骤
+                context["active_workflow"]["steps"][step_name] = node_id
+                
+                # 同时更新当前步骤
+                context["active_workflow"]["current_step"] = step_name
+
+                with open(context_file, 'w', encoding='utf-8') as f:
+                    json.dump(context, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    @staticmethod
     def list_all_workflows(workspace: Optional[Path] = None) -> List[Dict]:
         """
         列出所有工作流（用于切换）。
