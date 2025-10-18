@@ -689,6 +689,8 @@ async def _handle_ads_branch(arguments: Any) -> str:
                         workspace_path=arguments.get("workspace_path"),
                         force=True
                 )
+        else:
+                raise ValueError(f"Unsupported operation for ads.branch: {operation}")
 
 
 TOOL_HANDLERS = {
@@ -825,7 +827,10 @@ async  def  call_tool(name:  str,  arguments:  Any)  ->  list[TextContent]:
         if not handler:
                 raise ValueError(f"Unknown tool: {name}")
         
-        result = await handler(arguments)
+        args = arguments or {}
+        if not isinstance(args, dict):
+                raise TypeError(f"Tool '{name}' expects arguments object, got {type(arguments).__name__}")
+        result = await handler(args)
         return [TextContent(type="text", text=result)]
 
 

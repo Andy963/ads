@@ -7,7 +7,7 @@ authors = [
 ]
 dependencies = [
     "pydantic>=2.11.9",
-    "typer>=0.19.2",
+    "typer>=0.9,<0.16",
     "rich>=14.1.0",
     "sqlalchemy>=2.0.43",
     "alembic>=1.16.5",
@@ -28,7 +28,17 @@ mcp = "python -m ads.mcp.server"
 distribution = true
 
 [tool.setuptools]
-packages = ["ads"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["ads*"]
+
+[tool.setuptools.package-data]
+ads = [
+    "templates/**/*.md",
+    "templates/**/*.yaml",
+    "commands/**/*.md"
+]
 
 [dependency-groups]
 dev = [

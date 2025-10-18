@@ -6,6 +6,8 @@ import typer
 from rich.console import Console
 
 from .init import init
+from .setup import Client as SetupClient
+from .setup import setup_client
 
 app = typer.Typer(
     name="ads",
@@ -17,6 +19,7 @@ console = Console()
 
 # 只保留 init 命令，其他功能通过 MCP 使用
 app.command("init")(init)
+app.command("setup")(setup_client)
 
 
 @app.command()

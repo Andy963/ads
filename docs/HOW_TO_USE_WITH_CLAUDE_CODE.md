@@ -15,7 +15,7 @@
       "command": "pdm",
       "args": ["run", "python", "-m", "ads.mcp.server"],
       "cwd": "D:\\code\\ad",
-      "description": "ADS - 领域驱动设计协助系统"
+      "description": "ADS - AI-Driven Specification"
     }
   }
 }

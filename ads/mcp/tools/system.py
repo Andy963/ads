@@ -24,7 +24,7 @@ async def get_system_info() -> str:
         result = {
             "name": "AD Assistant",
             "version": "1.0.0",
-            "description": "基于知识图谱的领域驱动设计协助开发系统",
+            "description": "AI-Driven Specification 开发协作系统",
             "capabilities": {
                 "rules": {
                     "categories": [
