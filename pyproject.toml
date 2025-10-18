@@ -20,6 +20,16 @@ license = {text = "MIT"}
 
 [project.scripts]
 ads = "ads.cli.main:main"
+"ads.new" = "ads.cli.slash:new_main"
+"ads.status" = "ads.cli.slash:status_main"
+"ads.add" = "ads.cli.slash:add_main"
+"ads.commit" = "ads.cli.slash:commit_main"
+"ads.checkout" = "ads.cli.slash:checkout_main"
+"ads.branch" = "ads.cli.slash:branch_main"
+"ads.log" = "ads.cli.slash:log_main"
+"ads.get" = "ads.cli.slash:get_main"
+"ads.commands" = "ads.cli.slash:commands_main"
+"ads.run" = "ads.cli.slash:run_main"
 
 [tool.pdm.scripts]
 mcp = "python -m ads.mcp.server"

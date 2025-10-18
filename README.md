@@ -3,7 +3,7 @@
 **ADS** 是一个基于图谱的软件开发工作流管理系统，通过 Git 风格的命令和 AI 协作，帮助开发者管理需求、设计和实现的全流程。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 
 ## ✨ 核心特性
 
@@ -85,16 +85,33 @@ your-project/
 }
 ```
 
-#### Codex（实验性）
+#### Codex CLI（推荐）
 
-编辑 `~/.codex/config.toml`：
-```toml
-[mcp_servers.ads]
-command = "pdm"
-args = ["run", "python", "-m", "ads.mcp.server"]
-cwd = "/path/to/ad"
-type = "stdio"
-```
+1. **安装 CLI**  
+   在 ADS 仓库目录执行一次 `pdm install`（或 `pip install -e .` / `pip install --user --break-system-packages dist/ads-*.whl`），确保 `ads.new`、`ads.status` 等命令已在系统 PATH。
+
+2. **写入 slash prompt**  
+   运行仓库自带脚本：
+   ```bash
+   bash scripts/install_codex_prompts.sh
+   ```
+   它会在 `~/.codex/prompts/` 下为 `/ads.*` 创建精简指令，Codex 收到 `/ads.status` 等命令时会自动调用对应 CLI。
+
+3. **重启 Codex**  
+   重新打开 Codex CLI（或在会话中发送 `/status`）即可生效，之后只需输入一次 `/ads.new …`，Codex 会自行执行 `ads.new …` 并回显结果。
+
+> 仍需使用 MCP 服务端？可以保留旧配置：在 `~/.codex/config.toml` 中增加 `mcp_servers.ads`，并通过 `pdm run python -m ads.mcp.server` 启动。除非有特定需求，现在推荐优先使用上面的本地 CLI 工作流。
+
+> **迁移提示**：旧文档曾要求在 Codex 中配置 MCP server 并只能通过 MCP 使用 `/ads.*` 命令。现在 CLI 与 prompts 即可满足大部分场景，MCP 仅在需要远程调用或兼容旧工作流时才需要保留。
+
+### CLI 使用提示
+
+- **可用命令**：`ads.new`、`ads.status`、`ads.add`、`ads.commit`、`ads.checkout`、`ads.branch`、`ads.log`、`ads.get`、`ads.commands`、`ads.run`，分别对应原 MCP 的 `/ads.*` 功能。
+- **Python 版本**：当前锁文件针对 Python 3.12 构建，建议使用 3.12+ 的运行环境执行 `pdm install`，否则会触发 “lock target mismatch”。
+- **默认模板**：`ads.new "标题"` 会读取环境变量 `ADS_DEFAULT_TEMPLATE`（未设置时默认为 `standard`）。希望默认快速功能流时，可设置 `export ADS_DEFAULT_TEMPLATE=feature`。
+- **录入草稿**：`ads.add requirement` 支持多种输入方式：`ads.add requirement "内容"`、`ads.add requirement --file draft.md`，或使用管道 `cat draft.md | ads.add requirement`。
+- **查看完整 JSON**：所有命令都接受 `--json`，用于输出底层工具返回的完整 JSON，便于调试或与自动化脚本集成。
+- **Prompt 脚本备份**：`scripts/install_codex_prompts.sh` 会列出写入的 prompt 文件，并在覆盖现有文件前生成 `.bak` 备份，便于还原自定义配置。
 
 ---
 
@@ -116,7 +133,7 @@ AI：(整理成结构化文档) 请确认这个需求描述是否准确？
 
 你：确认
 
-AI：使用 ads.update 更新节点...已更新为 draft
+AI：使用 /ads.add requirement 更新节点...已更新为 draft
 
 你：/ads.commit requirement
 
