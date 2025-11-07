@@ -2,9 +2,8 @@ import type { Context } from 'grammy';
 import type { SessionManager } from '../utils/sessionManager.js';
 import type { AgentEvent } from '../../codex/events.js';
 import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
-import { downloadTelegramFile, cleanupFile, cleanupFiles, uploadFileToTelegram } from '../utils/fileHandler.js';
+import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../utils/fileHandler.js';
 import { processUrls } from '../utils/urlHandler.js';
-import { formatThreadEvent } from '../utils/eventFormatter.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 
 // 全局中断管理器
@@ -84,7 +83,6 @@ export async function handleCodexMessage(
   interruptManager.registerRequest(userId);
 
   const sentMsg = await ctx.reply('💭 开始处理...', { parse_mode: 'Markdown' });
-  const eventMessages: string[] = [];
   let lastUpdate = Date.now();
   
   // 处理 URL（如果消息中有链接）

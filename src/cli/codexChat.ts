@@ -223,7 +223,7 @@ export class CodexSession {
 
   private async processStreamedResult(
     streamed: Awaited<ReturnType<ReturnType<Codex["startThread"]>["runStreamed"]>>,
-    signal?: AbortSignal,
+    _signal?: AbortSignal,
   ): Promise<CodexSendResult> {
     const aggregator = new StreamAggregator();
 

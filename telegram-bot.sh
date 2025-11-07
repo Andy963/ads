@@ -2,7 +2,7 @@
 
 # Telegram Bot 管理脚本
 
-BOT_DIR="/home/andy/ads-js"
+BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BOT_SCRIPT="dist/src/telegram/bot.js"
 ENV_FILE=".env.telegram"
 LOG_FILE=".ads/logs/telegram-bot.log"

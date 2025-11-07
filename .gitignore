@@ -7,6 +7,10 @@ coverage/
 *.tsbuildinfo
 docs/
 
+# Build artifacts
+/dist
+*.js.map
+
 # Runtime/state
 .ads/
 .cache/

@@ -1,4 +1,4 @@
-import { getAllWorkflowTemplates, getWorkflowTemplate, getAllNodeTypes } from "../graph/workflowConfig.js";
+import { getAllWorkflowTemplates, getAllNodeTypes } from "../graph/workflowConfig.js";
 import { getEdgeTypes } from "../graph/edgeTypes.js";
 import { safeStringify } from "../utils/json.js";
 

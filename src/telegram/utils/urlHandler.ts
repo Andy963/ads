@@ -1,7 +1,5 @@
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
 
 const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'url-downloads');
 
@@ -41,6 +39,7 @@ export async function detectUrlType(url: string): Promise<UrlInfo> {
   
   const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
   const fileExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.tar', '.gz', '.json', '.xml', '.csv', '.txt', '.md'];
+  const webpageExts = ['.html', '.htm', '.php', '.asp', '.aspx', '.jsp'];
   
   if (imageExts.includes(ext)) {
     return { url, type: UrlType.IMAGE, extension: ext };
@@ -50,6 +49,10 @@ export async function detectUrlType(url: string): Promise<UrlInfo> {
     return { url, type: UrlType.FILE, extension: ext };
   }
   
+  if (webpageExts.includes(ext)) {
+    return { url, type: UrlType.WEBPAGE, extension: ext };
+  }
+  
   // 通过 HEAD 请求检查 Content-Type
   try {
     const response = await fetch(url, { method: 'HEAD' });
@@ -57,6 +60,10 @@ export async function detectUrlType(url: string): Promise<UrlInfo> {
     
     if (contentType.startsWith('image/')) {
       return { url, type: UrlType.IMAGE, extension: ext || '.jpg' };
+    }
+    
+    if (contentType.includes('text/html')) {
+      return { url, type: UrlType.WEBPAGE, extension: ext };
     }
     
     if (contentType.includes('application/') || contentType.includes('text/')) {

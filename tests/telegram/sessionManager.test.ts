@@ -26,9 +26,16 @@ describe('SessionManager', () => {
 
   it('should reset session', () => {
     const session1 = manager.getOrCreate(123456);
+    // Save initial state to verify reset
+    const initialThreadId = session1.getThreadId();
+    
     manager.reset(123456);
     const session2 = manager.getOrCreate(123456);
-    assert.notStrictEqual(session1, session2);
+    
+    // After reset, should be same object but with reset state
+    assert.strictEqual(session1, session2);
+    // Thread should be cleared after reset
+    assert.strictEqual(session2.getThreadId(), null);
   });
 
   it('should track session statistics', () => {

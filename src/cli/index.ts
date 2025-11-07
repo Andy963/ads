@@ -13,6 +13,9 @@ import {
   listWorkflowLog,
 } from "../workflow/service.js";
 import { createWorkflowFromTemplate } from "../workflow/templateService.js";
+import { createLogger } from "../utils/logger.js";
+
+const cliLogger = createLogger('CLI');
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
 import { readRules, listRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
@@ -75,7 +78,7 @@ async function ensureWorkspace(logger: ConversationLogger): Promise<void> {
   const response = await initWorkspace({ name: path.basename(cwd) });
   const message = formatResponse(response);
   logger.logOutput(message);
-  console.log(message);
+  cliLogger.info(message);
   syncWorkspaceTemplates();
 }
 
@@ -195,7 +198,7 @@ async function handleCodexInteraction(input: string, codex: CodexSession, logger
     const startTime = Date.now();
     if (!streamingConfig.enabled) {
       const thinking = "⌛ Codex 正在思考...";
-      console.log(thinking);
+      cliLogger.info(thinking);
       logger.logOutput(thinking);
     }
     const renderer = createStatusRenderer(startTime, streamingConfig.throttleMs, logger, streamingConfig.enabled);
@@ -208,7 +211,7 @@ async function handleCodexInteraction(input: string, codex: CodexSession, logger
       renderer.finish();
       if (!streamingConfig.enabled) {
         const summary = `[Codex] 耗时 ${elapsed.toFixed(1)}s`;
-        console.log(summary);
+        cliLogger.info(summary);
         logger.logOutput(summary);
       }
       return { output: result.response || "(Codex 无响应)" };
@@ -222,7 +225,7 @@ async function handleCodexInteraction(input: string, codex: CodexSession, logger
   }
 }
 
-async function handleAdsCommand(command: string, rawArgs: string[], logger: ConversationLogger): Promise<CommandResult> {
+async function handleAdsCommand(command: string, rawArgs: string[], _logger: ConversationLogger): Promise<CommandResult> {
   const positional: string[] = [];
   const params: Record<string, string> = {};
 
@@ -756,14 +759,14 @@ async function main(): Promise<void> {
 
   await ensureWorkspace(logger);
 
-  console.log("欢迎使用 ADS CLI，输入 /ads.help 查看可用命令。");
-  console.log(`会话日志: ${logger.path}`);
+  cliLogger.info("欢迎使用 ADS CLI，输入 /ads.help 查看可用命令。");
+  cliLogger.info(`会话日志: ${logger.path}`);
 
   const codexStatus = codex.status();
   if (codexStatus.ready) {
-    console.log("[Codex] 已连接，直接输入自然语言即可对话。");
+    cliLogger.info("[Codex] 已连接，直接输入自然语言即可对话。");
   } else {
-    console.warn(`[Codex] 未启用: ${codexStatus.error ?? "请配置 CODEX_API_KEY 或 ~/.codex"}`);
+    cliLogger.warn(`[Codex] 未启用: ${codexStatus.error ?? "请配置 CODEX_API_KEY 或 ~/.codex"}`);
   }
 
   const rl = readline.createInterface({

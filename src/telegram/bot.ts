@@ -8,29 +8,32 @@ import { DirectoryManager } from './utils/directoryManager.js';
 import { handleCodexMessage, interruptExecution } from './adapters/codex.js';
 import { handleAdsCommand } from './adapters/ads.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('Bot');
 
 async function main() {
-  console.log('[Bot] Starting ADS Telegram Bot...');
+  logger.info('Starting ADS Telegram Bot...');
 
   // 加载配置
   let config;
   try {
     config = loadTelegramConfig();
     validateConfig(config);
-    console.log('[Config] Telegram config loaded');
-    console.log(`[Config] Allowed users: ${config.allowedUsers.join(', ')}`);
-    console.log(`[Config] Allowed dirs: ${config.allowedDirs.join(', ')}`);
+    logger.info('Telegram config loaded');
+    logger.info(`Allowed users: ${config.allowedUsers.join(', ')}`);
+    logger.info(`Allowed dirs: ${config.allowedDirs.join(', ')}`);
   } catch (error) {
-    console.error('[Config] Failed to load config:', (error as Error).message);
+    logger.error('Failed to load config:', (error as Error).message);
     process.exit(1);
   }
 
   // 验证 Codex 配置
   try {
-    const codexConfig = resolveCodexConfig();
-    console.log('[Codex] Config validated');
+    resolveCodexConfig();
+    logger.info('Codex config validated');
   } catch (error) {
-    console.error('[Codex] Failed to validate config:', (error as Error).message);
+    logger.error('Failed to validate Codex config:', (error as Error).message);
     process.exit(1);
   }
 

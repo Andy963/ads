@@ -26,9 +26,10 @@ describe('EventFormatter', () => {
       assert.strictEqual(result.isDangerous, false);
     });
 
-    it('should allow rm node_modules', () => {
+    it('should detect rm node_modules as dangerous', () => {
       const result = checkDangerousCommand('rm -rf node_modules');
-      assert.strictEqual(result.isDangerous, false);
+      assert.strictEqual(result.isDangerous, true);
+      assert.ok(result.reason?.includes('删除大量文件'));
     });
   });
 

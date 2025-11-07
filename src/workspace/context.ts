@@ -266,7 +266,7 @@ export class WorkflowContext {
     WorkflowContext.saveContext(workspace, context);
   }
 
-  static listAllWorkflows(workspace?: string): Array<{
+  static listAllWorkflows(_workspace?: string): Array<{
     workflow_id: string;
     template: string;
     title: string;

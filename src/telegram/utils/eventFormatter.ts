@@ -193,13 +193,14 @@ export function checkDangerousCommand(command: string): { isDangerous: boolean; 
   
   // 删除操作
   if (cmd.includes('rm -rf') || cmd.includes('rm -fr')) {
-    if (cmd.includes('rm -rf /') || cmd.includes('rm -rf ~') || cmd.includes('rm -rf .')) {
+    if (cmd.includes('rm -rf /') || cmd.includes('rm -rf ~') || cmd.includes('rm -rf .') || 
+        cmd.includes('node_modules') || cmd.includes('dist') || cmd.includes('.git')) {
       return { isDangerous: true, reason: '⚠️ 危险：删除大量文件' };
     }
     return { isDangerous: true, reason: '⚠️ 警告：递归删除文件' };
   }
   
-  if (cmd.match(/\brm\b.*-r/) && !cmd.includes('node_modules')) {
+  if (cmd.match(/\brm\b.*-r/)) {
     return { isDangerous: true, reason: '⚠️ 警告：递归删除' };
   }
   

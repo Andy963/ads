@@ -1,8 +1,6 @@
 import path from "node:path";
 
 import {
-  getWorkspaceRulesDir,
-  getWorkspaceSpecsDir,
   getWorkspaceInfo as detectorWorkspaceInfo,
   isWorkspaceInitialized,
 } from "../workspace/detector.js";

@@ -1,8 +1,8 @@
 import { Api } from 'grammy';
 import { createWriteStream, createReadStream, existsSync, mkdirSync, statSync, unlinkSync, readdirSync } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { createGunzip, createGzip } from 'node:zlib';
+import { createGzip } from 'node:zlib';
 
 const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-files');
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB Telegram 限制

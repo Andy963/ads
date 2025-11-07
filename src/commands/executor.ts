@@ -1,5 +1,3 @@
-import path from "node:path";
-
 import { CommandLoader, CommandDefinition } from "./loader.js";
 
 export class CommandExecutor {
