@@ -1,0 +1,32 @@
+{
+  "name": "ads",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Experimental MCP server implementation for ADS using Node.js/TypeScript.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-templates.js",
+    "start": "node dist/ads.js",
+    "dev": "tsx watch src/ads.ts",
+    "test": "tsx --test tests/**/*.test.ts",
+    "install:codex-prompts": "node scripts/install-codex-prompts.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "ads": "./dist/ads.js"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "^0.53.0",
+    "picocolors": "^1.0.0",
+    "better-sqlite3": "^9.6.0",
+    "toml": "^3.0.0",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.5.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.4"
+  }
+}

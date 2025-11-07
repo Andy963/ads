@@ -1,0 +1,85 @@
+# 工作流规则配置
+# 定义节点类型、连接规则和工作流模板
+
+# ==================== 节点类型配置 ====================
+node_types:
+  requirement:
+    key: requirement
+    label: 需求
+    prefix: req
+    next_types:
+      - design
+    color: "#67c23a"
+    icon: "📝"
+    description: 需求分析和功能定义
+
+  design:
+    key: design
+    label: 设计
+    prefix: des
+    next_types:
+      - implementation
+    color: "#e6a23c"
+    icon: "🎨"
+    description: 架构设计和技术方案
+
+  implementation:
+    key: implementation
+    label: 实现
+    prefix: imp
+    next_types: []
+    color: "#909399"
+    icon: "💻"
+    description: 代码实现
+
+
+# ==================== 前端连接规则 ====================
+# 定义前端UI中允许的节点连接规则
+# 这些规则比后端的next_types更灵活，允许同类型节点互连和反向关联
+connection_rules:
+  requirement:
+    - design
+    - requirement
+
+  design:
+    - implementation
+    - design
+
+  implementation:
+    - implementation
+
+
+# ==================== 工作流模板配置 ====================
+workflow_templates:
+  unified:
+    key: unified
+    name: 单一工作流
+    description: 需求→方案→实施，适用于所有工作类型
+    icon: "🧭"
+    steps:
+      - step_number: 1
+        label: 需求澄清
+        required: true
+        default_option: requirement
+        options:
+          - node_type: requirement
+            label: 需求
+            description: 收集背景、目标、范围、干系人与依赖
+
+      - step_number: 2
+        label: 方案设计
+        required: true
+        default_option: design
+        options:
+          - node_type: design
+            label: 设计
+            description: 输出架构决策、影响评估与任务拆分
+
+      - step_number: 3
+        label: 实施与验证
+        required: true
+        default_option: implementation
+        options:
+          - node_type: implementation
+            label: 实施
+            description: 执行实现、测试、上线与验证记录

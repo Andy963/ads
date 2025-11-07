@@ -1,0 +1,31 @@
+key: unified
+name: 单一工作流
+description: 需求→方案→实施的统一流程
+icon: "🧭"
+steps:
+  - step_number: 1
+    label: 需求澄清
+    required: true
+    default_option: requirement
+    options:
+      - node_type: requirement
+        label: 需求
+        description: 收集背景、目标、范围、干系人与依赖
+
+  - step_number: 2
+    label: 方案设计
+    required: true
+    default_option: design
+    options:
+      - node_type: design
+        label: 设计
+        description: 输出架构决策、影响分析与任务拆分
+
+  - step_number: 3
+    label: 实施与验证
+    required: true
+    default_option: implementation
+    options:
+      - node_type: implementation
+        label: 实施
+        description: 执行实现、测试、上线与验证记录
