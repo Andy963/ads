@@ -5,6 +5,7 @@ build/
 coverage/
 .nyc_output/
 *.tsbuildinfo
+docs/
 
 # Runtime/state
 .ads/
