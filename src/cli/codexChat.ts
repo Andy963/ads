@@ -3,6 +3,7 @@ import {
   type ThreadEvent,
   type TurnOptions,
   type Usage,
+  type SandboxMode,
 } from "@openai/codex-sdk";
 
 import { resolveCodexConfig, type CodexResolvedConfig } from "../codexConfig.js";
@@ -13,11 +14,20 @@ interface CodexSessionOptions {
   overrides?: Partial<CodexResolvedConfig>;
   streamingEnabled?: boolean;
   streamThrottleMs?: number;
+  resumeThreadId?: string;
+  sandboxMode?: SandboxMode;
+  model?: string;
 }
 
 export interface CodexSendOptions {
   streaming?: boolean;
   outputSchema?: unknown;
+  signal?: AbortSignal;
+}
+
+export interface CodexSendResult {
+  response: string;
+  usage: Usage | null;
 }
 
 export class CodexSession {
@@ -56,11 +66,29 @@ export class CodexSession {
 
   private ensureThread(): ReturnType<Codex["startThread"]> {
     if (!this.thread && this.codex) {
-      this.thread = this.codex.startThread({
+      const threadOptions = {
         skipGitRepoCheck: true,
-      });
+        sandboxMode: this.options.sandboxMode,
+        model: this.options.model,
+      };
+      
+      if (this.options.resumeThreadId) {
+        try {
+          this.thread = this.codex.resumeThread(this.options.resumeThreadId, threadOptions);
+          console.log(`[CodexSession] Resumed thread ${this.options.resumeThreadId}`);
+        } catch (error) {
+          console.warn(`[CodexSession] Failed to resume thread, creating new one:`, error);
+          this.thread = this.codex.startThread(threadOptions);
+        }
+      } else {
+        this.thread = this.codex.startThread(threadOptions);
+      }
     }
     return this.thread!;
+  }
+  
+  getThreadId(): string | null {
+    return this.thread?.id ?? null;
   }
 
   private emitEvent(event: AgentEvent): void {
@@ -107,7 +135,7 @@ export class CodexSession {
     return { ready: this.ready, error: this.lastError ?? undefined, streaming: this.streamingEnabled };
   }
 
-  async send(prompt: string, options: CodexSendOptions = {}): Promise<string> {
+  async send(prompt: any, options: CodexSendOptions = {}): Promise<CodexSendResult> {
     this.ensureClient();
     if (!this.ready || !this.codex) {
       throw new Error(this.lastError ?? "未配置 Codex 凭证");
@@ -116,12 +144,13 @@ export class CodexSession {
     const thread = this.ensureThread();
     const turnOptions = this.buildTurnOptions(options);
     const useStreaming = options.streaming ?? this.streamingEnabled;
+    const signal = options.signal;
 
     if (!useStreaming) {
-      return this.sendNonStreaming(thread, prompt, turnOptions);
+      return this.sendNonStreaming(thread, prompt, turnOptions, signal);
     }
 
-    return this.sendStreaming(thread, prompt, turnOptions);
+    return this.sendStreaming(thread, prompt, turnOptions, signal);
   }
 
   private buildTurnOptions(options: CodexSendOptions): TurnOptions | undefined {
@@ -133,14 +162,35 @@ export class CodexSession {
 
   private async sendNonStreaming(
     thread: ReturnType<Codex["startThread"]>,
-    prompt: string,
+    prompt: any,
     turnOptions: TurnOptions | undefined,
-  ): Promise<string> {
+    signal?: AbortSignal,
+  ): Promise<CodexSendResult> {
     this.emitSynthetic("analysis", "开始处理请求", undefined, "turn.started");
     try {
-      const result = await thread.run(prompt, turnOptions);
+      // SDK 不支持 signal 参数，使用 Promise.race 实现中断
+      const runPromise = thread.run(prompt, turnOptions);
+      
+      if (signal) {
+        const abortPromise = new Promise<never>((_, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new Error('用户中断了请求'));
+          });
+        });
+        const result = await Promise.race([runPromise, abortPromise]);
+        this.emitSynthetic("completed", "处理完成", undefined, "turn.completed");
+        return {
+          response: this.normalizeResponse(result.finalResponse),
+          usage: result.usage,
+        };
+      }
+      
+      const result = await runPromise;
       this.emitSynthetic("completed", "处理完成", undefined, "turn.completed");
-      return this.normalizeResponse(result.finalResponse);
+      return {
+        response: this.normalizeResponse(result.finalResponse),
+        usage: result.usage,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.emitSynthetic("error", "执行失败", message, "turn.failed");
@@ -150,10 +200,31 @@ export class CodexSession {
 
   private async sendStreaming(
     thread: ReturnType<Codex["startThread"]>,
-    prompt: string,
+    prompt: any,
     turnOptions: TurnOptions | undefined,
-  ): Promise<string> {
-    const streamed = await thread.runStreamed(prompt, turnOptions);
+    signal?: AbortSignal,
+  ): Promise<CodexSendResult> {
+    // SDK 不支持 signal 参数，使用 Promise.race 实现中断
+    const streamedPromise = thread.runStreamed(prompt, turnOptions);
+    
+    if (signal) {
+      const abortPromise = new Promise<never>((_, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new Error('用户中断了请求'));
+        });
+      });
+      const streamed = await Promise.race([streamedPromise, abortPromise]);
+      return this.processStreamedResult(streamed, signal);
+    }
+    
+    const streamed = await streamedPromise;
+    return this.processStreamedResult(streamed, signal);
+  }
+
+  private async processStreamedResult(
+    streamed: Awaited<ReturnType<ReturnType<Codex["startThread"]>["runStreamed"]>>,
+    signal?: AbortSignal,
+  ): Promise<CodexSendResult> {
     const aggregator = new StreamAggregator();
 
     try {
@@ -175,7 +246,10 @@ export class CodexSession {
       this.emitSynthetic("error", "执行失败", final.error.message, "turn.failed");
       throw final.error;
     }
-    return this.normalizeResponse(final.finalResponse ?? "");
+    return {
+      response: this.normalizeResponse(final.finalResponse ?? ""),
+      usage: final.usage,
+    };
   }
 
   private normalizeResponse(finalResponse: unknown): string {

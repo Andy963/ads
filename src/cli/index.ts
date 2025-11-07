@@ -203,7 +203,7 @@ async function handleCodexInteraction(input: string, codex: CodexSession, logger
     const clarification = buildRequirementClarificationPrompt();
     const finalPrompt = clarification ? `${clarification}\n\n用户输入: ${trimmed}` : trimmed;
     try {
-      const response = await codex.send(finalPrompt);
+      const result = await codex.send(finalPrompt);
       const elapsed = (Date.now() - startTime) / 1000;
       renderer.finish();
       if (!streamingConfig.enabled) {
@@ -211,7 +211,7 @@ async function handleCodexInteraction(input: string, codex: CodexSession, logger
         console.log(summary);
         logger.logOutput(summary);
       }
-      return { output: response || "(Codex 无响应)" };
+      return { output: result.response || "(Codex 无响应)" };
     } finally {
       unsubscribe();
       renderer.cleanup();

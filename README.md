@@ -1,5 +1,23 @@
 # ADS MCP Server (Node.js)
 
+## 📚 Documentation
+
+### Telegram Bot
+
+📱 **[Telegram Bot Documentation](./docs/telegram/)** - Complete guide for remote bot control
+
+Quick links:
+- [Quick Start (5 min)](./docs/telegram/QUICKSTART.md) - Get started in 5 minutes
+- [Full Guide](./docs/telegram/FULL_GUIDE.md) - Complete documentation
+- [Deployment Guide](./docs/telegram/DEPLOYMENT.md) - Production deployment
+
+### General
+
+- [Usage Guide](./docs/USAGE_GUIDE.md) - How to use ADS
+- [Codex Integration](./docs/CODEX.md) - Codex SDK integration
+
+---
+
 This directory contains an experimental Node.js/TypeScript implementation of the ADS MCP server. It mirrors the capabilities of the existing Python service while offering a more convenient distribution path (e.g., via `npx`) once the project is production-ready.
 
 > ⚠️ **Preview status**: this implementation re-creates the ADS MCP toolchain purely in Node.js. The server talks directly to the ADS SQLite workspace, reimplements workflow/context logic, and writes specs to disk. Expect functional parity with the Python version, but treat it as beta while edge-cases are validated.

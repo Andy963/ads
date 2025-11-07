@@ -14,12 +14,15 @@
     "node": ">=18"
   },
   "bin": {
-    "ads": "./dist/ads.js"
+    "ads": "./dist/src/ads.js",
+    "ads-telegram": "./dist/src/telegram/cli.js"
   },
   "dependencies": {
+    "@grammyjs/types": "^3.22.2",
     "@openai/codex-sdk": "^0.53.0",
-    "picocolors": "^1.0.0",
     "better-sqlite3": "^9.6.0",
+    "grammy": "^1.38.3",
+    "picocolors": "^1.0.0",
     "toml": "^3.0.0",
     "yaml": "^2.6.0"
   },

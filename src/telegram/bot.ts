@@ -1,0 +1,323 @@
+import { Bot } from 'grammy';
+import { loadTelegramConfig, validateConfig } from './config.js';
+import { createAuthMiddleware } from './middleware/auth.js';
+import { createRateLimitMiddleware } from './middleware/rateLimit.js';
+import { resolveCodexConfig } from '../codexConfig.js';
+import { SessionManager } from './utils/sessionManager.js';
+import { DirectoryManager } from './utils/directoryManager.js';
+import { handleCodexMessage, interruptExecution } from './adapters/codex.js';
+import { handleAdsCommand } from './adapters/ads.js';
+import { cleanupAllTempFiles } from './utils/fileHandler.js';
+
+async function main() {
+  console.log('[Bot] Starting ADS Telegram Bot...');
+
+  // 加载配置
+  let config;
+  try {
+    config = loadTelegramConfig();
+    validateConfig(config);
+    console.log('[Config] Telegram config loaded');
+    console.log(`[Config] Allowed users: ${config.allowedUsers.join(', ')}`);
+    console.log(`[Config] Allowed dirs: ${config.allowedDirs.join(', ')}`);
+  } catch (error) {
+    console.error('[Config] Failed to load config:', (error as Error).message);
+    process.exit(1);
+  }
+
+  // 验证 Codex 配置
+  try {
+    const codexConfig = resolveCodexConfig();
+    console.log('[Codex] Config validated');
+  } catch (error) {
+    console.error('[Codex] Failed to validate config:', (error as Error).message);
+    process.exit(1);
+  }
+
+  // 清理旧的临时文件
+  cleanupAllTempFiles();
+
+  // 创建管理器
+  const sessionManager = new SessionManager(
+    config.sessionTimeoutMs,
+    5 * 60 * 1000,
+    config.sandboxMode,
+    config.defaultModel
+  );
+  const directoryManager = new DirectoryManager(config.allowedDirs);
+
+  // 创建 Bot 实例
+  const bot = new Bot(config.botToken);
+
+  // 注册中间件
+  bot.use(createAuthMiddleware(config.allowedUsers));
+  bot.use(createRateLimitMiddleware(config.maxRequestsPerMinute));
+
+  // 注册命令列表（显示在 Telegram 输入框）
+  await bot.api.setMyCommands([
+    { command: 'start', description: '欢迎信息' },
+    { command: 'help', description: '命令帮助' },
+    { command: 'status', description: '系统状态' },
+    { command: 'reset', description: '开始新对话' },
+    { command: 'resume', description: '恢复之前的对话' },
+    { command: 'model', description: '查看/切换模型' },
+    { command: 'stop', description: '中断当前执行' },
+    { command: 'pwd', description: '当前目录' },
+    { command: 'cd', description: '切换目录' },
+    { command: 'ads', description: 'ADS 命令' },
+  ]);
+
+  // 基础命令
+  bot.command('start', async (ctx) => {
+    await ctx.reply(
+      '👋 欢迎使用 ADS Telegram Bot!\n\n' +
+      '可用命令：\n' +
+      '/help - 查看所有命令\n' +
+      '/status - 查看系统状态\n' +
+      '/reset - 重置会话\n' +
+      '/pwd - 查看当前目录\n' +
+      '/cd <path> - 切换目录\n' +
+      '/ads <command> - 执行 ADS 命令\n\n' +
+      '直接发送文本与 Codex 对话'
+    );
+  });
+
+  bot.command('help', async (ctx) => {
+    await ctx.reply(
+      '📖 ADS Telegram Bot 命令列表\n\n' +
+      '🔧 系统命令：\n' +
+      '/start - 欢迎信息\n' +
+      '/help - 显示此帮助\n' +
+      '/status - 系统状态\n' +
+      '/reset - 重置会话（开始新对话）\n' +
+      '/resume - 恢复之前的对话\n' +
+      '/model [name] - 查看/切换模型\n' +
+      '/stop - 中断当前执行\n\n' +
+      '📁 目录管理：\n' +
+      '/pwd - 当前工作目录\n' +
+      '/cd <path> - 切换目录\n\n' +
+      '⚙️ ADS 命令：\n' +
+      '/ads status - 工作流状态\n' +
+      '/ads new <title> - 创建工作流\n' +
+      '/ads commit <step> - 定稿步骤\n\n' +
+      '💬 对话：\n' +
+      '直接发送消息与 Codex AI 对话\n' +
+      '发送图片可让 Codex 分析图像\n' +
+      '发送文件让 Codex 处理文件\n' +
+      '执行过程中可用 /stop 中断'
+    );
+  });
+
+  bot.command('status', async (ctx) => {
+    const userId = ctx.from!.id;
+    const stats = sessionManager.getStats();
+    const cwd = directoryManager.getUserCwd(userId);
+    const currentModel = sessionManager.getUserModel(userId);
+    
+    const sandboxEmoji = {
+      'read-only': '🔒',
+      'workspace-write': '✏️',
+      'danger-full-access': '⚠️'
+    }[stats.sandboxMode];
+    
+    await ctx.reply(
+      '📊 系统状态\n\n' +
+      `💬 会话统计: ${stats.active} 活跃 / ${stats.total} 总数\n` +
+      `${sandboxEmoji} 沙箱模式: ${stats.sandboxMode}\n` +
+      `🤖 当前模型: ${currentModel}\n` +
+      `📁 当前目录: ${cwd}\n` +
+      `✅ Codex: 已连接`
+    );
+  });
+
+  bot.command('reset', async (ctx) => {
+    const userId = ctx.from!.id;
+    sessionManager.reset(userId);
+    await ctx.reply('✅ Codex 会话已重置，新对话已开始');
+  });
+
+  bot.command('resume', async (ctx) => {
+    const userId = ctx.from!.id;
+    
+    if (!sessionManager.hasSavedThread(userId)) {
+      await ctx.reply('❌ 没有保存的对话可恢复');
+      return;
+    }
+
+    const threadId = sessionManager.getSavedThreadId(userId);
+    sessionManager.reset(userId); // 清空当前 session
+    
+    // 创建新 session 并恢复 thread
+    sessionManager.getOrCreate(userId, undefined, true);
+    
+    await ctx.reply(`✅ 已恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)`);
+  });
+
+  bot.command('model', async (ctx) => {
+    const userId = ctx.from!.id;
+    const args = ctx.message?.text.split(' ').slice(1) || [];
+    
+    if (args.length === 0) {
+      // 查看当前模型
+      const currentModel = sessionManager.getUserModel(userId);
+      const defaultModel = sessionManager.getDefaultModel();
+      
+      await ctx.reply(
+        `🤖 模型设置\n\n` +
+        `当前模型: ${currentModel}\n` +
+        `默认模型: ${defaultModel}\n\n` +
+        `使用 /model <name> 切换模型\n` +
+        `注意：切换模型会重置当前对话`
+      );
+    } else {
+      // 切换模型
+      const newModel = args.join(' ').trim();
+      if (!newModel) {
+        await ctx.reply('❌ 请提供模型名称');
+        return;
+      }
+      
+      sessionManager.setUserModel(userId, newModel);
+      await ctx.reply(`✅ 已切换到模型: ${newModel}\n会话已重置，可以开始新对话`);
+    }
+  });
+
+  bot.command('stop', async (ctx) => {
+    const userId = ctx.from!.id;
+    const interrupted = interruptExecution(userId);
+    
+    if (interrupted) {
+      await ctx.reply('⛔️ 正在中断执行...');
+    } else {
+      await ctx.reply('ℹ️ 当前没有正在执行的任务');
+    }
+  });
+
+  bot.command('pwd', async (ctx) => {
+    const userId = ctx.from!.id;
+    const cwd = directoryManager.getUserCwd(userId);
+    await ctx.reply(`📁 当前工作目录: ${cwd}`);
+  });
+
+  bot.command('cd', async (ctx) => {
+    const userId = ctx.from!.id;
+    const args = ctx.message?.text?.split(/\s+/).slice(1);
+    
+    if (!args || args.length === 0) {
+      await ctx.reply('用法: /cd <path>');
+      return;
+    }
+
+    const path = args.join(' ');
+    const result = directoryManager.setUserCwd(userId, path);
+
+    if (result.success) {
+      sessionManager.reset(userId);
+      await ctx.reply(`✅ 已切换到: ${directoryManager.getUserCwd(userId)}\n💡 Codex 会话已自动重置`);
+    } else {
+      await ctx.reply(`❌ ${result.error}`);
+    }
+  });
+
+  bot.command('ads', async (ctx) => {
+    const args = ctx.message?.text?.split(/\s+/).slice(1) || [];
+    await handleAdsCommand(ctx, args);
+  });
+
+  // 处理带图片的消息
+  bot.on('message:photo', async (ctx) => {
+    const caption = ctx.message.caption || '请描述这张图片';
+    const photos = ctx.message.photo;
+    
+    // 获取最高分辨率的图片
+    const photo = photos[photos.length - 1];
+    
+    await handleCodexMessage(
+      ctx,
+      caption,
+      sessionManager,
+      config.streamUpdateIntervalMs,
+      [photo.file_id]
+    );
+  });
+
+  // 处理文档文件
+  bot.on('message:document', async (ctx) => {
+    const doc = ctx.message.document;
+    const caption = ctx.message.caption || '';
+    
+    // 检查文件大小
+    if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
+      await ctx.reply('❌ 文件过大，限制 20MB');
+      return;
+    }
+    
+    await handleCodexMessage(
+      ctx,
+      caption,
+      sessionManager,
+      config.streamUpdateIntervalMs,
+      undefined,
+      doc.file_id
+    );
+  });
+
+  // 处理普通文本消息 - Codex 对话
+  bot.on('message:text', async (ctx) => {
+    const text = ctx.message.text;
+    
+    // 跳过命令
+    if (text.startsWith('/')) {
+      return;
+    }
+
+    const userId = ctx.from!.id;
+    
+    // 检查是否有保存的对话但当前没有活跃 session
+    // 如果有保存的 thread 且当前没有 session，自动恢复
+    const hasActiveSession = sessionManager.hasSession(userId);
+    
+    if (sessionManager.hasSavedThread(userId) && !hasActiveSession) {
+      const threadId = sessionManager.getSavedThreadId(userId);
+      
+      // 自动恢复之前的对话
+      sessionManager.getOrCreate(userId, undefined, true);
+      
+      await ctx.reply(
+        `💡 自动恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)\n\n` +
+        '💬 正在处理您的消息...\n\n' +
+        '提示：使用 /reset 可以开始新对话'
+      );
+    }
+
+    await handleCodexMessage(ctx, text, sessionManager, config.streamUpdateIntervalMs);
+  });
+
+  // 启动 Bot
+  console.log('[Bot] Starting long polling...');
+  bot.start({
+    onStart: () => {
+      console.log('[Bot] ✅ Bot is running!');
+    },
+  });
+
+  // 优雅退出
+  process.once('SIGINT', () => {
+    console.log('\n[Bot] Shutting down...');
+    sessionManager.destroy();
+    bot.stop();
+    process.exit(0);
+  });
+
+  process.once('SIGTERM', () => {
+    console.log('\n[Bot] Shutting down...');
+    sessionManager.destroy();
+    bot.stop();
+    process.exit(0);
+  });
+}
+
+main().catch((error) => {
+  console.error('[Bot] Fatal error:', error);
+  process.exit(1);
+});
