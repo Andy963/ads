@@ -1,4 +1,4 @@
-import type { Context } from 'grammy';
+import { GrammyError, type Context } from 'grammy';
 import type { SessionManager } from '../utils/sessionManager.js';
 import type { AgentEvent } from '../../codex/events.js';
 import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
@@ -60,7 +60,8 @@ export async function handleCodexMessage(
   sessionManager: SessionManager,
   streamUpdateIntervalMs: number,
   imageFileIds?: string[],
-  documentFileId?: string
+  documentFileId?: string,
+  cwd?: string
 ) {
   const userId = ctx.from!.id;
   
@@ -70,7 +71,7 @@ export async function handleCodexMessage(
     return;
   }
   
-  const session = sessionManager.getOrCreate(userId);
+  const session = sessionManager.getOrCreate(userId, cwd);
   
   const saveThreadIdIfNeeded = () => {
     const threadId = session.getThreadId();
@@ -83,7 +84,76 @@ export async function handleCodexMessage(
   interruptManager.registerRequest(userId);
 
   const sentMsg = await ctx.reply('💭 开始处理...', { parse_mode: 'Markdown' });
-  let lastUpdate = Date.now();
+  let lastStatusText = sentMsg.text ?? '';
+  let lastStatusLength = lastStatusText.length;
+  let lastStatusPhase: AgentEvent['phase'] | null = null;
+  let lengthDeltaThreshold = 5;
+  let rateLimitUntil = 0;
+  let statusUpdateChain: Promise<void> = Promise.resolve();
+  let retryTimer: NodeJS.Timeout | null = null;
+  let lastStatusUpdateAt = Date.now();
+
+  async function updateStatusMessage(status: string, phase: AgentEvent['phase']): Promise<void> {
+    if (!interruptManager.hasActiveRequest(userId)) {
+      return;
+    }
+
+    if (status === lastStatusText) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now < rateLimitUntil) {
+      return;
+    }
+
+    const length = status.length;
+    const delta = Math.abs(length - lastStatusLength);
+    const phaseChanged = phase !== lastStatusPhase;
+    const isTerminalPhase = phase === 'completed' || phase === 'error';
+    const hasEnoughDelta = delta >= lengthDeltaThreshold;
+    const timedOut = now - lastStatusUpdateAt >= streamUpdateIntervalMs;
+    const shouldSend = phaseChanged || isTerminalPhase || hasEnoughDelta || !lastStatusText || timedOut;
+
+    if (!shouldSend) {
+      return;
+    }
+
+    try {
+      await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, status);
+      lastStatusText = status;
+      lastStatusLength = length;
+      lastStatusPhase = phase;
+      lastStatusUpdateAt = now;
+      lengthDeltaThreshold = Math.min(Math.max(lengthDeltaThreshold * 5, 5), 5000);
+      rateLimitUntil = 0;
+    } catch (error) {
+      if (error instanceof GrammyError && error.error_code === 429) {
+        const retryAfter = error.parameters?.retry_after ?? 1;
+        rateLimitUntil = Date.now() + retryAfter * 1000;
+        console.warn(`[Telegram] Status update rate limited, retry after ${retryAfter}s`);
+        if (retryTimer) {
+          clearTimeout(retryTimer);
+        }
+        const statusCopy = status;
+        const phaseCopy = phase;
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          queueStatusUpdate(statusCopy, phaseCopy);
+        }, retryAfter * 1000);
+      } else {
+        console.warn('[CodexAdapter] Failed to edit status message:', error);
+      }
+    }
+  }
+
+  function queueStatusUpdate(status: string, phase: AgentEvent['phase']): void {
+    statusUpdateChain = statusUpdateChain
+      .then(() => updateStatusMessage(status, phase))
+      .catch((error) => {
+        console.warn('[CodexAdapter] Status update chain error:', error);
+      });
+  }
   
   // 处理 URL（如果消息中有链接）
   let urlData: Awaited<ReturnType<typeof processUrls>> | null = null;
@@ -149,37 +219,31 @@ export async function handleCodexMessage(
     if (!interruptManager.hasActiveRequest(userId)) {
       return;
     }
-
-    const now = Date.now();
-    if (now - lastUpdate < streamUpdateIntervalMs) {
-      return;
-    }
-
-    lastUpdate = now;
     
     // 简化事件展示 - 使用纯文本避免 Markdown 解析问题
     let status = '💭 处理中...';
     
+    if (event.phase === 'command') status = '⚙️ 执行命令...';
+    else if (event.phase === 'editing') status = '✏️ 编辑文件...';
+    else if (event.phase === 'tool') status = '🔧 调用工具...';
+
     if (event.title) {
-      // 限制长度，防止超长文本
-      const shortTitle = event.title.length > 100 ? event.title.slice(0, 97) + '...' : event.title;
-      
-      if (event.phase === 'command') {
-        status = `⚙️ 执行: ${shortTitle}`;
-      } else if (event.phase === 'editing') {
-        status = `✏️ 编辑: ${shortTitle}`;
-      } else if (event.phase === 'tool') {
-        status = `🔧 工具: ${shortTitle}`;
-      }
-    } else {
-      if (event.phase === 'command') status = '⚙️ 执行命令...';
-      else if (event.phase === 'editing') status = '✏️ 编辑文件...';
-      else if (event.phase === 'tool') status = '🔧 调用工具...';
+      const shortTitle = event.title.length > 80 ? event.title.slice(0, 77) + '...' : event.title;
+      if (event.phase === 'command') status = `⚙️ ${shortTitle}`;
+      else if (event.phase === 'editing') status = `✏️ ${shortTitle}`;
+      else if (event.phase === 'tool') status = `🔧 ${shortTitle}`;
+      else if (event.phase === 'analysis') status = `💭 ${shortTitle}`;
+      else if (event.phase === 'responding') status = `🗣️ ${shortTitle}`;
+      else if (event.phase === 'completed') status = `✅ ${shortTitle}`;
+      else if (event.phase === 'error') status = `❌ ${shortTitle}`;
     }
 
-    // 使用纯文本，避免 Markdown 解析问题
-    ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, status)
-      .catch(() => {});
+    if (event.detail) {
+      const detail = event.detail.length > 160 ? event.detail.slice(0, 157) + '...' : event.detail;
+      status += `\n${detail}`;
+    }
+
+    queueStatusUpdate(status, event.phase);
   });
 
   try {
@@ -207,6 +271,11 @@ export async function handleCodexMessage(
 
     const signal = interruptManager.getSignal(userId);
     const result = await session.send(input, { streaming: true, signal });
+
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
 
     unsubscribe();
     cleanupImages(imagePaths);
@@ -256,6 +325,11 @@ export async function handleCodexMessage(
       }
     }
   } catch (error) {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+
     unsubscribe();
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);

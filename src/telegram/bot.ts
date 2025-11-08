@@ -151,7 +151,7 @@ async function main() {
     sessionManager.reset(userId); // 清空当前 session
     
     // 创建新 session 并恢复 thread
-    sessionManager.getOrCreate(userId, undefined, true);
+    sessionManager.getOrCreate(userId, directoryManager.getUserCwd(userId), true);
     
     await ctx.reply(`✅ 已恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)`);
   });
@@ -215,6 +215,8 @@ async function main() {
     const result = directoryManager.setUserCwd(userId, path);
 
     if (result.success) {
+      const newCwd = directoryManager.getUserCwd(userId);
+      sessionManager.setUserCwd(userId, newCwd);
       sessionManager.reset(userId);
       await ctx.reply(`✅ 已切换到: ${directoryManager.getUserCwd(userId)}\n💡 Codex 会话已自动重置`);
     } else {
@@ -231,6 +233,7 @@ async function main() {
   bot.on('message:photo', async (ctx) => {
     const caption = ctx.message.caption || '请描述这张图片';
     const photos = ctx.message.photo;
+    const userId = ctx.from!.id;
     
     // 获取最高分辨率的图片
     const photo = photos[photos.length - 1];
@@ -240,7 +243,9 @@ async function main() {
       caption,
       sessionManager,
       config.streamUpdateIntervalMs,
-      [photo.file_id]
+      [photo.file_id],
+      undefined,
+      directoryManager.getUserCwd(userId)
     );
   });
 
@@ -248,6 +253,7 @@ async function main() {
   bot.on('message:document', async (ctx) => {
     const doc = ctx.message.document;
     const caption = ctx.message.caption || '';
+    const userId = ctx.from!.id;
     
     // 检查文件大小
     if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
@@ -261,7 +267,8 @@ async function main() {
       sessionManager,
       config.streamUpdateIntervalMs,
       undefined,
-      doc.file_id
+      doc.file_id,
+      directoryManager.getUserCwd(userId)
     );
   });
 
@@ -284,7 +291,7 @@ async function main() {
       const threadId = sessionManager.getSavedThreadId(userId);
       
       // 自动恢复之前的对话
-      sessionManager.getOrCreate(userId, undefined, true);
+      sessionManager.getOrCreate(userId, directoryManager.getUserCwd(userId), true);
       
       await ctx.reply(
         `💡 自动恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)\n\n` +
@@ -293,7 +300,15 @@ async function main() {
       );
     }
 
-    await handleCodexMessage(ctx, text, sessionManager, config.streamUpdateIntervalMs);
+    await handleCodexMessage(
+      ctx,
+      text,
+      sessionManager,
+      config.streamUpdateIntervalMs,
+      undefined,
+      undefined,
+      directoryManager.getUserCwd(userId)
+    );
   });
 
   // 启动 Bot

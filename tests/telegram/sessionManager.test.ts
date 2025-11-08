@@ -52,4 +52,10 @@ describe('SessionManager', () => {
     assert.strictEqual(manager.hasSavedThread(123456), true);
     assert.strictEqual(manager.getSavedThreadId(123456), 'thread-123');
   });
+
+  it('should clear persisted thread on reset even without active session', () => {
+    manager.saveThreadId(123456, 'thread-abc');
+    manager.reset(123456);
+    assert.strictEqual(manager.hasSavedThread(123456), false);
+  });
 });

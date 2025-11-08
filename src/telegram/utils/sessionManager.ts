@@ -37,6 +37,7 @@ export class SessionManager {
       existing.lastActivity = Date.now();
       if (cwd && cwd !== existing.cwd) {
         existing.cwd = cwd;
+        existing.session.setWorkingDirectory(cwd);
       }
       return existing.session;
     }
@@ -45,20 +46,22 @@ export class SessionManager {
     const savedThreadId = resumeThread ? this.threadStorage.getThreadId(userId) : undefined;
     
     const userModel = this.userModels.get(userId) || this.defaultModel;
+    const effectiveCwd = cwd || process.cwd();
     
-    console.log(`[SessionManager] Creating new session for user ${userId}${savedThreadId ? ` (resuming thread ${savedThreadId})` : ''} with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''}`);
+    console.log(`[SessionManager] Creating new session for user ${userId}${savedThreadId ? ` (resuming thread ${savedThreadId})` : ''} with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`);
     
     const session = new CodexSession({
       streamingEnabled: true,
       resumeThreadId: savedThreadId,
       sandboxMode: this.sandboxMode,
       model: userModel,
+      workingDirectory: effectiveCwd,
     });
 
     this.sessions.set(userId, {
       session,
       lastActivity: Date.now(),
-      cwd: cwd || process.cwd(),
+      cwd: effectiveCwd,
     });
 
     return session;
@@ -100,8 +103,13 @@ export class SessionManager {
     if (record) {
       record.session.reset();
       record.lastActivity = Date.now();
-      this.threadStorage.removeThread(userId);
       console.log(`[SessionManager] Session reset for user ${userId}`);
+    } else {
+      console.log(`[SessionManager] Reset requested for user ${userId} without active session`);
+    }
+
+    if (this.threadStorage.getThreadId(userId)) {
+      this.threadStorage.removeThread(userId);
     }
   }
 
@@ -113,6 +121,7 @@ export class SessionManager {
     const record = this.sessions.get(userId);
     if (record) {
       record.cwd = cwd;
+      record.session.setWorkingDirectory(cwd);
     }
   }
 

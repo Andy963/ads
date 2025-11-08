@@ -17,6 +17,7 @@ interface CodexSessionOptions {
   resumeThreadId?: string;
   sandboxMode?: SandboxMode;
   model?: string;
+  workingDirectory?: string;
 }
 
 export interface CodexSendOptions {
@@ -38,13 +39,15 @@ export class CodexSession {
   private readonly streamingEnabled: boolean;
   private readonly streamThrottleMs: number;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private options: CodexSessionOptions;
 
-  constructor(private readonly options: CodexSessionOptions = {}) {
+  constructor(options: CodexSessionOptions = {}) {
+    this.options = { ...options };
     this.streamingEnabled =
-      options.streamingEnabled ?? process.env.ADS_CODEX_STREAMING !== "0";
+      this.options.streamingEnabled ?? process.env.ADS_CODEX_STREAMING !== "0";
 
     const envThrottle = Number(process.env.ADS_CODEX_STREAM_THROTTLE_MS);
-    this.streamThrottleMs = options.streamThrottleMs ?? (Number.isFinite(envThrottle) && envThrottle >= 0 ? envThrottle : 200);
+    this.streamThrottleMs = this.options.streamThrottleMs ?? (Number.isFinite(envThrottle) && envThrottle >= 0 ? envThrottle : 200);
   }
 
   private ensureClient(): void {
@@ -70,6 +73,7 @@ export class CodexSession {
         skipGitRepoCheck: true,
         sandboxMode: this.options.sandboxMode,
         model: this.options.model,
+        workingDirectory: this.options.workingDirectory,
       };
       
       if (this.options.resumeThreadId) {
@@ -128,6 +132,14 @@ export class CodexSession {
 
   reset(): void {
     this.thread = null;
+  }
+
+  setWorkingDirectory(workingDirectory?: string): void {
+    if (this.options.workingDirectory === workingDirectory) {
+      return;
+    }
+    this.options = { ...this.options, workingDirectory };
+    this.reset();
   }
 
   status(): { ready: boolean; error?: string; streaming: boolean } {
