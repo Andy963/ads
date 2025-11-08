@@ -18,8 +18,9 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
       case 'status': {
         const response = await getWorkflowStatusSummary({});
         const text = formatAdsResponse(response);
-        await ctx.reply(text, { parse_mode: 'Markdown' }).catch(() => {
-          ctx.reply(text); // Fallback to plain text
+        const safeText = escapeMarkdown(text);
+        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
+          await ctx.reply(text); // Fallback to plain text
         });
         break;
       }
@@ -35,8 +36,9 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
           template_id: 'unified',
         });
         const text = formatAdsResponse(response);
-        await ctx.reply(text, { parse_mode: 'Markdown' }).catch(() => {
-          ctx.reply(text);
+        const safeText = escapeMarkdown(text);
+        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
+          await ctx.reply(text);
         });
         break;
       }
@@ -49,8 +51,9 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
         const identifier = commandArgs.join(' ');
         const response = await checkoutWorkflow({ workflow_identifier: identifier });
         const text = formatAdsResponse(response);
-        await ctx.reply(text, { parse_mode: 'Markdown' }).catch(() => {
-          ctx.reply(text);
+        const safeText = escapeMarkdown(text);
+        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
+          await ctx.reply(text);
         });
         break;
       }
@@ -63,8 +66,9 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
         const stepName = commandArgs.join(' ');
         const response = await commitStep({ step_name: stepName });
         const text = formatAdsResponse(response);
-        await ctx.reply(text, { parse_mode: 'Markdown' }).catch(() => {
-          ctx.reply(text);
+        const safeText = escapeMarkdown(text);
+        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
+          await ctx.reply(text);
         });
         break;
       }
@@ -119,4 +123,10 @@ function formatAdsResponse(response: unknown): string {
   }
 
   return JSON.stringify(response, null, 2);
+}
+
+const MARKDOWN_ESCAPE_REGEX = /([_\*\[\]\(\)~`>#+\-=|{}.!])/g;
+
+function escapeMarkdown(text: string): string {
+  return text.replace(MARKDOWN_ESCAPE_REGEX, '\\$1');
 }

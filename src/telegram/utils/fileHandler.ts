@@ -23,7 +23,8 @@ function ensureDownloadDir(): void {
 export async function downloadTelegramFile(
   api: Api,
   fileId: string,
-  fileName: string
+  fileName: string,
+  signal?: AbortSignal
 ): Promise<string> {
   ensureDownloadDir();
   
@@ -47,7 +48,7 @@ export async function downloadTelegramFile(
     
     // 下载文件
     const fileUrl = `https://api.telegram.org/file/bot${api.token}/${file.file_path}`;
-    const response = await fetch(fileUrl);
+    const response = await fetch(fileUrl, { signal });
     
     if (!response.ok) {
       throw new Error(`下载失败: ${response.statusText}`);
@@ -61,6 +62,11 @@ export async function downloadTelegramFile(
     console.log(`[FileHandler] Downloaded file: ${localPath} (${formatFileSize(buffer.byteLength)})`);
     return localPath;
   } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      const abortError = new Error('文件下载被中断');
+      abortError.name = 'AbortError';
+      throw abortError;
+    }
     throw new Error(`文件下载失败: ${(error as Error).message}`);
   }
 }

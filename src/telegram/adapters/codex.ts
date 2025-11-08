@@ -58,7 +58,7 @@ export async function handleCodexMessage(
   ctx: Context,
   text: string,
   sessionManager: SessionManager,
-  streamUpdateIntervalMs: number,
+  _streamUpdateIntervalMs: number,
   imageFileIds?: string[],
   documentFileId?: string,
   cwd?: string
@@ -81,172 +81,255 @@ export async function handleCodexMessage(
   };
 
   // 注册请求
-  interruptManager.registerRequest(userId);
+  const signal = interruptManager.registerRequest(userId).signal;
 
-  const sentMsg = await ctx.reply('💭 开始处理...', { parse_mode: 'Markdown' });
-  let lastStatusText = sentMsg.text ?? '';
-  let lastStatusLength = lastStatusText.length;
-  let lastStatusPhase: AgentEvent['phase'] | null = null;
-  let lengthDeltaThreshold = 5;
+  const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
+  const COMMAND_OUTPUT_LIMIT = 800;
+  const sentMsg = await ctx.reply('💭 开始处理...');
+  let statusMessageId = sentMsg.message_id;
+  let statusMessageText = sentMsg.text ?? '💭 开始处理...';
+  let statusUpdatesClosed = false;
   let rateLimitUntil = 0;
   let statusUpdateChain: Promise<void> = Promise.resolve();
-  let retryTimer: NodeJS.Timeout | null = null;
-  let lastStatusUpdateAt = Date.now();
 
-  async function updateStatusMessage(status: string, phase: AgentEvent['phase']): Promise<void> {
-    if (!interruptManager.hasActiveRequest(userId)) {
-      return;
+  const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
+    analysis: '💭',
+    command: '⚙️',
+    editing: '✏️',
+    tool: '🔧',
+    responding: '🗣️',
+    completed: '✅',
+    error: '❌',
+    connection: '📡',
+  };
+
+  const PHASE_FALLBACK: Partial<Record<AgentEvent['phase'], string>> = {
+    analysis: '分析中',
+    command: '执行命令',
+    editing: '编辑文件',
+    tool: '调用工具',
+    responding: '生成回复',
+    completed: '已完成',
+    error: '错误',
+    connection: '网络状态',
+  };
+
+  function indent(text: string): string {
+    return text
+      .split('\n')
+      .map((line) => `  ${line}`)
+      .join('\n');
+  }
+
+  function formatCommandOutput(event: AgentEvent): string | null {
+    const rawItem = (event.raw as any)?.item;
+    if (!rawItem || rawItem.type !== 'command_execution') {
+      return null;
+    }
+    const output: string | undefined = rawItem.aggregated_output;
+    if (!output) {
+      return null;
+    }
+    const trimmed = output.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const limited =
+      trimmed.length > COMMAND_OUTPUT_LIMIT
+        ? `${trimmed.slice(0, COMMAND_OUTPUT_LIMIT - 1)}…`
+        : trimmed;
+    return indent(limited);
+  }
+
+  function formatStatusEntry(event: AgentEvent): string | null {
+    const icon = PHASE_ICON[event.phase] ?? '💬';
+    const title = event.title || PHASE_FALLBACK[event.phase] || '处理中';
+    const lines: string[] = [`${icon} ${title}`];
+
+    if (event.detail) {
+      const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
+      lines.push(indent(detail));
     }
 
-    if (status === lastStatusText) {
-      return;
+    const commandOutput = formatCommandOutput(event);
+    if (commandOutput) {
+      lines.push(commandOutput);
     }
 
+    return lines.join('\n');
+  }
+
+  async function editStatusMessage(text: string): Promise<void> {
     const now = Date.now();
     if (now < rateLimitUntil) {
-      return;
+      await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
-
-    const length = status.length;
-    const delta = Math.abs(length - lastStatusLength);
-    const phaseChanged = phase !== lastStatusPhase;
-    const isTerminalPhase = phase === 'completed' || phase === 'error';
-    const hasEnoughDelta = delta >= lengthDeltaThreshold;
-    const timedOut = now - lastStatusUpdateAt >= streamUpdateIntervalMs;
-    const shouldSend = phaseChanged || isTerminalPhase || hasEnoughDelta || !lastStatusText || timedOut;
-
-    if (!shouldSend) {
-      return;
-    }
-
     try {
-      await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, status);
-      lastStatusText = status;
-      lastStatusLength = length;
-      lastStatusPhase = phase;
-      lastStatusUpdateAt = now;
-      lengthDeltaThreshold = Math.min(Math.max(lengthDeltaThreshold * 5, 5), 5000);
+      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text);
       rateLimitUntil = 0;
     } catch (error) {
+      if (error instanceof GrammyError && error.error_code === 400 && error.description?.includes('message is not modified')) {
+        return;
+      }
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters?.retry_after ?? 1;
         rateLimitUntil = Date.now() + retryAfter * 1000;
         console.warn(`[Telegram] Status update rate limited, retry after ${retryAfter}s`);
-        if (retryTimer) {
-          clearTimeout(retryTimer);
-        }
-        const statusCopy = status;
-        const phaseCopy = phase;
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
-          queueStatusUpdate(statusCopy, phaseCopy);
-        }, retryAfter * 1000);
+        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+        await editStatusMessage(text);
       } else {
         console.warn('[CodexAdapter] Failed to edit status message:', error);
       }
     }
   }
 
-  function queueStatusUpdate(status: string, phase: AgentEvent['phase']): void {
+  async function sendNewStatusMessage(initialText: string): Promise<void> {
+    const now = Date.now();
+    if (now < rateLimitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
+    }
+    try {
+      const newMsg = await ctx.reply(initialText);
+      statusMessageId = newMsg.message_id;
+      statusMessageText = initialText;
+      rateLimitUntil = 0;
+    } catch (error) {
+      if (error instanceof GrammyError && error.error_code === 429) {
+        const retryAfter = error.parameters?.retry_after ?? 1;
+        rateLimitUntil = Date.now() + retryAfter * 1000;
+        console.warn(`[Telegram] Sending status rate limited, retry after ${retryAfter}s`);
+        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+        await sendNewStatusMessage(initialText);
+      } else {
+        console.warn('[CodexAdapter] Failed to send status message:', error);
+      }
+    }
+  }
+
+  async function appendStatusEntry(entry: string): Promise<void> {
+    if (!entry) {
+      return;
+    }
+    const trimmed = entry.trimEnd();
+    const candidate = statusMessageText ? `${statusMessageText}\n${trimmed}` : trimmed;
+    if (candidate.length <= STATUS_MESSAGE_LIMIT) {
+      await editStatusMessage(candidate);
+      statusMessageText = candidate;
+    } else {
+      await sendNewStatusMessage(trimmed);
+    }
+  }
+
+  function queueStatusUpdate(event: AgentEvent): void {
     statusUpdateChain = statusUpdateChain
-      .then(() => updateStatusMessage(status, phase))
+      .then(async () => {
+        if (statusUpdatesClosed || !interruptManager.hasActiveRequest(userId)) {
+          return;
+        }
+        const entry = formatStatusEntry(event);
+        if (!entry) {
+          return;
+        }
+        await appendStatusEntry(entry);
+      })
       .catch((error) => {
         console.warn('[CodexAdapter] Status update chain error:', error);
       });
   }
-  
-  // 处理 URL（如果消息中有链接）
-  let urlData: Awaited<ReturnType<typeof processUrls>> | null = null;
-  if (!imageFileIds && !documentFileId && text) {
+
+  async function finalizeStatusUpdates(finalEntry?: string): Promise<void> {
+    if (finalEntry) {
+      statusUpdateChain = statusUpdateChain
+        .then(() => appendStatusEntry(finalEntry))
+        .catch((error) => {
+          console.warn('[CodexAdapter] Final status update error:', error);
+        });
+    }
+    statusUpdatesClosed = true;
     try {
-      urlData = await processUrls(text);
-      if (urlData.imagePaths.length > 0 || urlData.filePaths.length > 0) {
-        await ctx.reply(`🔗 检测到链接，正在下载...\n图片: ${urlData.imagePaths.length}\n文件: ${urlData.filePaths.length}`);
-      }
+      await statusUpdateChain;
     } catch (error) {
-      console.warn('[CodexAdapter] URL processing failed:', error);
+      console.warn('[CodexAdapter] Status update flush failed:', error);
     }
   }
   
-  // 下载图片
   const imagePaths: string[] = [];
-  if (imageFileIds && imageFileIds.length > 0) {
-    try {
-      for (let i = 0; i < imageFileIds.length; i++) {
-        const path = await downloadTelegramImage(
-          ctx.api,
-          imageFileIds[i],
-          `image-${i}.jpg`
-        );
-        imagePaths.push(path);
-      }
-    } catch (error) {
-      cleanupImages(imagePaths);
-      interruptManager.complete(userId);
-      throw new Error(`图片下载失败: ${(error as Error).message}`);
-    }
-  }
-  
-  // 添加 URL 下载的图片
-  if (urlData) {
-    imagePaths.push(...urlData.imagePaths);
-  }
-  
-  // 下载文档文件
   const filePaths: string[] = [];
-  if (documentFileId) {
-    try {
-      const doc = ctx.message?.document;
-      const fileName = doc?.file_name || 'file.bin';
-      const path = await downloadTelegramFile(ctx.api, documentFileId, fileName);
-      filePaths.push(path);
-      await ctx.reply(`📥 已接收文件: ${fileName}\n正在处理...`);
-    } catch (error) {
-      cleanupImages(imagePaths);
-      interruptManager.complete(userId);
-      throw new Error(`文件下载失败: ${(error as Error).message}`);
-    }
-  }
-  
-  // 添加 URL 下载的文件
-  if (urlData) {
-    filePaths.push(...urlData.filePaths);
-  }
-
-  // 监听事件
-  const unsubscribe = session.onEvent((event: AgentEvent) => {
-    // 检查中断
-    if (!interruptManager.hasActiveRequest(userId)) {
-      return;
-    }
-    
-    // 简化事件展示 - 使用纯文本避免 Markdown 解析问题
-    let status = '💭 处理中...';
-    
-    if (event.phase === 'command') status = '⚙️ 执行命令...';
-    else if (event.phase === 'editing') status = '✏️ 编辑文件...';
-    else if (event.phase === 'tool') status = '🔧 调用工具...';
-
-    if (event.title) {
-      const shortTitle = event.title.length > 80 ? event.title.slice(0, 77) + '...' : event.title;
-      if (event.phase === 'command') status = `⚙️ ${shortTitle}`;
-      else if (event.phase === 'editing') status = `✏️ ${shortTitle}`;
-      else if (event.phase === 'tool') status = `🔧 ${shortTitle}`;
-      else if (event.phase === 'analysis') status = `💭 ${shortTitle}`;
-      else if (event.phase === 'responding') status = `🗣️ ${shortTitle}`;
-      else if (event.phase === 'completed') status = `✅ ${shortTitle}`;
-      else if (event.phase === 'error') status = `❌ ${shortTitle}`;
-    }
-
-    if (event.detail) {
-      const detail = event.detail.length > 160 ? event.detail.slice(0, 157) + '...' : event.detail;
-      status += `\n${detail}`;
-    }
-
-    queueStatusUpdate(status, event.phase);
-  });
+  let urlData: Awaited<ReturnType<typeof processUrls>> | null = null;
+  let unsubscribe: (() => void) | null = null;
 
   try {
+    // 处理 URL（如果消息中有链接）
+    if (!imageFileIds && !documentFileId && text) {
+      try {
+        urlData = await processUrls(text, signal);
+        if (urlData.imagePaths.length > 0 || urlData.filePaths.length > 0) {
+          await ctx.reply(`🔗 检测到链接，正在下载...\n图片: ${urlData.imagePaths.length}\n文件: ${urlData.filePaths.length}`);
+        }
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') {
+          throw error;
+        }
+        console.warn('[CodexAdapter] URL processing failed:', error);
+      }
+    }
+    
+    // 下载图片
+    if (imageFileIds && imageFileIds.length > 0) {
+      try {
+        for (let i = 0; i < imageFileIds.length; i++) {
+          const path = await downloadTelegramImage(
+            ctx.api,
+            imageFileIds[i],
+            `image-${i}.jpg`,
+            signal
+          );
+          imagePaths.push(path);
+        }
+      } catch (error) {
+        cleanupImages(imagePaths);
+        if ((error as Error).name === 'AbortError') {
+          throw error;
+        }
+        throw new Error(`图片下载失败: ${(error as Error).message}`);
+      }
+    }
+    
+    // 添加 URL 下载的图片
+    if (urlData) {
+      imagePaths.push(...urlData.imagePaths);
+    }
+    
+    // 下载文档文件
+    if (documentFileId) {
+      try {
+        const doc = ctx.message?.document;
+        const fileName = doc?.file_name || 'file.bin';
+        const path = await downloadTelegramFile(ctx.api, documentFileId, fileName, signal);
+        filePaths.push(path);
+        await ctx.reply(`📥 已接收文件: ${fileName}\n正在处理...`);
+      } catch (error) {
+        cleanupImages(imagePaths);
+        if ((error as Error).name === 'AbortError') {
+          throw error;
+        }
+        throw new Error(`文件下载失败: ${(error as Error).message}`);
+      }
+    }
+    
+    // 添加 URL 下载的文件
+    if (urlData) {
+      filePaths.push(...urlData.filePaths);
+    }
+
+    // 监听事件
+    unsubscribe = session.onEvent((event: AgentEvent) => {
+      if (!interruptManager.hasActiveRequest(userId)) {
+        return;
+      }
+      queueStatusUpdate(event);
+    });
+
     // 构建输入
     let input: any;
     let enhancedText = urlData ? urlData.processedText : text;
@@ -269,15 +352,10 @@ export async function handleCodexMessage(
       input = enhancedText;
     }
 
-    const signal = interruptManager.getSignal(userId);
     const result = await session.send(input, { streaming: true, signal });
 
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
-
-    unsubscribe();
+    await finalizeStatusUpdates();
+    unsubscribe?.();
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);
     interruptManager.complete(userId);
@@ -305,46 +383,27 @@ export async function handleCodexMessage(
     
     const chunks = chunkMessage(finalText);
 
-    if (chunks.length === 1) {
-      await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, chunks[0], { 
-        parse_mode: 'Markdown' 
-      }).catch(async () => {
-        await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, chunks[0]);
-      });
-    } else {
-      await ctx.api.deleteMessage(ctx.chat!.id, sentMsg.message_id);
-      
-      for (let i = 0; i < chunks.length; i++) {
-        if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        await ctx.reply(chunks[i], { parse_mode: 'Markdown' }).catch(async () => {
-          await ctx.reply(chunks[i]);
-        });
+    for (let i = 0; i < chunks.length; i++) {
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
+      await ctx.reply(chunks[i], { parse_mode: 'Markdown' }).catch(async () => {
+        await ctx.reply(chunks[i]);
+      });
     }
   } catch (error) {
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
+    if (unsubscribe) {
+      unsubscribe();
     }
-
-    unsubscribe();
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);
-    interruptManager.complete(userId);
     
     const errorMsg = error instanceof Error ? error.message : String(error);
-    const isInterrupt = !interruptManager.hasActiveRequest(userId);
-    
-    await ctx.api.editMessageText(
-      ctx.chat!.id,
-      sentMsg.message_id,
-      isInterrupt ? `⛔️ 已中断执行` : `❌ 错误: ${errorMsg}`
-    ).catch(() => {
-      ctx.reply(isInterrupt ? `⛔️ 已中断执行` : `❌ 错误: ${errorMsg}`);
-    });
+    const isInterrupt = (error as Error).name === 'AbortError';
+    const replyText = isInterrupt ? '⛔️ 已中断执行' : `❌ 错误: ${errorMsg}`;
+    await finalizeStatusUpdates(replyText);
+    interruptManager.complete(userId);
+    await ctx.reply(replyText);
   }
 }
 

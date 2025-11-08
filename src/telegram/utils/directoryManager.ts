@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, relative, isAbsolute } from 'node:path';
 
 export class DirectoryManager {
   private userCwds = new Map<number, string>();
@@ -19,8 +19,9 @@ export class DirectoryManager {
       for (const allowedDir of this.allowedDirs) {
         const allowedAbsolute = resolve(allowedDir);
         const allowedReal = existsSync(allowedAbsolute) ? realpathSync(allowedAbsolute) : allowedAbsolute;
+        const relativePath = relative(allowedReal, realPath);
         
-        if (realPath === allowedReal || realPath.startsWith(allowedReal + '/')) {
+        if (!relativePath || (!relativePath.startsWith('..') && !isAbsolute(relativePath))) {
           return true;
         }
       }

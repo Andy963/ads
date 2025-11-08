@@ -51,7 +51,7 @@ export class CodexSession {
   }
 
   private ensureClient(): void {
-    if (this.ready || this.lastError) {
+    if (this.ready) {
       return;
     }
 
@@ -62,6 +62,7 @@ export class CodexSession {
         apiKey: config.apiKey,
       });
       this.ready = true;
+      this.lastError = null;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
     }
@@ -132,6 +133,17 @@ export class CodexSession {
 
   reset(): void {
     this.thread = null;
+    if (this.options.resumeThreadId) {
+      this.options = { ...this.options, resumeThreadId: undefined };
+    }
+  }
+
+  setModel(model?: string): void {
+    if (this.options.model === model) {
+      return;
+    }
+    this.options = { ...this.options, model };
+    this.reset();
   }
 
   setWorkingDirectory(workingDirectory?: string): void {

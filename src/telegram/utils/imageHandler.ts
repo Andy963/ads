@@ -15,7 +15,8 @@ function ensureTempDir() {
 export async function downloadTelegramImage(
   api: Api,
   fileId: string,
-  fileName: string
+  fileName: string,
+  signal?: AbortSignal
 ): Promise<string> {
   ensureTempDir();
 
@@ -33,13 +34,22 @@ export async function downloadTelegramImage(
   const localPath = join(TEMP_DIR, `${Date.now()}-${fileName}`);
   
   // 下载文件
-  const response = await fetch(fileUrl);
+  const response = await fetch(fileUrl, { signal });
   if (!response.ok) {
     throw new Error(`Failed to download image: ${response.statusText}`);
   }
 
   const fileStream = createWriteStream(localPath);
-  await pipeline(response.body as any, fileStream);
+  try {
+    await pipeline(response.body as any, fileStream);
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      const abortError = new Error('图片下载被中断');
+      abortError.name = 'AbortError';
+      throw abortError;
+    }
+    throw error;
+  }
 
   console.log(`[ImageHandler] Downloaded image to ${localPath}`);
   return localPath;

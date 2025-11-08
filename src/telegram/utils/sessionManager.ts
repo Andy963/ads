@@ -85,8 +85,14 @@ export class SessionManager {
 
   setUserModel(userId: number, model: string): void {
     this.userModels.set(userId, model);
-    // 切换模型时重置会话，因为模型是在创建 thread 时设置的
-    this.reset(userId);
+    const record = this.sessions.get(userId);
+    if (record) {
+      record.session.setModel(model);
+      record.lastActivity = Date.now();
+    }
+    if (this.threadStorage.getThreadId(userId)) {
+      this.threadStorage.removeThread(userId);
+    }
     console.log(`[SessionManager] User ${userId} switched to model: ${model}`);
   }
 

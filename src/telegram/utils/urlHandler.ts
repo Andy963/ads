@@ -33,7 +33,7 @@ export function extractUrls(text: string): string[] {
 /**
  * 判断 URL 类型
  */
-export async function detectUrlType(url: string): Promise<UrlInfo> {
+export async function detectUrlType(url: string, signal?: AbortSignal): Promise<UrlInfo> {
   // 先通过扩展名判断
   const ext = extname(url.split('?')[0]).toLowerCase();
   
@@ -55,7 +55,7 @@ export async function detectUrlType(url: string): Promise<UrlInfo> {
   
   // 通过 HEAD 请求检查 Content-Type
   try {
-    const response = await fetch(url, { method: 'HEAD' });
+    const response = await fetch(url, { method: 'HEAD', signal });
     const contentType = response.headers.get('content-type') || '';
     
     if (contentType.startsWith('image/')) {
@@ -93,7 +93,7 @@ function isPrivateIP(ip: string): boolean {
 /**
  * 下载 URL 内容
  */
-export async function downloadUrl(url: string, fileName: string): Promise<string> {
+export async function downloadUrl(url: string, fileName: string, signal?: AbortSignal): Promise<string> {
   // 验证 URL 安全性
   const parsed = new URL(url);
   if (!['http:', 'https:'].includes(parsed.protocol)) {
@@ -136,6 +136,14 @@ export async function downloadUrl(url: string, fileName: string): Promise<string
   // 超时控制
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30000);
+  const abortHandler = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', abortHandler);
+    }
+  }
   
   try {
     console.log(`[UrlHandler] Downloading ${url}...`);
@@ -180,16 +188,24 @@ export async function downloadUrl(url: string, fileName: string): Promise<string
     console.log(`[UrlHandler] Downloaded to ${localPath}`);
     return localPath;
   } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      const abortError = new Error('下载被中断');
+      abortError.name = 'AbortError';
+      throw abortError;
+    }
     throw new Error(`下载失败: ${(error as Error).message}`);
   } finally {
     clearTimeout(timeout);
+    if (signal) {
+      signal.removeEventListener('abort', abortHandler);
+    }
   }
 }
 
 /**
  * 处理消息中的 URLs
  */
-export async function processUrls(text: string): Promise<{
+export async function processUrls(text: string, signal?: AbortSignal): Promise<{
   processedText: string;
   imagePaths: string[];
   filePaths: string[];
@@ -212,15 +228,20 @@ export async function processUrls(text: string): Promise<{
   
   for (const url of urls) {
     try {
-      const info = await detectUrlType(url);
+      if (signal?.aborted) {
+        const abortError = new Error('链接处理已中断');
+        abortError.name = 'AbortError';
+        throw abortError;
+      }
+      const info = await detectUrlType(url, signal);
       
       if (info.type === UrlType.IMAGE) {
         const fileName = `image${info.extension}`;
-        const path = await downloadUrl(url, fileName);
+        const path = await downloadUrl(url, fileName, signal);
         imagePaths.push(path);
       } else if (info.type === UrlType.FILE) {
         const fileName = `file${info.extension}`;
-        const path = await downloadUrl(url, fileName);
+        const path = await downloadUrl(url, fileName, signal);
         filePaths.push(path);
       } else {
         webpageUrls.push(url);
