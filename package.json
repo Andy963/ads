@@ -5,7 +5,7 @@
   "description": "Experimental MCP server implementation for ADS using Node.js/TypeScript.",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-templates.js",
-    "start": "node dist/ads.js",
+    "start": "node dist/src/ads.js",
     "dev": "tsx watch src/ads.ts",
     "test": "tsx --test tests/**/*.test.ts",
     "install:codex-prompts": "node scripts/install-codex-prompts.js"

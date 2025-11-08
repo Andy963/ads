@@ -87,11 +87,9 @@ export class TemplateLoader {
   private candidateDirectories(): string[] {
     const base = this.root;
     return [
-      base,
-      path.join(base, "nodes"),
       path.join(base, ".ads", "templates"),
-      path.join(base, ".ads", "templates", "nodes"),
-      path.join(base, ".ads", "templates", "workflows"),
+      path.join(base, "templates"),
+      base,
     ];
   }
 
@@ -158,7 +156,7 @@ export class TemplateLoader {
   }
 
   loadNodeTemplates(): NodeTemplate[] {
-    const templatesDir = path.join(this.root, ".ads", "templates", "nodes");
+    const templatesDir = path.join(this.root, ".ads", "templates");
     if (!exists(templatesDir)) {
       return [];
     }
@@ -166,25 +164,23 @@ export class TemplateLoader {
     const results: NodeTemplate[] = [];
     for (const entry of fs.readdirSync(templatesDir)) {
       const fullPath = path.join(templatesDir, entry);
-      if (entry.endsWith(".yaml")) {
-        try {
-          results.push(parseNodeTemplateYaml(fullPath));
-        } catch (error) {
-          console.warn(`Failed to parse node template ${entry}: ${(error as Error).message}`);
-        }
-      } else if (entry.endsWith(".md")) {
-        try {
-          results.push(parseNodeTemplateMarkdown(fullPath));
-        } catch (error) {
-          console.warn(`Failed to parse node template ${entry}: ${(error as Error).message}`);
-        }
+      if (!entry.endsWith(".md")) {
+        continue;
+      }
+      if (entry.toLowerCase() === "rules.md") {
+        continue;
+      }
+      try {
+        results.push(parseNodeTemplateMarkdown(fullPath));
+      } catch (error) {
+        console.warn(`Failed to parse node template ${entry}: ${(error as Error).message}`);
       }
     }
     return results;
   }
 
   loadWorkflowTemplates(): WorkflowTemplate[] {
-    const templatesDir = path.join(this.root, ".ads", "templates", "workflows");
+    const templatesDir = path.join(this.root, ".ads", "templates");
     if (!exists(templatesDir)) {
       return [];
     }

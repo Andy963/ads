@@ -5,8 +5,6 @@ build/
 coverage/
 .nyc_output/
 *.tsbuildinfo
-docs/
-
 # Build artifacts
 /dist
 *.js.map

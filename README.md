@@ -59,6 +59,18 @@ The executable produced in `dist/server.js` is shebanged, so the project can lat
 
 The Node entrypoint lives at `src/server.ts`. It registers each MCP tool with its Zod schema and delegates to the TypeScript implementations under `src/tools`. Graph persistence, workflow automation, and template rendering are handled by modules in `src/graph`, `src/workspace`, and `src/templates`.
 
+### Template Layout
+
+ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建时复制到 `dist/templates`）。目录内仅包含 5 个扁平文件：
+
+- `rules.md` – 默认工作区规则
+- `requirement.md` – 需求文档模板
+- `design.md` – 设计文档模板
+- `implementation.md` – 实施/验证模板
+- `workflow.yaml` – 工作流步骤定义
+
+每次运行 CLI 时，`templates/` 的内容都会同步到 `.ads/templates/`，如需自定义模板只需编辑这些文件。
+
 ## Codex slash commands
 
 Codex exposes slash commands via local prompt files (mirroring the approach used in the Python ADS repo and spec-kit). To let `/ads.status`, `/ads.new`, and friends call this MCP server instead of shelling out to a CLI, run:

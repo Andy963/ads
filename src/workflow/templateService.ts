@@ -17,10 +17,10 @@ import { saveNodeToFile } from "../graph/fileManager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
-const NODE_TEMPLATES_ROOT = path.join(PROJECT_ROOT, "templates", "nodes");
-const REQUIREMENT_TEMPLATE = path.join(NODE_TEMPLATES_ROOT, "requirements_template.md");
-const DESIGN_TEMPLATE = path.join(NODE_TEMPLATES_ROOT, "design_template.md");
-const IMPLEMENTATION_TEMPLATE = path.join(NODE_TEMPLATES_ROOT, "implementation_template.md");
+const TEMPLATE_ROOT = path.join(PROJECT_ROOT, "templates");
+const REQUIREMENT_TEMPLATE = path.join(TEMPLATE_ROOT, "requirement.md");
+const DESIGN_TEMPLATE = path.join(TEMPLATE_ROOT, "design.md");
+const IMPLEMENTATION_TEMPLATE = path.join(TEMPLATE_ROOT, "implementation.md");
 
 export async function listWorkflowTemplates(): Promise<string> {
   try {
