@@ -125,7 +125,7 @@ function formatAdsResponse(response: unknown): string {
   return JSON.stringify(response, null, 2);
 }
 
-const MARKDOWN_ESCAPE_REGEX = /([_\*\[\]\(\)~`>#+\-=|{}.!])/g;
+const MARKDOWN_ESCAPE_REGEX = /([_\*\[\]\(\)~`#+=|{}!])/g;
 
 function escapeMarkdown(text: string): string {
   return text.replace(MARKDOWN_ESCAPE_REGEX, '\\$1');

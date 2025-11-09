@@ -130,15 +130,18 @@ export async function handleCodexMessage(
     if (!output) {
       return null;
     }
-    const trimmed = output.trim();
-    if (!trimmed) {
+    const lines = output.split(/\r?\n/);
+    const limitedLines = lines.slice(0, 10);
+    let snippet = limitedLines.join('\n').trim();
+    if (!snippet) {
       return null;
     }
-    const limited =
-      trimmed.length > COMMAND_OUTPUT_LIMIT
-        ? `${trimmed.slice(0, COMMAND_OUTPUT_LIMIT - 1)}…`
-        : trimmed;
-    return indent(limited);
+    let truncated = lines.length > limitedLines.length;
+    if (snippet.length > COMMAND_OUTPUT_LIMIT) {
+      snippet = `${snippet.slice(0, COMMAND_OUTPUT_LIMIT - 1)}…`;
+      truncated = true;
+    }
+    return truncated ? indent(`${snippet}\n  …(output truncated)…`) : indent(snippet);
   }
 
   function formatStatusEntry(event: AgentEvent): string | null {
