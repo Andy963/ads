@@ -1,0 +1,257 @@
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+
+import { createLogger, type Logger } from "../utils/logger.js";
+
+export interface ReinjectionConfig {
+  enabled: boolean;
+  turns: number;
+}
+
+export interface SystemPromptManagerOptions {
+  workspaceRoot: string;
+  reinjection?: Partial<ReinjectionConfig>;
+  logger?: Logger;
+}
+
+interface FileCache {
+  path: string;
+  mtimeMs: number;
+  hash: string;
+  content: string;
+}
+
+export interface PromptInjection {
+  text: string;
+  reason: string;
+  instructionsHash: string;
+  rulesHash: string;
+}
+
+function shortHash(hash: string): string {
+  return hash.slice(0, 8);
+}
+
+function parseBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["0", "false", "off", "no"].includes(normalized)) {
+    return false;
+  }
+  if (["1", "true", "on", "yes"].includes(normalized)) {
+    return true;
+  }
+  return undefined;
+}
+
+function parseTurns(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const turns = Number(value);
+  if (!Number.isFinite(turns) || turns < 1) {
+    return undefined;
+  }
+  return Math.floor(turns);
+}
+
+export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
+  const enabledEnvName = prefix ? `${prefix}_REINJECTION_ENABLED` : undefined;
+  const turnsEnvName = prefix ? `${prefix}_REINJECTION_TURNS` : undefined;
+
+  const enabledEnv =
+    parseBoolean(enabledEnvName ? process.env[enabledEnvName] : undefined) ??
+    parseBoolean(process.env.ADS_REINJECTION_ENABLED);
+  const turnsEnv =
+    parseTurns(turnsEnvName ? process.env[turnsEnvName] : undefined) ??
+    parseTurns(process.env.ADS_REINJECTION_TURNS);
+
+  return {
+    enabled: enabledEnv ?? true,
+    turns: turnsEnv ?? 15,
+  };
+}
+
+export class SystemPromptManager {
+  private workspaceRoot: string;
+  private readonly logger: Logger;
+  private readonly reinjection: ReinjectionConfig;
+  private instructionsCache: FileCache | null = null;
+  private rulesCache: FileCache | null = null;
+  private hasInjected = false;
+  private turnCount = 0;
+  private lastInjectionTurn = -1;
+  private pendingReason: string | null = null;
+  private lastInstructionsHash: string | null = null;
+  private lastRulesHash: string | null = null;
+  private rulesWarningLogged = false;
+
+  constructor(options: SystemPromptManagerOptions) {
+    this.workspaceRoot = path.resolve(options.workspaceRoot);
+    this.reinjection = {
+      enabled: options.reinjection?.enabled ?? true,
+      turns: options.reinjection?.turns ?? 15,
+    };
+    if (this.reinjection.turns < 1) {
+      this.reinjection.turns = 15;
+    }
+    this.logger = options.logger ?? createLogger("SystemPrompt");
+  }
+
+  setWorkspaceRoot(nextRoot: string): void {
+    const normalized = path.resolve(nextRoot);
+    if (normalized === this.workspaceRoot) {
+      return;
+    }
+    this.workspaceRoot = normalized;
+    this.instructionsCache = null;
+    this.rulesCache = null;
+    this.pendingReason = "workspace-changed";
+    this.logger.info(`[SystemPrompt] Workspace switched to ${normalized}`);
+  }
+
+  maybeInject(): PromptInjection | null {
+    const reason = this.computeInjectionReason();
+    if (!reason) {
+      return null;
+    }
+
+    const instructions = this.readInstructions();
+    const rules = this.readRules();
+
+    const textParts = [instructions.content.trim()];
+    if (rules.content.trim()) {
+      textParts.push(rules.content.trim());
+    }
+    const text = textParts.join("\n\n\n");
+
+    this.hasInjected = true;
+    this.lastInjectionTurn = this.turnCount;
+    this.lastInstructionsHash = instructions.hash;
+    this.lastRulesHash = rules.hash;
+    this.logger.info(
+      `[SystemPrompt] ${reason} instructions=${shortHash(instructions.hash)} rules=${rules.hash}`,
+    );
+
+    return {
+      text,
+      reason,
+      instructionsHash: instructions.hash,
+      rulesHash: rules.hash,
+    };
+  }
+
+  completeTurn(): void {
+    this.turnCount += 1;
+  }
+
+  private computeInjectionReason(): string | null {
+    if (!this.hasInjected) {
+      return "initial";
+    }
+
+    if (this.pendingReason) {
+      const reason = this.pendingReason;
+      this.pendingReason = null;
+      return reason;
+    }
+
+    if (
+      this.reinjection.enabled &&
+      this.reinjection.turns > 0 &&
+      this.turnCount - this.lastInjectionTurn >= this.reinjection.turns
+    ) {
+      return `turn-${this.turnCount}`;
+    }
+    return null;
+  }
+
+  private readInstructions(): FileCache {
+    const instructionsPath = path.join(this.workspaceRoot, ".ads", "templates", "instructions.md");
+    const cache = this.readFileWithCache(
+      instructionsPath,
+      true,
+      "instructions",
+      this.instructionsCache,
+    );
+    this.instructionsCache = cache;
+    if (this.lastInstructionsHash && cache.hash !== this.lastInstructionsHash) {
+      this.pendingReason = this.pendingReason ?? "instructions-updated";
+    }
+    return cache;
+  }
+
+  private readRules(): FileCache {
+    const rulesPath = path.join(this.workspaceRoot, ".ads", "rules.md");
+    const templateRules = path.join(this.workspaceRoot, ".ads", "templates", "rules.md");
+    let cache: FileCache | null = null;
+
+    if (fs.existsSync(rulesPath)) {
+      cache = this.readFileWithCache(rulesPath, false, "workspace rules", this.rulesCache);
+    } else if (fs.existsSync(templateRules)) {
+      cache = this.readFileWithCache(templateRules, false, "template rules", this.rulesCache);
+    } else {
+      cache = {
+        path: rulesPath,
+        content: "",
+        hash: "missing",
+        mtimeMs: 0,
+      };
+    }
+
+    if (cache.hash === "missing" && !this.rulesWarningLogged) {
+      this.logger.warn(
+        `[SystemPrompt] workspace rules missing at ${rulesPath}, continuing with instructions only`,
+      );
+      this.rulesWarningLogged = true;
+    }
+
+    this.rulesCache = cache;
+    if (this.lastRulesHash && cache.hash !== this.lastRulesHash && cache.hash !== "missing") {
+      this.pendingReason = this.pendingReason ?? "rules-updated";
+    }
+    if (cache.hash === "missing") {
+      cache.hash = "missing";
+    } else {
+      this.rulesWarningLogged = false;
+    }
+    return cache;
+  }
+
+  private readFileWithCache(
+    filePath: string,
+    required: boolean,
+    label: string,
+    cache: FileCache | null,
+  ): FileCache {
+    try {
+      const stats = fs.statSync(filePath);
+      if (cache && cache.path === filePath && cache.mtimeMs === stats.mtimeMs) {
+        return cache;
+      }
+      const content = fs.readFileSync(filePath, "utf-8");
+      return {
+        path: filePath,
+        mtimeMs: stats.mtimeMs,
+        content,
+        hash: crypto.createHash("sha1").update(content).digest("hex"),
+      };
+    } catch (error) {
+      if (required) {
+        throw new Error(
+          `[SystemPrompt] 无法读取 ${label}: ${filePath}`,
+          error instanceof Error ? { cause: error } : undefined,
+        );
+      }
+      return {
+        path: filePath,
+        mtimeMs: 0,
+        content: "",
+        hash: "missing",
+      };
+    }
+  }
+}

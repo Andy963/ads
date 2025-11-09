@@ -8,6 +8,14 @@ const GIT_MARKER = ".git";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
+const REQUIRED_TEMPLATE_FILES = [
+  "instructions.md",
+  "rules.md",
+  "requirement.md",
+  "design.md",
+  "implementation.md",
+  "workflow.yaml",
+];
 const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];
 
 function existsSync(target: string): boolean {
@@ -36,7 +44,12 @@ function listTemplateFiles(): string[] {
         .join(", ")}`
     );
   }
-  return entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  const missing = REQUIRED_TEMPLATE_FILES.filter((file) => !files.includes(file));
+  if (missing.length > 0) {
+    throw new Error(`templates/ 缺少必需文件: ${missing.join(", ")}`);
+  }
+  return files;
 }
 
 function hasLegacyStructure(dir: string): boolean {
@@ -97,6 +110,12 @@ function copyDefaultTemplates(workspaceRoot: string): void {
       continue;
     }
     fs.copyFileSync(srcPath, destPath);
+  }
+
+  const workspaceRulesPath = path.join(workspaceRoot, ".ads", "rules.md");
+  const defaultRulesPath = path.join(templatesRoot, "rules.md");
+  if (!existsSync(workspaceRulesPath) && existsSync(defaultRulesPath)) {
+    fs.copyFileSync(defaultRulesPath, workspaceRulesPath);
   }
 }
 
@@ -191,9 +210,6 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
 
   const adsDir = path.join(root, ".ads");
   fs.mkdirSync(adsDir, { recursive: true });
-
-  const rulesDir = path.join(adsDir, "rules");
-  fs.mkdirSync(rulesDir, { recursive: true });
 
   const specsDir = path.join(root, "docs", "specs");
   fs.mkdirSync(specsDir, { recursive: true });

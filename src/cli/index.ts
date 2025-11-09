@@ -14,9 +14,11 @@ import {
 } from "../workflow/service.js";
 import { createWorkflowFromTemplate } from "../workflow/templateService.js";
 import { createLogger } from "../utils/logger.js";
+import { SystemPromptManager, resolveReinjectionConfig } from "../systemPrompt/manager.js";
 
 const cliLogger = createLogger('CLI');
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
+import { detectWorkspace } from "../workspace/detector.js";
 import { readRules, listRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
 import { ConversationLogger } from "../utils/conversationLogger.js";
@@ -749,7 +751,6 @@ async function handleLine(line: string, logger: ConversationLogger, codex: Codex
 
 async function main(): Promise<void> {
   const logger = new ConversationLogger();
-  const codex = new CodexSession();
 
   process.on("exit", () => logger.close());
   process.on("SIGINT", () => {
@@ -758,6 +759,16 @@ async function main(): Promise<void> {
   });
 
   await ensureWorkspace(logger);
+  const workspaceRoot = detectWorkspace();
+  const systemPromptManager = new SystemPromptManager({
+    workspaceRoot,
+    reinjection: resolveReinjectionConfig("CLI"),
+    logger: cliLogger.child("SystemPrompt"),
+  });
+  const codex = new CodexSession({
+    workingDirectory: workspaceRoot,
+    systemPromptManager,
+  });
 
   cliLogger.info("欢迎使用 ADS CLI，输入 /ads.help 查看可用命令。");
   cliLogger.info(`会话日志: ${logger.path}`);

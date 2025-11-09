@@ -17,6 +17,14 @@ if (!fs.existsSync(SRC_DIR)) {
 }
 
 const entries = fs.readdirSync(SRC_DIR, { withFileTypes: true });
+const requiredFiles = new Set([
+  "instructions.md",
+  "rules.md",
+  "requirement.md",
+  "design.md",
+  "implementation.md",
+  "workflow.yaml",
+]);
 const unexpectedDirs = entries.filter((entry) => entry.isDirectory());
 if (unexpectedDirs.length > 0) {
   console.warn(
@@ -28,6 +36,14 @@ if (unexpectedDirs.length > 0) {
 
 fs.rmSync(DEST_DIR, { recursive: true, force: true });
 fs.mkdirSync(DEST_DIR, { recursive: true });
+
+const missingFiles = Array.from(requiredFiles).filter(
+  (file) => !entries.some((entry) => entry.isFile() && entry.name === file),
+);
+if (missingFiles.length > 0) {
+  console.error(`[copy-templates] Missing required template files: ${missingFiles.join(", ")}`);
+  process.exit(1);
+}
 
 for (const entry of entries) {
   if (!entry.isFile()) {

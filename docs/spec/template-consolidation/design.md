@@ -10,7 +10,7 @@
 
 ## 2. 关键模块设计
 ### 2.1 模板目录常量
-- 新增 `TEMPLATE_FILES = ['rules.md','requirement.md','design.md','implementation.md','workflow.yaml']`，位于 `workspace/service.ts` 或单独 util。
+- 新增 `TEMPLATE_FILES = ['instructions.md','rules.md','requirement.md','design.md','implementation.md','workflow.yaml']`，位于 `workspace/service.ts` 或单独 util。
 - 提供工具函数 `ensureTemplates(): string[]` 返回模板源目录，集中管理路径。
 
 ### 2.2 初始化流程

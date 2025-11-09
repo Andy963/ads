@@ -9,6 +9,7 @@ import {
 import { resolveCodexConfig, type CodexResolvedConfig } from "../codexConfig.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../codex/events.js";
 import type { IntakeClassification } from "../intake/types.js";
+import { SystemPromptManager } from "../systemPrompt/manager.js";
 
 interface CodexSessionOptions {
   overrides?: Partial<CodexResolvedConfig>;
@@ -18,6 +19,7 @@ interface CodexSessionOptions {
   sandboxMode?: SandboxMode;
   model?: string;
   workingDirectory?: string;
+  systemPromptManager?: SystemPromptManager;
 }
 
 export interface CodexSendOptions {
@@ -40,9 +42,11 @@ export class CodexSession {
   private readonly streamThrottleMs: number;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private options: CodexSessionOptions;
+  private readonly systemPromptManager?: SystemPromptManager;
 
   constructor(options: CodexSessionOptions = {}) {
     this.options = { ...options };
+    this.systemPromptManager = options.systemPromptManager;
     this.streamingEnabled =
       this.options.streamingEnabled ?? process.env.ADS_CODEX_STREAMING !== "0";
 
@@ -151,6 +155,9 @@ export class CodexSession {
       return;
     }
     this.options = { ...this.options, workingDirectory };
+    if (workingDirectory) {
+      this.systemPromptManager?.setWorkspaceRoot(workingDirectory);
+    }
     this.reset();
   }
 
@@ -169,12 +176,17 @@ export class CodexSession {
     const turnOptions = this.buildTurnOptions(options);
     const useStreaming = options.streaming ?? this.streamingEnabled;
     const signal = options.signal;
+    const preparedPrompt = this.applySystemPrompt(prompt);
 
-    if (!useStreaming) {
-      return this.sendNonStreaming(thread, prompt, turnOptions, signal);
+    try {
+      if (!useStreaming) {
+        return await this.sendNonStreaming(thread, preparedPrompt, turnOptions, signal);
+      }
+
+      return await this.sendStreaming(thread, preparedPrompt, turnOptions, signal);
+    } finally {
+      this.systemPromptManager?.completeTurn();
     }
-
-    return this.sendStreaming(thread, prompt, turnOptions, signal);
   }
 
   private buildTurnOptions(options: CodexSendOptions): TurnOptions | undefined {
@@ -182,6 +194,27 @@ export class CodexSession {
       return undefined;
     }
     return { outputSchema: options.outputSchema } satisfies TurnOptions;
+  }
+
+  private applySystemPrompt(prompt: any): any {
+    if (!this.systemPromptManager) {
+      return prompt;
+    }
+    const injection = this.systemPromptManager.maybeInject();
+    if (!injection) {
+      return prompt;
+    }
+    return this.mergeSystemPrompt(injection.text, prompt);
+  }
+
+  private mergeSystemPrompt(systemText: string, prompt: any): any {
+    if (typeof prompt === "string") {
+      return `${systemText}\n\n${prompt}`;
+    }
+    if (Array.isArray(prompt)) {
+      return [{ type: "text", text: systemText }, ...prompt];
+    }
+    return `${systemText}\n\n${String(prompt ?? "")}`;
   }
 
   private async sendNonStreaming(

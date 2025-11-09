@@ -1,6 +1,8 @@
 import { CodexSession } from '../../cli/codexChat.js';
 import { ThreadStorage } from './threadStorage.js';
 import type { SandboxMode } from '../config.js';
+import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
+import { createLogger } from '../../utils/logger.js';
 
 interface SessionRecord {
   session: CodexSession;
@@ -15,6 +17,8 @@ export class SessionManager {
   private sandboxMode: SandboxMode;
   private defaultModel?: string;
   private userModels = new Map<number, string>(); // 用户自定义模型
+  private readonly reinjectionConfig = resolveReinjectionConfig("TELEGRAM");
+  private readonly logger = createLogger("SessionManager");
 
   constructor(
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000, // 30分钟
@@ -50,12 +54,19 @@ export class SessionManager {
     
     console.log(`[SessionManager] Creating new session for user ${userId}${savedThreadId ? ` (resuming thread ${savedThreadId})` : ''} with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`);
     
+    const systemPromptManager = new SystemPromptManager({
+      workspaceRoot: effectiveCwd,
+      reinjection: this.reinjectionConfig,
+      logger: this.logger.child(`User:${userId}`),
+    });
+    
     const session = new CodexSession({
       streamingEnabled: true,
       resumeThreadId: savedThreadId,
       sandboxMode: this.sandboxMode,
       model: userModel,
       workingDirectory: effectiveCwd,
+      systemPromptManager,
     });
 
     this.sessions.set(userId, {

@@ -61,8 +61,9 @@ The Node entrypoint lives at `src/server.ts`. It registers each MCP tool with it
 
 ### Template Layout
 
-ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建时复制到 `dist/templates`）。目录内仅包含 5 个扁平文件：
+ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建时复制到 `dist/templates`）。目录内仅包含 6 个扁平文件：
 
+- `instructions.md` – 系统提示与工作流指引
 - `rules.md` – 默认工作区规则
 - `requirement.md` – 需求文档模板
 - `design.md` – 设计文档模板
@@ -70,6 +71,14 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
 - `workflow.yaml` – 工作流步骤定义
 
 每次运行 CLI 时，`templates/` 的内容都会同步到 `.ads/templates/`，如需自定义模板只需编辑这些文件。
+
+### System Prompt Reinjection
+
+- 所有会话会自动注入 `templates/instructions.md` 与工作区 `.ads/rules.md`。
+- 通过以下环境变量调节再注入：
+  - `ADS_REINJECTION_ENABLED`（默认 `true`，设置为 `0`/`false` 禁用）
+  - `ADS_REINJECTION_TURNS`（默认 `15`）
+  - `CLI_REINJECTION_*` / `TELEGRAM_REINJECTION_*` 可覆盖对应入口。
 
 ## Codex slash commands
 

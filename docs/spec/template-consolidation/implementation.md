@@ -2,7 +2,8 @@
 
 ## 1. 任务分解
 1. **模板文件整理**
-   - 将 `templates/nodes/*.md`、`templates/workflows/unified.yaml` 内容迁移为 5 个顶层文件：
+   - 将 `templates/nodes/*.md`、`templates/workflows/unified.yaml` 内容迁移为 6 个顶层文件：
+     - `templates/instructions.md`
      - `templates/rules.md`
      - `templates/requirement.md`
      - `templates/design.md`

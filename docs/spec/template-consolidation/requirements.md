@@ -7,7 +7,7 @@
 
 ## 目标
 1. **唯一模板源**：仅保留 `templates/` 目录，所有运行时/初始化逻辑都从这一份读取。
-2. **扁平结构**：目录内只包含 5 个顶层文件（建议：`rules.md`、`requirement.md`、`design.md`、`implementation.md`、`workflow.yaml`），不再区分 `nodes/`、`workflows/` 子目录。
+2. **扁平结构**：目录内只包含 6 个顶层文件（`instructions.md`、`rules.md`、`requirement.md`、`design.md`、`implementation.md`、`workflow.yaml`），不再区分 `nodes/`、`workflows/` 子目录。
 3. **统一复制**：`initWorkspace` 创建 `.ads` 时只复制该目录内容；`syncWorkspaceTemplates` 亦以它为源。
 4. **构建一致**：`scripts/copy-templates.js` 直接把 `templates/*` 复制到 `dist/templates`，供发行版本使用。
 5. **清理遗留引用**：移除所有对 `ads/templates` 以及子目录结构 (`nodes/`, `workflows/`) 的依赖，包含文档与日志描述。
@@ -20,7 +20,8 @@
 ## 详细需求
 ### 文件结构
 - `templates/` 下仅存 5 个文件，对应：
-  - `rules.md`：全局规则模板。
+- `instructions.md`：系统提示模板。
+- `rules.md`：全局规则模板。
   - `requirement.md`：需求文档模板。
   - `design.md`：设计文档模板。
   - `implementation.md`：实施/验证模板。
