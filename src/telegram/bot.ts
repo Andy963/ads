@@ -9,6 +9,7 @@ import { handleCodexMessage, interruptExecution } from './adapters/codex.js';
 import { handleAdsCommand } from './adapters/ads.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
+import { checkWorkspaceInit } from './utils/workspaceInitChecker.js';
 
 const logger = createLogger('Bot');
 
@@ -218,7 +219,21 @@ async function main() {
       const newCwd = directoryManager.getUserCwd(userId);
       sessionManager.setUserCwd(userId, newCwd);
       sessionManager.reset(userId);
-      await ctx.reply(`✅ 已切换到: ${directoryManager.getUserCwd(userId)}\n💡 Codex 会话已自动重置`);
+
+      const initStatus = checkWorkspaceInit(newCwd);
+      let replyMessage = `✅ 已切换到: ${newCwd}\n💡 Codex 会话已自动重置`;
+
+      if (!initStatus.initialized) {
+        const missing = initStatus.missingArtifact ?? "ADS 必需文件";
+        replyMessage += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。请先在此目录运行 'ads init'，否则系统指令无法加载。`;
+        logger.warn(
+          `[Telegram][WorkspaceInit] user=${userId} path=${newCwd} missing=${missing}${
+            initStatus.details ? ` details=${initStatus.details}` : ""
+          }`,
+        );
+      }
+
+      await ctx.reply(replyMessage);
     } else {
       await ctx.reply(`❌ ${result.error}`);
     }

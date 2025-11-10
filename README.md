@@ -11,6 +11,8 @@ Quick links:
 - [Full Guide](./docs/telegram/FULL_GUIDE.md) - Complete documentation
 - [Deployment Guide](./docs/telegram/DEPLOYMENT.md) - Production deployment
 
+> ℹ️ 使用 `/cd <path>` 切换目录时，如果目标目录缺少 `.ads/workspace.json` 或模板文件，Bot 会提示先运行 `ads init`，但仍会完成切换以便你在该目录执行初始化。
+
 ### General
 
 - [Usage Guide](./docs/USAGE_GUIDE.md) - How to use ADS
