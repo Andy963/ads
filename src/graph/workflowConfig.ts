@@ -58,7 +58,10 @@ function resolveConfigPath(): string {
   }
 
   const fallbackPaths = [
+    // When running from source (tsx/dev) or tests
     path.join(PROJECT_ROOT, "src", "graph", "config.yaml"),
+    // When running compiled code from dist, hop back to repo src
+    path.join(PROJECT_ROOT, "..", "src", "graph", "config.yaml"),
     path.join(PROJECT_ROOT, "ads", "graph", "config.yaml"),
     path.join(PROJECT_ROOT, "..", "ads", "graph", "config.yaml"),
     path.join(PROJECT_ROOT, "graph", "config.yaml"),
@@ -70,7 +73,9 @@ function resolveConfigPath(): string {
     }
   }
 
-  throw new Error("无法找到工作流配置文件 (ads/graph/config.yaml)");
+  throw new Error(
+    "无法找到工作流配置文件。请设置 ADS_CONFIG_PATH 指向 config.yaml，或确保构建产物包含 dist/src/graph/config.yaml，或仓库存在 src/graph/config.yaml",
+  );
 }
 
 class WorkflowRulesConfigSingleton {

@@ -6,6 +6,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
 const SRC_DIR = path.join(ROOT_DIR, "templates");
 const DEST_DIR = path.join(ROOT_DIR, "dist", "templates");
+const GRAPH_CONFIG_SRC = path.join(ROOT_DIR, "src", "graph", "config.yaml");
+const GRAPH_CONFIG_DEST_DIR = path.join(ROOT_DIR, "dist", "src", "graph");
 
 if (!fs.existsSync(path.join(ROOT_DIR, "dist"))) {
   fs.mkdirSync(path.join(ROOT_DIR, "dist"), { recursive: true });
@@ -55,3 +57,17 @@ for (const entry of entries) {
 }
 
 console.log(`[copy-templates] Templates copied to ${DEST_DIR}`);
+
+// Also ensure workflow graph config is available in dist for runtime
+try {
+  if (fs.existsSync(GRAPH_CONFIG_SRC)) {
+    fs.mkdirSync(GRAPH_CONFIG_DEST_DIR, { recursive: true });
+    const graphConfigDest = path.join(GRAPH_CONFIG_DEST_DIR, "config.yaml");
+    fs.copyFileSync(GRAPH_CONFIG_SRC, graphConfigDest);
+    console.log(`[copy-templates] Graph config copied to ${graphConfigDest}`);
+  } else {
+    console.warn(`[copy-templates] Graph config not found at ${GRAPH_CONFIG_SRC}`);
+  }
+} catch (error) {
+  console.warn(`[copy-templates] Failed to copy graph config: ${(error ?? {}).message ?? error}`);
+}
