@@ -1,5 +1,5 @@
 import type { Context } from 'grammy';
-import { getWorkflowStatusSummary, checkoutWorkflow, commitStep } from '../../workflow/service.js';
+import { getWorkflowStatusSummary, checkoutWorkflow, commitStep, listWorkflows } from '../../workflow/service.js';
 import { createWorkflowFromTemplate } from '../../workflow/templateService.js';
 
 export async function handleAdsCommand(ctx: Context, args: string[]) {
@@ -73,11 +73,23 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
         break;
       }
 
+      case 'branch':
+      case 'list': {
+        const response = await listWorkflows({});
+        const text = formatAdsResponse(response);
+        const safeText = escapeMarkdown(text);
+        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
+          await ctx.reply(text);
+        });
+        break;
+      }
+
       case 'help': {
         await ctx.reply(
           '📋 *ADS 命令列表*\n\n' +
           '`/ads status` - 查看当前工作流状态\n' +
           '`/ads new <title>` - 创建新工作流\n' +
+          '`/ads branch` - 列出所有工作流\n' +
           '`/ads checkout <workflow>` - 切换工作流\n' +
           '`/ads commit <step>` - 定稿步骤\n' +
           '`/ads help` - 显示此帮助',
