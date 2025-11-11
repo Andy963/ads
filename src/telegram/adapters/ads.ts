@@ -97,13 +97,45 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
 }
 
 function formatAdsResponse(response: unknown): string {
+  // 如果是 JSON 字符串，先解析
   if (typeof response === 'string') {
-    return response;
+    try {
+      const parsed = JSON.parse(response);
+      return formatAdsResponse(parsed);
+    } catch {
+      // 不是 JSON，直接返回
+      return response;
+    }
   }
 
   if (response && typeof response === 'object') {
     const obj = response as Record<string, unknown>;
-    
+
+    // 处理成功的工作流创建
+    if (obj.success && obj.workflow && obj.message) {
+      const workflow = obj.workflow as Record<string, unknown>;
+      const lines = [
+        '✅ 工作流创建成功',
+        '',
+        `📋 Root Node: \`${workflow.root_node_id}\``,
+        `📊 创建节点数: ${workflow.nodes_created}`,
+        `🔗 创建边数: ${workflow.edges_created}`,
+        '',
+        `💡 ${obj.message}`,
+      ];
+      return lines.join('\n');
+    }
+
+    // 处理通用成功消息
+    if (obj.success && obj.message) {
+      return `✅ ${obj.message}`;
+    }
+
+    // 处理错误
+    if (obj.error) {
+      return `❌ ${obj.error}`;
+    }
+
     // 尝试提取常见字段
     if (obj.message && typeof obj.message === 'string') {
       return obj.message;
@@ -111,14 +143,6 @@ function formatAdsResponse(response: unknown): string {
 
     if (obj.output && typeof obj.output === 'string') {
       return obj.output;
-    }
-
-    if (obj.success && obj.message) {
-      return `✅ ${obj.message}`;
-    }
-
-    if (obj.error) {
-      return `❌ ${obj.error}`;
     }
   }
 
