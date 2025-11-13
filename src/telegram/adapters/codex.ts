@@ -131,7 +131,7 @@ export async function handleCodexMessage(
       return null;
     }
     const lines = output.split(/\r?\n/);
-    const limitedLines = lines.slice(0, 10);
+    const limitedLines = lines.slice(0, 5);
     let snippet = limitedLines.join('\n').trim();
     if (!snippet) {
       return null;
