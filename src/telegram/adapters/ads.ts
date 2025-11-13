@@ -1,6 +1,18 @@
 import type { Context } from 'grammy';
-import { getWorkflowStatusSummary, checkoutWorkflow, commitStep, listWorkflows } from '../../workflow/service.js';
+import {
+  getWorkflowStatusSummary,
+  checkoutWorkflow,
+  commitStep,
+  listWorkflows,
+  listWorkflowLog,
+} from '../../workflow/service.js';
 import { createWorkflowFromTemplate } from '../../workflow/templateService.js';
+import { listRules, readRules } from '../../workspace/rulesService.js';
+import { getCurrentWorkspace } from '../../workspace/service.js';
+import { syncAllNodesToFiles } from '../../graph/service.js';
+import { cancelIntake } from '../../intake/service.js';
+import { buildAdsHelpMessage } from '../../workflow/commands.js';
+import { escapeTelegramMarkdown } from '../../utils/markdown.js';
 
 export async function handleAdsCommand(ctx: Context, args: string[]) {
   if (args.length === 0) {
@@ -16,12 +28,8 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
   try {
     switch (command) {
       case 'status': {
-        const response = await getWorkflowStatusSummary({});
-        const text = formatAdsResponse(response);
-        const safeText = escapeMarkdown(text);
-        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
-          await ctx.reply(text); // Fallback to plain text
-        });
+        const response = await getWorkflowStatusSummary({ format: 'markdown' });
+        await replyWithAdsText(ctx, response, { markdown: true });
         break;
       }
 
@@ -35,11 +43,7 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
           title,
           template_id: 'unified',
         });
-        const text = formatAdsResponse(response);
-        const safeText = escapeMarkdown(text);
-        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
-          await ctx.reply(text);
-        });
+        await replyWithAdsText(ctx, response);
         break;
       }
 
@@ -50,11 +54,7 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
         }
         const identifier = commandArgs.join(' ');
         const response = await checkoutWorkflow({ workflow_identifier: identifier });
-        const text = formatAdsResponse(response);
-        const safeText = escapeMarkdown(text);
-        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
-          await ctx.reply(text);
-        });
+        await replyWithAdsText(ctx, response);
         break;
       }
 
@@ -65,36 +65,60 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
         }
         const stepName = commandArgs.join(' ');
         const response = await commitStep({ step_name: stepName });
-        const text = formatAdsResponse(response);
-        const safeText = escapeMarkdown(text);
-        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
-          await ctx.reply(text);
-        });
+        await replyWithAdsText(ctx, response);
         break;
       }
 
       case 'branch':
       case 'list': {
-        const response = await listWorkflows({});
-        const text = formatAdsResponse(response);
-        const safeText = escapeMarkdown(text);
-        await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
-          await ctx.reply(text);
-        });
+        const branchOptions = parseBranchArguments(commandArgs);
+        const format = branchOptions.operation === "list" ? "markdown" : "cli";
+        const response = await listWorkflows({ ...branchOptions, format });
+        await replyWithAdsText(ctx, response, { markdown: branchOptions.operation === "list" });
+        break;
+      }
+
+      case 'log': {
+        const { limit, workflow } = parseLogArguments(commandArgs);
+        const response = await listWorkflowLog({ limit, workflow, format: 'markdown' });
+        await replyWithAdsText(ctx, response, { markdown: true });
+        break;
+      }
+
+      case 'rules': {
+        if (commandArgs.length > 0) {
+          const category = commandArgs.join(' ');
+          const response = await listRules({ category });
+          await replyWithAdsText(ctx, response);
+        } else {
+          const response = await readRules();
+          await replyWithAdsText(ctx, response);
+        }
+        break;
+      }
+
+      case 'workspace': {
+        const response = await getCurrentWorkspace();
+        await replyWithAdsText(ctx, response);
+        break;
+      }
+
+      case 'sync': {
+        const response = await syncAllNodesToFiles({});
+        await replyWithAdsText(ctx, response);
+        break;
+      }
+
+      case 'cancel-intake':
+      case 'cancel': {
+        const response = await cancelIntake();
+        await replyWithAdsText(ctx, response);
         break;
       }
 
       case 'help': {
-        await ctx.reply(
-          '📋 *ADS 命令列表*\n\n' +
-          '`/ads status` - 查看当前工作流状态\n' +
-          '`/ads new <title>` - 创建新工作流\n' +
-          '`/ads branch` - 列出所有工作流\n' +
-          '`/ads checkout <workflow>` - 切换工作流\n' +
-          '`/ads commit <step>` - 定稿步骤\n' +
-          '`/ads help` - 显示此帮助',
-          { parse_mode: 'Markdown' }
-        );
+        const message = buildAdsHelpMessage('markdown');
+        await replyWithAdsText(ctx, message, { markdown: true });
         break;
       }
 
@@ -161,8 +185,68 @@ function formatAdsResponse(response: unknown): string {
   return JSON.stringify(response, null, 2);
 }
 
-const MARKDOWN_ESCAPE_REGEX = /([_\*\[\]\(\)~`#+=|{}!])/g;
+async function replyWithAdsText(ctx: Context, response: unknown, options?: { markdown?: boolean }) {
+  const text = formatAdsResponse(response);
+  if (options?.markdown) {
+    await ctx.reply(text, { parse_mode: 'Markdown' }).catch(async () => {
+      await ctx.reply(text);
+    });
+    return;
+  }
 
-function escapeMarkdown(text: string): string {
-  return text.replace(MARKDOWN_ESCAPE_REGEX, '\\$1');
+  const safeText = escapeTelegramMarkdown(text);
+  await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
+    await ctx.reply(text);
+  });
+}
+
+function parseBranchArguments(args: string[]): { operation: "list" | "delete" | "force_delete"; workflow?: string } {
+  let deleteMode: "none" | "soft" | "hard" = "none";
+  let workflowArg: string | undefined;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === "-d" || token === "--delete-context") {
+      deleteMode = "soft";
+      workflowArg = args.slice(i + 1).join(" ") || workflowArg;
+      break;
+    }
+    if (token === "-D" || token === "--delete" || token === "--force-delete") {
+      deleteMode = "hard";
+      workflowArg = args.slice(i + 1).join(" ") || workflowArg;
+      break;
+    }
+    if (token.startsWith("--delete=")) {
+      deleteMode = "hard";
+      workflowArg = token.slice("--delete=".length) || workflowArg;
+      if (!workflowArg && i + 1 < args.length) {
+        workflowArg = args[i + 1];
+      }
+      break;
+    }
+    if (token.startsWith("--delete-context=")) {
+      deleteMode = "soft";
+      workflowArg = token.slice("--delete-context=".length) || workflowArg;
+      if (!workflowArg && i + 1 < args.length) {
+        workflowArg = args[i + 1];
+      }
+      break;
+    }
+  }
+
+  const operation = deleteMode === "hard" ? "force_delete" : deleteMode === "soft" ? "delete" : "list";
+  const workflow = deleteMode === "none" ? undefined : workflowArg?.trim().replace(/^['"]|['"]$/g, "");
+  return { operation, workflow };
+}
+
+function parseLogArguments(args: string[]): { limit?: number; workflow?: string } {
+  if (args.length === 0) {
+    return {};
+  }
+  const maybeLimit = Number(args[0]);
+  if (!Number.isNaN(maybeLimit)) {
+    const workflow = args.slice(1).join(" ") || undefined;
+    return { limit: maybeLimit, workflow };
+  }
+  return { workflow: args.join(" ") };
 }
