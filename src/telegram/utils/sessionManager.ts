@@ -3,11 +3,13 @@ import { ThreadStorage } from './threadStorage.js';
 import type { SandboxMode } from '../config.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { createLogger } from '../../utils/logger.js';
+import { ConversationLogger } from '../../utils/conversationLogger.js';
 
 interface SessionRecord {
   session: CodexSession;
   lastActivity: number;
   cwd: string;
+  logger?: ConversationLogger;
 }
 
 export class SessionManager {
@@ -73,6 +75,7 @@ export class SessionManager {
       session,
       lastActivity: Date.now(),
       cwd: effectiveCwd,
+      logger: undefined, // 延迟创建，等到获取 threadId 后
     });
 
     return session;
@@ -80,6 +83,37 @@ export class SessionManager {
   
   hasSession(userId: number): boolean {
     return this.sessions.has(userId);
+  }
+
+  getLogger(userId: number): ConversationLogger | undefined {
+    return this.sessions.get(userId)?.logger;
+  }
+
+  /**
+   * 确保 logger 存在，如果不存在则创建
+   * 必须在 session 有 threadId 后调用
+   */
+  ensureLogger(userId: number): ConversationLogger | undefined {
+    const record = this.sessions.get(userId);
+    if (!record) {
+      return undefined;
+    }
+
+    // 如果已经有 logger，直接返回
+    if (record.logger) {
+      return record.logger;
+    }
+
+    // 获取 threadId
+    const threadId = record.session.getThreadId();
+    if (!threadId) {
+      // 没有 threadId，说明还没发送过消息，暂时不创建 logger
+      return undefined;
+    }
+
+    // 创建 logger
+    record.logger = new ConversationLogger(record.cwd, userId, threadId);
+    return record.logger;
   }
 
   hasSavedThread(userId: number): boolean {
@@ -126,6 +160,11 @@ export class SessionManager {
   reset(userId: number): void {
     const record = this.sessions.get(userId);
     if (record) {
+      // 关闭旧的 logger
+      if (record.logger) {
+        record.logger.close();
+        record.logger = undefined;
+      }
       record.session.reset();
       record.lastActivity = Date.now();
       console.log(`[SessionManager] Session reset for user ${userId}`);
@@ -183,6 +222,10 @@ export class SessionManager {
     }
 
     for (const userId of expiredUsers) {
+      const record = this.sessions.get(userId);
+      if (record && record.logger) {
+        record.logger.close();
+      }
       this.sessions.delete(userId);
       console.log(`[SessionManager] Cleaned up idle session for user ${userId}`);
     }
@@ -190,15 +233,18 @@ export class SessionManager {
 
   destroy(): void {
     clearInterval(this.cleanupInterval);
-    
-    // 保存所有活跃 session 的 thread ID
+
+    // 保存所有活跃 session 的 thread ID 并关闭 logger
     for (const [userId, record] of this.sessions.entries()) {
       const threadId = record.session.getThreadId();
       if (threadId) {
         this.threadStorage.setRecord(userId, { threadId, cwd: record.cwd });
       }
+      if (record.logger) {
+        record.logger.close();
+      }
     }
-    
+
     this.sessions.clear();
   }
 }

@@ -13,15 +13,36 @@ export class ConversationLogger {
   private readonly filePath: string;
   private readonly stream: fs.WriteStream;
 
-  constructor(workspacePath?: string) {
+  constructor(workspacePath?: string, userId?: number, threadId?: string) {
     this.workspace = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
     const logDir = path.join(this.workspace, ".ads", "logs");
     fs.mkdirSync(logDir, { recursive: true });
 
-    const timestamp = sanitizeTimestamp(new Date());
-    this.filePath = path.join(logDir, `session-${timestamp}.log`);
+    // 如果有 threadId，使用 thread 作为日志文件名
+    let fileName: string;
+    if (userId !== undefined && threadId) {
+      fileName = `telegram-user${userId}-thread-${threadId}.log`;
+    } else {
+      const timestamp = sanitizeTimestamp(new Date());
+      fileName = `session-${timestamp}.log`;
+    }
+
+    this.filePath = path.join(logDir, fileName);
+    const fileExists = fs.existsSync(this.filePath);
+
     this.stream = fs.createWriteStream(this.filePath, { flags: "a" });
-    this.stream.write(`# ADS Session ${new Date().toISOString()}\n`);
+
+    // 只有新文件才写标题
+    if (!fileExists) {
+      this.stream.write(`# ADS Session ${new Date().toISOString()}\n`);
+      if (userId !== undefined && threadId) {
+        this.stream.write(`# User ID: ${userId}\n`);
+        this.stream.write(`# Thread ID: ${threadId}\n`);
+      }
+    } else {
+      // 续写时添加分隔符
+      this.stream.write(`\n# === Session resumed at ${new Date().toISOString()} ===\n`);
+    }
   }
 
   get path(): string {

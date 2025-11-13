@@ -64,21 +64,24 @@ export async function handleCodexMessage(
   cwd?: string
 ) {
   const userId = ctx.from!.id;
-  
+
   // 检查是否有活跃请求
   if (interruptManager.hasActiveRequest(userId)) {
     await ctx.reply('⚠️ 已有请求正在执行，请等待完成或使用 /stop 中断');
     return;
   }
-  
+
   const session = sessionManager.getOrCreate(userId, cwd);
-  
+
   const saveThreadIdIfNeeded = () => {
     const threadId = session.getThreadId();
     if (threadId) {
       sessionManager.saveThreadId(userId, threadId);
     }
   };
+
+  // 尝试获取或创建 logger（如果已有 threadId）
+  let logger = sessionManager.ensureLogger(userId);
 
   // 注册请求
   const signal = interruptManager.registerRequest(userId).signal;
@@ -330,13 +333,17 @@ export async function handleCodexMessage(
       if (!interruptManager.hasActiveRequest(userId)) {
         return;
       }
+      // 记录事件
+      if (logger) {
+        logger.logEvent(event);
+      }
       queueStatusUpdate(event);
     });
 
     // 构建输入
     let input: any;
     let enhancedText = urlData ? urlData.processedText : text;
-    
+
     // 如果有文件，添加文件信息到提示
     if (filePaths.length > 0) {
       enhancedText += '\n\n用户上传的文件:';
@@ -345,7 +352,18 @@ export async function handleCodexMessage(
         enhancedText += `\n- ${fileName}: ${path}`;
       }
     }
-    
+
+    // 准备用户输入日志（可能现在还没有 logger）
+    let userInputLog = enhancedText;
+    if (imagePaths.length > 0) {
+      userInputLog += `\n[附带 ${imagePaths.length} 张图片]`;
+    }
+
+    // 如果已有 logger，立即记录
+    if (logger) {
+      logger.logInput(userInputLog);
+    }
+
     if (imagePaths.length > 0) {
       input = [
         { type: 'text', text: enhancedText },
@@ -362,8 +380,24 @@ export async function handleCodexMessage(
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);
     interruptManager.complete(userId);
-    
+
     saveThreadIdIfNeeded();
+
+    // 确保 logger 存在（如果是新 thread，现在才有 threadId）
+    const wasLoggerCreated = !logger;
+    if (!logger) {
+      logger = sessionManager.ensureLogger(userId);
+    }
+
+    // 如果 logger 是刚创建的，补充记录用户输入
+    if (logger && wasLoggerCreated) {
+      logger.logInput(userInputLog);
+    }
+
+    // 记录 AI 回复（不含 token 统计）
+    if (logger) {
+      logger.logOutput(result.response);
+    }
 
     // 发送最终响应
     let finalText = result.response;
@@ -400,10 +434,16 @@ export async function handleCodexMessage(
     }
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);
-    
+
     const errorMsg = error instanceof Error ? error.message : String(error);
     const isInterrupt = (error as Error).name === 'AbortError';
     const replyText = isInterrupt ? '⛔️ 已中断执行' : `❌ 错误: ${errorMsg}`;
+
+    // 记录错误
+    if (logger && !isInterrupt) {
+      logger.logError(errorMsg);
+    }
+
     await finalizeStatusUpdates(replyText);
     interruptManager.complete(userId);
     await ctx.reply(replyText);
