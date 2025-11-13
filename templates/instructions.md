@@ -25,17 +25,23 @@
       这会自动创建文档目录、从模板复制文件并在数据库中创建记录。
     •  **禁止**在未执行 `ads new` 之前直接创建 docs/spec/<feature-name>/ 目录或文档文件。
     •  只有通过 ADS 命令创建的工作流才会正确同步到数据库。
-    •  完成 requirements.md 后，执行 `ads commit requirement` 标记完成。
-    •  完成 design.md 后，执行 `ads commit design` 标记完成。
-    •  完成 implementation.md 后，执行 `ads commit implementation` 标记完成。
-    •  如果用户已经手动创建了文档，需要使用 `ads new` 重新创建工作流来同步数据库。
+    •  编辑文档后，必须与用户充分讨论并得到明确确认后，才能执行 `ads commit <step>` 定稿。
+    •  **禁止**在用户未明确同意的情况下执行 `ads commit`，这会锁定该步骤。
     •  可以使用 `ads status` 查看当前工作流状态。
-    •  **执行流程示例**：
+
+    •  **正确的执行流程**：
       1. 用户说"帮我实现 XXX 功能"
-      2. 你执行 `ads new "XXX 功能"`（通过 Bash 工具）
-      3. 编辑 requirements.md
-      4. 执行 `ads commit requirement`
-      5. 继续下一步骤
+      2. 你执行 `ads new "XXX 功能"`（通过 Bash 工具）创建工作流
+      3. 编辑 requirements.md，与用户讨论需求细节
+      4. 用户确认需求后，询问"是否定稿 requirements？"
+      5. 用户明确同意后，执行 `ads commit requirement`
+      6. 继续 design.md，重复 3-5 步骤
+      7. 继续 implementation.md，重复 3-5 步骤
+
+    •  **错误示例**（禁止）：
+      ❌ 自动执行所有步骤：ads new → 编辑文档 → 立即 ads commit（未经用户确认）
+      ❌ 在讨论过程中就执行 ads commit
+      ❌ 未询问用户就定稿文档
 
   3. 评审与变更
     •  文档若需修改，必须按“需求 → 设计 → 实施”链条依次更新，避免跳级。
