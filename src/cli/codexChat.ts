@@ -43,6 +43,7 @@ export class CodexSession {
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private options: CodexSessionOptions;
   private readonly systemPromptManager?: SystemPromptManager;
+  private threadStartedEmitted = false;
 
   constructor(options: CodexSessionOptions = {}) {
     this.options = { ...options };
@@ -137,6 +138,7 @@ export class CodexSession {
 
   reset(): void {
     this.thread = null;
+    this.threadStartedEmitted = false;
     if (this.options.resumeThreadId) {
       this.options = { ...this.options, resumeThreadId: undefined };
     }
@@ -288,6 +290,13 @@ export class CodexSession {
       for await (const event of streamed.events) {
         const mapped = mapThreadEventToAgentEvent(event);
         if (mapped) {
+          // 过滤掉重复的 thread.started 事件（已经恢复或创建过的线程）
+          if (event.type === 'thread.started' && this.threadStartedEmitted) {
+            continue;
+          }
+          if (event.type === 'thread.started') {
+            this.threadStartedEmitted = true;
+          }
           this.emitEvent(mapped);
         }
         aggregator.consume(event);

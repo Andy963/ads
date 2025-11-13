@@ -10,6 +10,7 @@ import { handleAdsCommand } from './adapters/ads.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
 import { checkWorkspaceInit } from './utils/workspaceInitChecker.js';
+import { parseInlineAdsCommand } from './utils/adsCommand.js';
 
 const logger = createLogger('Bot');
 
@@ -22,7 +23,7 @@ async function main() {
     config = loadTelegramConfig();
     validateConfig(config);
     logger.info('Telegram config loaded');
-    logger.info(`Allowed users: ${config.allowedUsers.join(', ')}`);
+    logger.info(`Single allowed user: ${config.allowedUsers[0]}`);
     logger.info(`Allowed dirs: ${config.allowedDirs.join(', ')}`);
   } catch (error) {
     logger.error('Failed to load config:', (error as Error).message);
@@ -49,6 +50,31 @@ async function main() {
     config.defaultModel
   );
   const directoryManager = new DirectoryManager(config.allowedDirs);
+
+  // 启动时恢复工作目录（单用户）
+  const userId = config.allowedUsers[0];
+  const savedState = sessionManager.getSavedState(userId);
+  if (savedState?.cwd) {
+    const result = directoryManager.setUserCwd(userId, savedState.cwd);
+    if (result.success) {
+      logger.info(`[WorkspacePersistence] Restored cwd for user ${userId}: ${savedState.cwd}`);
+    } else {
+      logger.warn(
+        `[WorkspacePersistence] Failed to restore cwd for user ${userId} from ${savedState.cwd}: ${result.error}`,
+      );
+      // 如果恢复失败，使用默认目录
+      const defaultDir = config.allowedDirs[0];
+      directoryManager.setUserCwd(userId, defaultDir);
+      // 同步到 SessionManager
+      sessionManager.setUserCwd(userId, defaultDir);
+    }
+  } else {
+    logger.info('[WorkspacePersistence] No saved cwd found, using default');
+    // 设置默认目录
+    const defaultDir = config.allowedDirs[0];
+    directoryManager.setUserCwd(userId, defaultDir);
+    sessionManager.setUserCwd(userId, defaultDir);
+  }
 
   // 创建 Bot 实例
   const bot = new Bot(config.botToken);
@@ -240,7 +266,17 @@ async function main() {
   });
 
   bot.command('ads', async (ctx) => {
-    const args = ctx.message?.text?.split(/\s+/).slice(1) || [];
+    const text = ctx.message?.text ?? "";
+    const args = text.split(/\s+/).slice(1);
+
+    if (args.length === 0) {
+      const inlineArgs = parseInlineAdsCommand(text);
+      if (inlineArgs) {
+        await handleAdsCommand(ctx, inlineArgs);
+        return;
+      }
+    }
+
     await handleAdsCommand(ctx, args);
   });
 
@@ -290,8 +326,14 @@ async function main() {
   // 处理普通文本消息 - Codex 对话
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
-    
-    // 跳过命令
+
+    const inlineAdsArgs = parseInlineAdsCommand(text);
+    if (inlineAdsArgs) {
+      await handleAdsCommand(ctx, inlineAdsArgs);
+      return;
+    }
+
+    // 跳过其它命令
     if (text.startsWith('/')) {
       return;
     }
