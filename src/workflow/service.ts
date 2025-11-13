@@ -8,6 +8,13 @@ import { onNodeFinalized } from "../graph/autoWorkflow.js";
 import { saveNodeToFile } from "../graph/fileManager.js";
 import type { GraphNode } from "../graph/types.js";
 import { getDatabase } from "../storage/database.js";
+import {
+  formatWorkflowStatusSummary,
+  formatWorkflowLog,
+  formatWorkflowList,
+  type WorkflowTextFormat,
+} from "./formatter.js";
+import { escapeTelegramInlineCode, escapeTelegramMarkdown } from "../utils/markdown.js";
 
 const CMD_NEW = "/ads.new";
 const CMD_STATUS = "/ads.status";
@@ -117,10 +124,22 @@ export async function getActiveWorkflowSummary(params: {
 
 export async function getWorkflowStatusSummary(params: {
   workspace_path?: string;
+  format?: WorkflowTextFormat;
 }): Promise<string> {
+  const format = params.format ?? "cli";
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
   const workflowStatus = WorkflowContext.getWorkflowStatus(workspace);
   if (!workflowStatus) {
+    if (format === "markdown") {
+      return [
+        "**❌ No active workflow**",
+        "",
+        "💡 To get started:",
+        `- 使用 \`${CMD_BRANCH}\` 查看现有工作流`,
+        `- 使用 \`${CMD_NEW}\` 创建新工作流`,
+        `- 使用 \`${CMD_CHECKOUT} <workflow>\` 切换到指定工作流`,
+      ].join("\n");
+    }
     return [
       "❌ No active workflow",
       "",
@@ -134,71 +153,37 @@ export async function getWorkflowStatusSummary(params: {
   const workflow = workflowStatus.workflow;
   const steps = workflowStatus.steps ?? [];
   const allWorkflows = WorkflowContext.listAllWorkflows(workspace);
-
-  const lines: string[] = [];
-  const COLOR_RESET = "\u001b[0m";
-  const COLOR_ACTIVE = "\u001b[32m";
-  const COLOR_INACTIVE = "\u001b[90m";
-
-  const activeHeader = `${COLOR_ACTIVE}${workflow.workflow_id ?? "(unknown-id)"} • ${workflow.title ?? "Unknown"}${COLOR_RESET}`;
-  lines.push("当前工作流:");
-  lines.push(`  ${activeHeader}`);
-  lines.push(`  模板: ${workflow.template ?? "Unknown"}`);
-  lines.push("");
-  lines.push("Steps:");
-
   const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
   const stepOrder = Object.keys(stepMapping);
-
-  let finalizedCount = 0;
-  for (const stepName of stepOrder) {
-    const info = steps.find((step) => step.name === stepName);
-    if (!info) {
-      lines.push(`  ○ ${stepName} (not created)`);
-      continue;
-    }
-    const statusIcon = info.status === "finalized" ? "✅" : "📝";
-    if (info.status === "finalized") {
-      finalizedCount += 1;
-    }
-    const currentMark = info.is_current ? " ← current" : "";
-    lines.push(`  ${statusIcon} ${stepName}: ${info.label}${currentMark}`);
-  }
-
-  const progress = stepOrder.length > 0 ? Math.round((finalizedCount / stepOrder.length) * 100) : 0;
-  lines.push("");
-  lines.push(`Progress: ${progress}% (${finalizedCount}/${stepOrder.length})`);
-
-  if (progress === 100) {
-    lines.push("");
-    lines.push("🎉 This workflow is complete!");
-  }
-
-  if (allWorkflows.length > 0) {
-    lines.push("");
-    lines.push("所有工作流:");
-    for (const wf of allWorkflows) {
-      const isCurrent = wf.workflow_id === workflow.workflow_id;
-      const color = isCurrent ? COLOR_ACTIVE : COLOR_INACTIVE;
-      const label = `${wf.workflow_id} ${wf.title ?? "(未命名)"} [${wf.template ?? "unknown"}] nodes:${wf.node_count} finalized:${wf.finalized_count}`;
-      lines.push(`  ${color}${isCurrent ? "★ " : "  "}${label}${COLOR_RESET}`);
-    }
-  }
-
-  lines.push("");
-  lines.push("💡 Next actions:");
-  lines.push(`    - Add draft content: ${CMD_ADD} <step> <content>`);
-  lines.push(`    - Finalize step: ${CMD_COMMIT} <step>`);
-
-  return lines.join("\n");
+  return formatWorkflowStatusSummary(
+    {
+      workflow,
+      steps,
+      stepOrder,
+      allWorkflows,
+      nextActions: [
+        { label: "Add draft content", command: `${CMD_ADD} <step> <content>` },
+        { label: "Finalize step", command: `${CMD_COMMIT} <step>` },
+      ],
+    },
+    { format },
+  );
 }
+
+const DEFAULT_WORKFLOW_LOG_HEADER = "最新提交:";
 
 export async function listWorkflows(params: {
   workspace_path?: string;
   operation?: "list" | "delete" | "force_delete";
   workflow?: string;
+  format?: WorkflowTextFormat;
 }): Promise<string> {
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const format = params.format ?? "cli";
+  const markdown = format === "markdown";
+  const escapeText = (value: string) => (markdown ? escapeTelegramMarkdown(value) : value);
+  const inlineCode = (value: string) => (markdown ? `\`${escapeTelegramInlineCode(value)}\`` : value);
+  const join = (lines: string[]) => lines.join("\n");
 
   // 处理删除操作
   if (params.operation === "delete" || params.operation === "force_delete") {
@@ -225,12 +210,16 @@ export async function listWorkflows(params: {
         if (matches.length === 1) {
           targetWorkflow = matches[0];
         } else if (matches.length > 1) {
-          const preview = matches
-            .slice(0, 5)
-            .map((wf) => `  ${wf.workflow_id} ${wf.title ?? "(未命名)"}`)
-            .join("\n");
-          const tail = matches.length > 5 ? "\n  …" : "";
-          return [`❌ 前缀 '${params.workflow}' 匹配多个工作流:`, preview + tail, "请提供更长的 ID 前缀"].join("\n");
+          const previewLines = matches.slice(0, 5).map((wf) =>
+            markdown ? `  - ${inlineCode(wf.workflow_id)}` : `  ${wf.workflow_id}`,
+          );
+          const tail = matches.length > 5 ? (markdown ? "  - …" : "  …") : null;
+          const body = tail ? [...previewLines, tail] : previewLines;
+          return join([
+            `❌ 前缀 '${escapeText(params.workflow)}' 匹配多个工作流:`,
+            ...body,
+            "请提供更长的 ID 前缀",
+          ]);
         }
       }
       if (!targetWorkflow) {
@@ -244,7 +233,7 @@ export async function listWorkflows(params: {
     }
 
     if (!targetWorkflow) {
-      return `❌ 未找到匹配 '${params.workflow}' 的工作流`;
+      return `❌ 未找到匹配 '${escapeText(params.workflow)}' 的工作流`;
     }
 
     // 删除工作流
@@ -280,39 +269,41 @@ export async function listWorkflows(params: {
 
       const orphanCount = Math.max(nodeIds.size - 1, 0);
       const lines = [
-        `✅ 已彻底删除工作流: ${targetWorkflow.title} (${targetWorkflow.workflow_id})`,
+        markdown
+          ? `✅ 已彻底删除工作流: ${escapeText(targetWorkflow.title ?? "(未命名)")} (${inlineCode(targetWorkflow.workflow_id)})`
+          : `✅ 已彻底删除工作流: ${targetWorkflow.title} (${targetWorkflow.workflow_id})`,
         `🧹 清理节点 ${nodesRemoved}/${nodeIds.size} 个（含孤立节点 ${orphanCount} 个），移除关联边 ${edgesRemoved} 条`,
       ];
       if (!hadContext) {
-        lines.push("⚠️ 工作流上下文原本不存在，已直接清理数据库记录");
+        lines.push(
+          markdown
+            ? "⚠️ 工作流上下文原本不存在，已直接清理数据库记录"
+            : "⚠️ 工作流上下文原本不存在，已直接清理数据库记录",
+        );
       }
-      return lines.join("\n");
+      return join(lines);
     }
 
-    return `✅ 已删除工作流上下文: ${targetWorkflow.title} (${targetWorkflow.workflow_id})\n💡 节点数据已保留（使用 -D 或 --delete 可彻底删除)`;
+    const title = escapeText(targetWorkflow.title ?? "(未命名)");
+    const workflowId = inlineCode(targetWorkflow.workflow_id);
+    const message = markdown
+      ? `✅ 已删除工作流上下文: ${title} (${workflowId})\n💡 节点数据已保留（使用 -D 或 --delete 可彻底删除)`
+      : `✅ 已删除工作流上下文: ${targetWorkflow.title} (${targetWorkflow.workflow_id})\n💡 节点数据已保留（使用 -D 或 --delete 可彻底删除)`;
+    return message;
   }
 
   // 列出工作流
   const workflows = WorkflowContext.listAllWorkflows(workspace);
-  if (workflows.length === 0) {
-    return "没有找到任何工作流。使用 /ads.new 创建一个新的工作流。";
-  }
-
-  const lines: string[] = [];
-  lines.push("现有工作流：");
-  workflows.forEach((wf, index) => {
-    lines.push(
-      `${index + 1}. [${wf.template}] ${wf.title} (nodes: ${wf.node_count}, finalized: ${wf.finalized_count}) - ${wf.workflow_id}`,
-    );
-  });
-  return lines.join("\n");
+  return formatWorkflowList(workflows, { format });
 }
 
 export async function listWorkflowLog(params: {
   workspace_path?: string;
   limit?: number;
   workflow?: string;
+  format?: WorkflowTextFormat;
 }): Promise<string> {
+  const format = params.format ?? "cli";
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
   const db = getDatabase();
   const limit = params.limit && params.limit > 0 ? Math.min(params.limit, 100) : 20;
@@ -393,37 +384,27 @@ export async function listWorkflowLog(params: {
     return "暂无任何提交记录。使用 /ads.commit 完成步骤时会生成日志。";
   }
 
-  const COLOR_RESET = "\u001b[0m";
-  const COLOR_ACTIVE = "\u001b[32m";
-  const COLOR_INACTIVE = "\u001b[90m";
+  const entries = rows.map((row) => ({
+    workflowId: row.workflow_id,
+    workflowTitle: row.workflow_title,
+    version: row.version,
+    stepName: row.step_name,
+    stepLabel: row.node_label,
+    timestamp: formatTimestamp(row.created_at),
+    changeDescription: row.change_description ?? null,
+    filePath: row.file_path ?? null,
+    isActive: row.workflow_id === activeId,
+  }));
 
-  const lines: string[] = [];
-  if (workflowId) {
-    const titleSegment = workflowTitle ? ` - ${workflowTitle}` : "";
-    lines.push(`Workflow ${workflowId}${titleSegment} 的提交历史:`);
-  } else {
-    lines.push("最新提交:");
-  }
+  const header = workflowId
+    ? `Workflow ${workflowId}${workflowTitle ? ` - ${workflowTitle}` : ""} 的提交历史:`
+    : DEFAULT_WORKFLOW_LOG_HEADER;
 
-  for (const row of rows) {
-    const isActive = row.workflow_id === activeId;
-    const color = isActive ? COLOR_ACTIVE : COLOR_INACTIVE;
-    const star = isActive ? "★" : "•";
-    const stepLabel = row.node_label && row.node_label !== row.step_name ? ` (${row.node_label})` : "";
-    const titleHint = !workflowId && row.workflow_title ? ` ${row.workflow_title}` : "";
-    const timestamp = formatTimestamp(row.created_at);
-    lines.push(
-      `${color}${star} ${row.workflow_id}${titleHint} v${row.version} ${row.step_name}${stepLabel} • ${timestamp}${COLOR_RESET}`
-    );
-    if (row.change_description) {
-      lines.push(`    描述: ${row.change_description}`);
-    }
-    if (row.file_path) {
-      lines.push(`    文件: ${row.file_path}`);
-    }
-  }
-
-  return lines.join("\n");
+  return formatWorkflowLog(entries, {
+    format,
+    header,
+    showWorkflowTitle: !workflowId,
+  });
 }
 
 export async function checkoutWorkflow(params: {

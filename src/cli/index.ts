@@ -12,6 +12,7 @@ import {
   commitStep,
   listWorkflowLog,
 } from "../workflow/service.js";
+import { buildAdsHelpMessage } from "../workflow/commands.js";
 import { createWorkflowFromTemplate } from "../workflow/templateService.js";
 import { createLogger } from "../utils/logger.js";
 import { SystemPromptManager, resolveReinjectionConfig } from "../systemPrompt/manager.js";
@@ -243,20 +244,7 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
   switch (command) {
     case "ads.help":
       return {
-        output: [
-          "可用命令:",
-          "  /ads.branch [-d|--delete-context <workflow>] [--delete <workflow>]",
-          "  /ads.checkout <workflow>",
-          "  /ads.status",
-          "  /ads.log [limit]",
-          "  /ads.new <title>",
-          "  /ads.commit <step>",
-          "  /ads.rules [category]",
-          "  /ads.workspace",
-          "  /ads.sync",
-          "  直接输入文字或 /model 等命令发送给 Codex",
-          "  /exit 退出",
-        ].join("\n"),
+        output: buildAdsHelpMessage("cli"),
       };
 
     case "ads.branch": {
@@ -314,7 +302,7 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
     }
 
     case "ads.status": {
-      const response = await getWorkflowStatusSummary({});
+      const response = await getWorkflowStatusSummary({ format: "cli" });
       return { output: normalizeOutput(response) };
     }
 
@@ -349,6 +337,7 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       const response = await listWorkflowLog({
         limit: normalizedLimit,
         workflow: workflowFilter,
+        format: "cli",
       });
       return { output: normalizeOutput(response) };
     }

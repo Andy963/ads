@@ -196,7 +196,7 @@ export async function createWorkflowFromTemplate(params: {
     };
     updateNode(rootNode.id, { metadata: rootMetadata });
 
-    await writeTemplateFile(workflowDir, "requirement.md", REQUIREMENT_TEMPLATE);
+    await writeTemplateFile(workflowDir, "requirements.md", REQUIREMENT_TEMPLATE);
     await writeTemplateFile(workflowDir, "design.md", DESIGN_TEMPLATE);
     await writeTemplateFile(workflowDir, "implementation.md", IMPLEMENTATION_TEMPLATE);
 
