@@ -7,10 +7,16 @@ interface ThreadRecord {
   userId: number;
   threadId: string;
   lastActivity: number;
+  cwd?: string;
+}
+
+interface ThreadState {
+  threadId: string;
+  cwd?: string;
 }
 
 export class ThreadStorage {
-  private threads = new Map<number, string>();
+  private threads = new Map<number, ThreadState>();
 
   constructor() {
     this.load();
@@ -24,11 +30,14 @@ export class ThreadStorage {
     try {
       const content = readFileSync(STORAGE_PATH, 'utf-8');
       const data: ThreadRecord[] = JSON.parse(content);
-      
+
       for (const record of data) {
-        this.threads.set(record.userId, record.threadId);
+        this.threads.set(record.userId, {
+          threadId: record.threadId,
+          cwd: record.cwd,
+        });
       }
-      
+
       console.log(`[ThreadStorage] Loaded ${this.threads.size} thread records`);
     } catch (error) {
       console.warn('[ThreadStorage] Failed to load:', error);
@@ -37,12 +46,13 @@ export class ThreadStorage {
 
   private save(): void {
     const records: ThreadRecord[] = [];
-    
-    for (const [userId, threadId] of this.threads.entries()) {
+
+    for (const [userId, state] of this.threads.entries()) {
       records.push({
         userId,
-        threadId,
+        threadId: state.threadId,
         lastActivity: Date.now(),
+        cwd: state.cwd,
       });
     }
 
@@ -59,13 +69,29 @@ export class ThreadStorage {
   }
 
   getThreadId(userId: number): string | undefined {
-    return this.threads.get(userId);
+    return this.threads.get(userId)?.threadId;
   }
 
   setThreadId(userId: number, threadId: string): void {
-    this.threads.set(userId, threadId);
+    const existing = this.threads.get(userId);
+    this.threads.set(userId, {
+      threadId,
+      cwd: existing?.cwd,
+    });
     this.save();
     console.log(`[ThreadStorage] Saved thread ${threadId} for user ${userId}`);
+  }
+
+  getRecord(userId: number): ThreadState | undefined {
+    return this.threads.get(userId);
+  }
+
+  setRecord(userId: number, state: ThreadState): void {
+    this.threads.set(userId, state);
+    this.save();
+    console.log(
+      `[ThreadStorage] Saved state for user ${userId} (thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`,
+    );
   }
 
   removeThread(userId: number): void {

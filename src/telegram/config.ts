@@ -83,6 +83,10 @@ export function validateConfig(config: TelegramConfig): void {
     throw new Error('Allowed users list is empty');
   }
 
+  if (config.allowedUsers.length !== 1) {
+    throw new Error('TELEGRAM_ALLOWED_USERS must contain exactly one user ID for this bot');
+  }
+
   if (config.allowedDirs.length === 0) {
     throw new Error('Allowed directories list is empty');
   }

@@ -91,7 +91,15 @@ export class SessionManager {
   }
   
   saveThreadId(userId: number, threadId: string): void {
-    this.threadStorage.setThreadId(userId, threadId);
+    const record = this.sessions.get(userId);
+    const cwd = record?.cwd;
+    this.threadStorage.setRecord(userId, { threadId, cwd });
+  }
+  
+  getSavedState(userId: number): { threadId?: string; cwd?: string } | undefined {
+    const record = this.threadStorage.getRecord(userId);
+    if (!record) return undefined;
+    return { threadId: record.threadId, cwd: record.cwd };
   }
 
   setUserModel(userId: number, model: string): void {
@@ -187,7 +195,7 @@ export class SessionManager {
     for (const [userId, record] of this.sessions.entries()) {
       const threadId = record.session.getThreadId();
       if (threadId) {
-        this.threadStorage.setThreadId(userId, threadId);
+        this.threadStorage.setRecord(userId, { threadId, cwd: record.cwd });
       }
     }
     
