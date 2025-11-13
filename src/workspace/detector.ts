@@ -191,11 +191,32 @@ export function getWorkspaceRulesDir(workspace?: string): string {
 export function getWorkspaceSpecsDir(workspace?: string): string {
   return ensureInitialized(() => {
     const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
-    const specsDir = path.join(root, "docs", "specs");
-    if (!existsSync(specsDir)) {
-      throw new Error(`Specs 目录不存在: ${specsDir}`);
+    const specDir = path.join(root, "docs", "spec");
+    if (existsSync(specDir)) {
+      return specDir;
     }
-    return specsDir;
+
+    const docsDir = path.join(root, "docs");
+    if (!existsSync(docsDir)) {
+      throw new Error(`Specs 目录不存在: ${specDir}`);
+    }
+
+    const legacyDir = path.join(root, "docs", "specs");
+    if (existsSync(legacyDir)) {
+      try {
+        fs.mkdirSync(specDir, { recursive: true });
+      } catch (error) {
+        throw new Error(`无法创建新的 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
+      }
+      return specDir;
+    }
+
+    try {
+      fs.mkdirSync(specDir, { recursive: true });
+    } catch (error) {
+      throw new Error(`无法创建 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
+    }
+    return specDir;
   }, () => `工作空间未初始化: ${workspace ?? detectWorkspace()}`);
 }
 
@@ -211,7 +232,7 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
   const adsDir = path.join(root, ".ads");
   fs.mkdirSync(adsDir, { recursive: true });
 
-  const specsDir = path.join(root, "docs", "specs");
+  const specsDir = path.join(root, "docs", "spec");
   fs.mkdirSync(specsDir, { recursive: true });
 
   const config = {

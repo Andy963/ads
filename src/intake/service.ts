@@ -59,7 +59,7 @@ function buildSummaryBlock(state: IntakeState): string {
 }
 
 async function updateRequirementSummary(specDir: string, state: IntakeState): Promise<void> {
-  const filePath = path.join(specDir, "requirement.md");
+  const filePath = path.join(specDir, "requirements.md");
   let content: string;
   try {
     content = await fs.readFile(filePath, "utf-8");

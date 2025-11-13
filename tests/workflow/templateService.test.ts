@@ -52,10 +52,10 @@ describe("createWorkflowFromTemplate", () => {
     const specFolder = (rootNode!.metadata?.spec_folder as string) ?? "";
     assert.ok(specFolder.length > 0, "spec folder metadata should be set");
 
-    const folderPath = path.join(workspaceDir, "docs", "specs", specFolder);
+    const folderPath = path.join(workspaceDir, "docs", "spec", specFolder);
     assert.equal(await fileExists(folderPath), true, "spec folder should exist");
 
-    for (const filename of ["requirement.md", "design.md", "implementation.md"]) {
+    for (const filename of ["requirements.md", "design.md", "implementation.md"]) {
       const filePath = path.join(folderPath, filename);
       assert.equal(await fileExists(filePath), true, `${filename} should be created`);
       const content = await fs.readFile(filePath, "utf-8");
