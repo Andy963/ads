@@ -21,15 +21,21 @@
     4. 编码 → 仅能依据 implementation.md 执行开发，禁止未记录的临时改动。
 
   **重要：ADS 工作流集成（严格遵守）**
-    •  开始新功能开发时，必须先提醒用户执行 `/ads.new <标题>` 创建工作流。
+    •  开始新功能开发时，必须先执行 `ads new "<标题>"` 创建工作流。
       这会自动创建文档目录、从模板复制文件并在数据库中创建记录。
-    •  **禁止**在用户未执行 `/ads.new` 之前直接创建 docs/spec/<feature-name>/ 目录或文档文件。
+    •  **禁止**在未执行 `ads new` 之前直接创建 docs/spec/<feature-name>/ 目录或文档文件。
     •  只有通过 ADS 命令创建的工作流才会正确同步到数据库。
-    •  完成 requirements.md 后，提醒用户执行 `/ads.commit requirement` 标记完成。
-    •  完成 design.md 后，提醒用户执行 `/ads.commit design` 标记完成。
-    •  完成 implementation.md 后，提醒用户执行 `/ads.commit implementation` 标记完成。
-    •  如果用户已经手动创建了文档，需要使用 `/ads.new` 重新创建工作流来同步数据库。
-    •  可以使用 `/ads.status` 查看当前工作流状态。
+    •  完成 requirements.md 后，执行 `ads commit requirement` 标记完成。
+    •  完成 design.md 后，执行 `ads commit design` 标记完成。
+    •  完成 implementation.md 后，执行 `ads commit implementation` 标记完成。
+    •  如果用户已经手动创建了文档，需要使用 `ads new` 重新创建工作流来同步数据库。
+    •  可以使用 `ads status` 查看当前工作流状态。
+    •  **执行流程示例**：
+      1. 用户说"帮我实现 XXX 功能"
+      2. 你执行 `ads new "XXX 功能"`（通过 Bash 工具）
+      3. 编辑 requirements.md
+      4. 执行 `ads commit requirement`
+      5. 继续下一步骤
 
   3. 评审与变更
     •  文档若需修改，必须按“需求 → 设计 → 实施”链条依次更新，避免跳级。
