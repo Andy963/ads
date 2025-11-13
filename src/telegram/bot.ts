@@ -232,7 +232,7 @@ async function main() {
   bot.command('cd', async (ctx) => {
     const userId = ctx.from!.id;
     const args = ctx.message?.text?.split(/\s+/).slice(1);
-    
+
     if (!args || args.length === 0) {
       await ctx.reply('用法: /cd <path>');
       return;
@@ -251,15 +251,22 @@ async function main() {
 
       if (!initStatus.initialized) {
         const missing = initStatus.missingArtifact ?? "ADS 必需文件";
-        replyMessage += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。请先在此目录运行 'ads init'，否则系统指令无法加载。`;
+        replyMessage += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。`;
         logger.warn(
           `[Telegram][WorkspaceInit] user=${userId} path=${newCwd} missing=${missing}${
             initStatus.details ? ` details=${initStatus.details}` : ""
           }`,
         );
-      }
 
-      await ctx.reply(replyMessage);
+        await ctx.reply(replyMessage);
+        await ctx.reply(
+          '是否初始化此目录？这将创建 .ads 目录、配置文件和数据库。\n\n' +
+          '回复 "是" 或 "y" 确认初始化，其他任何回复将取消。'
+        );
+        // Note: 用户的回复会在普通消息处理中被 Codex 接收，它会根据 instructions 执行 ads init
+      } else {
+        await ctx.reply(replyMessage);
+      }
     } else {
       await ctx.reply(`❌ ${result.error}`);
     }
