@@ -89,9 +89,10 @@ export async function handleCodexMessage(
 
   const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
   const COMMAND_OUTPUT_LIMIT = 800;
-  const sentMsg = await ctx.reply('💭 开始处理...');
+  const INITIAL_STATUS_PLACEHOLDER = '💭 开始处理...';
+  const sentMsg = await ctx.reply(INITIAL_STATUS_PLACEHOLDER);
   let statusMessageId = sentMsg.message_id;
-  let statusMessageText = sentMsg.text ?? '💭 开始处理...';
+  let statusMessageText = sentMsg.text ?? INITIAL_STATUS_PLACEHOLDER;
   let statusUpdatesClosed = false;
   let rateLimitUntil = 0;
   let statusUpdateChain: Promise<void> = Promise.resolve();
@@ -230,12 +231,14 @@ export async function handleCodexMessage(
       return;
     }
     const trimmed = entry.trimEnd();
-    const candidate = statusMessageText ? `${statusMessageText}\n${trimmed}` : trimmed;
+    const baseText = statusMessageText === INITIAL_STATUS_PLACEHOLDER ? '' : statusMessageText;
+    const candidate = baseText ? `${baseText}\n${trimmed}` : trimmed;
     if (candidate.length <= STATUS_MESSAGE_LIMIT) {
       await editStatusMessage(candidate);
       statusMessageText = candidate;
     } else {
       await sendNewStatusMessage(trimmed);
+      statusMessageText = trimmed;
     }
   }
 

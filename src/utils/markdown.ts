@@ -1,4 +1,4 @@
-const TELEGRAM_MARKDOWN_ESCAPE = /([_\*\[\]\(\)~`#+=|{}!])/g;
+const TELEGRAM_MARKDOWN_ESCAPE = /([_\*\[\]\(\)~`+=|{}!])/g;
 const TELEGRAM_CODE_ESCAPE = /([`\\])/g;
 
 export function escapeTelegramMarkdown(text: string): string {
