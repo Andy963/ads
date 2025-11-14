@@ -134,12 +134,14 @@ export async function handleCodexMessage(
       return null;
     }
     const lines = output.split(/\r?\n/);
-    const limitedLines = lines.slice(0, 3);
+    const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
+    const sourceLines = nonEmptyLines.length > 0 ? nonEmptyLines : lines;
+    const limitedLines = sourceLines.slice(0, 3);
     let snippet = limitedLines.join('\n').trim();
     if (!snippet) {
       return null;
     }
-    let truncated = lines.length > limitedLines.length;
+    let truncated = sourceLines.length > limitedLines.length;
     if (snippet.length > COMMAND_OUTPUT_LIMIT) {
       snippet = `${snippet.slice(0, COMMAND_OUTPUT_LIMIT - 1)}…`;
       truncated = true;
@@ -154,7 +156,13 @@ export async function handleCodexMessage(
 
     if (event.detail) {
       const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
-      lines.push(indent(detail));
+      if (event.phase === 'command') {
+        lines.push(indent('```bash'));
+        lines.push(indent(detail));
+        lines.push(indent('```'));
+      } else {
+        lines.push(indent(detail));
+      }
     }
 
     const commandOutput = formatCommandOutput(event);
