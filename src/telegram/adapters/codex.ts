@@ -5,6 +5,7 @@ import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
 import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../utils/fileHandler.js';
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
+import { escapeTelegramMarkdown } from '../../utils/markdown.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -120,7 +121,7 @@ export async function handleCodexMessage(
   function indent(text: string): string {
     return text
       .split('\n')
-      .map((line) => `  ${line}`)
+      .map((line) => `  ${escapeTelegramMarkdown(line)}`)
       .join('\n');
   }
 
@@ -146,20 +147,22 @@ export async function handleCodexMessage(
       snippet = `${snippet.slice(0, COMMAND_OUTPUT_LIMIT - 1)}…`;
       truncated = true;
     }
-    return truncated ? indent(`${snippet}\n  …(output truncated)…`) : indent(snippet);
+    const blockBody = truncated ? `${snippet}\n…(output truncated)…` : snippet;
+    return ['```', blockBody, '```'].join('\n');
   }
 
   function formatStatusEntry(event: AgentEvent): string | null {
     const icon = PHASE_ICON[event.phase] ?? '💬';
-    const title = event.title || PHASE_FALLBACK[event.phase] || '处理中';
-    const lines: string[] = [`${icon} ${title}`];
+    const rawTitle = event.title || PHASE_FALLBACK[event.phase] || '处理中';
+    const safeTitle = escapeTelegramMarkdown(rawTitle);
+    const lines: string[] = [`${icon} ${safeTitle}`];
 
     if (event.detail) {
       const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
       if (event.phase === 'command') {
-        lines.push(indent('```bash'));
-        lines.push(indent(detail));
-        lines.push(indent('```'));
+        lines.push('```bash');
+        lines.push(detail);
+        lines.push('```');
       } else {
         lines.push(indent(detail));
       }
@@ -179,7 +182,9 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text);
+      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text, {
+        parse_mode: 'Markdown',
+      });
       rateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 400 && error.description?.includes('message is not modified')) {
@@ -203,7 +208,7 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      const newMsg = await ctx.reply(initialText);
+      const newMsg = await ctx.reply(initialText, { parse_mode: 'Markdown' });
       statusMessageId = newMsg.message_id;
       statusMessageText = initialText;
       rateLimitUntil = 0;
