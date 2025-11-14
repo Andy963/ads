@@ -35,6 +35,7 @@
     •  编辑文档后，必须与用户充分讨论并得到明确确认后，才能执行 `ads commit <step>` 定稿。
     •  **禁止**在用户未明确同意的情况下执行 `ads commit`，这会锁定该步骤。
     •  可以使用 `ads status` 查看当前工作流状态。
+    •  在 ADS CLI 会话中执行命令时，必须使用 `/ads.<命令>` 前缀（例如 `/ads.new "LLM client caching"`、`/ads.commit implementation`）；禁止输入 `ads new ...` 等裸文本或让机器人直接回显命令字符串，以免误触自动 intake。
 
     •  **正确的执行流程**：
       1. 用户说"帮我实现 XXX 功能"
