@@ -16,9 +16,15 @@ import { escapeTelegramMarkdown } from '../../utils/markdown.js';
 
 export async function handleAdsCommand(ctx: Context, args: string[], options?: { workspacePath?: string }) {
   if (args.length === 0) {
-    await ctx.reply('用法: /ads <command> [args]\n使用 /ads help 查看可用命令', {
-      parse_mode: 'Markdown'
-    });
+    await ctx.reply(
+      '用法示例：\n' +
+        '/ads.status - 查看工作流状态\n' +
+        '/ads.new <title> - 创建工作流\n' +
+        '/ads.commit <step> - 定稿步骤',
+      {
+        parse_mode: 'Markdown',
+      }
+    );
     return;
   }
 
@@ -36,7 +42,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'new': {
         if (commandArgs.length === 0) {
-          await ctx.reply('用法: /ads new <title>', { parse_mode: 'Markdown' });
+          await ctx.reply('用法: /ads.new <title>', { parse_mode: 'Markdown' });
           return;
         }
         const title = commandArgs.join(' ');
@@ -51,7 +57,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'checkout': {
         if (commandArgs.length === 0) {
-          await ctx.reply('用法: /ads checkout <workflow>', { parse_mode: 'Markdown' });
+          await ctx.reply('用法: /ads.checkout <workflow>', { parse_mode: 'Markdown' });
           return;
         }
         const identifier = commandArgs.join(' ');
@@ -62,7 +68,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'commit': {
         if (commandArgs.length === 0) {
-          await ctx.reply('用法: /ads commit <step>', { parse_mode: 'Markdown' });
+          await ctx.reply('用法: /ads.commit <step>', { parse_mode: 'Markdown' });
           return;
         }
         const stepName = commandArgs.join(' ');
@@ -125,7 +131,9 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
       }
 
       default:
-        await ctx.reply(`未知命令: ${command}\n使用 /ads help 查看可用命令`);
+        await ctx.reply(`未知命令: ${command}\n使用 /ads.help 查看可用命令`, {
+          parse_mode: 'Markdown',
+        });
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);

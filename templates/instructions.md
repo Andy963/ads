@@ -9,7 +9,7 @@
 ## workspace-init:
 当系统提示"是否初始化此目录？"时，表示当前工作空间未初始化 ADS。
 如果用户回复"是"、"好"、"y"、"yes"或类似肯定词汇，你应该：
-  1. 立即执行 `ads init` 命令初始化工作空间
+  1. 立即执行 `/ads.init` 命令初始化工作空间
   2. 告知用户初始化完成
   3. 如果失败，报告错误信息
 
@@ -28,27 +28,27 @@
     4. 编码 → 仅能依据 implementation.md 执行开发，禁止未记录的临时改动。
 
   **重要：ADS 工作流集成（严格遵守）**
-    •  开始新功能开发时，必须先执行 `ads new "<标题>"` 创建工作流。
+    •  开始新功能开发时，必须先执行 `/ads.new "<标题>"` 创建工作流。
       这会自动创建文档目录、从模板复制文件并在数据库中创建记录。
-    •  **禁止**在未执行 `ads new` 之前直接创建 docs/spec/<feature-name>/ 目录或文档文件。
-    •  只有通过 ADS 命令创建的工作流才会正确同步到数据库。
-    •  编辑文档后，必须与用户充分讨论并得到明确确认后，才能执行 `ads commit <step>` 定稿。
-    •  **禁止**在用户未明确同意的情况下执行 `ads commit`，这会锁定该步骤。
-    •  可以使用 `ads status` 查看当前工作流状态。
-    •  在 ADS CLI 会话中执行命令时，必须使用 `/ads.<命令>` 前缀（例如 `/ads.new "LLM client caching"`、`/ads.commit implementation`）；禁止输入 `ads new ...` 等裸文本或让机器人直接回显命令字符串，以免误触自动 intake。
+    •  **禁止**在未执行 `/ads.new` 之前直接创建 docs/spec/<feature-name>/ 目录或文档文件。
+    •  只有通过 `/ads.*` 命令创建的工作流才会正确同步到数据库（例如 `/ads.new`）。
+    •  编辑文档后，必须与用户充分讨论并得到明确确认后，才能执行 `/ads.commit <step>` 定稿（如需在 Bash 中执行，则运行 `ads` CLI 的 `commit <step>` 子命令）。
+    •  **禁止**在用户未明确同意的情况下通过任何方式执行 commit 步骤（无论是 `/ads.commit` 还是 Bash 中的 `ads` CLI），这会锁定该步骤。
+    •  可以使用 `/ads.status`（或在 Bash 中运行 `ads` CLI 的 `status` 子命令）查看当前工作流状态。
+    •  在 ADS CLI 会话中执行命令时，必须使用 `/ads.<命令>` 前缀（例如 `/ads.new "LLM client caching"`、`/ads.commit implementation`）；禁止输入 `ads` 加空格的裸命令（例如 `ads new ...`）或让机器人直接回显命令字符串，以免误触自动 intake。
 
     •  **正确的执行流程**：
       1. 用户说"帮我实现 XXX 功能"
-      2. 你执行 `ads new "XXX 功能"`（通过 Bash 工具）创建工作流
+      2. 你执行 `/ads.new "XXX 功能"`（在 ADS CLI 会话中；如果是在 Bash 中，则运行 `ads` CLI 的 `new "XXX 功能"` 子命令）创建工作流
       3. 编辑 requirements.md，与用户讨论需求细节
       4. 用户确认需求后，询问"是否定稿 requirements？"
-      5. 用户明确同意后，执行 `ads commit requirement`
+      5. 用户明确同意后，执行 `/ads.commit requirement`（或在 Bash 中调用 `ads` CLI 的 `commit requirement` 子命令）
       6. 继续 design.md，重复 3-5 步骤
       7. 继续 implementation.md，重复 3-5 步骤
 
     •  **错误示例**（禁止）：
-      ❌ 自动执行所有步骤：ads new → 编辑文档 → 立即 ads commit（未经用户确认）
-      ❌ 在讨论过程中就执行 ads commit
+      ❌ 自动执行所有步骤：`/ads.new` → 编辑文档 → 立即 `/ads.commit`（未经用户确认）
+      ❌ 在讨论过程中就执行 `/ads.commit` 或等效的 commit 操作
       ❌ 未询问用户就定稿文档
 
   3. 评审与变更

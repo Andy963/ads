@@ -19,7 +19,7 @@ export async function initWorkspace(params: { name?: string }): Promise<string> 
       created: {
         config: path.join(workspace, ".ads", "workspace.json"),
         rules_dir: path.join(workspace, ".ads", "rules"),
-        specs_dir: path.join(workspace, "docs", "specs"),
+        specs_dir: path.join(workspace, "docs", "spec"),
         db: path.join(workspace, ".ads", "ads.db"),
       },
       message: `工作空间已初始化: ${workspace}`,

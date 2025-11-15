@@ -107,7 +107,7 @@ async function main() {
       '/reset - 重置会话\n' +
       '/pwd - 查看当前目录\n' +
       '/cd <path> - 切换目录\n' +
-      '/ads <command> - 执行 ADS 命令\n\n' +
+      '使用 /ads.status、/ads.new、/ads.commit 等命令执行 ADS 操作\n\n' +
       '直接发送文本与 Codex 对话'
     );
   });
@@ -127,9 +127,9 @@ async function main() {
       '/pwd - 当前工作目录\n' +
       '/cd <path> - 切换目录\n\n' +
       '⚙️ ADS 命令：\n' +
-      '/ads status - 工作流状态\n' +
-      '/ads new <title> - 创建工作流\n' +
-      '/ads commit <step> - 定稿步骤\n\n' +
+      '/ads.status - 工作流状态\n' +
+      '/ads.new <title> - 创建工作流\n' +
+      '/ads.commit <step> - 定稿步骤\n\n' +
       '💬 对话：\n' +
       '直接发送消息与 Codex AI 对话\n' +
       '发送图片可让 Codex 分析图像\n' +
@@ -239,15 +239,20 @@ async function main() {
     }
 
     const path = args.join(' ');
+    const prevCwd = directoryManager.getUserCwd(userId);
     const result = directoryManager.setUserCwd(userId, path);
 
     if (result.success) {
       const newCwd = directoryManager.getUserCwd(userId);
       sessionManager.setUserCwd(userId, newCwd);
-      sessionManager.reset(userId);
 
       const initStatus = checkWorkspaceInit(newCwd);
-      let replyMessage = `✅ 已切换到: ${newCwd}\n💡 Codex 会话已自动重置`;
+      let replyMessage = `✅ 已切换到: ${newCwd}`;
+      if (prevCwd !== newCwd) {
+        replyMessage += `\n💡 Codex 会话已切换到新目录`;
+      } else {
+        replyMessage += `\nℹ️ 已在相同目录，无需重置会话`;
+      }
 
       if (!initStatus.initialized) {
         const missing = initStatus.missingArtifact ?? "ADS 必需文件";
@@ -273,20 +278,14 @@ async function main() {
   });
 
   bot.command('ads', async (ctx) => {
-    const text = ctx.message?.text ?? "";
-    const args = text.split(/\s+/).slice(1);
-    const userId = ctx.from!.id;
-    const workspacePath = directoryManager.getUserCwd(userId);
-
-    if (args.length === 0) {
-      const inlineArgs = parseInlineAdsCommand(text);
-      if (inlineArgs) {
-        await handleAdsCommand(ctx, inlineArgs, { workspacePath });
-        return;
-      }
-    }
-
-    await handleAdsCommand(ctx, args, { workspacePath });
+    await ctx.reply(
+      'ℹ️ ADS 命令已统一为点号形式，请使用以下格式：\n\n' +
+      '/ads.status - 查看工作流状态\n' +
+      '/ads.new <title> - 创建工作流\n' +
+      '/ads.commit <step> - 定稿步骤\n\n' +
+      '请不要使用 `/ads status` 或 `/ads new` 等空格形式。',
+      { parse_mode: 'Markdown' }
+    );
   });
 
   // 处理带图片的消息

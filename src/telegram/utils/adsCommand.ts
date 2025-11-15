@@ -1,6 +1,5 @@
 const ADS_INLINE_PREFIX = "ads.";
 const ADS_SLASH_PREFIX = `/${ADS_INLINE_PREFIX}`;
-const ADS_WORD_PREFIX = "ads";
 
 /**
  * Parses inline `/ads.<command>` Telegram inputs (e.g. `/ads.status arg1 arg2`)
@@ -45,7 +44,7 @@ export function parseInlineAdsCommand(text: string | undefined | null): string[]
 }
 
 /**
- * Parses plain-text ADS commands (e.g. "ads status") that are sent as regular
+ * Parses plain-text ADS commands (e.g. "ads.status") that are sent as regular
  * chat messages instead of Telegram slash commands.
  */
 export function parsePlainAdsCommand(text: string | undefined | null): string[] | null {
@@ -58,23 +57,27 @@ export function parsePlainAdsCommand(text: string | undefined | null): string[] 
     return null;
   }
 
-  const lower = trimmed.toLowerCase();
-  if (!lower.startsWith(ADS_WORD_PREFIX)) {
+  // Slash 开头的交给 parseInlineAdsCommand 处理
+  if (trimmed.startsWith("/")) {
     return null;
   }
 
   const tokens = trimmed.split(/\s+/);
-  if (tokens.length < 2) {
+  if (tokens.length === 0) {
     return null;
   }
 
   const [firstToken, ...restTokens] = tokens;
-  if (firstToken.toLowerCase() !== ADS_WORD_PREFIX) {
+  const lowerFirst = firstToken.toLowerCase();
+
+  if (!lowerFirst.startsWith(ADS_INLINE_PREFIX)) {
     return null;
   }
 
-  const [subcommandToken, ...subcommandArgs] = restTokens;
-  const normalizedSubcommand = subcommandToken.toLowerCase();
+  const subcommand = lowerFirst.slice(ADS_INLINE_PREFIX.length);
+  if (!subcommand) {
+    return null;
+  }
 
-  return [normalizedSubcommand, ...subcommandArgs];
+  return [subcommand.toLowerCase(), ...restTokens];
 }
