@@ -183,9 +183,25 @@ export class SessionManager {
 
   setUserCwd(userId: number, cwd: string): void {
     const record = this.sessions.get(userId);
-    if (record) {
-      record.cwd = cwd;
-      record.session.setWorkingDirectory(cwd);
+    if (!record) {
+      return;
+    }
+
+    const threadId = record.session.getThreadId();
+
+    if (record.cwd === cwd) {
+      if (threadId) {
+        // 确保最新 cwd 被持久化
+        this.saveThreadId(userId, threadId);
+      }
+      return;
+    }
+
+    record.cwd = cwd;
+    record.session.setWorkingDirectory(cwd);
+
+    if (threadId) {
+      this.saveThreadId(userId, threadId);
     }
   }
 

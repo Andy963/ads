@@ -6,6 +6,7 @@ import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../uti
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdown } from '../../utils/markdown.js';
+import { escapeTelegramHtml } from '../../utils/html.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -89,12 +90,12 @@ export async function handleCodexMessage(
 
   const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
   const COMMAND_OUTPUT_LIMIT = 800;
-  const sentMsg = await ctx.reply('💭 开始处理...');
+  const sentMsg = await ctx.reply('💭 开始处理...', { disable_notification: true });
   let statusMessageId = sentMsg.message_id;
   let statusMessageText = sentMsg.text ?? '💭 开始处理...';
   let statusUpdatesClosed = false;
   let rateLimitUntil = 0;
-  let statusUpdateChain: Promise<void> = Promise.resolve();
+  let eventQueue: Promise<void> = Promise.resolve();
 
   const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
     analysis: '💭',
@@ -125,9 +126,21 @@ export async function handleCodexMessage(
       .join('\n');
   }
 
-  function formatCommandOutput(event: AgentEvent): string | null {
-    const rawItem = (event.raw as any)?.item;
-    if (!rawItem || rawItem.type !== 'command_execution') {
+  function buildCommandDetailBlock(rawItem: any, fallbackDetail?: string): string | null {
+    const commandLine = (typeof rawItem.command === 'string' && rawItem.command.trim())
+      ? rawItem.command.trim()
+      : (fallbackDetail?.trim() ?? '');
+    if (!commandLine) {
+      return null;
+    }
+    const header = '⚙️ 执行命令';
+    const escapedCommand = escapeTelegramMarkdown(commandLine);
+    const escapedExit = rawItem.exit_code === undefined ? '' : ` (exit ${rawItem.exit_code})`;
+    return [header, '```', `${escapedCommand}${escapedExit}`, '```'].join('\n');
+  }
+
+  function extractCommandOutputSnippet(rawItem: any): { snippet: string; truncated: boolean } | null {
+    if (rawItem.type !== 'command_execution') {
       return null;
     }
     const output: string | undefined = rawItem.aggregated_output;
@@ -137,7 +150,7 @@ export async function handleCodexMessage(
     const lines = output.split(/\r?\n/);
     const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
     const sourceLines = nonEmptyLines.length > 0 ? nonEmptyLines : lines;
-    const limitedLines = sourceLines.slice(0, 3);
+    const limitedLines = sourceLines.slice(0, 5);
     let snippet = limitedLines.join('\n').trim();
     if (!snippet) {
       return null;
@@ -147,30 +160,53 @@ export async function handleCodexMessage(
       snippet = `${snippet.slice(0, COMMAND_OUTPUT_LIMIT - 1)}…`;
       truncated = true;
     }
-    const blockBody = truncated ? `${snippet}\n…(output truncated)…` : snippet;
-    return ['```', blockBody, '```'].join('\n');
+    return { snippet, truncated };
+  }
+
+  function buildCommandOutputSpoilerHtml(snippet: string, truncated: boolean): string {
+    const suffix = truncated ? '\n…(output truncated)…' : '';
+    const escaped = escapeTelegramHtml(`${snippet}${suffix}`).replace(/\n/g, '<br/>');
+    return `<blockquote expandable>${escaped}</blockquote>`;
+  }
+
+  async function sendMarkdownMessage(text: string): Promise<void> {
+    try {
+      await ctx.reply(text, { parse_mode: 'Markdown', disable_notification: true });
+    } catch (error) {
+      console.warn('[CodexAdapter] Markdown send failed, retrying without parse mode:', error);
+      await ctx.reply(text, { disable_notification: true });
+    }
+  }
+
+  async function sendHtmlMessage(html: string): Promise<void> {
+    try {
+      await ctx.reply(html, { parse_mode: 'HTML', disable_notification: true });
+    } catch (error) {
+      console.warn('[CodexAdapter] HTML send failed, retrying as plain text:', error);
+      const plain = html.replace(/<[^>]+>/g, '');
+      await ctx.reply(plain, { disable_notification: true });
+    }
   }
 
   function formatStatusEntry(event: AgentEvent): string | null {
+    if (event.phase === 'completed') {
+      return null;
+    }
+    if (event.phase === 'analysis' && event.title === '开始处理请求') {
+      return null;
+    }
+    if (event.phase === 'command' && event.title?.includes('命令完成')) {
+      return null;
+    }
+
     const icon = PHASE_ICON[event.phase] ?? '💬';
     const rawTitle = event.title || PHASE_FALLBACK[event.phase] || '处理中';
     const safeTitle = escapeTelegramMarkdown(rawTitle);
     const lines: string[] = [`${icon} ${safeTitle}`];
 
-    if (event.detail) {
+    if (event.detail && event.phase !== 'command') {
       const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
-      if (event.phase === 'command') {
-        lines.push('```bash');
-        lines.push(detail);
-        lines.push('```');
-      } else {
-        lines.push(indent(detail));
-      }
-    }
-
-    const commandOutput = formatCommandOutput(event);
-    if (commandOutput) {
-      lines.push(commandOutput);
+      lines.push(indent(detail));
     }
 
     return lines.join('\n');
@@ -182,10 +218,10 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text, {
-        parse_mode: 'Markdown',
-      });
-      rateLimitUntil = 0;
+          await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text, {
+            parse_mode: 'Markdown',
+          });
+          rateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 400 && error.description?.includes('message is not modified')) {
         return;
@@ -208,7 +244,7 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      const newMsg = await ctx.reply(initialText, { parse_mode: 'Markdown' });
+      const newMsg = await ctx.reply(initialText, { parse_mode: 'Markdown', disable_notification: true });
       statusMessageId = newMsg.message_id;
       statusMessageText = initialText;
       rateLimitUntil = 0;
@@ -239,12 +275,33 @@ export async function handleCodexMessage(
     }
   }
 
-  function queueStatusUpdate(event: AgentEvent): void {
-    statusUpdateChain = statusUpdateChain
+  function queueEvent(event: AgentEvent): void {
+    eventQueue = eventQueue
       .then(async () => {
         if (statusUpdatesClosed || !interruptManager.hasActiveRequest(userId)) {
           return;
         }
+
+        const rawEvent = event.raw as any;
+        const rawItem = rawEvent?.item;
+        if (
+          event.phase === 'command' &&
+          rawEvent?.type === 'item.completed' &&
+          rawItem?.type === 'command_execution'
+        ) {
+          const detailBlock = buildCommandDetailBlock(rawItem, event.detail);
+          if (detailBlock) {
+            await sendMarkdownMessage(detailBlock);
+          }
+          const snippet = extractCommandOutputSnippet(rawItem);
+          if (snippet) {
+            await sendHtmlMessage(buildCommandOutputSpoilerHtml(snippet.snippet, snippet.truncated));
+          }
+          if (rawItem.status === 'completed') {
+            return;
+          }
+        }
+
         const entry = formatStatusEntry(event);
         if (!entry) {
           return;
@@ -257,16 +314,16 @@ export async function handleCodexMessage(
   }
 
   async function finalizeStatusUpdates(finalEntry?: string): Promise<void> {
+    statusUpdatesClosed = true;
     if (finalEntry) {
-      statusUpdateChain = statusUpdateChain
+      eventQueue = eventQueue
         .then(() => appendStatusEntry(finalEntry))
         .catch((error) => {
           console.warn('[CodexAdapter] Final status update error:', error);
         });
     }
-    statusUpdatesClosed = true;
     try {
-      await statusUpdateChain;
+      await eventQueue;
     } catch (error) {
       console.warn('[CodexAdapter] Status update flush failed:', error);
     }
@@ -350,7 +407,7 @@ export async function handleCodexMessage(
       if (logger) {
         logger.logEvent(event);
       }
-      queueStatusUpdate(event);
+      queueEvent(event);
     });
 
     // 构建输入
@@ -437,7 +494,7 @@ export async function handleCodexMessage(
         `total:${formatK(totalTokens)}`,
       ].join(",");
 
-      finalText += `\n\n${tokenLine}`;
+      finalText += `\n\n> ${tokenLine}`;
     }
     
     const chunks = chunkMessage(finalText);

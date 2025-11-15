@@ -105,7 +105,7 @@ function formatItemCompleted(item: ThreadItem): FormattedEvent | null {
   }
 }
 
-function formatCommandExecution(item: any, stage: 'started' | 'completed'): FormattedEvent {
+function formatCommandExecution(item: any, stage: 'started' | 'completed'): FormattedEvent | null {
   const command = item.command || '';
   const dangerous = checkDangerousCommand(command);
   
@@ -124,9 +124,8 @@ function formatCommandExecution(item: any, stage: 'started' | 'completed'): Form
     };
   }
   
-  return {
-    text: `✅ 命令完成 (退出码: ${item.exit_code || 0})`,
-  };
+  // 成功时不发送“命令完成”提示，输出由其他逻辑单独呈现
+  return null;
 }
 
 function formatFileChange(item: any, stage: 'started' | 'completed'): FormattedEvent {
