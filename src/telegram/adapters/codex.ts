@@ -416,19 +416,28 @@ export async function handleCodexMessage(
     let finalText = result.response;
     
     if (result.usage) {
-      const stats = [
-        `\n\n📊 Token 使用:`,
-        `• 输入: ${result.usage.input_tokens}`,
-      ];
-      
-      if (result.usage.cached_input_tokens > 0) {
-        stats.push(`• 缓存: ${result.usage.cached_input_tokens}`);
-      }
-      
-      stats.push(`• 输出: ${result.usage.output_tokens}`);
-      stats.push(`• 总计: ${result.usage.input_tokens + result.usage.output_tokens}`);
-      
-      finalText += stats.join(' ');
+      const inputTokens = result.usage.input_tokens ?? 0;
+      const cachedTokens = result.usage.cached_input_tokens ?? 0;
+      const outputTokens = result.usage.output_tokens ?? 0;
+      const totalTokens = inputTokens + outputTokens;
+      const formatK = (value: number): string => {
+        if (!value) {
+          return "0k";
+        }
+        const kValue = value / 1000;
+        const precision = Math.abs(kValue) >= 10 ? 0 : 1;
+        const formatted = kValue.toFixed(precision).replace(/\.0$/, "");
+        return `${formatted}k`;
+      };
+      const cachePercent = inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0;
+      const tokenLine = [
+        `token:in:${formatK(inputTokens)}`,
+        `out:${formatK(outputTokens)}`,
+        `cache:${cachePercent.toFixed(1)}%`,
+        `total:${formatK(totalTokens)}`,
+      ].join(",");
+
+      finalText += `\n\n${tokenLine}`;
     }
     
     const chunks = chunkMessage(finalText);

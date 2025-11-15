@@ -14,7 +14,7 @@ import { cancelIntake } from '../../intake/service.js';
 import { buildAdsHelpMessage } from '../../workflow/commands.js';
 import { escapeTelegramMarkdown } from '../../utils/markdown.js';
 
-export async function handleAdsCommand(ctx: Context, args: string[]) {
+export async function handleAdsCommand(ctx: Context, args: string[], options?: { workspacePath?: string }) {
   if (args.length === 0) {
     await ctx.reply('用法: /ads <command> [args]\n使用 /ads help 查看可用命令', {
       parse_mode: 'Markdown'
@@ -24,11 +24,12 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
 
   const command = args[0].toLowerCase();
   const commandArgs = args.slice(1);
+  const workspacePath = options?.workspacePath;
 
   try {
     switch (command) {
       case 'status': {
-        const response = await getWorkflowStatusSummary({ format: 'markdown' });
+        const response = await getWorkflowStatusSummary({ format: 'markdown', workspace_path: workspacePath });
         await replyWithAdsText(ctx, response, { markdown: true });
         break;
       }
@@ -42,6 +43,7 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
         const response = await createWorkflowFromTemplate({
           title,
           template_id: 'unified',
+          workspace_path: workspacePath,
         });
         await replyWithAdsText(ctx, response);
         break;
@@ -53,7 +55,7 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
           return;
         }
         const identifier = commandArgs.join(' ');
-        const response = await checkoutWorkflow({ workflow_identifier: identifier });
+        const response = await checkoutWorkflow({ workflow_identifier: identifier, workspace_path: workspacePath });
         await replyWithAdsText(ctx, response);
         break;
       }
@@ -64,7 +66,7 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
           return;
         }
         const stepName = commandArgs.join(' ');
-        const response = await commitStep({ step_name: stepName });
+        const response = await commitStep({ step_name: stepName, workspace_path: workspacePath });
         await replyWithAdsText(ctx, response);
         break;
       }
@@ -73,14 +75,14 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
       case 'list': {
         const branchOptions = parseBranchArguments(commandArgs);
         const format = branchOptions.operation === "list" ? "markdown" : "cli";
-        const response = await listWorkflows({ ...branchOptions, format });
+        const response = await listWorkflows({ ...branchOptions, format, workspace_path: workspacePath });
         await replyWithAdsText(ctx, response, { markdown: branchOptions.operation === "list" });
         break;
       }
 
       case 'log': {
         const { limit, workflow } = parseLogArguments(commandArgs);
-        const response = await listWorkflowLog({ limit, workflow, format: 'markdown' });
+        const response = await listWorkflowLog({ limit, workflow, format: 'markdown', workspace_path: workspacePath });
         await replyWithAdsText(ctx, response, { markdown: true });
         break;
       }
@@ -88,10 +90,10 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
       case 'rules': {
         if (commandArgs.length > 0) {
           const category = commandArgs.join(' ');
-          const response = await listRules({ category });
+          const response = await listRules({ category, workspace_path: workspacePath });
           await replyWithAdsText(ctx, response);
         } else {
-          const response = await readRules();
+          const response = await readRules(workspacePath);
           await replyWithAdsText(ctx, response);
         }
         break;
@@ -104,7 +106,7 @@ export async function handleAdsCommand(ctx: Context, args: string[]) {
       }
 
       case 'sync': {
-        const response = await syncAllNodesToFiles({});
+        const response = await syncAllNodesToFiles({ workspace_path: workspacePath });
         await replyWithAdsText(ctx, response);
         break;
       }
