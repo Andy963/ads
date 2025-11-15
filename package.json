@@ -2,7 +2,27 @@
   "name": "ads",
   "version": "0.1.0",
   "type": "module",
-  "description": "Experimental MCP server implementation for ADS using Node.js/TypeScript.",
+  "description": "AI-powered development workflow automation with MCP server and Telegram bot support",
+  "author": "ADS Contributors",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "ai",
+    "assistant",
+    "telegram-bot",
+    "workflow",
+    "automation",
+    "codex",
+    "openai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR_USERNAME/ads.git"
+  },
+  "homepage": "https://github.com/YOUR_USERNAME/ads#readme",
+  "bugs": {
+    "url": "https://github.com/YOUR_USERNAME/ads/issues"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-templates.js",
     "start": "node dist/src/ads.js",

@@ -14,6 +14,13 @@ docs/
 .cache/
 .tmp/
 temp/
+*.pid
+
+# ADS specific
+.ads/logs/
+.ads/*.db
+.ads/*.db-*
+.ads/telegram-bot.pid
 
 # Environment & secrets
 .env

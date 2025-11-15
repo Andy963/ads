@@ -1,4 +1,63 @@
-# ADS MCP Server (Node.js)
+# ADS - AI-Powered Development System
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node Version](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+
+AI-powered development workflow automation system with MCP (Model Context Protocol) server implementation and Telegram bot support. Built with Node.js/TypeScript.
+
+## ✨ Features
+
+- 🤖 **MCP Server**: Full-featured MCP server for AI assistants (Claude, etc.)
+- 📱 **Telegram Bot**: Remote control your development workflow via Telegram
+- 🔄 **Workflow Automation**: Template-based workflow management and execution
+- 💾 **SQLite Workspace**: Persistent graph-based project state tracking
+- 🎯 **Context Management**: Intelligent context injection and reinjection
+- 🔧 **Extensible**: Plugin-friendly architecture for custom tools and workflows
+
+## 🚀 Quick Start
+
+### Installation
+
+```bash
+# Install globally via npm
+npm install -g ads
+
+# Or use locally
+npm install
+npm run build
+```
+
+### Basic Usage
+
+1. **Initialize a workspace**:
+   ```bash
+   ads init
+   ```
+
+2. **Create a new workflow**:
+   ```bash
+   ads new "Implement user authentication"
+   ```
+
+3. **Check status**:
+   ```bash
+   ads status
+   ```
+
+### Using with Claude Desktop
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "ads": {
+      "command": "node",
+      "args": ["/path/to/ads/dist/src/ads.js", "--transport", "stdio"]
+    }
+  }
+}
+```
 
 ## 📚 Documentation
 
@@ -91,3 +150,62 @@ npm run install:codex-prompts
 ```
 
 The script writes Markdown prompts to `~/.codex/prompts/*.md`. Each prompt instructs Codex to call the corresponding MCP tool (`ads.status`, `ads.new`, `ads.branch`, …) with parsed arguments. Restart Codex after installing so the new commands show up in the picker.
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on:
+
+- Setting up the development environment
+- Coding standards and best practices
+- Pull request process
+- Testing guidelines
+
+## 🔒 Security
+
+Security is important to us. If you discover a security vulnerability, please follow our [Security Policy](SECURITY.md) for responsible disclosure.
+
+### Key Security Practices
+
+- Never commit `.env` or `.env.*` files to version control
+- Use `.env.example` as a template
+- Set proper file permissions for sensitive files (`chmod 600 .env.telegram`)
+- Configure `TELEGRAM_ALLOWED_USERS` and `TELEGRAM_ALLOWED_DIRS` appropriately
+- Revoke leaked tokens immediately via [@BotFather](https://t.me/BotFather)
+
+See [SECURITY.md](SECURITY.md) for complete security guidelines.
+
+## 📦 Project Structure
+
+```
+ads/
+├── src/              # Source code
+│   ├── tools/        # MCP tool implementations
+│   ├── graph/        # Graph persistence & workflow logic
+│   ├── workspace/    # Workspace management
+│   ├── telegram/     # Telegram bot implementation
+│   └── templates/    # Template rendering
+├── tests/            # Test files
+├── templates/        # Workspace templates
+├── docs/             # Documentation
+└── scripts/          # Build and utility scripts
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- Built with [OpenAI Codex SDK](https://github.com/openai/codex-sdk)
+- Telegram bot powered by [grammY](https://grammy.dev)
+- Database powered by [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)
+
+## 📮 Support
+
+- 📖 [Documentation](./docs/)
+- 🐛 [Report Issues](https://github.com/YOUR_USERNAME/ads/issues)
+- 💬 [Discussions](https://github.com/YOUR_USERNAME/ads/discussions)
+
+---
+
+**Note**: This is an experimental preview. While it aims for functional parity with the Python ADS implementation, treat it as beta software while edge cases are validated.
