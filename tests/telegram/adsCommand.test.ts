@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseInlineAdsCommand } from "../../src/telegram/utils/adsCommand.js";
+import { parseInlineAdsCommand, parsePlainAdsCommand } from "../../src/telegram/utils/adsCommand.js";
 
 describe("parseInlineAdsCommand", () => {
   test("parses simple /ads.<command> inputs", () => {
@@ -23,5 +23,22 @@ describe("parseInlineAdsCommand", () => {
   test("is case-insensitive and skips incomplete commands", () => {
     assert.deepEqual(parseInlineAdsCommand("/ADS.BRANCH --delete foo"), ["branch", "--delete", "foo"]);
     assert.equal(parseInlineAdsCommand("/ads."), null);
+  });
+});
+
+describe("parsePlainAdsCommand", () => {
+  test("parses simple text commands", () => {
+    assert.deepEqual(parsePlainAdsCommand("ads status"), ["status"]);
+    assert.deepEqual(parsePlainAdsCommand("ADS commit requirement"), ["commit", "requirement"]);
+  });
+
+  test("ignores incomplete or non-matching text", () => {
+    assert.equal(parsePlainAdsCommand("ads"), null);
+    assert.equal(parsePlainAdsCommand("adsorption process"), null);
+    assert.equal(parsePlainAdsCommand("random text"), null);
+  });
+
+  test("preserves additional arguments", () => {
+    assert.deepEqual(parsePlainAdsCommand("ads log 10 req_demo"), ["log", "10", "req_demo"]);
   });
 });

@@ -89,10 +89,9 @@ export async function handleCodexMessage(
 
   const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
   const COMMAND_OUTPUT_LIMIT = 800;
-  const INITIAL_STATUS_PLACEHOLDER = '💭 开始处理...';
-  const sentMsg = await ctx.reply(INITIAL_STATUS_PLACEHOLDER);
+  const sentMsg = await ctx.reply('💭 开始处理...');
   let statusMessageId = sentMsg.message_id;
-  let statusMessageText = sentMsg.text ?? INITIAL_STATUS_PLACEHOLDER;
+  let statusMessageText = sentMsg.text ?? '💭 开始处理...';
   let statusUpdatesClosed = false;
   let rateLimitUntil = 0;
   let statusUpdateChain: Promise<void> = Promise.resolve();
@@ -231,14 +230,12 @@ export async function handleCodexMessage(
       return;
     }
     const trimmed = entry.trimEnd();
-    const baseText = statusMessageText === INITIAL_STATUS_PLACEHOLDER ? '' : statusMessageText;
-    const candidate = baseText ? `${baseText}\n${trimmed}` : trimmed;
+    const candidate = statusMessageText ? `${statusMessageText}\n${trimmed}` : trimmed;
     if (candidate.length <= STATUS_MESSAGE_LIMIT) {
       await editStatusMessage(candidate);
       statusMessageText = candidate;
     } else {
       await sendNewStatusMessage(trimmed);
-      statusMessageText = trimmed;
     }
   }
 
@@ -417,31 +414,23 @@ export async function handleCodexMessage(
 
     // 发送最终响应
     let finalText = result.response;
-    let tokenStatsHtml: string | null = null;
-    let tokenStatsPlain: string | null = null;
-
+    
     if (result.usage) {
-      const inputTokens = result.usage.input_tokens ?? 0;
-      const cachedTokens = result.usage.cached_input_tokens ?? 0;
-      const outputTokens = result.usage.output_tokens ?? 0;
-      const totalTokens = inputTokens + outputTokens;
-      const statsLines = [
-        '📊 Token 使用',
-        `• 输入: ${inputTokens}`,
+      const stats = [
+        `\n\n📊 Token 使用:`,
+        `• 输入: ${result.usage.input_tokens}`,
       ];
-      if (cachedTokens > 0) {
-        statsLines.push(`• 缓存: ${cachedTokens}`);
-        if (inputTokens > 0) {
-          const hitRate = (cachedTokens / inputTokens) * 100;
-          statsLines.push(`• 缓存命中率: ${hitRate.toFixed(1)}%`);
-        }
+      
+      if (result.usage.cached_input_tokens > 0) {
+        stats.push(`• 缓存: ${result.usage.cached_input_tokens}`);
       }
-      statsLines.push(`• 输出: ${outputTokens}`);
-      statsLines.push(`• 总计: ${totalTokens}`);
-      tokenStatsPlain = statsLines.join('\n');
-      tokenStatsHtml = `<tg-spoiler>${statsLines.join('<br/>')}</tg-spoiler>`;
+      
+      stats.push(`• 输出: ${result.usage.output_tokens}`);
+      stats.push(`• 总计: ${result.usage.input_tokens + result.usage.output_tokens}`);
+      
+      finalText += stats.join(' ');
     }
-
+    
     const chunks = chunkMessage(finalText);
 
     for (let i = 0; i < chunks.length; i++) {
@@ -450,14 +439,6 @@ export async function handleCodexMessage(
       }
       await ctx.reply(chunks[i], { parse_mode: 'Markdown' }).catch(async () => {
         await ctx.reply(chunks[i]);
-      });
-    }
-
-    if (tokenStatsHtml) {
-      await ctx.reply(tokenStatsHtml, { parse_mode: 'HTML' }).catch(async () => {
-        if (tokenStatsPlain) {
-          await ctx.reply(tokenStatsPlain);
-        }
       });
     }
   } catch (error) {

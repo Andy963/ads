@@ -10,7 +10,7 @@ import { handleAdsCommand } from './adapters/ads.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
 import { checkWorkspaceInit } from './utils/workspaceInitChecker.js';
-import { parseInlineAdsCommand } from './utils/adsCommand.js';
+import { parseInlineAdsCommand, parsePlainAdsCommand } from './utils/adsCommand.js';
 
 const logger = createLogger('Bot');
 
@@ -275,16 +275,18 @@ async function main() {
   bot.command('ads', async (ctx) => {
     const text = ctx.message?.text ?? "";
     const args = text.split(/\s+/).slice(1);
+    const userId = ctx.from!.id;
+    const workspacePath = directoryManager.getUserCwd(userId);
 
     if (args.length === 0) {
       const inlineArgs = parseInlineAdsCommand(text);
       if (inlineArgs) {
-        await handleAdsCommand(ctx, inlineArgs);
+        await handleAdsCommand(ctx, inlineArgs, { workspacePath });
         return;
       }
     }
 
-    await handleAdsCommand(ctx, args);
+    await handleAdsCommand(ctx, args, { workspacePath });
   });
 
   // 处理带图片的消息
@@ -336,7 +338,15 @@ async function main() {
 
     const inlineAdsArgs = parseInlineAdsCommand(text);
     if (inlineAdsArgs) {
-      await handleAdsCommand(ctx, inlineAdsArgs);
+      const workspacePath = directoryManager.getUserCwd(ctx.from!.id);
+      await handleAdsCommand(ctx, inlineAdsArgs, { workspacePath });
+      return;
+    }
+
+    const plainAdsArgs = parsePlainAdsCommand(text);
+    if (plainAdsArgs) {
+      const workspacePath = directoryManager.getUserCwd(ctx.from!.id);
+      await handleAdsCommand(ctx, plainAdsArgs, { workspacePath });
       return;
     }
 
