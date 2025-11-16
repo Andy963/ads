@@ -2,13 +2,12 @@
   "name": "ads",
   "version": "0.1.0",
   "type": "module",
-  "description": "AI-powered development workflow automation with MCP server and Telegram bot support",
+  "description": "AI-driven specification-based development workflow automation with Telegram bot support",
   "author": "ADS Contributors",
   "license": "MIT",
   "keywords": [
-    "mcp",
     "ai",
-    "assistant",
+    "specification",
     "telegram-bot",
     "workflow",
     "automation",
@@ -17,18 +16,18 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_USERNAME/ads.git"
+    "url": "git+https://github.com/Andy963/ads.git"
   },
-  "homepage": "https://github.com/YOUR_USERNAME/ads#readme",
+  "homepage": "https://github.com/Andy963/ads#readme",
   "bugs": {
-    "url": "https://github.com/YOUR_USERNAME/ads/issues"
+    "url": "https://github.com/Andy963/ads/issues"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-templates.js",
     "start": "node dist/src/ads.js",
     "dev": "tsx watch src/ads.ts",
     "test": "tsx --test tests/**/*.test.ts",
-    "install:codex-prompts": "node scripts/install-codex-prompts.js"
+    "lint": "eslint . --ext .ts"
   },
   "engines": {
     "node": ">=18"
@@ -49,7 +48,12 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.5.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.4",
+    "@typescript-eslint/parser": "^8.46.4",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
     "tsx": "^4.16.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.46.4"
   }
 }

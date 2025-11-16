@@ -1,3 +1,5 @@
+import "./utils/logSink.js";
+
 import { Codex } from "@openai/codex-sdk";
 
 import {

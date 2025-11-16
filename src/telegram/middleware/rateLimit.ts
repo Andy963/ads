@@ -28,7 +28,7 @@ export function createRateLimitMiddleware(maxRequestsPerMinute: number) {
 
     if (record.count >= maxRequestsPerMinute) {
       await ctx.reply('请求过于频繁，请稍后再试');
-      console.warn(`[RateLimit] User ${userId} exceeded rate limit`);
+      console.warn(`[RateLimit] Rate limit exceeded`);
       return;
     }
 

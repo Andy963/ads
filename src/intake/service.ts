@@ -74,7 +74,7 @@ async function updateRequirementSummary(specDir: string, state: IntakeState): Pr
 
   const summaryBlock = buildSummaryBlock(state);
   if (content.includes(SUMMARY_START) && content.includes(SUMMARY_END)) {
-    const pattern = new RegExp(`${SUMMARY_START}[\s\S]*?${SUMMARY_END}`);
+    const pattern = new RegExp(String.raw`${SUMMARY_START}[\s\S]*?${SUMMARY_END}`);
     content = content.replace(pattern, summaryBlock);
   } else {
     content = `${summaryBlock}\n\n${content}`.trimEnd();

@@ -71,7 +71,7 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
 
   return {
     enabled: enabledEnv ?? true,
-    turns: turnsEnv ?? 15,
+    turns: turnsEnv ?? 10,
   };
 }
 
@@ -93,10 +93,10 @@ export class SystemPromptManager {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
-      turns: options.reinjection?.turns ?? 15,
+      turns: options.reinjection?.turns ?? 10,
     };
     if (this.reinjection.turns < 1) {
-      this.reinjection.turns = 15;
+      this.reinjection.turns = 10;
     }
     this.logger = options.logger ?? createLogger("SystemPrompt");
   }

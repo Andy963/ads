@@ -26,9 +26,20 @@ function exists(target: string): boolean {
   return fs.existsSync(target);
 }
 
-function readYamlFile(filePath: string): any {
+function readYamlFile(filePath: string): unknown {
   const content = fs.readFileSync(filePath, "utf-8");
   return yaml.parse(content);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function parseMarkdownVariables(content: string): string[] {
@@ -44,14 +55,21 @@ function parseMarkdownVariables(content: string): string[] {
 }
 
 function parseNodeTemplateYaml(filePath: string): NodeTemplate {
-  const data = readYamlFile(filePath) ?? {};
+  const raw = readYamlFile(filePath);
+  const data = isRecord(raw) ? raw : {};
+  const metadata = isRecord(data.metadata) ? (data.metadata as Record<string, unknown>) : {};
+  const contentTemplate = typeof data.content === "string" ? data.content : "";
+  const titleTemplate = typeof data.title === "string" ? data.title : "{{title}}";
+  const nodeType = typeof data.node_type === "string" ? data.node_type : "default";
+  const name = typeof data.name === "string" ? data.name : path.basename(filePath, path.extname(filePath));
+
   return {
-    name: data.name ?? path.basename(filePath, path.extname(filePath)),
-    nodeType: data.node_type ?? "default",
-    titleTemplate: data.title ?? "{{title}}",
-    contentTemplate: data.content ?? "",
-    variables: Array.isArray(data.variables) ? data.variables : [],
-    metadata: typeof data.metadata === "object" && data.metadata !== null ? data.metadata : {},
+    name,
+    nodeType,
+    titleTemplate,
+    contentTemplate,
+    variables: toStringArray(data.variables),
+    metadata,
     filePath,
   };
 }
@@ -70,13 +88,24 @@ function parseNodeTemplateMarkdown(filePath: string): NodeTemplate {
 }
 
 function parseWorkflowTemplateYaml(filePath: string): WorkflowTemplate {
-  const data = readYamlFile(filePath) ?? {};
+  const raw = readYamlFile(filePath);
+  const data = isRecord(raw) ? raw : {};
+  const name = typeof data.name === "string" ? data.name : path.basename(filePath, path.extname(filePath));
+  const title = typeof data.title === "string" ? data.title : "";
+  const description = typeof data.description === "string" ? data.description : "";
+  const nodes = Array.isArray(data.nodes)
+    ? data.nodes.filter((node): node is Record<string, unknown> => isRecord(node))
+    : [];
+  const edges = Array.isArray(data.edges)
+    ? data.edges.filter((edge): edge is Record<string, unknown> => isRecord(edge))
+    : [];
+
   return {
-    name: data.name ?? path.basename(filePath, path.extname(filePath)),
-    title: data.title ?? "",
-    description: data.description ?? "",
-    nodes: Array.isArray(data.nodes) ? data.nodes : [],
-    edges: Array.isArray(data.edges) ? data.edges : [],
+    name,
+    title,
+    description,
+    nodes,
+    edges,
     filePath,
   };
 }

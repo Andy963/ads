@@ -79,7 +79,7 @@ export class ThreadStorage {
       cwd: existing?.cwd,
     });
     this.save();
-    console.log(`[ThreadStorage] Saved thread ${threadId} for user ${userId}`);
+    console.log(`[ThreadStorage] Saved thread ${threadId}`);
   }
 
   getRecord(userId: number): ThreadState | undefined {
@@ -90,14 +90,14 @@ export class ThreadStorage {
     this.threads.set(userId, state);
     this.save();
     console.log(
-      `[ThreadStorage] Saved state for user ${userId} (thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`,
+      `[ThreadStorage] Saved state (thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`,
     );
   }
 
   removeThread(userId: number): void {
     this.threads.delete(userId);
     this.save();
-    console.log(`[ThreadStorage] Removed thread for user ${userId}`);
+    console.log(`[ThreadStorage] Removed thread`);
   }
 
   clear(): void {

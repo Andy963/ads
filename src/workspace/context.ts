@@ -11,6 +11,15 @@ import type { GraphNode } from "../graph/types.js";
 
 type WorkflowSteps = Record<string, string>;
 
+export interface WorkflowSummary {
+  workflow_id: string;
+  template: string;
+  title: string;
+  node_count: number;
+  finalized_count: number;
+  created_at: string | null;
+}
+
 export interface WorkflowInfo {
   workflow_id: string;
   template?: string;
@@ -84,7 +93,7 @@ export class WorkflowContext {
     fs.writeFileSync(contextFile, JSON.stringify(sanitized, null, 2), "utf-8");
   }
 
-  private static normalizeContext(rawContext: any): WorkflowContextState {
+  private static normalizeContext(rawContext: unknown): WorkflowContextState {
     const context = clone(rawContext ?? {}) as Record<string, unknown>;
 
     let activeWorkflow = (context.active_workflow ?? null) as WorkflowInfo | null;
@@ -266,14 +275,8 @@ export class WorkflowContext {
     WorkflowContext.saveContext(workspace, context);
   }
 
-  static listAllWorkflows(_workspace?: string): Array<{
-    workflow_id: string;
-    template: string;
-    title: string;
-    node_count: number;
-    finalized_count: number;
-    created_at: string | null;
-  }> {
+  static listAllWorkflows(_workspace?: string): WorkflowSummary[] {
+    void _workspace;
     const nodes = getAllNodes();
     const workflows = new Map<string, { root: GraphNode; nodes: GraphNode[]; template: string }>();
 
@@ -297,14 +300,7 @@ export class WorkflowContext {
       workflows.get(rootId)!.nodes.push(node);
     }
 
-    const result: Array<{
-      workflow_id: string;
-      template: string;
-      title: string;
-      node_count: number;
-      finalized_count: number;
-      created_at: string | null;
-    }> = [];
+    const result: WorkflowSummary[] = [];
 
     for (const [rootId, workflow] of workflows.entries()) {
       let template = workflow.template;
@@ -342,7 +338,7 @@ export class WorkflowContext {
   ): {
     success: boolean;
     workflow: WorkflowInfo | null;
-    matches: Array<Record<string, unknown>>;
+    matches: WorkflowSummary[];
     message: string;
   } {
     const allWorkflows = WorkflowContext.listAllWorkflows(workspace);
@@ -350,12 +346,14 @@ export class WorkflowContext {
       return {
         success: false,
         workflow: null,
-        matches: [] as Array<Record<string, unknown>>,
+        matches: [],
         message: "没有找到任何工作流",
       };
     }
 
-    let matched = allWorkflows.find((wf) => wf.workflow_id === workflowIdentifier);
+    let matched: WorkflowSummary | undefined = allWorkflows.find(
+      (wf) => wf.workflow_id === workflowIdentifier,
+    );
 
     // 支持序号选择（1-based index）
     if (!matched) {
@@ -369,19 +367,19 @@ export class WorkflowContext {
       matched = allWorkflows.find((wf) => wf.title === workflowIdentifier);
     }
 
-    let matches: any[] = [];
+    let matches: WorkflowSummary[] = [];
 
     if (!matched) {
       const templateType = WorkflowContext.TYPE_KEYWORDS[workflowIdentifier.toLowerCase()];
       if (templateType) {
         matches = allWorkflows.filter((wf) => wf.template === templateType);
         if (matches.length === 1) {
-          matched = matches[0] as typeof matched;
+          matched = matches[0];
         } else if (matches.length > 1) {
           return {
             success: false,
             workflow: null,
-            matches: matches as Array<Record<string, unknown>>,
+            matches,
             message: `找到 ${matches.length} 个 '${templateType}' 类型的工作流，请指定具体的工作流`,
           };
         }
@@ -398,7 +396,7 @@ export class WorkflowContext {
       return {
         success: false,
         workflow: null,
-        matches: [] as Array<Record<string, unknown>>,
+        matches: [],
         message: `未找到匹配 '${workflowIdentifier}' 的工作流`,
       };
     }
@@ -425,7 +423,7 @@ export class WorkflowContext {
     return {
       success: true,
       workflow,
-      matches: [] as Array<Record<string, unknown>>,
+      matches: [],
       message: `已切换到工作流: ${matched.title}`,
     };
   }

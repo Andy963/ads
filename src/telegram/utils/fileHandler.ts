@@ -177,7 +177,7 @@ export function cleanupAllTempFiles(): void {
         unlinkSync(filePath);
         cleaned++;
       }
-    } catch (error) {
+    } catch {
       // 忽略错误
     }
   }

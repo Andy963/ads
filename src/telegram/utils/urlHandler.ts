@@ -118,10 +118,13 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
           throw new Error(`域名 ${parsed.hostname} 解析到内网地址: ${addr}`);
         }
       }
-    } catch (err: any) {
-      if (err.message?.includes('内网') || err.message?.includes('解析到')) throw err;
+    } catch (err) {
+      if (err instanceof Error && (err.message?.includes('内网') || err.message?.includes('解析到'))) {
+        throw err;
+      }
+      const detail = err instanceof Error ? err.message : String(err);
       // 其他 DNS 错误，阻止访问（安全优先）
-      throw new Error(`DNS 解析失败: ${err.message}`);
+      throw new Error(`DNS 解析失败: ${detail}`);
     }
   }
   

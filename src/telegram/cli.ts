@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import '../utils/logSink.js';
+
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -18,23 +20,24 @@ if (!existsSync(botPath)) {
 }
 
 switch (command) {
-  case 'start':
+  case 'start': {
     console.log('🚀 Starting Telegram bot...');
     const bot = spawn('node', [botPath], {
       stdio: 'inherit',
       detached: false,
     });
-    
+
     bot.on('error', (error) => {
       console.error('❌ Failed to start bot:', error);
       process.exit(1);
     });
-    
+
     process.on('SIGINT', () => {
       bot.kill();
       process.exit(0);
     });
     break;
+  }
 
   case 'help':
   case '--help':
@@ -69,10 +72,11 @@ Documentation:
 
   case 'version':
   case '--version':
-  case '-v':
+  case '-v': {
     const pkg = await import('../../package.json', { assert: { type: 'json' } });
     console.log(`Telegram Bot v${pkg.default.version}`);
     break;
+  }
 
   default:
     console.error(`❌ Unknown command: ${command}`);

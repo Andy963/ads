@@ -1,5 +1,6 @@
 import { getDatabase } from "../storage/database.js";
 import { getNodeById } from "./crud.js";
+import type { NodeRow } from "./crud.js";
 import type { GraphNode } from "./types.js";
 
 class NodeNotFoundError extends Error {}
@@ -8,7 +9,7 @@ class InvalidOperationError extends Error {}
 export async function finalizeNode(nodeId: string, changeDescription?: string): Promise<GraphNode> {
   const db = getDatabase();
   const transaction = db.transaction(() => {
-    const nodeRow = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as any;
+    const nodeRow = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as NodeRow | undefined;
     if (!nodeRow) {
       throw new NodeNotFoundError("Node not found");
     }

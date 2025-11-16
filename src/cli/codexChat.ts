@@ -4,6 +4,7 @@ import {
   type TurnOptions,
   type Usage,
   type SandboxMode,
+  type Input,
 } from "@openai/codex-sdk";
 
 import { resolveCodexConfig, type CodexResolvedConfig } from "../codexConfig.js";
@@ -168,7 +169,7 @@ export class CodexSession {
     return { ready: this.ready, error: this.lastError ?? undefined, streaming: this.streamingEnabled };
   }
 
-  async send(prompt: any, options: CodexSendOptions = {}): Promise<CodexSendResult> {
+  async send(prompt: Input, options: CodexSendOptions = {}): Promise<CodexSendResult> {
     this.ensureClient();
     if (!this.ready || !this.codex) {
       throw new Error(this.lastError ?? "未配置 Codex 凭证");
@@ -198,7 +199,7 @@ export class CodexSession {
     return { outputSchema: options.outputSchema } satisfies TurnOptions;
   }
 
-  private applySystemPrompt(prompt: any): any {
+  private applySystemPrompt(prompt: Input): Input {
     if (!this.systemPromptManager) {
       return prompt;
     }
@@ -209,7 +210,7 @@ export class CodexSession {
     return this.mergeSystemPrompt(injection.text, prompt);
   }
 
-  private mergeSystemPrompt(systemText: string, prompt: any): any {
+  private mergeSystemPrompt(systemText: string, prompt: Input): Input {
     if (typeof prompt === "string") {
       return `${systemText}\n\n${prompt}`;
     }
@@ -221,7 +222,7 @@ export class CodexSession {
 
   private async sendNonStreaming(
     thread: ReturnType<Codex["startThread"]>,
-    prompt: any,
+    prompt: Input,
     turnOptions: TurnOptions | undefined,
     signal?: AbortSignal,
   ): Promise<CodexSendResult> {
@@ -259,7 +260,7 @@ export class CodexSession {
 
   private async sendStreaming(
     thread: ReturnType<Codex["startThread"]>,
-    prompt: any,
+    prompt: Input,
     turnOptions: TurnOptions | undefined,
     signal?: AbortSignal,
   ): Promise<CodexSendResult> {
@@ -284,6 +285,7 @@ export class CodexSession {
     streamed: Awaited<ReturnType<ReturnType<Codex["startThread"]>["runStreamed"]>>,
     _signal?: AbortSignal,
   ): Promise<CodexSendResult> {
+    void _signal;
     const aggregator = new StreamAggregator();
 
     try {

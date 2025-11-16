@@ -15,26 +15,77 @@ interface CreateNodeInput {
 
 type NodeUpdateInput = Record<string, unknown>;
 
-function mapNode(row: any): GraphNode {
-  const metadata =
-    typeof row.metadata === "string"
-      ? safeParseJson<Record<string, unknown>>(row.metadata) ?? {}
-      : row.metadata ?? {};
+type SqlDateValue = string | number | Date | null | undefined;
 
-  const position =
-    typeof row.position === "string"
-      ? safeParseJson<Record<string, unknown>>(row.position) ?? { x: 0, y: 0 }
-      : row.position ?? { x: 0, y: 0 };
+export interface NodeRow {
+  id: string;
+  type: string;
+  label: string;
+  content?: string | null;
+  metadata?: string | Record<string, unknown> | null;
+  position?: string | Record<string, unknown> | null;
+  current_version?: number | null;
+  draft_content?: string | null;
+  draft_source_type?: string | null;
+  draft_conversation_id?: string | null;
+  draft_message_id?: number | string | null;
+  draft_based_on_version?: number | null;
+  draft_ai_original_content?: string | null;
+  draft_updated_at?: SqlDateValue;
+  is_draft?: number | boolean | null;
+  created_at?: SqlDateValue;
+  updated_at?: SqlDateValue;
+  workspace_id?: number | null;
+}
 
-  const normalizeDate = (value: any): Date | null => {
-    if (!value) {
-      return null;
-    }
-    if (value instanceof Date) {
-      return value;
-    }
-    return new Date(value);
-  };
+interface EdgeRow {
+  id: string;
+  source: string;
+  target: string;
+  source_handle?: string | null;
+  target_handle?: string | null;
+  label?: string | null;
+  edge_type: string;
+  animated?: number | boolean | null;
+  created_at?: SqlDateValue;
+  updated_at?: SqlDateValue;
+}
+
+function normalizeDate(value: SqlDateValue): Date | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  return new Date(value);
+}
+
+function parseJsonColumn(
+  value: string | Record<string, unknown> | null | undefined,
+  fallback: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof value === "string") {
+    return safeParseJson<Record<string, unknown>>(value) ?? fallback;
+  }
+  if (typeof value === "object" && value !== null) {
+    return value as Record<string, unknown>;
+  }
+  return fallback;
+}
+
+function mapNode(row: NodeRow): GraphNode {
+  const metadata = parseJsonColumn(row.metadata ?? null, {});
+  const position = parseJsonColumn(row.position ?? null, { x: 0, y: 0 });
+
+  const draftMessageIdRaw = row.draft_message_id;
+  let draftMessageId: number | null = null;
+  if (typeof draftMessageIdRaw === "number") {
+    draftMessageId = draftMessageIdRaw;
+  } else if (draftMessageIdRaw !== undefined && draftMessageIdRaw !== null) {
+    const numeric = Number(draftMessageIdRaw);
+    draftMessageId = Number.isFinite(numeric) ? numeric : null;
+  }
 
   return {
     id: row.id,
@@ -50,30 +101,16 @@ function mapNode(row: any): GraphNode {
     updatedAt: normalizeDate(row.updated_at),
     draftSourceType: row.draft_source_type ?? null,
     draftConversationId: row.draft_conversation_id ?? null,
-    draftMessageId: row.draft_message_id ?? null,
+    draftMessageId,
     draftBasedOnVersion: row.draft_based_on_version ?? null,
     draftAiOriginalContent: row.draft_ai_original_content ?? null,
     draftUpdatedAt: normalizeDate(row.draft_updated_at),
   };
 }
 
-function mapEdge(row: any): GraphEdge {
-  const toBoolean = (value: any): boolean => {
-    if (typeof value === "boolean") {
-      return value;
-    }
-    return Number(value) === 1;
-  };
-
-  const normalizeDate = (value: any): Date | null => {
-    if (!value) {
-      return null;
-    }
-    if (value instanceof Date) {
-      return value;
-    }
-    return new Date(value);
-  };
+function mapEdge(row: EdgeRow): GraphEdge {
+  const animated =
+    typeof row.animated === "boolean" ? row.animated : Number(row.animated) === 1;
 
   return {
     id: row.id,
@@ -83,7 +120,7 @@ function mapEdge(row: any): GraphEdge {
     targetHandle: row.target_handle ?? null,
     label: row.label ?? null,
     edgeType: row.edge_type,
-    animated: toBoolean(row.animated),
+    animated,
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
   };
@@ -91,13 +128,13 @@ function mapEdge(row: any): GraphEdge {
 
 export function getAllNodes(): GraphNode[] {
   const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all();
+  const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all() as NodeRow[];
   return rows.map(mapNode);
 }
 
 export function getNodeById(nodeId: string): GraphNode | null {
   const db = getDatabase();
-  const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId);
+  const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as NodeRow | undefined;
   if (!row) {
     return null;
   }
@@ -247,8 +284,8 @@ export function deleteNode(nodeId: string): boolean {
 
 export function getAllEdges(): GraphEdge[] {
   const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM edges ORDER BY created_at ASC").all();
-  return rows.map(mapEdge);
+  const rows = db.prepare("SELECT * FROM edges ORDER BY created_at ASC").all() as EdgeRow[];
+  return rows.map((row) => mapEdge(row));
 }
 
 export function createEdge(input: {
@@ -301,7 +338,7 @@ export function createEdge(input: {
     updated_at: now,
   });
 
-  const row = db.prepare("SELECT * FROM edges WHERE id = ?").get(input.id);
+  const row = db.prepare("SELECT * FROM edges WHERE id = ?").get(input.id) as EdgeRow;
   return mapEdge(row);
 }
 
@@ -313,8 +350,8 @@ export function deleteEdge(edgeId: string): boolean {
 
 export function getEdgesFromNode(nodeId: string): GraphEdge[] {
   const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM edges WHERE source = ?").all(nodeId);
-  return rows.map(mapEdge);
+  const rows = db.prepare("SELECT * FROM edges WHERE source = ?").all(nodeId) as EdgeRow[];
+  return rows.map((row) => mapEdge(row));
 }
 
 export function getNextNode(nodeId: string): GraphNode | null {

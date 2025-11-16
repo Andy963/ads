@@ -1,5 +1,7 @@
 import { createWriteStream, mkdirSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import type { Api } from 'grammy';
 
@@ -39,9 +41,14 @@ export async function downloadTelegramImage(
     throw new Error(`Failed to download image: ${response.statusText}`);
   }
 
+  const body = response.body;
+  if (!body) {
+    throw new Error('Failed to read image stream');
+  }
+
   const fileStream = createWriteStream(localPath);
   try {
-    await pipeline(response.body as any, fileStream);
+    await pipeline(Readable.fromWeb(body as NodeReadableStream<Uint8Array>), fileStream);
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
       const abortError = new Error('图片下载被中断');

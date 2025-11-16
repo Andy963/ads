@@ -26,9 +26,6 @@ describe('SessionManager', () => {
 
   it('should reset session', () => {
     const session1 = manager.getOrCreate(123456);
-    // Save initial state to verify reset
-    const initialThreadId = session1.getThreadId();
-    
     manager.reset(123456);
     const session2 = manager.getOrCreate(123456);
     

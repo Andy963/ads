@@ -4,6 +4,56 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
+
+function initScriptLogger() {
+  const original = {
+    log: console.log.bind(console),
+    info: console.info ? console.info.bind(console) : console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+  };
+
+  const logDir = path.join(ROOT_DIR, ".ads", "logs");
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+  } catch (error) {
+    original.warn("[copy-templates] Failed to prepare log directory", error);
+    return;
+  }
+
+  let stream;
+  try {
+    stream = fs.createWriteStream(path.join(logDir, "build.log"), { flags: "a" });
+  } catch (error) {
+    original.warn("[copy-templates] Failed to open log file", error);
+    return;
+  }
+
+  const write = (level, mirror) => (...args) => {
+    const timestamp = new Date().toISOString();
+    const text = args
+      .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
+      .join(" ");
+    stream.write(`${timestamp} ${level} ${text}\n`);
+    mirror(...args);
+  };
+
+  console.log = write("INFO", original.log);
+  console.info = write("INFO", original.info);
+  console.warn = write("WARN", original.warn);
+  console.error = write("ERROR", original.error);
+
+  const close = () => {
+    if (stream) {
+      stream.end();
+    }
+  };
+  process.once("exit", close);
+  process.once("SIGINT", close);
+  process.once("SIGTERM", close);
+}
+
+initScriptLogger();
 const SRC_DIR = path.join(ROOT_DIR, "templates");
 const DEST_DIR = path.join(ROOT_DIR, "dist", "templates");
 const GRAPH_CONFIG_SRC = path.join(ROOT_DIR, "src", "graph", "config.yaml");

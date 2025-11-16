@@ -36,7 +36,7 @@ interface WorkflowCommitRecord {
   created_at: string;
 }
 
-interface WorkflowCommitRow extends WorkflowCommitRecord {}
+type WorkflowCommitRow = WorkflowCommitRecord;
 
 function recordWorkflowCommit(record: WorkflowCommitRecord): void {
   if (!record.workflow_id) {
@@ -416,7 +416,7 @@ export async function checkoutWorkflow(params: {
   if (!result.success) {
     if (result.matches && result.matches.length > 1) {
       const suggestions = result.matches
-        .map((match: any) => `- ${match.title} (${match.workflow_id})`)
+        .map((match) => `- ${match.title} (${match.workflow_id})`)
         .join("\n");
       return `${result.message}\n${suggestions}`;
     }

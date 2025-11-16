@@ -174,7 +174,7 @@ describe('Feature Name', () => {
 ```
 ads/
 ├── src/           # Source code
-│   ├── tools/     # MCP tool implementations
+│   ├── tools/     # ADS tool implementations
 │   ├── graph/     # Graph/workflow logic
 │   ├── workspace/ # Workspace management
 │   ├── telegram/  # Telegram bot

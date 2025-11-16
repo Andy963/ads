@@ -53,13 +53,16 @@ export class SessionManager {
     
     const userModel = this.userModels.get(userId) || this.defaultModel;
     const effectiveCwd = cwd || process.cwd();
-    
-    console.log(`[SessionManager] Creating new session for user ${userId}${savedThreadId ? ` (resuming thread ${savedThreadId})` : ''} with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`);
-    
+
+    // 使用时间戳和随机数生成唯一的会话ID（不暴露用户信息）
+    const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    console.log(`[SessionManager] Creating new session (id: ${sessionId})${savedThreadId ? ` (resuming thread ${savedThreadId})` : ''} with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`);
+
     const systemPromptManager = new SystemPromptManager({
       workspaceRoot: effectiveCwd,
       reinjection: this.reinjectionConfig,
-      logger: this.logger.child(`User:${userId}`),
+      logger: this.logger.child(`Session-${sessionId}`),
     });
     
     const session = new CodexSession({
@@ -146,7 +149,7 @@ export class SessionManager {
     if (this.threadStorage.getThreadId(userId)) {
       this.threadStorage.removeThread(userId);
     }
-    console.log(`[SessionManager] User ${userId} switched to model: ${model}`);
+    console.log(`[SessionManager] Switched to model: ${model}`);
   }
 
   getUserModel(userId: number): string {
@@ -167,9 +170,9 @@ export class SessionManager {
       }
       record.session.reset();
       record.lastActivity = Date.now();
-      console.log(`[SessionManager] Session reset for user ${userId}`);
+      console.log(`[SessionManager] Session reset`);
     } else {
-      console.log(`[SessionManager] Reset requested for user ${userId} without active session`);
+      console.log(`[SessionManager] Reset requested without active session`);
     }
 
     if (this.threadStorage.getThreadId(userId)) {
@@ -243,7 +246,7 @@ export class SessionManager {
         record.logger.close();
       }
       this.sessions.delete(userId);
-      console.log(`[SessionManager] Cleaned up idle session for user ${userId}`);
+      console.log(`[SessionManager] Cleaned up idle session`);
     }
   }
 

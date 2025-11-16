@@ -1,4 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { GrammyError, type Context } from 'grammy';
+import type { Input, CommandExecutionItem } from '@openai/codex-sdk';
 import type { SessionManager } from '../utils/sessionManager.js';
 import type { AgentEvent } from '../../codex/events.js';
 import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
@@ -66,6 +70,32 @@ export async function handleCodexMessage(
   cwd?: string
 ) {
   const userId = ctx.from!.id;
+  const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
+  const adapterLogDir = path.join(workspaceRoot, '.ads', 'logs');
+  const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
+  let logDirReady = false;
+
+  const logWarning = (message: string, error?: unknown) => {
+    const timestamp = new Date().toISOString();
+    const detail = error
+      ? error instanceof Error
+        ? error.stack ?? error.message
+        : String(error)
+      : '';
+    try {
+      if (!logDirReady) {
+        fs.mkdirSync(adapterLogDir, { recursive: true });
+        logDirReady = true;
+      }
+      fs.appendFileSync(
+        adapterLogFile,
+        `${timestamp} WARN ${message}${detail ? ` | ${detail}` : ''}\n`,
+      );
+    } catch (fileError) {
+      console.warn('[CodexAdapter] Failed to write adapter log:', fileError);
+    }
+    console.warn(message, error);
+  };
 
   // 检查是否有活跃请求
   if (interruptManager.hasActiveRequest(userId)) {
@@ -126,7 +156,7 @@ export async function handleCodexMessage(
       .join('\n');
   }
 
-  function buildCommandDetailBlock(rawItem: any, fallbackDetail?: string): string | null {
+  function buildCommandDetailBlock(rawItem: CommandExecutionItem, fallbackDetail?: string): string | null {
     const commandLine = (typeof rawItem.command === 'string' && rawItem.command.trim())
       ? rawItem.command.trim()
       : (fallbackDetail?.trim() ?? '');
@@ -139,7 +169,7 @@ export async function handleCodexMessage(
     return [header, '```', `${escapedCommand}${escapedExit}`, '```'].join('\n');
   }
 
-  function extractCommandOutputSnippet(rawItem: any): { snippet: string; truncated: boolean } | null {
+  function extractCommandOutputSnippet(rawItem: CommandExecutionItem): { snippet: string; truncated: boolean } | null {
     if (rawItem.type !== 'command_execution') {
       return null;
     }
@@ -173,8 +203,18 @@ export async function handleCodexMessage(
     try {
       await ctx.reply(text, { parse_mode: 'Markdown', disable_notification: true });
     } catch (error) {
-      console.warn('[CodexAdapter] Markdown send failed, retrying without parse mode:', error);
+      logWarning('[CodexAdapter] Markdown send failed, retrying without parse mode', error);
       await ctx.reply(text, { disable_notification: true });
+    }
+  }
+
+  async function sendTokenSummary(tokenLine: string): Promise<void> {
+    const htmlQuote = `<blockquote>${escapeTelegramHtml(tokenLine)}</blockquote>`;
+    try {
+      await ctx.reply(htmlQuote, { parse_mode: 'HTML', disable_notification: true });
+    } catch (error) {
+      logWarning('[CodexAdapter] Failed to send token summary with HTML', error);
+      await ctx.reply(`token ${tokenLine}`, { disable_notification: true });
     }
   }
 
@@ -182,7 +222,7 @@ export async function handleCodexMessage(
     try {
       await ctx.reply(html, { parse_mode: 'HTML', disable_notification: true });
     } catch (error) {
-      console.warn('[CodexAdapter] HTML send failed, retrying as plain text:', error);
+      logWarning('[CodexAdapter] HTML send failed, retrying as plain text', error);
       const plain = html.replace(/<[^>]+>/g, '');
       await ctx.reply(plain, { disable_notification: true });
     }
@@ -229,11 +269,11 @@ export async function handleCodexMessage(
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters?.retry_after ?? 1;
         rateLimitUntil = Date.now() + retryAfter * 1000;
-        console.warn(`[Telegram] Status update rate limited, retry after ${retryAfter}s`);
+        logWarning(`[Telegram] Status update rate limited, retry after ${retryAfter}s`);
         await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
         await editStatusMessage(text);
       } else {
-        console.warn('[CodexAdapter] Failed to edit status message:', error);
+        logWarning('[CodexAdapter] Failed to edit status message', error);
       }
     }
   }
@@ -252,11 +292,11 @@ export async function handleCodexMessage(
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters?.retry_after ?? 1;
         rateLimitUntil = Date.now() + retryAfter * 1000;
-        console.warn(`[Telegram] Sending status rate limited, retry after ${retryAfter}s`);
+        logWarning(`[Telegram] Sending status rate limited, retry after ${retryAfter}s`);
         await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
         await sendNewStatusMessage(initialText);
       } else {
-        console.warn('[CodexAdapter] Failed to send status message:', error);
+        logWarning('[CodexAdapter] Failed to send status message', error);
       }
     }
   }
@@ -282,13 +322,13 @@ export async function handleCodexMessage(
           return;
         }
 
-        const rawEvent = event.raw as any;
-        const rawItem = rawEvent?.item;
+        const rawEvent = event.raw;
         if (
           event.phase === 'command' &&
           rawEvent?.type === 'item.completed' &&
-          rawItem?.type === 'command_execution'
+          rawEvent.item.type === 'command_execution'
         ) {
+          const rawItem = rawEvent.item;
           const detailBlock = buildCommandDetailBlock(rawItem, event.detail);
           if (detailBlock) {
             await sendMarkdownMessage(detailBlock);
@@ -309,7 +349,7 @@ export async function handleCodexMessage(
         await appendStatusEntry(entry);
       })
       .catch((error) => {
-        console.warn('[CodexAdapter] Status update chain error:', error);
+        logWarning('[CodexAdapter] Status update chain error', error);
       });
   }
 
@@ -319,13 +359,13 @@ export async function handleCodexMessage(
       eventQueue = eventQueue
         .then(() => appendStatusEntry(finalEntry))
         .catch((error) => {
-          console.warn('[CodexAdapter] Final status update error:', error);
+          logWarning('[CodexAdapter] Final status update error', error);
         });
     }
     try {
       await eventQueue;
     } catch (error) {
-      console.warn('[CodexAdapter] Status update flush failed:', error);
+      logWarning('[CodexAdapter] Status update flush failed', error);
     }
   }
   
@@ -346,7 +386,7 @@ export async function handleCodexMessage(
         if ((error as Error).name === 'AbortError') {
           throw error;
         }
-        console.warn('[CodexAdapter] URL processing failed:', error);
+        logWarning('[CodexAdapter] URL processing failed', error);
       }
     }
     
@@ -411,7 +451,7 @@ export async function handleCodexMessage(
     });
 
     // 构建输入
-    let input: any;
+    let input: Input;
     let enhancedText = urlData ? urlData.processedText : text;
 
     // 如果有文件，添加文件信息到提示
@@ -437,7 +477,7 @@ export async function handleCodexMessage(
     if (imagePaths.length > 0) {
       input = [
         { type: 'text', text: enhancedText },
-        ...imagePaths.map(path => ({ type: 'local_image', path }))
+        ...imagePaths.map((path) => ({ type: 'local_image' as const, path })),
       ];
     } else {
       input = enhancedText;
@@ -470,7 +510,8 @@ export async function handleCodexMessage(
     }
 
     // 发送最终响应
-    let finalText = result.response;
+    const finalText = result.response;
+    let tokenUsageLine: string | null = null;
     
     if (result.usage) {
       const inputTokens = result.usage.input_tokens ?? 0;
@@ -494,7 +535,7 @@ export async function handleCodexMessage(
         `total:${formatK(totalTokens)}`,
       ].join(",");
 
-      finalText += `\n\n> ${tokenLine}`;
+      tokenUsageLine = tokenLine;
     }
     
     const chunks = chunkMessage(finalText);
@@ -506,6 +547,10 @@ export async function handleCodexMessage(
       await ctx.reply(chunks[i], { parse_mode: 'Markdown' }).catch(async () => {
         await ctx.reply(chunks[i]);
       });
+    }
+
+    if (tokenUsageLine) {
+      await sendTokenSummary(tokenUsageLine);
     }
   } catch (error) {
     if (unsubscribe) {

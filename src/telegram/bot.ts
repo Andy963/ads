@@ -1,3 +1,5 @@
+import '../utils/logSink.js';
+
 import { Bot } from 'grammy';
 import { loadTelegramConfig, validateConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
@@ -23,7 +25,7 @@ async function main() {
     config = loadTelegramConfig();
     validateConfig(config);
     logger.info('Telegram config loaded');
-    logger.info(`Single allowed user: ${config.allowedUsers[0]}`);
+    logger.info(`Single allowed user configured`);
     logger.info(`Allowed dirs: ${config.allowedDirs.join(', ')}`);
   } catch (error) {
     logger.error('Failed to load config:', (error as Error).message);
@@ -57,10 +59,10 @@ async function main() {
   if (savedState?.cwd) {
     const result = directoryManager.setUserCwd(userId, savedState.cwd);
     if (result.success) {
-      logger.info(`[WorkspacePersistence] Restored cwd for user ${userId}: ${savedState.cwd}`);
+      logger.info(`[WorkspacePersistence] Restored cwd: ${savedState.cwd}`);
     } else {
       logger.warn(
-        `[WorkspacePersistence] Failed to restore cwd for user ${userId} from ${savedState.cwd}: ${result.error}`,
+        `[WorkspacePersistence] Failed to restore cwd from ${savedState.cwd}: ${result.error}`,
       );
       // 如果恢复失败，使用默认目录
       const defaultDir = config.allowedDirs[0];
@@ -258,7 +260,7 @@ async function main() {
         const missing = initStatus.missingArtifact ?? "ADS 必需文件";
         replyMessage += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。`;
         logger.warn(
-          `[Telegram][WorkspaceInit] user=${userId} path=${newCwd} missing=${missing}${
+          `[Telegram][WorkspaceInit] path=${newCwd} missing=${missing}${
             initStatus.details ? ` details=${initStatus.details}` : ""
           }`,
         );

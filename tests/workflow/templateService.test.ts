@@ -9,6 +9,16 @@ import { getNodeById } from "../../src/graph/crud.js";
 import { resetDatabaseForTests } from "../../src/storage/database.js";
 import { initializeWorkspace } from "../../src/workspace/detector.js";
 
+interface WorkflowCreationResponse {
+  success?: boolean;
+  message?: string;
+  workflow?: {
+    root_node_id?: string;
+  };
+  error?: string;
+  available_templates?: string[];
+}
+
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);
@@ -41,7 +51,7 @@ describe("createWorkflowFromTemplate", () => {
       title: "示例工作流",
       workspace_path: workspaceDir,
     });
-    const parsed = JSON.parse(response) as any;
+    const parsed = JSON.parse(response) as WorkflowCreationResponse;
 
     assert.equal(parsed.success, true);
     assert.ok(parsed.workflow?.root_node_id, "should return root node id");
@@ -73,8 +83,8 @@ describe("createWorkflowFromTemplate", () => {
       workspace_path: workspaceDir,
     });
 
-    const first = JSON.parse(firstResponse) as any;
-    const second = JSON.parse(secondResponse) as any;
+    const first = JSON.parse(firstResponse) as WorkflowCreationResponse;
+    const second = JSON.parse(secondResponse) as WorkflowCreationResponse;
 
     assert.equal(first.success, true, "first workflow should be created successfully");
     assert.equal(second.success, true, "second workflow should be created successfully");
@@ -101,10 +111,10 @@ describe("createWorkflowFromTemplate", () => {
       title: "测试需求",
       workspace_path: workspaceDir,
     });
-    const parsed = JSON.parse(response) as any;
+    const parsed = JSON.parse(response) as WorkflowCreationResponse;
 
     assert.equal(parsed.success ?? false, false);
-    assert.ok(parsed.error.includes("工作流模板不存在"));
+    assert.ok(parsed.error && parsed.error.includes("工作流模板不存在"));
     assert.deepStrictEqual(parsed.available_templates, ["unified"]);
   });
 });

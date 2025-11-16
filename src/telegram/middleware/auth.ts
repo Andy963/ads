@@ -11,7 +11,7 @@ export function createAuthMiddleware(allowedUsers: number[]) {
 
     if (!allowedUsers.includes(userId)) {
       await ctx.reply('您未获得授权访问此 Bot');
-      console.warn(`[Auth] Unauthorized access attempt from user ${userId}`);
+      console.warn(`[Auth] Unauthorized access attempt`);
       return;
     }
 

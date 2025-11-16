@@ -1,4 +1,12 @@
-import type { ThreadItem, ThreadEvent } from '@openai/codex-sdk';
+import type {
+  CommandExecutionItem,
+  FileChangeItem,
+  ThreadItem,
+  ThreadEvent,
+  TodoListItem,
+} from '@openai/codex-sdk';
+
+type FileUpdateChange = FileChangeItem['changes'][number];
 
 export interface FormattedEvent {
   text: string;
@@ -105,7 +113,7 @@ function formatItemCompleted(item: ThreadItem): FormattedEvent | null {
   }
 }
 
-function formatCommandExecution(item: any, stage: 'started' | 'completed'): FormattedEvent | null {
+function formatCommandExecution(item: CommandExecutionItem, stage: 'started' | 'completed'): FormattedEvent | null {
   const command = item.command || '';
   const dangerous = checkDangerousCommand(command);
   
@@ -128,12 +136,12 @@ function formatCommandExecution(item: any, stage: 'started' | 'completed'): Form
   return null;
 }
 
-function formatFileChange(item: any, stage: 'started' | 'completed'): FormattedEvent {
+function formatFileChange(item: FileChangeItem, stage: 'started' | 'completed'): FormattedEvent {
   const changes = item.changes || [];
   const dangerous = checkDangerousFileChanges(changes);
   
   if (stage === 'started') {
-    const summary = changes.slice(0, 3).map((c: any) => 
+    const summary = changes.slice(0, 3).map((c) => 
       `${getChangeIcon(c.kind)} ${c.path}`
     ).join('\n');
     
@@ -154,14 +162,14 @@ function formatFileChange(item: any, stage: 'started' | 'completed'): FormattedE
   return { text: `✅ 已应用 ${changes.length} 个文件变更` };
 }
 
-function formatTodoList(item: any): FormattedEvent | null {
+function formatTodoList(item: TodoListItem): FormattedEvent | null {
   const items = item.items || [];
-  const completed = items.filter((i: any) => i.completed).length;
+  const completed = items.filter((i) => i.completed).length;
   const total = items.length;
   
   if (total === 0) return null;
   
-  const preview = items.slice(0, 3).map((i: any) => 
+  const preview = items.slice(0, 3).map((i) => 
     `${i.completed ? '✅' : '⬜️'} ${i.text}`
   ).join('\n');
   
@@ -170,7 +178,7 @@ function formatTodoList(item: any): FormattedEvent | null {
   };
 }
 
-function getChangeIcon(kind: string): string {
+function getChangeIcon(kind: FileUpdateChange['kind']): string {
   switch (kind) {
     case 'add': return '➕';
     case 'delete': return '🗑️';
@@ -228,7 +236,7 @@ export function checkDangerousCommand(command: string): { isDangerous: boolean; 
 /**
  * 检测危险文件变更
  */
-export function checkDangerousFileChanges(changes: any[]): { isDangerous: boolean; reason?: string } {
+export function checkDangerousFileChanges(changes: FileUpdateChange[]): { isDangerous: boolean; reason?: string } {
   // 检查是否删除重要文件
   const deletions = changes.filter(c => c.kind === 'delete');
   

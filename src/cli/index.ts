@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import "../utils/logSink.js";
+
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -26,6 +28,7 @@ import { ConversationLogger } from "../utils/conversationLogger.js";
 import { CodexSession } from "./codexChat.js";
 import type { AgentEvent, AgentPhase } from "../codex/events.js";
 import { WorkflowContext } from "../workspace/context.js";
+import type { ThreadEvent } from "@openai/codex-sdk";
 import {
   cancelIntake,
   getActiveIntakeState,
@@ -69,6 +72,122 @@ interface CommandResult {
 
 const PROMPT = "ADS> ";
 
+interface TemplateMetadata {
+  id?: string;
+  name?: string;
+  description?: string;
+  steps?: string;
+}
+
+interface WorkspaceInfoFields {
+  path?: string;
+  db_path?: string;
+  rules_dir?: string;
+  specs_dir?: string;
+  name?: string;
+  created_at?: string;
+  version?: string;
+  is_initialized?: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeTemplateEntry(entry: unknown): TemplateMetadata | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+
+  const metadata: TemplateMetadata = {
+    id: typeof entry.id === "string" ? entry.id : undefined,
+    name: typeof entry.name === "string" ? entry.name : undefined,
+    description: typeof entry.description === "string" ? entry.description : undefined,
+  };
+
+  const stepsValue = entry.steps;
+  if (typeof stepsValue === "string") {
+    metadata.steps = stepsValue;
+  } else if (Array.isArray(stepsValue)) {
+    metadata.steps = stepsValue.map((value) => String(value)).join(", ");
+  } else if (typeof stepsValue === "number") {
+    metadata.steps = stepsValue.toString();
+  }
+
+  return metadata;
+}
+
+function describeTemplateEntry(entry: unknown, index: number): string | null {
+  const metadata = normalizeTemplateEntry(entry);
+  if (!metadata) {
+    return null;
+  }
+
+  const label = metadata.name ?? metadata.id ?? `模板${index + 1}`;
+  const descPart = metadata.description ? ` - ${metadata.description}` : "";
+  const stepsPart = metadata.steps ? ` (步骤: ${metadata.steps})` : "";
+  const idLabel = metadata.id ? ` [${metadata.id}]` : "";
+  return `${index + 1}. ${label}${idLabel}${stepsPart}${descPart}`;
+}
+
+function normalizeWorkspaceInfo(value: unknown): WorkspaceInfoFields | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const info: WorkspaceInfoFields = {};
+  let hasField = false;
+
+  if (typeof value.path === "string") {
+    info.path = value.path;
+    hasField = true;
+  }
+  if (typeof value.db_path === "string") {
+    info.db_path = value.db_path;
+    hasField = true;
+  }
+  if (typeof value.rules_dir === "string") {
+    info.rules_dir = value.rules_dir;
+    hasField = true;
+  }
+  if (typeof value.specs_dir === "string") {
+    info.specs_dir = value.specs_dir;
+    hasField = true;
+  }
+  if (typeof value.name === "string") {
+    info.name = value.name;
+    hasField = true;
+  }
+  if (typeof value.created_at === "string") {
+    info.created_at = value.created_at;
+    hasField = true;
+  }
+  if (typeof value.version === "string") {
+    info.version = value.version;
+    hasField = true;
+  }
+  if (typeof value.is_initialized === "boolean") {
+    info.is_initialized = value.is_initialized;
+    hasField = true;
+  }
+
+  return hasField ? info : null;
+}
+
+function formatWorkspaceInfo(info: WorkspaceInfoFields): string {
+  const lines: string[] = ["工作空间信息:"];
+  if (info.path) lines.push(`  根目录: ${info.path}`);
+  if (info.db_path) lines.push(`  数据库: ${info.db_path}`);
+  if (info.rules_dir) lines.push(`  规则目录: ${info.rules_dir}`);
+  if (info.specs_dir) lines.push(`  规格目录: ${info.specs_dir}`);
+  if (info.name) lines.push(`  名称: ${info.name}`);
+  if (info.created_at) lines.push(`  创建时间: ${info.created_at}`);
+  if (info.version) lines.push(`  版本: ${info.version}`);
+  if (info.is_initialized !== undefined) {
+    lines.push(`  已初始化: ${info.is_initialized ? "是" : "否"}`);
+  }
+  return lines.join("\n");
+}
+
 async function ensureWorkspace(logger: ConversationLogger): Promise<void> {
   const cwd = process.cwd();
   const marker = path.join(cwd, ".ads", "workspace.json");
@@ -90,67 +209,41 @@ function formatResponse(text: string): string {
     return "(无输出)";
   }
   try {
-    const parsed = JSON.parse(text);
-    if (parsed.error) {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isRecord(parsed)) {
+      return text;
+    }
+
+    if (typeof parsed.error === "string") {
       return `❌ ${parsed.error}`;
     }
-    if (parsed.success && parsed.message) {
+    if (parsed.success === true && typeof parsed.message === "string") {
       return parsed.message;
     }
-    if (parsed.message) {
+    if (typeof parsed.message === "string") {
       return parsed.message;
     }
-    if (parsed.templates && Array.isArray(parsed.templates)) {
-      const lines: string[] = [];
-      lines.push("可用模板:");
-      parsed.templates.forEach((tpl: any, index: number) => {
-        const title = tpl.name ?? tpl.id ?? `模板${index + 1}`;
-        const desc = tpl.description ? ` - ${tpl.description}` : "";
-        const steps = tpl.steps ? ` (步骤: ${tpl.steps})` : "";
-        const idLabel = tpl.id ? ` [${tpl.id}]` : "";
-        lines.push(`${index + 1}. ${title}${idLabel}${steps}${desc}`);
-      });
-      return lines.join("\n");
+
+    if (Array.isArray(parsed.templates)) {
+      const lines = parsed.templates
+        .map((entry, index) => describeTemplateEntry(entry, index))
+        .filter((line): line is string => Boolean(line));
+      if (lines.length > 0) {
+        lines.unshift("可用模板:");
+        return lines.join("\n");
+      }
     }
-    if (parsed.path && parsed.db_path) {
-      const lines: string[] = [];
-      lines.push("工作空间信息:");
-      lines.push(`  根目录: ${parsed.path}`);
-      lines.push(`  数据库: ${parsed.db_path}`);
-      if (parsed.rules_dir) {
-        lines.push(`  规则目录: ${parsed.rules_dir}`);
-      }
-      if (parsed.specs_dir) {
-        lines.push(`  规格目录: ${parsed.specs_dir}`);
-      }
-      if (parsed.name) {
-        lines.push(`  名称: ${parsed.name}`);
-      }
-      if (parsed.created_at) {
-        lines.push(`  创建时间: ${parsed.created_at}`);
-      }
-      if (parsed.version) {
-        lines.push(`  版本: ${parsed.version}`);
-      }
-      lines.push(`  已初始化: ${parsed.is_initialized ? "是" : "否"}`);
-      return lines.join("\n");
+
+    const workspaceInfo = normalizeWorkspaceInfo(parsed);
+    if (workspaceInfo?.path && workspaceInfo.db_path) {
+      return formatWorkspaceInfo(workspaceInfo);
     }
-    if (parsed.workspace && typeof parsed.workspace === "object") {
-      const ws = parsed.workspace as Record<string, unknown>;
-      const lines: string[] = [];
-      lines.push("工作空间信息:");
-      if (ws.path) lines.push(`  根目录: ${ws.path}`);
-      if (ws.db_path) lines.push(`  数据库: ${ws.db_path}`);
-      if (ws.rules_dir) lines.push(`  规则目录: ${ws.rules_dir}`);
-      if (ws.specs_dir) lines.push(`  规格目录: ${ws.specs_dir}`);
-      if (ws.name) lines.push(`  名称: ${ws.name}`);
-      if (ws.created_at) lines.push(`  创建时间: ${ws.created_at}`);
-      if (ws.version) lines.push(`  版本: ${ws.version}`);
-      if (ws.is_initialized !== undefined) {
-        lines.push(`  已初始化: ${ws.is_initialized ? "是" : "否"}`);
-      }
-      return lines.join("\n");
+
+    const nestedWorkspaceInfo = normalizeWorkspaceInfo(parsed.workspace);
+    if (nestedWorkspaceInfo) {
+      return formatWorkspaceInfo(nestedWorkspaceInfo);
     }
+
     return JSON.stringify(parsed, null, 2);
   } catch {
     return text;
@@ -158,7 +251,10 @@ function formatResponse(text: string): string {
 }
 
 function normalizeOutput(text: string): string {
-  return text || "(无输出)";
+  if (typeof text !== "string") {
+    return "(无输出)";
+  }
+  return text.trim() ? text : "(无输出)";
 }
 
 function buildRequirementClarificationPrompt(): string | null {
@@ -229,6 +325,7 @@ async function handleCodexInteraction(input: string, codex: CodexSession, logger
 }
 
 async function handleAdsCommand(command: string, rawArgs: string[], _logger: ConversationLogger): Promise<CommandResult> {
+  void _logger;
   const positional: string[] = [];
   const params: Record<string, string> = {};
 
@@ -427,14 +524,7 @@ function createStatusRenderer(
   let cursorHidden = false;
   let spinnerTimer: NodeJS.Timeout | null = null;
   let spinnerIndex = 0;
-  let currentEvent: AgentEvent | null = streamingEnabled
-    ? {
-        phase: "analysis",
-        title: "处理中",
-        timestamp: startTime,
-        raw: { type: "turn.started" } as any,
-      }
-    : null;
+  let currentEvent: AgentEvent | null = streamingEnabled ? createPlaceholderEvent(startTime) : null;
 
   const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -562,6 +652,16 @@ function createStatusRenderer(
   };
 
   return { handleEvent, finish, cleanup };
+}
+
+function createPlaceholderEvent(startTime: number): AgentEvent {
+  const placeholderEvent: ThreadEvent = { type: "turn.started" };
+  return {
+    phase: "analysis",
+    title: "处理中",
+    timestamp: startTime,
+    raw: placeholderEvent,
+  };
 }
 
 const PHASE_LABEL: Record<AgentPhase, string> = {
