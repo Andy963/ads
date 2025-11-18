@@ -60,6 +60,7 @@ Environment Variables:
   TELEGRAM_MAX_RPM           Max requests per minute (default: 10)
   TELEGRAM_SANDBOX_MODE       Sandbox mode: read-only|workspace-write|full-access
   TELEGRAM_MODEL             AI model to use
+  TELEGRAM_PROXY_URL         Optional HTTP proxy (e.g. http://127.0.0.1:7897)
 
 Quick Start:
   1. Create .env.telegram file with your configuration

@@ -12,7 +12,7 @@ import { mapThreadEventToAgentEvent, type AgentEvent } from "../codex/events.js"
 import type { IntakeClassification } from "../intake/types.js";
 import { SystemPromptManager } from "../systemPrompt/manager.js";
 
-interface CodexSessionOptions {
+export interface CodexSessionOptions {
   overrides?: Partial<CodexResolvedConfig>;
   streamingEnabled?: boolean;
   streamThrottleMs?: number;

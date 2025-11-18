@@ -25,8 +25,12 @@ import { detectWorkspace } from "../workspace/detector.js";
 import { readRules, listRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
 import { ConversationLogger } from "../utils/conversationLogger.js";
-import { CodexSession } from "./codexChat.js";
+import { CodexAgentAdapter } from "../agents/adapters/codexAdapter.js";
+import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
+import { HybridOrchestrator } from "../agents/orchestrator.js";
 import type { AgentEvent, AgentPhase } from "../codex/events.js";
+import { resolveClaudeAgentConfig } from "../agents/config.js";
+import type { AgentAdapter } from "../agents/types.js";
 import { WorkflowContext } from "../workspace/context.js";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import {
@@ -204,6 +208,29 @@ async function ensureWorkspace(logger: ConversationLogger): Promise<void> {
   syncWorkspaceTemplates();
 }
 
+function createAgentController(
+  workspaceRoot: string,
+  systemPromptManager: SystemPromptManager,
+): HybridOrchestrator {
+  const adapters: AgentAdapter[] = [
+    new CodexAgentAdapter({
+      workingDirectory: workspaceRoot,
+      systemPromptManager,
+    }),
+  ];
+
+  const claudeConfig = resolveClaudeAgentConfig();
+  if (claudeConfig.enabled) {
+    adapters.push(new ClaudeAgentAdapter({ config: claudeConfig }));
+  }
+
+  return new HybridOrchestrator({
+    adapters,
+    defaultAgentId: "codex",
+    initialWorkingDirectory: workspaceRoot,
+  });
+}
+
 function formatResponse(text: string): string {
   if (!text.trim()) {
     return "(无输出)";
@@ -280,47 +307,57 @@ function buildRequirementClarificationPrompt(): string | null {
   return null;
 }
 
-async function handleCodexInteraction(input: string, codex: CodexSession, logger: ConversationLogger): Promise<CommandResult> {
+async function handleAgentInteraction(
+  input: string,
+  orchestrator: HybridOrchestrator,
+  logger: ConversationLogger,
+): Promise<CommandResult> {
   const trimmed = input.trim();
   if (!trimmed) {
     return { output: "" };
   }
 
-  const status = codex.status();
+  const status = orchestrator.status();
   if (!status.ready) {
     const reason = status.error ?? "请设置 CODEX_API_KEY 或配置 ~/.codex";
-    return { output: `❌ Codex 未启用: ${reason}` };
+    return { output: `❌ 当前代理未启用: ${reason}` };
   }
 
   try {
-    const streamingConfig = codex.getStreamingConfig();
+    const streamingConfig = orchestrator.getStreamingConfig();
     const startTime = Date.now();
     if (!streamingConfig.enabled) {
-      const thinking = "⌛ Codex 正在思考...";
+      const thinking = "⌛ 代理正在思考...";
       cliLogger.info(thinking);
       logger.logOutput(thinking);
     }
-    const renderer = createStatusRenderer(startTime, streamingConfig.throttleMs, logger, streamingConfig.enabled);
-    const unsubscribe = codex.onEvent(renderer.handleEvent);
+    const renderer = createStatusRenderer(
+      startTime,
+      streamingConfig.throttleMs,
+      logger,
+      streamingConfig.enabled,
+      orchestrator,
+    );
+    const unsubscribe = orchestrator.onEvent(renderer.handleEvent);
     const clarification = buildRequirementClarificationPrompt();
     const finalPrompt = clarification ? `${clarification}\n\n用户输入: ${trimmed}` : trimmed;
     try {
-      const result = await codex.send(finalPrompt);
+      const result = await orchestrator.send(finalPrompt);
       const elapsed = (Date.now() - startTime) / 1000;
       renderer.finish();
       if (!streamingConfig.enabled) {
-        const summary = `[Codex] 耗时 ${elapsed.toFixed(1)}s`;
+        const summary = `[${renderer.getAgentLabel()}] 耗时 ${elapsed.toFixed(1)}s`;
         cliLogger.info(summary);
         logger.logOutput(summary);
       }
-      return { output: result.response || "(Codex 无响应)" };
+      return { output: result.response || "(代理无响应)" };
     } finally {
       unsubscribe();
       renderer.cleanup();
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { output: `❌ Codex 调用失败: ${message}` };
+    return { output: `❌ 代理调用失败: ${message}` };
   }
 }
 
@@ -511,10 +548,12 @@ function createStatusRenderer(
   throttleMs: number,
   logger: ConversationLogger,
   streamingEnabled: boolean,
+  orchestrator: HybridOrchestrator,
 ): {
   handleEvent: (event: AgentEvent) => void;
   finish: () => void;
   cleanup: () => void;
+  getAgentLabel: () => string;
 } {
   let lastPrintedAt = 0;
   let lastPhase: AgentPhase | null = null;
@@ -553,6 +592,8 @@ function createStatusRenderer(
     }
   };
 
+  let agentLabel = describeActiveAgent(orchestrator);
+
   const render = (force = false) => {
     if (!streamingEnabled || !currentEvent) {
       return;
@@ -561,7 +602,8 @@ function createStatusRenderer(
     const now = Date.now();
     const elapsedSeconds = (now - startTime) / 1000;
     const spinner = isActivePhase(currentEvent.phase) ? spinnerFrames[spinnerIndex] : undefined;
-    const message = formatAgentStatus(currentEvent, elapsedSeconds, spinner);
+    agentLabel = describeActiveAgent(orchestrator);
+    const message = formatAgentStatus(currentEvent, elapsedSeconds, spinner, agentLabel);
     if (force || message !== lastRendered) {
       updateStatusLine(message);
       lastRendered = message;
@@ -651,7 +693,9 @@ function createStatusRenderer(
     currentEvent = null;
   };
 
-  return { handleEvent, finish, cleanup };
+  const getAgentLabel = () => agentLabel;
+
+  return { handleEvent, finish, cleanup, getAgentLabel };
 }
 
 function createPlaceholderEvent(startTime: number): AgentEvent {
@@ -690,12 +734,61 @@ const PHASE_COLOR: Record<AgentPhase, (text: string) => string> = {
   error: pc.red,
 };
 
-function formatAgentStatus(event: AgentEvent, elapsedSeconds?: number, spinner?: string): string {
+function describeActiveAgent(orchestrator: HybridOrchestrator): string {
+  const activeId = orchestrator.getActiveAgentId();
+  const descriptor = orchestrator
+    .listAgents()
+    .find((entry) => entry.metadata.id === activeId);
+  return descriptor?.metadata.name ?? activeId;
+}
+
+function formatAgentList(orchestrator: HybridOrchestrator): string {
+  const activeId = orchestrator.getActiveAgentId();
+  const descriptors = orchestrator.listAgents();
+  if (descriptors.length === 0) {
+    return "❌ 未检测到可用代理";
+  }
+
+  const lines = ["🤖 可用代理："];
+  for (const entry of descriptors) {
+    const prefix = entry.metadata.id === activeId ? "•" : "○";
+    const state = entry.status.ready ? "可用" : entry.status.error ?? "未配置";
+    lines.push(`${prefix} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`);
+  }
+  lines.push("\n使用 /agent <id> 切换代理，例如 /agent claude");
+  return lines.join("\n");
+}
+
+function switchAgent(orchestrator: HybridOrchestrator, rawId: string): CommandResult {
+  const normalized = rawId.toLowerCase();
+  const target = orchestrator
+    .listAgents()
+    .find(
+      (entry) =>
+        entry.metadata.id.toLowerCase() === normalized ||
+        entry.metadata.name.toLowerCase() === normalized,
+    );
+  if (!target) {
+    return { output: `❌ 未知代理: ${rawId}` };
+  }
+  if (!target.status.ready) {
+    return { output: `❌ ${target.metadata.name} 不可用: ${target.status.error ?? "未配置"}` };
+  }
+  orchestrator.switchAgent(target.metadata.id);
+  return { output: `🤖 已切换至 ${target.metadata.name}` };
+}
+
+function formatAgentStatus(
+  event: AgentEvent,
+  elapsedSeconds: number | undefined,
+  spinner: string | undefined,
+  agentLabel: string,
+): string {
   const phaseLabel = PHASE_LABEL[event.phase] ?? event.phase;
   const detail = event.detail ? ` (${event.detail})` : "";
   const timePart = elapsedSeconds !== undefined ? ` | ${elapsedSeconds.toFixed(1)}s` : "";
   const indicator = spinner ? `${spinner} ` : "";
-  const base = `[Codex] ${indicator}${phaseLabel}${detail}${timePart}`;
+  const base = `[${agentLabel}] ${indicator}${phaseLabel}${detail}${timePart}`;
   const colorize = PHASE_COLOR[event.phase];
   return colorize ? colorize(base) : base;
 }
@@ -706,7 +799,7 @@ function updateStatusLine(message: string): void {
   process.stdout.write(message);
 }
 
-async function maybeHandleAutoIntake(input: string, codex: CodexSession): Promise<CommandResult | null> {
+async function maybeHandleAutoIntake(input: string, orchestrator: HybridOrchestrator): Promise<CommandResult | null> {
   if (!input) {
     return null;
   }
@@ -719,13 +812,13 @@ async function maybeHandleAutoIntake(input: string, codex: CodexSession): Promis
     return null;
   }
 
-  const status = codex.status();
+  const status = orchestrator.status();
   if (!status.ready) {
     return null;
   }
 
   try {
-    const classification = await codex.classifyInput(input);
+    const classification = await orchestrator.classifyInput(input);
     if (classification === "task") {
       pendingIntakeRequest = input;
       const preview = input.length > 48 ? `${input.slice(0, 48)}…` : input;
@@ -742,7 +835,11 @@ async function maybeHandleAutoIntake(input: string, codex: CodexSession): Promis
   return null;
 }
 
-async function handleLine(line: string, logger: ConversationLogger, codex: CodexSession): Promise<CommandResult> {
+async function handleLine(
+  line: string,
+  logger: ConversationLogger,
+  orchestrator: HybridOrchestrator,
+): Promise<CommandResult> {
   const trimmed = line.trim();
   if (!trimmed) {
     return { output: "" };
@@ -815,27 +912,36 @@ async function handleLine(line: string, logger: ConversationLogger, codex: Codex
     switch (slash.command) {
       case "reset":
       case "codex.reset":
-        codex.reset();
-        return { output: "✅ 已重置 Codex 会话" };
-      case "codex.status": {
-        const status = codex.status();
+        orchestrator.reset();
+        return { output: "✅ 已重置代理会话" };
+      case "codex.status":
+      case "agent.status": {
+        const status = orchestrator.status();
+        const agentLabel = describeActiveAgent(orchestrator);
         return {
           output: status.ready
-            ? "✅ Codex 已就绪，可直接输入自然语言或 /model 等命令"
-            : `❌ Codex 未启用: ${status.error ?? "请配置 CODEX_API_KEY"}`,
+            ? `✅ ${agentLabel} 已就绪，可直接输入自然语言或 /model 等命令`
+            : `❌ ${agentLabel} 未启用: ${status.error ?? "请配置凭证"}`,
         };
       }
+      case "agent": {
+        const agentArg = slash.body.trim();
+        if (!agentArg) {
+          return { output: formatAgentList(orchestrator) };
+        }
+        return switchAgent(orchestrator, agentArg);
+      }
       default:
-        return handleCodexInteraction(trimmed, codex, logger);
+        return handleAgentInteraction(trimmed, orchestrator, logger);
     }
   }
 
-  const autoIntakeResult = await maybeHandleAutoIntake(trimmed, codex);
+  const autoIntakeResult = await maybeHandleAutoIntake(trimmed, orchestrator);
   if (autoIntakeResult) {
     return autoIntakeResult;
   }
 
-  return handleCodexInteraction(trimmed, codex, logger);
+  return handleAgentInteraction(trimmed, orchestrator, logger);
 }
 
 async function main(): Promise<void> {
@@ -854,19 +960,19 @@ async function main(): Promise<void> {
     reinjection: resolveReinjectionConfig("CLI"),
     logger: cliLogger.child("SystemPrompt"),
   });
-  const codex = new CodexSession({
-    workingDirectory: workspaceRoot,
-    systemPromptManager,
-  });
+  const agents = createAgentController(workspaceRoot, systemPromptManager);
 
   cliLogger.info("欢迎使用 ADS CLI，输入 /ads.help 查看可用命令。");
   cliLogger.info(`会话日志: ${logger.path}`);
 
-  const codexStatus = codex.status();
-  if (codexStatus.ready) {
-    cliLogger.info("[Codex] 已连接，直接输入自然语言即可对话。");
+  const activeLabel = describeActiveAgent(agents);
+  const initialStatus = agents.status();
+  if (initialStatus.ready) {
+    cliLogger.info(`[${activeLabel}] 已连接，直接输入自然语言即可对话。`);
   } else {
-    cliLogger.warn(`[Codex] 未启用: ${codexStatus.error ?? "请配置 CODEX_API_KEY 或 ~/.codex"}`);
+    cliLogger.warn(
+      `[${activeLabel}] 未启用: ${initialStatus.error ?? "请配置 CODEX_API_KEY 或 ~/.codex"}`,
+    );
   }
 
   const rl = readline.createInterface({
@@ -880,7 +986,7 @@ async function main(): Promise<void> {
   rl.on("line", async (line) => {
     logger.logInput(line);
     try {
-      const result = await handleLine(line, logger, codex);
+      const result = await handleLine(line, logger, agents);
       const output = normalizeOutput(result.output);
       if (output) {
         console.log(output);

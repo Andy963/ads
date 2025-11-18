@@ -103,6 +103,7 @@ export async function handleCodexMessage(
   }
 
   const session = sessionManager.getOrCreate(userId, cwd);
+  const activeAgentLabel = sessionManager.getActiveAgentLabel(userId) || 'Codex';
 
   const saveThreadIdIfNeeded = () => {
     const threadId = session.getThreadId();
@@ -119,7 +120,7 @@ export async function handleCodexMessage(
 
   const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
   const COMMAND_OUTPUT_LIMIT = 800;
-  const sentMsg = await ctx.reply('💭 开始处理...', { disable_notification: true });
+  const sentMsg = await ctx.reply(`💭 [${activeAgentLabel}] 开始处理...`, { disable_notification: true });
   let statusMessageId = sentMsg.message_id;
   let statusMessageText = sentMsg.text ?? '💭 开始处理...';
   let statusUpdatesClosed = false;
@@ -158,6 +159,12 @@ export async function handleCodexMessage(
   function formatCodeBlock(text: string): string {
     const safe = text.replace(/```/g, '`​``');
     return ['```', safe || '\u200b', '```'].join('\n');
+  }
+
+  function isEncryptedThreadError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    const normalized = message.toLowerCase();
+    return normalized.includes('encrypted content') && normalized.includes('could not be verified');
   }
 
   function extractCommandOutputSnippet(rawItem: CommandExecutionItem): { snippet: string; truncated: boolean } | null {
@@ -509,6 +516,7 @@ export async function handleCodexMessage(
     if (result.usage) {
       const inputTokens = result.usage.input_tokens ?? 0;
       const cachedTokens = result.usage.cached_input_tokens ?? 0;
+      const activeTokens = Math.max(inputTokens - cachedTokens, 0);
       const outputTokens = result.usage.output_tokens ?? 0;
       const totalTokens = inputTokens + outputTokens;
       const formatTokens = (value: number): string => {
@@ -530,8 +538,9 @@ export async function handleCodexMessage(
       const cachePercent = inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0;
       const tokenLine = [
         `Tokens · Input: ${formatTokens(inputTokens)}`,
-        `Output: ${formatTokens(outputTokens)}`,
+        `Active: ${formatTokens(activeTokens)}`,
         `Cache Hit: ${cachePercent.toFixed(1)}%`,
+        `Output: ${formatTokens(outputTokens)}`,
         `Total: ${formatTokens(totalTokens)}`,
       ].join(" | ");
 
@@ -565,11 +574,22 @@ export async function handleCodexMessage(
 
     const errorMsg = error instanceof Error ? error.message : String(error);
     const isInterrupt = (error as Error).name === 'AbortError';
-    const replyText = isInterrupt ? '⛔️ 已中断执行' : `❌ 错误: ${errorMsg}`;
+    const encryptedError = isEncryptedThreadError(error);
+    const replyText = isInterrupt
+      ? '⛔️ 已中断执行'
+      : encryptedError
+        ? `⚠️ Codex 线程上下文损坏，已自动重置，请重新发送请求。\n\n${formatCodeBlock(errorMsg)}`
+        : `❌ 错误: ${errorMsg}`;
 
     // 记录错误
     if (logger && !isInterrupt) {
       logger.logError(errorMsg);
+    }
+
+    if (encryptedError) {
+      logWarning('[CodexAdapter] Detected corrupted Codex thread, resetting session', error);
+      sessionManager.reset(userId);
+      logger = undefined;
     }
 
     await finalizeStatusUpdates(replyText);

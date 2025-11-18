@@ -13,6 +13,7 @@ import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
 import { checkWorkspaceInit } from './utils/workspaceInitChecker.js';
 import { parseInlineAdsCommand, parsePlainAdsCommand } from './utils/adsCommand.js';
+import { HttpsProxyAgent } from './utils/proxyAgent.js';
 
 const logger = createLogger('Bot');
 
@@ -79,25 +80,39 @@ async function main() {
   }
 
   // 创建 Bot 实例
-  const bot = new Bot(config.botToken);
+  const clientConfig = config.proxyUrl
+    ? {
+        baseFetchConfig: {
+          agent: new HttpsProxyAgent(config.proxyUrl),
+        },
+      }
+    : undefined;
+
+  const bot = new Bot(config.botToken, clientConfig ? { client: clientConfig } : undefined);
 
   // 注册中间件
   bot.use(createAuthMiddleware(config.allowedUsers));
   bot.use(createRateLimitMiddleware(config.maxRequestsPerMinute));
 
   // 注册命令列表（显示在 Telegram 输入框）
-  await bot.api.setMyCommands([
-    { command: 'start', description: '欢迎信息' },
-    { command: 'help', description: '命令帮助' },
-    { command: 'status', description: '系统状态' },
-    { command: 'reset', description: '开始新对话' },
-    { command: 'resume', description: '恢复之前的对话' },
-    { command: 'model', description: '查看/切换模型' },
-    { command: 'stop', description: '中断当前执行' },
-    { command: 'pwd', description: '当前目录' },
-    { command: 'cd', description: '切换目录' },
-    { command: 'ads', description: 'ADS 命令' },
-  ]);
+  try {
+    await bot.api.setMyCommands([
+      { command: 'start', description: '欢迎信息' },
+      { command: 'help', description: '命令帮助' },
+      { command: 'status', description: '系统状态' },
+      { command: 'reset', description: '开始新对话' },
+      { command: 'resume', description: '恢复之前的对话' },
+      { command: 'model', description: '查看/切换模型' },
+      { command: 'agent', description: '查看/切换代理' },
+      { command: 'stop', description: '中断当前执行' },
+      { command: 'pwd', description: '当前目录' },
+      { command: 'cd', description: '切换目录' },
+      { command: 'ads', description: 'ADS 命令' },
+    ]);
+    logger.info('Telegram commands registered');
+  } catch (error) {
+    logger.warn(`Failed to register Telegram commands (will continue): ${(error as Error).message}`);
+  }
 
   // 基础命令
   bot.command('start', async (ctx) => {
@@ -109,6 +124,7 @@ async function main() {
       '/reset - 重置会话\n' +
       '/pwd - 查看当前目录\n' +
       '/cd <path> - 切换目录\n' +
+      '/agent [name] - 查看或切换可用代理\n' +
       '使用 /ads.status、/ads.new、/ads.commit 等命令执行 ADS 操作\n\n' +
       '直接发送文本与 Codex 对话'
     );
@@ -124,6 +140,7 @@ async function main() {
       '/reset - 重置会话（开始新对话）\n' +
       '/resume - 恢复之前的对话\n' +
       '/model [name] - 查看/切换模型\n' +
+      '/agent [name] - 查看/切换代理\n' +
       '/stop - 中断当前执行\n\n' +
       '📁 目录管理：\n' +
       '/pwd - 当前工作目录\n' +
@@ -144,7 +161,17 @@ async function main() {
     const userId = ctx.from!.id;
     const stats = sessionManager.getStats();
     const cwd = directoryManager.getUserCwd(userId);
+    const orchestrator = sessionManager.getOrCreate(userId, cwd, false);
     const currentModel = sessionManager.getUserModel(userId);
+    const agentLabel = sessionManager.getActiveAgentLabel(userId) || 'Codex';
+    const agentLines = orchestrator
+      .listAgents()
+      .map((entry) => {
+        const marker = entry.metadata.id === orchestrator.getActiveAgentId() ? '•' : '○';
+        const state = entry.status.ready ? '可用' : entry.status.error ?? '未配置';
+        return `${marker} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`;
+      })
+      .join('\n');
     
     const sandboxEmoji = {
       'read-only': '🔒',
@@ -157,15 +184,16 @@ async function main() {
       `💬 会话统计: ${stats.active} 活跃 / ${stats.total} 总数\n` +
       `${sandboxEmoji} 沙箱模式: ${stats.sandboxMode}\n` +
       `🤖 当前模型: ${currentModel}\n` +
-      `📁 当前目录: ${cwd}\n` +
-      `✅ Codex: 已连接`
+      `🧠 当前代理: ${agentLabel}\n` +
+      `📁 当前目录: ${cwd}\n\n` +
+      `代理列表：\n${agentLines || '（暂无可用代理）'}`
     );
   });
 
   bot.command('reset', async (ctx) => {
     const userId = ctx.from!.id;
     sessionManager.reset(userId);
-    await ctx.reply('✅ Codex 会话已重置，新对话已开始');
+    await ctx.reply('✅ 代理会话已重置，新对话已开始');
   });
 
   bot.command('resume', async (ctx) => {
@@ -214,6 +242,33 @@ async function main() {
     }
   });
 
+  bot.command('agent', async (ctx) => {
+    const userId = ctx.from!.id;
+    const args = ctx.message?.text.split(' ').slice(1) || [];
+    const cwd = directoryManager.getUserCwd(userId);
+    const orchestrator = sessionManager.getOrCreate(userId, cwd, false);
+
+    if (args.length === 0) {
+      const agents = orchestrator.listAgents();
+      if (!agents.length) {
+        await ctx.reply('❌ 暂无可用代理');
+        return;
+      }
+      const lines = agents
+        .map((entry) => {
+          const marker = entry.metadata.id === orchestrator.getActiveAgentId() ? '•' : '○';
+          const state = entry.status.ready ? '可用' : entry.status.error ?? '未配置';
+          return `${marker} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`;
+        })
+        .join('\n');
+      await ctx.reply(`🤖 可用代理：\n${lines}\n\n使用 /agent <id> 切换代理，如 /agent claude`);
+      return;
+    }
+
+    const result = sessionManager.switchAgent(userId, args[0]);
+    await ctx.reply(result.message);
+  });
+
   bot.command('stop', async (ctx) => {
     const userId = ctx.from!.id;
     const interrupted = interruptExecution(userId);
@@ -251,7 +306,7 @@ async function main() {
       const initStatus = checkWorkspaceInit(newCwd);
       let replyMessage = `✅ 已切换到: ${newCwd}`;
       if (prevCwd !== newCwd) {
-        replyMessage += `\n💡 Codex 会话已切换到新目录`;
+        replyMessage += `\n💡 代理上下文已切换到新目录`;
       } else {
         replyMessage += `\nℹ️ 已在相同目录，无需重置会话`;
       }
@@ -280,6 +335,13 @@ async function main() {
   });
 
   bot.command('ads', async (ctx) => {
+    const inlineArgs = parseInlineAdsCommand(ctx.message?.text);
+    if (inlineArgs) {
+      const workspacePath = directoryManager.getUserCwd(ctx.from!.id);
+      await handleAdsCommand(ctx, inlineArgs, { workspacePath });
+      return;
+    }
+
     await ctx.reply(
       'ℹ️ ADS 命令已统一为点号形式，请使用以下格式：\n\n' +
       '/ads.status - 查看工作流状态\n' +

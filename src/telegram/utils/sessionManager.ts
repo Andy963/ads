@@ -1,12 +1,16 @@
-import { CodexSession } from '../../cli/codexChat.js';
+import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
+import { ClaudeAgentAdapter } from '../../agents/adapters/claudeAdapter.js';
+import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import { ThreadStorage } from './threadStorage.js';
 import type { SandboxMode } from '../config.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { createLogger } from '../../utils/logger.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
+import { resolveClaudeAgentConfig } from '../../agents/config.js';
+import type { AgentAdapter } from '../../agents/types.js';
 
 interface SessionRecord {
-  session: CodexSession;
+  orchestrator: HybridOrchestrator;
   lastActivity: number;
   cwd: string;
   logger?: ConversationLogger;
@@ -21,6 +25,7 @@ export class SessionManager {
   private userModels = new Map<number, string>(); // 用户自定义模型
   private readonly reinjectionConfig = resolveReinjectionConfig("TELEGRAM");
   private readonly logger = createLogger("SessionManager");
+  private readonly claudeConfig = resolveClaudeAgentConfig();
 
   constructor(
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000, // 30分钟
@@ -36,16 +41,16 @@ export class SessionManager {
     }, this.cleanupIntervalMs);
   }
 
-  getOrCreate(userId: number, cwd?: string, resumeThread?: boolean): CodexSession {
+  getOrCreate(userId: number, cwd?: string, resumeThread?: boolean): HybridOrchestrator {
     const existing = this.sessions.get(userId);
     
     if (existing) {
       existing.lastActivity = Date.now();
       if (cwd && cwd !== existing.cwd) {
         existing.cwd = cwd;
-        existing.session.setWorkingDirectory(cwd);
+        existing.orchestrator.setWorkingDirectory(cwd);
       }
-      return existing.session;
+      return existing.orchestrator;
     }
 
     // 只有明确要求时才恢复 thread
@@ -57,7 +62,11 @@ export class SessionManager {
     // 使用时间戳和随机数生成唯一的会话ID（不暴露用户信息）
     const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    console.log(`[SessionManager] Creating new session (id: ${sessionId})${savedThreadId ? ` (resuming thread ${savedThreadId})` : ''} with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`);
+    console.log(
+      `[SessionManager] Creating new session (id: ${sessionId})${
+        savedThreadId ? ` (resuming thread ${savedThreadId})` : ''
+      } with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
+    );
 
     const systemPromptManager = new SystemPromptManager({
       workspaceRoot: effectiveCwd,
@@ -65,23 +74,36 @@ export class SessionManager {
       logger: this.logger.child(`Session-${sessionId}`),
     });
     
-    const session = new CodexSession({
-      streamingEnabled: true,
-      resumeThreadId: savedThreadId,
-      sandboxMode: this.sandboxMode,
-      model: userModel,
-      workingDirectory: effectiveCwd,
-      systemPromptManager,
+    const adapters: AgentAdapter[] = [
+      new CodexAgentAdapter({
+        streamingEnabled: true,
+        resumeThreadId: savedThreadId,
+        sandboxMode: this.sandboxMode,
+        model: userModel,
+        workingDirectory: effectiveCwd,
+        systemPromptManager,
+      }),
+    ];
+
+    if (this.claudeConfig.enabled) {
+      adapters.push(new ClaudeAgentAdapter({ config: this.claudeConfig }));
+    }
+
+    const orchestrator = new HybridOrchestrator({
+      adapters,
+      defaultAgentId: "codex",
+      initialWorkingDirectory: effectiveCwd,
+      initialModel: userModel,
     });
 
     this.sessions.set(userId, {
-      session,
+      orchestrator,
       lastActivity: Date.now(),
       cwd: effectiveCwd,
       logger: undefined, // 延迟创建，等到获取 threadId 后
     });
 
-    return session;
+    return orchestrator;
   }
   
   hasSession(userId: number): boolean {
@@ -108,7 +130,7 @@ export class SessionManager {
     }
 
     // 获取 threadId
-    const threadId = record.session.getThreadId();
+    const threadId = record.orchestrator.getThreadId();
     if (!threadId) {
       // 没有 threadId，说明还没发送过消息，暂时不创建 logger
       return undefined;
@@ -143,7 +165,7 @@ export class SessionManager {
     this.userModels.set(userId, model);
     const record = this.sessions.get(userId);
     if (record) {
-      record.session.setModel(model);
+      record.orchestrator.setModel(model);
       record.lastActivity = Date.now();
     }
     if (this.threadStorage.getThreadId(userId)) {
@@ -168,7 +190,7 @@ export class SessionManager {
         record.logger.close();
         record.logger = undefined;
       }
-      record.session.reset();
+      record.orchestrator.reset();
       record.lastActivity = Date.now();
       console.log(`[SessionManager] Session reset`);
     } else {
@@ -190,7 +212,7 @@ export class SessionManager {
       return;
     }
 
-    const threadId = record.session.getThreadId();
+    const threadId = record.orchestrator.getThreadId();
 
     if (record.cwd === cwd) {
       if (threadId) {
@@ -201,11 +223,55 @@ export class SessionManager {
     }
 
     record.cwd = cwd;
-    record.session.setWorkingDirectory(cwd);
+    record.orchestrator.setWorkingDirectory(cwd);
 
     if (threadId) {
       this.saveThreadId(userId, threadId);
     }
+  }
+
+  listAgents(userId: number) {
+    return this.sessions.get(userId)?.orchestrator.listAgents() ?? [];
+  }
+
+  getActiveAgentLabel(userId: number): string | undefined {
+    const record = this.sessions.get(userId);
+    if (!record) {
+      return undefined;
+    }
+    const activeId = record.orchestrator.getActiveAgentId();
+    const descriptor = record
+      .orchestrator
+      .listAgents()
+      .find((entry) => entry.metadata.id === activeId);
+    return descriptor?.metadata.name ?? activeId;
+  }
+
+  switchAgent(userId: number, agentId: string): { success: boolean; message: string } {
+    const record = this.sessions.get(userId);
+    if (!record) {
+      return { success: false, message: "❌ 当前没有活跃会话" };
+    }
+    const normalized = agentId.toLowerCase();
+    const descriptor = record
+      .orchestrator
+      .listAgents()
+      .find(
+        (entry) =>
+          entry.metadata.id.toLowerCase() === normalized ||
+          entry.metadata.name.toLowerCase() === normalized,
+      );
+    if (!descriptor) {
+      return { success: false, message: `❌ 未知代理: ${agentId}` };
+    }
+    if (!descriptor.status.ready) {
+      return {
+        success: false,
+        message: `❌ ${descriptor.metadata.name} 不可用: ${descriptor.status.error ?? "未配置"}`,
+      };
+    }
+    record.orchestrator.switchAgent(descriptor.metadata.id);
+    return { success: true, message: `🤖 已切换至 ${descriptor.metadata.name}` };
   }
 
   getStats(): { total: number; active: number; idle: number; sandboxMode: SandboxMode; defaultModel: string } {
@@ -255,7 +321,7 @@ export class SessionManager {
 
     // 保存所有活跃 session 的 thread ID 并关闭 logger
     for (const [userId, record] of this.sessions.entries()) {
-      const threadId = record.session.getThreadId();
+      const threadId = record.orchestrator.getThreadId();
       if (threadId) {
         this.threadStorage.setRecord(userId, { threadId, cwd: record.cwd });
       }

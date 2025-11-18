@@ -9,6 +9,7 @@ export interface TelegramConfig {
   streamUpdateIntervalMs: number;
   sandboxMode: SandboxMode;
   defaultModel?: string;
+  proxyUrl?: string;
 }
 
 export function loadTelegramConfig(): TelegramConfig {
@@ -61,6 +62,7 @@ export function loadTelegramConfig(): TelegramConfig {
   }
 
   const defaultModel = process.env.TELEGRAM_MODEL; // 可选，不设置则使用 SDK 默认
+  const proxyUrl = normalizeProxyUrl(process.env.TELEGRAM_PROXY_URL);
 
   return {
     botToken,
@@ -71,7 +73,19 @@ export function loadTelegramConfig(): TelegramConfig {
     streamUpdateIntervalMs,
     sandboxMode,
     defaultModel,
+    proxyUrl,
   };
+}
+
+function normalizeProxyUrl(raw?: string): string | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
 export function validateConfig(config: TelegramConfig): void {

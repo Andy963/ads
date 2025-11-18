@@ -104,6 +104,34 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
   - `ADS_REINJECTION_TURNS`（默认 `10`）
   - `CLI_REINJECTION_*` / `TELEGRAM_REINJECTION_*` 可覆盖对应入口。
 
+### Claude Agent（实验性）
+
+Claude 集成正在逐步落地，可通过以下环境变量启用实验特性：
+
+- `ENABLE_CLAUDE_AGENT=1`：显式打开 Claude 适配器（默认关闭，可在 `.claude/config.json` 里设置 `enabled: true`）
+- `CLAUDE_API_KEY`：Anthropic API Key（若未设置，依次回退查找 `ANTHROPIC_API_KEY` 或 `~/.claude/auth.json`）
+- `CLAUDE_MODEL`：Claude 模型名称，默认 `claude-sonnet-4.5`
+- `CLAUDE_WORKDIR`：Claude Agent Runner 的工作目录，默认 `/tmp/ads-claude-agent`
+- `CLAUDE_TOOL_ALLOWLIST`：逗号分隔的工具白名单，占位用于后续阶段
+- `ENABLE_GEMINI_AGENT`：预留开关，暂不生效
+
+也可以像 Codex 一样在主目录放置配置文件：
+
+`~/.claude/config.json`
+```json
+{
+  "enabled": true,
+  "api_key": "sk-ant-xxx",
+  "model": "claude-sonnet-4.5",
+  "workdir": "/tmp/ads-claude-agent",
+  "tool_allowlist": ["bash", "file.edit"]
+}
+```
+
+（可选）在 `~/.claude/auth.json` 中保存 `{"ANTHROPIC_API_KEY": "..."}` 以与 `config.json` 分离密钥。
+
+配置解析逻辑位于 `src/agents/config.ts`，CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex 与 Claude 之间切换。
+
 ## 🤝 Contributing
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on:
@@ -123,6 +151,7 @@ Security is important to us. If you discover a security vulnerability, please fo
 - Use `.env.example` as a template
 - Set proper file permissions for sensitive files (`chmod 600 .env.telegram`)
 - Configure `TELEGRAM_ALLOWED_USERS` and `TELEGRAM_ALLOWED_DIRS` appropriately
+- If your environment requires a proxy, set `TELEGRAM_PROXY_URL` (e.g. `http://127.0.0.1:7897`) instead of hardcoding it in code
 - Revoke leaked tokens immediately via [@BotFather](https://t.me/BotFather)
 
 See [SECURITY.md](SECURITY.md) for complete security guidelines.

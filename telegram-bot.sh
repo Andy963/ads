@@ -4,11 +4,60 @@
 
 BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BOT_SCRIPT="dist/src/telegram/bot.js"
+MCP_SCRIPT="dist/src/mcp/server.js"
 ENV_FILE=".env.telegram"
 LOG_FILE=".ads/logs/telegram-bot.log"
 PID_FILE=".ads/telegram-bot.pid"
+MCP_LOG_FILE=".ads/logs/mcp-server.log"
+MCP_PID_FILE=".ads/mcp-server.pid"
 
 cd "$BOT_DIR" || exit 1
+
+start_mcp() {
+  if [ ! -f "$MCP_SCRIPT" ]; then
+    echo "❌ MCP server脚本不存在: $MCP_SCRIPT"
+    return 1
+  fi
+
+  if [ -f "$MCP_PID_FILE" ]; then
+    MCP_PID=$(cat "$MCP_PID_FILE")
+    if ps -p "$MCP_PID" > /dev/null 2>&1; then
+      echo "ℹ️  MCP server 已在运行 (PID: $MCP_PID)"
+      return 0
+    fi
+  fi
+
+  mkdir -p "$(dirname "$MCP_LOG_FILE")"
+  nohup node "$MCP_SCRIPT" > "$MCP_LOG_FILE" 2>&1 &
+  MCP_PID=$!
+  echo $MCP_PID > "$MCP_PID_FILE"
+  sleep 1
+  if ps -p "$MCP_PID" > /dev/null 2>&1; then
+    echo "✅ MCP server started (PID: $MCP_PID)"
+  else
+    echo "❌ 无法启动 MCP server"
+    tail -n 20 "$MCP_LOG_FILE"
+    return 1
+  fi
+}
+
+stop_mcp() {
+  if [ ! -f "$MCP_PID_FILE" ]; then
+    return 0
+  fi
+
+  MCP_PID=$(cat "$MCP_PID_FILE")
+  if ps -p "$MCP_PID" > /dev/null 2>&1; then
+    echo "🛑 Stopping MCP server (PID: $MCP_PID)..."
+    kill "$MCP_PID"
+    sleep 1
+    if ps -p "$MCP_PID" > /dev/null 2>&1; then
+      echo "⚠️  Force killing MCP server..."
+      kill -9 "$MCP_PID"
+    fi
+  fi
+  rm -f "$MCP_PID_FILE"
+}
 
 case "$1" in
   start)
@@ -21,6 +70,10 @@ case "$1" in
     fi
 
     echo "🚀 Starting Telegram Bot..."
+    if ! start_mcp; then
+      echo "❌ MCP server 启动失败"
+      exit 1
+    fi
     
     # 验证环境文件安全性
     if [ ! -f "$ENV_FILE" ]; then
@@ -77,6 +130,7 @@ case "$1" in
     if [ ! -f "$PID_FILE" ]; then
       echo "❌ PID file not found"
       pkill -f "node $BOT_SCRIPT" && echo "✅ Bot stopped (forced)" || echo "ℹ️  No bot process found"
+      stop_mcp
       exit 0
     fi
 
@@ -97,6 +151,7 @@ case "$1" in
       echo "ℹ️  Bot not running"
       rm -f "$PID_FILE"
     fi
+    stop_mcp
     ;;
 
   restart)
@@ -118,6 +173,17 @@ case "$1" in
     else
       echo "❌ Bot not running"
     fi
+    if [ -f "$MCP_PID_FILE" ]; then
+      MCP_PID=$(cat "$MCP_PID_FILE")
+      if ps -p "$MCP_PID" > /dev/null 2>&1; then
+        echo "✅ MCP server is running (PID: $MCP_PID)"
+      else
+        echo "❌ MCP server not running (stale PID file)"
+        rm -f "$MCP_PID_FILE"
+      fi
+    else
+      echo "❌ MCP server not running"
+    fi
     ;;
 
   log)
@@ -135,6 +201,8 @@ case "$1" in
 
   *)
     echo "Usage: $0 {start|stop|restart|status|log [-f|n]}"
+    echo ""
+    echo "MCP server log: $MCP_LOG_FILE"
     echo ""
     echo "Commands:"
     echo "  start   - Start the bot"
