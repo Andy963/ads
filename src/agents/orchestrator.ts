@@ -84,6 +84,10 @@ export class HybridOrchestrator {
     return this.activeAgentId;
   }
 
+  hasAgent(agentId: AgentIdentifier): boolean {
+    return this.adapters.has(agentId);
+  }
+
   listAgents(): AgentDescriptor[] {
     return Array.from(this.adapters.values()).map(({ adapter, metadata }) => ({
       metadata,
@@ -127,6 +131,14 @@ export class HybridOrchestrator {
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
     return this.activeEntry.adapter.send(input, options);
+  }
+
+  async invokeAgent(agentId: AgentIdentifier, input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    const entry = this.adapters.get(agentId);
+    if (!entry) {
+      throw new Error(`Agent "${agentId}" is not registered`);
+    }
+    return entry.adapter.send(input, options);
   }
 
   setWorkingDirectory(workingDirectory?: string): void {

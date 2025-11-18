@@ -28,6 +28,12 @@ import { ConversationLogger } from "../utils/conversationLogger.js";
 import { CodexAgentAdapter } from "../agents/adapters/codexAdapter.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 import { HybridOrchestrator } from "../agents/orchestrator.js";
+import {
+  injectDelegationGuide,
+  resolveDelegations,
+  supportsAutoDelegation,
+  type AgentMode,
+} from "../agents/delegation.js";
 import type { AgentEvent, AgentPhase } from "../codex/events.js";
 import { resolveClaudeAgentConfig } from "../agents/config.js";
 import type { AgentAdapter } from "../agents/types.js";
@@ -68,6 +74,7 @@ const NO_SET = new Set([
 ]);
 
 let pendingIntakeRequest: string | null = null;
+let agentMode: AgentMode = "manual";
 
 interface CommandResult {
   output: string;
@@ -284,6 +291,14 @@ function normalizeOutput(text: string): string {
   return text.trim() ? text : "(无输出)";
 }
 
+function truncateForLog(text: string, limit = 96): string {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= limit) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, limit - 1)}…`;
+}
+
 function buildRequirementClarificationPrompt(): string | null {
   try {
     const status = WorkflowContext.getWorkflowStatus();
@@ -311,6 +326,7 @@ async function handleAgentInteraction(
   input: string,
   orchestrator: HybridOrchestrator,
   logger: ConversationLogger,
+  mode: AgentMode,
 ): Promise<CommandResult> {
   const trimmed = input.trim();
   if (!trimmed) {
@@ -340,9 +356,18 @@ async function handleAgentInteraction(
     );
     const unsubscribe = orchestrator.onEvent(renderer.handleEvent);
     const clarification = buildRequirementClarificationPrompt();
-    const finalPrompt = clarification ? `${clarification}\n\n用户输入: ${trimmed}` : trimmed;
+    const basePrompt = clarification ? `${clarification}\n\n用户输入: ${trimmed}` : trimmed;
+    const finalPrompt = injectDelegationGuide(basePrompt, orchestrator, mode);
     try {
       const result = await orchestrator.send(finalPrompt);
+      const delegated = await resolveDelegations(result, orchestrator, mode, {
+        onInvoke: (prompt) => {
+          logger.logOutput(`[Auto] 调用 Claude 协助：${truncateForLog(prompt)}`);
+        },
+        onResult: (summary) => {
+          logger.logOutput(`[Auto] Claude 完成：${truncateForLog(summary.prompt)}`);
+        },
+      });
       const elapsed = (Date.now() - startTime) / 1000;
       renderer.finish();
       if (!streamingConfig.enabled) {
@@ -350,7 +375,8 @@ async function handleAgentInteraction(
         cliLogger.info(summary);
         logger.logOutput(summary);
       }
-      return { output: result.response || "(代理无响应)" };
+      const finalText = delegated.response || "(代理无响应)";
+      return { output: finalText };
     } finally {
       unsubscribe();
       renderer.cleanup();
@@ -742,14 +768,17 @@ function describeActiveAgent(orchestrator: HybridOrchestrator): string {
   return descriptor?.metadata.name ?? activeId;
 }
 
-function formatAgentList(orchestrator: HybridOrchestrator): string {
+function formatAgentList(orchestrator: HybridOrchestrator, mode: AgentMode): string {
   const activeId = orchestrator.getActiveAgentId();
   const descriptors = orchestrator.listAgents();
   if (descriptors.length === 0) {
     return "❌ 未检测到可用代理";
   }
 
-  const lines = ["🤖 可用代理："];
+  const lines = [
+    "🤖 可用代理：",
+    `当前模式: ${mode === "auto" ? "自动（允许 Codex 调用 Claude）" : "手动"}`,
+  ];
   for (const entry of descriptors) {
     const prefix = entry.metadata.id === activeId ? "•" : "○";
     const state = entry.status.ready ? "可用" : entry.status.error ?? "未配置";
@@ -927,12 +956,24 @@ async function handleLine(
       case "agent": {
         const agentArg = slash.body.trim();
         if (!agentArg) {
-          return { output: formatAgentList(orchestrator) };
+          return { output: formatAgentList(orchestrator, agentMode) };
+        }
+        const normalized = agentArg.toLowerCase();
+        if (normalized === "auto") {
+          if (!supportsAutoDelegation(orchestrator)) {
+            return { output: "❌ Claude 未启用，无法进入自动模式" };
+          }
+          agentMode = "auto";
+          return { output: "🤖 已启用自动代理模式（Codex 可自行调用 Claude）" };
+        }
+        if (normalized === "manual") {
+          agentMode = "manual";
+          return { output: "🔧 已切换到手动代理模式" };
         }
         return switchAgent(orchestrator, agentArg);
       }
       default:
-        return handleAgentInteraction(trimmed, orchestrator, logger);
+        return handleAgentInteraction(trimmed, orchestrator, logger, agentMode);
     }
   }
 
@@ -941,7 +982,7 @@ async function handleLine(
     return autoIntakeResult;
   }
 
-  return handleAgentInteraction(trimmed, orchestrator, logger);
+  return handleAgentInteraction(trimmed, orchestrator, logger, agentMode);
 }
 
 async function main(): Promise<void> {

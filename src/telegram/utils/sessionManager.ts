@@ -7,6 +7,7 @@ import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPromp
 import { createLogger } from '../../utils/logger.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
 import { resolveClaudeAgentConfig } from '../../agents/config.js';
+import type { AgentMode } from '../../agents/delegation.js';
 import type { AgentAdapter } from '../../agents/types.js';
 
 interface SessionRecord {
@@ -14,6 +15,7 @@ interface SessionRecord {
   lastActivity: number;
   cwd: string;
   logger?: ConversationLogger;
+  agentMode: AgentMode;
 }
 
 export class SessionManager {
@@ -101,6 +103,7 @@ export class SessionManager {
       lastActivity: Date.now(),
       cwd: effectiveCwd,
       logger: undefined, // 延迟创建，等到获取 threadId 后
+      agentMode: "manual",
     });
 
     return orchestrator;
@@ -232,6 +235,18 @@ export class SessionManager {
 
   listAgents(userId: number) {
     return this.sessions.get(userId)?.orchestrator.listAgents() ?? [];
+  }
+
+  getAgentMode(userId: number): AgentMode {
+    return this.sessions.get(userId)?.agentMode ?? "manual";
+  }
+
+  setAgentMode(userId: number, mode: AgentMode): void {
+    const record = this.sessions.get(userId);
+    if (!record) {
+      return;
+    }
+    record.agentMode = mode;
   }
 
   getActiveAgentLabel(userId: number): string | undefined {

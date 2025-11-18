@@ -10,6 +10,7 @@ import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../uti
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdown } from '../../utils/markdown.js';
+import { injectDelegationGuide, resolveDelegations } from '../../agents/delegation.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -59,6 +60,14 @@ function chunkMessage(text: string, maxLen = 4000): string[] {
   return chunks;
 }
 
+function truncateForStatus(text: string, limit = 96): string {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  if (trimmed.length <= limit) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, limit - 1)}…`;
+}
+
 export async function handleCodexMessage(
   ctx: Context,
   text: string,
@@ -103,6 +112,7 @@ export async function handleCodexMessage(
   }
 
   const session = sessionManager.getOrCreate(userId, cwd);
+  const agentMode = sessionManager.getAgentMode(userId);
   const activeAgentLabel = sessionManager.getActiveAgentLabel(userId) || 'Codex';
 
   const saveThreadIdIfNeeded = () => {
@@ -463,6 +473,17 @@ export async function handleCodexMessage(
       }
     }
 
+    enhancedText = injectDelegationGuide(enhancedText, session, agentMode);
+
+    if (imagePaths.length > 0) {
+      input = [
+        { type: 'text', text: enhancedText },
+        ...imagePaths.map((path) => ({ type: 'local_image' as const, path })),
+      ];
+    } else {
+      input = enhancedText;
+    }
+
     // 准备用户输入日志（可能现在还没有 logger）
     let userInputLog = enhancedText;
     if (imagePaths.length > 0) {
@@ -474,16 +495,11 @@ export async function handleCodexMessage(
       logger.logInput(userInputLog);
     }
 
-    if (imagePaths.length > 0) {
-      input = [
-        { type: 'text', text: enhancedText },
-        ...imagePaths.map((path) => ({ type: 'local_image' as const, path })),
-      ];
-    } else {
-      input = enhancedText;
-    }
-
     const result = await session.send(input, { streaming: true, signal });
+    const delegation = await resolveDelegations(result, session, agentMode, {
+      onInvoke: (prompt) => logger?.logOutput(`[Auto] 调用 Claude：${truncateForStatus(prompt)}`),
+      onResult: (summary) => logger?.logOutput(`[Auto] Claude 完成：${truncateForStatus(summary.prompt)}`),
+    });
 
     await finalizeStatusUpdates();
     unsubscribe?.();
@@ -510,14 +526,15 @@ export async function handleCodexMessage(
     }
 
     // 发送最终响应
-    const finalText = result.response;
+    let finalText = delegation.response;
     let tokenUsageLine: string | null = null;
     
-    if (result.usage) {
-      const inputTokens = result.usage.input_tokens ?? 0;
-      const cachedTokens = result.usage.cached_input_tokens ?? 0;
+    const usage = delegation.usage ?? result.usage;
+    if (usage) {
+      const inputTokens = usage.input_tokens ?? 0;
+      const cachedTokens = usage.cached_input_tokens ?? 0;
       const activeTokens = Math.max(inputTokens - cachedTokens, 0);
-      const outputTokens = result.usage.output_tokens ?? 0;
+      const outputTokens = usage.output_tokens ?? 0;
       const totalTokens = inputTokens + outputTokens;
       const formatTokens = (value: number): string => {
         if (!value) {
