@@ -54,11 +54,22 @@ function normalizeToolAllowlist(value: unknown): string[] | undefined {
   return undefined;
 }
 
+function resolveEnabledFlag(envValue: string | undefined, fileValue: boolean | undefined, hasApiKey: boolean): boolean {
+  if (envValue !== undefined) {
+    return parseBoolean(envValue, false);
+  }
+  if (fileValue !== undefined) {
+    return fileValue;
+  }
+  return hasApiKey;
+}
+
 function loadClaudeConfigFiles(): ClaudeFileConfig {
   const home = homedir();
   const configDir = join(home, ".claude");
   const configPath = join(configDir, "config.json");
   const authPath = join(configDir, "auth.json");
+  const settingsPath = join(configDir, "settings.json");
   const result: ClaudeFileConfig = {};
 
   if (existsSync(configPath)) {
@@ -108,19 +119,46 @@ function loadClaudeConfigFiles(): ClaudeFileConfig {
     }
   }
 
+  if (existsSync(settingsPath)) {
+    try {
+      const rawSettings = readFileSync(settingsPath, "utf-8");
+      const parsedSettings = JSON.parse(rawSettings) as Record<string, unknown>;
+      if (typeof parsedSettings.enabled === "boolean" && result.enabled === undefined) {
+        result.enabled = parsedSettings.enabled;
+      }
+      const envSection = parsedSettings.env;
+      if (envSection && typeof envSection === "object") {
+        const envRecord = envSection as Record<string, unknown>;
+        const envKey =
+          envRecord.ANTHROPIC_AUTH_TOKEN ??
+          envRecord.ANTHROPIC_API_KEY ??
+          envRecord.CLAUDE_API_KEY;
+        if (typeof envKey === "string" && !result.apiKey) {
+          result.apiKey = envKey;
+        }
+      }
+    } catch (error) {
+      console.warn(`[ClaudeConfig] Failed to parse ${settingsPath}:`, error);
+    }
+  }
+
   return result;
 }
 
 export function getAgentFeatureFlags(): AgentFeatureFlags {
   const fileConfig = loadClaudeConfigFiles();
+  const envApiKey = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
+  const effectiveKey = envApiKey || fileConfig.apiKey;
   return {
-    claudeEnabled: parseBoolean(process.env.ENABLE_CLAUDE_AGENT, fileConfig.enabled ?? false),
+    claudeEnabled: resolveEnabledFlag(process.env.ENABLE_CLAUDE_AGENT, fileConfig.enabled, Boolean(effectiveKey)),
     geminiEnabled: parseBoolean(process.env.ENABLE_GEMINI_AGENT, false),
   };
 }
 
 export function resolveClaudeAgentConfig(): ClaudeAgentConfig {
   const fileConfig = loadClaudeConfigFiles();
+  const envApiKey = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
+  const apiKey = envApiKey || fileConfig.apiKey;
   const defaultWorkdir =
     process.env.CLAUDE_WORKDIR || fileConfig.workdir || join(tmpdir(), "ads-claude-agent");
   const envToolList = process.env.CLAUDE_TOOL_ALLOWLIST;
@@ -129,8 +167,8 @@ export function resolveClaudeAgentConfig(): ClaudeAgentConfig {
       ? parseList(envToolList)
       : fileConfig.toolAllowlist ?? [];
   return {
-    enabled: parseBoolean(process.env.ENABLE_CLAUDE_AGENT, fileConfig.enabled ?? false),
-    apiKey: process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || fileConfig.apiKey,
+    enabled: resolveEnabledFlag(process.env.ENABLE_CLAUDE_AGENT, fileConfig.enabled, Boolean(apiKey)),
+    apiKey,
     model: process.env.CLAUDE_MODEL || fileConfig.model || CLAUDE_DEFAULT_MODEL,
     workdir: defaultWorkdir,
     toolAllowlist,

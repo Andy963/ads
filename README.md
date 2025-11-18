@@ -117,7 +117,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 
 也可以像 Codex 一样在主目录放置配置文件：
 
-`~/.claude/config.json`
+`~/.claude/config.json`（或 `settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN`）
 ```json
 {
   "enabled": true,
@@ -130,7 +130,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 
 （可选）在 `~/.claude/auth.json` 中保存 `{"ANTHROPIC_API_KEY": "..."}` 以与 `config.json` 分离密钥。
 
-配置解析逻辑位于 `src/agents/config.ts`，CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex 与 Claude 之间切换。
+配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude API Key（环境变量、`~/.claude/{config,auth,settings}.json`）则默认启用 Claude，CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex 与 Claude 之间切换。
 
 ## 🤝 Contributing
 
