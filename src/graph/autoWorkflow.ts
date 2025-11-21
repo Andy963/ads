@@ -74,6 +74,7 @@ export function createWorkflowFromConfig(params: {
         required: nodeConfig.required,
       },
       position: { x: currentX, y: currentY },
+      isDraft: true,  // 工作流节点始终创建为草稿，需要用户 commit 后才定稿
     });
 
     createdNodes.push(node);
