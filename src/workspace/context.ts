@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import Database from 'better-sqlite3';
 
-import { detectWorkspace } from "./detector.js";
+import { detectWorkspace, getWorkspaceDbPath } from "./detector.js";
 import {
   getAllNodes,
   getNodeById,
@@ -60,6 +61,115 @@ export class WorkflowContext {
   private static getContextFile(workspace?: string): string {
     const root = workspace ? path.resolve(workspace) : detectWorkspace();
     return path.join(root, WorkflowContext.CONTEXT_FILE);
+  }
+
+  /**
+   * Helper function to map database row to GraphNode format
+   */
+  private static mapDbRowToNode(row: any): GraphNode {
+    const metadata = typeof row.metadata === 'string'
+      ? JSON.parse(row.metadata || '{}')
+      : (row.metadata ?? {});
+    const position = typeof row.position === 'string'
+      ? JSON.parse(row.position || '{}')
+      : (row.position ?? {x: 0, y: 0});
+
+    return {
+      id: row.id,
+      type: row.type,
+      label: row.label,
+      content: row.content ?? null,
+      metadata,
+      position,
+      currentVersion: row.current_version ?? 0,
+      draftContent: row.draft_content ?? null,
+      isDraft: Boolean(row.is_draft),
+      createdAt: row.created_at ? new Date(row.created_at) : null,
+      updatedAt: row.updated_at ? new Date(row.updated_at) : null,
+      draftSourceType: row.draft_source_type ?? null,
+      draftConversationId: row.draft_conversation_id ?? null,
+      draftMessageId: row.draft_message_id ?? null,
+      draftBasedOnVersion: row.draft_based_on_version ?? null,
+      draftAiOriginalContent: row.draft_ai_original_content ?? null,
+      draftUpdatedAt: row.draft_updated_at ? new Date(row.draft_updated_at) : null,
+    };
+  }
+
+  /**
+   * Helper function to read a node from a specific workspace's database
+   */
+  private static getNodeFromWorkspace(nodeId: string, workspace: string): GraphNode | null {
+    const dbPath = getWorkspaceDbPath(workspace);
+    const db = new Database(dbPath, { readonly: true });
+
+    try {
+      const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as any;
+      if (!row) {
+        return null;
+      }
+      return WorkflowContext.mapDbRowToNode(row);
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Helper function to read all nodes from a specific workspace's database
+   */
+  private static getAllNodesFromWorkspace(workspace: string): GraphNode[] {
+    const dbPath = getWorkspaceDbPath(workspace);
+    const db = new Database(dbPath, { readonly: true });
+
+    try {
+      const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all() as any[];
+      return rows.map(row => WorkflowContext.mapDbRowToNode(row));
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Helper function to get parent nodes from a specific workspace's database
+   */
+  private static getParentNodesFromWorkspace(nodeId: string, workspace: string, recursive = true): GraphNode[] {
+    const dbPath = getWorkspaceDbPath(workspace);
+    const db = new Database(dbPath, { readonly: true });
+
+    try {
+      const parents: GraphNode[] = [];
+      const seen = new Set<string>();
+      let current = nodeId;
+
+      while (true) {
+        const edge = db
+          .prepare("SELECT source FROM edges WHERE target = ? AND source != ? LIMIT 1")
+          .get(current, current) as { source?: string } | undefined;
+        if (!edge?.source) {
+          break;
+        }
+        if (seen.has(edge.source)) {
+          break;
+        }
+
+        const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(edge.source) as any;
+        if (!row) {
+          break;
+        }
+
+        const node = WorkflowContext.mapDbRowToNode(row);
+        parents.push(node);
+        seen.add(node.id);
+
+        if (!recursive) {
+          break;
+        }
+        current = node.id;
+      }
+
+      return parents;
+    } finally {
+      db.close();
+    }
   }
 
   static loadContext(workspace?: string): WorkflowContextState {
@@ -275,17 +385,26 @@ export class WorkflowContext {
     WorkflowContext.saveContext(workspace, context);
   }
 
-  static listAllWorkflows(_workspace?: string): WorkflowSummary[] {
-    void _workspace;
-    const nodes = getAllNodes();
+  static listAllWorkflows(workspace?: string): WorkflowSummary[] {
+    // Use workspace-specific functions if workspace is specified
+    const nodes = workspace
+      ? WorkflowContext.getAllNodesFromWorkspace(workspace)
+      : getAllNodes();
+
     const workflows = new Map<string, { root: GraphNode; nodes: GraphNode[]; template: string }>();
 
     for (const node of nodes) {
-      const parents = getParentNodes(node.id, true);
+      const parents = workspace
+        ? WorkflowContext.getParentNodesFromWorkspace(node.id, workspace, true)
+        : getParentNodes(node.id, true);
+
       const rootId = parents.length > 0 ? parents[parents.length - 1].id : node.id;
 
       if (!workflows.has(rootId)) {
-        const rootNode = getNodeById(rootId);
+        const rootNode = workspace
+          ? WorkflowContext.getNodeFromWorkspace(rootId, workspace)
+          : getNodeById(rootId);
+
         if (!rootNode) {
           continue;
         }
@@ -401,7 +520,7 @@ export class WorkflowContext {
       };
     }
 
-    const workflowNodes = WorkflowContext.collectWorkflowNodes(matched.workflow_id);
+    const workflowNodes = WorkflowContext.collectWorkflowNodes(matched.workflow_id, workspace);
     const stepMapping = WorkflowContext.STEP_MAPPINGS[matched.template] ?? {};
     const steps: WorkflowSteps = {};
 
@@ -428,12 +547,17 @@ export class WorkflowContext {
     };
   }
 
-  static collectWorkflowNodes(workflowId: string): GraphNode[] {
-    const allNodes = getAllNodes();
+  static collectWorkflowNodes(workflowId: string, workspace?: string): GraphNode[] {
+    const allNodes = workspace
+      ? WorkflowContext.getAllNodesFromWorkspace(workspace)
+      : getAllNodes();
     const nodes: GraphNode[] = [];
 
     for (const node of allNodes) {
-      const parents = getParentNodes(node.id, true);
+      const parents = workspace
+        ? WorkflowContext.getParentNodesFromWorkspace(node.id, workspace, true)
+        : getParentNodes(node.id, true);
+
       const rootId = parents.length > 0 ? parents[parents.length - 1].id : node.id;
       if (rootId === workflowId) {
         nodes.push(node);
@@ -459,7 +583,11 @@ export class WorkflowContext {
     }
 
     const steps = Object.entries(workflow.steps ?? {}).map(([stepName, nodeId]) => {
-      const node = getNodeById(nodeId);
+      // If workspace is specified, read from that workspace's database
+      const node = workspace
+        ? WorkflowContext.getNodeFromWorkspace(nodeId, workspace)
+        : getNodeById(nodeId);
+
       if (!node) {
         return null;
       }
