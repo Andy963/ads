@@ -7,6 +7,7 @@ import { createLogger, type Logger } from "../utils/logger.js";
 export interface ReinjectionConfig {
   enabled: boolean;
   turns: number;
+  rulesTurns?: number;
 }
 
 export interface SystemPromptManagerOptions {
@@ -61,6 +62,7 @@ function parseTurns(value: string | undefined): number | undefined {
 export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
   const enabledEnvName = prefix ? `${prefix}_REINJECTION_ENABLED` : undefined;
   const turnsEnvName = prefix ? `${prefix}_REINJECTION_TURNS` : undefined;
+  const rulesTurnsEnvName = prefix ? `${prefix}_RULES_REINJECTION_TURNS` : undefined;
 
   const enabledEnv =
     parseBoolean(enabledEnvName ? process.env[enabledEnvName] : undefined) ??
@@ -68,10 +70,14 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
   const turnsEnv =
     parseTurns(turnsEnvName ? process.env[turnsEnvName] : undefined) ??
     parseTurns(process.env.ADS_REINJECTION_TURNS);
+  const rulesTurnsEnv =
+    parseTurns(rulesTurnsEnvName ? process.env[rulesTurnsEnvName] : undefined) ??
+    parseTurns(process.env.ADS_RULES_REINJECTION_TURNS);
 
   return {
     enabled: enabledEnv ?? true,
     turns: turnsEnv ?? 10,
+    rulesTurns: rulesTurnsEnv ?? 5,
   };
 }
 
@@ -79,11 +85,13 @@ export class SystemPromptManager {
   private workspaceRoot: string;
   private readonly logger: Logger;
   private readonly reinjection: ReinjectionConfig;
+  private readonly rulesReinjectionTurns: number;
   private instructionsCache: FileCache | null = null;
   private rulesCache: FileCache | null = null;
   private hasInjected = false;
   private turnCount = 0;
   private lastInjectionTurn = -1;
+  private lastRulesInjectionTurn = -1;
   private pendingReason: string | null = null;
   private lastInstructionsHash: string | null = null;
   private lastRulesHash: string | null = null;
@@ -94,10 +102,15 @@ export class SystemPromptManager {
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
       turns: options.reinjection?.turns ?? 10,
+      rulesTurns: options.reinjection?.rulesTurns ?? 5,
     };
     if (this.reinjection.turns < 1) {
       this.reinjection.turns = 10;
     }
+    const ruleTurns = this.reinjection.rulesTurns && this.reinjection.rulesTurns > 0
+      ? this.reinjection.rulesTurns
+      : 5;
+    this.rulesReinjectionTurns = ruleTurns;
     this.logger = options.logger ?? createLogger("SystemPrompt");
   }
 
@@ -130,6 +143,7 @@ export class SystemPromptManager {
 
     this.hasInjected = true;
     this.lastInjectionTurn = this.turnCount;
+    this.lastRulesInjectionTurn = this.turnCount;
     this.lastInstructionsHash = instructions.hash;
     this.lastRulesHash = rules.hash;
     this.logger.info(
@@ -157,6 +171,13 @@ export class SystemPromptManager {
       const reason = this.pendingReason;
       this.pendingReason = null;
       return reason;
+    }
+
+    if (
+      this.rulesReinjectionTurns > 0 &&
+      this.turnCount - this.lastRulesInjectionTurn >= this.rulesReinjectionTurns
+    ) {
+      return `rules-turn-${this.turnCount}`;
     }
 
     if (

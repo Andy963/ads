@@ -2,7 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { GrammyError, type Context } from 'grammy';
-import type { Input, CommandExecutionItem } from '@openai/codex-sdk';
+import type {
+  Input,
+  CommandExecutionItem,
+  TodoListItem,
+  ThreadEvent,
+  ItemStartedEvent,
+  ItemUpdatedEvent,
+  ItemCompletedEvent,
+} from '@openai/codex-sdk';
 import type { SessionManager } from '../utils/sessionManager.js';
 import type { AgentEvent } from '../../codex/events.js';
 import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
@@ -127,7 +135,6 @@ export async function handleCodexMessage(
   }
 
   const session = sessionManager.getOrCreate(userId, cwd);
-  const agentMode = sessionManager.getAgentMode(userId);
   const activeAgentLabel = sessionManager.getActiveAgentLabel(userId) || 'Codex';
 
   const saveThreadIdIfNeeded = () => {
@@ -334,6 +341,100 @@ export async function handleCodexMessage(
     }
   }
 
+  function buildTodoListSignature(item: TodoListItem): string {
+    const entries = item.items ?? [];
+    return JSON.stringify(
+      entries.map((entry) => ({
+        text: entry.text ?? '',
+        completed: !!entry.completed,
+      })),
+    );
+  }
+
+  type TodoListThreadEvent = (ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent) & {
+    item: TodoListItem;
+  };
+
+  function isTodoListEvent(rawEvent: ThreadEvent): rawEvent is TodoListThreadEvent {
+    if (
+      rawEvent.type === 'item.started' ||
+      rawEvent.type === 'item.updated' ||
+      rawEvent.type === 'item.completed'
+    ) {
+      const item = (rawEvent as ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent).item;
+      return item.type === 'todo_list';
+    }
+    return false;
+  }
+
+  function formatTodoListUpdate(event: TodoListThreadEvent): string | null {
+    const entries = event.item.items ?? [];
+    if (entries.length === 0) {
+      return null;
+    }
+    const completed = entries.filter((entry) => entry.completed).length;
+    const stageLabel =
+      event.type === 'item.started'
+        ? '生成任务计划'
+        : event.type === 'item.completed'
+          ? '任务计划完成'
+          : '更新任务计划';
+
+    const lines = entries.slice(0, 8).map((entry, index) => {
+      const marker = entry.completed ? '✅' : '⬜️';
+      const text = entry.text?.trim() || `步骤 ${index + 1}`;
+      return `${marker} ${index + 1}. ${text}`;
+    });
+    const more = entries.length > 8 ? `... 还有 ${entries.length - 8} 项` : '';
+    return [
+      `📋 ${stageLabel} (${completed}/${entries.length})`,
+      ...lines,
+      more,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  async function sendPlanMessage(text: string): Promise<void> {
+    const now = Date.now();
+    if (now < rateLimitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
+    }
+    try {
+      await ctx.reply(text, { disable_notification: true });
+      rateLimitUntil = 0;
+    } catch (error) {
+      if (error instanceof GrammyError && error.error_code === 429) {
+        const retryAfter = error.parameters?.retry_after ?? 1;
+        rateLimitUntil = Date.now() + retryAfter * 1000;
+        logWarning(`[Telegram] Plan message rate limited, retry after ${retryAfter}s`);
+        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+        await sendPlanMessage(text);
+      } else {
+        logWarning('[CodexAdapter] Failed to send plan update', error);
+      }
+    }
+  }
+
+  let lastTodoSignature: string | null = null;
+
+  async function maybeSendTodoListUpdate(event: AgentEvent): Promise<void> {
+    const raw = event.raw;
+    if (!isTodoListEvent(raw)) {
+      return;
+    }
+    const signature = buildTodoListSignature(raw.item);
+    if (signature === lastTodoSignature) {
+      return;
+    }
+    lastTodoSignature = signature;
+    const message = formatTodoListUpdate(raw);
+    if (!message) {
+      return;
+    }
+    await sendPlanMessage(message);
+  }
+
   function queueEvent(event: AgentEvent): void {
     eventQueue = eventQueue
       .then(async () => {
@@ -341,6 +442,7 @@ export async function handleCodexMessage(
           return;
         }
 
+        await maybeSendTodoListUpdate(event);
         const entry = formatStatusEntry(event);
         if (!entry) {
           return;
@@ -462,7 +564,7 @@ export async function handleCodexMessage(
       }
     }
 
-    enhancedText = injectDelegationGuide(enhancedText, session, agentMode);
+    enhancedText = injectDelegationGuide(enhancedText, session);
 
     if (imagePaths.length > 0) {
       input = [
@@ -485,7 +587,7 @@ export async function handleCodexMessage(
     }
 
     const result = await session.send(input, { streaming: true, signal });
-    const delegation = await resolveDelegations(result, session, agentMode, {
+    const delegation = await resolveDelegations(result, session, {
       onInvoke: (prompt) => logger?.logOutput(`[Auto] 调用 Claude：${truncateForStatus(prompt)}`),
       onResult: (summary) => logger?.logOutput(`[Auto] Claude 完成：${truncateForStatus(summary.prompt)}`),
     });

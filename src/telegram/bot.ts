@@ -13,7 +13,6 @@ import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
 import { checkWorkspaceInit } from './utils/workspaceInitChecker.js';
 import { parseInlineAdsCommand, parsePlainAdsCommand } from './utils/adsCommand.js';
-import { supportsAutoDelegation } from '../agents/delegation.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
 
 const logger = createLogger('Bot');
@@ -165,7 +164,6 @@ async function main() {
     const orchestrator = sessionManager.getOrCreate(userId, cwd, false);
     const currentModel = sessionManager.getUserModel(userId);
     const agentLabel = sessionManager.getActiveAgentLabel(userId) || 'Codex';
-    const agentMode = sessionManager.getAgentMode(userId);
     const agentLines = orchestrator
       .listAgents()
       .map((entry) => {
@@ -185,7 +183,6 @@ async function main() {
       '📊 系统状态\n\n' +
       `💬 会话统计: ${stats.active} 活跃 / ${stats.total} 总数\n` +
       `${sandboxEmoji} 沙箱模式: ${stats.sandboxMode}\n` +
-      `⚙️ 代理模式: ${agentMode === 'auto' ? '自动（Codex 可调用 Claude）' : '手动'}\n` +
       `🤖 当前模型: ${currentModel}\n` +
       `🧠 当前代理: ${agentLabel}\n` +
       `📁 当前目录: ${cwd}\n\n` +
@@ -257,7 +254,6 @@ async function main() {
         await ctx.reply('❌ 暂无可用代理');
         return;
       }
-      const mode = sessionManager.getAgentMode(userId);
       const lines = agents
         .map((entry) => {
           const marker = entry.metadata.id === orchestrator.getActiveAgentId() ? '•' : '○';
@@ -267,26 +263,19 @@ async function main() {
         .join('\n');
       await ctx.reply(
         `🤖 可用代理：\n${lines}\n\n` +
-        `当前模式: ${mode === 'auto' ? '自动（Codex 可调用 Claude）' : '手动'}\n` +
-        `使用 /agent <id> 切换代理，如 /agent claude\n` +
-        `使用 /agent auto 或 /agent manual 切换模式`
+        `使用 /agent <id> 切换代理，如 /agent claude。\n` +
+        `需要 Claude 协助时，请在消息中插入 <<<agent.claude ...>>> 指令块描述任务。`
       );
       return;
     }
 
     const normalized = args[0].toLowerCase();
     if (normalized === 'auto') {
-      if (!supportsAutoDelegation(orchestrator)) {
-        await ctx.reply('❌ 未检测到 Claude，无法启用自动模式');
-        return;
-      }
-      sessionManager.setAgentMode(userId, 'auto');
-      await ctx.reply('🤖 已启用自动代理模式，Codex 可根据需要委托 Claude。');
+      await ctx.reply('❌ 自动模式已停用，需要 Claude 时请手动插入 <<<agent.claude ...>>> 指令块。');
       return;
     }
     if (normalized === 'manual') {
-      sessionManager.setAgentMode(userId, 'manual');
-      await ctx.reply('🔧 已切换到手动代理模式。');
+      await ctx.reply('ℹ️ 当前已经是手动协作模式，可直接继续使用。');
       return;
     }
 

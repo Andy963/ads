@@ -41,7 +41,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.1.44",
     "@grammyjs/types": "^3.22.2",
     "@modelcontextprotocol/sdk": "^1.22.0",
-    "@openai/codex-sdk": "^0.53.0",
+    "@openai/codex-sdk": "^0.60.1",
     "better-sqlite3": "^9.6.0",
     "grammy": "^1.38.3",
     "picocolors": "^1.0.0",

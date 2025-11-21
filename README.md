@@ -133,15 +133,16 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 
 配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude API Key（环境变量、`~/.claude/{config,auth,settings}.json`）则默认启用 Claude，CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex 与 Claude 之间切换。
 
-### 自动代理模式（实验性）
+### Claude 协作（手动触发）
 
-- 使用 `/agent auto` 可让 Codex 在需要时自动插入指令：
+- 在 Codex 输出中插入以下指令块即可请求 Claude 帮忙：
   ```
   <<<agent.claude
-  需要 Claude 协助的任务说明
+  需要 Claude 协助的任务说明（提供上下文、约束、期望输出）
   >>>
   ```
-- ADS 会捕获该指令，调用 Claude 获取结果，并将输出直接替换指令块展示给用户；切回 `/agent manual` 可恢复纯手动模式。
+- ADS 会捕获该指令、调用 Claude、并把结果原位插回；你再继续执行命令或整合输出。
+- 系统不会再自动切换代理，如需 Claude 必须显式写出上述指令块（Telegram/CLI 均适用）。
 
 ## 🤝 Contributing
 
