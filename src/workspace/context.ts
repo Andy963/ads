@@ -12,6 +12,26 @@ import type { GraphNode } from "../graph/types.js";
 
 type WorkflowSteps = Record<string, string>;
 
+type NodeDbRow = {
+  id: string;
+  type: string;
+  label: string | null;
+  content: string | null;
+  metadata: string | Record<string, unknown> | null;
+  position: string | { x: number; y: number } | null;
+  current_version: number | null;
+  draft_content: string | null;
+  draft_source_type: string | null;
+  draft_conversation_id: string | null;
+  draft_message_id: number | string | null;
+  draft_based_on_version: number | null;
+  draft_ai_original_content: string | null;
+  draft_updated_at: string | null;
+  is_draft: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export interface WorkflowSummary {
   workflow_id: string;
   template: string;
@@ -66,18 +86,27 @@ export class WorkflowContext {
   /**
    * Helper function to map database row to GraphNode format
    */
-  private static mapDbRowToNode(row: any): GraphNode {
-    const metadata = typeof row.metadata === 'string'
+  private static mapDbRowToNode(row: NodeDbRow): GraphNode {
+    const metadata: Record<string, unknown> = typeof row.metadata === 'string'
       ? JSON.parse(row.metadata || '{}')
       : (row.metadata ?? {});
-    const position = typeof row.position === 'string'
+    const position: Record<string, unknown> = typeof row.position === 'string'
       ? JSON.parse(row.position || '{}')
-      : (row.position ?? {x: 0, y: 0});
+      : (row.position ?? { x: 0, y: 0 });
+    const draftMessageId =
+      typeof row.draft_message_id === 'number'
+        ? row.draft_message_id
+        : typeof row.draft_message_id === 'string' && row.draft_message_id.trim().length > 0
+          ? (() => {
+              const parsed = Number.parseInt(row.draft_message_id as string, 10);
+              return Number.isNaN(parsed) ? null : parsed;
+            })()
+          : null;
 
     return {
       id: row.id,
       type: row.type,
-      label: row.label,
+      label: row.label ?? '',
       content: row.content ?? null,
       metadata,
       position,
@@ -88,7 +117,7 @@ export class WorkflowContext {
       updatedAt: row.updated_at ? new Date(row.updated_at) : null,
       draftSourceType: row.draft_source_type ?? null,
       draftConversationId: row.draft_conversation_id ?? null,
-      draftMessageId: row.draft_message_id ?? null,
+      draftMessageId,
       draftBasedOnVersion: row.draft_based_on_version ?? null,
       draftAiOriginalContent: row.draft_ai_original_content ?? null,
       draftUpdatedAt: row.draft_updated_at ? new Date(row.draft_updated_at) : null,
@@ -103,7 +132,7 @@ export class WorkflowContext {
     const db = new Database(dbPath, { readonly: true });
 
     try {
-      const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as any;
+      const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as NodeDbRow | undefined;
       if (!row) {
         return null;
       }
@@ -121,7 +150,7 @@ export class WorkflowContext {
     const db = new Database(dbPath, { readonly: true });
 
     try {
-      const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all() as any[];
+      const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all() as NodeDbRow[];
       return rows.map(row => WorkflowContext.mapDbRowToNode(row));
     } finally {
       db.close();
@@ -151,7 +180,7 @@ export class WorkflowContext {
           break;
         }
 
-        const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(edge.source) as any;
+        const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(edge.source) as NodeDbRow | undefined;
         if (!row) {
           break;
         }

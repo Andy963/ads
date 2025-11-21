@@ -151,6 +151,9 @@ export async function handleCodexMessage(
   const signal = interruptManager.registerRequest(userId).signal;
 
   const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
+  const COMMAND_TEXT_MAX_LINES = 5;
+  const COMMAND_OUTPUT_MAX_LINES = 10;
+  const COMMAND_OUTPUT_MAX_CHARS = 1200;
   const sentMsg = await ctx.reply(`💭 [${activeAgentLabel}] 开始处理...`, { disable_notification: true });
   let statusMessageId = sentMsg.message_id;
   let statusMessageText = sentMsg.text ?? '💭 开始处理...';
@@ -160,6 +163,9 @@ export async function handleCodexMessage(
   let planMessageId: number | null = null;
   let lastPlanContent: string | null = null;
   let lastTodoSignature: string | null = null;
+  let commandMessageId: number | null = null;
+  let commandMessageText: string | null = null;
+  let commandMessageRateLimitUntil = 0;
 
   const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
     analysis: '💭',
@@ -205,19 +211,6 @@ export async function handleCodexMessage(
     return { text: kept.join('\n'), truncated: true };
   }
 
-  function buildCommandStatusEntry(rawItem: CommandExecutionItem, fallbackDetail?: string): string | null {
-    const commandLine = (typeof rawItem.command === 'string' && rawItem.command.trim())
-      ? rawItem.command.trim()
-      : (fallbackDetail?.trim() ?? '');
-    if (!commandLine) {
-      return null;
-    }
-    const exitText = rawItem.exit_code === undefined ? '' : ` (exit ${rawItem.exit_code})`;
-    const { text: truncatedCommand } = truncateCommandText(commandLine, 3);
-    const withExit = `${truncatedCommand}${exitText}`;
-    return formatCodeBlock(withExit);
-  }
-
   interface StatusEntry {
     text: string;
     silent: boolean;
@@ -245,6 +238,11 @@ export async function handleCodexMessage(
       return null;
     }
 
+    const commandItem = getCommandExecutionItem(event.raw);
+    if (commandItem) {
+      return null;
+    }
+
     const icon = PHASE_ICON[event.phase] ?? '💬';
     const rawTitle = event.title || PHASE_FALLBACK[event.phase] || '处理中';
     const safeTitle = escapeTelegramMarkdown(rawTitle);
@@ -259,19 +257,9 @@ export async function handleCodexMessage(
       }
     }
 
-    let silent = false;
-    const commandItem = getCommandExecutionItem(event.raw);
-    if (commandItem) {
-      const commandBlock = buildCommandStatusEntry(commandItem, event.detail);
-      if (commandBlock) {
-        lines.push(commandBlock);
-        silent = true;
-      }
-    }
-
     return {
       text: lines.join('\n'),
-      silent,
+      silent: false,
     };
   }
 
@@ -462,6 +450,152 @@ export async function handleCodexMessage(
     await sendPlanMessage(message);
   }
 
+  async function maybeUpdateCommandLog(event: AgentEvent): Promise<void> {
+    const commandItem = getCommandExecutionItem(event.raw);
+    if (!commandItem) {
+      return;
+    }
+    const message = buildCommandLogMessage(commandItem, event.detail);
+    if (!message) {
+      return;
+    }
+    await upsertCommandLogMessage(message);
+  }
+
+  function buildCommandLogMessage(rawItem: CommandExecutionItem, fallbackDetail?: string): string | null {
+    const commandLine =
+      (typeof rawItem.command === 'string' && rawItem.command.trim())
+        ? rawItem.command.trim()
+        : (fallbackDetail?.trim() ?? '');
+    if (!commandLine) {
+      return null;
+    }
+    const { text: truncatedCommand } = truncateCommandText(commandLine, COMMAND_TEXT_MAX_LINES);
+    const statusLabel = buildCommandStatusLabel(rawItem);
+    const sections: string[] = [
+      `⚙️ 命令:\n${formatCodeBlock(truncatedCommand)}`,
+    ];
+    const outputSnippet = formatCommandOutput(rawItem.aggregated_output);
+    if (outputSnippet) {
+      sections.push(`输出:\n${formatCodeBlock(outputSnippet)}`);
+    }
+    sections.push(`状态：${statusLabel}`);
+    return sections.join('\n\n');
+  }
+
+  function buildCommandStatusLabel(rawItem: CommandExecutionItem): string {
+    const exitText = rawItem.exit_code === undefined ? '' : ` (exit ${rawItem.exit_code})`;
+    if (rawItem.status === 'failed') {
+      return `❌ 失败${exitText}`;
+    }
+    if (rawItem.status === 'completed') {
+      return `✅ 已完成${exitText}`;
+    }
+    return `⏳ 执行中${exitText}`;
+  }
+
+  function formatCommandOutput(
+    output?: string | null,
+  ): string | null {
+    if (!output) {
+      return null;
+    }
+    const trimmed = output.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const lines = trimmed.split(/\r?\n/);
+    const keptLines = lines.slice(0, COMMAND_OUTPUT_MAX_LINES);
+    let snippet = keptLines.join('\n');
+    let truncated = lines.length > COMMAND_OUTPUT_MAX_LINES;
+    if (snippet.length > COMMAND_OUTPUT_MAX_CHARS) {
+      snippet = snippet.slice(0, COMMAND_OUTPUT_MAX_CHARS);
+      truncated = true;
+    }
+    if (truncated) {
+      snippet = `${snippet.trimEnd()}\n…`;
+    }
+    return snippet;
+  }
+
+  async function upsertCommandLogMessage(text: string): Promise<void> {
+    if (commandMessageId) {
+      if (commandMessageText === text) {
+        return;
+      }
+      await editCommandLogMessage(text);
+    } else {
+      await sendCommandLogMessage(text);
+    }
+  }
+
+  async function sendCommandLogMessage(text: string): Promise<void> {
+    const now = Date.now();
+    if (now < commandMessageRateLimitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
+    }
+    try {
+      const newMsg = await ctx.reply(text, {
+        parse_mode: 'Markdown',
+        disable_notification: true,
+      });
+      commandMessageId = newMsg.message_id;
+      commandMessageText = text;
+      commandMessageRateLimitUntil = 0;
+    } catch (error) {
+      if (error instanceof GrammyError && error.error_code === 429) {
+        const retryAfter = error.parameters?.retry_after ?? 1;
+        commandMessageRateLimitUntil = Date.now() + retryAfter * 1000;
+        logWarning(`[Telegram] Command log rate limited, retry after ${retryAfter}s`);
+        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+        await sendCommandLogMessage(text);
+      } else {
+        logWarning('[CodexAdapter] Failed to send command log message', error);
+      }
+    }
+  }
+
+  async function editCommandLogMessage(text: string): Promise<void> {
+    if (!commandMessageId) {
+      await sendCommandLogMessage(text);
+      return;
+    }
+    if (commandMessageText === text) {
+      return;
+    }
+    const now = Date.now();
+    if (now < commandMessageRateLimitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
+    }
+    try {
+      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text, {
+        parse_mode: 'Markdown',
+      });
+      commandMessageText = text;
+      commandMessageRateLimitUntil = 0;
+    } catch (error) {
+      if (error instanceof GrammyError) {
+        if (error.error_code === 400 && error.description?.includes('message is not modified')) {
+          return;
+        }
+        if (error.error_code === 400 && error.description?.includes('message to edit not found')) {
+          commandMessageId = null;
+          commandMessageText = null;
+          await sendCommandLogMessage(text);
+          return;
+        }
+        if (error.error_code === 429) {
+          const retryAfter = error.parameters?.retry_after ?? 1;
+          commandMessageRateLimitUntil = Date.now() + retryAfter * 1000;
+          logWarning(`[Telegram] Command log edit rate limited, retry after ${retryAfter}s`);
+          await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+          await editCommandLogMessage(text);
+          return;
+        }
+      }
+      logWarning('[CodexAdapter] Failed to edit command log message', error);
+    }
+  }
   function queueEvent(event: AgentEvent): void {
     eventQueue = eventQueue
       .then(async () => {
@@ -470,6 +604,7 @@ export async function handleCodexMessage(
         }
 
         await maybeSendTodoListUpdate(event);
+        await maybeUpdateCommandLog(event);
         const entry = formatStatusEntry(event);
         if (!entry) {
           return;
@@ -644,7 +779,7 @@ export async function handleCodexMessage(
     }
 
     // 发送最终响应
-    let finalText = delegation.response;
+    const finalText = delegation.response;
     let tokenUsageLine: string | null = null;
     
     const usage = delegation.usage ?? result.usage;
