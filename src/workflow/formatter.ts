@@ -1,7 +1,7 @@
 import pc from "picocolors";
 
 import type { WorkflowInfo } from "../workspace/context.js";
-import { escapeTelegramMarkdown, escapeTelegramInlineCode } from "../utils/markdown.js";
+import { escapeTelegramMarkdown, escapeTelegramInlineCode, escapeTelegramItalic } from "../utils/markdown.js";
 
 export type WorkflowTextFormat = "cli" | "markdown";
 
@@ -62,6 +62,7 @@ interface FormatHelpers {
 function createFormatHelpers(format: WorkflowTextFormat): FormatHelpers {
   const escape = (text: string) => (format === "markdown" ? escapeTelegramMarkdown(text) : text);
   const escapeCode = (text: string) => escapeTelegramInlineCode(text);
+  const escapeItalic = (text: string) => escapeTelegramItalic(text);
 
   return {
     format,
@@ -73,7 +74,7 @@ function createFormatHelpers(format: WorkflowTextFormat): FormatHelpers {
     info: (text: string) => (format === "cli" ? `  ${text}` : `- ${text}`),
     subInfo: (text: string) => (format === "cli" ? `    ${text}` : `  - ${text}`),
     code: (text: string) => (format === "cli" ? pc.cyan(text) : `\`${escapeCode(text)}\``),
-    muted: (text: string) => (format === "cli" ? pc.dim(text) : `_${escape(text)}_`),
+    muted: (text: string) => (format === "cli" ? pc.dim(text) : `_${escapeItalic(text)}_`),
     accent: (text: string) => (format === "cli" ? pc.green(text) : `**${text}**`),
   };
 }
