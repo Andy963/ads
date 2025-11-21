@@ -146,6 +146,7 @@ server.registerTool(
 
 const checkoutSchema = workspaceParam.extend({
   workflow_identifier: z.string(),
+  format: z.enum(["cli", "markdown"]).optional(),
 });
 
 server.registerTool(
@@ -155,8 +156,8 @@ server.registerTool(
     description: "Switch the active workflow by identifier, title, or index.",
     inputSchema: checkoutSchema,
   },
-  withHandler(checkoutSchema, async ({ workspace_path, workflow_identifier }) => {
-    const text = await checkoutWorkflow({ workspace_path, workflow_identifier });
+  withHandler(checkoutSchema, async ({ workspace_path, workflow_identifier, format }) => {
+    const text = await checkoutWorkflow({ workspace_path, workflow_identifier, format: format ?? "cli" });
     return asToolResult(text);
   })
 );
@@ -165,6 +166,7 @@ const newWorkflowSchema = workspaceParam.extend({
   title: z.string().min(1, "title is required"),
   template_id: z.string().optional(),
   description: z.string().optional(),
+  format: z.enum(["cli", "markdown"]).optional(),
 });
 
 server.registerTool(
@@ -174,12 +176,13 @@ server.registerTool(
     description: "Generate a workflow using the unified template (or another template).",
     inputSchema: newWorkflowSchema,
   },
-  withHandler(newWorkflowSchema, async ({ workspace_path, title, template_id, description }) => {
+  withHandler(newWorkflowSchema, async ({ workspace_path, title, template_id, description, format }) => {
     const text = await createWorkflowFromTemplate({
       workspace_path,
       title,
       template_id: template_id?.trim() || undefined,
       description,
+      format: format ?? "cli",
     });
     return asToolResult(text);
   })
@@ -188,6 +191,7 @@ server.registerTool(
 const commitSchema = workspaceParam.extend({
   step_name: z.string().min(1, "step_name is required"),
   change_description: z.string().optional(),
+  format: z.enum(["cli", "markdown"]).optional(),
 });
 
 server.registerTool(
@@ -197,8 +201,8 @@ server.registerTool(
     description: "Finalize a specified workflow step after approval.",
     inputSchema: commitSchema,
   },
-  withHandler(commitSchema, async ({ workspace_path, step_name, change_description }) => {
-    const text = await commitStep({ workspace_path, step_name, change_description });
+  withHandler(commitSchema, async ({ workspace_path, step_name, change_description, format }) => {
+    const text = await commitStep({ workspace_path, step_name, change_description, format: format ?? "cli" });
     return asToolResult(text);
   })
 );

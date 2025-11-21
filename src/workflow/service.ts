@@ -410,6 +410,7 @@ export async function listWorkflowLog(params: {
 export async function checkoutWorkflow(params: {
   workflow_identifier: string;
   workspace_path?: string;
+  format?: WorkflowTextFormat;
 }): Promise<string> {
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
   const result = WorkflowContext.switchWorkflow(params.workflow_identifier, workspace);
@@ -422,7 +423,15 @@ export async function checkoutWorkflow(params: {
     }
     return result.message;
   }
-  return result.message;
+
+  // 添加工作流状态回显
+  const format = params.format ?? "cli";
+  const statusSummary = await getWorkflowStatusSummary({
+    workspace_path: workspace,
+    format,
+  });
+
+  return `${result.message}\n\n${statusSummary}`;
 }
 
 export async function getStepNode(params: {
@@ -496,6 +505,7 @@ export async function commitStep(params: {
   step_name: string;
   change_description?: string;
   workspace_path?: string;
+  format?: WorkflowTextFormat;
 }): Promise<string> {
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
   const workflow = WorkflowContext.getActiveWorkflow(workspace);
@@ -557,16 +567,30 @@ export async function commitStep(params: {
     created_at: new Date().toISOString(),
   });
 
+  const format = params.format ?? "cli";
+  const isMarkdown = format === "markdown";
+  const escapeText = (text: string) => (isMarkdown ? escapeTelegramMarkdown(text) : text);
+  const inlineCode = (text: string) => (isMarkdown ? `\`${escapeTelegramInlineCode(text)}\`` : text);
+
   const lines: string[] = [];
-  lines.push(`✅ Committed '${params.step_name}' as v${finalizedNode.currentVersion}`);
+  lines.push(`✅ Committed ${inlineCode(params.step_name)} as v${finalizedNode.currentVersion}`);
   if (filePath) {
-    lines.push(`📁 Saved to: ${filePath}`);
+    lines.push(`📁 Saved to: ${inlineCode(filePath)}`);
   }
   if (workflowResult?.message) {
-    lines.push(workflowResult.message);
+    lines.push(escapeText(workflowResult.message));
   }
   if (nextStepMessage) {
-    lines.push(nextStepMessage);
+    lines.push(escapeText(nextStepMessage));
   }
+
+  // 添加工作流状态回显
+  const statusSummary = await getWorkflowStatusSummary({
+    workspace_path: workspace,
+    format,
+  });
+  lines.push("");
+  lines.push(statusSummary);
+
   return lines.join("\n");
 }

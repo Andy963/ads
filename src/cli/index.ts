@@ -449,7 +449,7 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       if (!identifier) {
         return { output: "❌ 需要提供工作流标识" };
       }
-      const response = await checkoutWorkflow({ workflow_identifier: identifier });
+      const response = await checkoutWorkflow({ workflow_identifier: identifier, format: "cli" });
       return { output: formatResponse(response) };
     }
 
@@ -515,6 +515,7 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
         template_id: templateArg,
         title: titleArg,
         description: params.description,
+        format: "cli",
       });
       return { output: formatResponse(response) };
     }
@@ -526,7 +527,7 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       if (!params.step_name) {
         return { output: "❌ 用法: /ads.commit <step>" };
       }
-      const response = await commitStep({ step_name: params.step_name, change_description: params.change_description });
+      const response = await commitStep({ step_name: params.step_name, change_description: params.change_description, format: "cli" });
       return { output: normalizeOutput(response) };
     }
 

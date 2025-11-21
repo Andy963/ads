@@ -50,8 +50,9 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
           title,
           template_id: 'unified',
           workspace_path: workspacePath,
+          format: 'markdown',
         });
-        await replyWithAdsText(ctx, response);
+        await replyWithAdsText(ctx, response, { markdown: true });
         break;
       }
 
@@ -61,8 +62,12 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
           return;
         }
         const identifier = commandArgs.join(' ');
-        const response = await checkoutWorkflow({ workflow_identifier: identifier, workspace_path: workspacePath });
-        await replyWithAdsText(ctx, response);
+        const response = await checkoutWorkflow({
+          workflow_identifier: identifier,
+          workspace_path: workspacePath,
+          format: 'markdown',
+        });
+        await replyWithAdsText(ctx, response, { markdown: true });
         break;
       }
 
@@ -72,8 +77,8 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
           return;
         }
         const stepName = commandArgs.join(' ');
-        const response = await commitStep({ step_name: stepName, workspace_path: workspacePath });
-        await replyWithAdsText(ctx, response);
+        const response = await commitStep({ step_name: stepName, workspace_path: workspacePath, format: 'markdown' });
+        await replyWithAdsText(ctx, response, { markdown: true });
         break;
       }
 

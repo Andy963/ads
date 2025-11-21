@@ -112,6 +112,7 @@ export async function createWorkflowFromTemplate(params: {
   title: string;
   description?: string;
   workspace_path?: string;
+  format?: "cli" | "markdown";
 }): Promise<string> {
   try {
     const requestedId = params.template_id?.trim();
@@ -225,6 +226,26 @@ export async function createWorkflowFromTemplate(params: {
       });
     } catch (error) {
       console.warn("Warning: Failed to set active workflow:", error);
+    }
+
+    // 获取工作流状态回显
+    const format = params.format ?? "cli";
+    const { getWorkflowStatusSummary } = await import("./service.js");
+    const statusSummary = await getWorkflowStatusSummary({
+      workspace_path: workspace,
+      format,
+    });
+
+    if (format === "markdown") {
+      return [
+        "✅ 工作流创建成功",
+        "",
+        `📋 Root Node: \`${rootNode.id}\``,
+        `📊 创建节点数: ${result.nodes.length}`,
+        `🔗 创建边数: ${result.edges.length}`,
+        "",
+        statusSummary,
+      ].join("\n");
     }
 
     return safeStringify({
