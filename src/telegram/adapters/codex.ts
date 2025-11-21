@@ -130,7 +130,7 @@ export async function handleCodexMessage(
 
   // 检查是否有活跃请求
   if (interruptManager.hasActiveRequest(userId)) {
-    await ctx.reply('⚠️ 已有请求正在执行，请等待完成或使用 /stop 中断');
+    await ctx.reply('⚠️ 已有请求正在执行，请等待完成或使用 /stop 中断', { disable_notification: true });
     return;
   }
 
@@ -508,7 +508,7 @@ export async function handleCodexMessage(
       try {
         urlData = await processUrls(text, signal);
         if (urlData.imagePaths.length > 0 || urlData.filePaths.length > 0) {
-          await ctx.reply(`🔗 检测到链接，正在下载...\n图片: ${urlData.imagePaths.length}\n文件: ${urlData.filePaths.length}`);
+          await ctx.reply(`🔗 检测到链接，正在下载...\n图片: ${urlData.imagePaths.length}\n文件: ${urlData.filePaths.length}`, { disable_notification: true });
         }
       } catch (error) {
         if ((error as Error).name === 'AbortError') {
@@ -551,7 +551,7 @@ export async function handleCodexMessage(
         const fileName = doc?.file_name || 'file.bin';
         const path = await downloadTelegramFile(ctx.api, documentFileId, fileName, signal);
         filePaths.push(path);
-        await ctx.reply(`📥 已接收文件: ${fileName}\n正在处理...`);
+        await ctx.reply(`📥 已接收文件: ${fileName}\n正在处理...`, { disable_notification: true });
       } catch (error) {
         cleanupImages(imagePaths);
         if ((error as Error).name === 'AbortError') {
@@ -696,8 +696,8 @@ export async function handleCodexMessage(
         const tokenBlock = formatCodeBlock(tokenUsageLine);
         chunkText = chunkText ? `${chunkText}\n\n${tokenBlock}` : tokenBlock;
       }
-      await ctx.reply(chunkText, { parse_mode: 'Markdown' }).catch(async () => {
-        await ctx.reply(chunkText);
+      await ctx.reply(chunkText, { parse_mode: 'Markdown', disable_notification: true }).catch(async () => {
+        await ctx.reply(chunkText, { parse_mode: 'Markdown', disable_notification: true });
       });
     }
   } catch (error) {
@@ -735,7 +735,7 @@ export async function handleCodexMessage(
 
     await finalizeStatusUpdates(replyText);
     interruptManager.complete(userId);
-    await ctx.reply(replyText);
+    await ctx.reply(replyText, { disable_notification: true });
   }
 }
 
