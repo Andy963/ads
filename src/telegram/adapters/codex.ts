@@ -157,6 +157,9 @@ export async function handleCodexMessage(
   let statusUpdatesClosed = false;
   let rateLimitUntil = 0;
   let eventQueue: Promise<void> = Promise.resolve();
+  let planMessageId: number | null = null;
+  let lastPlanContent: string | null = null;
+  let lastTodoSignature: string | null = null;
 
   const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
     analysis: '💭',
@@ -338,6 +341,8 @@ export async function handleCodexMessage(
       statusMessageText = candidate;
     } else {
       await sendNewStatusMessage(trimmed, entry.silent);
+      // 状态消息超长发了新消息，重新把 plan 固定到底部
+      await resendPlanToBottom();
     }
   }
 
@@ -401,7 +406,9 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      await ctx.reply(text, { disable_notification: true });
+      const msg = await ctx.reply(text, { disable_notification: true });
+      planMessageId = msg.message_id;
+      lastPlanContent = text;
       rateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 429) {
@@ -416,7 +423,28 @@ export async function handleCodexMessage(
     }
   }
 
-  let lastTodoSignature: string | null = null;
+  async function deletePlanMessage(): Promise<void> {
+    if (!planMessageId) {
+      return;
+    }
+    try {
+      await ctx.api.deleteMessage(ctx.chat!.id, planMessageId);
+    } catch (error) {
+      // 消息可能已被删除，忽略错误
+      if (!(error instanceof GrammyError && error.error_code === 400)) {
+        logWarning('[CodexAdapter] Failed to delete plan message', error);
+      }
+    }
+    planMessageId = null;
+  }
+
+  async function resendPlanToBottom(): Promise<void> {
+    if (!lastPlanContent) {
+      return;
+    }
+    await deletePlanMessage();
+    await sendPlanMessage(lastPlanContent);
+  }
 
   async function maybeSendTodoListUpdate(event: AgentEvent): Promise<void> {
     const raw = event.raw;
@@ -432,6 +460,8 @@ export async function handleCodexMessage(
     if (!message) {
       return;
     }
+    // 删除旧的 plan 消息，发新的到底部
+    await deletePlanMessage();
     await sendPlanMessage(message);
   }
 
