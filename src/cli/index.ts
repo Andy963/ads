@@ -74,7 +74,7 @@ const NO_SET = new Set([
 ]);
 
 let pendingIntakeRequest: string | null = null;
-let agentMode: AgentMode = "manual";
+let agentMode: AgentMode = "auto";
 
 interface CommandResult {
   output: string;
@@ -1002,6 +1002,9 @@ async function main(): Promise<void> {
     logger: cliLogger.child("SystemPrompt"),
   });
   const agents = createAgentController(workspaceRoot, systemPromptManager);
+  if (agentMode === "auto" && !supportsAutoDelegation(agents)) {
+    agentMode = "manual";
+  }
 
   cliLogger.info("欢迎使用 ADS CLI，输入 /ads.help 查看可用命令。");
   cliLogger.info(`会话日志: ${logger.path}`);
@@ -1009,7 +1012,8 @@ async function main(): Promise<void> {
   const activeLabel = describeActiveAgent(agents);
   const initialStatus = agents.status();
   if (initialStatus.ready) {
-    cliLogger.info(`[${activeLabel}] 已连接，直接输入自然语言即可对话。`);
+    const modeLabel = agentMode === "auto" ? "自动代理模式已启用（Codex 可调用 Claude）" : "手动模式";
+    cliLogger.info(`[${activeLabel}] 已连接，${modeLabel}。`);
   } else {
     cliLogger.warn(
       `[${activeLabel}] 未启用: ${initialStatus.error ?? "请配置 CODEX_API_KEY 或 ~/.codex"}`,

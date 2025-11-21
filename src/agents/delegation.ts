@@ -7,6 +7,45 @@ export type AgentMode = "manual" | "auto";
 const CLAUDE_AGENT_ID = "claude";
 const CODEX_AGENT_ID = "codex";
 const CLAUDE_DELEGATION_REGEX = /<<<agent\.claude[\t ]*\n([\s\S]*?)>>>/gi;
+const FRONTEND_KEYWORDS = [
+  "前端",
+  "界面",
+  "ui ",
+  " ui",
+  "页面",
+  "页面布局",
+  "样式",
+  "美化",
+  "交互设计",
+  "html",
+  "css",
+  "jsx",
+  "tsx",
+  "react",
+  "vue",
+  "component",
+  "components",
+  "tailwind",
+  "chakra",
+  "ant design",
+  "material ui",
+  "semantic ui",
+  "bootstrap",
+  "grid",
+  "flexbox",
+  "图标",
+  "按钮",
+  "表格",
+  "表单",
+  "landing page",
+  "hero section",
+  "mockup",
+  "figma",
+  "设计稿",
+  "配色",
+  "布局图",
+  "wireframe",
+];
 
 interface DelegationDirective {
   raw: string;
@@ -27,6 +66,20 @@ export interface DelegationOutcome {
   response: string;
   usage: Usage | null;
   summaries: DelegationSummary[];
+}
+
+export function detectFrontendIntent(text: string): string | null {
+  const normalized = text.toLowerCase();
+  for (const keyword of FRONTEND_KEYWORDS) {
+    if (normalized.includes(keyword.toLowerCase())) {
+      return `检测到前端/UI 关键词「${keyword.trim()}」`;
+    }
+  }
+  const htmlLike = /<\s*(div|section|main|header|footer|button|table|form|input|svg|article)\b/i;
+  if (htmlLike.test(text)) {
+    return "检测到 HTML/组件结构";
+  }
+  return null;
 }
 
 export function supportsAutoDelegation(orchestrator: HybridOrchestrator): boolean {
@@ -76,31 +129,52 @@ export async function resolveDelegations(
   }
 
   const directives = extractDelegationBlocks(result.response);
-  if (directives.length === 0) {
-    return { response: result.response, usage: result.usage, summaries: [] };
-  }
-
   let finalResponse = result.response;
   const summaries: DelegationSummary[] = [];
 
-  for (const directive of directives) {
-    await hooks?.onInvoke?.(directive.prompt);
-    const claudeResult = await orchestrator.invokeAgent?.(CLAUDE_AGENT_ID, directive.prompt, {
-      streaming: false,
-    });
-    if (!claudeResult) {
-      continue;
+  const runDelegation = async (prompt: string, reason?: string) => {
+    if (!orchestrator.invokeAgent) {
+      return null;
     }
-
+    await hooks?.onInvoke?.(prompt);
+    const claudeResult = await orchestrator.invokeAgent(CLAUDE_AGENT_ID, prompt, { streaming: false });
+    if (!claudeResult) {
+      return null;
+    }
     const summary: DelegationSummary = {
-      prompt: directive.prompt.trim(),
+      prompt: prompt.trim(),
       response: claudeResult.response,
     };
     summaries.push(summary);
     await hooks?.onResult?.(summary);
+    return formatClaudeReplacement(summary, reason);
+  };
 
-    const replacement = formatClaudeReplacement(summary);
-    finalResponse = finalResponse.replace(directive.raw, replacement);
+  for (const directive of directives) {
+    const replacement = await runDelegation(directive.prompt);
+    if (replacement) {
+      finalResponse = finalResponse.replace(directive.raw, replacement);
+    }
+  }
+
+  if (
+    summaries.length === 0 &&
+    mode === "auto" &&
+    supportsAutoDelegation(orchestrator)
+  ) {
+    const reason = detectFrontendIntent(result.response);
+    if (reason) {
+      const autoPrompt = [
+        "Codex 需要你作为前端/UI 专家完成以下内容：",
+        result.response.trim(),
+        "",
+        "请根据以上上下文输出最终的前端/UI 结果（可包含代码、说明或需要的素材）。",
+      ].join("\n");
+      const replacement = await runDelegation(autoPrompt, reason);
+      if (replacement) {
+        finalResponse = replacement;
+      }
+    }
   }
 
   return {
@@ -122,14 +196,16 @@ function extractDelegationBlocks(response: string): DelegationDirective[] {
   return directives;
 }
 
-function formatClaudeReplacement(summary: DelegationSummary): string {
+function formatClaudeReplacement(summary: DelegationSummary, reason?: string): string {
   const promptPreview =
     summary.prompt.length > 160
       ? `${summary.prompt.slice(0, 157)}…`
       : summary.prompt;
 
+  const headerReason = reason ? `（触发：${reason}）` : "";
+
   return [
-    "🤝 **Claude（自动代理）已完成以下子任务：**",
+    `🤝 **Claude（协作代理）已完成以下子任务** ${headerReason}`.trim(),
     `> ${promptPreview}`,
     "",
     summary.response.trim(),

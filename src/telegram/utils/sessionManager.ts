@@ -7,7 +7,7 @@ import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPromp
 import { createLogger } from '../../utils/logger.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
 import { resolveClaudeAgentConfig } from '../../agents/config.js';
-import type { AgentMode } from '../../agents/delegation.js';
+import { supportsAutoDelegation, type AgentMode } from '../../agents/delegation.js';
 import type { AgentAdapter } from '../../agents/types.js';
 
 interface SessionRecord {
@@ -98,12 +98,14 @@ export class SessionManager {
       initialModel: userModel,
     });
 
+    const defaultAgentMode: AgentMode = supportsAutoDelegation(orchestrator) ? "auto" : "manual";
+
     this.sessions.set(userId, {
       orchestrator,
       lastActivity: Date.now(),
       cwd: effectiveCwd,
       logger: undefined, // 延迟创建，等到获取 threadId 后
-      agentMode: "manual",
+      agentMode: defaultAgentMode,
     });
 
     return orchestrator;

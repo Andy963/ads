@@ -11,52 +11,67 @@ import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdown } from '../../utils/markdown.js';
 import { injectDelegationGuide, resolveDelegations } from '../../agents/delegation.js';
+import {
+  CODEX_THREAD_RESET_HINT,
+  CodexThreadCorruptedError,
+  shouldResetThread,
+} from '../../codex/errors.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 
-function chunkMessage(text: string, maxLen = 4000): string[] {
+function chunkMessage(text: string, maxLen = 3900): string[] {
   if (text.length <= maxLen) {
     return [text];
   }
 
   const chunks: string[] = [];
-  let current = '';
   const lines = text.split('\n');
-  let inCodeBlock = false;
+  let current = '';
+  let openFence: string | null = null;
+
+  const appendLine = (line: string) => {
+    current = current ? `${current}\n${line}` : line;
+  };
+
+  const flushChunk = () => {
+    if (!current.trim()) {
+      current = '';
+      return;
+    }
+    chunks.push(current);
+    current = '';
+  };
 
   for (const line of lines) {
-    if (line.trim().startsWith('```')) {
-      inCodeBlock = !inCodeBlock;
-    }
-
-    if (current.length + line.length + 1 > maxLen) {
-      if (inCodeBlock && current) {
+    const prospective = current ? current.length + 1 + line.length : line.length;
+    if (prospective + (openFence ? 4 : 0) > maxLen && current) {
+      if (openFence) {
         current += '\n```';
-        inCodeBlock = false;
       }
-      
-      if (current) {
-        chunks.push(current.trim());
+      flushChunk();
+      if (openFence) {
+        current = openFence;
       }
-      
-      if (inCodeBlock) {
-        current = '```\n' + line;
+    }
+
+    appendLine(line);
+
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('```')) {
+      if (openFence) {
+        openFence = null;
       } else {
-        current = line;
+        const fence = trimmed.match(/^```[^\s]*?/);
+        openFence = fence ? fence[0] : '```';
       }
-    } else {
-      current += (current ? '\n' : '') + line;
     }
   }
 
-  if (current) {
-    if (inCodeBlock) {
-      current += '\n```';
-    }
-    chunks.push(current.trim());
+  if (openFence) {
+    current += '\n```';
   }
-
+  flushChunk();
   return chunks;
 }
 
@@ -129,7 +144,6 @@ export async function handleCodexMessage(
   const signal = interruptManager.registerRequest(userId).signal;
 
   const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
-  const COMMAND_OUTPUT_LIMIT = 800;
   const sentMsg = await ctx.reply(`💭 [${activeAgentLabel}] 开始处理...`, { disable_notification: true });
   let statusMessageId = sentMsg.message_id;
   let statusMessageText = sentMsg.text ?? '💭 开始处理...';
@@ -171,34 +185,14 @@ export async function handleCodexMessage(
     return ['```', safe || '\u200b', '```'].join('\n');
   }
 
-  function isEncryptedThreadError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error ?? '');
-    const normalized = message.toLowerCase();
-    return normalized.includes('encrypted content') && normalized.includes('could not be verified');
-  }
-
-  function extractCommandOutputSnippet(rawItem: CommandExecutionItem): { snippet: string; truncated: boolean } | null {
-    if (rawItem.type !== 'command_execution') {
-      return null;
+  function truncateCommandText(text: string, maxLines = 3): { text: string; truncated: boolean } {
+    const lines = text.split(/\r?\n/);
+    if (lines.length <= maxLines) {
+      return { text, truncated: false };
     }
-    const output: string | undefined = rawItem.aggregated_output;
-    if (!output) {
-      return null;
-    }
-    const lines = output.split(/\r?\n/);
-    const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
-    const sourceLines = nonEmptyLines.length > 0 ? nonEmptyLines : lines;
-    const limitedLines = sourceLines.slice(0, 5);
-    let snippet = limitedLines.join('\n').trim();
-    if (!snippet) {
-      return null;
-    }
-    let truncated = sourceLines.length > limitedLines.length;
-    if (snippet.length > COMMAND_OUTPUT_LIMIT) {
-      snippet = `${snippet.slice(0, COMMAND_OUTPUT_LIMIT - 1)}…`;
-      truncated = true;
-    }
-    return { snippet, truncated };
+    const kept = lines.slice(0, maxLines);
+    kept[kept.length - 1] = `${kept[kept.length - 1]} …`;
+    return { text: kept.join('\n'), truncated: true };
   }
 
   function buildCommandStatusEntry(rawItem: CommandExecutionItem, fallbackDetail?: string): string | null {
@@ -209,17 +203,12 @@ export async function handleCodexMessage(
       return null;
     }
     const exitText = rawItem.exit_code === undefined ? '' : ` (exit ${rawItem.exit_code})`;
-    const lines: Array<string | null> = [formatCodeBlock(`${commandLine}${exitText}`)];
-
-    const snippet = extractCommandOutputSnippet(rawItem);
-    if (snippet) {
-      const outputText = snippet.truncated
-        ? `${snippet.snippet}\n…(output truncated)…`
-        : snippet.snippet;
-      lines.push(formatCodeBlock(outputText));
-    }
-
-    return lines.filter(Boolean).join('\n');
+    const { text: truncatedCommand, truncated } = truncateCommandText(commandLine, 3);
+    const withExit = `${truncatedCommand}${exitText}`;
+    const blockBody = truncated
+      ? `${withExit}\n... (命令已截断至 3 行)`
+      : withExit;
+    return formatCodeBlock(blockBody);
   }
 
   interface StatusEntry {
@@ -591,11 +580,17 @@ export async function handleCodexMessage(
 
     const errorMsg = error instanceof Error ? error.message : String(error);
     const isInterrupt = (error as Error).name === 'AbortError';
-    const encryptedError = isEncryptedThreadError(error);
+    const corruptedThread = shouldResetThread(error);
+    const encryptedErrorDetails =
+      error instanceof CodexThreadCorruptedError
+        ? error.originalMessage ??
+          (error.cause instanceof Error ? error.cause.message : undefined)
+        : undefined;
+    const corruptedDetail = encryptedErrorDetails ?? errorMsg;
     const replyText = isInterrupt
       ? '⛔️ 已中断执行'
-      : encryptedError
-        ? `⚠️ Codex 线程上下文损坏，已自动重置，请重新发送请求。\n\n${formatCodeBlock(errorMsg)}`
+      : corruptedThread
+        ? `⚠️ ${CODEX_THREAD_RESET_HINT}\n\n${formatCodeBlock(corruptedDetail)}`
         : `❌ 错误: ${errorMsg}`;
 
     // 记录错误
@@ -603,7 +598,7 @@ export async function handleCodexMessage(
       logger.logError(errorMsg);
     }
 
-    if (encryptedError) {
+    if (corruptedThread) {
       logWarning('[CodexAdapter] Detected corrupted Codex thread, resetting session', error);
       sessionManager.reset(userId);
       logger = undefined;

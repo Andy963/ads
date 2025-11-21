@@ -9,6 +9,10 @@ import {
 
 import { resolveCodexConfig, type CodexResolvedConfig } from "../codexConfig.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../codex/events.js";
+import {
+  CodexThreadCorruptedError,
+  isEncryptedThreadError,
+} from "../codex/errors.js";
 import type { IntakeClassification } from "../intake/types.js";
 import { SystemPromptManager } from "../systemPrompt/manager.js";
 
@@ -187,6 +191,8 @@ export class CodexSession {
       }
 
       return await this.sendStreaming(thread, preparedPrompt, turnOptions, signal);
+    } catch (error) {
+      throw this.normalizeError(error);
     } finally {
       this.systemPromptManager?.completeTurn();
     }
@@ -380,6 +386,14 @@ export class CodexSession {
       // 忽略分类失败，回退为 unknown
     }
     return "unknown";
+  }
+
+  private normalizeError(error: unknown): Error {
+    if (isEncryptedThreadError(error)) {
+      this.reset();
+      return new CodexThreadCorruptedError(error);
+    }
+    return error instanceof Error ? error : new Error(String(error));
   }
 }
 

@@ -113,6 +113,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 - `CLAUDE_MODEL`：Claude 模型名称，默认 `claude-sonnet-4.5`
 - `CLAUDE_WORKDIR`：Claude Agent Runner 的工作目录，默认 `/tmp/ads-claude-agent`
 - `CLAUDE_TOOL_ALLOWLIST`：逗号分隔的工具白名单，占位用于后续阶段
+- `CLAUDE_BASE_URL` / `ANTHROPIC_BASE_URL`：如采用自托管 Claude Code endpoint，可在此指定 API 基础地址
 - `ENABLE_GEMINI_AGENT`：预留开关，暂不生效
 
 也可以像 Codex 一样在主目录放置配置文件：

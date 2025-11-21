@@ -150,6 +150,8 @@ export class ClaudeAgentAdapter implements AgentAdapter {
         env: {
           ...process.env,
           ANTHROPIC_API_KEY: this.config.apiKey,
+          ANTHROPIC_AUTH_TOKEN: this.config.apiKey,
+          ...(this.config.baseUrl ? { ANTHROPIC_BASE_URL: this.config.baseUrl } : {}),
         },
         outputSchema: options?.outputSchema as Record<string, unknown> | undefined,
       },

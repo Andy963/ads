@@ -13,6 +13,7 @@ export interface ClaudeAgentConfig {
   model: string;
   workdir: string;
   toolAllowlist: string[];
+  baseUrl?: string;
 }
 
 interface ClaudeFileConfig {
@@ -21,6 +22,7 @@ interface ClaudeFileConfig {
   model?: string;
   workdir?: string;
   toolAllowlist?: string[];
+  baseUrl?: string;
 }
 
 const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4.5";
@@ -98,6 +100,10 @@ function loadClaudeConfigFiles(): ClaudeFileConfig {
       if (allowlist) {
         result.toolAllowlist = allowlist;
       }
+      const baseUrl = parsed.baseUrl ?? parsed.base_url;
+      if (typeof baseUrl === "string") {
+        result.baseUrl = baseUrl;
+      }
     } catch (error) {
       console.warn(`[ClaudeConfig] Failed to parse ${configPath}:`, error);
     }
@@ -136,6 +142,12 @@ function loadClaudeConfigFiles(): ClaudeFileConfig {
         if (typeof envKey === "string" && !result.apiKey) {
           result.apiKey = envKey;
         }
+        const envBase =
+          envRecord.ANTHROPIC_BASE_URL ??
+          envRecord.CLAUDE_BASE_URL;
+        if (typeof envBase === "string" && !result.baseUrl) {
+          result.baseUrl = envBase;
+        }
       }
     } catch (error) {
       console.warn(`[ClaudeConfig] Failed to parse ${settingsPath}:`, error);
@@ -159,6 +171,11 @@ export function resolveClaudeAgentConfig(): ClaudeAgentConfig {
   const fileConfig = loadClaudeConfigFiles();
   const envApiKey = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
   const apiKey = envApiKey || fileConfig.apiKey;
+  const envBase =
+    process.env.CLAUDE_BASE_URL ||
+    process.env.CLAUDE_API_BASE ||
+    process.env.ANTHROPIC_BASE_URL;
+  const baseUrl = envBase || fileConfig.baseUrl;
   const defaultWorkdir =
     process.env.CLAUDE_WORKDIR || fileConfig.workdir || join(tmpdir(), "ads-claude-agent");
   const envToolList = process.env.CLAUDE_TOOL_ALLOWLIST;
@@ -172,5 +189,6 @@ export function resolveClaudeAgentConfig(): ClaudeAgentConfig {
     model: process.env.CLAUDE_MODEL || fileConfig.model || CLAUDE_DEFAULT_MODEL,
     workdir: defaultWorkdir,
     toolAllowlist,
+    baseUrl,
   };
 }
