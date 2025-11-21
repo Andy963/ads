@@ -47,7 +47,7 @@ export async function finalizeNode(nodeId: string, changeDescription?: string): 
       node_id: nodeId,
       version: newVersion,
       content: nodeRow.draft_content,
-      source_type: nodeRow.draft_source_type,
+      source_type: nodeRow.draft_source_type ?? 'manual',
       conversation_id: nodeRow.draft_conversation_id,
       message_id: nodeRow.draft_message_id,
       based_on_version: nodeRow.draft_based_on_version,

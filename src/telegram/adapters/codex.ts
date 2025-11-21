@@ -213,12 +213,9 @@ export async function handleCodexMessage(
       return null;
     }
     const exitText = rawItem.exit_code === undefined ? '' : ` (exit ${rawItem.exit_code})`;
-    const { text: truncatedCommand, truncated } = truncateCommandText(commandLine, 3);
+    const { text: truncatedCommand } = truncateCommandText(commandLine, 3);
     const withExit = `${truncatedCommand}${exitText}`;
-    const blockBody = truncated
-      ? `${withExit}\n... (命令已截断至 3 行)`
-      : withExit;
-    return formatCodeBlock(blockBody);
+    return formatCodeBlock(withExit);
   }
 
   interface StatusEntry {
