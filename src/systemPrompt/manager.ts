@@ -76,8 +76,8 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
 
   return {
     enabled: enabledEnv ?? true,
-    turns: turnsEnv ?? 10,
-    rulesTurns: rulesTurnsEnv ?? 5,
+    turns: turnsEnv ?? 6,
+    rulesTurns: rulesTurnsEnv ?? 3,
   };
 }
 
@@ -101,15 +101,15 @@ export class SystemPromptManager {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
-      turns: options.reinjection?.turns ?? 10,
-      rulesTurns: options.reinjection?.rulesTurns ?? 5,
+      turns: options.reinjection?.turns ?? 6,
+      rulesTurns: options.reinjection?.rulesTurns ?? 3,
     };
     if (this.reinjection.turns < 1) {
       this.reinjection.turns = 10;
     }
     const ruleTurns = this.reinjection.rulesTurns && this.reinjection.rulesTurns > 0
       ? this.reinjection.rulesTurns
-      : 5;
+      : 3;
     this.rulesReinjectionTurns = ruleTurns;
     this.logger = options.logger ?? createLogger("SystemPrompt");
   }
@@ -132,28 +132,37 @@ export class SystemPromptManager {
       return null;
     }
 
-    const instructions = this.readInstructions();
+    const rulesOnly = reason.startsWith("rules-only");
+    const instructions = rulesOnly ? null : this.readInstructions();
     const rules = this.readRules();
 
-    const textParts = [instructions.content.trim()];
+    const textParts: string[] = [];
+    if (!rulesOnly && instructions && instructions.content.trim()) {
+      textParts.push(instructions.content.trim());
+    }
     if (rules.content.trim()) {
       textParts.push(rules.content.trim());
+    }
+    if (textParts.length === 0) {
+      return null;
     }
     const text = textParts.join("\n\n\n");
 
     this.hasInjected = true;
     this.lastInjectionTurn = this.turnCount;
     this.lastRulesInjectionTurn = this.turnCount;
+    if (!rulesOnly && instructions) {
     this.lastInstructionsHash = instructions.hash;
+    }
     this.lastRulesHash = rules.hash;
     this.logger.info(
-      `[SystemPrompt] ${reason} instructions=${shortHash(instructions.hash)} rules=${rules.hash}`,
+      `[SystemPrompt] ${reason} instructions=${rulesOnly || !instructions ? "skip" : shortHash(instructions.hash)} rules=${rules.hash}`,
     );
 
     return {
       text,
       reason,
-      instructionsHash: instructions.hash,
+      instructionsHash: rulesOnly || !instructions ? this.lastInstructionsHash ?? "" : instructions.hash,
       rulesHash: rules.hash,
     };
   }
@@ -177,7 +186,7 @@ export class SystemPromptManager {
       this.rulesReinjectionTurns > 0 &&
       this.turnCount - this.lastRulesInjectionTurn >= this.rulesReinjectionTurns
     ) {
-      return `rules-turn-${this.turnCount}`;
+      return `rules-only-${this.turnCount}`;
     }
 
     if (
