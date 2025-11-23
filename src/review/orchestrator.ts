@@ -7,18 +7,20 @@ import { resolveClaudeAgentConfig } from "../agents/config.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 
 const REVIEW_PROMPT = (bundleDir: string) => `
-You are an independent reviewer agent. Your task is to evaluate the latest code changes using the artifacts stored under:
+You are an independent reviewer agent. Your task is to evaluate the latest code changes against the spec using the artifacts stored under:
 \`${bundleDir}\`
 
 Available files inside the bundle include:
 - diff.patch / stats.txt — Git diff and statistics
-- requirements.md, design.md, implementation.md — latest spec documents
-- tests.log — most recent test output
+- requirements.md, design.md, implementation.md — spec documents
 - deps.txt — dependency changes
 
 Instructions:
-1. Use shell commands (e.g. \`ls\`, \`cat\`, \`grep\`, \`npm test -- --runInBand\`) to inspect files inside the bundle directory. DO NOT modify any code or files.
-2. Focus on correctness, requirement alignment, documentation sync, dependency risks, and test results.
+1. Use shell commands (e.g. \`ls\`, \`cat\`, \`grep\`) to inspect files inside the bundle directory. DO NOT modify any code or files.
+2. Focus on:
+   - Does the code change align with the spec (requirements, design, implementation)?
+   - Are there any obvious bugs or issues in the diff?
+   - Are dependency changes reasonable?
 3. When ready, produce a JSON object **without code fences** using the schema:
 {
   "verdict": "approved" | "blocked",
@@ -34,7 +36,7 @@ Instructions:
   ],
   "notes": "<optional free-form notes>"
 }
-4. Only set "verdict":"approved" when there are no errors and tests look healthy. Any serious concern must result in "blocked".
+4. Only set "verdict":"approved" when the changes align with the spec and there are no serious concerns. Any serious issue must result in "blocked".
 5. Respond ONLY with the JSON object.`;
 
 export interface ReviewerAgentResult {

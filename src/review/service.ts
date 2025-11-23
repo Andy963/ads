@@ -6,7 +6,6 @@ import { detectWorkspace } from "../workspace/detector.js";
 import { WorkflowContext } from "../workspace/context.js";
 import type { WorkflowInfo } from "../workspace/context.js";
 import type { GraphNode } from "../graph/types.js";
-import { getSpecDir } from "../graph/fileManager.js";
 import type { ReviewState } from "./types.js";
 import { runReviewerAgent } from "./orchestrator.js";
 
@@ -56,7 +55,15 @@ function resolveSpecDir(workflow: WorkflowInfo, workspace: string): string | nul
   if (!rootNode) {
     return null;
   }
-  return getSpecDir(rootNode, workspace);
+
+  // 直接从 metadata 读取 spec_folder，避免依赖全局数据库状态
+  const specFolder = rootNode.metadata?.spec_folder;
+  if (typeof specFolder === "string" && specFolder) {
+    return path.join(workspace, "docs", "spec", specFolder);
+  }
+
+  // 回退到 workflow_id
+  return path.join(workspace, "docs", "spec", workflow.workflow_id);
 }
 
 interface BundleResult {
@@ -107,15 +114,6 @@ function buildBundle(workspace: string, workflow: WorkflowInfo, reviewDir: strin
     spec_files_found: specCount,
   };
   writeJson(path.join(bundleDir, "metadata.json"), metadata);
-
-  // Tests log
-  const latestTestsLog = path.join(workspace, ".ads", "logs", "latest-tests.log");
-  if (fs.existsSync(latestTestsLog)) {
-    fs.writeFileSync(path.join(bundleDir, "tests.log"), readFileSafe(latestTestsLog), "utf-8");
-  } else {
-    fs.writeFileSync(path.join(bundleDir, "tests.log"), "尚未捕获测试输出。", "utf-8");
-    warnings.push("未找到测试日志（.ads/logs/latest-tests.log）");
-  }
 
   return { bundleDir, warnings };
 }
