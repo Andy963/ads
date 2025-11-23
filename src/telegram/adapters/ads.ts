@@ -185,6 +185,8 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
           break;
         }
 
+        // 先发送提示，让用户知道 Review 正在执行
+        await ctx.reply('🔍 正在执行 Review，请稍候...', { disable_notification: true });
         const response = await runReview({ workspace_path: workspacePath, requestedBy: 'telegram', agent: agentParam });
         await replyWithAdsText(ctx, response);
         break;

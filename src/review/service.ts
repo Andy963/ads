@@ -55,25 +55,41 @@ function resolveSpecDir(workflow: WorkflowInfo, workspace: string): string | nul
   return getSpecDir(rootNode, workspace);
 }
 
-function copyIfExists(source: string, target: string): void {
-  if (fs.existsSync(source)) {
-    fs.copyFileSync(source, target);
-  }
+interface BundleResult {
+  bundleDir: string;
+  warnings: string[];
 }
 
-function buildBundle(workspace: string, workflow: WorkflowInfo, reviewDir: string): string {
+function buildBundle(workspace: string, workflow: WorkflowInfo, reviewDir: string): BundleResult {
   const bundleDir = path.join(reviewDir, "bundle");
+  const warnings: string[] = [];
   ensureDir(bundleDir);
 
-  fs.writeFileSync(path.join(bundleDir, "diff.patch"), runGit(workspace, ["diff", "--binary"]), "utf-8");
+  // Git diff
+  const diffContent = runGit(workspace, ["diff", "--binary"]);
+  fs.writeFileSync(path.join(bundleDir, "diff.patch"), diffContent, "utf-8");
+  if (!diffContent.trim() || diffContent.includes("[git diff")) {
+    warnings.push("未检测到代码变更（git diff 为空或失败）");
+  }
+
   fs.writeFileSync(path.join(bundleDir, "stats.txt"), runGit(workspace, ["diff", "--stat"]), "utf-8");
   fs.writeFileSync(path.join(bundleDir, "deps.txt"), runGit(workspace, ["diff", "--", "package.json", "package-lock.json"]), "utf-8");
 
+  // Spec files
   const specDir = resolveSpecDir(workflow, workspace);
-  if (specDir) {
-    copyIfExists(path.join(specDir, "requirements.md"), path.join(bundleDir, "requirements.md"));
-    copyIfExists(path.join(specDir, "design.md"), path.join(bundleDir, "design.md"));
-    copyIfExists(path.join(specDir, "implementation.md"), path.join(bundleDir, "implementation.md"));
+  let specCount = 0;
+  if (specDir && fs.existsSync(specDir)) {
+    const specFiles = ["requirements.md", "design.md", "implementation.md"];
+    for (const file of specFiles) {
+      const sourcePath = path.join(specDir, file);
+      if (fs.existsSync(sourcePath)) {
+        fs.copyFileSync(sourcePath, path.join(bundleDir, file));
+        specCount++;
+      }
+    }
+  }
+  if (specCount === 0) {
+    warnings.push(`未找到 spec 文件（spec 目录: ${specDir ?? "无法解析"}）`);
   }
 
   const metadata = {
@@ -83,16 +99,21 @@ function buildBundle(workspace: string, workflow: WorkflowInfo, reviewDir: strin
     head: runGit(workspace, ["rev-parse", "HEAD"]).trim(),
     branch: runGit(workspace, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
     generated_at: new Date().toISOString(),
+    spec_dir: specDir,
+    spec_files_found: specCount,
   };
   writeJson(path.join(bundleDir, "metadata.json"), metadata);
 
+  // Tests log
   const latestTestsLog = path.join(workspace, ".ads", "logs", "latest-tests.log");
-  const testsContent = fs.existsSync(latestTestsLog)
-    ? readFileSafe(latestTestsLog)
-    : "尚未捕获测试输出，请在实现计划中记录验证命令并执行。";
-  fs.writeFileSync(path.join(bundleDir, "tests.log"), testsContent, "utf-8");
+  if (fs.existsSync(latestTestsLog)) {
+    fs.writeFileSync(path.join(bundleDir, "tests.log"), readFileSafe(latestTestsLog), "utf-8");
+  } else {
+    fs.writeFileSync(path.join(bundleDir, "tests.log"), "尚未捕获测试输出。", "utf-8");
+    warnings.push("未找到测试日志（.ads/logs/latest-tests.log）");
+  }
 
-  return bundleDir;
+  return { bundleDir, warnings };
 }
 
 function writeReport(reportPath: string, workflow: WorkflowInfo, state: ReviewState): void {
@@ -162,7 +183,7 @@ export async function runReview(options: { workspace_path?: string; requestedBy?
   lockWorkflow(workspace, workflow.workflow_id, true);
 
   try {
-    const bundleDir = buildBundle(workspace, workflow, reviewDir);
+    const { bundleDir, warnings: bundleWarnings } = buildBundle(workspace, workflow, reviewDir);
     const reviewerResult = await runReviewerAgent({
       workspace,
       workflow,
@@ -198,7 +219,9 @@ export async function runReview(options: { workspace_path?: string; requestedBy?
       issuesText,
       "查看详细报告: /ads.review --show",
     ];
-    (reviewerResult.warnings ?? []).forEach((warning) => lines.splice(1, 0, `⚠️ ${warning}`));
+    // 添加 bundle 警告和 reviewer 警告
+    const allWarnings = [...bundleWarnings, ...(reviewerResult.warnings ?? [])];
+    allWarnings.forEach((warning) => lines.splice(1, 0, `⚠️ ${warning}`));
     return lines
       .filter(Boolean)
       .join("\n");
