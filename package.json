@@ -38,10 +38,10 @@
     "ads-telegram": "./dist/src/telegram/cli.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.49",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.50",
     "@grammyjs/types": "^3.22.2",
     "@modelcontextprotocol/sdk": "^1.22.0",
-    "@openai/codex-sdk": "^0.61.0",
+    "@openai/codex-sdk": "^0.63.0",
     "better-sqlite3": "^9.6.0",
     "grammy": "^1.38.3",
     "picocolors": "^1.0.0",
