@@ -130,7 +130,7 @@ export async function handleCodexMessage(
 
   // 检查是否有活跃请求
   if (interruptManager.hasActiveRequest(userId)) {
-    await ctx.reply('⚠️ 已有请求正在执行，请等待完成或使用 /stop 中断', { disable_notification: true });
+    await ctx.reply('⚠️ 已有请求正在执行，请等待完成或使用 /esc 中断', { disable_notification: true });
     return;
   }
 
@@ -852,7 +852,7 @@ export async function handleCodexMessage(
         : undefined;
     const corruptedDetail = encryptedErrorDetails ?? errorMsg;
     const replyText = isInterrupt
-      ? '⛔️ 已中断执行'
+      ? '⛔️ 已中断当前任务'
       : corruptedThread
         ? `⚠️ ${CODEX_THREAD_RESET_HINT}\n\n${formatCodeBlock(corruptedDetail)}`
         : `❌ 错误: ${errorMsg}`;

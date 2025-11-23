@@ -99,15 +99,15 @@ async function main() {
     await bot.api.setMyCommands([
       { command: 'start', description: '欢迎信息' },
       { command: 'help', description: '命令帮助' },
+      { command: 'ads', description: 'ADS 命令' },
       { command: 'status', description: '系统状态' },
+      { command: 'esc', description: '中断当前任务' },
       { command: 'reset', description: '开始新对话' },
       { command: 'resume', description: '恢复之前的对话' },
       { command: 'model', description: '查看/切换模型' },
       { command: 'agent', description: '查看/切换代理' },
-      { command: 'stop', description: '中断当前执行' },
       { command: 'pwd', description: '当前目录' },
       { command: 'cd', description: '切换目录' },
-      { command: 'ads', description: 'ADS 命令' },
     ]);
     logger.info('Telegram commands registered');
   } catch (error) {
@@ -141,7 +141,7 @@ async function main() {
       '/resume - 恢复之前的对话\n' +
       '/model [name] - 查看/切换模型\n' +
       '/agent [name] - 查看/切换代理\n' +
-      '/stop - 中断当前执行\n\n' +
+      '/esc - 中断当前任务（Agent 保持运行）\n\n' +
       '📁 目录管理：\n' +
       '/pwd - 当前工作目录\n' +
       '/cd <path> - 切换目录\n\n' +
@@ -153,7 +153,7 @@ async function main() {
       '直接发送消息与 Codex AI 对话\n' +
       '发送图片可让 Codex 分析图像\n' +
       '发送文件让 Codex 处理文件\n' +
-      '执行过程中可用 /stop 中断'
+      '执行过程中可用 /esc 中断当前任务'
     );
   });
 
@@ -283,12 +283,12 @@ async function main() {
     await ctx.reply(result.message);
   });
 
-  bot.command('stop', async (ctx) => {
+  bot.command('esc', async (ctx) => {
     const userId = ctx.from!.id;
     const interrupted = interruptExecution(userId);
-    
+
     if (interrupted) {
-      await ctx.reply('⛔️ 正在中断执行...');
+      await ctx.reply('⛔️ 已中断当前任务\n✅ Agent 仍在运行，可以发送新指令');
     } else {
       await ctx.reply('ℹ️ 当前没有正在执行的任务');
     }
