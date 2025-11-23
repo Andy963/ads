@@ -13,6 +13,20 @@ import { syncAllNodesToFiles } from '../../graph/service.js';
 import { cancelIntake } from '../../intake/service.js';
 import { buildAdsHelpMessage } from '../../workflow/commands.js';
 import { escapeTelegramMarkdown } from '../../utils/markdown.js';
+import { runReview, skipReview, showReviewReport } from '../../review/service.js';
+import { WorkflowContext } from '../../workspace/context.js';
+
+const REVIEW_LOCK_SAFE_COMMANDS = new Set([
+  'ads.review',
+  'ads.status',
+  'ads.log',
+  'ads.help',
+  'ads.rules',
+  'ads.workspace',
+  'ads.branch',
+  'ads.checkout',
+  'ads.cancel-intake',
+]);
 
 export async function handleAdsCommand(ctx: Context, args: string[], options?: { workspacePath?: string }) {
   if (args.length === 0) {
@@ -31,8 +45,15 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
   const command = args[0].toLowerCase();
   const commandArgs = args.slice(1);
   const workspacePath = options?.workspacePath;
+  const reviewLocked = WorkflowContext.isReviewLocked(workspacePath);
+  const qualifiedCommand = `ads.${command}`;
 
   try {
+    if (reviewLocked && !REVIEW_LOCK_SAFE_COMMANDS.has(qualifiedCommand)) {
+      await ctx.reply('⚠️ 当前工作流正在执行 Review，请等待完成或使用 /ads.review --show 查看进度。', { parse_mode: 'Markdown' });
+      return;
+    }
+
     switch (command) {
       case 'status': {
         const response = await getWorkflowStatusSummary({ format: 'markdown', workspace_path: workspacePath });
@@ -125,6 +146,46 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
       case 'cancel-intake':
       case 'cancel': {
         const response = await cancelIntake();
+        await replyWithAdsText(ctx, response);
+        break;
+      }
+
+      case 'review': {
+        let agentParam: "codex" | "claude" | undefined;
+        for (let i = 0; i < commandArgs.length; i += 1) {
+          const token = commandArgs[i];
+          if (token.startsWith("agent=")) {
+            agentParam = token.slice("agent=".length).toLowerCase() as "codex" | "claude";
+            commandArgs.splice(i, 1);
+            break;
+          }
+          if (token === "--agent" && commandArgs[i + 1]) {
+            agentParam = commandArgs[i + 1].toLowerCase() as "codex" | "claude";
+            commandArgs.splice(i, 2);
+            break;
+          }
+        }
+
+        const subCommand = commandArgs[0]?.toLowerCase();
+        if (subCommand === 'show') {
+          const workflowId = commandArgs.slice(1).join(' ') || undefined;
+          const response = await showReviewReport({ workspace_path: workspacePath, workflowId });
+          await replyWithAdsText(ctx, response);
+          break;
+        }
+
+        if (subCommand === 'skip') {
+          const reason = commandArgs.slice(1).join(' ');
+          if (!reason) {
+            await ctx.reply('请提供跳过 Review 的原因，例如 `/ads.review skip 用户要求立即上线`。', { parse_mode: 'Markdown' });
+            break;
+          }
+          const response = await skipReview({ workspace_path: workspacePath, reason, requestedBy: 'telegram' });
+          await replyWithAdsText(ctx, response);
+          break;
+        }
+
+        const response = await runReview({ workspace_path: workspacePath, requestedBy: 'telegram', agent: agentParam });
         await replyWithAdsText(ctx, response);
         break;
       }

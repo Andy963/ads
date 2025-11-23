@@ -155,16 +155,25 @@ export async function getWorkflowStatusSummary(params: {
   const allWorkflows = WorkflowContext.listAllWorkflows(workspace);
   const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
   const stepOrder = Object.keys(stepMapping);
+  const nextActions: Array<{ label: string; command: string }> = [
+    { label: "Add draft content", command: `${CMD_ADD} <step> <content>` },
+    { label: "Finalize step", command: `${CMD_COMMIT} <step>` },
+  ];
+
+  const reviewState = workflow.review;
+  if (!reviewState || reviewState.status === "blocked" || reviewState.status === "failed" || reviewState.status === "skipped") {
+    nextActions.unshift({ label: "Run review", command: "/ads.review" });
+  } else if (reviewState.status === "running" || reviewState.status === "pending") {
+    nextActions.unshift({ label: "查看 review 进度", command: "/ads.review --show" });
+  }
+
   return formatWorkflowStatusSummary(
     {
       workflow,
       steps,
       stepOrder,
       allWorkflows,
-      nextActions: [
-        { label: "Add draft content", command: `${CMD_ADD} <step> <content>` },
-        { label: "Finalize step", command: `${CMD_COMMIT} <step>` },
-      ],
+      nextActions,
     },
     { format },
   );

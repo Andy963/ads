@@ -9,6 +9,7 @@ import {
   getParentNodes,
 } from "../graph/crud.js";
 import type { GraphNode } from "../graph/types.js";
+import type { ReviewState as WorkflowReviewState } from "../review/types.js";
 
 type WorkflowSteps = Record<string, string>;
 
@@ -48,6 +49,8 @@ export interface WorkflowInfo {
   created_at?: string;
   steps: WorkflowSteps;
   current_step?: string | null;
+  review?: WorkflowReviewState;
+  review_lock?: boolean;
 }
 
 interface WorkflowContextState {
@@ -267,6 +270,8 @@ export class WorkflowContext {
         created_at: activeWorkflow.created_at ?? existing.created_at,
         steps: activeWorkflow.steps ?? existing.steps ?? {},
         current_step: activeWorkflow.current_step ?? existing.current_step ?? null,
+        review: activeWorkflow.review ?? existing.review,
+        review_lock: activeWorkflow.review_lock ?? existing.review_lock ?? false,
       };
       activeWorkflowId = workflowId;
     }
@@ -574,6 +579,72 @@ export class WorkflowContext {
       matches: [],
       message: `已切换到工作流: ${matched.title}`,
     };
+  }
+
+  static setReviewState(params: {
+    workspace?: string;
+    workflowId: string;
+    review: WorkflowReviewState | null;
+  }): WorkflowInfo | null {
+    const root = params.workspace ? path.resolve(params.workspace) : detectWorkspace();
+    const context = WorkflowContext.loadContext(root);
+    const entry = context.workflows[params.workflowId];
+    if (!entry) {
+      return null;
+    }
+
+    entry.review = params.review ?? undefined;
+    if (context.active_workflow_id === params.workflowId && context.active_workflow) {
+      context.active_workflow.review = params.review ?? undefined;
+    }
+    WorkflowContext.saveContext(root, context);
+    return entry;
+  }
+
+  static setReviewLock(params: {
+    workspace?: string;
+    workflowId: string;
+    locked: boolean;
+  }): void {
+    const root = params.workspace ? path.resolve(params.workspace) : detectWorkspace();
+    const context = WorkflowContext.loadContext(root);
+    const entry = context.workflows[params.workflowId];
+    if (!entry) {
+      return;
+    }
+    entry.review_lock = params.locked;
+    if (context.active_workflow_id === params.workflowId && context.active_workflow) {
+      context.active_workflow.review_lock = params.locked;
+    }
+    WorkflowContext.saveContext(root, context);
+  }
+
+  static getReviewState(workspace?: string, workflowId?: string): WorkflowReviewState | null {
+    const root = workspace ? path.resolve(workspace) : detectWorkspace();
+    const context = WorkflowContext.loadContext(root);
+    const targetId = workflowId ?? context.active_workflow_id;
+    if (!targetId) {
+      return null;
+    }
+    const entry = context.workflows[targetId];
+    return entry?.review ?? null;
+  }
+
+  static isReviewLocked(workspace?: string, workflowId?: string): boolean {
+    const root = workspace ? path.resolve(workspace) : detectWorkspace();
+    const context = WorkflowContext.loadContext(root);
+    const targetId = workflowId ?? context.active_workflow_id;
+    if (!targetId) {
+      return false;
+    }
+    const entry = context.workflows[targetId];
+    return Boolean(entry?.review_lock);
+  }
+
+  static getNode(workspace: string | undefined, nodeId: string): GraphNode | null {
+    return workspace
+      ? WorkflowContext.getNodeFromWorkspace(nodeId, workspace)
+      : getNodeById(nodeId);
   }
 
   static collectWorkflowNodes(workflowId: string, workspace?: string): GraphNode[] {

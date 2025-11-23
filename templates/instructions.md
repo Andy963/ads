@@ -29,6 +29,7 @@
     •  **禁止**在用户未明确同意的情况下通过任何方式执行 commit 步骤（无论是 `/ads.commit` 还是 Bash 中的 `ads` CLI），这会锁定该步骤。
     •  可以使用 `/ads.status`（或在 Bash 中运行 `ads` CLI 的 `status` 子命令）查看当前工作流状态。
     •  在 ADS CLI 会话中执行命令时，必须使用 `/ads.<命令>` 前缀（例如 `/ads.new "LLM client caching"`、`/ads.commit implementation`）；禁止输入 `ads` 加空格的裸命令（例如 `ads new ...`）或让机器人直接回显命令字符串，以免误触自动 intake。
+    •  实施完成后，必须询问用户是否执行 `/ads.review`，除非用户明确表示跳过并提供理由，否则不得直接交付；如需跳过，回复中必须提示风险并记录原因。
 
     •  **正确的执行流程**：
       1. 用户说"帮我实现 XXX 功能"
@@ -38,6 +39,7 @@
       5. 用户明确同意后，执行 `/ads.commit requirement`（或在 Bash 中调用 `ads` CLI 的 `commit requirement` 子命令）
       6. 继续 design.md，重复 3-5 步骤
       7. 继续 implementation.md，重复 3-5 步骤
+      8. 实施完成 → 询问是否执行 `/ads.review`，默认必须运行并等待结果；若用户要求跳过，记录理由并提示风险
 
     •  **错误示例**（禁止）：
       ❌ 自动执行所有步骤：`/ads.new` → 编辑文档 → 立即 `/ads.commit`（未经用户确认）
@@ -57,6 +59,7 @@
 - `/ads.log [limit] [workflow]`：查看最近提交记录，可指定数量或工作流。
 - `/ads.new <title> [--template_id=unified]`：基于模板创建新工作流（会生成 spec 目录与节点）。
 - `/ads.commit <step>`：在用户确认后定稿指定步骤并记录版本。
+- `/ads.review [--skip=<reason>] [--show]`：触发 Review 或查看/跳过 Review 结果。
 - `/ads.rules [category]`：读取项目规则或按类别筛选。
 - `/ads.workspace`：显示当前工作空间路径、数据库位置等信息。
 - `/ads.sync`：将节点内容同步到文件系统，确保 spec 文件最新。

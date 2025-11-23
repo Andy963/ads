@@ -41,6 +41,7 @@ import {
   startIntake,
 } from "../intake/service.js";
 import pc from "picocolors";
+import { runReview, skipReview, showReviewReport } from "../review/service.js";
 
 const YES_SET = new Set([
   "y",
@@ -75,6 +76,17 @@ interface CommandResult {
 }
 
 const PROMPT = "ADS> ";
+const REVIEW_LOCK_SAFE_COMMANDS = new Set([
+  "ads.review",
+  "ads.status",
+  "ads.log",
+  "ads.help",
+  "ads.rules",
+  "ads.workspace",
+  "ads.branch",
+  "ads.checkout",
+  "ads.cancel-intake",
+]);
 
 interface TemplateMetadata {
   id?: string;
@@ -385,12 +397,23 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
   const params: Record<string, string> = {};
 
   for (const token of rawArgs) {
-    const match = token.match(/^--([^=]+)=(.+)$/);
-    if (match) {
-      params[match[1]] = match[2];
-    } else {
-      positional.push(token.replace(/^['"]|['"]$/g, ""));
+    if (token.startsWith("--")) {
+      const eqIndex = token.indexOf("=");
+      if (eqIndex > -1) {
+        const key = token.slice(2, eqIndex);
+        const value = token.slice(eqIndex + 1);
+        params[key] = value;
+      } else {
+        params[token.slice(2)] = "true";
+      }
+      continue;
     }
+    positional.push(token.replace(/^['"]|['"]$/g, ""));
+  }
+
+  const reviewLocked = WorkflowContext.isReviewLocked();
+  if (reviewLocked && !REVIEW_LOCK_SAFE_COMMANDS.has(command)) {
+    return { output: "⚠️ 当前工作流正在进行 Review。请等待完成或使用 /ads.review --show 查看报告。", exit: false };
   }
 
   switch (command) {
@@ -555,6 +578,33 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       pendingIntakeRequest = null;
       const result = await cancelIntake();
       return { output: result.messages.join("\n") };
+    }
+
+    case "ads.review": {
+      if (!params.skip && positional[0]?.toLowerCase() === "skip") {
+        params.skip = positional.slice(1).join(" ");
+      }
+      const wantsShow = params.show === "true" || positional[0]?.toLowerCase() === "show";
+      const workflowArg =
+        params.workflow ??
+        (wantsShow ? positional.slice(1).join(" ") : undefined);
+
+      const agent =
+        (params.agent as "codex" | "claude" | undefined) ??
+        (["codex", "claude"].includes(positional[0]?.toLowerCase() ?? "") ? (positional.shift()!.toLowerCase() as "codex" | "claude") : undefined);
+
+      if (wantsShow) {
+        const response = await showReviewReport({ workflowId: workflowArg });
+        return { output: response };
+      }
+
+      if (params.skip) {
+        const response = await skipReview({ reason: params.skip, requestedBy: "cli" });
+        return { output: response };
+      }
+
+      const response = await runReview({ requestedBy: "cli", agent });
+      return { output: response };
     }
 
     default:

@@ -180,6 +180,22 @@ export function formatWorkflowStatusSummary(
     lines.push(helpers.info("🎉 This workflow is complete!"));
   }
 
+  lines.push("");
+  lines.push(helpers.section("Review"));
+  if (workflow.review) {
+    const statusLabel = helpers.code(workflow.review.status);
+    const updated = workflow.review.updated_at ? ` · ${helpers.escape(workflow.review.updated_at)}` : "";
+    lines.push(helpers.info(`状态: ${statusLabel}${updated}`));
+    if (workflow.review.summary) {
+      lines.push(helpers.info(`摘要: ${helpers.escape(workflow.review.summary)}`));
+    }
+    if (workflow.review.skip_reason) {
+      lines.push(helpers.info(`跳过原因: ${helpers.escape(workflow.review.skip_reason)}`));
+    }
+  } else {
+    lines.push(helpers.info("尚未执行 Review。使用 /ads.review 触发检查。"));
+  }
+
   if (allWorkflows.length > 0) {
     lines.push("");
     lines.push(helpers.section("所有工作流"));
