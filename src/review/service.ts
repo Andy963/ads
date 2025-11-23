@@ -40,7 +40,11 @@ function readFileSafe(filePath: string): string {
 
 function runGit(workspace: string, args: string[]): string {
   try {
-    return execSync(`git ${args.join(" ")}`, { cwd: workspace, encoding: "utf-8" });
+    return execSync(`git ${args.join(" ")}`, {
+      cwd: workspace,
+      encoding: "utf-8",
+      maxBuffer: 50 * 1024 * 1024, // 50MB buffer
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return `[git ${args.join(" ")} 失败] ${message}`;
