@@ -7,10 +7,11 @@ AI-driven specification-based development workflow automation with Telegram bot 
 
 ## ✨ Features
 
-- 📱 **Telegram Bot**: Remote control your development workflow via Telegram
+- 📱 **Telegram Bot**: Remote control your development workflow via Telegram from anywhere
 - 🔄 **Workflow Automation**: Template-based workflow management and execution
 - 💾 **SQLite Workspace**: Persistent graph-based project state tracking
 - 🎯 **Context Management**: Intelligent context injection and reinjection
+- 🔍 **Review Workflow**: Automated code review before delivery with AI agents
 - 🔧 **Extensible**: Plugin-friendly architecture for custom tools and workflows
 
 ## 🚀 Quick Start
@@ -143,6 +144,75 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
   ```
 - ADS 会捕获该指令、调用 Claude、并把结果原位插回；你再继续执行命令或整合输出。
 - 系统不会再自动切换代理，如需 Claude 必须显式写出上述指令块（Telegram/CLI 均适用）。
+
+### 📱 Telegram Bot 远程编程
+
+通过 Telegram Bot，你可以在任意地点、任意设备上远程控制开发工作流：
+
+**启动 Bot**：
+```bash
+# 设置环境变量
+export TELEGRAM_BOT_TOKEN="your-bot-token"
+export TELEGRAM_ALLOWED_USERS="your-telegram-user-id"
+
+# 启动 Bot
+npm run telegram
+# 或
+ads-telegram
+```
+
+**常用命令**：
+| 命令 | 说明 |
+| ---- | ---- |
+| `/ads` | ADS 工作流命令入口 |
+| `/ads.new <title>` | 创建新工作流 |
+| `/ads.status` | 查看当前工作流状态 |
+| `/ads.commit <step>` | 定稿指定步骤 |
+| `/ads.review` | 触发代码审查 |
+| `/esc` | 中断当前任务（Agent 保持运行） |
+| `/reset` | 重置会话，开始新对话 |
+| `/agent [name]` | 查看或切换代理（Codex/Claude） |
+| `/cd <path>` | 切换工作目录 |
+
+**特性**：
+- 💬 直接发送消息与 AI 对话，支持多轮交互
+- 🖼️ 发送图片让 AI 分析（截图、设计稿等）
+- 📎 发送文件让 AI 处理
+- 🔄 会话持久化，断线后可 `/resume` 恢复
+- ⚡ `/esc` 可随时中断当前任务，立即执行新指令
+
+### 🔍 Review 工作流
+
+实施完成后，可触发自动化代码审查：
+
+```bash
+# 触发 Review（实施步骤定稿后）
+/ads.review
+
+# 查看 Review 报告
+/ads.review show
+
+# 跳过 Review（需提供原因）
+/ads.review skip 紧急上线，用户确认跳过
+```
+
+**Review 流程**：
+1. 自动收集 bundle（git diff、spec 文档、测试日志、依赖变更）
+2. 启动独立 Reviewer Agent 执行检查
+3. 生成结构化报告（verdict: approved/blocked + issues）
+4. Review 期间工作流锁定，禁止其他修改
+
+**Review 状态**：
+- `pending` - 等待执行
+- `running` - 正在审查
+- `approved` - 审查通过 ✅
+- `blocked` - 发现问题，需修复 ❌
+- `skipped` - 用户跳过（已记录原因）
+
+**规则**：
+- 实施完成后**必须**执行 `/ads.review`，除非用户明确要求跳过
+- Review 进行期间禁止执行写操作
+- 跳过 Review 需提供原因并记录
 
 ## 🤝 Contributing
 
