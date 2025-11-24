@@ -11,6 +11,7 @@ interface WorkflowStepStatus {
   label: string;
   status: "draft" | "finalized";
   is_current: boolean;
+  file_path?: string | null;
 }
 
 export interface WorkflowListEntry {

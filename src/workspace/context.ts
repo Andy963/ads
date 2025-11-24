@@ -10,6 +10,7 @@ import {
 } from "../graph/crud.js";
 import type { GraphNode } from "../graph/types.js";
 import type { ReviewState as WorkflowReviewState } from "../review/types.js";
+import { getNodeFilePath } from "../graph/fileManager.js";
 
 type WorkflowSteps = Record<string, string>;
 
@@ -675,12 +676,15 @@ export class WorkflowContext {
       label: string;
       status: "draft" | "finalized";
       is_current: boolean;
+      file_path?: string | null;
     }>;
   } | null {
     const workflow = WorkflowContext.getActiveWorkflow(workspace);
     if (!workflow) {
       return null;
     }
+
+    const workspaceRoot = workspace ? path.resolve(workspace) : detectWorkspace();
 
     const steps = Object.entries(workflow.steps ?? {}).map(([stepName, nodeId]) => {
       // If workspace is specified, read from that workspace's database
@@ -691,12 +695,30 @@ export class WorkflowContext {
       if (!node) {
         return null;
       }
+
+      let filePath: string | null = null;
+      try {
+        const metadataPath = typeof node.metadata?.file_path === "string" ? node.metadata.file_path : null;
+        if (metadataPath && metadataPath.trim()) {
+          filePath = path.isAbsolute(metadataPath)
+            ? metadataPath
+            : path.join(workspaceRoot, metadataPath);
+        } else {
+          filePath = getNodeFilePath(node, workspace);
+        }
+      } catch {
+        filePath = null;
+      }
+      const relativeFile =
+        filePath && workspaceRoot ? path.relative(workspaceRoot, filePath) : filePath;
+
       return {
         name: stepName,
         node_id: nodeId,
         label: node.label,
         status: node.isDraft ? "draft" as const : "finalized" as const,
         is_current: stepName === workflow.current_step,
+        file_path: relativeFile ?? filePath ?? null,
       };
     }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
