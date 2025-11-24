@@ -16,6 +16,11 @@ export async function finalizeNode(nodeId: string, changeDescription?: string): 
     if (!nodeRow.is_draft) {
       throw new InvalidOperationError("没有草稿可以定稿");
     }
+    const draftContent =
+      typeof nodeRow.draft_content === "string" ? nodeRow.draft_content.trim() : "";
+    if (!draftContent) {
+      throw new InvalidOperationError("草稿内容为空，无法定稿。请先更新文档内容。");
+    }
 
     const newVersion = (nodeRow.current_version ?? 0) + 1;
 
@@ -46,7 +51,7 @@ export async function finalizeNode(nodeId: string, changeDescription?: string): 
     ).run({
       node_id: nodeId,
       version: newVersion,
-      content: nodeRow.draft_content,
+        content: nodeRow.draft_content,
       source_type: nodeRow.draft_source_type ?? 'manual',
       conversation_id: nodeRow.draft_conversation_id,
       message_id: nodeRow.draft_message_id,

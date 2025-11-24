@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import { WorkflowContext } from "../workspace/context.js";
@@ -5,7 +6,7 @@ import { detectWorkspace } from "../workspace/detector.js";
 import { getNodeById, updateNode, deleteNode } from "../graph/crud.js";
 import { finalizeNode } from "../graph/finalizeHelper.js";
 import { onNodeFinalized } from "../graph/autoWorkflow.js";
-import { saveNodeToFile } from "../graph/fileManager.js";
+import { saveNodeToFile, getSpecDir } from "../graph/fileManager.js";
 import type { GraphNode } from "../graph/types.js";
 import { getDatabase } from "../storage/database.js";
 import {
@@ -526,6 +527,47 @@ export async function commitStep(params: {
   if (!nodeId) {
     return `❌ 步骤 '${params.step_name}' 不存在`;
   }
+
+  const node = getNodeById(nodeId);
+  if (!node) {
+    return `❌ 节点 ${nodeId} 不存在`;
+  }
+
+  const specDir = getSpecDir(node, workspace);
+  const workflowSteps = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
+  const normalizedStepName =
+    Object.entries(workflowSteps).find(([, value]) => value === node.type)?.[0] ?? params.step_name;
+  const candidateFiles = [
+    `${normalizedStepName}.md`,
+    `${params.step_name}.md`,
+    `${node.type}.md`,
+    "requirements.md",
+    "design.md",
+    "implementation.md",
+  ];
+
+  let specContent: string | null = null;
+  for (const fileName of candidateFiles) {
+    const filePath = path.join(specDir, fileName);
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      specContent = raw.trim();
+      if (specContent) {
+        break;
+      }
+    }
+  }
+
+  if (!specContent || !specContent.trim()) {
+    return `❌ 定稿失败: 未在 ${path.relative(workspace, specDir)} 找到 ${params.step_name} 的内容，请填写 spec 后再试`;
+  }
+
+  updateNode(nodeId, {
+    draft_content: specContent,
+    is_draft: true,
+    draft_updated_at: new Date().toISOString(),
+    draft_source_type: "spec-file",
+  });
 
   let finalizedNode: GraphNode;
   try {
