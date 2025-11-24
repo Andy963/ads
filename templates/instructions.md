@@ -51,6 +51,11 @@
 - 用户确认"是/正确"后才能进入设计或实现阶段；若用户指出误解，则根据反馈修正理解，再次确认。
 - 普通闲聊或不涉及实现的问答可直接回应，不需要走该流程。
 
+## 命令执行约束
+- 只有在用户明确要求时才执行 `/ads.*` 指令；重复调用 `/ads.status`、`/ads.branch` 等不会带来新信息，只会制造噪音。
+- 运行 ADS CLI 时，**绝不要**在 shell 中再次嵌套 `ads <<'EOF' ...`、`printf '/ads.status\n/ads.exit\n' | ads` 等批处理命令。
+- 永远不要执行 `/ads.exit`，该命令会终止用户会话。示例中的 `/ads.exit` 仅用于人类手动退出，agent 必须忽略。
+
 ## ADS 命令速查
 所有 ADS 指令必须使用带斜杠的点号形式（如 `/ads.status`），禁止使用 `ads.status` 或任何带空格的写法（如 `/ads status`）。常用命令：
 - `/ads.branch [-d|--delete-context <workflow>] [--delete <workflow>]`：列出或删除工作流（含软删/硬删）。
@@ -87,7 +92,7 @@
 ### CLI 调用指南（供其它代理/自动化使用）
 - **先进入 ADS CLI**：在目标工作区目录执行 `ads`，等待出现 `ADS>` 提示符后再输入 `/ads.*` 指令；直接在 shell 里运行 `/ads.new ...` 会被解释为系统路径，导致 “No such file or directory”。
 - **交互式控制**：若代理需要自动化执行，可通过支持伪终端的工具（如 `pexpect`、`script -q /dev/null ads`、`python -m pty` 等）启动 `ads`，并按顺序发送 `/ads.status`、`/ads.new "..."` 等命令，结束时发送 `/exit`。
-- **非交互批处理**：亦可使用 `printf '/ads.status\n/ads.exit\n' | ads` 这类管道方式在单次 CLI 会话内执行一组命令。
+- **禁止二次嵌套或批处理**：当前环境已经是 ADS CLI，绝不要在 shell 中再运行 `ads <<'EOF' ...`、`printf '/ads.status\n/ads.exit\n' | ads` 之类的批量命令，也不要执行 `/ads.exit`。每条 `/ads.*` 指令仅执行一次，只有在用户明确要求时才运行，避免日志洪水。
 - **工作区要求**：CLI 会基于当前目录查找 `.ads/`，如未初始化会提示执行 `/ads.init`；务必在正确的工作区（如 `~/study_buddy`）下运行。
 
 ### MCP Server（供其它 Agent / IDE 使用）
