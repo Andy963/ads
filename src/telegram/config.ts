@@ -63,7 +63,6 @@ export function loadTelegramConfig(): TelegramConfig {
 
   const defaultModel = process.env.TELEGRAM_MODEL; // 可选，不设置则使用 SDK 默认
   const proxyUrl = normalizeProxyUrl(process.env.TELEGRAM_PROXY_URL);
-
   return {
     botToken,
     allowedUsers,

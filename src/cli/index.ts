@@ -33,6 +33,7 @@ import type { AgentEvent, AgentPhase } from "../codex/events.js";
 import { resolveClaudeAgentConfig } from "../agents/config.js";
 import type { AgentAdapter } from "../agents/types.js";
 import { WorkflowContext } from "../workspace/context.js";
+import type { WorkflowInfo } from "../workspace/context.js";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import {
   cancelIntake,
@@ -327,6 +328,77 @@ function buildRequirementClarificationPrompt(): string | null {
   return null;
 }
 
+function resolveWorkflowSpecDir(workflow: WorkflowInfo, workspace: string): string | null {
+  const rootNode = WorkflowContext.getNode(workspace, workflow.workflow_id);
+  if (!rootNode) {
+    return null;
+  }
+  const specFolder =
+    typeof rootNode.metadata?.spec_folder === "string" && rootNode.metadata.spec_folder
+      ? rootNode.metadata.spec_folder
+      : workflow.workflow_id;
+  if (!specFolder) {
+    return null;
+  }
+  return path.join(workspace, "docs", "spec", specFolder);
+}
+
+function formatRelativePath(workspace: string, target?: string | null): string | null {
+  if (!target) {
+    return null;
+  }
+  const absolute = path.isAbsolute(target) ? target : path.join(workspace, target);
+  const relative = path.relative(workspace, absolute);
+  return relative.replace(/\\/g, "/") || ".";
+}
+
+function buildWorkflowContextPrompt(): string | null {
+  try {
+    const workspace = detectWorkspace();
+    const status = WorkflowContext.getWorkflowStatus(workspace);
+    if (!status) {
+      return null;
+    }
+    const { workflow, steps } = status;
+    const specDir = resolveWorkflowSpecDir(workflow, workspace);
+    const relativeSpecDir = specDir ? formatRelativePath(workspace, specDir) : null;
+    const lines: string[] = [];
+    lines.push("📌 当前 ADS 工作流（系统已同步上下文，除非状态过期请勿重复执行 /ads.status）");
+    lines.push(`• 标题: ${workflow.title ?? "(未命名)"} (${workflow.workflow_id})`);
+    lines.push(`• 模板: ${workflow.template ?? "unknown"}`);
+    if (workflow.current_step) {
+      lines.push(`• 当前步骤: ${workflow.current_step}`);
+    }
+    if (relativeSpecDir) {
+      lines.push(`• Spec 目录: ${relativeSpecDir}`);
+    }
+    if (workflow.review) {
+      lines.push(
+        `• Review 状态: ${workflow.review.status}` +
+          (workflow.review.updated_at ? ` (${workflow.review.updated_at})` : ""),
+      );
+    }
+    if (steps.length > 0) {
+      lines.push("• 步骤：");
+      for (const step of steps) {
+        const icon = step.status === "finalized" ? "✅" : "📝";
+        const currentMark = step.is_current ? " ← 当前" : "";
+        const fileHint = formatRelativePath(workspace, step.file_path);
+        const fileSegment = fileHint ? ` [${fileHint}]` : "";
+        lines.push(`  - ${icon} ${step.name}${currentMark}${fileSegment}`);
+      }
+    }
+    lines.push("");
+    lines.push("⚠️ 当前即在 ADS CLI 内，直接输入 `/ads.*` 命令即可。不要在 shell 里再运行 `ads <<'EOF' ...`、`printf '/ads.status\\n/ads.exit\\n' | ads`，也不要执行 `/ads.exit`。");
+    return lines.join("\n");
+  } catch (error) {
+    cliLogger.warn(
+      `[WorkflowContext] Failed to build workflow prompt: ${(error as Error).message}`,
+    );
+    return null;
+  }
+}
+
 async function handleAgentInteraction(
   input: string,
   orchestrator: HybridOrchestrator,
@@ -360,7 +432,16 @@ async function handleAgentInteraction(
     );
     const unsubscribe = orchestrator.onEvent(renderer.handleEvent);
     const clarification = buildRequirementClarificationPrompt();
-    const basePrompt = clarification ? `${clarification}\n\n用户输入: ${trimmed}` : trimmed;
+    const workflowPrompt = buildWorkflowContextPrompt();
+    const promptSections: string[] = [];
+    if (workflowPrompt) {
+      promptSections.push(workflowPrompt);
+    }
+    if (clarification) {
+      promptSections.push(clarification);
+    }
+    promptSections.push(`用户输入: ${trimmed}`);
+    const basePrompt = promptSections.join("\n\n");
     const finalPrompt = injectDelegationGuide(basePrompt, orchestrator);
     try {
       const result = await orchestrator.send(finalPrompt);

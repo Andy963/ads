@@ -171,6 +171,7 @@ ads-telegram
 | `/ads.review` | 触发代码审查 |
 | `/esc` | 中断当前任务（Agent 保持运行） |
 | `/reset` | 重置会话，开始新对话 |
+| `/mark [on\|off]` | 记录对话到 `YYYY-MM-DD-note.md`（可省略参数切换状态） |
 | `/agent [name]` | 查看或切换代理（Codex/Claude） |
 | `/cd <path>` | 切换工作目录 |
 
@@ -179,6 +180,7 @@ ads-telegram
 - 🖼️ 发送图片让 AI 分析（截图、设计稿等）
 - 📎 发送文件让 AI 处理
 - 🔄 会话持久化，断线后可 `/resume` 恢复
+- 📝 `/mark` 可将后续对话记录到当天 note，便于整理灵感
 - ⚡ `/esc` 可随时中断当前任务，立即执行新指令
 
 ### 🔍 Review 工作流
