@@ -12,6 +12,7 @@ export class ConversationLogger {
   private readonly workspace: string;
   private readonly filePath: string;
   private readonly stream: fs.WriteStream;
+  private recordedThreadId: string | null;
 
   constructor(workspacePath?: string, _userId?: number, threadId?: string) {
     this.workspace = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
@@ -29,6 +30,7 @@ export class ConversationLogger {
 
     this.filePath = path.join(logDir, fileName);
     const fileExists = fs.existsSync(this.filePath);
+    this.recordedThreadId = threadId ?? null;
 
     this.stream = fs.createWriteStream(this.filePath, { flags: "a" });
 
@@ -81,5 +83,17 @@ export class ConversationLogger {
 
   close(): void {
     this.stream.end();
+  }
+
+  /**
+   * 线程 ID 可能在日志文件创建后才可用（例如第一次消息时 Codex 还未返回 threadId）。
+   * 允许在后续补充写入 threadId，避免漏记。
+   */
+  attachThreadId(threadId?: string | null): void {
+    if (!threadId || this.recordedThreadId === threadId) {
+      return;
+    }
+    this.stream.write(`# Thread ID: ${threadId}\n`);
+    this.recordedThreadId = threadId;
   }
 }

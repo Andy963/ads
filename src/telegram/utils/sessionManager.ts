@@ -116,7 +116,7 @@ export class SessionManager {
 
   /**
    * 确保 logger 存在，如果不存在则创建
-   * 必须在 session 有 threadId 后调用
+   * 如果还没有 threadId，会先创建一个临时日志文件，threadId 获得后会补记
    */
   ensureLogger(userId: number): ConversationLogger | undefined {
     const record = this.sessions.get(userId);
@@ -126,18 +126,18 @@ export class SessionManager {
 
     // 如果已经有 logger，直接返回
     if (record.logger) {
+      const threadId = record.orchestrator.getThreadId();
+      if (threadId) {
+        record.logger.attachThreadId(threadId);
+      }
       return record.logger;
     }
 
-    // 获取 threadId
+    // 获取 threadId（可能为空，但也要创建日志以免漏记第一条消息）
     const threadId = record.orchestrator.getThreadId();
-    if (!threadId) {
-      // 没有 threadId，说明还没发送过消息，暂时不创建 logger
-      return undefined;
-    }
 
     // 创建 logger
-    record.logger = new ConversationLogger(record.cwd, userId, threadId);
+    record.logger = new ConversationLogger(record.cwd, userId, threadId ?? undefined);
     return record.logger;
   }
 

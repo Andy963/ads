@@ -19,6 +19,7 @@ import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdown } from '../../utils/markdown.js';
 import { injectDelegationGuide, resolveDelegations } from '../../agents/delegation.js';
+import { appendMarkNoteEntry } from '../utils/noteLogger.js';
 import {
   CODEX_THREAD_RESET_HINT,
   CodexThreadCorruptedError,
@@ -98,12 +99,14 @@ export async function handleCodexMessage(
   _streamUpdateIntervalMs: number,
   imageFileIds?: string[],
   documentFileId?: string,
-  cwd?: string
+  cwd?: string,
+  options?: { markNoteEnabled?: boolean }
 ) {
   const userId = ctx.from!.id;
   const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
   const adapterLogDir = path.join(workspaceRoot, '.ads', 'logs');
   const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
+  const markNoteEnabled = options?.markNoteEnabled ?? false;
   let logDirReady = false;
 
   const logWarning = (message: string, error?: unknown) => {
@@ -144,7 +147,7 @@ export async function handleCodexMessage(
     }
   };
 
-  // 尝试获取或创建 logger（如果已有 threadId）
+  // 尝试获取或创建 logger（如果 threadId 还没有，也会先写入日志）
   let logger = sessionManager.ensureLogger(userId);
 
   // 注册请求
@@ -529,6 +532,34 @@ export async function handleCodexMessage(
     }
   }
 
+  function formatAttachmentList(paths: string[]): string {
+    if (!paths.length) {
+      return '';
+    }
+    const names = paths.map((p) => {
+      const basename = path.basename(p);
+      const rel = path.relative(workspaceRoot, p);
+      if (!rel || rel.startsWith('..')) {
+        return basename;
+      }
+      return rel;
+    });
+    return names.join(', ');
+  }
+
+function buildUserLogEntry(rawText: string | undefined, images: string[], files: string[]): string {
+  const lines: string[] = [];
+  const trimmed = rawText?.trim();
+  lines.push(trimmed ? trimmed : '(no text)');
+  if (images.length) {
+      lines.push(`Images: ${formatAttachmentList(images)}`);
+    }
+    if (files.length) {
+      lines.push(`Files: ${formatAttachmentList(files)}`);
+  }
+  return lines.join('\n');
+}
+
   async function sendCommandLogMessage(text: string): Promise<void> {
     const now = Date.now();
     if (now < commandMessageRateLimitUntil) {
@@ -636,6 +667,7 @@ export async function handleCodexMessage(
   const filePaths: string[] = [];
   let urlData: Awaited<ReturnType<typeof processUrls>> | null = null;
   let unsubscribe: (() => void) | null = null;
+  let userLogEntry: string | null = null;
 
   try {
     // 处理 URL（如果消息中有链接）
@@ -701,6 +733,12 @@ export async function handleCodexMessage(
       filePaths.push(...urlData.filePaths);
     }
 
+    // 记录用户输入（使用原始文本 + 附件概览，不带系统注入）
+    userLogEntry = buildUserLogEntry(text, imagePaths, filePaths);
+    if (logger && userLogEntry) {
+      logger.logInput(userLogEntry);
+    }
+
     // 监听事件
     unsubscribe = session.onEvent((event: AgentEvent) => {
       if (!interruptManager.hasActiveRequest(userId)) {
@@ -737,17 +775,6 @@ export async function handleCodexMessage(
       input = enhancedText;
     }
 
-    // 准备用户输入日志（可能现在还没有 logger）
-    let userInputLog = enhancedText;
-    if (imagePaths.length > 0) {
-      userInputLog += `\n[附带 ${imagePaths.length} 张图片]`;
-    }
-
-    // 如果已有 logger，立即记录
-    if (logger) {
-      logger.logInput(userInputLog);
-    }
-
     const result = await session.send(input, { streaming: true, signal });
     const delegation = await resolveDelegations(result, session, {
       onInvoke: (prompt) => logger?.logOutput(`[Auto] 调用 Claude：${truncateForStatus(prompt)}`),
@@ -762,62 +789,36 @@ export async function handleCodexMessage(
 
     saveThreadIdIfNeeded();
 
+    const baseOutput =
+      typeof delegation.response === 'string'
+        ? delegation.response
+        : String(delegation.response ?? '');
+
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
-    const wasLoggerCreated = !logger;
     if (!logger) {
       logger = sessionManager.ensureLogger(userId);
     }
-
-    // 如果 logger 是刚创建的，补充记录用户输入
-    if (logger && wasLoggerCreated) {
-      logger.logInput(userInputLog);
+    if (logger) {
+      logger.attachThreadId(session.getThreadId());
     }
 
-    // 记录 AI 回复（不含 token 统计）
+    // 记录 AI 回复（不含 token 统计，除非开启）
     if (logger) {
-      logger.logOutput(result.response);
+      logger.logOutput(baseOutput);
+    }
+
+    if (markNoteEnabled && userLogEntry) {
+      try {
+        appendMarkNoteEntry(workspaceRoot, userLogEntry, baseOutput);
+      } catch (error) {
+        logWarning('[CodexAdapter] Failed to append mark note', error);
+      }
     }
 
     // 发送最终响应
-    const finalText = delegation.response;
-    let tokenUsageLine: string | null = null;
+    const renderText = baseOutput;
     
-    const usage = delegation.usage ?? result.usage;
-    if (usage) {
-      const inputTokens = usage.input_tokens ?? 0;
-      const cachedTokens = usage.cached_input_tokens ?? 0;
-      const activeTokens = Math.max(inputTokens - cachedTokens, 0);
-      const outputTokens = usage.output_tokens ?? 0;
-      const totalTokens = inputTokens + outputTokens;
-      const formatTokens = (value: number): string => {
-        if (!value) {
-          return "0k";
-        }
-        const absValue = Math.abs(value);
-        if (absValue >= 1_000_000) {
-          const mValue = value / 1_000_000;
-          const precision = Math.abs(mValue) >= 10 ? 0 : 1;
-          const formattedM = mValue.toFixed(precision).replace(/\.0$/, "");
-          return `${formattedM}M`;
-        }
-        const kValue = value / 1000;
-        const precision = Math.abs(kValue) >= 10 ? 0 : 1;
-        const formattedK = kValue.toFixed(precision).replace(/\.0$/, "");
-        return `${formattedK}k`;
-      };
-      const cachePercent = inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0;
-      const tokenLine = [
-        `Tokens · Input: ${formatTokens(inputTokens)}`,
-        `Active: ${formatTokens(activeTokens)}`,
-        `Cache Hit: ${cachePercent.toFixed(1)}%`,
-        `Output: ${formatTokens(outputTokens)}`,
-        `Total: ${formatTokens(totalTokens)}`,
-      ].join(" | ");
-
-      tokenUsageLine = tokenLine;
-    }
-    
-    const chunks = chunkMessage(finalText);
+    const chunks = chunkMessage(renderText);
     if (chunks.length === 0) {
       chunks.push('');
     }
@@ -826,11 +827,7 @@ export async function handleCodexMessage(
       if (i > 0) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      let chunkText = chunks[i];
-      if (i === chunks.length - 1 && tokenUsageLine) {
-        const tokenBlock = formatCodeBlock(tokenUsageLine);
-        chunkText = chunkText ? `${chunkText}\n\n${tokenBlock}` : tokenBlock;
-      }
+      const chunkText = chunks[i];
       await ctx.reply(chunkText, { parse_mode: 'Markdown', disable_notification: true }).catch(async () => {
         await ctx.reply(chunkText, { parse_mode: 'Markdown', disable_notification: true });
       });
@@ -841,6 +838,10 @@ export async function handleCodexMessage(
     }
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);
+
+    if (!userLogEntry && logger) {
+      logger.logInput(buildUserLogEntry(text, imagePaths, filePaths));
+    }
 
     const errorMsg = error instanceof Error ? error.message : String(error);
     const isInterrupt = (error as Error).name === 'AbortError';

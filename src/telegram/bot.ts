@@ -1,6 +1,6 @@
 import '../utils/logSink.js';
 
-import { Bot } from 'grammy';
+import { Bot, type Context } from 'grammy';
 import { loadTelegramConfig, validateConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
@@ -14,8 +14,88 @@ import { createLogger } from '../utils/logger.js';
 import { checkWorkspaceInit } from './utils/workspaceInitChecker.js';
 import { parseInlineAdsCommand, parsePlainAdsCommand } from './utils/adsCommand.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
+import { getDailyNoteFilePath } from './utils/noteLogger.js';
+import { initializeWorkspace } from '../workspace/detector.js';
+import type { WorkspaceInitStatus } from './utils/workspaceInitChecker.js';
 
 const logger = createLogger('Bot');
+const markStates = new Map<number, boolean>();
+
+const AFFIRMATIVE_RESPONSES = new Set([
+  'y',
+  'yes',
+  'ok',
+  'okay',
+  'sure',
+  '好',
+  '好的',
+  '好吧',
+  '好呀',
+  '好啊',
+  '好啦',
+  '好勒',
+  '行',
+  '行吧',
+  '行啊',
+  '行的',
+  '可以',
+  '确认',
+  '确定',
+  '是',
+  '是的',
+  '没问题',
+]);
+
+function normalizeAffirmativeCandidate(text: string | undefined | null): string {
+  if (!text) {
+    return '';
+  }
+  return text
+    .trim()
+    .replace(/[\u3002。!！?？~～\s]+$/g, '')
+    .toLowerCase();
+}
+
+function isAffirmativeResponse(text: string | undefined | null): boolean {
+  const normalized = normalizeAffirmativeCandidate(text);
+  if (!normalized) {
+    return false;
+  }
+  if (AFFIRMATIVE_RESPONSES.has(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+function buildWorkspaceInitReminder(status: WorkspaceInitStatus, cwd: string): string {
+  const missing = status.missingArtifact ?? 'ADS 必需文件';
+  return (
+    '⚠️ 当前目录尚未初始化 ADS\n' +
+    `📁 目录: ${cwd}\n` +
+    `缺少: ${missing}\n` +
+    '发送 /ads.init 初始化，或回复 "是" 自动执行。'
+  );
+}
+
+async function initializeWorkspaceForUser(
+  ctx: Context,
+  cwd: string,
+  userId: number,
+  sessionManager: SessionManager,
+): Promise<void> {
+  const status = checkWorkspaceInit(cwd);
+  if (status.initialized) {
+    await ctx.reply(`ℹ️ 当前目录已完成初始化: ${cwd}`);
+    return;
+  }
+  try {
+    initializeWorkspace(cwd);
+    sessionManager.reset(userId);
+    await ctx.reply(`✅ 已在 ${cwd} 初始化 ADS 工作空间\n可以继续执行命令或开始对话`);
+  } catch (error) {
+    await ctx.reply(`❌ 初始化失败: ${(error as Error).message}`);
+  }
+}
 
 async function main() {
   logger.info('Starting ADS Telegram Bot...');
@@ -104,6 +184,7 @@ async function main() {
       { command: 'esc', description: '中断当前任务' },
       { command: 'reset', description: '开始新对话' },
       { command: 'resume', description: '恢复之前的对话' },
+      { command: 'mark', description: '记录对话到笔记' },
       { command: 'model', description: '查看/切换模型' },
       { command: 'agent', description: '查看/切换代理' },
       { command: 'pwd', description: '当前目录' },
@@ -122,6 +203,7 @@ async function main() {
       '/help - 查看所有命令\n' +
       '/status - 查看系统状态\n' +
       '/reset - 重置会话\n' +
+      '/mark - 切换对话标记，记录到当天 note\n' +
       '/pwd - 查看当前目录\n' +
       '/cd <path> - 切换目录\n' +
       '/agent [name] - 查看或切换可用代理\n' +
@@ -139,6 +221,7 @@ async function main() {
       '/status - 系统状态\n' +
       '/reset - 重置会话（开始新对话）\n' +
       '/resume - 恢复之前的对话\n' +
+      '/mark - 切换对话标记（记录每日 note）\n' +
       '/model [name] - 查看/切换模型\n' +
       '/agent [name] - 查看/切换代理\n' +
       '/esc - 中断当前任务（Agent 保持运行）\n\n' +
@@ -211,6 +294,39 @@ async function main() {
     sessionManager.getOrCreate(userId, directoryManager.getUserCwd(userId), true);
     
     await ctx.reply(`✅ 已恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)`);
+  });
+
+  bot.command('mark', async (ctx) => {
+    const userId = ctx.from!.id;
+    const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
+    const current = markStates.get(userId) ?? false;
+    let nextState: boolean | null = null;
+
+    if (args.length === 0) {
+      nextState = !current;
+    } else {
+      const normalized = args[0].toLowerCase();
+      if (['on', 'enable', 'start', 'true', '1'].includes(normalized)) {
+        nextState = true;
+      } else if (['off', 'disable', 'stop', 'false', '0'].includes(normalized)) {
+        nextState = false;
+      } else if (['status', '?'].includes(normalized)) {
+        await ctx.reply(current ? '📝 标记模式：开启' : '📝 标记模式：关闭');
+        return;
+      } else {
+        await ctx.reply('用法: /mark [on|off]\n省略参数将切换当前状态');
+        return;
+      }
+    }
+
+    markStates.set(userId, nextState);
+    if (nextState) {
+      const cwd = directoryManager.getUserCwd(userId);
+      const notePath = getDailyNoteFilePath(cwd);
+      await ctx.reply(`📝 标记模式已开启\n将在 ${notePath} 记录后续对话`);
+    } else {
+      await ctx.reply('📝 标记模式已关闭');
+    }
   });
 
   bot.command('model', async (ctx) => {
@@ -339,7 +455,7 @@ async function main() {
           '是否初始化此目录？这将创建 .ads 目录、配置文件和数据库。\n\n' +
           '回复 "是" 或 "y" 确认初始化，其他任何回复将取消。'
         );
-        // Note: 用户的回复会在普通消息处理中被 Codex 接收，它会根据 instructions 执行 ads init
+        // Note: 用户后续回复 (如 "是") 将由 Telegram Bot 自动触发 /ads.init
       } else {
         await ctx.reply(replyMessage);
       }
@@ -351,8 +467,19 @@ async function main() {
   bot.command('ads', async (ctx) => {
     const inlineArgs = parseInlineAdsCommand(ctx.message?.text);
     if (inlineArgs) {
-      const workspacePath = directoryManager.getUserCwd(ctx.from!.id);
-      await handleAdsCommand(ctx, inlineArgs, { workspacePath });
+      const userId = ctx.from!.id;
+      const cwd = directoryManager.getUserCwd(userId);
+      const subcommand = inlineArgs[0];
+      if (subcommand === 'init') {
+        await initializeWorkspaceForUser(ctx, cwd, userId, sessionManager);
+        return;
+      }
+      const initStatus = checkWorkspaceInit(cwd);
+      if (!initStatus.initialized) {
+        await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
+        return;
+      }
+      await handleAdsCommand(ctx, inlineArgs, { workspacePath: cwd });
       return;
     }
 
@@ -371,6 +498,12 @@ async function main() {
     const caption = ctx.message.caption || '请描述这张图片';
     const photos = ctx.message.photo;
     const userId = ctx.from!.id;
+    const cwd = directoryManager.getUserCwd(userId);
+    const initStatus = checkWorkspaceInit(cwd);
+    if (!initStatus.initialized) {
+      await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
+      return;
+    }
     
     // 获取最高分辨率的图片
     const photo = photos[photos.length - 1];
@@ -382,7 +515,8 @@ async function main() {
       config.streamUpdateIntervalMs,
       [photo.file_id],
       undefined,
-      directoryManager.getUserCwd(userId)
+      cwd,
+      { markNoteEnabled: markStates.get(userId) ?? false }
     );
   });
 
@@ -391,6 +525,12 @@ async function main() {
     const doc = ctx.message.document;
     const caption = ctx.message.caption || '';
     const userId = ctx.from!.id;
+    const cwd = directoryManager.getUserCwd(userId);
+    const initStatus = checkWorkspaceInit(cwd);
+    if (!initStatus.initialized) {
+      await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
+      return;
+    }
     
     // 检查文件大小
     if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
@@ -405,25 +545,49 @@ async function main() {
       config.streamUpdateIntervalMs,
       undefined,
       doc.file_id,
-      directoryManager.getUserCwd(userId)
+      cwd,
+      { markNoteEnabled: markStates.get(userId) ?? false }
     );
   });
 
   // 处理普通文本消息 - Codex 对话
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
+    const userId = ctx.from!.id;
+    const cwd = directoryManager.getUserCwd(userId);
+    const initStatus = checkWorkspaceInit(cwd);
+
+    const handleWorkspaceInitCommand = async () => {
+      await initializeWorkspaceForUser(ctx, cwd, userId, sessionManager);
+    };
 
     const inlineAdsArgs = parseInlineAdsCommand(text);
     if (inlineAdsArgs) {
-      const workspacePath = directoryManager.getUserCwd(ctx.from!.id);
-      await handleAdsCommand(ctx, inlineAdsArgs, { workspacePath });
+      const subcommand = inlineAdsArgs[0];
+      if (subcommand === 'init') {
+        await handleWorkspaceInitCommand();
+        return;
+      }
+      if (!initStatus.initialized) {
+        await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
+        return;
+      }
+      await handleAdsCommand(ctx, inlineAdsArgs, { workspacePath: cwd });
       return;
     }
 
     const plainAdsArgs = parsePlainAdsCommand(text);
     if (plainAdsArgs) {
-      const workspacePath = directoryManager.getUserCwd(ctx.from!.id);
-      await handleAdsCommand(ctx, plainAdsArgs, { workspacePath });
+      const subcommand = plainAdsArgs[0];
+      if (subcommand === 'init') {
+        await handleWorkspaceInitCommand();
+        return;
+      }
+      if (!initStatus.initialized) {
+        await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
+        return;
+      }
+      await handleAdsCommand(ctx, plainAdsArgs, { workspacePath: cwd });
       return;
     }
 
@@ -432,8 +596,15 @@ async function main() {
       return;
     }
 
-    const userId = ctx.from!.id;
-    
+    if (!initStatus.initialized) {
+      if (isAffirmativeResponse(text)) {
+        await handleWorkspaceInitCommand();
+      } else {
+        await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
+      }
+      return;
+    }
+
     // 检查是否有保存的对话但当前没有活跃 session
     // 如果有保存的 thread 且当前没有 session，自动恢复
     const hasActiveSession = sessionManager.hasSession(userId);
@@ -458,7 +629,8 @@ async function main() {
       config.streamUpdateIntervalMs,
       undefined,
       undefined,
-      directoryManager.getUserCwd(userId)
+      directoryManager.getUserCwd(userId),
+      { markNoteEnabled: markStates.get(userId) ?? false }
     );
   });
 
