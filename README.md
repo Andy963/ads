@@ -36,6 +36,8 @@ npm link
    ```bash
    /ads.init
    ```
+   - 可选 `--name=<workspace>` 指定工作区名称（默认取当前目录名）。
+   - 会创建 `.ads/workspace.json`、`.ads/ads.db` 占位符、`.ads/templates/*`、`.ads/rules.md`，并确保 `docs/spec/` 目录存在。重复执行是幂等的。
 
 2. **Create a new workflow**:
    ```bash
