@@ -21,7 +21,6 @@ const CMD_NEW = "/ads.new";
 const CMD_STATUS = "/ads.status";
 const CMD_BRANCH = "/ads.branch";
 const CMD_CHECKOUT = "/ads.checkout";
-const CMD_ADD = "/ads.add";
 const CMD_COMMIT = "/ads.commit";
 
 interface WorkflowCommitRecord {
@@ -157,7 +156,6 @@ export async function getWorkflowStatusSummary(params: {
   const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
   const stepOrder = Object.keys(stepMapping);
   const nextActions: Array<{ label: string; command: string }> = [
-    { label: "Add draft content", command: `${CMD_ADD} <step> <content>` },
     { label: "Finalize step", command: `${CMD_COMMIT} <step>` },
   ];
 

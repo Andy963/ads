@@ -13,7 +13,6 @@ const CMD_NEW = "/ads.new";
 const CMD_STATUS = "/ads.status";
 const CMD_BRANCH = "/ads.branch";
 const CMD_CHECKOUT = "/ads.checkout";
-const CMD_ADD = "/ads.add";
 const CMD_COMMIT = "/ads.commit";
 
 export async function getActiveWorkflowSummary(params: {
@@ -112,7 +111,6 @@ export async function getWorkflowStatusSummary(params: {
 
   lines.push("");
   lines.push("💡 Next actions:");
-  lines.push(`    - Add draft content: ${CMD_ADD} <step> <content>`);
   lines.push(`    - Finalize step: ${CMD_COMMIT} <step>`);
 
   return lines.join("\n");
