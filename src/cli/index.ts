@@ -78,6 +78,7 @@ interface CommandResult {
 
 const PROMPT = "ADS> ";
 const REVIEW_LOCK_SAFE_COMMANDS = new Set([
+  "ads.init",
   "ads.review",
   "ads.status",
   "ads.log",
@@ -502,6 +503,12 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       return {
         output: buildAdsHelpMessage("cli"),
       };
+
+    case "ads.init": {
+      const name = params.name ?? (positional.length > 0 ? positional.join(" ") : undefined);
+      const response = await initWorkspace({ name });
+      return { output: formatResponse(response) };
+    }
 
     case "ads.branch": {
       let deleteMode: "none" | "soft" | "hard" = "none";

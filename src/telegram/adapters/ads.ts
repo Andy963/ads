@@ -8,7 +8,7 @@ import {
 } from '../../workflow/service.js';
 import { createWorkflowFromTemplate } from '../../workflow/templateService.js';
 import { listRules, readRules } from '../../workspace/rulesService.js';
-import { getCurrentWorkspace } from '../../workspace/service.js';
+import { getCurrentWorkspace, initWorkspace } from '../../workspace/service.js';
 import { syncAllNodesToFiles } from '../../graph/service.js';
 import { cancelIntake } from '../../intake/service.js';
 import { buildAdsHelpMessage } from '../../workflow/commands.js';
@@ -17,6 +17,7 @@ import { runReview, skipReview, showReviewReport } from '../../review/service.js
 import { WorkflowContext } from '../../workspace/context.js';
 
 const REVIEW_LOCK_SAFE_COMMANDS = new Set([
+  'ads.init',
   'ads.review',
   'ads.status',
   'ads.log',
@@ -55,6 +56,13 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
     }
 
     switch (command) {
+      case 'init': {
+        const name = commandArgs.join(' ') || undefined;
+        const response = await initWorkspace({ name });
+        await replyWithAdsText(ctx, response);
+        break;
+      }
+
       case 'status': {
         const response = await getWorkflowStatusSummary({ format: 'markdown', workspace_path: workspacePath });
         await replyWithAdsText(ctx, response, { markdown: true });

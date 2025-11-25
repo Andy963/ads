@@ -15,6 +15,7 @@ import {
 import { createWorkflowFromTemplate } from "../workflow/templateService.js";
 import { buildAdsHelpMessage } from "../workflow/commands.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
+import { initWorkspace } from "../workspace/service.js";
 import { syncAllNodesToFiles, getWorkspaceInfo as getGraphWorkspaceInfo } from "../graph/service.js";
 
 const require = createRequire(import.meta.url);
@@ -93,6 +94,10 @@ const statusSchema = workspaceParam.extend({
   format: z.enum(["cli", "markdown"]).optional(),
 });
 
+const initSchema = workspaceParam.extend({
+  name: z.string().min(1).optional(),
+});
+
 server.registerTool(
   "ads.status",
   {
@@ -102,6 +107,19 @@ server.registerTool(
   },
   withHandler(statusSchema, async ({ workspace_path, format }) => {
     const text = await getWorkflowStatusSummary({ workspace_path, format: format ?? "cli" });
+    return asToolResult(text);
+  })
+);
+
+server.registerTool(
+  "ads.init",
+  {
+    title: "Initialize ADS workspace",
+    description: "Create .ads workspace metadata, copy default templates, and ensure specs folders exist.",
+    inputSchema: initSchema,
+  },
+  withHandler(initSchema, async ({ workspace_path, name }) => {
+    const text = await initWorkspace({ workspace_path, name });
     return asToolResult(text);
   })
 );

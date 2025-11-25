@@ -8,9 +8,9 @@ import {
 } from "./detector.js";
 import { safeStringify } from "../utils/json.js";
 
-export async function initWorkspace(params: { name?: string }): Promise<string> {
+export async function initWorkspace(params: { name?: string; workspace_path?: string }): Promise<string> {
   try {
-    const workspace = initializeWorkspace(undefined, params.name);
+    const workspace = initializeWorkspace(params.workspace_path, params.name);
     const result = {
       success: true,
       workspace: {
