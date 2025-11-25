@@ -10,7 +10,6 @@ describe("parseInlineAdsCommand", () => {
   });
 
   test("handles hyphenated commands and bot mentions", () => {
-    assert.deepEqual(parseInlineAdsCommand("/ads.cancel-intake"), ["cancel-intake"]);
     assert.deepEqual(parseInlineAdsCommand("/ads.status@MyBot extra args"), ["status", "extra", "args"]);
   });
 

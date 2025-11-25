@@ -52,10 +52,6 @@ const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
     description: "将节点内容同步写入文件系统",
   },
   {
-    usage: "/ads.cancel-intake",
-    description: "取消正在进行的需求澄清流程",
-  },
-  {
     usage: "/ads.help",
     description: "显示命令帮助",
   },

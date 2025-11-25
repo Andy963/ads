@@ -28,7 +28,7 @@
     •  编辑文档后，必须与用户充分讨论并得到明确确认后，才能执行 `/ads.commit <step>` 定稿（如需在 Bash 中执行，则运行 `ads` CLI 的 `commit <step>` 子命令）。
     •  **禁止**在用户未明确同意的情况下通过任何方式执行 commit 步骤（无论是 `/ads.commit` 还是 Bash 中的 `ads` CLI），这会锁定该步骤。
     •  可以使用 `/ads.status`（或在 Bash 中运行 `ads` CLI 的 `status` 子命令）查看当前工作流状态。
-    •  在 ADS CLI 会话中执行命令时，必须使用 `/ads.<命令>` 前缀（例如 `/ads.new "LLM client caching"`、`/ads.commit implementation`）；禁止输入 `ads` 加空格的裸命令（例如 `ads new ...`）或让机器人直接回显命令字符串，以免误触自动 intake。
+    •  在 ADS CLI 会话中执行命令时，必须使用 `/ads.<命令>` 前缀（例如 `/ads.new "LLM client caching"`、`/ads.commit implementation`）；禁止输入 `ads` 加空格的裸命令（例如 `ads new ...`）。
     •  实施完成后，必须询问用户是否执行 `/ads.review`，除非用户明确表示跳过并提供理由，否则不得直接交付；如需跳过，回复中必须提示风险并记录原因。
 
     •  **正确的执行流程**：
@@ -68,7 +68,6 @@
 - `/ads.rules [category]`：读取项目规则或按类别筛选。
 - `/ads.workspace`：显示当前工作空间路径、数据库位置等信息。
 - `/ads.sync`：将节点内容同步到文件系统，确保 spec 文件最新。
-- `/ads.cancel-intake`：取消进行中的需求 intake 流程。
 - `/ads.help`：输出以上命令说明，供 agent 随时查询。
 
 ### 协作代理（Codex ⇆ Claude）

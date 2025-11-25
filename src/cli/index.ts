@@ -35,42 +35,9 @@ import type { AgentAdapter } from "../agents/types.js";
 import { WorkflowContext } from "../workspace/context.js";
 import type { WorkflowInfo } from "../workspace/context.js";
 import type { ThreadEvent } from "@openai/codex-sdk";
-import {
-  cancelIntake,
-  getActiveIntakeState,
-  handleIntakeAnswer,
-  startIntake,
-} from "../intake/service.js";
 import pc from "picocolors";
 import { runReview, skipReview, showReviewReport } from "../review/service.js";
 
-const YES_SET = new Set([
-  "y",
-  "yes",
-  "是",
-  "是的",
-  "好",
-  "好的",
-  "确认",
-  "ok",
-  "可以",
-  "行",
-  "要",
-]);
-
-const NO_SET = new Set([
-  "n",
-  "no",
-  "否",
-  "不是",
-  "不用",
-  "不要",
-  "算了",
-  "取消",
-  "不了",
-]);
-
-let pendingIntakeRequest: string | null = null;
 interface CommandResult {
   output: string;
   exit?: boolean;
@@ -87,7 +54,6 @@ const REVIEW_LOCK_SAFE_COMMANDS = new Set([
   "ads.workspace",
   "ads.branch",
   "ads.checkout",
-  "ads.cancel-intake",
 ]);
 
 interface TemplateMetadata {
@@ -662,12 +628,6 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       return { output: formatResponse(response) };
     }
 
-    case "ads.cancel-intake": {
-      pendingIntakeRequest = null;
-      const result = await cancelIntake();
-      return { output: result.messages.join("\n") };
-    }
-
     case "ads.review": {
       if (!params.skip && positional[0]?.toLowerCase() === "skip") {
         params.skip = positional.slice(1).join(" ");
@@ -958,42 +918,6 @@ function updateStatusLine(message: string): void {
   process.stdout.write(message);
 }
 
-async function maybeHandleAutoIntake(input: string, orchestrator: HybridOrchestrator): Promise<CommandResult | null> {
-  if (!input) {
-    return null;
-  }
-
-  if (pendingIntakeRequest) {
-    return null;
-  }
-
-  if (WorkflowContext.getActiveWorkflow()) {
-    return null;
-  }
-
-  const status = orchestrator.status();
-  if (!status.ready) {
-    return null;
-  }
-
-  try {
-    const classification = await orchestrator.classifyInput(input);
-    if (classification === "task") {
-      pendingIntakeRequest = input;
-      const preview = input.length > 48 ? `${input.slice(0, 48)}…` : input;
-      return {
-        output: `检测到你可能提出了新的任务需求：「${preview}」。是否创建工作流？(y/n，可用 /ads.cancel-intake 取消)`,
-      };
-    }
-  } catch (error) {
-    if (process.env.ADS_DEBUG === "1") {
-      console.warn("自动识别需求失败:", error);
-    }
-  }
-
-  return null;
-}
-
 async function handleLine(
   line: string,
   logger: ConversationLogger,
@@ -1013,53 +937,6 @@ async function handleLine(
   }
 
   const slash = parseSlashCommand(trimmed);
-
-  if (pendingIntakeRequest) {
-    const normalized = trimmed.toLowerCase();
-    if (slash) {
-      if (slash.command === "ads.cancel" || slash.command === "ads.cancel-intake") {
-        pendingIntakeRequest = null;
-        return { output: "已取消自动创建工作流的操作。" };
-      }
-      return {
-        output: "❗ 请先回答是否需要创建新的工作流（y/n），如需取消请输入 /ads.cancel-intake。",
-      };
-    }
-
-    if (YES_SET.has(normalized) || YES_SET.has(trimmed)) {
-      const request = pendingIntakeRequest;
-      pendingIntakeRequest = null;
-      const result = await startIntake(request);
-      return { output: result.messages.join("\n") };
-    }
-
-    if (NO_SET.has(normalized) || NO_SET.has(trimmed)) {
-      pendingIntakeRequest = null;
-      return {
-        output: "好的，不会自动创建工作流。如需手动创建可使用 /ads.new。",
-      };
-    }
-
-    return {
-      output: "请回答是否需要创建新的工作流：输入 y 确认，或 n 放弃（可用 /ads.cancel-intake 取消）。",
-    };
-  }
-
-  const intakeState = await getActiveIntakeState();
-  if (intakeState) {
-    if (slash) {
-      if (slash.command === "ads.cancel-intake" || slash.command === "ads.cancel") {
-        const result = await cancelIntake();
-        return { output: result.messages.join("\n") };
-      }
-      return {
-        output: "❗ 当前正在进行需求澄清，请先回答问题或输入 /ads.cancel-intake 取消。",
-      };
-    }
-
-    const result = await handleIntakeAnswer(trimmed);
-    return { output: result.messages.join("\n") };
-  }
 
   if (slash && slash.command.startsWith("ads.")) {
     const parts = trimmed.split(/\s+/);
@@ -1101,15 +978,10 @@ async function handleLine(
         }
         return switchAgent(orchestrator, agentArg);
       }
-      default:
-        return handleAgentInteraction(trimmed, orchestrator, logger);
-    }
+  default:
+    return handleAgentInteraction(trimmed, orchestrator, logger);
   }
-
-  const autoIntakeResult = await maybeHandleAutoIntake(trimmed, orchestrator);
-  if (autoIntakeResult) {
-    return autoIntakeResult;
-  }
+}
 
   return handleAgentInteraction(trimmed, orchestrator, logger);
 }

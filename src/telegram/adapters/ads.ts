@@ -10,7 +10,6 @@ import { createWorkflowFromTemplate } from '../../workflow/templateService.js';
 import { listRules, readRules } from '../../workspace/rulesService.js';
 import { getCurrentWorkspace, initWorkspace } from '../../workspace/service.js';
 import { syncAllNodesToFiles } from '../../graph/service.js';
-import { cancelIntake } from '../../intake/service.js';
 import { buildAdsHelpMessage } from '../../workflow/commands.js';
 import { escapeTelegramMarkdown } from '../../utils/markdown.js';
 import { runReview, skipReview, showReviewReport } from '../../review/service.js';
@@ -26,7 +25,6 @@ const REVIEW_LOCK_SAFE_COMMANDS = new Set([
   'ads.workspace',
   'ads.branch',
   'ads.checkout',
-  'ads.cancel-intake',
 ]);
 
 export async function handleAdsCommand(ctx: Context, args: string[], options?: { workspacePath?: string }) {
@@ -148,13 +146,6 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'sync': {
         const response = await syncAllNodesToFiles({ workspace_path: workspacePath });
-        await replyWithAdsText(ctx, response);
-        break;
-      }
-
-      case 'cancel-intake':
-      case 'cancel': {
-        const response = await cancelIntake();
         await replyWithAdsText(ctx, response);
         break;
       }
