@@ -49,6 +49,18 @@ npm link
    /ads.status
    ```
 
+### Common ADS commands
+- `/ads.init [--name=<workspace>]` - 初始化当前目录工作区
+- `/ads.status` - 查看当前工作流状态
+- `/ads.new <title>` - 创建新工作流（默认 unified 模板）
+- `/ads.checkout <workflow>` - 切换工作流
+- `/ads.commit <step>` - 定稿步骤并推进到下一步
+- `/ads.branch [-d|--delete-context <id>] [--delete <id>]` - 列出或删除工作流（含上下文/数据）
+- `/ads.log [limit] [workflow]` - 查看最近的 workflow commit 日志
+- `/ads.rules [category]` - 查看项目规则
+- `/ads.workspace` / `/ads.sync` - 查看/同步工作区
+- `/ads.review [--skip=<reason>] [--show]` - 触发/查看 Review
+
 ## 📚 Documentation
 
 Comprehensive documentation is being migrated into this repository. Until those guides land, use the following sources:

@@ -33,6 +33,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
   if (args.length === 0) {
     await ctx.reply(
       '用法示例：\n' +
+        '/ads.init [name] - 初始化工作区\n' +
         '/ads.status - 查看工作流状态\n' +
         '/ads.new <title> - 创建工作流\n' +
         '/ads.commit <step> - 定稿步骤',
