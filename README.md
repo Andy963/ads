@@ -117,6 +117,7 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
 - 通过以下环境变量调节再注入：
   - `ADS_REINJECTION_ENABLED`（默认 `true`，设置为 `0`/`false` 禁用）
   - `ADS_REINJECTION_TURNS`（默认 `10`）
+  - `ADS_RULES_REINJECTION_TURNS`（默认 `1`，即每轮重新注入 workspace 规则，可调大以降低频率）
   - `CLI_REINJECTION_*` / `TELEGRAM_REINJECTION_*` 可覆盖对应入口。
 
 ### Claude Agent（实验性）

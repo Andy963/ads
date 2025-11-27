@@ -43,6 +43,27 @@ describe("SystemPromptManager rule reinjection", () => {
     manager.completeTurn();
     const reinjected = manager.maybeInject();
     assert(reinjected);
-    assert.equal(reinjected.reason, "rules-turn-5");
+    assert.equal(reinjected.reason, "rules-only-5");
+  });
+
+  it("injects workspace rules every turn by default", () => {
+    const manager = new SystemPromptManager({
+      workspaceRoot: workspace,
+      reinjection: { enabled: true, turns: 999 },
+    });
+
+    const initial = manager.maybeInject();
+    assert(initial);
+    assert.equal(initial.reason, "initial");
+
+    manager.completeTurn();
+    let injection = manager.maybeInject();
+    assert(injection);
+    assert.equal(injection.reason, "rules-only-1");
+
+    manager.completeTurn();
+    injection = manager.maybeInject();
+    assert(injection);
+    assert.equal(injection.reason, "rules-only-2");
   });
 });

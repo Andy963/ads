@@ -77,7 +77,7 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
   return {
     enabled: enabledEnv ?? true,
     turns: turnsEnv ?? 6,
-    rulesTurns: rulesTurnsEnv ?? 3,
+    rulesTurns: rulesTurnsEnv ?? 1,
   };
 }
 
@@ -102,14 +102,14 @@ export class SystemPromptManager {
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
       turns: options.reinjection?.turns ?? 6,
-      rulesTurns: options.reinjection?.rulesTurns ?? 3,
+      rulesTurns: options.reinjection?.rulesTurns ?? 1,
     };
     if (this.reinjection.turns < 1) {
       this.reinjection.turns = 10;
     }
     const ruleTurns = this.reinjection.rulesTurns && this.reinjection.rulesTurns > 0
       ? this.reinjection.rulesTurns
-      : 3;
+      : 1;
     this.rulesReinjectionTurns = ruleTurns;
     this.logger = options.logger ?? createLogger("SystemPrompt");
   }
