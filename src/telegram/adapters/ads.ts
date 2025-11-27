@@ -54,7 +54,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
       return;
     }
 
-    switch (command) {
+  switch (command) {
       case 'init': {
         const name = commandArgs.join(' ') || undefined;
         const response = await initWorkspace({ name });
@@ -152,29 +152,78 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'review': {
         let agentParam: "codex" | "claude" | undefined;
+        let includeSpec = false;
+        let specMode: "default" | "forceInclude" | "forceExclude" = "default";
+        let commitRef: string | undefined;
         for (let i = 0; i < commandArgs.length; i += 1) {
           const token = commandArgs[i];
+          const normalized = token.toLowerCase();
           if (token.startsWith("agent=")) {
             agentParam = token.slice("agent=".length).toLowerCase() as "codex" | "claude";
             commandArgs.splice(i, 1);
-            break;
+            i -= 1;
+            continue;
           }
           if (token === "--agent" && commandArgs[i + 1]) {
             agentParam = commandArgs[i + 1].toLowerCase() as "codex" | "claude";
             commandArgs.splice(i, 2);
-            break;
+            i -= 1;
+            continue;
+          }
+          if (isNoSpecToken(normalized)) {
+            includeSpec = false;
+            specMode = "forceExclude";
+            commandArgs.splice(i, 1);
+            i -= 1;
+            continue;
+          }
+          if (normalized.startsWith("spec=")) {
+            const parsed = parseBooleanFlag(token.slice(token.indexOf("=") + 1));
+            if (parsed !== undefined) {
+              includeSpec = parsed;
+              specMode = includeSpec ? "forceInclude" : "forceExclude";
+            }
+            commandArgs.splice(i, 1);
+            i -= 1;
+            continue;
+          }
+          if (normalized === "--spec") {
+            includeSpec = true;
+            specMode = "forceInclude";
+            commandArgs.splice(i, 1);
+            i -= 1;
+            continue;
+          }
+          if (normalized === "commit" || normalized === "--commit") {
+            const next = commandArgs[i + 1];
+            if (next && !next.startsWith("--")) {
+              commitRef = next.trim();
+              commandArgs.splice(i, 2);
+            } else {
+              commitRef = "HEAD";
+              commandArgs.splice(i, 1);
+            }
+            i -= 1;
+            continue;
+          }
+          if (normalized.startsWith("commit=") || normalized.startsWith("--commit=")) {
+            const ref = token.slice(token.indexOf("=") + 1).trim();
+            commitRef = ref || "HEAD";
+            commandArgs.splice(i, 1);
+            i -= 1;
+            continue;
           }
         }
 
         const subCommand = commandArgs[0]?.toLowerCase();
-        if (subCommand === 'show') {
+        if (subCommand === 'show' || subCommand === '--show') {
           const workflowId = commandArgs.slice(1).join(' ') || undefined;
           const response = await showReviewReport({ workspace_path: workspacePath, workflowId });
           await replyWithAdsText(ctx, response, { markdown: true });
           break;
         }
 
-        if (subCommand === 'skip') {
+        if (subCommand === 'skip' || subCommand === '--skip') {
           const reason = commandArgs.slice(1).join(' ');
           if (!reason) {
             await ctx.reply('请提供跳过 Review 的原因，例如 `/ads.review skip 用户要求立即上线`。', { parse_mode: 'Markdown' });
@@ -186,9 +235,24 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
         }
 
         // 先发送提示，让用户知道 Review 正在执行
-        await ctx.reply('🔍 正在执行 Review，请稍候...', { disable_notification: true });
-        const response = await runReview({ workspace_path: workspacePath, requestedBy: 'telegram', agent: agentParam });
-        await replyWithAdsText(ctx, response, { markdown: true });
+        const modeLabel = describeReviewMode(includeSpec, commitRef);
+        const statusMessage = await ctx.reply(`🔍 正在执行 Review | 模式: ${modeLabel}`, { disable_notification: true });
+        const stopSpinner = startReviewSpinner(ctx, statusMessage, modeLabel);
+        try {
+          const response = await runReview({
+            workspace_path: workspacePath,
+            requestedBy: 'telegram',
+            agent: agentParam,
+            includeSpec,
+            commitRef,
+            specMode,
+          });
+          await stopSpinner(`✅ Review 完成，结果如下（模式: ${modeLabel}）`);
+          await replyWithAdsText(ctx, response, { markdown: true });
+        } catch (error) {
+          await stopSpinner(`❌ Review 执行失败（模式: ${modeLabel}），请稍后重试。`);
+          throw error;
+        }
         break;
       }
 
@@ -276,6 +340,74 @@ async function replyWithAdsText(ctx: Context, response: unknown, options?: { mar
   await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
     await ctx.reply(text);
   });
+}
+
+function startReviewSpinner(
+  ctx: Context,
+  statusMessage: { message_id: number; chat?: { id: number } } | undefined,
+  modeLabel: string,
+) {
+  if (!statusMessage || !ctx.chat) {
+    return async (finalText?: string) => {
+      void finalText;
+    };
+  }
+  const chatId = statusMessage.chat?.id ?? ctx.chat.id;
+  const messageId = statusMessage.message_id;
+  const frames = [' 🟢', ' 🟡', ' 🔴', ' 🟡'];
+  let frameIndex = 0;
+  const updateText = () => `🔍 正在执行 Review | 模式: ${modeLabel}${frames[frameIndex]}`;
+  let timer: NodeJS.Timeout | undefined;
+
+  const tick = () => {
+    frameIndex = (frameIndex + 1) % frames.length;
+    ctx.api.editMessageText(chatId, messageId, updateText()).catch(() => {});
+  };
+  ctx.api.editMessageText(chatId, messageId, updateText()).catch(() => {});
+  timer = setInterval(tick, 1000);
+
+  return async (finalText?: string) => {
+    if (timer) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+    if (finalText) {
+      await ctx.api.editMessageText(chatId, messageId, finalText).catch(() => {});
+    }
+  };
+}
+
+function describeReviewMode(includeSpec: boolean, commitRef?: string): string {
+  const target = commitRef ? `提交 ${formatCommitRef(commitRef)}` : "未提交代码";
+  const specLabel = includeSpec ? "附带 spec" : "仅代码 diff";
+  return `${target} · ${specLabel}`;
+}
+
+function formatCommitRef(ref: string): string {
+  const trimmed = ref.trim();
+  if (!trimmed || trimmed.toUpperCase() === "HEAD") {
+    return "HEAD";
+  }
+  return trimmed.length > 12 ? trimmed.slice(0, 12) : trimmed;
+}
+
+function parseBooleanFlag(value?: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "" || normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return undefined;
+}
+
+function isNoSpecToken(token: string): boolean {
+  const normalized = token.toLowerCase();
+  return normalized === "--no-spec" || normalized === "no-spec" || normalized === "--nospec" || normalized === "nospec";
 }
 
 function parseBranchArguments(args: string[]): { operation: "list" | "delete" | "force_delete"; workflow?: string } {

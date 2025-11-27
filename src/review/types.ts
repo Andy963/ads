@@ -17,6 +17,13 @@ export interface ReviewReport {
   notes?: string;
 }
 
+export interface ReviewTargetInfo {
+  type: "working" | "commit";
+  commit_ref?: string;
+  commit_sha?: string;
+  commit_summary?: string;
+}
+
 export interface ReviewState {
   workflow_id: string;
   status: ReviewStatus;
@@ -29,4 +36,5 @@ export interface ReviewState {
   report_path?: string;
   issues?: ReviewIssue[];
   verdict?: ReviewReport["verdict"];
+  target?: ReviewTargetInfo;
 }

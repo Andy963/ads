@@ -6,19 +6,31 @@ import type { ReviewReport, ReviewIssue } from "./types.js";
 import { resolveClaudeAgentConfig } from "../agents/config.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 
-const REVIEW_PROMPT = (bundleDir: string) => `
+const REVIEW_PROMPT = (
+  bundleDir: string,
+  options?: {
+    includeSpecFiles?: boolean;
+    specSummary?: string;
+    workflowTitle?: string;
+  },
+) => {
+  const includeSpec = options?.includeSpecFiles ?? true;
+  const specInstruction = includeSpec
+    ? "- Does the code change align with the spec (requirements, design, implementation)?"
+    : "- Spec files are unavailable on purpose. Evaluate whether the code change is correct, safe, and self-consistent based on the diff.";
+  return `
 You are an independent reviewer agent. Your task is to evaluate the latest code changes against the spec using the artifacts stored under:
 \`${bundleDir}\`
 
 Available files inside the bundle include:
 - diff.patch / stats.txt — Git diff and statistics
-- requirements.md, design.md, implementation.md — spec documents
+- ${includeSpec ? "requirements.md, design.md, implementation.md — spec documents" : "Spec documents (omitted in this run)"}
 - deps.txt — dependency changes
 
 Instructions:
 1. Use shell commands (e.g. \`ls\`, \`cat\`, \`grep\`) to inspect files inside the bundle directory. DO NOT modify any code or files.
 2. Focus on:
-   - Does the code change align with the spec (requirements, design, implementation)?
+   ${specInstruction}
    - Are there any obvious bugs or issues in the diff?
    - Are dependency changes reasonable?
 3. When ready, produce a JSON object **without code fences** using the schema:
@@ -38,6 +50,7 @@ Instructions:
 }
 4. Only set "verdict":"approved" when the changes align with the spec and there are no serious concerns. Any serious issue must result in "blocked".
 5. Respond ONLY with the JSON object.`;
+};
 
 export interface ReviewerAgentResult {
   report: ReviewReport;
@@ -51,8 +64,9 @@ export async function runReviewerAgent(options: {
   reviewDir: string;
   bundleDir: string;
   preferredAgent?: "codex" | "claude";
+  includeSpecFiles?: boolean;
 }): Promise<ReviewerAgentResult> {
-  const { workspace, workflow, reviewDir, bundleDir, preferredAgent } = options;
+  const { workspace, workflow, reviewDir, bundleDir, preferredAgent, includeSpecFiles } = options;
   const systemPromptManager = new SystemPromptManager({
     workspaceRoot: workspace,
     reinjection: resolveReinjectionConfig("REVIEW"),
@@ -65,8 +79,8 @@ export async function runReviewerAgent(options: {
     workingDirectory: workspace,
     systemPromptManager,
     metadata: {
-      id: "reviewer",
-      name: "Reviewer",
+      id: "codex",
+      name: "Codex Reviewer",
       vendor: "OpenAI",
     },
   });
@@ -94,7 +108,7 @@ export async function runReviewerAgent(options: {
     `Workflow: ${workflow.title ?? workflow.workflow_id}`,
     `Bundle directory: ${bundleDir}`,
     `Report directory: ${reviewDir}`,
-    REVIEW_PROMPT(bundleDir),
+    REVIEW_PROMPT(bundleDir, { includeSpecFiles }),
   ].join("\n\n");
 
   try {

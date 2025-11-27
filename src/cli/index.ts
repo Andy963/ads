@@ -211,6 +211,32 @@ function createAgentController(
   });
 }
 
+function parseBooleanParam(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "" || normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return undefined;
+}
+
+function resolveCommitRefParam(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const bool = parseBooleanParam(value);
+  if (bool === undefined) {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  return bool ? "HEAD" : undefined;
+}
+
 function formatResponse(text: string): string {
   if (!text.trim()) {
     return "(无输出)";
@@ -641,6 +667,29 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
         (params.agent as "codex" | "claude" | undefined) ??
         (["codex", "claude"].includes(positional[0]?.toLowerCase() ?? "") ? (positional.shift()!.toLowerCase() as "codex" | "claude") : undefined);
 
+      const specOverride = parseBooleanParam(params.spec);
+      const noSpecFlag =
+        parseBooleanParam(params["no-spec"]) ??
+        parseBooleanParam(params["no_spec"]) ??
+        parseBooleanParam(params.nospec);
+      let includeSpec = specOverride ?? false;
+      let specMode: "default" | "forceInclude" | "forceExclude" =
+        specOverride !== undefined ? (includeSpec ? "forceInclude" : "forceExclude") : "default";
+      if (noSpecFlag !== undefined) {
+        includeSpec = !noSpecFlag;
+        specMode = includeSpec ? "forceInclude" : "forceExclude";
+      }
+
+      const commitFlagRef = resolveCommitRefParam(params.commit);
+      let commitRef = commitFlagRef;
+      if (!commitRef && positional[0]?.toLowerCase() === "commit") {
+        commitRef = positional[1] && !positional[1].startsWith("--") ? positional[1] : undefined;
+        commitRef = commitRef?.trim() || "HEAD";
+      }
+      if (commitRef) {
+        commitRef = commitRef.trim() || "HEAD";
+      }
+
       if (wantsShow) {
         const response = await showReviewReport({ workflowId: workflowArg });
         return { output: response };
@@ -651,7 +700,7 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
         return { output: response };
       }
 
-      const response = await runReview({ requestedBy: "cli", agent });
+      const response = await runReview({ requestedBy: "cli", agent, includeSpec, commitRef, specMode });
       return { output: response };
     }
 

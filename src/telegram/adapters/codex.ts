@@ -416,6 +416,24 @@ export async function handleCodexMessage(
     }
   }
 
+  async function upsertPlanMessage(text: string): Promise<void> {
+    lastPlanContent = text;
+    if (!planMessageId) {
+      await sendPlanMessage(text);
+      return;
+    }
+    try {
+      await ctx.api.editMessageText(ctx.chat!.id, planMessageId, text);
+    } catch (error) {
+      if (error instanceof GrammyError && error.error_code === 400) {
+        planMessageId = null;
+        await sendPlanMessage(text);
+      } else {
+        logWarning('[CodexAdapter] Failed to update plan message', error);
+      }
+    }
+  }
+
   async function deletePlanMessage(): Promise<void> {
     if (!planMessageId) {
       return;
@@ -453,9 +471,7 @@ export async function handleCodexMessage(
     if (!message) {
       return;
     }
-    // 删除旧的 plan 消息，发新的到底部
-    await deletePlanMessage();
-    await sendPlanMessage(message);
+    await upsertPlanMessage(message);
   }
 
   async function maybeUpdateCommandLog(event: AgentEvent): Promise<void> {

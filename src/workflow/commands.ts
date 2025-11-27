@@ -36,8 +36,8 @@ const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
     description: "定稿某个步骤并生成版本记录",
   },
   {
-    usage: "/ads.review [--skip=<reason>] [--show]",
-    description: "触发 Reviewer 检查当前工作流，或查看/跳过 Review",
+    usage: "/ads.review [--skip=<reason>] [--show] [--spec] [--commit[=<ref>]]",
+    description: "触发 Reviewer 检查当前工作流，可指定最新提交或当前 diff，默认仅看代码变更",
   },
   {
     usage: "/ads.rules [category]",

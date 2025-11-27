@@ -59,7 +59,7 @@ npm link
 - `/ads.log [limit] [workflow]` - 查看最近的 workflow commit 日志
 - `/ads.rules [category]` - 查看项目规则
 - `/ads.workspace` / `/ads.sync` - 查看/同步工作区
-- `/ads.review [--skip=<reason>] [--show]` - 触发/查看 Review
+- `/ads.review [--skip=<reason>] [--show] [--spec] [--commit[=<ref>]]` - 触发/查看 Review，可指定最新提交或当前 diff，默认仅基于代码 diff
 
 ## 📚 Documentation
 

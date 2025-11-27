@@ -50,6 +50,19 @@ function runGit(workspace: string, args: string[]): string {
   }
 }
 
+function runGitStrict(workspace: string, args: string[]): string {
+  try {
+    return execSync(`git ${args.join(" ")}`, {
+      cwd: workspace,
+      encoding: "utf-8",
+      maxBuffer: 50 * 1024 * 1024,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`[git ${args.join(" ")}] ${message}`);
+  }
+}
+
 function resolveSpecDir(workflow: WorkflowInfo, workspace: string): string | null {
   const rootNode: GraphNode | null = WorkflowContext.getNode(workspace, workflow.workflow_id);
   if (!rootNode) {
@@ -66,30 +79,118 @@ function resolveSpecDir(workflow: WorkflowInfo, workspace: string): string | nul
   return path.join(workspace, "docs", "spec", workflow.workflow_id);
 }
 
+interface CommitDiffSource {
+  type: "commit";
+  ref: string;
+  sha: string;
+  summary?: string;
+  author?: string;
+  email?: string;
+  date?: string;
+  message?: string;
+}
+
+type ReviewDiffSource = { type: "working" } | CommitDiffSource;
+
+type SpecMode = "default" | "forceInclude" | "forceExclude";
+
+function resolveCommitDiffSource(workspace: string, ref: string): CommitDiffSource {
+  const normalizedRef = ref.trim() || "HEAD";
+  const sha = runGitStrict(workspace, ["rev-parse", normalizedRef]).trim();
+  const pretty = runGitStrict(workspace, ["show", "-s", "--format=%H%n%an%n%ae%n%ad%n%s%n%b", sha]);
+  const lines = pretty.split("\n");
+  const hash = lines.shift() ?? sha;
+  const author = lines.shift();
+  const email = lines.shift();
+  const date = lines.shift();
+  const summary = lines.shift();
+  const message = lines.join("\n").trim();
+  return {
+    type: "commit",
+    ref: normalizedRef,
+    sha: hash || sha,
+    author: author || undefined,
+    email: email || undefined,
+    date: date || undefined,
+    summary: summary || undefined,
+    message: message || undefined,
+  };
+}
+
+function toReviewStateTarget(diffSource: ReviewDiffSource): ReviewState["target"] {
+  if (diffSource.type === "commit") {
+    return {
+      type: "commit",
+      commit_ref: diffSource.ref,
+      commit_sha: diffSource.sha,
+      commit_summary: diffSource.summary,
+    };
+  }
+  return { type: "working" };
+}
+
+function describeDiffSource(diffSource: ReviewDiffSource): string {
+  if (diffSource.type === "commit") {
+    const shortSha = diffSource.sha.slice(0, 12);
+    const summary = diffSource.summary ? ` - ${diffSource.summary}` : "";
+    return `🔁 Review 目标: 提交 ${shortSha}${summary}`;
+  }
+  return "🔁 Review 目标: 当前未提交的工作区变更";
+}
+
 interface BundleResult {
   bundleDir: string;
   warnings: string[];
+  specFilesCopied: number;
+  includeSpecFiles: boolean;
 }
 
-function buildBundle(workspace: string, workflow: WorkflowInfo, reviewDir: string): BundleResult {
+interface BuildBundleOptions {
+  includeSpecFiles?: boolean;
+  diffSource?: ReviewDiffSource;
+  specMode?: SpecMode;
+}
+
+function buildBundle(
+  workspace: string,
+  workflow: WorkflowInfo,
+  reviewDir: string,
+  options?: BuildBundleOptions,
+): BundleResult {
   const bundleDir = path.join(reviewDir, "bundle");
   const warnings: string[] = [];
   ensureDir(bundleDir);
+  const includeSpecFiles = options?.includeSpecFiles ?? true;
+  const diffSource: ReviewDiffSource = options?.diffSource ?? { type: "working" };
+  const specMode = options?.specMode ?? "default";
+
+  const diffArgs =
+    diffSource.type === "commit"
+      ? ["diff", "--binary", `${diffSource.sha}^!`]
+      : ["diff", "--binary"];
+  const statsArgs =
+    diffSource.type === "commit"
+      ? ["diff", "--stat", `${diffSource.sha}^!`]
+      : ["diff", "--stat"];
+  const depsArgs =
+    diffSource.type === "commit"
+      ? ["diff", `${diffSource.sha}^!`, "--", "package.json", "package-lock.json"]
+      : ["diff", "--", "package.json", "package-lock.json"];
 
   // Git diff
-  const diffContent = runGit(workspace, ["diff", "--binary"]);
+  const diffContent = runGit(workspace, diffArgs);
   fs.writeFileSync(path.join(bundleDir, "diff.patch"), diffContent, "utf-8");
   if (!diffContent.trim() || diffContent.includes("[git diff")) {
     warnings.push("未检测到代码变更（git diff 为空或失败）");
   }
 
-  fs.writeFileSync(path.join(bundleDir, "stats.txt"), runGit(workspace, ["diff", "--stat"]), "utf-8");
-  fs.writeFileSync(path.join(bundleDir, "deps.txt"), runGit(workspace, ["diff", "--", "package.json", "package-lock.json"]), "utf-8");
+  fs.writeFileSync(path.join(bundleDir, "stats.txt"), runGit(workspace, statsArgs), "utf-8");
+  fs.writeFileSync(path.join(bundleDir, "deps.txt"), runGit(workspace, depsArgs), "utf-8");
 
   // Spec files
   const specDir = resolveSpecDir(workflow, workspace);
   let specCount = 0;
-  if (specDir && fs.existsSync(specDir)) {
+  if (includeSpecFiles && specDir && fs.existsSync(specDir)) {
     const specFiles = ["requirements.md", "design.md", "implementation.md"];
     for (const file of specFiles) {
       const sourcePath = path.join(specDir, file);
@@ -99,7 +200,13 @@ function buildBundle(workspace: string, workflow: WorkflowInfo, reviewDir: strin
       }
     }
   }
-  if (specCount === 0) {
+  if (!includeSpecFiles) {
+    if (specMode === "forceExclude") {
+      warnings.push("已根据 --no-spec 指令跳过 spec 文件，本次 Review 仅依据代码 diff。");
+    } else {
+      warnings.push("默认未附带 spec 文件，本次 Review 仅依据代码 diff。");
+    }
+  } else if (specCount === 0) {
     warnings.push(`未找到 spec 文件（spec 目录: ${specDir ?? "无法解析"}）`);
   }
 
@@ -112,10 +219,36 @@ function buildBundle(workspace: string, workflow: WorkflowInfo, reviewDir: strin
     generated_at: new Date().toISOString(),
     spec_dir: specDir,
     spec_files_found: specCount,
+    spec_files_included: includeSpecFiles,
+    target:
+      diffSource.type === "commit"
+        ? {
+            type: "commit",
+            ref: diffSource.ref,
+            sha: diffSource.sha,
+            summary: diffSource.summary,
+            author: diffSource.author,
+            email: diffSource.email,
+            date: diffSource.date,
+          }
+        : { type: "working" },
+    commit_message: diffSource.type === "commit" ? diffSource.message : undefined,
   };
   writeJson(path.join(bundleDir, "metadata.json"), metadata);
 
-  return { bundleDir, warnings };
+  return { bundleDir, warnings, specFilesCopied: specCount, includeSpecFiles };
+}
+
+function formatStateTarget(target?: ReviewState["target"]): string | null {
+  if (!target) {
+    return null;
+  }
+  if (target.type === "commit") {
+    const label = target.commit_sha?.slice(0, 10) ?? target.commit_ref ?? "commit";
+    const summary = target.commit_summary ? ` - ${target.commit_summary}` : "";
+    return `Commit ${label}${summary}`;
+  }
+  return "Working tree (未提交变更)";
 }
 
 function writeReport(reportPath: string, workflow: WorkflowInfo, state: ReviewState): void {
@@ -125,6 +258,10 @@ function writeReport(reportPath: string, workflow: WorkflowInfo, state: ReviewSt
   lines.push(`- Reviewed At: ${state.updated_at ?? new Date().toISOString()}`);
   if (state.summary) {
     lines.push(`- Summary: ${state.summary}`);
+  }
+  const targetLine = formatStateTarget(state.target);
+  if (targetLine) {
+    lines.push(`- Target: ${targetLine}`);
   }
   lines.push("");
   lines.push("## Issues");
@@ -159,7 +296,16 @@ function lockWorkflow(workspace: string, workflowId: string, locked: boolean): v
   });
 }
 
-export async function runReview(options: { workspace_path?: string; requestedBy?: string; agent?: "codex" | "claude" } = {}): Promise<string> {
+export async function runReview(
+  options: {
+    workspace_path?: string;
+    requestedBy?: string;
+    agent?: "codex" | "claude";
+    includeSpec?: boolean;
+    commitRef?: string;
+    specMode?: SpecMode;
+  } = {},
+): Promise<string> {
   const workspace = getWorkspacePath(options.workspace_path);
   const workflowStatus = WorkflowContext.getWorkflowStatus(workspace);
   if (!workflowStatus) {
@@ -167,31 +313,44 @@ export async function runReview(options: { workspace_path?: string; requestedBy?
   }
 
   const workflow = workflowStatus.workflow;
+  const includeSpec = options.includeSpec ?? false;
+  const specMode: SpecMode = options.specMode ?? "default";
+  const diffSource: ReviewDiffSource =
+    options.commitRef && options.commitRef.trim()
+      ? resolveCommitDiffSource(workspace, options.commitRef)
+      : { type: "working" };
+
   const implementationStep = workflowStatus.steps.find((step) => step.name === "implementation");
-  if (!implementationStep || implementationStep.status !== "finalized") {
-    return "❌ 实施步骤尚未定稿，无法执行 Review。";
-  }
+  const implementationFinalized = implementationStep?.status === "finalized";
+  const workflowWarning = implementationFinalized ? null : "实施步骤尚未定稿，本次 Review 仅供参考。";
 
   const reviewDir = getReviewDir(workspace, workflow.workflow_id);
   const now = new Date().toISOString();
+  const targetInfo = toReviewStateTarget(diffSource);
   const runningState: ReviewState = {
     workflow_id: workflow.workflow_id,
     status: "running",
     requested_by: options.requestedBy ?? "cli",
     requested_at: now,
     updated_at: now,
+    target: targetInfo,
   };
   writeState(reviewDir, runningState, workspace);
   lockWorkflow(workspace, workflow.workflow_id, true);
 
   try {
-    const { bundleDir, warnings: bundleWarnings } = buildBundle(workspace, workflow, reviewDir);
+    const { bundleDir, warnings: bundleWarnings } = buildBundle(workspace, workflow, reviewDir, {
+      includeSpecFiles: includeSpec,
+      diffSource,
+      specMode,
+    });
     const reviewerResult = await runReviewerAgent({
       workspace,
       workflow,
       reviewDir,
       bundleDir,
       preferredAgent: options.agent,
+      includeSpecFiles: includeSpec,
     });
     const report = reviewerResult.report;
     const finalState: ReviewState = {
@@ -201,6 +360,7 @@ export async function runReview(options: { workspace_path?: string; requestedBy?
       summary: report.summary,
       issues: report.issues,
       updated_at: new Date().toISOString(),
+      target: targetInfo,
     };
 
     const reportPath = path.join(reviewDir, "report.md");
@@ -217,13 +377,18 @@ export async function runReview(options: { workspace_path?: string; requestedBy?
     const lines = [
       finalState.status === "approved" ? "✅ Review 通过" : finalState.status === "blocked" ? "❌ Review 阻塞" : "⚠️ Review 失败",
       `Reviewer: ${reviewerResult.agentId}`,
+      describeDiffSource(diffSource),
       report.summary ?? "",
       issuesText,
       "查看详细报告: /ads.review --show",
     ];
     // 添加 bundle 警告和 reviewer 警告
-    const allWarnings = [...bundleWarnings, ...(reviewerResult.warnings ?? [])];
-    allWarnings.forEach((warning) => lines.splice(1, 0, `⚠️ ${warning}`));
+    const warningCandidates = [
+      workflowWarning,
+      ...bundleWarnings,
+      ...(reviewerResult.warnings ?? []),
+    ].filter((warning): warning is string => Boolean(warning));
+    warningCandidates.forEach((warning) => lines.splice(1, 0, `⚠️ ${warning}`));
     return lines
       .filter(Boolean)
       .join("\n");
@@ -234,6 +399,7 @@ export async function runReview(options: { workspace_path?: string; requestedBy?
       status: "failed",
       summary: `Reviewer 执行失败：${message}`,
       updated_at: new Date().toISOString(),
+      target: targetInfo,
     };
     writeState(reviewDir, failedState, workspace);
     return `⚠️ Review 执行失败：${message}`;
