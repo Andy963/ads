@@ -277,7 +277,8 @@ export async function showReviewReport(options: { workspace_path?: string; workf
   }
   const statePath = path.join(reviewDir, "state.json");
   if (fs.existsSync(statePath)) {
-    return readFileSafe(statePath);
+    const stateContent = readFileSafe(statePath);
+    return stateContent ? ["```json", stateContent, "```"].join("\n") : stateContent;
   }
   return "ℹ️ 尚未执行 Review。";
 }

@@ -109,6 +109,7 @@ export async function uploadFileToTelegram(
     
     await api.sendDocument(chatId, new InputFile(filePath), {
       caption: caption || `📁 ${fileName} (${formatFileSize(stats.size)})`,
+      disable_notification: true,
     });
     
     console.log(`[FileHandler] Uploaded file: ${fileName}`);

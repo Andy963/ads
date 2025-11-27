@@ -7,7 +7,7 @@ import { safeStringify } from "../utils/json.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
-const TEMPLATE_RULES_PATH = path.join(PROJECT_ROOT, "ads", "templates", "rules.md");
+const TEMPLATE_RULES_PATH = path.join(PROJECT_ROOT, "templates", "rules.md");
 
 function readFileIfExists(filePath: string): string | null {
   try {

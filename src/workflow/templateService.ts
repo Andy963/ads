@@ -22,6 +22,20 @@ const REQUIREMENT_TEMPLATE = path.join(TEMPLATE_ROOT, "requirement.md");
 const DESIGN_TEMPLATE = path.join(TEMPLATE_ROOT, "design.md");
 const IMPLEMENTATION_TEMPLATE = path.join(TEMPLATE_ROOT, "implementation.md");
 
+async function withWorkspaceEnv<T>(workspace: string, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.AD_WORKSPACE;
+  process.env.AD_WORKSPACE = workspace;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.AD_WORKSPACE;
+    } else {
+      process.env.AD_WORKSPACE = previous;
+    }
+  }
+}
+
 export async function listWorkflowTemplates(): Promise<string> {
   try {
     const templates = getAllWorkflowTemplates();
@@ -155,12 +169,14 @@ export async function createWorkflowFromTemplate(params: {
       enhancedDescription += `## 项目规则约束\n\n${rulesSummary}\n\n---\n\n`;
     }
 
-    const result = createWorkflowFromConfig({
-      nodes: nodesConfig.slice(0, 1),
-      rootLabel: params.title,
-      rootContent: enhancedDescription,
-      position: { x: 100, y: 100 },
-    });
+    const result = await withWorkspaceEnv(workspace, () =>
+      createWorkflowFromConfig({
+        nodes: nodesConfig.slice(0, 1),
+        rootLabel: params.title,
+        rootContent: enhancedDescription,
+        position: { x: 100, y: 100 },
+      }),
+    );
 
     const rootNode = result.nodes[0];
     const specsDir = getWorkspaceSpecsDir(workspace);

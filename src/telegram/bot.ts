@@ -46,6 +46,20 @@ const AFFIRMATIVE_RESPONSES = new Set([
   '没问题',
 ]);
 
+function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boolean {
+  if (value == null) {
+    return defaultValue;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return defaultValue;
+}
+
 function normalizeAffirmativeCandidate(text: string | undefined | null): string {
   if (!text) {
     return '';
@@ -125,6 +139,8 @@ async function main() {
   // 清理旧的临时文件
   cleanupAllTempFiles();
 
+  const silentNotifications = parseBooleanFlag(process.env.TELEGRAM_SILENT_NOTIFICATIONS, true);
+
   // 创建管理器
   const sessionManager = new SessionManager(
     config.sessionTimeoutMs,
@@ -169,6 +185,23 @@ async function main() {
     : undefined;
 
   const bot = new Bot(config.botToken, clientConfig ? { client: clientConfig } : undefined);
+
+  // 根据配置静音：所有 ctx.reply 默认禁用通知，除非调用方显式覆盖
+  bot.use(async (ctx, next) => {
+    const originalReply = ctx.reply.bind(ctx);
+    const wrappedReply = (text: Parameters<Context["reply"]>[0], other?: Parameters<Context["reply"]>[1]) => {
+      if (!silentNotifications) {
+        return originalReply(text as never, other as never);
+      }
+      if (other && Object.prototype.hasOwnProperty.call(other, 'disable_notification')) {
+        return originalReply(text as never, other as never);
+      }
+      const merged = { ...(other ?? {}), disable_notification: true };
+      return originalReply(text as never, merged as never);
+    };
+    ctx.reply = wrappedReply as Context["reply"];
+    await next();
+  });
 
   // 注册中间件
   bot.use(createAuthMiddleware(config.allowedUsers));
@@ -516,7 +549,10 @@ async function main() {
       [photo.file_id],
       undefined,
       cwd,
-      { markNoteEnabled: markStates.get(userId) ?? false }
+      {
+        markNoteEnabled: markStates.get(userId) ?? false,
+        silentNotifications,
+      }
     );
   });
 
@@ -546,7 +582,10 @@ async function main() {
       undefined,
       doc.file_id,
       cwd,
-      { markNoteEnabled: markStates.get(userId) ?? false }
+      {
+        markNoteEnabled: markStates.get(userId) ?? false,
+        silentNotifications,
+      }
     );
   });
 
@@ -630,7 +669,10 @@ async function main() {
       undefined,
       undefined,
       directoryManager.getUserCwd(userId),
-      { markNoteEnabled: markStates.get(userId) ?? false }
+      {
+        markNoteEnabled: markStates.get(userId) ?? false,
+        silentNotifications,
+      }
     );
   });
 

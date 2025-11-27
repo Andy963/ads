@@ -180,6 +180,20 @@ export async function getWorkflowStatusSummary(params: {
 
 const DEFAULT_WORKFLOW_LOG_HEADER = "最新提交:";
 
+async function withWorkspaceEnv<T>(workspace: string, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.AD_WORKSPACE;
+  process.env.AD_WORKSPACE = workspace;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.AD_WORKSPACE;
+    } else {
+      process.env.AD_WORKSPACE = previous;
+    }
+  }
+}
+
 export async function listWorkflows(params: {
   workspace_path?: string;
   operation?: "list" | "delete" | "force_delete";
@@ -257,39 +271,41 @@ export async function listWorkflows(params: {
 
     // 2. 删除数据库中的所有节点（force_delete）
     if (params.operation === "force_delete") {
-      const workflowNodes = WorkflowContext.collectWorkflowNodes(targetWorkflow.workflow_id);
-      const nodeIds = new Set(workflowNodes.map((node) => node.id));
-      nodeIds.add(targetWorkflow.workflow_id);
+      return await withWorkspaceEnv(workspace, async () => {
+        const workflowNodes = WorkflowContext.collectWorkflowNodes(targetWorkflow.workflow_id, workspace);
+        const nodeIds = new Set(workflowNodes.map((node) => node.id));
+        nodeIds.add(targetWorkflow.workflow_id);
 
-      const db = getDatabase();
-      let edgesRemoved = 0;
-      for (const nodeId of nodeIds) {
-        const result = db.prepare("DELETE FROM edges WHERE source = ? OR target = ?").run(nodeId, nodeId);
-        edgesRemoved += result?.changes ?? 0;
-      }
-
-      let nodesRemoved = 0;
-      for (const nodeId of nodeIds) {
-        if (deleteNode(nodeId)) {
-          nodesRemoved += 1;
+        const db = getDatabase(workspace);
+        let edgesRemoved = 0;
+        for (const nodeId of nodeIds) {
+          const result = db.prepare("DELETE FROM edges WHERE source = ? OR target = ?").run(nodeId, nodeId);
+          edgesRemoved += result?.changes ?? 0;
         }
-      }
 
-      const orphanCount = Math.max(nodeIds.size - 1, 0);
-      const lines = [
-        markdown
-          ? `✅ 已彻底删除工作流: ${escapeText(targetWorkflow.title ?? "(未命名)")} (${inlineCode(targetWorkflow.workflow_id)})`
-          : `✅ 已彻底删除工作流: ${targetWorkflow.title} (${targetWorkflow.workflow_id})`,
-        `🧹 清理节点 ${nodesRemoved}/${nodeIds.size} 个（含孤立节点 ${orphanCount} 个），移除关联边 ${edgesRemoved} 条`,
-      ];
-      if (!hadContext) {
-        lines.push(
+        let nodesRemoved = 0;
+        for (const nodeId of nodeIds) {
+          if (deleteNode(nodeId)) {
+            nodesRemoved += 1;
+          }
+        }
+
+        const orphanCount = Math.max(nodeIds.size - 1, 0);
+        const lines = [
           markdown
-            ? "⚠️ 工作流上下文原本不存在，已直接清理数据库记录"
-            : "⚠️ 工作流上下文原本不存在，已直接清理数据库记录",
-        );
-      }
-      return join(lines);
+            ? `✅ 已彻底删除工作流: ${escapeText(targetWorkflow.title ?? "(未命名)")} (${inlineCode(targetWorkflow.workflow_id)})`
+            : `✅ 已彻底删除工作流: ${targetWorkflow.title} (${targetWorkflow.workflow_id})`,
+          `🧹 清理节点 ${nodesRemoved}/${nodeIds.size} 个（含孤立节点 ${orphanCount} 个），移除关联边 ${edgesRemoved} 条`,
+        ];
+        if (!hadContext) {
+          lines.push(
+            markdown
+              ? "⚠️ 工作流上下文原本不存在，已直接清理数据库记录"
+              : "⚠️ 工作流上下文原本不存在，已直接清理数据库记录",
+          );
+        }
+        return join(lines);
+      });
     }
 
     const title = escapeText(targetWorkflow.title ?? "(未命名)");
@@ -313,7 +329,7 @@ export async function listWorkflowLog(params: {
 }): Promise<string> {
   const format = params.format ?? "cli";
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
-  const db = getDatabase();
+  const db = getDatabase(workspace);
   const limit = params.limit && params.limit > 0 ? Math.min(params.limit, 100) : 20;
 
   const activeWorkflow = WorkflowContext.getActiveWorkflow(workspace);
@@ -361,29 +377,31 @@ export async function listWorkflowLog(params: {
   }
 
   let rows: WorkflowCommitRow[] = [];
-  if (workflowId) {
-    rows = db
-      .prepare(
-        `SELECT workflow_id, workflow_title, template, node_id, step_name, node_label, version, change_description, file_path, created_at
-         FROM workflow_commits
-         WHERE workflow_id = ?
-         ORDER BY datetime(created_at) DESC
-         LIMIT ?`
-      )
-      .all(workflowId, limit) as WorkflowCommitRow[];
-    if (!workflowTitle && rows.length > 0) {
-      workflowTitle = rows[0].workflow_title ?? null;
+  await withWorkspaceEnv(workspace, () => {
+    if (workflowId) {
+      rows = db
+        .prepare(
+          `SELECT workflow_id, workflow_title, template, node_id, step_name, node_label, version, change_description, file_path, created_at
+           FROM workflow_commits
+           WHERE workflow_id = ?
+           ORDER BY datetime(created_at) DESC
+           LIMIT ?`
+        )
+        .all(workflowId, limit) as WorkflowCommitRow[];
+      if (!workflowTitle && rows.length > 0) {
+        workflowTitle = rows[0].workflow_title ?? null;
+      }
+    } else {
+      rows = db
+        .prepare(
+          `SELECT workflow_id, workflow_title, template, node_id, step_name, node_label, version, change_description, file_path, created_at
+           FROM workflow_commits
+           ORDER BY datetime(created_at) DESC
+           LIMIT ?`
+        )
+        .all(limit) as WorkflowCommitRow[];
     }
-  } else {
-    rows = db
-      .prepare(
-        `SELECT workflow_id, workflow_title, template, node_id, step_name, node_label, version, change_description, file_path, created_at
-         FROM workflow_commits
-         ORDER BY datetime(created_at) DESC
-         LIMIT ?`
-      )
-      .all(limit) as WorkflowCommitRow[];
-  }
+  });
 
   if (rows.length === 0) {
     if (workflowId) {
@@ -516,130 +534,134 @@ export async function commitStep(params: {
   format?: WorkflowTextFormat;
 }): Promise<string> {
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
-  const workflow = WorkflowContext.getActiveWorkflow(workspace);
-  if (!workflow) {
-    return "❌ 没有活动的工作流";
-  }
+  return withWorkspaceEnv(workspace, async () => {
+    const workflow = WorkflowContext.getActiveWorkflow(workspace);
+    if (!workflow) {
+      return "❌ 没有活动的工作流";
+    }
 
-  const nodeId = WorkflowContext.getWorkflowStepNodeId(params.step_name, workflow, workspace);
-  if (!nodeId) {
-    return `❌ 步骤 '${params.step_name}' 不存在`;
-  }
+    const nodeId = WorkflowContext.getWorkflowStepNodeId(params.step_name, workflow, workspace);
+    if (!nodeId) {
+      return `❌ 步骤 '${params.step_name}' 不存在`;
+    }
 
-  const node = getNodeById(nodeId);
-  if (!node) {
-    return `❌ 节点 ${nodeId} 不存在`;
-  }
+    const node = getNodeById(nodeId);
+    if (!node) {
+      return `❌ 节点 ${nodeId} 不存在`;
+    }
 
-  const specDir = getSpecDir(node, workspace);
-  const workflowSteps = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
-  const normalizedStepName =
-    Object.entries(workflowSteps).find(([, value]) => value === node.type)?.[0] ?? params.step_name;
-  const candidateFiles = [
-    `${normalizedStepName}.md`,
-    `${params.step_name}.md`,
-    `${node.type}.md`,
-    "requirements.md",
-    "design.md",
-    "implementation.md",
-  ];
+    const specDir = getSpecDir(node, workspace);
+    const workflowSteps = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
+    const normalizedStepName =
+      Object.entries(workflowSteps).find(([, value]) => value === node.type)?.[0] ?? params.step_name;
+    const candidateFiles = [
+      `${normalizedStepName}.md`,
+      `${params.step_name}.md`,
+      `${node.type}.md`,
+      "requirements.md",
+      "design.md",
+      "implementation.md",
+    ];
 
-  let specContent: string | null = null;
-  for (const fileName of candidateFiles) {
-    const filePath = path.join(specDir, fileName);
-    if (fs.existsSync(filePath)) {
-      const raw = fs.readFileSync(filePath, "utf-8");
-      specContent = raw.trim();
-      if (specContent) {
-        break;
+    let specContent: string | null = null;
+    for (const fileName of candidateFiles) {
+      const filePath = path.join(specDir, fileName);
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, "utf-8");
+        specContent = raw.trim();
+        if (specContent) {
+          break;
+        }
       }
     }
-  }
 
-  if (!specContent || !specContent.trim()) {
-    return `❌ 定稿失败: 未在 ${path.relative(workspace, specDir)} 找到 ${params.step_name} 的内容，请填写 spec 后再试`;
-  }
+    if (!specContent || !specContent.trim()) {
+      return `❌ 定稿失败: 未在 ${path.relative(workspace, specDir)} 找到 ${params.step_name} 的内容，请填写 spec 后再试`;
+    }
 
-  updateNode(nodeId, {
-    draft_content: specContent,
-    is_draft: true,
-    draft_updated_at: new Date().toISOString(),
-    draft_source_type: "spec-file",
-  });
+    updateNode(nodeId, {
+      draft_content: specContent,
+      is_draft: true,
+      draft_updated_at: new Date().toISOString(),
+      draft_source_type: "spec-file",
+    });
 
-  let finalizedNode: GraphNode;
-  try {
-    finalizedNode = await finalizeNode(nodeId, params.change_description);
-  } catch (error) {
-    return `❌ 定稿失败: ${(error as Error).message}`;
-  }
+    let finalizedNode: GraphNode;
+    try {
+      finalizedNode = await finalizeNode(nodeId, params.change_description);
+    } catch (error) {
+      return `❌ 定稿失败: ${(error as Error).message}`;
+    }
 
-  const filePath = saveNodeToFile(finalizedNode, workspace);
+    const filePath = saveNodeToFile(finalizedNode, workspace);
 
-  const workflowResult = onNodeFinalized(nodeId);
-  let nextStepMessage = "";
+    const workflowResult = onNodeFinalized(nodeId);
+    let nextStepMessage = "";
+    let nextStepName: string | null = null;
 
-  if (workflowResult?.node_id) {
-    const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
-    const nextNode = getNodeById(workflowResult.node_id);
-    if (nextNode) {
-      const entry = Object.entries(stepMapping).find(([, nodeType]) => nodeType === nextNode.type);
-      if (entry) {
-        WorkflowContext.addWorkflowStep(entry[0], nextNode.id, workspace);
-        nextStepMessage = `\n➡️ 下一步: ${entry[0]} (${nextNode.label})`;
+    if (workflowResult?.node_id) {
+      const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
+      const nextNode = getNodeById(workflowResult.node_id);
+      if (nextNode) {
+        const entry = Object.entries(stepMapping).find(([, nodeType]) => nodeType === nextNode.type);
+        if (entry) {
+          WorkflowContext.addWorkflowStep(entry[0], nextNode.id, workspace);
+          nextStepName = entry[0];
+          nextStepMessage = `\n➡️ 下一步: ${entry[0]} (${nextNode.label})`;
+        }
       }
     }
-  }
 
-  WorkflowContext.updateCurrentStep(params.step_name, workspace);
+    const currentStep = nextStepName ?? params.step_name;
+    WorkflowContext.updateCurrentStep(currentStep, workspace);
 
-  const workflowListEntry = WorkflowContext.listAllWorkflows(workspace).find(
-    (wf) => wf.workflow_id === workflow.workflow_id,
-  );
-  const templateId =
-    workflow.template ??
-    (workflowListEntry?.template ?? null) ??
-    (finalizedNode.metadata && typeof finalizedNode.metadata === "object"
-      ? (finalizedNode.metadata as Record<string, unknown>).workflow_template
-      : null);
+    const workflowListEntry = WorkflowContext.listAllWorkflows(workspace).find(
+      (wf) => wf.workflow_id === workflow.workflow_id,
+    );
+    const templateId =
+      workflow.template ??
+      (workflowListEntry?.template ?? null) ??
+      (finalizedNode.metadata && typeof finalizedNode.metadata === "object"
+        ? (finalizedNode.metadata as Record<string, unknown>).workflow_template
+        : null);
 
-  recordWorkflowCommit({
-    workflow_id: workflow.workflow_id,
-    workflow_title: workflow.title ?? null,
-    template: templateId ? String(templateId) : null,
-    node_id: finalizedNode.id,
-    step_name: params.step_name,
-    node_label: finalizedNode.label,
-    version: finalizedNode.currentVersion ?? 1,
-    change_description: params.change_description ?? null,
-    file_path: filePath ?? null,
-    created_at: new Date().toISOString(),
+    recordWorkflowCommit({
+      workflow_id: workflow.workflow_id,
+      workflow_title: workflow.title ?? null,
+      template: templateId ? String(templateId) : null,
+      node_id: finalizedNode.id,
+      step_name: params.step_name,
+      node_label: finalizedNode.label,
+      version: finalizedNode.currentVersion ?? 1,
+      change_description: params.change_description ?? null,
+      file_path: filePath ?? null,
+      created_at: new Date().toISOString(),
+    });
+
+    const format = params.format ?? "cli";
+    const isMarkdown = format === "markdown";
+    const escapeText = (text: string) => (isMarkdown ? escapeTelegramMarkdown(text) : text);
+    const inlineCode = (text: string) => (isMarkdown ? `\`${escapeTelegramInlineCode(text)}\`` : text);
+
+    const lines: string[] = [];
+    lines.push(`✅ Committed ${inlineCode(params.step_name)} as v${finalizedNode.currentVersion}`);
+    if (filePath) {
+      lines.push(`📁 Saved to: ${inlineCode(filePath)}`);
+    }
+    if (workflowResult?.message) {
+      lines.push(escapeText(workflowResult.message));
+    }
+    if (nextStepMessage) {
+      lines.push(escapeText(nextStepMessage));
+    }
+
+    const statusSummary = await getWorkflowStatusSummary({
+      workspace_path: workspace,
+      format,
+    });
+    lines.push("");
+    lines.push(statusSummary);
+
+    return lines.join("\n");
   });
-
-  const format = params.format ?? "cli";
-  const isMarkdown = format === "markdown";
-  const escapeText = (text: string) => (isMarkdown ? escapeTelegramMarkdown(text) : text);
-  const inlineCode = (text: string) => (isMarkdown ? `\`${escapeTelegramInlineCode(text)}\`` : text);
-
-  const lines: string[] = [];
-  lines.push(`✅ Committed ${inlineCode(params.step_name)} as v${finalizedNode.currentVersion}`);
-  if (filePath) {
-    lines.push(`📁 Saved to: ${inlineCode(filePath)}`);
-  }
-  if (workflowResult?.message) {
-    lines.push(escapeText(workflowResult.message));
-  }
-  if (nextStepMessage) {
-    lines.push(escapeText(nextStepMessage));
-  }
-
-  // 添加工作流状态回显
-  const statusSummary = await getWorkflowStatusSummary({
-    workspace_path: workspace,
-    format,
-  });
-  lines.push("");
-  lines.push(statusSummary);
-
-  return lines.join("\n");
 }

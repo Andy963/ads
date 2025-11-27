@@ -170,7 +170,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
         if (subCommand === 'show') {
           const workflowId = commandArgs.slice(1).join(' ') || undefined;
           const response = await showReviewReport({ workspace_path: workspacePath, workflowId });
-          await replyWithAdsText(ctx, response);
+          await replyWithAdsText(ctx, response, { markdown: true });
           break;
         }
 
@@ -188,7 +188,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
         // 先发送提示，让用户知道 Review 正在执行
         await ctx.reply('🔍 正在执行 Review，请稍候...', { disable_notification: true });
         const response = await runReview({ workspace_path: workspacePath, requestedBy: 'telegram', agent: agentParam });
-        await replyWithAdsText(ctx, response);
+        await replyWithAdsText(ctx, response, { markdown: true });
         break;
       }
 

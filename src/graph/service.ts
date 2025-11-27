@@ -20,9 +20,26 @@ import type { GraphNode } from "./types.js";
 import { detectWorkspace } from "../workspace/detector.js";
 import { finalizeNode as finalizeGraphNodeHelper } from "./finalizeHelper.js";
 
-export async function getWorkspaceInfo(params: { workspace_path?: string }): Promise<string> {
+async function withWorkspaceEnv<T>(workspacePath: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  if (!workspacePath) {
+    return await fn();
+  }
+  const previous = process.env.AD_WORKSPACE;
+  process.env.AD_WORKSPACE = workspacePath;
   try {
-    const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.AD_WORKSPACE;
+    } else {
+      process.env.AD_WORKSPACE = previous;
+    }
+  }
+}
+
+export async function getWorkspaceInfo(params: { workspace_path?: string }): Promise<string> {
+  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  try {
     if (!isWorkspaceInitialized(workspace)) {
       return safeStringify({
         error: "工作空间未初始化",
@@ -31,43 +48,45 @@ export async function getWorkspaceInfo(params: { workspace_path?: string }): Pro
       });
     }
 
-    const nodes = getAllNodes();
-    const edges = getAllEdges();
+    return await withWorkspaceEnv(workspace, () => {
+      const nodes = getAllNodes();
+      const edges = getAllEdges();
 
-    const nodeStats: Record<string, number> = {};
-    const statusStats: Record<string, number> = { draft: 0, finalized: 0 };
-    for (const node of nodes) {
-      nodeStats[node.type] = (nodeStats[node.type] ?? 0) + 1;
-      statusStats[node.isDraft ? "draft" : "finalized"] += 1;
-    }
+      const nodeStats: Record<string, number> = {};
+      const statusStats: Record<string, number> = { draft: 0, finalized: 0 };
+      for (const node of nodes) {
+        nodeStats[node.type] = (nodeStats[node.type] ?? 0) + 1;
+        statusStats[node.isDraft ? "draft" : "finalized"] += 1;
+      }
 
-    const edgeStats: Record<string, number> = {};
-    for (const edge of edges) {
-      edgeStats[edge.edgeType] = (edgeStats[edge.edgeType] ?? 0) + 1;
-    }
+      const edgeStats: Record<string, number> = {};
+      for (const edge of edges) {
+        edgeStats[edge.edgeType] = (edgeStats[edge.edgeType] ?? 0) + 1;
+      }
 
-    const info = detectorWorkspaceInfo(workspace);
+      const info = detectorWorkspaceInfo(workspace);
 
-    return safeStringify({
-      workspace: {
-        path: workspace,
-        name: (info.name as string) ?? path.basename(workspace),
-        is_initialized: true,
-        db_path: info.db_path,
-        rules_dir: info.rules_dir,
-        specs_dir: info.specs_dir,
-      },
-      statistics: {
-        nodes: {
-          total: nodes.length,
-          by_type: nodeStats,
-          by_status: statusStats,
+      return safeStringify({
+        workspace: {
+          path: workspace,
+          name: (info.name as string) ?? path.basename(workspace),
+          is_initialized: true,
+          db_path: info.db_path,
+          rules_dir: info.rules_dir,
+          specs_dir: info.specs_dir,
         },
-        edges: {
-          total: edges.length,
-          by_type: edgeStats,
+        statistics: {
+          nodes: {
+            total: nodes.length,
+            by_type: nodeStats,
+            by_status: statusStats,
+          },
+          edges: {
+            total: edges.length,
+            by_type: edgeStats,
+          },
         },
-      },
+      });
     });
   } catch (error) {
     return safeStringify({ error: (error as Error).message });
@@ -81,16 +100,18 @@ export async function listNodes(params: {
   limit?: number;
 }): Promise<string> {
   try {
-    const nodes = getAllNodes()
-      .filter((node) => !params.node_type || node.type === params.node_type)
-      .filter((node) => {
-        if (!params.status) {
-          return true;
-        }
-        const isDraft = params.status === "draft";
-        return node.isDraft === isDraft;
-      })
-      .slice(0, params.limit ?? undefined);
+    const nodes = await withWorkspaceEnv(params.workspace_path ? path.resolve(params.workspace_path) : undefined, () =>
+      getAllNodes()
+        .filter((node) => !params.node_type || node.type === params.node_type)
+        .filter((node) => {
+          if (!params.status) {
+            return true;
+          }
+          const isDraft = params.status === "draft";
+          return node.isDraft === isDraft;
+        })
+        .slice(0, params.limit ?? undefined),
+    );
 
     return safeStringify({
       nodes: nodes.map((node) => ({
@@ -177,39 +198,42 @@ export async function createGraphNode(params: {
   status?: string;
 }): Promise<string> {
   try {
-    const nodeId = generateNodeId(params.node_type);
-    const isDraft = params.status !== "finalized";
+    const workspacePath = path.resolve(params.workspace_path);
+    return await withWorkspaceEnv(workspacePath, () => {
+      const nodeId = generateNodeId(params.node_type);
+      const isDraft = params.status !== "finalized";
 
-    const node = createNode({
-      id: nodeId,
-      type: params.node_type,
-      label: params.title,
-      content: params.content,
-      metadata: {},
-      isDraft,
-    });
-
-    if (params.parent_id) {
-      createEdge({
-        id: `edge_${params.parent_id}_${nodeId}`,
-        source: params.parent_id,
-        target: nodeId,
-        edgeType: "next",
+      const node = createNode({
+        id: nodeId,
+        type: params.node_type,
+        label: params.title,
+        content: params.content,
+        metadata: {},
+        isDraft,
       });
-    }
 
-    const filePath = saveNodeToFile(node, params.workspace_path);
+      if (params.parent_id) {
+        createEdge({
+          id: `edge_${params.parent_id}_${nodeId}`,
+          source: params.parent_id,
+          target: nodeId,
+          edgeType: "next",
+        });
+      }
 
-    return safeStringify({
-      success: true,
-      node: {
-        id: node.id,
-        type: node.type,
-        label: node.label,
-        content: node.content,
-        status: node.isDraft ? "draft" : "finalized",
-      },
-      file: filePath,
+      const filePath = saveNodeToFile(node, workspacePath);
+
+      return safeStringify({
+        success: true,
+        node: {
+          id: node.id,
+          type: node.type,
+          label: node.label,
+          content: node.content,
+          status: node.isDraft ? "draft" : "finalized",
+        },
+        file: filePath,
+      });
     });
   } catch (error) {
     return safeStringify({ success: false, error: (error as Error).message });
@@ -304,7 +328,8 @@ export async function finalizeGraphNode(nodeId: string): Promise<string> {
 
 export async function syncAllNodesToFiles(params: { workspace_path?: string }): Promise<string> {
   try {
-    const stats = syncAllNodes(params.workspace_path);
+    const workspace = params.workspace_path ? path.resolve(params.workspace_path) : undefined;
+    const stats = await withWorkspaceEnv(workspace, () => syncAllNodes(workspace));
     return safeStringify({
       success: true,
       statistics: {

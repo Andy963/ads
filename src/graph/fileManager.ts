@@ -173,7 +173,9 @@ export function generateIndex(workspacePath?: string): string[] {
       });
       for (const node of sortedNodes) {
         const statusIcon = node.isDraft ? "📝" : "✅";
-        content += `- ${statusIcon} [${node.label}](./${node.type}.md)\n`;
+        const filePath = getNodeFilePath(node, workspacePath);
+        const linkPath = path.relative(specDir, filePath).split(path.sep).join("/");
+        content += `- ${statusIcon} [${node.label}](./${linkPath})\n`;
       }
       content += "\n";
     }

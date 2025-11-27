@@ -7,7 +7,7 @@ import toml from "toml";
 
 import { detectWorkspace, getWorkspaceDbPath } from "../workspace/detector.js";
 
-let cachedDb: DatabaseType | null = null;
+let cachedDbs: Map<string, DatabaseType> = new Map();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
@@ -26,7 +26,7 @@ function readPyProjectName(): string | null {
   }
 }
 
-function resolveDatabasePath(): string {
+function resolveDatabasePath(workspacePath?: string): string {
   const envDb = process.env.ADS_DATABASE_PATH || process.env.DATABASE_URL;
   if (envDb) {
     return envDb.replace(/^sqlite:\/\//, "");
@@ -38,7 +38,7 @@ function resolveDatabasePath(): string {
   }
 
   try {
-    const workspaceRoot = detectWorkspace();
+    const workspaceRoot = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
     return getWorkspaceDbPath(workspaceRoot);
   } catch {
     return path.join(process.cwd(), "ads.db");
@@ -141,22 +141,29 @@ function initializeDatabase(db: DatabaseType): void {
   `);
 }
 
-export function getDatabase(): DatabaseType {
-  if (!cachedDb) {
-    const dbPath = resolveDatabasePath();
-    cachedDb = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
-    cachedDb.pragma("journal_mode = WAL");
-    cachedDb.pragma("foreign_keys = ON");
-
-    // Initialize database tables if they don't exist
-    initializeDatabase(cachedDb);
+export function getDatabase(workspacePath?: string): DatabaseType {
+  const dbPath = resolveDatabasePath(workspacePath);
+  const existing = cachedDbs.get(dbPath);
+  if (existing) {
+    return existing;
   }
-  return cachedDb;
+
+  const db = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+
+  initializeDatabase(db);
+  cachedDbs.set(dbPath, db);
+  return db;
 }
 
 export function resetDatabaseForTests(): void {
-  if (cachedDb) {
-    cachedDb.close();
-    cachedDb = null;
+  for (const db of cachedDbs.values()) {
+    try {
+      db.close();
+    } catch {
+      // ignore
+    }
   }
+  cachedDbs = new Map();
 }
