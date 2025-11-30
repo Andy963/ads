@@ -17,7 +17,7 @@ import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
 import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../utils/fileHandler.js';
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
-import { escapeTelegramMarkdown } from '../../utils/markdown.js';
+import { escapeTelegramMarkdown, escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
 import { injectDelegationGuide, resolveDelegations } from '../../agents/delegation.js';
 import { appendMarkNoteEntry } from '../utils/noteLogger.js';
 import {
@@ -854,11 +854,12 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       const chunkText = chunks[i];
-      await ctx.reply(chunkText, {
-        parse_mode: 'Markdown',
+      const escapedV2 = escapeTelegramMarkdownV2(chunkText);
+      await ctx.reply(escapedV2, {
+        parse_mode: 'MarkdownV2',
         disable_notification: silentNotifications,
       }).catch(async () => {
-        // 如果 Markdown 解析失败，再尝试转义后的文本
+        // 如果 MarkdownV2 解析失败，再尝试旧 Markdown 转义
         const safeChunk = escapeTelegramMarkdown(chunkText);
         await ctx.reply(safeChunk, {
           parse_mode: 'Markdown',
@@ -908,8 +909,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     await finalizeStatusUpdates(escapeTelegramMarkdown(replyText));
     interruptManager.complete(userId);
-    await ctx.reply(replyText, {
-      parse_mode: 'Markdown',
+    const escapedV2 = escapeTelegramMarkdownV2(replyText);
+    await ctx.reply(escapedV2, {
+      parse_mode: 'MarkdownV2',
       disable_notification: silentNotifications,
     }).catch(async () => {
       const safe = escapeTelegramMarkdown(replyText);

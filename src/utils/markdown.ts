@@ -2,12 +2,32 @@ const TELEGRAM_MARKDOWN_ESCAPE = new RegExp("([_*()~`+=|{}!\\[\\]])", "g");
 const TELEGRAM_CODE_ESCAPE = /([`\\])/g;
 // For italic text (_..._), we only need to escape underscores and backslashes
 const TELEGRAM_ITALIC_ESCAPE = /([_\\])/g;
+const TELEGRAM_MARKDOWN_V2_ESCAPE = /([_*\[\]()~`>#+\-=|{}.!\\])/g;
 
 export function escapeTelegramMarkdown(text: string): string {
   if (!text) {
     return "";
   }
   return text.replace(TELEGRAM_MARKDOWN_ESCAPE, "\\$1");
+}
+
+/**
+ * Escape text for Telegram MarkdownV2 while preserving fenced code blocks.
+ * This keeps ```blocks``` intact and only escapes MarkdownV2 specials outside fences.
+ */
+export function escapeTelegramMarkdownV2(text: string): string {
+  if (!text) {
+    return "";
+  }
+  const parts = text.split(/(```[\s\S]*?```)/);
+  return parts
+    .map((part) => {
+      if (part.startsWith("```") && part.endsWith("```")) {
+        return part; // keep code fences as-is
+      }
+      return part.replace(TELEGRAM_MARKDOWN_V2_ESCAPE, "\\$1");
+    })
+    .join("");
 }
 
 export function escapeTelegramInlineCode(text: string): string {
