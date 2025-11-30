@@ -106,9 +106,17 @@ export async function handleCodexMessage(
   const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
   const adapterLogDir = path.join(workspaceRoot, '.ads', 'logs');
   const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
+  const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
   const markNoteEnabled = options?.markNoteEnabled ?? false;
   const silentNotifications = options?.silentNotifications ?? true;
   let logDirReady = false;
+
+  const ensureLogDir = () => {
+    if (!logDirReady) {
+      fs.mkdirSync(adapterLogDir, { recursive: true });
+      logDirReady = true;
+    }
+  };
 
   const logWarning = (message: string, error?: unknown) => {
     const timestamp = new Date().toISOString();
@@ -118,10 +126,7 @@ export async function handleCodexMessage(
         : String(error)
       : '';
     try {
-      if (!logDirReady) {
-        fs.mkdirSync(adapterLogDir, { recursive: true });
-        logDirReady = true;
-      }
+      ensureLogDir();
       fs.appendFileSync(
         adapterLogFile,
         `${timestamp} WARN ${message}${detail ? ` | ${detail}` : ''}\n`,
@@ -130,6 +135,17 @@ export async function handleCodexMessage(
       console.warn('[CodexAdapter] Failed to write adapter log:', fileError);
     }
     console.warn(message, error);
+  };
+
+  const recordFallback = (stage: string, original: string, escapedV2: string) => {
+    try {
+      ensureLogDir();
+      const timestamp = new Date().toISOString();
+      const entry = `${timestamp} ${stage}\nORIGINAL:\n${original}\n---\nMARKDOWN_V2:\n${escapedV2}\n\n`;
+      fs.appendFileSync(fallbackLogFile, entry);
+    } catch (fileError) {
+      console.warn('[CodexAdapter] Failed to record fallback:', fileError);
+    }
   };
 
   // 检查是否有活跃请求
@@ -843,6 +859,14 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     // 发送最终响应
     const renderText = baseOutput;
+    let fallbackNotified = false;
+    const notifyFallback = async () => {
+      if (fallbackNotified) return;
+      fallbackNotified = true;
+      await ctx.reply('⚠️ 本条消息的 Markdown 渲染发生降级，内容已记录便于排查。', {
+        disable_notification: silentNotifications,
+      }).catch(() => {});
+    };
     
     const chunks = chunkMessage(renderText);
     if (chunks.length === 0) {
@@ -859,12 +883,15 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         parse_mode: 'MarkdownV2',
         disable_notification: silentNotifications,
       }).catch(async () => {
+        recordFallback('chunk_markdownv2_failed', chunkText, escapedV2);
+        await notifyFallback();
         // 如果 MarkdownV2 解析失败，再尝试旧 Markdown 转义
         const safeChunk = escapeTelegramMarkdown(chunkText);
         await ctx.reply(safeChunk, {
           parse_mode: 'Markdown',
           disable_notification: silentNotifications,
         }).catch(async () => {
+          recordFallback('chunk_markdown_failed', chunkText, escapedV2);
           // 最后退回纯文本，避免泄露解析错误
           await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch(() => {});
         });
@@ -914,11 +941,13 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       parse_mode: 'MarkdownV2',
       disable_notification: silentNotifications,
     }).catch(async () => {
+      recordFallback('error_markdownv2_failed', replyText, escapedV2);
       const safe = escapeTelegramMarkdown(replyText);
       await ctx.reply(safe, {
         parse_mode: 'Markdown',
         disable_notification: silentNotifications,
       }).catch(async () => {
+        recordFallback('error_markdown_failed', replyText, escapedV2);
         await ctx.reply(replyText, { disable_notification: silentNotifications }).catch(() => {});
       });
     });
