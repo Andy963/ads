@@ -140,6 +140,7 @@ async function main() {
   cleanupAllTempFiles();
 
   const silentNotifications = parseBooleanFlag(process.env.TELEGRAM_SILENT_NOTIFICATIONS, true);
+  logger.info(`[Config] TELEGRAM_SILENT_NOTIFICATIONS env=${process.env.TELEGRAM_SILENT_NOTIFICATIONS}, parsed=${silentNotifications}`);
 
   // 创建管理器
   const sessionManager = new SessionManager(
@@ -185,6 +186,15 @@ async function main() {
     : undefined;
 
   const bot = new Bot(config.botToken, clientConfig ? { client: clientConfig } : undefined);
+
+  // Debug: Log all API calls to see exactly what's being sent
+  bot.api.config.use(async (prev, method, payload, signal) => {
+    if (method === 'sendMessage' || method === 'sendDocument' || method === 'sendPhoto') {
+      const p = payload as Record<string, unknown>;
+      logger.info(`[API Debug] ${method} disable_notification=${p.disable_notification} (type: ${typeof p.disable_notification})`);
+    }
+    return prev(method, payload, signal);
+  });
 
   // 根据配置静音：所有 ctx.reply 默认禁用通知，除非调用方显式覆盖
   bot.use(async (ctx, next) => {

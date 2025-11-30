@@ -96,7 +96,7 @@
 
 ### MCP Server（供其它 Agent / IDE 使用）
 - **启动方式**：在仓库根目录执行 `npm run build && npm run mcp`，即可通过 stdio Transport 启动名为 `ads-mcp` 的 MCP Server。
-- **可用工具**：Server 直接复用 ADS 逻辑并暴露 `ads.status`、`ads.branch`、`ads.log`、`ads.checkout`、`ads.new`、`ads.commit`、`ads.workspace`、`ads.rules`、`ads.sync`、`ads.help` 等工具，参数同 CLI，并支持 `workspace_path` 指定工作区根目录。
+- **可用工具**：Server 直接复用 ADS 逻辑并暴露 `ads_status`、`ads_branch`、`ads_log`、`ads_checkout`、`ads_new`、`ads_commit`、`ads_workspace`、`ads_rules`、`ads_sync`、`ads_help` 等工具，参数同 CLI，并支持 `workspace_path` 指定工作区根目录。
 - **连接方式**：任意支持 MCP stdio 的客户端（如 Claude Code、Cursor、VS Code MCP、Inspector）可配置一个自定义 server，命令为 `npm run mcp`。若客户端支持 HTTP 也可通过额外 transport 包装，但默认提供 stdio。
 - **工作区隔离**：Server 默认使用运行命令时的 `cwd` 作为工作区；跨目录操作需在调用参数里显式传 `workspace_path`（绝对路径）。
 

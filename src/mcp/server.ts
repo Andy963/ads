@@ -99,7 +99,7 @@ const initSchema = workspaceParam.extend({
 });
 
 server.registerTool(
-  "ads.status",
+  "ads_status",
   {
     title: "Get ADS workflow status",
     description: "Retrieve the current workflow status summary for a workspace.",
@@ -112,7 +112,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "ads.init",
+  "ads_init",
   {
     title: "Initialize ADS workspace",
     description: "Create .ads workspace metadata, copy default templates, and ensure specs folders exist.",
@@ -131,7 +131,7 @@ const branchSchema = workspaceParam.extend({
 });
 
 server.registerTool(
-  "ads.branch",
+  "ads_branch",
   {
     title: "List or delete ADS workflows",
     description: "List workflows or delete workflow context/records in a workspace.",
@@ -150,7 +150,7 @@ const logSchema = workspaceParam.extend({
 });
 
 server.registerTool(
-  "ads.log",
+  "ads_log",
   {
     title: "Show workflow commit log",
     description: "List recent workflow commits optionally filtered by workflow ID or title.",
@@ -168,7 +168,7 @@ const checkoutSchema = workspaceParam.extend({
 });
 
 server.registerTool(
-  "ads.checkout",
+  "ads_checkout",
   {
     title: "Checkout a workflow",
     description: "Switch the active workflow by identifier, title, or index.",
@@ -188,7 +188,7 @@ const newWorkflowSchema = workspaceParam.extend({
 });
 
 server.registerTool(
-  "ads.new",
+  "ads_new",
   {
     title: "Create a new workflow",
     description: "Generate a workflow using the unified template (or another template).",
@@ -213,7 +213,7 @@ const commitSchema = workspaceParam.extend({
 });
 
 server.registerTool(
-  "ads.commit",
+  "ads_commit",
   {
     title: "Commit a workflow step",
     description: "Finalize a specified workflow step after approval.",
@@ -226,7 +226,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "ads.workspace",
+  "ads_workspace",
   {
     title: "Inspect workspace",
     description: "Return workspace metadata and paths for the current directory.",
@@ -243,7 +243,7 @@ const rulesSchema = workspaceParam.extend({
 });
 
 server.registerTool(
-  "ads.rules",
+  "ads_rules",
   {
     title: "Read workspace rules",
     description: "List project rules or read the full rules document.",
@@ -260,7 +260,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "ads.sync",
+  "ads_sync",
   {
     title: "Sync graph nodes to files",
     description: "Ensure graph nodes are written to docs/spec directories.",
@@ -275,7 +275,7 @@ server.registerTool(
 const helpSchema = z.object({});
 
 server.registerTool(
-  "ads.help",
+  "ads_help",
   {
     title: "ADS command reference",
     description: "Return the standard ADS command cheat sheet.",

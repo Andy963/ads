@@ -854,14 +854,18 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       const chunkText = chunks[i];
-      await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch(async () => {
-        // 如果仍然失败，尝试发送已转义的文本
+      await ctx.reply(chunkText, {
+        parse_mode: 'Markdown',
+        disable_notification: silentNotifications,
+      }).catch(async () => {
+        // 如果 Markdown 解析失败，再尝试转义后的文本
         const safeChunk = escapeTelegramMarkdown(chunkText);
         await ctx.reply(safeChunk, {
           parse_mode: 'Markdown',
           disable_notification: silentNotifications,
-        }).catch(() => {
-          // swallow to avoid向用户暴露解析错误
+        }).catch(async () => {
+          // 最后退回纯文本，避免泄露解析错误
+          await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch(() => {});
         });
       });
     }
@@ -904,13 +908,16 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     await finalizeStatusUpdates(escapeTelegramMarkdown(replyText));
     interruptManager.complete(userId);
-    await ctx.reply(replyText, { disable_notification: silentNotifications }).catch(async () => {
+    await ctx.reply(replyText, {
+      parse_mode: 'Markdown',
+      disable_notification: silentNotifications,
+    }).catch(async () => {
       const safe = escapeTelegramMarkdown(replyText);
       await ctx.reply(safe, {
         parse_mode: 'Markdown',
         disable_notification: silentNotifications,
-      }).catch(() => {
-        // ignore
+      }).catch(async () => {
+        await ctx.reply(replyText, { disable_notification: silentNotifications }).catch(() => {});
       });
     });
   }
