@@ -12,20 +12,43 @@ export function escapeTelegramMarkdown(text: string): string {
 }
 
 /**
- * Escape text for Telegram MarkdownV2 while preserving fenced code blocks.
- * This keeps ```blocks``` intact and only escapes MarkdownV2 specials outside fences.
+ * Escape text for Telegram MarkdownV2 while preserving code.
+ * - Keeps ``` fenced blocks intact.
+ * - Keeps inline `code` blocks, only escaping backtick/backslash inside them.
+ * - Escapes MarkdownV2 specials elsewhere.
  */
 export function escapeTelegramMarkdownV2(text: string): string {
   if (!text) {
     return "";
   }
-  const parts = text.split(/(```[\s\S]*?```)/);
-  return parts
-    .map((part) => {
-      if (part.startsWith("```") && part.endsWith("```")) {
-        return part; // keep code fences as-is
+
+  const fenceSplit = text.split(/(```[\s\S]*?```)/);
+  return fenceSplit
+    .map((segment) => {
+      if (segment.startsWith("```") && segment.endsWith("```")) {
+        return segment; // preserve fenced code blocks
       }
-      return part.replace(TELEGRAM_MARKDOWN_V2_ESCAPE, "\\$1");
+
+      // Process inline code segments within this non-fence segment
+      const inlineRegex = /`([^`\n]+)`/g;
+      let lastIndex = 0;
+      let result = "";
+      let match: RegExpExecArray | null;
+
+      while ((match = inlineRegex.exec(segment)) !== null) {
+        const before = segment.slice(lastIndex, match.index);
+        result += before.replace(TELEGRAM_MARKDOWN_V2_ESCAPE, "\\$1");
+
+        const codeContent = match[1].replace(/([`\\])/g, "\\$1");
+        result += "`" + codeContent + "`";
+
+        lastIndex = match.index + match[0].length;
+      }
+
+      const tail = segment.slice(lastIndex);
+      result += tail.replace(TELEGRAM_MARKDOWN_V2_ESCAPE, "\\$1");
+
+      return result;
     })
     .join("");
 }
