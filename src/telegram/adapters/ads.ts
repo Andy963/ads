@@ -11,7 +11,7 @@ import { listRules, readRules } from '../../workspace/rulesService.js';
 import { getCurrentWorkspace, initWorkspace } from '../../workspace/service.js';
 import { syncAllNodesToFiles } from '../../graph/service.js';
 import { buildAdsHelpMessage } from '../../workflow/commands.js';
-import { escapeTelegramMarkdown } from '../../utils/markdown.js';
+import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
 import { runReview, skipReview, showReviewReport } from '../../review/service.js';
 import { WorkflowContext } from '../../workspace/context.js';
 
@@ -28,16 +28,22 @@ const REVIEW_LOCK_SAFE_COMMANDS = new Set([
 ]);
 
 export async function handleAdsCommand(ctx: Context, args: string[], options?: { workspacePath?: string }) {
+  const replyMarkdownV2 = async (text: string, extra?: Parameters<Context['reply']>[1]) => {
+    const escaped = escapeTelegramMarkdownV2(text);
+    try {
+      await ctx.reply(escaped, { parse_mode: 'MarkdownV2', ...extra });
+    } catch {
+      await ctx.reply(text, extra);
+    }
+  };
+
   if (args.length === 0) {
-    await ctx.reply(
+    await replyMarkdownV2(
       '用法示例：\n' +
         '/ads.init [name] - 初始化工作区\n' +
         '/ads.status - 查看工作流状态\n' +
         '/ads.new <title> - 创建工作流\n' +
-        '/ads.commit <step> - 定稿步骤',
-      {
-        parse_mode: 'Markdown',
-      }
+        '/ads.commit <step> - 定稿步骤'
     );
     return;
   }
@@ -50,7 +56,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
   try {
     if (reviewLocked && !REVIEW_LOCK_SAFE_COMMANDS.has(qualifiedCommand)) {
-      await ctx.reply('⚠️ 当前工作流正在执行 Review，请等待完成或使用 /ads.review --show 查看进度。', { parse_mode: 'Markdown' });
+      await replyMarkdownV2('⚠️ 当前工作流正在执行 Review，请等待完成或使用 /ads.review --show 查看进度。');
       return;
     }
 
@@ -70,7 +76,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'new': {
         if (commandArgs.length === 0) {
-          await ctx.reply('用法: /ads.new <title>', { parse_mode: 'Markdown' });
+          await replyMarkdownV2('用法: /ads.new <title>');
           return;
         }
         const title = commandArgs.join(' ');
@@ -86,7 +92,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'checkout': {
         if (commandArgs.length === 0) {
-          await ctx.reply('用法: /ads.checkout <workflow>', { parse_mode: 'Markdown' });
+          await replyMarkdownV2('用法: /ads.checkout <workflow>');
           return;
         }
         const identifier = commandArgs.join(' ');
@@ -101,7 +107,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
       case 'commit': {
         if (commandArgs.length === 0) {
-          await ctx.reply('用法: /ads.commit <step>', { parse_mode: 'Markdown' });
+          await replyMarkdownV2('用法: /ads.commit <step>');
           return;
         }
         const stepName = commandArgs.join(' ');
@@ -226,7 +232,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
         if (subCommand === 'skip' || subCommand === '--skip') {
           const reason = commandArgs.slice(1).join(' ');
           if (!reason) {
-            await ctx.reply('请提供跳过 Review 的原因，例如 `/ads.review skip 用户要求立即上线`。', { parse_mode: 'Markdown' });
+            await replyMarkdownV2('请提供跳过 Review 的原因，例如 `/ads.review skip 用户要求立即上线`。');
             break;
           }
           const response = await skipReview({ workspace_path: workspacePath, reason, requestedBy: 'telegram' });
@@ -236,7 +242,10 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
 
         // 先发送提示，让用户知道 Review 正在执行
         const modeLabel = describeReviewMode(includeSpec, commitRef);
-        const statusMessage = await ctx.reply(`🔍 正在执行 Review | 模式: ${modeLabel}`, { disable_notification: true });
+        const statusMessage = await ctx.reply(escapeTelegramMarkdownV2(`🔍 正在执行 Review | 模式: ${modeLabel}`), {
+          disable_notification: true,
+          parse_mode: 'MarkdownV2',
+        });
         const stopSpinner = startReviewSpinner(ctx, statusMessage, modeLabel);
         try {
           const response = await runReview({
@@ -263,13 +272,11 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
       }
 
       default:
-        await ctx.reply(`未知命令: ${command}\n使用 /ads.help 查看可用命令`, {
-          parse_mode: 'Markdown',
-        });
+        await replyMarkdownV2(`未知命令: ${command}\n使用 /ads.help 查看可用命令`);
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    await ctx.reply(`❌ 命令执行失败: ${errorMsg}`);
+    await replyMarkdownV2(`❌ 命令执行失败: ${errorMsg}`);
     console.error('[ADS] Command error:', error);
   }
 }
@@ -327,17 +334,10 @@ function formatAdsResponse(response: unknown): string {
   return JSON.stringify(response, null, 2);
 }
 
-async function replyWithAdsText(ctx: Context, response: unknown, options?: { markdown?: boolean }) {
+async function replyWithAdsText(ctx: Context, response: unknown, _options?: { markdown?: boolean }) {
   const text = formatAdsResponse(response);
-  if (options?.markdown) {
-    await ctx.reply(text, { parse_mode: 'Markdown' }).catch(async () => {
-      await ctx.reply(text);
-    });
-    return;
-  }
-
-  const safeText = escapeTelegramMarkdown(text);
-  await ctx.reply(safeText, { parse_mode: 'Markdown' }).catch(async () => {
+  const escaped = escapeTelegramMarkdownV2(text);
+  await ctx.reply(escaped, { parse_mode: 'MarkdownV2' }).catch(async () => {
     await ctx.reply(text);
   });
 }
@@ -361,9 +361,11 @@ function startReviewSpinner(
 
   const tick = () => {
     frameIndex = (frameIndex + 1) % frames.length;
-    ctx.api.editMessageText(chatId, messageId, updateText()).catch(() => {});
+    const escaped = escapeTelegramMarkdownV2(updateText());
+    ctx.api.editMessageText(chatId, messageId, escaped, { parse_mode: 'MarkdownV2' }).catch(() => {});
   };
-  ctx.api.editMessageText(chatId, messageId, updateText()).catch(() => {});
+  const firstText = escapeTelegramMarkdownV2(updateText());
+  ctx.api.editMessageText(chatId, messageId, firstText, { parse_mode: 'MarkdownV2' }).catch(() => {});
   timer = setInterval(tick, 1000);
 
   return async (finalText?: string) => {
@@ -372,7 +374,8 @@ function startReviewSpinner(
       timer = undefined;
     }
     if (finalText) {
-      await ctx.api.editMessageText(chatId, messageId, finalText).catch(() => {});
+      const escaped = escapeTelegramMarkdownV2(finalText);
+      await ctx.api.editMessageText(chatId, messageId, escaped, { parse_mode: 'MarkdownV2' }).catch(() => {});
     }
   };
 }

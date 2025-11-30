@@ -17,6 +17,7 @@ import { HttpsProxyAgent } from './utils/proxyAgent.js';
 import { getDailyNoteFilePath } from './utils/noteLogger.js';
 import { initializeWorkspace } from '../workspace/detector.js';
 import type { WorkspaceInitStatus } from './utils/workspaceInitChecker.js';
+import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
@@ -526,14 +527,14 @@ async function main() {
       return;
     }
 
-    await ctx.reply(
+    const helpText =
       'ℹ️ ADS 命令已统一为点号形式，请使用以下格式：\n\n' +
       '/ads.status - 查看工作流状态\n' +
       '/ads.new <title> - 创建工作流\n' +
       '/ads.commit <step> - 定稿步骤\n\n' +
-      '请不要使用 `/ads status` 或 `/ads new` 等空格形式。',
-      { parse_mode: 'Markdown' }
-    );
+      '请不要使用 `/ads status` 或 `/ads new` 等空格形式。';
+    const escaped = escapeTelegramMarkdownV2(helpText);
+    await ctx.reply(escaped, { parse_mode: 'MarkdownV2' });
   });
 
   // 处理带图片的消息

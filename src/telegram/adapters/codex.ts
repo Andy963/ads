@@ -17,7 +17,7 @@ import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
 import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../utils/fileHandler.js';
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
-import { escapeTelegramMarkdown, escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
+import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
 import { injectDelegationGuide, resolveDelegations } from '../../agents/delegation.js';
 import { appendMarkNoteEntry } from '../utils/noteLogger.js';
 import {
@@ -216,7 +216,7 @@ export async function handleCodexMessage(
   function indent(text: string): string {
     return text
       .split('\n')
-      .map((line) => `  ${escapeTelegramMarkdown(line)}`)
+      .map((line) => `  ${escapeTelegramMarkdownV2(line)}`)
       .join('\n');
   }
 
@@ -269,12 +269,12 @@ export async function handleCodexMessage(
 
     const icon = PHASE_ICON[event.phase] ?? '💬';
     const rawTitle = event.title || PHASE_FALLBACK[event.phase] || '处理中';
-    const safeTitle = escapeTelegramMarkdown(rawTitle);
+    const safeTitle = escapeTelegramMarkdownV2(rawTitle);
     const lines: string[] = [`${icon} ${safeTitle}`];
 
     if (event.detail && event.phase !== 'command') {
       if (event.phase === 'boot' && event.detail.startsWith('thread#')) {
-        lines.push(`> ${escapeTelegramMarkdown(event.detail)}`);
+        lines.push(`> ${escapeTelegramMarkdownV2(event.detail)}`);
       } else {
         const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
         lines.push(indent(detail));
@@ -293,10 +293,11 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-          await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text, {
-            parse_mode: 'Markdown',
-          });
-          rateLimitUntil = 0;
+      const escaped = escapeTelegramMarkdownV2(text);
+      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, escaped, {
+        parse_mode: 'MarkdownV2',
+      });
+      rateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 400 && error.description?.includes('message is not modified')) {
         return;
@@ -319,12 +320,13 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      const newMsg = await ctx.reply(initialText, {
-        parse_mode: 'Markdown',
+      const escaped = escapeTelegramMarkdownV2(initialText);
+      const newMsg = await ctx.reply(escaped, {
+        parse_mode: 'MarkdownV2',
         disable_notification: silent ?? silentNotifications,
       });
       statusMessageId = newMsg.message_id;
-      statusMessageText = initialText;
+      statusMessageText = escaped;
       rateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 429) {
@@ -603,12 +605,13 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
-      const newMsg = await ctx.reply(text, {
-        parse_mode: 'Markdown',
+      const escaped = escapeTelegramMarkdownV2(text);
+      const newMsg = await ctx.reply(escaped, {
+        parse_mode: 'MarkdownV2',
         disable_notification: silentNotifications,
       });
       commandMessageId = newMsg.message_id;
-      commandMessageText = text;
+      commandMessageText = escaped;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 429) {
@@ -636,10 +639,11 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
-      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text, {
-        parse_mode: 'Markdown',
+      const escaped = escapeTelegramMarkdownV2(text);
+      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, escaped, {
+        parse_mode: 'MarkdownV2',
       });
-      commandMessageText = text;
+      commandMessageText = escaped;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError) {
@@ -885,16 +889,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       }).catch(async () => {
         recordFallback('chunk_markdownv2_failed', chunkText, escapedV2);
         await notifyFallback();
-        // 如果 MarkdownV2 解析失败，再尝试旧 Markdown 转义
-        const safeChunk = escapeTelegramMarkdown(chunkText);
-        await ctx.reply(safeChunk, {
-          parse_mode: 'Markdown',
-          disable_notification: silentNotifications,
-        }).catch(async () => {
-          recordFallback('chunk_markdown_failed', chunkText, escapedV2);
-          // 最后退回纯文本，避免泄露解析错误
-          await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch(() => {});
-        });
+        await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch(() => {});
       });
     }
   } catch (error) {
@@ -934,7 +929,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       logger = undefined;
     }
 
-    await finalizeStatusUpdates(escapeTelegramMarkdown(replyText));
+    await finalizeStatusUpdates(escapeTelegramMarkdownV2(replyText));
     interruptManager.complete(userId);
     const escapedV2 = escapeTelegramMarkdownV2(replyText);
     await ctx.reply(escapedV2, {
@@ -942,14 +937,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       disable_notification: silentNotifications,
     }).catch(async () => {
       recordFallback('error_markdownv2_failed', replyText, escapedV2);
-      const safe = escapeTelegramMarkdown(replyText);
-      await ctx.reply(safe, {
-        parse_mode: 'Markdown',
-        disable_notification: silentNotifications,
-      }).catch(async () => {
-        recordFallback('error_markdown_failed', replyText, escapedV2);
-        await ctx.reply(replyText, { disable_notification: silentNotifications }).catch(() => {});
-      });
+      await ctx.reply(replyText, { disable_notification: silentNotifications }).catch(() => {});
     });
   }
 }
