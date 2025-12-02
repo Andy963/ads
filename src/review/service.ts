@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 import { detectWorkspace } from "../workspace/detector.js";
 import { WorkflowContext } from "../workspace/context.js";
@@ -39,7 +39,7 @@ function readFileSafe(filePath: string): string {
 
 function runGit(workspace: string, args: string[]): string {
   try {
-    return execSync(`git ${args.join(" ")}`, {
+    return execFileSync("git", args, {
       cwd: workspace,
       encoding: "utf-8",
       maxBuffer: 50 * 1024 * 1024, // 50MB buffer
@@ -52,7 +52,7 @@ function runGit(workspace: string, args: string[]): string {
 
 function runGitStrict(workspace: string, args: string[]): string {
   try {
-    return execSync(`git ${args.join(" ")}`, {
+    return execFileSync("git", args, {
       cwd: workspace,
       encoding: "utf-8",
       maxBuffer: 50 * 1024 * 1024,

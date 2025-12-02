@@ -27,6 +27,7 @@
     "start": "node dist/src/ads.js",
     "dev": "tsx watch src/ads.ts",
     "test": "tsx --test tests/**/*.test.ts",
+    "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
     "lint": "eslint . --ext .ts",
     "mcp": "node dist/src/mcp/server.js"
   },
@@ -54,6 +55,7 @@
     "@types/node": "^22.5.0",
     "@typescript-eslint/eslint-plugin": "^8.46.4",
     "@typescript-eslint/parser": "^8.46.4",
+    "c8": "^9.1.0",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
     "tsx": "^4.16.0",

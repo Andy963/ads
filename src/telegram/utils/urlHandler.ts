@@ -53,9 +53,17 @@ export async function detectUrlType(url: string, signal?: AbortSignal): Promise<
     return { url, type: UrlType.WEBPAGE, extension: ext };
   }
   
-  // 通过 HEAD 请求检查 Content-Type
+  // 通过 HEAD 请求检查 Content-Type（附加安全与超时保护）
   try {
-    const response = await fetch(url, { method: 'HEAD', signal });
+    const parsed = new URL(url);
+    await assertUrlSafe(parsed);
+    const { signal: combinedSignal, cleanup } = createTimeoutSignal(signal, 5000);
+    let response;
+    try {
+      response = await fetch(parsed.toString(), { method: 'HEAD', signal: combinedSignal });
+    } finally {
+      cleanup();
+    }
     const contentType = response.headers.get('content-type') || '';
     
     if (contentType.startsWith('image/')) {
@@ -90,43 +98,70 @@ function isPrivateIP(ip: string): boolean {
   return false;
 }
 
+function isIpAddress(hostname: string): boolean {
+  return /^[\d.]+$/.test(hostname) || /^[0-9a-f:]+$/i.test(hostname);
+}
+
+async function assertUrlSafe(parsed: URL): Promise<void> {
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('只支持 HTTP/HTTPS 协议');
+  }
+
+  if (isPrivateIP(parsed.hostname)) {
+    throw new Error('禁止访问内网地址');
+  }
+
+  if (isIpAddress(parsed.hostname)) {
+    return;
+  }
+
+  try {
+    const dns = await import('node:dns/promises');
+    const addresses = await dns.resolve(parsed.hostname);
+    for (const addr of addresses) {
+      if (isPrivateIP(addr)) {
+        throw new Error(`域名 ${parsed.hostname} 解析到内网地址: ${addr}`);
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && (err.message?.includes('内网') || err.message?.includes('解析到'))) {
+      throw err;
+    }
+    const detail = err instanceof Error ? err.message : String(err);
+    // 其他 DNS 错误，阻止访问（安全优先）
+    throw new Error(`DNS 解析失败: ${detail}`);
+  }
+}
+
+function createTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abortHandler = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', abortHandler);
+    }
+  }
+
+  const cleanup = () => {
+    clearTimeout(timeout);
+    if (signal) {
+      signal.removeEventListener('abort', abortHandler);
+    }
+  };
+
+  return { signal: controller.signal, cleanup };
+}
+
 /**
  * 下载 URL 内容
  */
 export async function downloadUrl(url: string, fileName: string, signal?: AbortSignal): Promise<string> {
   // 验证 URL 安全性
   const parsed = new URL(url);
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('只支持 HTTP/HTTPS 协议');
-  }
-  
-  // 检查主机名（直接检查是否为内网 IP）
-  if (isPrivateIP(parsed.hostname)) {
-    throw new Error('禁止访问内网地址');
-  }
-  
-  // DNS 解析检查（防止 DNS 重绑定）
-  // 如果主机名不是 IP 地址，需要解析 DNS
-  const isIPAddress = /^[\d.]+$/.test(parsed.hostname) || /^[0-9a-f:]+$/i.test(parsed.hostname);
-  
-  if (!isIPAddress) {
-    try {
-      const dns = await import('node:dns/promises');
-      const addresses = await dns.resolve(parsed.hostname);
-      for (const addr of addresses) {
-        if (isPrivateIP(addr)) {
-          throw new Error(`域名 ${parsed.hostname} 解析到内网地址: ${addr}`);
-        }
-      }
-    } catch (err) {
-      if (err instanceof Error && (err.message?.includes('内网') || err.message?.includes('解析到'))) {
-        throw err;
-      }
-      const detail = err instanceof Error ? err.message : String(err);
-      // 其他 DNS 错误，阻止访问（安全优先）
-      throw new Error(`DNS 解析失败: ${detail}`);
-    }
-  }
+  await assertUrlSafe(parsed);
   
   if (!existsSync(DOWNLOAD_DIR)) {
     mkdirSync(DOWNLOAD_DIR, { recursive: true });

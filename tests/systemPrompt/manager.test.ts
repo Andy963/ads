@@ -66,4 +66,37 @@ describe("SystemPromptManager rule reinjection", () => {
     assert(injection);
     assert.equal(injection.reason, "rules-only-2");
   });
+
+  it("detects instruction updates and workspace switch", () => {
+    const manager = new SystemPromptManager({
+      workspaceRoot: workspace,
+      reinjection: { enabled: true, turns: 2, rulesTurns: 2 },
+    });
+
+    const initial = manager.maybeInject();
+    assert(initial);
+    assert.equal(initial.reason, "initial");
+
+    // Modify instructions to trigger pending reason
+    const instructionsPath = path.join(workspace, ".ads", "templates", "instructions.md");
+    fs.writeFileSync(instructionsPath, "Updated instructions");
+    manager.completeTurn();
+    const updated = manager.maybeInject();
+    assert(updated);
+    assert.equal(updated.reason, "instructions-updated");
+
+    // Switch workspace and ensure reset
+    const nextWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-next-"));
+    const nextAds = path.join(nextWorkspace, ".ads", "templates");
+    fs.mkdirSync(nextAds, { recursive: true });
+    fs.writeFileSync(path.join(nextAds, "instructions.md"), "Next instructions");
+    fs.writeFileSync(path.join(nextAds, "rules.md"), "Next rules");
+    manager.setWorkspaceRoot(nextWorkspace);
+    manager.completeTurn();
+    const switched = manager.maybeInject();
+    assert(switched);
+    assert.equal(switched.reason, "workspace-changed");
+
+    fs.rmSync(nextWorkspace, { recursive: true, force: true });
+  });
 });
