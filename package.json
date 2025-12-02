@@ -28,6 +28,7 @@
     "dev": "tsx watch src/ads.ts",
     "test": "tsx --test tests/**/*.test.ts",
     "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
+    "web": "node dist/src/web/server.js",
     "lint": "eslint . --ext .ts",
     "mcp": "node dist/src/mcp/server.js"
   },
@@ -48,11 +49,13 @@
     "picocolors": "^1.0.0",
     "toml": "^3.0.0",
     "yaml": "^2.6.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.5.0",
+    "@types/ws": "^8.5.12",
     "@typescript-eslint/eslint-plugin": "^8.46.4",
     "@typescript-eslint/parser": "^8.46.4",
     "c8": "^9.1.0",
