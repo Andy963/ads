@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 
 import { WebSocketServer } from "ws";
+import type { WebSocket, RawData } from "ws";
 
 import { runAdsCommandLine } from "./commandRouter.js";
 import { detectWorkspace } from "../workspace/detector.js";
@@ -12,6 +13,8 @@ import { resolveClaudeAgentConfig } from "../agents/config.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 import { SystemPromptManager, resolveReinjectionConfig } from "../systemPrompt/manager.js";
 import { createLogger } from "../utils/logger.js";
+import type { AgentAdapter } from "../agents/types.js";
+import type { AgentEvent } from "../codex/events.js";
 
 interface WsMessage {
   type: string;
@@ -157,7 +160,7 @@ async function start(): Promise<void> {
     reinjection: resolveReinjectionConfig("WEB"),
     logger,
   });
-  const adapters = [
+  const adapters: AgentAdapter[] = [
     new CodexAgentAdapter({
       workingDirectory: workspaceRoot,
       systemPromptManager,
@@ -174,7 +177,7 @@ async function start(): Promise<void> {
     initialWorkingDirectory: workspaceRoot,
   });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws: WebSocket) => {
     log("client connected");
     ws.send(
       JSON.stringify({
@@ -184,7 +187,7 @@ async function start(): Promise<void> {
       }),
     );
 
-    ws.on("message", async (data) => {
+    ws.on("message", async (data: RawData) => {
       let parsed: WsMessage;
       try {
         parsed = JSON.parse(String(data)) as WsMessage;
@@ -193,13 +196,8 @@ async function start(): Promise<void> {
         return;
       }
 
-      if (parsed.type !== "command") {
-        ws.send(JSON.stringify({ type: "error", message: "Unsupported message type" }));
-        return;
-      }
-
-      const command = sanitizeInput(parsed.payload);
       const isPrompt = parsed.type === "prompt";
+      const isCommand = parsed.type === "command";
 
       if (isPrompt) {
         const promptText = sanitizeInput(parsed.payload);
@@ -212,11 +210,18 @@ async function start(): Promise<void> {
           ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
           return;
         }
-        const unsubscribe = orchestrator.onEvent((event) => {
-          ws.send(JSON.stringify({ type: "event", phase: event.phase, title: event.title, detail: event.detail }));
+        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+          const payload: Record<string, unknown> = {
+            type: "event",
+            phase: event.phase,
+            title: event.title,
+          };
+          if (event.detail) payload.detail = event.detail;
+          if (event.delta) payload.delta = event.delta;
+          ws.send(JSON.stringify(payload));
         });
         try {
-          const result = await orchestrator.send(promptText, { streaming: false });
+          const result = await orchestrator.send(promptText, { streaming: true });
           ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
         } catch (error) {
           ws.send(JSON.stringify({ type: "error", message: (error as Error).message ?? String(error) }));
@@ -226,6 +231,12 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (!isCommand) {
+        ws.send(JSON.stringify({ type: "error", message: "Unsupported message type" }));
+        return;
+      }
+
+      const command = sanitizeInput(parsed.payload);
       if (!command) {
         ws.send(JSON.stringify({ type: "error", message: "Payload must be a command string" }));
         return;

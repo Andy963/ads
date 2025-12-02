@@ -29,6 +29,7 @@ export interface AgentEvent {
   phase: AgentPhase;
   title: string;
   detail?: string;
+  delta?: string;
   timestamp: number;
   raw: ThreadEvent;
 }
@@ -133,10 +134,21 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
     case "mcp_tool_call":
       return mapToolCall(event, item, timestamp);
     case "agent_message":
+      if (event.type === "item.updated" && typeof (item as any).text === "string" && (item as any).text.trim()) {
+        return {
+          phase: "responding",
+          title: "生成回复",
+          detail: undefined,
+          delta: (item as any).text as string,
+          timestamp,
+          raw: event,
+        };
+      }
       return event.type === "item.completed"
         ? {
             phase: "responding",
             title: "生成回复",
+            detail: typeof (item as any).text === "string" ? truncate((item as any).text as string) : undefined,
             timestamp,
             raw: event,
           }

@@ -29,6 +29,7 @@
     "test": "tsx --test tests/**/*.test.ts",
     "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
     "web": "node dist/src/web/server.js",
+    "services": "bash scripts/services.sh",
     "lint": "eslint . --ext .ts",
     "mcp": "node dist/src/mcp/server.js"
   },
