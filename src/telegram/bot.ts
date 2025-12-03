@@ -1,3 +1,4 @@
+import '../utils/env.js';
 import '../utils/logSink.js';
 
 import { Bot, type Context } from 'grammy';

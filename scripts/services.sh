@@ -58,11 +58,13 @@ start_service() {
 
   echo "[$svc] starting..."
   local log="$LOG_DIR/$svc.log"
-  (cd "$ROOT" && nohup bash -c "$cmd" >"$log" 2>&1 & echo $! >"$RUN_DIR/$svc.pid")
+  local pid_file="$RUN_DIR/$svc.pid"
+  (cd "$ROOT" && nohup bash -c "exec $cmd" >"$log" 2>&1 & echo $! >"$pid_file")
   sleep 0.5
   if pid=$(is_running "$svc"); then
     echo "[$svc] started (pid $pid), log: $log"
   else
+    rm -f "$pid_file"
     echo "[$svc] failed to start; see $log"
     return 1
   fi

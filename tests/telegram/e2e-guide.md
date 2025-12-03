@@ -8,8 +8,8 @@
 ## Setup
 ```bash
 # 1. Configure test environment
-cp .env.telegram .env.telegram.test
-vim .env.telegram.test  # Add your test bot token and user ID
+cp .env .env.test
+vim .env.test  # Add your test bot token and user ID
 
 # 2. Start bot in test mode
 TELEGRAM_BOT_TOKEN=<test-token> \

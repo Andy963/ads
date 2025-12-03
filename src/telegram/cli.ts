@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import '../utils/env.js';
 import '../utils/logSink.js';
 
 import { spawn } from 'child_process';
@@ -63,7 +64,7 @@ Environment Variables:
   TELEGRAM_PROXY_URL         Optional HTTP proxy (e.g. http://127.0.0.1:7897)
 
 Quick Start:
-  1. Create .env.telegram file with your configuration
+  1. Create .env file with your configuration (shared by Telegram & web)
   2. Run: ads-telegram start
 
 Documentation:

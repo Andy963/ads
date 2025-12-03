@@ -92,6 +92,11 @@ Missing guides referenced elsewhere will be restored once the documentation migr
    npm start
    ```
 
+### Environment loading
+
+- CLI、Web Console、Telegram Bot 会自动读取工作区根目录的 `.env`，并在存在时加载 `.env.local` 作为覆盖，无需手动 `source`。
+- 建议将共享变量（如 `TELEGRAM_*`、`ADS_WEB_HOST`/`ADS_WEB_PORT`、`ADS_WEB_ALLOWED_DIRS`，可与 `TELEGRAM_ALLOWED_DIRS` 对齐）写在 `.env`，机器专属配置放 `.env.local`。
+
 ### Runtime requirements
 
 - Node.js 18 or newer (ESM + top-level await support).
@@ -170,11 +175,18 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 export TELEGRAM_BOT_TOKEN="your-bot-token"
 export TELEGRAM_ALLOWED_USERS="your-telegram-user-id"
 
-# 启动 Bot
-npm run telegram
-# 或
-ads-telegram
+# 启动 Bot（构建后，复用根目录 .env）
+npm run services -- start telegram
+# 或使用 CLI 入口
+ads-telegram start
+
+# 停止 / 状态
+npm run services -- stop telegram
+npm run services -- status
 ```
+
+> 推荐：把上述配置写入根目录的 `.env`，Telegram 与 Web Console 会共用这一份环境变量。若需要让 Web 端与 Bot 使用相同的目录白名单，设置 `ADS_WEB_ALLOWED_DIRS` 与 `TELEGRAM_ALLOWED_DIRS` 一致。
+> 旧的 `telegram-bot.sh` 已移除，统一通过 `npm run services -- <start|stop|status>` 管理服务。
 
 **常用命令**：
 | 命令 | 说明 |
@@ -248,7 +260,7 @@ Security is important to us. If you discover a security vulnerability, please fo
 
 - Never commit `.env` or `.env.*` files to version control
 - Use `.env.example` as a template
-- Set proper file permissions for sensitive files (`chmod 600 .env.telegram`)
+- Set proper file permissions for sensitive files (`chmod 600 .env`)
 - Configure `TELEGRAM_ALLOWED_USERS` and `TELEGRAM_ALLOWED_DIRS` appropriately
 - If your environment requires a proxy, set `TELEGRAM_PROXY_URL` (e.g. `http://127.0.0.1:7897`) instead of hardcoding it in code
 - Revoke leaked tokens immediately via [@BotFather](https://t.me/BotFather)

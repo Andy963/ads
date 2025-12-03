@@ -64,7 +64,7 @@ We appreciate security researchers who help keep ADS safe:
 
 - Set proper permissions on sensitive files:
   ```bash
-  chmod 600 .env.telegram
+  chmod 600 .env
   ```
 - Ensure the Telegram bot script validates file permissions before starting
 
@@ -125,7 +125,8 @@ If you accidentally commit a secret:
 
 2. **SQLite Database**: The `.ads/ads.db` file may contain sensitive information. Ensure it's not committed to version control (covered by `.gitignore`).
 
-3. **Environment Files**: Multiple `.env.*` files are used. Ensure all are properly ignored by Git.
+3. **Environment Files**: `.env` and any overrides contain secrets. Ensure all `.env*` files stay out of Git.
+   - `.env` is shared by web and Telegram; keep any overrides (e.g., `.env.local`) out of version control.
 
 ### Mitigation
 

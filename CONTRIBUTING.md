@@ -36,7 +36,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
    ```bash
    npm install
    ```
-4. Create a `.env.telegram` file based on `.env.example` (if working on Telegram features)
+4. Create a `.env` file based on `.env.example` (shared by Telegram/Web)
 5. Build the project:
    ```bash
    npm run build
