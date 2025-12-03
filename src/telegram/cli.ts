@@ -57,9 +57,9 @@ Commands:
 Environment Variables:
   TELEGRAM_BOT_TOKEN          Your Telegram bot token (required)
   TELEGRAM_ALLOWED_USERS      Comma-separated user IDs (required)
-  TELEGRAM_ALLOWED_DIRS       Comma-separated directory paths
-  TELEGRAM_MAX_RPM           Max requests per minute (default: 10)
-  TELEGRAM_SANDBOX_MODE       Sandbox mode: read-only|workspace-write|full-access
+  ALLOWED_DIRS                Comma-separated directory paths (shared by all endpoints)
+  TELEGRAM_MAX_RPM            Max requests per minute (default: 10)
+  SANDBOX_MODE                Sandbox mode: read-only|workspace-write|danger-full-access (shared)
   TELEGRAM_MODEL             AI model to use
   TELEGRAM_PROXY_URL         Optional HTTP proxy (e.g. http://127.0.0.1:7897)
 

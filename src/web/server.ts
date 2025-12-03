@@ -4,6 +4,7 @@ import fs from "node:fs";
 
 import { WebSocketServer } from "ws";
 import type { WebSocket, RawData } from "ws";
+import childProcess from "node:child_process";
 
 import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
@@ -27,6 +28,9 @@ interface WsMessage {
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "0.0.0.0";
+const TOKEN = (process.env.ADS_WEB_TOKEN ?? "").trim();
+const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
+const IDLE_MINUTES = Math.max(1, Number(process.env.ADS_WEB_IDLE_MINUTES ?? 15));
 const logger = createLogger("WebSocket");
 
 function log(...args: unknown[]): void {
@@ -122,7 +126,7 @@ async function ensureWebPidFile(workspaceRoot: string): Promise<string> {
 }
 
 function resolveAllowedDirs(workspaceRoot: string): string[] {
-  const raw = process.env.ADS_WEB_ALLOWED_DIRS;
+  const raw = process.env.ALLOWED_DIRS;
   const list = (raw ? raw.split(",") : [workspaceRoot]).map((dir) => dir.trim()).filter(Boolean);
   const resolved = list.map((dir) => path.resolve(dir));
   return resolved.length > 0 ? resolved : [workspaceRoot];
@@ -130,13 +134,14 @@ function resolveAllowedDirs(workspaceRoot: string): string[] {
 
 function createHttpServer(): http.Server {
   const server = http.createServer((req, res) => {
-    if (req.url === "/" && req.method === "GET") {
+    if (req.method === "GET") {
+      if (req.url?.startsWith("/healthz")) {
+        res.writeHead(200).end("ok");
+        return;
+      }
+      // 任何 GET 路径统一返回控制台，便于反代子路径
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(renderLandingPage());
-      return;
-    }
-    if (req.url === "/healthz") {
-      res.writeHead(200).end("ok");
       return;
     }
     res.writeHead(404).end("Not Found");
@@ -169,8 +174,40 @@ function getWorkspaceInfo(): string {
   }
 }
 
+function getWorkspaceState(workspaceRoot: string): { path: string; rules: string; modified: string[] } {
+  const rulesPath = path.join(workspaceRoot, ".ads", "rules.md");
+  let modified: string[] = [];
+  try {
+    const gitStatus = childProcess.execSync("git status --porcelain", {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    modified = gitStatus
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => line.replace(/^[A-Z?]{1,2}\s+/, ""));
+  } catch {
+    modified = [];
+  }
+  return {
+    path: workspaceRoot,
+    rules: rulesPath,
+    modified,
+  };
+}
+
+function sendWorkspaceState(ws: WebSocket, workspaceRoot: string): void {
+  try {
+    const state = getWorkspaceState(workspaceRoot);
+    ws.send(JSON.stringify({ type: "workspace", data: state }));
+  } catch {
+    // ignore send errors
+  }
+}
+
 function renderLandingPage(): string {
-  const info = getWorkspaceInfo();
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -198,8 +235,13 @@ function renderLandingPage(): string {
     .ws-indicator.connecting { background: #f59e0b; box-shadow: 0 0 0 2px #fef3c7; }
     .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; }
     header h1 { margin: 0; font-size: 18px; }
-    header p { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
-    main { max-width: 960px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; align-items: flex-start; }
+    #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
+    .sidebar-title { font-size: 13px; font-weight: 600; margin: 0; color: var(--muted); }
+    .workspace-list { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+    .workspace-list .path { color: var(--text); word-break: break-all; }
+    .files-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); max-height: 260px; overflow-y: auto; }
+    #console { flex: 1; display: flex; flex-direction: column; gap: 12px; }
     #log { flex: 1 1 0; min-height: 60vh; max-height: 74vh; overflow-y: auto; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; }
     .msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; align-items: flex-start; }
     .msg.user { align-items: flex-start; }
@@ -220,6 +262,14 @@ function renderLandingPage(): string {
     .cmd-details summary { cursor: pointer; color: var(--accent); }
     #form { margin-top: auto; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); }
     #input { width: 100%; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; min-height: 64px; max-height: 200px; resize: vertical; line-height: 1.5; }
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
+    .overlay.hidden { display: none; }
+    .overlay .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 20px 22px; width: 340px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; }
+    .overlay h2 { margin: 0; font-size: 18px; }
+    .overlay p { margin: 0; color: #4b5563; font-size: 13px; }
+    .overlay .row { display: flex; gap: 8px; }
+    .overlay input { flex: 1; padding: 10px 12px; font-size: 14px; border: 1px solid #d6d9e0; border-radius: 8px; }
+    .overlay button { padding: 11px 14px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
     @media (max-width: 640px) {
       main { padding: 12px 10px 16px; }
       #log { min-height: 55vh; }
@@ -232,24 +282,48 @@ function renderLandingPage(): string {
       <span id="ws-indicator" class="ws-indicator" title="WebSocket disconnected" aria-label="WebSocket disconnected"></span>
       <h1>ADS Web Console</h1>
     </div>
-    <p>${info}</p>
   </header>
   <main>
-    <div id="log"></div>
-    <form id="form">
-      <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
-    </form>
+    <aside id="sidebar">
+      <h3 class="sidebar-title">Workspace</h3>
+      <div id="workspace-info" class="workspace-list"></div>
+      <h3 class="sidebar-title">Modified Files</h3>
+      <div id="modified-files" class="files-list"></div>
+    </aside>
+    <section id="console">
+      <div id="log"></div>
+      <form id="form">
+        <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
+      </form>
+    </section>
   </main>
+  <div id="token-overlay" class="overlay">
+    <div class="card">
+      <h2>输入访问口令</h2>
+      <p>未提供口令，无法连接</p>
+      <div class="row">
+        <input id="token-input" type="password" placeholder="ADS_WEB_TOKEN" autofocus />
+        <button id="token-submit" type="button">连接</button>
+      </div>
+    </div>
+  </div>
   <script>
     const logEl = document.getElementById('log');
     const inputEl = document.getElementById('input');
     const formEl = document.getElementById('form');
     const wsIndicator = document.getElementById('ws-indicator');
+    const workspaceInfoEl = document.getElementById('workspace-info');
+    const modifiedFilesEl = document.getElementById('modified-files');
+    const tokenOverlay = document.getElementById('token-overlay');
+    const tokenInput = document.getElementById('token-input');
+    const tokenSubmit = document.getElementById('token-submit');
+    const idleMinutes = ${IDLE_MINUTES};
     let ws;
     let sendQueue = [];
     let streamState = null;
     let autoScroll = true;
     let commandMessage = null;
+    let idleTimer = null;
 
     function escapeHtml(str) {
       if (!str) return '';
@@ -400,11 +474,40 @@ function renderLandingPage(): string {
       wsIndicator.setAttribute('aria-label', label);
     }
 
+    const TOKEN_KEY = 'ADS_WEB_TOKEN';
+
+    function resetIdleTimer() {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+      }
+      idleTimer = setTimeout(() => {
+        const reason = '空闲超过 ' + idleMinutes + ' 分钟，已锁定';
+        sessionStorage.removeItem(TOKEN_KEY);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.close(4400, "idle timeout");
+        }
+        tokenOverlay.classList.remove('hidden');
+        tokenInput.value = '';
+        appendMessage('ai', reason, { status: true });
+        setWsState('disconnected');
+      }, idleMinutes * 60 * 1000);
+    }
+
     function connect() {
-      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+      let token = sessionStorage.getItem(TOKEN_KEY) || '';
+      if (!token) {
+        tokenOverlay.classList.remove('hidden');
+        tokenInput.focus();
+        return;
+      }
+      tokenOverlay.classList.add('hidden');
+      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
       setWsState('connecting');
-      ws = new WebSocket(url);
-      ws.onopen = () => setWsState('connected');
+      ws = new WebSocket(url, ['ads-token', token]);
+      ws.onopen = () => {
+        setWsState('connected');
+        resetIdleTimer();
+      };
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
@@ -417,6 +520,11 @@ function renderLandingPage(): string {
             return;
           } else if (msg.type === 'welcome') {
             setWsState('connected');
+            if (msg.workspace) {
+              renderWorkspaceInfo(msg.workspace);
+            }
+          } else if (msg.type === 'workspace') {
+            renderWorkspaceInfo(msg.data);
           } else if (msg.type === 'error') {
             if (sendQueue.length > 0) {
               sendQueue.shift();
@@ -433,7 +541,21 @@ function renderLandingPage(): string {
           appendMessage('ai', ev.data, { status: true });
         }
       };
-      ws.onclose = () => setWsState('disconnected');
+      ws.onclose = (ev) => {
+        setWsState('disconnected');
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+        if (ev.code === 4401) {
+          sessionStorage.removeItem(TOKEN_KEY);
+          tokenOverlay.classList.remove('hidden');
+          tokenInput.value = '';
+          appendMessage('ai', '口令无效或已过期，请重新输入', { status: true });
+        } else if (ev.code === 4409) {
+          appendMessage('ai', '已有新连接，当前会话被替换', { status: true });
+        }
+        renderWorkspaceInfo(null);
+      };
       ws.onerror = (err) => {
         setWsState('disconnected');
         appendMessage('ai', 'WS error: ' + err.message, { status: true });
@@ -449,6 +571,7 @@ function renderLandingPage(): string {
           formEl.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
         }
       }
+      resetIdleTimer();
     });
 
     formEl.addEventListener('submit', (e) => {
@@ -466,6 +589,7 @@ function renderLandingPage(): string {
       }
       inputEl.value = '';
       inputEl.focus();
+      resetIdleTimer();
     });
 
     function ensureStream() {
@@ -483,6 +607,7 @@ function renderLandingPage(): string {
       stream.buffer += delta;
       stream.message.bubble.textContent = stream.buffer;
       autoScrollIfNeeded();
+      resetIdleTimer();
     }
 
     function appendCommandResult(ok, output) {
@@ -524,7 +649,59 @@ function renderLandingPage(): string {
         return;
       }
       finalizeStream(msg.output || '');
+      resetIdleTimer();
     }
+
+    function renderWorkspaceInfo(info) {
+      if (!workspaceInfoEl) return;
+      workspaceInfoEl.innerHTML = '';
+      if (modifiedFilesEl) modifiedFilesEl.innerHTML = '';
+      if (!info) return;
+      const paths = [];
+      if (info.path) paths.push(info.path);
+      if (info.rules) paths.push('Rules: ' + info.rules);
+      paths.forEach((line) => {
+        const span = document.createElement('span');
+        span.className = 'path';
+        span.textContent = line;
+        workspaceInfoEl.appendChild(span);
+      });
+      if (modifiedFilesEl && Array.isArray(info.modified)) {
+        if (info.modified.length === 0) {
+          const span = document.createElement('span');
+          span.textContent = '（无变更）';
+          span.style.color = 'var(--muted)';
+          modifiedFilesEl.appendChild(span);
+        } else {
+          info.modified.slice(0, 50).forEach((file) => {
+            const span = document.createElement('span');
+            span.textContent = file;
+            modifiedFilesEl.appendChild(span);
+          });
+          if (info.modified.length > 50) {
+            const span = document.createElement('span');
+            span.textContent = '... 共 ' + info.modified.length + ' 个';
+            span.style.color = 'var(--muted)';
+            modifiedFilesEl.appendChild(span);
+          }
+        }
+      }
+    }
+
+    tokenSubmit.addEventListener('click', () => {
+      const token = tokenInput.value.trim();
+      if (!token) return;
+      sessionStorage.setItem(TOKEN_KEY, token);
+      tokenOverlay.classList.add('hidden');
+      connect();
+    });
+
+    tokenInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        tokenSubmit.click();
+      }
+    });
 
     connect();
   </script>
@@ -539,8 +716,28 @@ async function start(): Promise<void> {
   const workspaceRoot = detectWorkspace();
   await ensureWebPidFile(workspaceRoot);
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
+  const clients: Set<WebSocket> = new Set();
 
-  wss.on("connection", (ws: WebSocket) => {
+  wss.on("connection", (ws: WebSocket, req) => {
+    const protocolHeader = req.headers["sec-websocket-protocol"];
+    const wsToken =
+      Array.isArray(protocolHeader) && protocolHeader.length > 0
+        ? protocolHeader[protocolHeader.length - 1]
+        : typeof protocolHeader === "string"
+          ? protocolHeader.split(",").map((p) => p.trim()).pop()
+          : undefined;
+    if (TOKEN && wsToken !== TOKEN) {
+      ws.close(4401, "unauthorized");
+      return;
+    }
+
+    if (clients.size >= MAX_CLIENTS) {
+      const [first] = clients;
+      first?.close(4409, "replaced by new connection");
+      clients.delete(first as WebSocket);
+    }
+    clients.add(ws);
+
     const directoryManager = new DirectoryManager(allowedDirs);
     const userId = 0;
     let currentCwd = directoryManager.getUserCwd(userId);
@@ -572,7 +769,7 @@ async function start(): Promise<void> {
       JSON.stringify({
         type: "welcome",
         message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
-        workspace: getWorkspaceInfo(),
+        workspace: getWorkspaceState(currentCwd),
       }),
     );
 
@@ -621,6 +818,7 @@ async function start(): Promise<void> {
         try {
           const result = await orchestrator.send(promptText, { streaming: true });
           ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
+          sendWorkspaceState(ws, currentCwd);
         } catch (error) {
           ws.send(JSON.stringify({ type: "error", message: (error as Error).message ?? String(error) }));
         } finally {
@@ -679,6 +877,7 @@ async function start(): Promise<void> {
           );
         }
         ws.send(JSON.stringify({ type: "result", ok: true, output: message }));
+        sendWorkspaceState(ws, currentCwd);
         return;
       }
 
@@ -688,6 +887,7 @@ async function start(): Promise<void> {
         process.env.AD_WORKSPACE = currentCwd;
         const result = await runAdsCommandLine(command);
         ws.send(JSON.stringify({ type: "result", ok: result.ok, output: result.output }));
+        sendWorkspaceState(ws, currentCwd);
       } catch (error) {
         ws.send(
           JSON.stringify({
@@ -705,6 +905,7 @@ async function start(): Promise<void> {
     });
 
     ws.on("close", () => log("client disconnected"));
+    ws.on("close", () => clients.delete(ws));
   });
 
   server.listen(PORT, HOST, () => {

@@ -37,7 +37,7 @@ export function loadTelegramConfig(): TelegramConfig {
     throw new Error('TELEGRAM_ALLOWED_USERS must contain at least one user ID');
   }
 
-  const allowedDirsStr = process.env.TELEGRAM_ALLOWED_DIRS || process.cwd();
+  const allowedDirsStr = process.env.ALLOWED_DIRS || process.cwd();
   const allowedDirs = allowedDirsStr.split(',').map(dir => dir.trim()).filter(Boolean);
 
   const maxRequestsPerMinute = parseInt(process.env.TELEGRAM_MAX_RPM || '10', 10);
@@ -55,10 +55,10 @@ export function loadTelegramConfig(): TelegramConfig {
     throw new Error('TELEGRAM_STREAM_UPDATE_INTERVAL must be a positive number');
   }
 
-  const sandboxMode = (process.env.TELEGRAM_SANDBOX_MODE || 'workspace-write') as SandboxMode;
+  const sandboxMode = (process.env.SANDBOX_MODE || 'workspace-write') as SandboxMode;
   const validModes: SandboxMode[] = ['read-only', 'workspace-write', 'danger-full-access'];
   if (!validModes.includes(sandboxMode)) {
-    throw new Error(`Invalid TELEGRAM_SANDBOX_MODE: ${sandboxMode}. Must be one of: ${validModes.join(', ')}`);
+    throw new Error(`Invalid SANDBOX_MODE: ${sandboxMode}. Must be one of: ${validModes.join(', ')}`);
   }
 
   const defaultModel = process.env.TELEGRAM_MODEL; // 可选，不设置则使用 SDK 默认
