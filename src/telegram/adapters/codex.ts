@@ -29,60 +29,60 @@ import {
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 
-function chunkMessage(text: string, maxLen = 3900): string[] {
-  if (text.length <= maxLen) {
-    return [text];
-  }
+  function chunkMessage(text: string, maxLen = 3900): string[] {
+    if (text.length <= maxLen) {
+      return [text];
+    }
 
-  const chunks: string[] = [];
-  const lines = text.split('\n');
-  let current = '';
-  let openFence: string | null = null;
+    const chunks: string[] = [];
+    const lines = text.split('\n');
+    let current = '';
+    let openFence: string | null = null;
 
-  const appendLine = (line: string) => {
-    current = current ? `${current}\n${line}` : line;
-  };
+    const appendLine = (line: string) => {
+      current = current ? `${current}\n${line}` : line;
+    };
 
-  const flushChunk = () => {
-    if (!current.trim()) {
+    const flushChunk = () => {
+      if (!current.trim()) {
+        current = '';
+        return;
+      }
+      chunks.push(current);
       current = '';
-      return;
-    }
-    chunks.push(current);
-    current = '';
-  };
+    };
 
-  for (const line of lines) {
-    const prospective = current ? current.length + 1 + line.length : line.length;
-    if (prospective + (openFence ? 4 : 0) > maxLen && current) {
-      if (openFence) {
-        current += '\n```';
+    for (const line of lines) {
+      const prospective = current ? current.length + 1 + line.length : line.length;
+      if (prospective + (openFence ? 4 : 0) > maxLen && current) {
+        if (openFence) {
+          current += '\n```';
+        }
+        flushChunk();
+        if (openFence) {
+          current = openFence;
+        }
       }
-      flushChunk();
-      if (openFence) {
-        current = openFence;
-      }
-    }
 
-    appendLine(line);
+      appendLine(line);
 
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith('```')) {
-      if (openFence) {
-        openFence = null;
-      } else {
-        const fence = trimmed.match(/^```[^\s]*?/);
-        openFence = fence ? fence[0] : '```';
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith('```')) {
+        if (openFence) {
+          openFence = null;
+        } else {
+          const fence = trimmed.match(/^```[^\s]*?/);
+          openFence = fence ? fence[0] : '```';
+        }
       }
     }
+
+    if (openFence) {
+      current += '\n```';
+    }
+    flushChunk();
+    return chunks;
   }
-
-  if (openFence) {
-    current += '\n```';
-  }
-  flushChunk();
-  return chunks;
-}
 
 function truncateForStatus(text: string, limit = 96): string {
   const trimmed = text.trim().replace(/\s+/g, ' ');
@@ -605,13 +605,11 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
-      const escaped = escapeTelegramMarkdownV2(text);
-      const newMsg = await ctx.reply(escaped, {
-        parse_mode: 'MarkdownV2',
+      const newMsg = await ctx.reply(text, {
         disable_notification: silentNotifications,
       });
       commandMessageId = newMsg.message_id;
-      commandMessageText = escaped;
+      commandMessageText = text;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 429) {
@@ -639,11 +637,8 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
-      const escaped = escapeTelegramMarkdownV2(text);
-      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, escaped, {
-        parse_mode: 'MarkdownV2',
-      });
-      commandMessageText = escaped;
+      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text);
+      commandMessageText = text;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
       if (error instanceof GrammyError) {
@@ -877,11 +872,15 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       chunks.push('');
     }
 
+    const sentChunks = new Set<string>();
     for (let i = 0; i < chunks.length; i++) {
       if (i > 0) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       const chunkText = chunks[i];
+      if (sentChunks.has(chunkText)) {
+        continue;
+      }
       const escapedV2 = escapeTelegramMarkdownV2(chunkText);
       await ctx.reply(escapedV2, {
         parse_mode: 'MarkdownV2',
@@ -891,6 +890,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         await notifyFallback();
         await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch(() => {});
       });
+      sentChunks.add(chunkText);
     }
   } catch (error) {
     if (unsubscribe) {

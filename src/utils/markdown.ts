@@ -2,8 +2,8 @@ const TELEGRAM_MARKDOWN_ESCAPE = new RegExp("([_*()~`+=|{}!\\[\\]])", "g");
 const TELEGRAM_CODE_ESCAPE = /([`\\])/g;
 // For italic text (_..._), we only need to escape underscores and backslashes
 const TELEGRAM_ITALIC_ESCAPE = /([_\\])/g;
-// Note: '#' is intentionally not escaped to avoid visible backslashes in IDs (e.g., thread#...).
-const TELEGRAM_MARKDOWN_V2_ESCAPE = /([_*[\]()~`>+\-=|{}.!\\])/g;
+// Escape MarkdownV2 specials; include '#' to avoid parse errors in thread IDs.
+const TELEGRAM_MARKDOWN_V2_ESCAPE = /([_*[\]()~`>+\-=|{}.!#\\])/g;
 
 export function escapeTelegramMarkdown(text: string): string {
   if (!text) {

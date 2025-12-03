@@ -160,20 +160,6 @@ function sanitizeInput(input: unknown): string | null {
   return null;
 }
 
-function getWorkspaceInfo(): string {
-  try {
-    const workspace = detectWorkspace();
-    const adsRules = path.join(workspace, ".ads", "rules.md");
-    return [
-      `Workspace: ${workspace}`,
-      `Rules: ${fs.existsSync(adsRules) ? adsRules : "missing"}`,
-      `PID: ${process.pid}`,
-    ].join(" | ");
-  } catch (error) {
-    return `Workspace detection failed: ${(error as Error).message}`;
-  }
-}
-
 function getWorkspaceState(workspaceRoot: string): { path: string; rules: string; modified: string[] } {
   const rulesPath = path.join(workspaceRoot, ".ads", "rules.md");
   let modified: string[] = [];
@@ -232,8 +218,9 @@ function renderLandingPage(): string {
     header { padding: 14px 18px; background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 1px 3px rgba(15,23,42,0.06); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
     .header-row { display: flex; align-items: center; gap: 8px; }
     .ws-indicator { width: 12px; height: 12px; border-radius: 999px; background: #ef4444; border: 1px solid #e5e7eb; box-shadow: 0 0 0 2px #fff; }
-    .ws-indicator.connecting { background: #f59e0b; box-shadow: 0 0 0 2px #fef3c7; }
-    .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; }
+    .ws-indicator.connecting { background: #f59e0b; box-shadow: 0 0 0 2px #fef3c7; animation: pulse 1s infinite alternate; }
+    .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; animation: pulse 1s infinite alternate-reverse; }
+    @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
     header h1 { margin: 0; font-size: 18px; }
     main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; align-items: flex-start; }
     #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
@@ -910,7 +897,7 @@ async function start(): Promise<void> {
 
   server.listen(PORT, HOST, () => {
     log(`WebSocket server listening on ws://${HOST}:${PORT}`);
-    log(getWorkspaceInfo());
+    log(`Workspace: ${workspaceRoot}`);
   });
 }
 
