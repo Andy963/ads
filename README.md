@@ -8,6 +8,7 @@ AI-driven specification-based development workflow automation with Telegram bot 
 ## ✨ Features
 
 - 📱 **Telegram Bot**: Remote control your development workflow via Telegram from anywhere
+- 🌐 **Web Console**: Browser-based console with streaming responses and directory safeguards
 - 🔄 **Workflow Automation**: Template-based workflow management and execution
 - 💾 **SQLite Workspace**: Persistent graph-based project state tracking
 - 🎯 **Context Management**: Intelligent context injection and reinjection
@@ -164,6 +165,12 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
   ```
 - ADS 会捕获该指令、调用 Claude、并把结果原位插回；你再继续执行命令或整合输出。
 - 系统不会再自动切换代理，如需 Claude 必须显式写出上述指令块（Telegram/CLI 均适用）。
+
+### 🌐 Web Console（实验性）
+
+- 使用统一的 services 脚本启动（构建后）：`npm run services -- start web`
+- 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ADS_WEB_ALLOWED_DIRS` 控制。
+- 浏览器访问对应地址即可与 CLI 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
 
 ### 📱 Telegram Bot 远程编程
 
