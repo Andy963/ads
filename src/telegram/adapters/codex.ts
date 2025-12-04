@@ -110,6 +110,7 @@ export async function handleCodexMessage(
   const markNoteEnabled = options?.markNoteEnabled ?? false;
   const silentNotifications = options?.silentNotifications ?? true;
   let logDirReady = false;
+  let typingTimer: NodeJS.Timeout | null = null;
 
   const ensureLogDir = () => {
     if (!logDirReady) {
@@ -156,6 +157,25 @@ export async function handleCodexMessage(
     return;
   }
 
+  const startTyping = () => {
+    const sendTyping = async () => {
+      try {
+        await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
+      } catch {
+        /* ignore */
+      }
+    };
+    void sendTyping();
+    typingTimer = setInterval(sendTyping, 4000);
+  };
+
+  const stopTyping = () => {
+    if (typingTimer) {
+      clearInterval(typingTimer);
+      typingTimer = null;
+    }
+  };
+
   const session = sessionManager.getOrCreate(userId, cwd);
   const activeAgentLabel = sessionManager.getActiveAgentLabel(userId) || 'Codex';
 
@@ -181,6 +201,7 @@ export async function handleCodexMessage(
   });
   let statusMessageId = sentMsg.message_id;
   let statusMessageText = sentMsg.text ?? '💭 开始处理...';
+  let statusMessageUseMarkdown = true;
   let statusUpdatesClosed = false;
   let rateLimitUntil = 0;
   let eventQueue: Promise<void> = Promise.resolve();
@@ -189,6 +210,7 @@ export async function handleCodexMessage(
   let lastTodoSignature: string | null = null;
   let commandMessageId: number | null = null;
   let commandMessageText: string | null = null;
+  let commandMessageUseMarkdown = true;
   let commandMessageRateLimitUntil = 0;
 
   const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
@@ -216,7 +238,7 @@ export async function handleCodexMessage(
   function indent(text: string): string {
     return text
       .split('\n')
-      .map((line) => `  ${escapeTelegramMarkdownV2(line)}`)
+      .map((line) => `  ${line}`)
       .join('\n');
   }
 
@@ -269,12 +291,19 @@ export async function handleCodexMessage(
 
     const icon = PHASE_ICON[event.phase] ?? '💬';
     const rawTitle = event.title || PHASE_FALLBACK[event.phase] || '处理中';
-    const safeTitle = escapeTelegramMarkdownV2(rawTitle);
-    const lines: string[] = [`${icon} ${safeTitle}`];
+    const lines: string[] = [`${icon} ${rawTitle}`];
+
+    // 避免在状态消息中重复展示最终回复，保持状态与内容分离；交给最终回复发 MarkdownV2
+    if (event.phase === 'responding') {
+      return {
+        text: lines.join('\n'),
+        silent: silentNotifications,
+      };
+    }
 
     if (event.detail && event.phase !== 'command') {
       if (event.phase === 'boot' && event.detail.startsWith('thread#')) {
-        lines.push(`> ${escapeTelegramMarkdownV2(event.detail)}`);
+        lines.push(`> ${event.detail}`);
       } else {
         const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
         lines.push(indent(detail));
@@ -287,18 +316,37 @@ export async function handleCodexMessage(
     };
   }
 
+  function isParseEntityError(error: unknown): error is GrammyError {
+    return (
+      error instanceof GrammyError &&
+      error.error_code === 400 &&
+      typeof error.description === 'string' &&
+      /parse entities|Pre entity/i.test(error.description)
+    );
+  }
+
   async function editStatusMessage(text: string): Promise<void> {
     const now = Date.now();
     if (now < rateLimitUntil) {
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      const escaped = escapeTelegramMarkdownV2(text);
-      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, escaped, {
-        parse_mode: 'MarkdownV2',
-      });
+      const content = statusMessageUseMarkdown ? escapeTelegramMarkdownV2(text) : text;
+      const options = statusMessageUseMarkdown
+        ? { parse_mode: 'MarkdownV2' as const }
+        : { link_preview_options: { is_disabled: true as const } };
+      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, content, options);
       rateLimitUntil = 0;
     } catch (error) {
+      if (isParseEntityError(error)) {
+        logWarning('[Telegram] Status markdown parse failed, falling back to plain text', error);
+        statusMessageUseMarkdown = false;
+        await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text, {
+          link_preview_options: { is_disabled: true as const },
+        });
+        statusMessageText = text;
+        return;
+      }
       if (error instanceof GrammyError && error.error_code === 400 && error.description?.includes('message is not modified')) {
         return;
       }
@@ -320,15 +368,30 @@ export async function handleCodexMessage(
       await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
     }
     try {
-      const escaped = escapeTelegramMarkdownV2(initialText);
-      const newMsg = await ctx.reply(escaped, {
-        parse_mode: 'MarkdownV2',
-        disable_notification: silent ?? silentNotifications,
-      });
+      const content = statusMessageUseMarkdown ? escapeTelegramMarkdownV2(initialText) : initialText;
+      const options = statusMessageUseMarkdown
+        ? { parse_mode: 'MarkdownV2' as const, disable_notification: silent ?? silentNotifications }
+        : {
+            disable_notification: silent ?? silentNotifications,
+            link_preview_options: { is_disabled: true as const },
+          };
+      const newMsg = await ctx.reply(content, options);
       statusMessageId = newMsg.message_id;
-      statusMessageText = escaped;
+      statusMessageText = initialText;
       rateLimitUntil = 0;
     } catch (error) {
+      if (isParseEntityError(error)) {
+        logWarning('[Telegram] Status markdown parse failed, sending plain text', error);
+        statusMessageUseMarkdown = false;
+        const newMsg = await ctx.reply(initialText, {
+          disable_notification: silent ?? silentNotifications,
+          link_preview_options: { is_disabled: true as const },
+        });
+        statusMessageId = newMsg.message_id;
+        statusMessageText = initialText;
+        rateLimitUntil = 0;
+        return;
+      }
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters?.retry_after ?? 1;
         rateLimitUntil = Date.now() + retryAfter * 1000;
@@ -591,10 +654,10 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
   const trimmed = rawText?.trim();
   lines.push(trimmed ? trimmed : '(no text)');
   if (images.length) {
-      lines.push(`Images: ${formatAttachmentList(images)}`);
-    }
-    if (files.length) {
-      lines.push(`Files: ${formatAttachmentList(files)}`);
+    lines.push(`Images: ${formatAttachmentList(images)}`);
+  }
+  if (files.length) {
+    lines.push(`Files: ${formatAttachmentList(files)}`);
   }
   return lines.join('\n');
 }
@@ -605,13 +668,29 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
-      const newMsg = await ctx.reply(text, {
-        disable_notification: silentNotifications,
-      });
+      const options = commandMessageUseMarkdown
+        ? { disable_notification: silentNotifications, parse_mode: 'MarkdownV2' as const }
+        : {
+            disable_notification: silentNotifications,
+            link_preview_options: { is_disabled: true as const },
+          };
+      const newMsg = await ctx.reply(text, options);
       commandMessageId = newMsg.message_id;
       commandMessageText = text;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
+      if (isParseEntityError(error)) {
+        logWarning('[Telegram] Command log markdown parse failed, sending plain text', error);
+        commandMessageUseMarkdown = false;
+        const newMsg = await ctx.reply(text, {
+          disable_notification: silentNotifications,
+          link_preview_options: { is_disabled: true as const },
+        });
+        commandMessageId = newMsg.message_id;
+        commandMessageText = text;
+        commandMessageRateLimitUntil = 0;
+        return;
+      }
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters?.retry_after ?? 1;
         commandMessageRateLimitUntil = Date.now() + retryAfter * 1000;
@@ -637,10 +716,22 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
-      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text);
+      const options = commandMessageUseMarkdown
+        ? { parse_mode: 'MarkdownV2' as const }
+        : { link_preview_options: { is_disabled: true as const } };
+      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text, options);
       commandMessageText = text;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
+      if (isParseEntityError(error)) {
+        logWarning('[Telegram] Command log markdown parse failed, falling back to plain text', error);
+        commandMessageUseMarkdown = false;
+        await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text, {
+          link_preview_options: { is_disabled: true as const },
+        });
+        commandMessageText = text;
+        return;
+      }
       if (error instanceof GrammyError) {
         if (error.error_code === 400 && error.description?.includes('message is not modified')) {
           return;
@@ -706,6 +797,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
   let userLogEntry: string | null = null;
 
   try {
+    startTyping();
     // 处理 URL（如果消息中有链接）
     if (!imageFileIds && !documentFileId && text) {
       try {
@@ -823,6 +915,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     });
 
     await finalizeStatusUpdates();
+    stopTyping();
     unsubscribe?.();
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);
@@ -892,7 +985,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       });
       sentChunks.add(chunkText);
     }
+    stopTyping();
   } catch (error) {
+    stopTyping();
     if (unsubscribe) {
       unsubscribe();
     }
@@ -929,7 +1024,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       logger = undefined;
     }
 
-    await finalizeStatusUpdates(escapeTelegramMarkdownV2(replyText));
+    await finalizeStatusUpdates(replyText);
     interruptManager.complete(userId);
     const escapedV2 = escapeTelegramMarkdownV2(replyText);
     await ctx.reply(escapedV2, {
