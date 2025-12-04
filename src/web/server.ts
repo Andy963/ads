@@ -324,6 +324,7 @@ function renderLandingPage(): string {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ADS Web Console</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" integrity="sha512-Y7tQS9cPENs6eKf9pKVtWulGNS7l2AvHPvvrppVBNJwjt6KZdcpYDJ72HjVRUFy7j4L+L3NAwwSzEAPFYR0c0w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
   <style>
     :root {
       --vh: 100vh;
@@ -349,14 +350,14 @@ function renderLandingPage(): string {
     .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; animation: pulse 1s infinite alternate-reverse; }
     @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
     header h1 { margin: 0; font-size: 18px; }
-    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; align-items: flex-start; overflow: hidden; box-sizing: border-box; max-height: calc(var(--vh) - var(--header-h)); }
+    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; align-items: stretch; overflow: hidden; box-sizing: border-box; max-height: calc(var(--vh) - var(--header-h)); }
     #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
     .sidebar-title { font-size: 13px; font-weight: 600; margin: 0; color: var(--muted); }
     .workspace-list { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
     .workspace-list .path { color: var(--text); word-break: break-all; }
     .files-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); max-height: 260px; overflow-y: auto; }
-    #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; width: 100%; overflow: hidden; max-height: 100%; }
-    #log { flex: 1 1 0; min-height: 40vh; max-height: none; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; width: 100%; }
+    #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; width: 100%; overflow: hidden; height: 100%; }
+    #log { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; width: 100%; }
     .msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; align-items: flex-start; }
     .msg.user { align-items: flex-start; }
     .msg.ai { align-items: flex-start; }
@@ -367,6 +368,7 @@ function renderLandingPage(): string {
     .status .bubble { background: var(--status); color: var(--muted); font-size: 13px; }
     .meta { font-size: 12px; color: var(--muted); display: none; }
     .code-block { background: #0b1221; color: #f8fafc; padding: 12px; border-radius: 10px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+    .code-block code { background: transparent; display: block; font: inherit; color: inherit; white-space: pre-wrap; }
     .bubble code { background: rgba(15,23,42,0.07); padding: 2px 5px; border-radius: 6px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 13px; }
     .bubble h1, .bubble h2, .bubble h3 { margin: 0 0 6px; line-height: 1.3; }
     .bubble p { margin: 0 0 8px; }
@@ -374,13 +376,16 @@ function renderLandingPage(): string {
     .bubble a { color: var(--accent); text-decoration: none; }
     .bubble a:hover { text-decoration: underline; }
     .cmd-details summary { cursor: pointer; color: var(--accent); }
-    #form { margin-top: auto; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 8px; width: 100%; box-sizing: border-box; }
-    #form-row { display: flex; align-items: center; gap: 8px; }
-    #attach-btn { padding: 10px 12px; background: #eef2ff; border: 1px solid #c7d2fe; color: #312e81; border-radius: 8px; cursor: pointer; font-weight: 600; }
-    #attach-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    #status-label { font-size: 12px; color: var(--muted); }
-    #input { width: 100%; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 8px; font-size: 16px; min-height: 64px; max-height: 200px; resize: vertical; line-height: 1.5; overflow-x: hidden; white-space: pre-wrap; word-break: break-word; }
-    #attachments { display: flex; flex-wrap: wrap; gap: 6px; }
+    #form { flex-shrink: 0; padding: 0; background: transparent; border: none; box-shadow: none; display: flex; flex-direction: column; gap: 8px; width: 100%; box-sizing: border-box; }
+    #input-wrapper { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 2px 8px rgba(15,23,42,0.06); }
+    #attach-btn { position: absolute; left: 8px; bottom: 12px; width: 20px; height: 20px; padding: 0; background: transparent; border: none; color: #9ca3af; cursor: pointer; font-size: 18px; font-weight: 400; line-height: 20px; text-align: center; transition: color 0.15s; }
+    #attach-btn:hover { color: #6b7280; }
+    #attach-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #input { width: 100%; padding: 12px 14px 12px 32px; background: transparent; border: none; border-radius: 12px; font-size: 15px; min-height: 46px; max-height: 180px; resize: none; line-height: 1.5; overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; word-break: break-word; outline: none; }
+    #input:focus { outline: none; }
+    #input-wrapper:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    #attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px; }
+    #attachments:empty { display: none; }
     .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; background: #eef2ff; color: #1e1b4b; border-radius: 8px; font-size: 12px; }
     .chip button { border: none; background: transparent; cursor: pointer; color: #6b7280; }
     .typing-bubble { display: flex; gap: 6px; align-items: center; }
@@ -401,7 +406,8 @@ function renderLandingPage(): string {
       main { padding: 12px 10px 16px; gap: 10px; max-width: 100%; max-height: calc(var(--vh) - var(--header-h)); }
       #sidebar { display: none; }
       #console { width: 100%; }
-      #log { min-height: 60vh; }
+      #log { min-height: 55vh; }
+      #input { min-height: 40px; }
     }
   </style>
 </head>
@@ -422,13 +428,13 @@ function renderLandingPage(): string {
     <section id="console">
       <div id="log"></div>
       <form id="form">
-        <div id="form-row">
-          <button id="attach-btn" type="button">📎 图片</button>
-          <span id="status-label">已断开</span>
-        </div>
         <div id="attachments"></div>
-        <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
+        <div id="input-wrapper">
+          <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
+          <button id="attach-btn" type="button" title="添加图片">+</button>
+        </div>
         <input id="image-input" type="file" accept="image/*" multiple hidden />
+        <span id="status-label" style="display:none;">已断开</span>
       </form>
     </section>
   </main>
@@ -442,6 +448,7 @@ function renderLandingPage(): string {
       </div>
     </div>
   </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-5t6mTmGNG0By8mBGsRSk4ArhcXdMzdXAQS7XI0bXVUO0Fr0jnr8VJp9AfJ0sl64dWSi2YRX8J5kREhXPUAQ/7A==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script>
     const logEl = document.getElementById('log');
     const inputEl = document.getElementById('input');
@@ -475,6 +482,24 @@ function renderLandingPage(): string {
     let pendingImages = [];
     let typingPlaceholder = null;
     let wsErrorMessage = null;
+    
+    // 等待 highlight.js 加载完成后再配置
+    function initHighlightJs() {
+      if (window.hljs) {
+        // 不限制语言，让 highlight.js 自动检测
+        window.hljs.configure({ 
+          ignoreUnescapedHTML: true 
+        });
+        console.log('highlight.js initialized');
+        return true;
+      }
+      return false;
+    }
+    
+    // 立即尝试初始化，如果失败则在 DOMContentLoaded 时重试
+    if (!initHighlightJs()) {
+      document.addEventListener('DOMContentLoaded', initHighlightJs);
+    }
 
     function applyVh() {
       const vh = viewport ? viewport.height : window.innerHeight;
@@ -580,6 +605,33 @@ function renderLandingPage(): string {
         .join('');
     }
 
+    function highlightCodeElement(codeEl) {
+      if (!window.hljs || !codeEl) return;
+      try {
+        window.hljs.highlightElement(codeEl);
+      } catch (e) {
+        console.warn('Failed to highlight code:', e);
+      }
+    }
+
+    function highlightCodeWithin(element) {
+      if (!element || !window.hljs) return;
+      element.querySelectorAll('pre.code-block code').forEach((code) => highlightCodeElement(code));
+    }
+
+    function createCodeBlockElement(content, language) {
+      const pre = document.createElement('pre');
+      pre.className = 'code-block';
+      const code = document.createElement('code');
+      if (language) {
+        code.classList.add('language-' + language);
+      }
+      code.textContent = content;
+      pre.appendChild(code);
+      highlightCodeElement(code);
+      return pre;
+    }
+
     function autoScrollIfNeeded() {
       if (!autoScroll) return;
       logEl.scrollTop = logEl.scrollHeight;
@@ -627,8 +679,10 @@ function renderLandingPage(): string {
       bubble.className = 'bubble';
       if (options.markdown) {
         bubble.innerHTML = renderMarkdown(text);
+        highlightCodeWithin(bubble);
       } else if (options.html) {
         bubble.innerHTML = text;
+        highlightCodeWithin(bubble);
       } else {
         bubble.textContent = text;
       }
@@ -725,15 +779,11 @@ function renderLandingPage(): string {
         cmdLabel.style.marginTop = '6px';
         bubble.appendChild(cmdLabel);
 
-        const cmdBlock = document.createElement('pre');
-        cmdBlock.className = 'code-block';
-        cmdBlock.textContent = commandText;
+        const cmdBlock = createCodeBlockElement(commandText, 'bash');
         bubble.appendChild(cmdBlock);
       }
 
-      const outBlock = document.createElement('pre');
-      outBlock.className = 'code-block';
-      outBlock.textContent = snippet || '(无输出)';
+      const outBlock = createCodeBlockElement(snippet || '(无输出)', 'bash');
       outBlock.style.marginTop = '6px';
       bubble.appendChild(outBlock);
 
@@ -892,6 +942,19 @@ function renderLandingPage(): string {
       };
     }
 
+    // 自动调整输入框高度，最多6行
+    function autoResizeInput() {
+      if (!inputEl) return;
+      inputEl.style.height = 'auto';
+      const lineHeight = 24; // 约等于 font-size * line-height
+      const minHeight = 44;
+      const maxHeight = lineHeight * 6 + 24; // 6行 + padding
+      const scrollHeight = inputEl.scrollHeight;
+      const newHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+      inputEl.style.height = newHeight + 'px';
+      recalcLogHeight();
+    }
+
     inputEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -902,9 +965,9 @@ function renderLandingPage(): string {
         }
       }
       resetIdleTimer();
-      recalcLogHeight();
     });
 
+    inputEl.addEventListener('input', autoResizeInput);
     inputEl.addEventListener('focus', recalcLogHeight);
     inputEl.addEventListener('blur', recalcLogHeight);
 
@@ -923,6 +986,23 @@ function renderLandingPage(): string {
     formEl.addEventListener('drop', (e) => {
       e.preventDefault();
       addImagesFromFiles(e.dataTransfer?.files || []);
+    });
+
+    // 支持粘贴图片
+    inputEl.addEventListener('paste', (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageFiles = [];
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addImagesFromFiles(imageFiles);
+      }
     });
 
     formEl.addEventListener('submit', (e) => {
@@ -952,9 +1032,11 @@ function renderLandingPage(): string {
         streamState = null;
       }
       inputEl.value = '';
+      inputEl.style.height = '44px';
       clearAttachments();
       inputEl.focus();
       resetIdleTimer();
+      recalcLogHeight();
     });
 
     function ensureStream() {
@@ -1011,6 +1093,7 @@ function renderLandingPage(): string {
       if (streamState) {
         const finalText = output || streamState.buffer;
         streamState.message.bubble.innerHTML = renderMarkdown(finalText);
+        highlightCodeWithin(streamState.message.bubble);
         streamState = null;
         autoScrollIfNeeded();
         return;
@@ -1304,8 +1387,7 @@ async function start(): Promise<void> {
           const missing = initStatus.missingArtifact ?? "ADS 必需文件";
           message += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。\n如需初始化请运行 /ads.init`;
           logger.warn(
-            `[Web][WorkspaceInit] path=${currentCwd} missing=${missing}${
-              initStatus.details ? ` details=${initStatus.details}` : ""
+            `[Web][WorkspaceInit] path=${currentCwd} missing=${missing}${initStatus.details ? ` details=${initStatus.details}` : ""
             }`,
           );
         }
