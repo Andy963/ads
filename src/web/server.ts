@@ -13,15 +13,10 @@ import { runAdsCommandLine } from "./commandRouter.js";
 import { detectWorkspace } from "../workspace/detector.js";
 import { DirectoryManager } from "../telegram/utils/directoryManager.js";
 import { checkWorkspaceInit } from "../telegram/utils/workspaceInitChecker.js";
-import { HybridOrchestrator } from "../agents/orchestrator.js";
-import { CodexAgentAdapter } from "../agents/adapters/codexAdapter.js";
-import { resolveClaudeAgentConfig } from "../agents/config.js";
-import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
-import { SystemPromptManager, resolveReinjectionConfig } from "../systemPrompt/manager.js";
 import { createLogger } from "../utils/logger.js";
-import type { AgentAdapter } from "../agents/types.js";
 import type { AgentEvent } from "../codex/events.js";
 import { parseSlashCommand } from "../codexConfig.js";
+import { SessionManager } from "../telegram/utils/sessionManager.js";
 
 interface WsMessage {
   type: string;
@@ -49,6 +44,7 @@ const logger = createLogger("WebSocket");
 
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
 const workspaceCache = new Map<string, string>();
+const sessionManager = new SessionManager();
 
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
@@ -83,6 +79,14 @@ function isLikelyWebProcess(pid: number): boolean {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function deriveWebUserId(token: string): number {
+  const base = token || "default";
+  const hash = crypto.createHash("sha256").update(base).digest();
+  // Use a high offset to avoid collision with Telegram user IDs (int32)
+  const value = hash.readUInt32BE(0);
+  return 0x70000000 + value;
 }
 
 async function ensureWebPidFile(workspaceRoot: string): Promise<string> {
@@ -1163,41 +1167,26 @@ async function start(): Promise<void> {
     clients.add(ws);
 
     const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
+    const userId = deriveWebUserId(clientKey);
     const directoryManager = new DirectoryManager(allowedDirs);
-    const userId = 0;
+
     const cachedWorkspace = workspaceCache.get(clientKey);
+    const savedState = sessionManager.getSavedState(userId);
     let currentCwd = directoryManager.getUserCwd(userId);
-    if (cachedWorkspace) {
-      const restoreResult = directoryManager.setUserCwd(userId, cachedWorkspace);
+    const preferredCwd = cachedWorkspace ?? savedState?.cwd;
+    if (preferredCwd) {
+      const restoreResult = directoryManager.setUserCwd(userId, preferredCwd);
       if (!restoreResult.success) {
-        logger.warn(`[Web][WorkspaceRestore] failed path=${cachedWorkspace} reason=${restoreResult.error}`);
+        logger.warn(`[Web][WorkspaceRestore] failed path=${preferredCwd} reason=${restoreResult.error}`);
       } else {
         currentCwd = directoryManager.getUserCwd(userId);
       }
     }
     workspaceCache.set(clientKey, currentCwd);
+    sessionManager.setUserCwd(userId, currentCwd);
 
-    const systemPromptManager = new SystemPromptManager({
-      workspaceRoot: currentCwd,
-      reinjection: resolveReinjectionConfig("WEB"),
-      logger,
-    });
-    const adapters: AgentAdapter[] = [
-      new CodexAgentAdapter({
-        workingDirectory: currentCwd,
-        systemPromptManager,
-        metadata: { name: "Codex Web" },
-      }),
-    ];
-    const claudeConfig = resolveClaudeAgentConfig();
-    if (claudeConfig.enabled) {
-      adapters.push(new ClaudeAgentAdapter({ config: claudeConfig }));
-    }
-    const orchestrator = new HybridOrchestrator({
-      adapters,
-      defaultAgentId: adapters[0].id,
-      initialWorkingDirectory: currentCwd,
-    });
+    const resumeThread = !sessionManager.hasSession(userId);
+    let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
 
     log("client connected");
     ws.send(
@@ -1227,6 +1216,7 @@ async function start(): Promise<void> {
           ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
           return;
         }
+        orchestrator = sessionManager.getOrCreate(userId, currentCwd);
         const status = orchestrator.status();
         if (!status.ready) {
           ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
@@ -1256,6 +1246,10 @@ async function start(): Promise<void> {
         try {
           const result = await orchestrator.send(promptInput.input, { streaming: true });
           ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
+          const threadId = orchestrator.getThreadId();
+          if (threadId) {
+            sessionManager.saveThreadId(userId, threadId);
+          }
           sendWorkspaceState(ws, currentCwd);
         } catch (error) {
           ws.send(JSON.stringify({ type: "error", message: (error as Error).message ?? String(error) }));
@@ -1296,8 +1290,8 @@ async function start(): Promise<void> {
         }
         currentCwd = directoryManager.getUserCwd(userId);
         workspaceCache.set(clientKey, currentCwd);
-        orchestrator.setWorkingDirectory(currentCwd);
-        systemPromptManager.setWorkspaceRoot(currentCwd);
+        sessionManager.setUserCwd(userId, currentCwd);
+        orchestrator = sessionManager.getOrCreate(userId, currentCwd);
 
         const initStatus = checkWorkspaceInit(currentCwd);
         let message = `✅ 已切换到: ${currentCwd}`;
