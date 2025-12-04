@@ -432,6 +432,9 @@ function renderLandingPage(): string {
     const statusLabel = document.getElementById('status-label');
     const idleMinutes = ${IDLE_MINUTES};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+    const MAX_LOG_MESSAGES = 300;
+    const COMMAND_OUTPUT_MAX_LINES = 10;
+    const COMMAND_OUTPUT_MAX_CHARS = 1200;
     const viewport = window.visualViewport;
     let ws;
     let sendQueue = [];
@@ -553,6 +556,21 @@ function renderLandingPage(): string {
       logEl.scrollTop = logEl.scrollHeight;
     }
 
+    function pruneLog() {
+      if (!logEl) return;
+      while (logEl.children.length > MAX_LOG_MESSAGES) {
+        const first = logEl.firstElementChild;
+        if (!first) break;
+        logEl.removeChild(first);
+      }
+      if (typingPlaceholder?.wrapper && !typingPlaceholder.wrapper.isConnected) {
+        typingPlaceholder = null;
+      }
+      if (commandMessage?.wrapper && !commandMessage.wrapper.isConnected) {
+        commandMessage = null;
+      }
+    }
+
     function setLocked(locked) {
       document.body.classList.toggle('locked', !!locked);
     }
@@ -585,6 +603,7 @@ function renderLandingPage(): string {
       }
       wrapper.appendChild(bubble);
       logEl.appendChild(wrapper);
+      pruneLog();
       autoScrollIfNeeded();
       return { wrapper, bubble };
     }
@@ -613,6 +632,7 @@ function renderLandingPage(): string {
       }
       wrapper.appendChild(bubble);
       logEl.appendChild(wrapper);
+      pruneLog();
       autoScrollIfNeeded();
       typingPlaceholder = { wrapper, bubble };
       return typingPlaceholder;
@@ -627,6 +647,8 @@ function renderLandingPage(): string {
     }
 
     function showCommand(text) {
+      clearTypingPlaceholder();
+      streamState = null;
       const msg = getOrCreateCommandMessage();
       msg.bubble.textContent = text;
     }
@@ -821,6 +843,7 @@ function renderLandingPage(): string {
             text,
             images: hasImages ? pendingImages : undefined,
           };
+      autoScroll = true;
       ws.send(JSON.stringify({ type, payload }));
       sendQueue.push(type);
       if (isCommand) {
@@ -855,23 +878,53 @@ function renderLandingPage(): string {
       resetIdleTimer();
     }
 
+    function summarizeCommandOutput(rawOutput) {
+      const text = (typeof rawOutput === 'string' ? rawOutput : '').trim();
+      if (!text) {
+        return { snippet: '(无输出)', truncated: false, full: '' };
+      }
+      const lines = text.split(/\\r?\\n/);
+      const kept = lines.slice(0, COMMAND_OUTPUT_MAX_LINES);
+      let truncated = lines.length > COMMAND_OUTPUT_MAX_LINES;
+      let snippet = kept.join('\\n');
+      if (snippet.length > COMMAND_OUTPUT_MAX_CHARS) {
+        snippet = snippet.slice(0, COMMAND_OUTPUT_MAX_CHARS);
+        truncated = true;
+      }
+      if (truncated) {
+        snippet = snippet.trimEnd() + '\\n…';
+      }
+      return { snippet, truncated, full: text };
+    }
+
     function appendCommandResult(ok, output) {
       showCommand(ok ? '命令完成' : '命令失败');
       const { bubble } = appendMessage('ai', '', { status: true });
-      const summary = document.createElement('div');
-      summary.textContent = ok ? '命令已执行（查看输出）' : '命令失败（查看详情）';
-      bubble.appendChild(summary);
-      const details = document.createElement('details');
-      details.className = 'cmd-details';
-      const s = document.createElement('summary');
-      s.textContent = '展开输出';
-      details.appendChild(s);
-      const pre = document.createElement('pre');
-      pre.textContent = output || '(无输出)';
-      pre.style.whiteSpace = 'pre-wrap';
-      pre.style.wordBreak = 'break-word';
-      details.appendChild(pre);
-      bubble.appendChild(details);
+      const { snippet, truncated, full } = summarizeCommandOutput(output);
+      const heading = document.createElement('div');
+      heading.textContent = ok
+        ? truncated
+          ? '命令已执行（已截断前10行）'
+          : '命令已执行'
+        : truncated
+          ? '命令失败（已截断前10行）'
+          : '命令失败';
+      bubble.appendChild(heading);
+      const snippetEl = document.createElement('div');
+      snippetEl.innerHTML = renderMarkdown(snippet);
+      bubble.appendChild(snippetEl);
+
+      if (truncated && full) {
+        const details = document.createElement('details');
+        details.className = 'cmd-details';
+        const s = document.createElement('summary');
+        s.textContent = '展开完整输出';
+        details.appendChild(s);
+        const fullEl = document.createElement('div');
+        fullEl.innerHTML = renderMarkdown(full);
+        details.appendChild(fullEl);
+        bubble.appendChild(details);
+      }
       autoScrollIfNeeded();
     }
 
