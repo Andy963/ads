@@ -160,118 +160,119 @@ export async function createWorkflowFromTemplate(params: {
 
     const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
 
-    let enhancedDescription = params.description ?? "";
-    if (enhancedDescription) {
-      enhancedDescription += "\n\n---\n\n";
-    }
-    const rulesSummary = await getRulesSummary(workspace);
-    if (rulesSummary) {
-      enhancedDescription += `## 项目规则约束\n\n${rulesSummary}\n\n---\n\n`;
-    }
+    const format = params.format ?? "cli";
 
-    const result = await withWorkspaceEnv(workspace, () =>
-      createWorkflowFromConfig({
-        nodes: nodesConfig.slice(0, 1),
+    return await withWorkspaceEnv(workspace, async () => {
+      let enhancedDescription = params.description ?? "";
+      if (enhancedDescription) {
+        enhancedDescription += "\n\n---\n\n";
+      }
+      const rulesSummary = await getRulesSummary(workspace);
+      if (rulesSummary) {
+        enhancedDescription += `## 项目规则约束\n\n${rulesSummary}\n\n---\n\n`;
+      }
+
+      const result = createWorkflowFromConfig({
+        nodes: nodesConfig,
         rootLabel: params.title,
         rootContent: enhancedDescription,
         position: { x: 100, y: 100 },
-      }),
-    );
-
-    const rootNode = result.nodes[0];
-    const specsDir = getWorkspaceSpecsDir(workspace);
-    const now = new Date();
-    const folderTimestamp = `${now.getFullYear()}${(now.getMonth() + 1)
-      .toString()
-      .padStart(2, "0")}${now.getDate().toString().padStart(2, "0")}-${now
-      .getHours()
-      .toString()
-      .padStart(2, "0")}${now.getMinutes().toString().padStart(2, "0")}`;
-    const slug = sanitizeSlug(params.title);
-    let folderName = `${folderTimestamp}-${slug}`;
-    let workflowDir = path.join(specsDir, folderName);
-    let attempt = 1;
-    while (true) {
-      try {
-        await fs.mkdir(workflowDir, { recursive: false });
-        break;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST") {
-          throw error;
-        }
-        attempt += 1;
-        folderName = `${folderTimestamp}-${slug}-${attempt}`;
-        workflowDir = path.join(specsDir, folderName);
-      }
-    }
-
-    const rootMetadata = {
-      ...(rootNode.metadata ?? {}),
-      workflow_template: normalizedId,
-      spec_folder: folderName,
-    };
-    updateNode(rootNode.id, { metadata: rootMetadata });
-
-    await writeTemplateFile(workflowDir, "requirements.md", REQUIREMENT_TEMPLATE);
-    await writeTemplateFile(workflowDir, "design.md", DESIGN_TEMPLATE);
-    await writeTemplateFile(workflowDir, "implementation.md", IMPLEMENTATION_TEMPLATE);
-
-    for (const node of result.nodes) {
-      saveNodeToFile(node, workspace);
-    }
-
-    // 设置为活动工作流
-    try {
-      const normalizedStepMapping = WorkflowContext.STEP_MAPPINGS[normalizedId] ?? {};
-      const steps: Record<string, string> = {};
-
-      for (const [stepName, nodeType] of Object.entries(normalizedStepMapping)) {
-        const node = result.nodes.find((n) => n.type === nodeType);
-        if (node) {
-          steps[stepName] = node.id;
-        }
-      }
-
-      WorkflowContext.setActiveWorkflow({
-        workspace,
-        workflowRootId: rootNode.id,
-        template: normalizedId,
-        title: params.title,
-        steps,
       });
-    } catch (error) {
-      console.warn("Warning: Failed to set active workflow:", error);
-    }
 
-    // 获取工作流状态回显
-    const format = params.format ?? "cli";
-    const { getWorkflowStatusSummary } = await import("./service.js");
-    const statusSummary = await getWorkflowStatusSummary({
-      workspace_path: workspace,
-      format,
-    });
+      const rootNode = result.nodes[0];
+      const specsDir = getWorkspaceSpecsDir(workspace);
+      const now = new Date();
+      const folderTimestamp = `${now.getFullYear()}${(now.getMonth() + 1)
+        .toString()
+        .padStart(2, "0")}${now.getDate().toString().padStart(2, "0")}-${now
+        .getHours()
+        .toString()
+        .padStart(2, "0")}${now.getMinutes().toString().padStart(2, "0")}`;
+      const slug = sanitizeSlug(params.title);
+      let folderName = `${folderTimestamp}-${slug}`;
+      let workflowDir = path.join(specsDir, folderName);
+      let attempt = 1;
+      while (true) {
+        try {
+          await fs.mkdir(workflowDir, { recursive: false });
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "EEXIST") {
+            throw error;
+          }
+          attempt += 1;
+          folderName = `${folderTimestamp}-${slug}-${attempt}`;
+          workflowDir = path.join(specsDir, folderName);
+        }
+      }
 
-    if (format === "markdown") {
-      return [
-        "✅ 工作流创建成功",
-        "",
-        `📋 Root Node: \`${rootNode.id}\``,
-        `📊 创建节点数: ${result.nodes.length}`,
-        `🔗 创建边数: ${result.edges.length}`,
-        "",
-        statusSummary,
-      ].join("\n");
-    }
+      const rootMetadata = {
+        ...(rootNode.metadata ?? {}),
+        workflow_template: normalizedId,
+        spec_folder: folderName,
+      };
+      updateNode(rootNode.id, { metadata: rootMetadata });
 
-    return safeStringify({
-      success: true,
-      workflow: {
-        root_node_id: rootNode.id,
-        nodes_created: result.nodes.length,
-        edges_created: result.edges.length,
-      },
-      message: "工作流已创建，后续步骤将通过定稿自动流转",
+      await writeTemplateFile(workflowDir, "requirements.md", REQUIREMENT_TEMPLATE);
+      await writeTemplateFile(workflowDir, "design.md", DESIGN_TEMPLATE);
+      await writeTemplateFile(workflowDir, "implementation.md", IMPLEMENTATION_TEMPLATE);
+
+      for (const node of result.nodes) {
+        saveNodeToFile(node, workspace);
+      }
+
+      // 设置为活动工作流
+      try {
+        const normalizedStepMapping = WorkflowContext.STEP_MAPPINGS[normalizedId] ?? {};
+        const steps: Record<string, string> = {};
+
+        for (const [stepName, nodeType] of Object.entries(normalizedStepMapping)) {
+          const node = result.nodes.find((n) => n.type === nodeType);
+          if (node) {
+            steps[stepName] = node.id;
+          }
+        }
+
+        WorkflowContext.setActiveWorkflow({
+          workspace,
+          workflowRootId: rootNode.id,
+          template: normalizedId,
+          title: params.title,
+          steps,
+        });
+      } catch (error) {
+        console.warn("Warning: Failed to set active workflow:", error);
+      }
+
+      // 获取工作流状态回显
+      const { getWorkflowStatusSummary } = await import("./service.js");
+      const statusSummary = await getWorkflowStatusSummary({
+        workspace_path: workspace,
+        format,
+      });
+
+      if (format === "markdown") {
+        return [
+          "✅ 工作流创建成功",
+          "",
+          `📋 Root Node: \`${rootNode.id}\``,
+          `📊 创建节点数: ${result.nodes.length}`,
+          `🔗 创建边数: ${result.edges.length}`,
+          "",
+          statusSummary,
+        ].join("\n");
+      }
+
+      return safeStringify({
+        success: true,
+        workflow: {
+          root_node_id: rootNode.id,
+          nodes_created: result.nodes.length,
+          edges_created: result.edges.length,
+        },
+        message: "工作流已创建，后续步骤将通过定稿自动流转",
+      });
     });
   } catch (error) {
     return safeStringify({ error: (error as Error).message });
