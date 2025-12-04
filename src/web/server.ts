@@ -1,10 +1,12 @@
 import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 
 import { WebSocketServer } from "ws";
 import type { WebSocket, RawData } from "ws";
 import childProcess from "node:child_process";
+import type { Input } from "@openai/codex-sdk";
 
 import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
@@ -24,6 +26,18 @@ import { parseSlashCommand } from "../codexConfig.js";
 interface WsMessage {
   type: string;
   payload?: unknown;
+}
+
+interface IncomingImage {
+  name?: string;
+  mime?: string;
+  data?: string;
+  size?: number;
+}
+
+interface PromptPayload {
+  text?: string;
+  images?: IncomingImage[];
 }
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
@@ -193,6 +207,87 @@ function sendWorkspaceState(ws: WebSocket, workspaceRoot: string): void {
   }
 }
 
+const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/svg+xml"]);
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+
+function resolveImageExt(name: string | undefined, mime: string | undefined): string {
+  const safeName = name ? path.basename(name) : "";
+  const extFromName = safeName.includes(".") ? path.extname(safeName).toLowerCase() : "";
+  if (extFromName) return extFromName;
+  if (!mime) return ".jpg";
+  if (mime === "image/jpeg") return ".jpg";
+  if (mime === "image/png") return ".png";
+  if (mime === "image/gif") return ".gif";
+  if (mime === "image/webp") return ".webp";
+  if (mime === "image/bmp") return ".bmp";
+  if (mime === "image/svg+xml") return ".svg";
+  return ".jpg";
+}
+
+function decodeBase64Data(data: string): Buffer {
+  const base64 = data.includes(",") ? data.split(",").pop() ?? "" : data;
+  return Buffer.from(base64, "base64");
+}
+
+function persistIncomingImage(image: IncomingImage, imageDir: string): { ok: true; path: string } | { ok: false; message: string } {
+  if (!image.data) {
+    return { ok: false, message: "图片缺少数据" };
+  }
+  const mime = typeof image.mime === "string" ? image.mime : "";
+  if (mime && !ALLOWED_IMAGE_MIME.has(mime)) {
+    return { ok: false, message: `不支持的图片类型: ${mime}` };
+  }
+  const buffer = decodeBase64Data(image.data);
+  const size = buffer.byteLength;
+  if (size <= 0) {
+    return { ok: false, message: "图片内容为空" };
+  }
+  if (size > MAX_IMAGE_BYTES) {
+    return { ok: false, message: `图片超过 2MB 限制 (${Math.round(size / 1024)}KB)` };
+  }
+  const ext = resolveImageExt(image.name, mime);
+  const filename = `${crypto.randomBytes(8).toString("hex")}${ext}`;
+  fs.mkdirSync(imageDir, { recursive: true });
+  const filePath = path.join(imageDir, filename);
+  fs.writeFileSync(filePath, buffer);
+  return { ok: true, path: filePath };
+}
+
+function buildPromptInput(payload: unknown, imageDir: string): { ok: true; input: Input } | { ok: false; message: string } {
+  if (typeof payload === "string") {
+    const text = sanitizeInput(payload);
+    if (!text) {
+      return { ok: false, message: "Payload must be a text prompt" };
+    }
+    return { ok: true, input: text };
+  }
+  const inputParts: Exclude<Input, string> = [];
+  const parsed = (payload ?? {}) as PromptPayload;
+  const text = sanitizeInput(parsed.text);
+  if (text) {
+    inputParts.push({ type: "text", text });
+  }
+
+  if (Array.isArray(parsed.images) && parsed.images.length > 0) {
+    for (const image of parsed.images) {
+      const result = persistIncomingImage(image, imageDir);
+      if (!result.ok) {
+        return { ok: false, message: result.message };
+      }
+      inputParts.push({ type: "local_image", path: result.path });
+    }
+  }
+
+  if (inputParts.length === 0) {
+    return { ok: false, message: "payload 不能为空" };
+  }
+
+  if (inputParts.length === 1 && inputParts[0].type === "text") {
+    return { ok: true, input: inputParts[0].text };
+  }
+  return { ok: true, input: inputParts };
+}
+
 function renderLandingPage(): string {
   return `<!doctype html>
 <html lang="zh-CN">
@@ -202,6 +297,8 @@ function renderLandingPage(): string {
   <title>ADS Web Console</title>
   <style>
     :root {
+      --vh: 100vh;
+      --header-h: 64px;
       --bg: #f5f7fb;
       --panel: #ffffff;
       --border: #d6d9e0;
@@ -214,7 +311,8 @@ function renderLandingPage(): string {
       --code: #0f172a;
     }
     * { box-sizing: border-box; }
-    body { font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; }
+    html, body { height: 100%; width: 100%; }
+    body { font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: var(--vh); height: var(--vh); overflow: hidden; overflow-x: hidden; overscroll-behavior: contain; display: flex; flex-direction: column; }
     header { padding: 14px 18px; background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 1px 3px rgba(15,23,42,0.06); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
     .header-row { display: flex; align-items: center; gap: 8px; }
     .ws-indicator { width: 12px; height: 12px; border-radius: 999px; background: #ef4444; border: 1px solid #e5e7eb; box-shadow: 0 0 0 2px #fff; }
@@ -222,19 +320,19 @@ function renderLandingPage(): string {
     .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; animation: pulse 1s infinite alternate-reverse; }
     @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
     header h1 { margin: 0; font-size: 18px; }
-    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; align-items: flex-start; }
+    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; align-items: flex-start; overflow: hidden; box-sizing: border-box; max-height: calc(var(--vh) - var(--header-h)); }
     #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
     .sidebar-title { font-size: 13px; font-weight: 600; margin: 0; color: var(--muted); }
     .workspace-list { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
     .workspace-list .path { color: var(--text); word-break: break-all; }
     .files-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); max-height: 260px; overflow-y: auto; }
-    #console { flex: 1; display: flex; flex-direction: column; gap: 12px; }
-    #log { flex: 1 1 0; min-height: 60vh; max-height: 74vh; overflow-y: auto; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; }
+    #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; width: 100%; overflow: hidden; max-height: 100%; }
+    #log { flex: 1 1 0; min-height: 40vh; max-height: none; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; width: 100%; }
     .msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; align-items: flex-start; }
     .msg.user { align-items: flex-start; }
     .msg.ai { align-items: flex-start; }
     .msg.status { align-items: flex-start; }
-    .bubble { border-radius: 12px; padding: 12px 14px; line-height: 1.6; font-size: 14px; color: var(--text); max-width: 100%; word-break: break-word; }
+    .bubble { border-radius: 12px; padding: 12px 14px; line-height: 1.6; font-size: 14px; color: var(--text); max-width: 100%; word-break: break-word; overflow-wrap: anywhere; }
     .user .bubble { background: var(--user); }
     .ai .bubble { background: var(--ai); }
     .status .bubble { background: var(--status); color: var(--muted); font-size: 13px; }
@@ -247,19 +345,34 @@ function renderLandingPage(): string {
     .bubble a { color: var(--accent); text-decoration: none; }
     .bubble a:hover { text-decoration: underline; }
     .cmd-details summary { cursor: pointer; color: var(--accent); }
-    #form { margin-top: auto; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); }
-    #input { width: 100%; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; min-height: 64px; max-height: 200px; resize: vertical; line-height: 1.5; }
-    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
+    #form { margin-top: auto; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 8px; width: 100%; box-sizing: border-box; }
+    #form-row { display: flex; align-items: center; gap: 8px; }
+    #attach-btn { padding: 10px 12px; background: #eef2ff; border: 1px solid #c7d2fe; color: #312e81; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    #attach-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status-label { font-size: 12px; color: var(--muted); }
+    #input { width: 100%; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 8px; font-size: 16px; min-height: 64px; max-height: 200px; resize: vertical; line-height: 1.5; overflow-x: hidden; white-space: pre-wrap; word-break: break-word; }
+    #attachments { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; background: #eef2ff; color: #1e1b4b; border-radius: 8px; font-size: 12px; }
+    .chip button { border: none; background: transparent; cursor: pointer; color: #6b7280; }
+    .typing-bubble { display: flex; gap: 6px; align-items: center; }
+    .typing-dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; animation: typing 1s infinite; opacity: 0.6; }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typing { 0% { transform: translateY(0); opacity: 0.6; } 50% { transform: translateY(-2px); opacity: 1; } 100% { transform: translateY(0); opacity: 0.6; } }
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); backdrop-filter: blur(18px); display: flex; align-items: center; justify-content: center; }
     .overlay.hidden { display: none; }
-    .overlay .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 20px 22px; width: 340px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; }
+    .overlay .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 20px 22px; width: 340px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; position: relative; z-index: 2; }
     .overlay h2 { margin: 0; font-size: 18px; }
     .overlay p { margin: 0; color: #4b5563; font-size: 13px; }
-    .overlay .row { display: flex; gap: 8px; }
-    .overlay input { flex: 1; padding: 10px 12px; font-size: 14px; border: 1px solid #d6d9e0; border-radius: 8px; }
-    .overlay button { padding: 11px 14px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    .overlay .row { display: flex; gap: 8px; align-items: center; }
+    .overlay input { flex: 1; padding: 10px 12px; font-size: 16px; border: 1px solid #d6d9e0; border-radius: 8px; line-height: 1.2; }
+    .overlay button { padding: 10px 14px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 16px; line-height: 1.2; white-space: nowrap; }
+    body.locked header, body.locked main { filter: blur(18px); pointer-events: none; user-select: none; }
     @media (max-width: 640px) {
-      main { padding: 12px 10px 16px; }
-      #log { min-height: 55vh; }
+      main { padding: 12px 10px 16px; gap: 10px; max-width: 100%; max-height: calc(var(--vh) - var(--header-h)); }
+      #sidebar { display: none; }
+      #console { width: 100%; }
+      #log { min-height: 60vh; }
     }
   </style>
 </head>
@@ -280,7 +393,13 @@ function renderLandingPage(): string {
     <section id="console">
       <div id="log"></div>
       <form id="form">
+        <div id="form-row">
+          <button id="attach-btn" type="button">📎 图片</button>
+          <span id="status-label">已断开</span>
+        </div>
+        <div id="attachments"></div>
         <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
+        <input id="image-input" type="file" accept="image/*" multiple hidden />
       </form>
     </section>
   </main>
@@ -304,13 +423,48 @@ function renderLandingPage(): string {
     const tokenOverlay = document.getElementById('token-overlay');
     const tokenInput = document.getElementById('token-input');
     const tokenSubmit = document.getElementById('token-submit');
+    const attachBtn = document.getElementById('attach-btn');
+    const imageInput = document.getElementById('image-input');
+    const attachmentsEl = document.getElementById('attachments');
+    const statusLabel = document.getElementById('status-label');
     const idleMinutes = ${IDLE_MINUTES};
+    const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+    const viewport = window.visualViewport;
     let ws;
     let sendQueue = [];
     let streamState = null;
     let autoScroll = true;
     let commandMessage = null;
     let idleTimer = null;
+    let reconnectTimer = null;
+    let pendingImages = [];
+    let typingPlaceholder = null;
+    let wsErrorMessage = null;
+
+    function applyVh() {
+      const vh = viewport ? viewport.height : window.innerHeight;
+      document.documentElement.style.setProperty('--vh', vh + 'px');
+    }
+    applyVh();
+    window.addEventListener('resize', applyVh);
+    if (viewport) {
+      viewport.addEventListener('resize', applyVh);
+    }
+
+    function recalcLogHeight() {
+      if (!logEl) return;
+      const headerEl = document.querySelector('header');
+      const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
+      const formH = formEl ? formEl.getBoundingClientRect().height : 0;
+      const vh = viewport ? viewport.height : window.innerHeight;
+      const gap = 32; // padding/margins buffer
+      const available = vh - headerH - formH - gap;
+      const min = 180;
+      const target = Math.max(min, available);
+      logEl.style.maxHeight = target + 'px';
+      logEl.style.minHeight = Math.max(min, Math.min(target, 0.6 * vh)) + 'px';
+    }
+    recalcLogHeight();
 
     function escapeHtml(str) {
       if (!str) return '';
@@ -396,6 +550,19 @@ function renderLandingPage(): string {
       logEl.scrollTop = logEl.scrollHeight;
     }
 
+    function setLocked(locked) {
+      document.body.classList.toggle('locked', !!locked);
+    }
+
+    function scheduleReconnect() {
+      if (!tokenOverlay.classList.contains('hidden')) return;
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, 1500);
+    }
+
     logEl.addEventListener('scroll', () => {
       const nearBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80;
       autoScroll = nearBottom;
@@ -423,6 +590,31 @@ function renderLandingPage(): string {
       return appendMessage('status', text, { status: true });
     }
 
+    function clearTypingPlaceholder() {
+      if (typingPlaceholder?.wrapper?.isConnected) {
+        typingPlaceholder.wrapper.remove();
+      }
+      typingPlaceholder = null;
+    }
+
+    function appendTypingPlaceholder() {
+      clearTypingPlaceholder();
+      const wrapper = document.createElement('div');
+      wrapper.className = 'msg ai';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble typing-bubble';
+      for (let i = 0; i < 3; i++) {
+        const dot = document.createElement('span');
+        dot.className = 'typing-dot';
+        bubble.appendChild(dot);
+      }
+      wrapper.appendChild(bubble);
+      logEl.appendChild(wrapper);
+      autoScrollIfNeeded();
+      typingPlaceholder = { wrapper, bubble };
+      return typingPlaceholder;
+    }
+
     function getOrCreateCommandMessage() {
       if (commandMessage && commandMessage.wrapper?.isConnected) {
         return commandMessage;
@@ -444,12 +636,13 @@ function renderLandingPage(): string {
     }
 
     function setWsState(state) {
-      if (!wsIndicator) return;
-      wsIndicator.classList.remove('connected', 'connecting');
-      if (state === 'connected') {
-        wsIndicator.classList.add('connected');
-      } else if (state === 'connecting') {
-        wsIndicator.classList.add('connecting');
+      if (wsIndicator) {
+        wsIndicator.classList.remove('connected', 'connecting');
+        if (state === 'connected') {
+          wsIndicator.classList.add('connected');
+        } else if (state === 'connecting') {
+          wsIndicator.classList.add('connecting');
+        }
       }
       const label =
         state === 'connected'
@@ -457,8 +650,17 @@ function renderLandingPage(): string {
           : state === 'connecting'
           ? 'WebSocket connecting'
           : 'WebSocket disconnected';
-      wsIndicator.setAttribute('title', label);
-      wsIndicator.setAttribute('aria-label', label);
+      if (wsIndicator) {
+        wsIndicator.setAttribute('title', label);
+        wsIndicator.setAttribute('aria-label', label);
+      }
+      if (statusLabel) {
+        statusLabel.textContent =
+          state === 'connected' ? '已连接' : state === 'connecting' ? '连接中…' : '已断开';
+      }
+      const enableInput = state === 'connected';
+      if (inputEl) inputEl.disabled = !enableInput;
+      if (attachBtn) attachBtn.disabled = !enableInput;
     }
 
     const TOKEN_KEY = 'ADS_WEB_TOKEN';
@@ -475,6 +677,7 @@ function renderLandingPage(): string {
         }
         tokenOverlay.classList.remove('hidden');
         tokenInput.value = '';
+        setLocked(true);
         appendMessage('ai', reason, { status: true });
         setWsState('disconnected');
       }, idleMinutes * 60 * 1000);
@@ -485,15 +688,26 @@ function renderLandingPage(): string {
       if (!token) {
         tokenOverlay.classList.remove('hidden');
         tokenInput.focus();
+        setLocked(true);
         return;
       }
       tokenOverlay.classList.add('hidden');
+      setLocked(false);
       const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
       setWsState('connecting');
       ws = new WebSocket(url, ['ads-token', token]);
       ws.onopen = () => {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (wsErrorMessage?.wrapper?.isConnected) {
+          wsErrorMessage.wrapper.remove();
+          wsErrorMessage = null;
+        }
         setWsState('connected');
         resetIdleTimer();
+        setLocked(false);
       };
       ws.onmessage = (ev) => {
         try {
@@ -513,13 +727,16 @@ function renderLandingPage(): string {
           } else if (msg.type === 'workspace') {
             renderWorkspaceInfo(msg.data);
           } else if (msg.type === 'error') {
-            if (sendQueue.length > 0) {
-              sendQueue.shift();
-            }
+            const failedKind = sendQueue.shift() || 'prompt';
+            clearTypingPlaceholder();
             streamState = null;
-            showCommand('命令失败');
-            appendMessage('ai', msg.message || '错误', { status: true });
-            clearCommand();
+            if (failedKind === 'command') {
+              showCommand('命令失败');
+              appendMessage('ai', msg.message || '错误', { status: true });
+              clearCommand();
+            } else {
+              appendMessage('ai', msg.message || '错误', { status: true });
+            }
             return;
           } else {
             appendMessage('ai', ev.data, { status: true });
@@ -537,15 +754,21 @@ function renderLandingPage(): string {
           sessionStorage.removeItem(TOKEN_KEY);
           tokenOverlay.classList.remove('hidden');
           tokenInput.value = '';
+          setLocked(true);
           appendMessage('ai', '口令无效或已过期，请重新输入', { status: true });
         } else if (ev.code === 4409) {
           appendMessage('ai', '已有新连接，当前会话被替换', { status: true });
         }
         renderWorkspaceInfo(null);
+        scheduleReconnect();
       };
       ws.onerror = (err) => {
         setWsState('disconnected');
-        appendMessage('ai', 'WS error: ' + err.message, { status: true });
+        const message = err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
+        if (!wsErrorMessage || !wsErrorMessage.wrapper?.isConnected) {
+          wsErrorMessage = appendMessage('ai', 'WS error: ' + message, { status: true });
+        }
+        scheduleReconnect();
       };
     }
 
@@ -559,28 +782,60 @@ function renderLandingPage(): string {
         }
       }
       resetIdleTimer();
+      recalcLogHeight();
+    });
+
+    inputEl.addEventListener('focus', recalcLogHeight);
+    inputEl.addEventListener('blur', recalcLogHeight);
+
+    if (attachBtn && imageInput) {
+      attachBtn.addEventListener('click', () => imageInput.click());
+    }
+
+    if (imageInput) {
+      imageInput.addEventListener('change', () => addImagesFromFiles(imageInput.files));
+    }
+
+    formEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+
+    formEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      addImagesFromFiles(e.dataTransfer?.files || []);
     });
 
     formEl.addEventListener('submit', (e) => {
       e.preventDefault();
       const text = inputEl.value.trim();
-      if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const hasImages = pendingImages.length > 0;
+      if ((!text && !hasImages) || !ws || ws.readyState !== WebSocket.OPEN) return;
       const isCommand = text.startsWith('/');
       const type = isCommand ? 'command' : 'prompt';
-      ws.send(JSON.stringify({ type, payload: text }));
+      const payload = isCommand
+        ? text
+        : {
+            text,
+            images: hasImages ? pendingImages : undefined,
+          };
+      ws.send(JSON.stringify({ type, payload }));
       sendQueue.push(type);
       if (isCommand) {
         showCommand('执行中: ' + text);
       } else {
-        appendMessage('user', text);
+        appendMessage('user', text || '(图片)');
+        appendTypingPlaceholder();
+        streamState = null;
       }
       inputEl.value = '';
+      clearAttachments();
       inputEl.focus();
       resetIdleTimer();
     });
 
     function ensureStream() {
       if (!streamState) {
+        clearTypingPlaceholder();
         streamState = {
           buffer: '',
           message: appendMessage('ai', '', { markdown: false }),
@@ -618,6 +873,7 @@ function renderLandingPage(): string {
     }
 
     function finalizeStream(output) {
+      clearTypingPlaceholder();
       if (streamState) {
         const finalText = output || streamState.buffer;
         streamState.message.bubble.innerHTML = renderMarkdown(finalText);
@@ -630,6 +886,7 @@ function renderLandingPage(): string {
 
     function handleResult(msg) {
       const kind = sendQueue.shift() || 'prompt';
+      clearTypingPlaceholder();
       if (kind === 'command') {
         appendCommandResult(Boolean(msg.ok), msg.output || '');
         clearCommand();
@@ -644,15 +901,12 @@ function renderLandingPage(): string {
       workspaceInfoEl.innerHTML = '';
       if (modifiedFilesEl) modifiedFilesEl.innerHTML = '';
       if (!info) return;
-      const paths = [];
-      if (info.path) paths.push(info.path);
-      if (info.rules) paths.push('Rules: ' + info.rules);
-      paths.forEach((line) => {
+      if (info.path) {
         const span = document.createElement('span');
         span.className = 'path';
-        span.textContent = line;
+        span.textContent = info.path;
         workspaceInfoEl.appendChild(span);
-      });
+      }
       if (modifiedFilesEl && Array.isArray(info.modified)) {
         if (info.modified.length === 0) {
           const span = document.createElement('span');
@@ -673,6 +927,59 @@ function renderLandingPage(): string {
           }
         }
       }
+    }
+
+    function renderAttachments() {
+      if (!attachmentsEl) return;
+      attachmentsEl.innerHTML = '';
+      pendingImages.forEach((img, idx) => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        const label = document.createElement('span');
+        const sizeKb = Math.round((img.size || 0) / 1024);
+        label.textContent = (img.name || '图片') + (sizeKb ? ' (' + sizeKb + 'KB)' : '');
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+          pendingImages.splice(idx, 1);
+          renderAttachments();
+        });
+        chip.appendChild(label);
+        chip.appendChild(remove);
+        attachmentsEl.appendChild(chip);
+      });
+    }
+
+    function addImagesFromFiles(files) {
+      if (!files?.length) return;
+      Array.from(files).forEach((file) => {
+        if (!file.type.startsWith('image/')) {
+          appendStatus('仅支持图片文件: ' + file.name);
+          return;
+        }
+        if (file.size > MAX_IMAGE_BYTES) {
+          appendStatus(file.name + ' 超过 2MB 限制');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result;
+          if (typeof result !== 'string') return;
+          const base64 = result.includes(',') ? result.split(',').pop() || '' : result;
+          pendingImages.push({ name: file.name, mime: file.type, size: file.size, data: base64 });
+          renderAttachments();
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function clearAttachments() {
+      pendingImages = [];
+      if (imageInput) {
+        imageInput.value = '';
+      }
+      renderAttachments();
     }
 
     tokenSubmit.addEventListener('click', () => {
@@ -773,9 +1080,10 @@ async function start(): Promise<void> {
       const isCommand = parsed.type === "command";
 
       if (isPrompt) {
-        const promptText = sanitizeInput(parsed.payload);
-        if (!promptText) {
-          ws.send(JSON.stringify({ type: "error", message: "Payload must be a text prompt" }));
+        const imageDir = path.join(currentCwd, ".ads", "temp", "web-images");
+        const promptInput = buildPromptInput(parsed.payload, imageDir);
+        if (!promptInput.ok) {
+          ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
           return;
         }
         const status = orchestrator.status();
@@ -803,7 +1111,7 @@ async function start(): Promise<void> {
           }
         });
         try {
-          const result = await orchestrator.send(promptText, { streaming: true });
+          const result = await orchestrator.send(promptInput.input, { streaming: true });
           ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
           sendWorkspaceState(ws, currentCwd);
         } catch (error) {
