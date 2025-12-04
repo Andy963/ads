@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { WebSocket, RawData } from "ws";
 import childProcess from "node:child_process";
-import type { Input } from "@openai/codex-sdk";
+import type { CommandExecutionItem, Input } from "@openai/codex-sdk";
 
 import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
@@ -175,6 +175,28 @@ function sanitizeInput(input: unknown): string | null {
     return typeof command === "string" ? command : null;
   }
   return null;
+}
+
+function extractCommandPayload(
+  event: AgentEvent,
+): { id?: string; command?: string; status?: string; exit_code?: number; aggregated_output?: string } | null {
+  const raw = event.raw as { type?: string; item?: CommandExecutionItem };
+  if (!raw || typeof raw !== "object") return null;
+  if (!["item.started", "item.updated", "item.completed"].includes(raw.type ?? "")) {
+    return null;
+  }
+  const item = raw.item;
+  if (!item || (item as CommandExecutionItem).type !== "command_execution") {
+    return null;
+  }
+  const cmd = item as CommandExecutionItem;
+  return {
+    id: cmd.id,
+    command: cmd.command,
+    status: cmd.status,
+    exit_code: cmd.exit_code,
+    aggregated_output: cmd.aggregated_output,
+  };
 }
 
 function getWorkspaceState(workspaceRoot: string): { path: string; rules: string; modified: string[] } {
@@ -440,7 +462,10 @@ function renderLandingPage(): string {
     let sendQueue = [];
     let streamState = null;
     let autoScroll = true;
-    let commandMessage = null;
+    let activeCommandView = null;
+    let activeCommandSignature = null;
+    let activeCommandId = null;
+    let lastCommandText = '';
     let idleTimer = null;
     let reconnectTimer = null;
     let pendingImages = [];
@@ -566,8 +591,10 @@ function renderLandingPage(): string {
       if (typingPlaceholder?.wrapper && !typingPlaceholder.wrapper.isConnected) {
         typingPlaceholder = null;
       }
-      if (commandMessage?.wrapper && !commandMessage.wrapper.isConnected) {
-        commandMessage = null;
+      if (activeCommandView && !activeCommandView.wrapper?.isConnected) {
+        activeCommandView = null;
+        activeCommandSignature = null;
+        activeCommandId = null;
       }
     }
 
@@ -638,26 +665,80 @@ function renderLandingPage(): string {
       return typingPlaceholder;
     }
 
-    function getOrCreateCommandMessage() {
-      if (commandMessage && commandMessage.wrapper?.isConnected) {
-        return commandMessage;
-      }
-      commandMessage = appendMessage('status', '', { status: true });
-      return commandMessage;
+    function startNewTurn() {
+      resetCommandView();
+      lastCommandText = '';
     }
 
-    function showCommand(text) {
+    function resetCommandView() {
+      activeCommandView = null;
+      activeCommandSignature = null;
+      activeCommandId = null;
+    }
+
+    function buildCommandHeading(status, exitCode) {
+      const exitText = exitCode === undefined || exitCode === null ? '' : ' (exit ' + exitCode + ')';
+      if (status === 'failed') {
+        return '命令失败' + exitText;
+      }
+      if (status === 'completed') {
+        return '命令完成' + exitText;
+      }
+      return '命令执行中';
+    }
+
+    function renderCommandView(options = {}) {
+      const cmdId = options.id || null;
+      if (cmdId && activeCommandId && cmdId !== activeCommandId) {
+        resetCommandView();
+      }
+      if (cmdId) {
+        activeCommandId = cmdId;
+      }
+      const commandText = options.commandText || options.detail || '';
+      const status = options.status || 'in_progress';
+      const exitCode = options.exitCode;
+      const heading = options.title || buildCommandHeading(status, exitCode);
+      const output = typeof options.output === 'string' ? options.output : '';
+      const { snippet, truncated } = summarizeCommandOutput(output);
+      const signature = [commandText, status, snippet, heading].join('||');
+      if (signature === activeCommandSignature && activeCommandView?.wrapper?.isConnected) {
+        return;
+      }
+      activeCommandSignature = signature;
       clearTypingPlaceholder();
       streamState = null;
-      const msg = getOrCreateCommandMessage();
-      msg.bubble.textContent = text;
-    }
+      const message = activeCommandView?.wrapper?.isConnected ? activeCommandView : appendMessage('status', '', { status: true });
+      activeCommandView = message;
+      const bubble = message.bubble;
+      bubble.innerHTML = '';
 
-    function clearCommand() {
-      if (commandMessage?.wrapper?.isConnected) {
-        commandMessage.wrapper.remove();
+      if (commandText) {
+        const cmdLabel = document.createElement('div');
+        cmdLabel.textContent = '命令';
+        cmdLabel.style.color = 'var(--muted)';
+        cmdLabel.style.fontSize = '12px';
+        cmdLabel.style.marginTop = '6px';
+        bubble.appendChild(cmdLabel);
+
+        const cmdBlock = document.createElement('pre');
+        cmdBlock.className = 'code-block';
+        cmdBlock.textContent = commandText;
+        bubble.appendChild(cmdBlock);
       }
-      commandMessage = null;
+
+      const outBlock = document.createElement('pre');
+      outBlock.className = 'code-block';
+      outBlock.textContent = snippet || '(无输出)';
+      outBlock.style.marginTop = '6px';
+      bubble.appendChild(outBlock);
+
+      const headingEl = document.createElement('div');
+      headingEl.textContent = heading;
+      headingEl.style.fontWeight = '600';
+      headingEl.style.marginTop = '8px';
+      bubble.appendChild(headingEl);
+      autoScrollIfNeeded();
     }
 
     function setWsState(state) {
@@ -742,7 +823,15 @@ function renderLandingPage(): string {
           } else if (msg.type === 'delta') {
             handleDelta(msg.delta || '');
           } else if (msg.type === 'command') {
-            showCommand(msg.detail || '命令执行中');
+            const cmd = msg.command || {};
+            renderCommandView({
+              id: cmd.id,
+              commandText: cmd.command || msg.detail || '',
+              detail: msg.detail,
+              status: cmd.status || 'in_progress',
+              output: cmd.aggregated_output || '',
+              exitCode: cmd.exit_code,
+            });
             return;
           } else if (msg.type === 'welcome') {
             setWsState('connected');
@@ -753,12 +842,14 @@ function renderLandingPage(): string {
             renderWorkspaceInfo(msg.data);
           } else if (msg.type === 'error') {
             const failedKind = sendQueue.shift() || 'prompt';
-            clearTypingPlaceholder();
-            streamState = null;
             if (failedKind === 'command') {
-              showCommand('命令失败');
+              renderCommandView({
+                commandText: lastCommandText || '',
+                status: 'failed',
+                output: msg.message || '',
+                title: '命令失败',
+              });
               appendMessage('ai', msg.message || '错误', { status: true });
-              clearCommand();
             } else {
               appendMessage('ai', msg.message || '错误', { status: true });
             }
@@ -835,6 +926,7 @@ function renderLandingPage(): string {
       const text = inputEl.value.trim();
       const hasImages = pendingImages.length > 0;
       if ((!text && !hasImages) || !ws || ws.readyState !== WebSocket.OPEN) return;
+      startNewTurn();
       const isCommand = text.startsWith('/');
       const type = isCommand ? 'command' : 'prompt';
       const payload = isCommand
@@ -847,8 +939,10 @@ function renderLandingPage(): string {
       ws.send(JSON.stringify({ type, payload }));
       sendQueue.push(type);
       if (isCommand) {
-        showCommand('执行中: ' + text);
+        lastCommandText = text;
+        renderCommandView({ commandText: text, status: 'in_progress' });
       } else {
+        lastCommandText = '';
         appendMessage('user', text || '(图片)');
         appendTypingPlaceholder();
         streamState = null;
@@ -897,35 +991,15 @@ function renderLandingPage(): string {
       return { snippet, truncated, full: text };
     }
 
-    function appendCommandResult(ok, output) {
-      showCommand(ok ? '命令完成' : '命令失败');
-      const { bubble } = appendMessage('ai', '', { status: true });
-      const { snippet, truncated, full } = summarizeCommandOutput(output);
-      const heading = document.createElement('div');
-      heading.textContent = ok
-        ? truncated
-          ? '命令已执行（已截断前10行）'
-          : '命令已执行'
-        : truncated
-          ? '命令失败（已截断前10行）'
-          : '命令失败';
-      bubble.appendChild(heading);
-      const snippetEl = document.createElement('div');
-      snippetEl.innerHTML = renderMarkdown(snippet);
-      bubble.appendChild(snippetEl);
-
-      if (truncated && full) {
-        const details = document.createElement('details');
-        details.className = 'cmd-details';
-        const s = document.createElement('summary');
-        s.textContent = '展开完整输出';
-        details.appendChild(s);
-        const fullEl = document.createElement('div');
-        fullEl.innerHTML = renderMarkdown(full);
-        details.appendChild(fullEl);
-        bubble.appendChild(details);
-      }
-      autoScrollIfNeeded();
+    function appendCommandResult(ok, output, commandText, exitCode) {
+      const normalizedCommand = typeof commandText === 'string' ? commandText : '';
+      renderCommandView({
+        commandText: normalizedCommand || lastCommandText,
+        status: ok ? 'completed' : 'failed',
+        output,
+        exitCode,
+        title: ok ? '命令完成' : '命令失败',
+      });
     }
 
     function finalizeStream(output) {
@@ -944,8 +1018,8 @@ function renderLandingPage(): string {
       const kind = sendQueue.shift() || 'prompt';
       clearTypingPlaceholder();
       if (kind === 'command') {
-        appendCommandResult(Boolean(msg.ok), msg.output || '');
-        clearCommand();
+        appendCommandResult(Boolean(msg.ok), msg.output || '', msg.command, msg.exit_code);
+        resetIdleTimer();
         return;
       }
       finalizeStream(msg.output || '');
@@ -1165,10 +1239,12 @@ async function start(): Promise<void> {
             return;
           }
           if (event.phase === "command") {
+            const commandPayload = extractCommandPayload(event);
             ws.send(
               JSON.stringify({
                 type: "command",
                 detail: event.detail ?? event.title,
+                command: commandPayload ?? undefined,
               }),
             );
             return;
