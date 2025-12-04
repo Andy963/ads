@@ -1,74 +1,50 @@
-const TELEGRAM_MARKDOWN_ESCAPE = new RegExp("([_*()~`+=|{}!\\[\\]])", "g");
-const TELEGRAM_CODE_ESCAPE = /([`\\])/g;
-// For italic text (_..._), we only need to escape underscores and backslashes
-const TELEGRAM_ITALIC_ESCAPE = /([_\\])/g;
-// Escape MarkdownV2 specials; include '#' to avoid parse errors in thread IDs.
-const TELEGRAM_MARKDOWN_V2_ESCAPE = /([_*[\]()~`>+\-=|{}.!#\\])/g;
+import telegramifyMarkdown from "telegramify-markdown";
 
+type UnsupportedTagsStrategy = "escape" | "remove" | "keep";
+
+const DEFAULT_STRATEGY: UnsupportedTagsStrategy = "escape";
+
+/**
+ * Convert Markdown into Telegram-safe MarkdownV2 using telegramify-markdown.
+ * Defaults to escaping unsupported tags to avoid parse errors.
+ */
 export function escapeTelegramMarkdown(text: string): string {
-  if (!text) {
-    return "";
-  }
-  return text.replace(TELEGRAM_MARKDOWN_ESCAPE, "\\$1");
+  return toTelegramMarkdown(text);
 }
 
 /**
- * Escape text for Telegram MarkdownV2 while preserving code.
- * - Keeps ``` fenced blocks intact.
- * - Keeps inline `code` blocks, only escaping backtick/backslash inside them.
- * - Escapes MarkdownV2 specials elsewhere.
+ * Alias for Telegram MarkdownV2 escaping.
  */
 export function escapeTelegramMarkdownV2(text: string): string {
+  return toTelegramMarkdown(text);
+}
+
+function toTelegramMarkdown(
+  text: string,
+  strategy: UnsupportedTagsStrategy = DEFAULT_STRATEGY,
+): string {
   if (!text) {
     return "";
   }
-
-  const fenceSplit = text.split(/(```[\s\S]*?```)/);
-  return fenceSplit
-    .map((segment) => {
-      if (segment.startsWith("```") && segment.endsWith("```")) {
-        return segment; // preserve fenced code blocks
-      }
-
-      // Process inline code segments within this non-fence segment
-      const inlineRegex = /`([^`\n]+)`/g;
-      let lastIndex = 0;
-      let result = "";
-      let match: RegExpExecArray | null;
-
-      while ((match = inlineRegex.exec(segment)) !== null) {
-        const before = segment.slice(lastIndex, match.index);
-        result += before.replace(TELEGRAM_MARKDOWN_V2_ESCAPE, "\\$1");
-
-        const codeContent = match[1].replace(/([`\\])/g, "\\$1");
-        result += "`" + codeContent + "`";
-
-        lastIndex = match.index + match[0].length;
-      }
-
-      const tail = segment.slice(lastIndex);
-      result += tail.replace(TELEGRAM_MARKDOWN_V2_ESCAPE, "\\$1");
-
-      return result;
-    })
-    .join("");
+  return telegramifyMarkdown(text, strategy);
 }
 
+/**
+ * Escape inline code content (used inside single backticks).
+ */
 export function escapeTelegramInlineCode(text: string): string {
   if (!text) {
     return "";
   }
-  return text.replace(TELEGRAM_CODE_ESCAPE, "\\$1");
+  return text.replace(/([`\\])/g, "\\$1");
 }
 
 /**
- * Escape text for use inside italic markers (_..._)
- * Only escapes underscores and backslashes, as parentheses and other
- * special characters don't need escaping inside italic blocks
+ * Escape italic content (used inside underscores).
  */
 export function escapeTelegramItalic(text: string): string {
   if (!text) {
     return "";
   }
-  return text.replace(TELEGRAM_ITALIC_ESCAPE, "\\$1");
+  return text.replace(/([_\\])/g, "\\$1");
 }
