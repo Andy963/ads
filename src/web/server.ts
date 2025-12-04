@@ -47,6 +47,9 @@ const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
 const IDLE_MINUTES = Math.max(1, Number(process.env.ADS_WEB_IDLE_MINUTES ?? 15));
 const logger = createLogger("WebSocket");
 
+// Cache last workspace per client token to persist cwd across reconnects (process memory only)
+const workspaceCache = new Map<string, string>();
+
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
 }
@@ -1032,9 +1035,20 @@ async function start(): Promise<void> {
     }
     clients.add(ws);
 
+    const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
     const directoryManager = new DirectoryManager(allowedDirs);
     const userId = 0;
+    const cachedWorkspace = workspaceCache.get(clientKey);
     let currentCwd = directoryManager.getUserCwd(userId);
+    if (cachedWorkspace) {
+      const restoreResult = directoryManager.setUserCwd(userId, cachedWorkspace);
+      if (!restoreResult.success) {
+        logger.warn(`[Web][WorkspaceRestore] failed path=${cachedWorkspace} reason=${restoreResult.error}`);
+      } else {
+        currentCwd = directoryManager.getUserCwd(userId);
+      }
+    }
+    workspaceCache.set(clientKey, currentCwd);
 
     const systemPromptManager = new SystemPromptManager({
       workspaceRoot: currentCwd,
@@ -1152,6 +1166,7 @@ async function start(): Promise<void> {
           return;
         }
         currentCwd = directoryManager.getUserCwd(userId);
+        workspaceCache.set(clientKey, currentCwd);
         orchestrator.setWorkingDirectory(currentCwd);
         systemPromptManager.setWorkspaceRoot(currentCwd);
 
