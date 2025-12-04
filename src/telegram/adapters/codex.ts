@@ -668,15 +668,16 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
+      const content = commandMessageUseMarkdown ? escapeTelegramMarkdownV2(text) : text;
       const options = commandMessageUseMarkdown
         ? { disable_notification: silentNotifications, parse_mode: 'MarkdownV2' as const }
         : {
             disable_notification: silentNotifications,
             link_preview_options: { is_disabled: true as const },
           };
-      const newMsg = await ctx.reply(text, options);
+      const newMsg = await ctx.reply(content, options);
       commandMessageId = newMsg.message_id;
-      commandMessageText = text;
+      commandMessageText = content;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
       if (isParseEntityError(error)) {
@@ -716,11 +717,12 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
     }
     try {
+      const content = commandMessageUseMarkdown ? escapeTelegramMarkdownV2(text) : text;
       const options = commandMessageUseMarkdown
         ? { parse_mode: 'MarkdownV2' as const }
         : { link_preview_options: { is_disabled: true as const } };
-      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text, options);
-      commandMessageText = text;
+      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, content, options);
+      commandMessageText = content;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
       if (isParseEntityError(error)) {
