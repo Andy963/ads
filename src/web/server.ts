@@ -324,7 +324,6 @@ function renderLandingPage(): string {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ADS Web Console</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" integrity="sha512-Y7tQS9cPENs6eKf9pKVtWulGNS7l2AvHPvvrppVBNJwjt6KZdcpYDJ72HjVRUFy7j4L+L3NAwwSzEAPFYR0c0w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
   <style>
     :root {
       --vh: 100vh;
@@ -367,9 +366,8 @@ function renderLandingPage(): string {
     .ai .bubble { background: var(--ai); }
     .status .bubble { background: var(--status); color: var(--muted); font-size: 13px; }
     .meta { font-size: 12px; color: var(--muted); display: none; }
-    .code-block { background: #0d1117; padding: 12px; border-radius: 10px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
-    .code-block code { background: transparent !important; display: block; font: inherit; white-space: pre-wrap; padding: 0 !important; }
-    .code-block code.hljs { background: transparent !important; padding: 0 !important; }
+    .code-block { background: #f7f7f9; color: #111827; padding: 12px; border-radius: 10px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; border: 1px solid #e5e7eb; }
+    .code-block code { background: transparent !important; display: block; font: inherit; white-space: pre-wrap; padding: 0 !important; color: inherit; }
     .bubble > code { background: rgba(15,23,42,0.07); padding: 2px 5px; border-radius: 6px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 13px; }
     .bubble h1, .bubble h2, .bubble h3 { margin: 0 0 6px; line-height: 1.3; }
     .bubble p { margin: 0 0 8px; }
@@ -449,7 +447,6 @@ function renderLandingPage(): string {
       </div>
     </div>
   </div>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-5t6mTmGNG0By8mBGsRSk4ArhcXdMzdXAQS7XI0bXVUO0Fr0jnr8VJp9AfJ0sl64dWSi2YRX8J5kREhXPUAQ/7A==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script>
     const logEl = document.getElementById('log');
     const inputEl = document.getElementById('input');
@@ -483,25 +480,6 @@ function renderLandingPage(): string {
     let pendingImages = [];
     let typingPlaceholder = null;
     let wsErrorMessage = null;
-    
-    // 等待 highlight.js 加载完成后再配置
-    function initHighlightJs() {
-      if (window.hljs) {
-        // 不限制语言，让 highlight.js 自动检测
-        window.hljs.configure({ 
-          ignoreUnescapedHTML: true 
-        });
-        console.log('highlight.js initialized');
-        return true;
-      }
-      return false;
-    }
-    
-    // 立即尝试初始化，如果失败则在 DOMContentLoaded 时重试
-    if (!initHighlightJs()) {
-      document.addEventListener('DOMContentLoaded', initHighlightJs);
-    }
-
     function applyVh() {
       const vh = viewport ? viewport.height : window.innerHeight;
       document.documentElement.style.setProperty('--vh', vh + 'px');
@@ -606,27 +584,9 @@ function renderLandingPage(): string {
         .join('');
     }
 
-    function highlightCode(text, language) {
-      if (!window.hljs) return escapeHtml(text);
-      try {
-        if (language && window.hljs.getLanguage(language)) {
-          return window.hljs.highlight(text, { language }).value;
-        }
-        return window.hljs.highlightAuto(text).value;
-      } catch (e) {
-        console.warn('Failed to highlight code:', e);
-        return escapeHtml(text);
-      }
-    }
-
     function highlightCodeWithin(element) {
-      if (!element || !window.hljs) return;
-      element.querySelectorAll('pre.code-block code:not(.hljs)').forEach((code) => {
-        const lang = code.className.replace('language-', '') || null;
-        const text = code.textContent || '';
-        code.innerHTML = highlightCode(text, lang);
-        code.classList.add('hljs');
-      });
+      // no-op: code highlighting disabled
+      return;
     }
 
     function createCodeBlockElement(content, language) {
@@ -636,8 +596,7 @@ function renderLandingPage(): string {
       if (language) {
         code.classList.add('language-' + language);
       }
-      code.innerHTML = highlightCode(content, language);
-      code.classList.add('hljs');
+      code.textContent = content || '';
       pre.appendChild(code);
       return pre;
     }
@@ -734,11 +693,14 @@ function renderLandingPage(): string {
     }
 
     function startNewTurn() {
-      resetCommandView();
+      resetCommandView(true);
       lastCommandText = '';
     }
 
-    function resetCommandView() {
+    function resetCommandView(removeWrapper) {
+      if (removeWrapper && activeCommandView?.wrapper?.isConnected) {
+        activeCommandView.wrapper.remove();
+      }
       activeCommandView = null;
       activeCommandSignature = null;
       activeCommandId = null;
@@ -758,7 +720,7 @@ function renderLandingPage(): string {
     function renderCommandView(options = {}) {
       const cmdId = options.id || null;
       if (cmdId && activeCommandId && cmdId !== activeCommandId) {
-        resetCommandView();
+        resetCommandView(true);
       }
       if (cmdId) {
         activeCommandId = cmdId;
