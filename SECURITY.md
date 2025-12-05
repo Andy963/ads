@@ -71,7 +71,7 @@ We appreciate security researchers who help keep ADS safe:
 #### Telegram Bot Security
 
 - **Whitelist Users**: Always set `TELEGRAM_ALLOWED_USERS` to specific user IDs
-- **Limit Directories**: Use `TELEGRAM_ALLOWED_DIRS` to restrict accessible paths
+- **Limit Directories**: Use `ALLOWED_DIRS`（全端共享）限制可访问路径
 - **Sandbox Mode**: Use `read-only` or `workspace-write` mode unless absolutely necessary
   - `read-only`: Bot can only read files
   - `workspace-write`: Bot can write within allowed directories
@@ -121,7 +121,7 @@ If you accidentally commit a secret:
 
 ### Current Limitations
 
-1. **Telegram Bot Access**: The bot has extensive access to configured directories. Ensure proper configuration of `TELEGRAM_ALLOWED_DIRS` and `TELEGRAM_SANDBOX_MODE`.
+1. **Telegram Bot Access**: The bot has extensive access to configured directories. Ensure proper configuration of `ALLOWED_DIRS` and `TELEGRAM_SANDBOX_MODE`.
 
 2. **SQLite Database**: The `.ads/ads.db` file may contain sensitive information. Ensure it's not committed to version control (covered by `.gitignore`).
 

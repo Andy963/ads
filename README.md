@@ -274,7 +274,7 @@ Security is important to us. If you discover a security vulnerability, please fo
 - Never commit `.env` or `.env.*` files to version control
 - Use `.env.example` as a template
 - Set proper file permissions for sensitive files (`chmod 600 .env`)
-- Configure `TELEGRAM_ALLOWED_USERS` and `TELEGRAM_ALLOWED_DIRS` appropriately
+- Configure `TELEGRAM_ALLOWED_USERS` and `ALLOWED_DIRS` appropriately
 - If your environment requires a proxy, set `TELEGRAM_PROXY_URL` (e.g. `http://127.0.0.1:7897`) instead of hardcoding it in code
 - Revoke leaked tokens immediately via [@BotFather](https://t.me/BotFather)
 
