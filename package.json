@@ -52,7 +52,8 @@
     "toml": "^3.0.0",
     "ws": "^8.18.0",
     "yaml": "^2.6.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@tavily/core": "^0.5.4"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
