@@ -367,9 +367,10 @@ function renderLandingPage(): string {
     .ai .bubble { background: var(--ai); }
     .status .bubble { background: var(--status); color: var(--muted); font-size: 13px; }
     .meta { font-size: 12px; color: var(--muted); display: none; }
-    .code-block { background: #0b1221; color: #f8fafc; padding: 12px; border-radius: 10px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
-    .code-block code { background: transparent; display: block; font: inherit; color: inherit; white-space: pre-wrap; }
-    .bubble code { background: rgba(15,23,42,0.07); padding: 2px 5px; border-radius: 6px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 13px; }
+    .code-block { background: #0d1117; padding: 12px; border-radius: 10px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+    .code-block code { background: transparent !important; display: block; font: inherit; white-space: pre-wrap; padding: 0 !important; }
+    .code-block code.hljs { background: transparent !important; padding: 0 !important; }
+    .bubble > code { background: rgba(15,23,42,0.07); padding: 2px 5px; border-radius: 6px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 13px; }
     .bubble h1, .bubble h2, .bubble h3 { margin: 0 0 6px; line-height: 1.3; }
     .bubble p { margin: 0 0 8px; }
     .bubble ul { margin: 0 0 8px 18px; padding: 0; }
@@ -597,26 +598,35 @@ function renderLandingPage(): string {
         .map((seg) => {
           if (seg.type === 'code') {
             const code = escapeHtml(seg.content.replace(/\\n+$/, ''));
-            const lang = seg.lang ? ' data-lang="' + escapeHtml(seg.lang) + '"' : '';
-            return '<pre class="code-block"><code' + lang + '>' + code + '</code></pre>';
+            const langClass = seg.lang ? ' class="language-' + escapeHtml(seg.lang) + '"' : '';
+            return '<pre class="code-block"><code' + langClass + '>' + code + '</code></pre>';
           }
           return renderTextBlock(seg.content);
         })
         .join('');
     }
 
-    function highlightCodeElement(codeEl) {
-      if (!window.hljs || !codeEl) return;
+    function highlightCode(text, language) {
+      if (!window.hljs) return escapeHtml(text);
       try {
-        window.hljs.highlightElement(codeEl);
+        if (language && window.hljs.getLanguage(language)) {
+          return window.hljs.highlight(text, { language }).value;
+        }
+        return window.hljs.highlightAuto(text).value;
       } catch (e) {
         console.warn('Failed to highlight code:', e);
+        return escapeHtml(text);
       }
     }
 
     function highlightCodeWithin(element) {
       if (!element || !window.hljs) return;
-      element.querySelectorAll('pre.code-block code').forEach((code) => highlightCodeElement(code));
+      element.querySelectorAll('pre.code-block code:not(.hljs)').forEach((code) => {
+        const lang = code.className.replace('language-', '') || null;
+        const text = code.textContent || '';
+        code.innerHTML = highlightCode(text, lang);
+        code.classList.add('hljs');
+      });
     }
 
     function createCodeBlockElement(content, language) {
@@ -626,9 +636,9 @@ function renderLandingPage(): string {
       if (language) {
         code.classList.add('language-' + language);
       }
-      code.textContent = content;
+      code.innerHTML = highlightCode(content, language);
+      code.classList.add('hljs');
       pre.appendChild(code);
-      highlightCodeElement(code);
       return pre;
     }
 
@@ -1396,11 +1406,63 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (slash?.command === "agent") {
+        orchestrator = sessionManager.getOrCreate(userId, currentCwd);
+        const agentArg = slash.body.trim();
+        if (!agentArg) {
+          const agents = orchestrator.listAgents();
+          if (agents.length === 0) {
+            ws.send(JSON.stringify({ type: "result", ok: false, output: "❌ 暂无可用代理" }));
+            return;
+          }
+          const activeId = orchestrator.getActiveAgentId();
+          const lines = agents
+            .map((entry) => {
+              const marker = entry.metadata.id === activeId ? "•" : "○";
+              const state = entry.status.ready ? "可用" : entry.status.error ?? "未配置";
+              return `${marker} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`;
+            })
+            .join("\n");
+          const message = [
+            "🤖 可用代理：",
+            lines,
+            "",
+            "使用 /agent <id> 切换代理，如 /agent claude。",
+            "需要 Claude 协助时，请在消息中插入 <<<agent.claude ...>>> 指令块描述任务。",
+          ].join("\n");
+          ws.send(JSON.stringify({ type: "result", ok: true, output: message }));
+          return;
+        }
+        const normalized = agentArg.toLowerCase();
+        if (normalized === "auto") {
+          ws.send(
+            JSON.stringify({
+              type: "result",
+              ok: false,
+              output: "❌ 自动模式已停用，需要 Claude 时请手动插入 <<<agent.claude ...>>> 指令块。",
+            }),
+          );
+          return;
+        }
+        if (normalized === "manual") {
+          ws.send(JSON.stringify({ type: "result", ok: true, output: "ℹ️ 当前已经是手动协作模式，可直接继续使用。" }));
+          return;
+        }
+        const switchResult = sessionManager.switchAgent(userId, agentArg);
+        ws.send(JSON.stringify({ type: "result", ok: switchResult.success, output: switchResult.message }));
+        return;
+      }
+
+      let commandToExecute = command;
+      if (slash?.command === "review") {
+        commandToExecute = `/ads.review${slash.body ? ` ${slash.body}` : ""}`;
+      }
+
       let previousWorkspaceEnv: string | undefined;
       try {
         previousWorkspaceEnv = process.env.AD_WORKSPACE;
         process.env.AD_WORKSPACE = currentCwd;
-        const result = await runAdsCommandLine(command);
+        const result = await runAdsCommandLine(commandToExecute);
         ws.send(JSON.stringify({ type: "result", ok: result.ok, output: result.output }));
         sendWorkspaceState(ws, currentCwd);
       } catch (error) {

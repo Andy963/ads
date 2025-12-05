@@ -259,6 +259,11 @@ export async function runAdsCommandLine(input: string, _activeAgent?: AgentAdapt
       }
       const wantsShow = params.show === "true" || positional[0]?.toLowerCase() === "show";
       const workflowArg = params.workflow ?? (wantsShow ? positional.slice(1).join(" ") : undefined);
+      const agent =
+        (params.agent as "codex" | "claude" | undefined) ??
+        (["codex", "claude"].includes(positional[0]?.toLowerCase() ?? "")
+          ? (positional.shift()!.toLowerCase() as "codex" | "claude")
+          : undefined);
       const specOverride = parseBooleanParam(params.spec);
       const noSpecFlag =
         parseBooleanParam(params["no-spec"]) ??
@@ -288,7 +293,7 @@ export async function runAdsCommandLine(input: string, _activeAgent?: AgentAdapt
         const response = await skipReview({ reason: params.skip, requestedBy: "web" });
         return { ok: true, output: response };
       }
-      const response = await runReview({ requestedBy: "web", includeSpec, commitRef, specMode });
+      const response = await runReview({ requestedBy: "web", agent, includeSpec, commitRef, specMode });
       return { ok: true, output: response };
     }
 
