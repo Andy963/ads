@@ -31,9 +31,10 @@ export class SessionManager {
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000, // 30分钟
     private readonly cleanupIntervalMs: number = 5 * 60 * 1000,  // 5分钟检查一次
     sandboxMode: SandboxMode = 'workspace-write',
-    defaultModel?: string
+    defaultModel?: string,
+    threadStorage?: ThreadStorage
   ) {
-    this.threadStorage = new ThreadStorage();
+    this.threadStorage = threadStorage ?? new ThreadStorage();
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
     this.cleanupInterval = setInterval(() => {

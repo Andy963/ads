@@ -2,17 +2,20 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 
-const STORAGE_DIR = join(process.cwd(), '.ads');
-const STORAGE_PATH = join(STORAGE_DIR, 'telegram-threads.json');
-const SALT_PATH = join(STORAGE_DIR, 'thread-storage-salt');
+interface ThreadStorageOptions {
+  namespace?: string;
+  storagePath?: string;
+  saltPath?: string;
+}
 
 interface ThreadRecord {
   userHash: string;
   threadId: string;
   lastActivity: number;
   cwd?: string;
+  namespace?: string;
 
-  // Legacy field to support older files
+  // Legacy fields
   userId?: number;
 }
 
@@ -22,18 +25,27 @@ interface ThreadState {
 }
 
 export class ThreadStorage {
+  private readonly namespace: string;
+  private readonly storagePath: string;
+  private readonly saltPath: string;
+  private readonly storageDir: string;
   private threads = new Map<string, ThreadState>();
   private salt: string;
 
-  constructor() {
+  constructor(options: ThreadStorageOptions = {}) {
+    this.namespace = options.namespace?.trim() || 'tg';
+    const storageDir = join(process.cwd(), '.ads');
+    this.storagePath = options.storagePath ?? join(storageDir, this.namespace === 'tg' ? 'telegram-threads.json' : `${this.namespace}-threads.json`);
+    this.saltPath = options.saltPath ?? join(storageDir, 'thread-storage-salt');
+    this.storageDir = dirname(this.storagePath);
     this.salt = this.loadSalt();
     this.load();
   }
 
   private loadSalt(): string {
     try {
-      if (existsSync(SALT_PATH)) {
-        const existing = readFileSync(SALT_PATH, 'utf-8').trim();
+      if (existsSync(this.saltPath)) {
+        const existing = readFileSync(this.saltPath, 'utf-8').trim();
         if (existing) {
           return existing;
         }
@@ -44,10 +56,10 @@ export class ThreadStorage {
 
     const generated = randomBytes(32).toString('hex');
     try {
-      if (!existsSync(STORAGE_DIR)) {
-        mkdirSync(STORAGE_DIR, { recursive: true });
+      if (!existsSync(this.storageDir)) {
+        mkdirSync(this.storageDir, { recursive: true });
       }
-      writeFileSync(SALT_PATH, generated, 'utf-8');
+      writeFileSync(this.saltPath, generated, 'utf-8');
     } catch {
       // ignore write errors; regenerated next time
     }
@@ -59,15 +71,18 @@ export class ThreadStorage {
   }
 
   private load(): void {
-    if (!existsSync(STORAGE_PATH)) {
+    if (!existsSync(this.storagePath)) {
       return;
     }
 
     try {
-      const content = readFileSync(STORAGE_PATH, 'utf-8');
+      const content = readFileSync(this.storagePath, 'utf-8');
       const data: ThreadRecord[] = JSON.parse(content);
 
       for (const record of data) {
+        if (record.namespace && record.namespace !== this.namespace) {
+          continue;
+        }
         const key = record.userHash ?? (record.userId !== undefined ? this.hashUserId(record.userId) : null);
         if (!key) {
           continue;
@@ -93,16 +108,17 @@ export class ThreadStorage {
         threadId: state.threadId,
         lastActivity: Date.now(),
         cwd: state.cwd,
+        namespace: this.namespace,
       });
     }
 
     try {
-      const dir = dirname(STORAGE_PATH);
+      const dir = dirname(this.storagePath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
       
-      writeFileSync(STORAGE_PATH, JSON.stringify(records, null, 2), 'utf-8');
+      writeFileSync(this.storagePath, JSON.stringify(records, null, 2), 'utf-8');
     } catch (error) {
       console.warn('[ThreadStorage] Failed to save:', error);
     }
@@ -132,7 +148,7 @@ export class ThreadStorage {
     this.threads.set(this.hashUserId(userId), state);
     this.save();
     console.log(
-      `[ThreadStorage] Saved state (thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`,
+      `[ThreadStorage] Saved state (ns=${this.namespace} thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`,
     );
   }
 

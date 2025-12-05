@@ -17,6 +17,7 @@ import { createLogger } from "../utils/logger.js";
 import type { AgentEvent } from "../codex/events.js";
 import { parseSlashCommand } from "../codexConfig.js";
 import { SessionManager } from "../telegram/utils/sessionManager.js";
+import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 
 interface WsMessage {
   type: string;
@@ -44,7 +45,11 @@ const logger = createLogger("WebSocket");
 
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
 const workspaceCache = new Map<string, string>();
-const sessionManager = new SessionManager();
+const webThreadStorage = new ThreadStorage({
+  namespace: "web",
+  storagePath: path.join(process.cwd(), ".ads", "web-threads.json"),
+});
+const sessionManager = new SessionManager(undefined, undefined, "workspace-write", undefined, webThreadStorage);
 
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
