@@ -96,7 +96,7 @@ Missing guides referenced elsewhere will be restored once the documentation migr
 ### Environment loading
 
 - CLI、Web Console、Telegram Bot 会自动读取工作区根目录的 `.env`，并在存在时加载 `.env.local` 作为覆盖，无需手动 `source`。
-- 建议将共享变量（如 `TELEGRAM_*`、`ADS_WEB_HOST`/`ADS_WEB_PORT`、`ADS_WEB_ALLOWED_DIRS`，可与 `TELEGRAM_ALLOWED_DIRS` 对齐）写在 `.env`，机器专属配置放 `.env.local`。
+- 建议将共享变量（如 `TELEGRAM_*`、`ADS_WEB_HOST`/`ADS_WEB_PORT`、`ALLOWED_DIRS`）写在 `.env`，机器专属配置放 `.env.local`。
 
 ### Runtime requirements
 
@@ -169,7 +169,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 ### 🌐 Web Console（实验性）
 
 - 使用统一的 services 脚本启动（构建后）：`npm run services -- start web`
-- 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ADS_WEB_ALLOWED_DIRS` 控制。
+- 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ALLOWED_DIRS` 控制（Web/Telegram 共用）。
 - 浏览器访问对应地址即可与 CLI 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
 
 ### 📱 Telegram Bot 远程编程
@@ -192,7 +192,7 @@ npm run services -- stop telegram
 npm run services -- status
 ```
 
-> 推荐：把上述配置写入根目录的 `.env`，Telegram 与 Web Console 会共用这一份环境变量。若需要让 Web 端与 Bot 使用相同的目录白名单，设置 `ADS_WEB_ALLOWED_DIRS` 与 `TELEGRAM_ALLOWED_DIRS` 一致。
+> 推荐：把上述配置写入根目录的 `.env`，Telegram 与 Web Console 会共用这一份环境变量。目录白名单使用统一的 `ALLOWED_DIRS`。
 > 旧的 `telegram-bot.sh` 已移除，统一通过 `npm run services -- <start|stop|status>` 管理服务。
 
 **常用命令**：
@@ -215,7 +215,13 @@ npm run services -- status
 - 📎 发送文件让 AI 处理
 - 🔄 会话持久化，断线后可 `/resume` 恢复
 - 📝 `/mark` 可将后续对话记录到当天 note，便于整理灵感
-- ⚡ `/esc` 可随时中断当前任务，立即执行新指令
+- ⚡ `/esc` 可随时中断当前任务，立即执行新指令；Web 端提供停止按钮（执行中可用）
+
+### 🔍 Tavily Search Tool
+
+- 新增搜索工具，默认从 `TAVILY_API_KEYS`（逗号分隔）或 `TAVILY_API_KEY` 读取密钥。
+- 可配置速率与返回条数（默认 `maxResults` 上限 10，`retries` 3，`rps` 3，`concurrency` 3，`timeoutMs` 30000），详见 `src/tools/search/config.ts`。
+- 日志输出到 `logs/tavily-search.log`（可用 `.env` 覆盖路径）。
 
 ### 🔍 Review 工作流
 

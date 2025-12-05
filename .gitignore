@@ -25,6 +25,7 @@ temp/
 # Environment & secrets
 .env
 .env.*
+!.env.example
 *.local.env
 
 # Logs
