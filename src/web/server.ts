@@ -45,6 +45,7 @@ const logger = createLogger("WebSocket");
 
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
 const workspaceCache = new Map<string, string>();
+const interruptControllers = new Map<number, AbortController>();
 const webThreadStorage = new ThreadStorage({
   namespace: "web",
   storagePath: path.join(process.cwd(), ".ads", "web-threads.json"),
@@ -385,7 +386,10 @@ function renderLandingPage(): string {
     #attach-btn { position: absolute; left: 8px; bottom: 12px; width: 20px; height: 20px; padding: 0; background: transparent; border: none; color: #9ca3af; cursor: pointer; font-size: 18px; font-weight: 400; line-height: 20px; text-align: center; transition: color 0.15s; }
     #attach-btn:hover { color: #6b7280; }
     #attach-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    #input { width: 100%; padding: 12px 14px 12px 32px; background: transparent; border: none; border-radius: 12px; font-size: 15px; min-height: 46px; max-height: 180px; resize: none; line-height: 1.5; overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; word-break: break-word; outline: none; }
+    #stop-btn { position: absolute; right: 10px; bottom: 12px; width: 24px; height: 24px; padding: 0; background: transparent; border: none; color: #ef4444; cursor: pointer; font-size: 18px; line-height: 20px; text-align: center; transition: color 0.15s, opacity 0.15s; }
+    #stop-btn:hover { color: #dc2626; }
+    #stop-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #input { width: 100%; padding: 12px 46px 12px 32px; background: transparent; border: none; border-radius: 12px; font-size: 15px; min-height: 46px; max-height: 180px; resize: none; line-height: 1.5; overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; word-break: break-word; outline: none; }
     #input:focus { outline: none; }
     #input-wrapper:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
     #attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px; }
@@ -436,6 +440,7 @@ function renderLandingPage(): string {
         <div id="input-wrapper">
           <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
           <button id="attach-btn" type="button" title="添加图片">+</button>
+          <button id="stop-btn" type="button" title="停止当前回复">■</button>
         </div>
         <input id="image-input" type="file" accept="image/*" multiple hidden />
         <span id="status-label" style="display:none;">已断开</span>
@@ -466,6 +471,7 @@ function renderLandingPage(): string {
     const imageInput = document.getElementById('image-input');
     const attachmentsEl = document.getElementById('attachments');
     const statusLabel = document.getElementById('status-label');
+    const stopBtn = document.getElementById('stop-btn');
     const idleMinutes = ${IDLE_MINUTES};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
@@ -485,6 +491,15 @@ function renderLandingPage(): string {
     let pendingImages = [];
     let typingPlaceholder = null;
     let wsErrorMessage = null;
+    let isBusy = false;
+
+    function setBusy(busy) {
+      isBusy = !!busy;
+      if (stopBtn) {
+        const canUse = isBusy && ws && ws.readyState === WebSocket.OPEN;
+        stopBtn.disabled = !canUse;
+      }
+    }
     function applyVh() {
       const vh = viewport ? viewport.height : window.innerHeight;
       document.documentElement.style.setProperty('--vh', vh + 'px');
@@ -507,6 +522,10 @@ function renderLandingPage(): string {
       const target = Math.max(min, available);
       logEl.style.maxHeight = target + 'px';
       logEl.style.minHeight = Math.max(min, Math.min(target, 0.6 * vh)) + 'px';
+      if (stopBtn) {
+        const bottomOffset = Math.max(10, Math.min(18, (headerH + 16) / 6));
+        stopBtn.style.bottom = bottomOffset + 'px';
+      }
     }
     recalcLogHeight();
 
@@ -770,6 +789,11 @@ function renderLandingPage(): string {
       headingEl.style.marginTop = '8px';
       bubble.appendChild(headingEl);
       autoScrollIfNeeded();
+      if (status === 'in_progress') {
+        setBusy(true);
+      } else {
+        setBusy(false);
+      }
     }
 
     function setWsState(state) {
@@ -798,6 +822,11 @@ function renderLandingPage(): string {
       const enableInput = state === 'connected';
       if (inputEl) inputEl.disabled = !enableInput;
       if (attachBtn) attachBtn.disabled = !enableInput;
+      if (!enableInput) {
+        setBusy(false);
+      } else {
+        setBusy(isBusy);
+      }
     }
 
     const TOKEN_KEY = 'ADS_WEB_TOKEN';
@@ -884,6 +913,7 @@ function renderLandingPage(): string {
             } else {
               appendMessage('ai', msg.message || '错误', { status: true });
             }
+            setBusy(false);
             return;
           } else {
             appendMessage('ai', ev.data, { status: true });
@@ -897,6 +927,7 @@ function renderLandingPage(): string {
         if (idleTimer) {
           clearTimeout(idleTimer);
         }
+        setBusy(false);
         if (ev.code === 4401) {
           sessionStorage.removeItem(TOKEN_KEY);
           tokenOverlay.classList.remove('hidden');
@@ -911,6 +942,7 @@ function renderLandingPage(): string {
       };
       ws.onerror = (err) => {
         setWsState('disconnected');
+        setBusy(false);
         const message = err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
         if (!wsErrorMessage || !wsErrorMessage.wrapper?.isConnected) {
           wsErrorMessage = appendMessage('ai', 'WS error: ' + message, { status: true });
@@ -956,6 +988,16 @@ function renderLandingPage(): string {
       imageInput.addEventListener('change', () => addImagesFromFiles(imageInput.files));
     }
 
+    if (stopBtn) {
+      stopBtn.addEventListener('click', () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !isBusy) return;
+        ws.send(JSON.stringify({ type: 'interrupt' }));
+        appendStatus('⛔ 已请求停止，输出可能不完整');
+        setBusy(false);
+      });
+      stopBtn.disabled = true;
+    }
+
     formEl.addEventListener('dragover', (e) => {
       e.preventDefault();
     });
@@ -999,6 +1041,7 @@ function renderLandingPage(): string {
       autoScroll = true;
       ws.send(JSON.stringify({ type, payload }));
       sendQueue.push(type);
+      setBusy(true);
       if (isCommand) {
         lastCommandText = text;
         renderCommandView({ commandText: text, status: 'in_progress' });
@@ -1084,10 +1127,12 @@ function renderLandingPage(): string {
       if (kind === 'command') {
         appendCommandResult(Boolean(msg.ok), msg.output || '', msg.command, msg.exit_code);
         resetIdleTimer();
+        setBusy(false);
         return;
       }
       finalizeStream(msg.output || '');
       resetIdleTimer();
+      setBusy(false);
     }
 
     function renderWorkspaceInfo(info) {
@@ -1262,29 +1307,45 @@ async function start(): Promise<void> {
       try {
         parsed = JSON.parse(String(data)) as WsMessage;
       } catch {
-        ws.send(JSON.stringify({ type: "error", message: "Invalid JSON message" }));
-        return;
-      }
-
-      const isPrompt = parsed.type === "prompt";
-      const isCommand = parsed.type === "command";
-
-      if (isPrompt) {
-        const imageDir = path.join(currentCwd, ".ads", "temp", "web-images");
-        const promptInput = buildPromptInput(parsed.payload, imageDir);
-        if (!promptInput.ok) {
-          ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
+          ws.send(JSON.stringify({ type: "error", message: "Invalid JSON message" }));
           return;
         }
-        orchestrator = sessionManager.getOrCreate(userId, currentCwd);
-        const status = orchestrator.status();
-        if (!status.ready) {
-          ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
+
+        const isPrompt = parsed.type === "prompt";
+        const isCommand = parsed.type === "command";
+        const isInterrupt = parsed.type === "interrupt";
+
+        if (isInterrupt) {
+          const controller = interruptControllers.get(userId);
+          if (controller) {
+            controller.abort();
+            interruptControllers.delete(userId);
+            ws.send(JSON.stringify({ type: "result", ok: false, output: "⛔ 已中断，输出可能不完整" }));
+          } else {
+            ws.send(JSON.stringify({ type: "error", message: "当前没有正在执行的任务" }));
+          }
           return;
         }
-        orchestrator.setWorkingDirectory(currentCwd);
-        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-          if (event.delta) {
+
+        if (isPrompt) {
+          const imageDir = path.join(currentCwd, ".ads", "temp", "web-images");
+          const promptInput = buildPromptInput(parsed.payload, imageDir);
+          if (!promptInput.ok) {
+            ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
+            return;
+          }
+          const controller = new AbortController();
+          interruptControllers.set(userId, controller);
+          orchestrator = sessionManager.getOrCreate(userId, currentCwd);
+          const status = orchestrator.status();
+          if (!status.ready) {
+            ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
+            interruptControllers.delete(userId);
+            return;
+          }
+          orchestrator.setWorkingDirectory(currentCwd);
+          const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+            if (event.delta) {
             ws.send(JSON.stringify({ type: "delta", delta: event.delta }));
             return;
           }
@@ -1303,8 +1364,8 @@ async function start(): Promise<void> {
             ws.send(JSON.stringify({ type: "error", message: event.detail ?? event.title }));
           }
         });
-        try {
-          const result = await orchestrator.send(promptInput.input, { streaming: true });
+          try {
+          const result = await orchestrator.send(promptInput.input, { streaming: true, signal: controller.signal });
           ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
           const threadId = orchestrator.getThreadId();
           if (threadId) {
@@ -1312,9 +1373,12 @@ async function start(): Promise<void> {
           }
           sendWorkspaceState(ws, currentCwd);
         } catch (error) {
-          ws.send(JSON.stringify({ type: "error", message: (error as Error).message ?? String(error) }));
+          const message = (error as Error).message ?? String(error);
+          const aborted = controller.signal.aborted;
+          ws.send(JSON.stringify({ type: "error", message: aborted ? "已中断，输出可能不完整" : message }));
         } finally {
           unsubscribe();
+          interruptControllers.delete(userId);
         }
         return;
       }
@@ -1425,26 +1489,51 @@ async function start(): Promise<void> {
         commandToExecute = `/ads.review${slash.body ? ` ${slash.body}` : ""}`;
       }
 
+      const controller = new AbortController();
+      interruptControllers.set(userId, controller);
+
       let previousWorkspaceEnv: string | undefined;
+      let runPromise: Promise<{ ok: boolean; output: string }> | undefined;
       try {
         previousWorkspaceEnv = process.env.AD_WORKSPACE;
         process.env.AD_WORKSPACE = currentCwd;
-        const result = await runAdsCommandLine(commandToExecute);
+        runPromise = runAdsCommandLine(commandToExecute);
+        const abortPromise = new Promise<never>((_, reject) => {
+          controller.signal.addEventListener(
+            "abort",
+            () => {
+              reject(new Error("用户中断"));
+            },
+            { once: true },
+          );
+        });
+        const result = await Promise.race([runPromise, abortPromise]);
         ws.send(JSON.stringify({ type: "result", ok: result.ok, output: result.output }));
         sendWorkspaceState(ws, currentCwd);
       } catch (error) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: (error as Error).message ?? String(error),
-          }),
-        );
+        const aborted = controller.signal.aborted;
+        const message = (error as Error).message ?? String(error);
+        if (aborted) {
+          // runPromise may still settle; swallow to avoid unhandled rejection
+          if (runPromise) {
+            runPromise.catch(() => {});
+          }
+          ws.send(JSON.stringify({ type: "error", message: "已中断，输出可能不完整" }));
+        } else {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message,
+            }),
+          );
+        }
       } finally {
         if (previousWorkspaceEnv === undefined) {
           delete process.env.AD_WORKSPACE;
         } else {
           process.env.AD_WORKSPACE = previousWorkspaceEnv;
         }
+        interruptControllers.delete(userId);
       }
     });
 
