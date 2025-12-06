@@ -17,6 +17,7 @@ import { buildAdsHelpMessage } from "../workflow/commands.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
 import { initWorkspace } from "../workspace/service.js";
 import { syncAllNodesToFiles, getWorkspaceInfo as getGraphWorkspaceInfo } from "../graph/service.js";
+import { search } from "../tools/search/index.js";
 
 const require = createRequire(import.meta.url);
 const { version: packageVersion } = require("../../package.json") as { version: string };
@@ -98,6 +99,14 @@ const initSchema = workspaceParam.extend({
   name: z.string().min(1).optional(),
 });
 
+const searchSchema = z.object({
+  query: z.string().min(1, "query is required"),
+  max_results: z.number().int().positive().max(10).optional(),
+  include_domains: z.array(z.string().min(1)).optional(),
+  exclude_domains: z.array(z.string().min(1)).optional(),
+  lang: z.string().min(1).optional(),
+});
+
 server.registerTool(
   "ads_status",
   {
@@ -121,6 +130,25 @@ server.registerTool(
   withHandler(initSchema, async ({ workspace_path, name }) => {
     const text = await initWorkspace({ workspace_path, name });
     return asToolResult(text);
+  })
+);
+
+server.registerTool(
+  "ads_search",
+  {
+    title: "Tavily search",
+    description: "Perform a web search via Tavily. Returns normalized results and metadata.",
+    inputSchema: searchSchema,
+  },
+  withHandler(searchSchema, async ({ query, max_results, include_domains, exclude_domains, lang }) => {
+    const result = await search({
+      query,
+      maxResults: max_results,
+      includeDomains: include_domains,
+      excludeDomains: exclude_domains,
+      lang,
+    });
+    return asToolResult(JSON.stringify(result), result);
   })
 );
 

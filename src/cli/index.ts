@@ -29,6 +29,7 @@ import { CodexAgentAdapter } from "../agents/adapters/codexAdapter.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 import { HybridOrchestrator } from "../agents/orchestrator.js";
 import { injectDelegationGuide, resolveDelegations } from "../agents/delegation.js";
+import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
 import type { AgentEvent, AgentPhase } from "../codex/events.js";
 import { resolveClaudeAgentConfig } from "../agents/config.js";
 import type { AgentAdapter } from "../agents/types.js";
@@ -435,10 +436,18 @@ async function handleAgentInteraction(
     }
     promptSections.push(`用户输入: ${trimmed}`);
     const basePrompt = promptSections.join("\n\n");
-    const finalPrompt = injectDelegationGuide(basePrompt, orchestrator);
+    const promptWithTools = injectToolGuide(basePrompt);
+    const finalPrompt = injectDelegationGuide(promptWithTools, orchestrator);
     try {
       const result = await orchestrator.send(finalPrompt);
-      const delegated = await resolveDelegations(result, orchestrator, {
+      const withTools = await resolveToolInvocations(result, {
+        onInvoke: (tool, payload) => logger.logOutput(`[Tool] ${tool}: ${truncateForLog(payload)}`),
+        onResult: (summary) =>
+          logger.logOutput(
+            `[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`,
+          ),
+      });
+      const delegated = await resolveDelegations(withTools, orchestrator, {
         onInvoke: (prompt) => {
           logger.logOutput(`[Auto] 调用 Claude 协助：${truncateForLog(prompt)}`);
         },

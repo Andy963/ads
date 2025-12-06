@@ -219,9 +219,57 @@ npm run services -- status
 
 ### 🔍 Tavily Search Tool
 
-- 新增搜索工具，默认从 `TAVILY_API_KEYS`（逗号分隔）或 `TAVILY_API_KEY` 读取密钥。
-- 可配置速率与返回条数（默认 `maxResults` 上限 10，`retries` 3，`rps` 3，`concurrency` 3，`timeoutMs` 30000），详见 `src/tools/search/config.ts`。
-- 日志输出到 `logs/tavily-search.log`（可用 `.env` 覆盖路径）。
+ADS 支持通过 Tavily MCP 为 Codex 提供联网搜索能力。
+
+**快速配置（推荐）**：
+
+```bash
+# 设置 API 密钥
+export TAVILY_API_KEY="tvly-xxx"
+
+# 自动配置 Codex MCP（使用本地 NPX 方式）
+npx ts-node src/tools/search/setupCodexMcp.ts setup
+
+# 或使用 Tavily 远程 MCP 服务器（无需本地安装）
+npx ts-node src/tools/search/setupCodexMcp.ts setup --remote
+
+# 检查配置状态
+npx ts-node src/tools/search/setupCodexMcp.ts status
+```
+
+配置后 Codex 会自动获得 `tavily_search` 和 `tavily_extract` 工具，无需在 prompt 中手动说明。
+
+**手动配置**（`~/.codex/config.toml`）：
+
+```toml
+# 方式1：本地 NPX（推荐，可离线缓存）
+[mcp_servers.tavily]
+command = "npx"
+args = ["-y", "tavily-mcp@latest"]
+tool_timeout_sec = 30
+
+[mcp_servers.tavily.env]
+TAVILY_API_KEY = "tvly-xxx"
+
+# 方式2：远程 HTTP（无需本地 Node.js）
+[mcp_servers.tavily]
+url = "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-xxx"
+tool_timeout_sec = 30
+```
+
+**为什么旧的 `<<<tool.search>>>` 方式不工作？**
+
+之前使用自定义文本标记协议让模型调用搜索，但：
+1. 这不是原生的 Function Calling，模型不认识
+2. 模型会说"我无法联网"因为它知道自己通常没有这个能力
+
+正确的做法是通过 Codex 的 MCP 配置注册工具，这样模型在 API 层面就能看到并调用这些工具。
+
+**其他配置**：
+
+- 环境变量：`TAVILY_API_KEYS`（逗号分隔）或 `TAVILY_API_KEY`
+- 速率配置：`maxResults` 上限 10，`retries` 3，`rps` 3，`concurrency` 3，`timeoutMs` 30000
+- 详见 `src/tools/search/config.ts`
 
 ### 🔍 Review 工作流
 

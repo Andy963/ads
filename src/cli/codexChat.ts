@@ -25,6 +25,7 @@ export interface CodexSessionOptions {
   model?: string;
   workingDirectory?: string;
   systemPromptManager?: SystemPromptManager;
+   networkAccessEnabled?: boolean;
 }
 
 export interface CodexSendOptions {
@@ -85,8 +86,11 @@ export class CodexSession {
         sandboxMode: this.options.sandboxMode,
         model: this.options.model,
         workingDirectory: this.options.workingDirectory,
+        networkAccessEnabled: this.options.networkAccessEnabled ?? true,
       };
-      
+
+      console.log(`[CodexSession] Creating thread with networkAccessEnabled=${threadOptions.networkAccessEnabled}`);
+
       if (this.options.resumeThreadId) {
         try {
           this.thread = this.codex.resumeThread(this.options.resumeThreadId, threadOptions);

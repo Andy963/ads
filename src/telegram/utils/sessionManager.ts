@@ -83,6 +83,7 @@ export class SessionManager {
         model: userModel,
         workingDirectory: effectiveCwd,
         systemPromptManager,
+        networkAccessEnabled: true, // 启用网络访问以支持 MCP 工具（如 Tavily 搜索）
       }),
     ];
 

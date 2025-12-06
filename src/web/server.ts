@@ -328,7 +328,7 @@ function renderLandingPage(): string {
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>ADS Web Console</title>
   <style>
     :root {
@@ -346,8 +346,8 @@ function renderLandingPage(): string {
       --code: #0f172a;
     }
     * { box-sizing: border-box; }
-    html, body { height: 100%; width: 100%; }
-    body { font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: var(--vh); height: var(--vh); overflow: hidden; overflow-x: hidden; overscroll-behavior: contain; display: flex; flex-direction: column; }
+    html { height: 100%; width: 100%; overflow: hidden; }
+    body { font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; display: flex; flex-direction: column; }
     header { padding: 14px 18px; background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 1px 3px rgba(15,23,42,0.06); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
     .header-row { display: flex; align-items: center; gap: 8px; }
     .ws-indicator { width: 12px; height: 12px; border-radius: 999px; background: #ef4444; border: 1px solid #e5e7eb; box-shadow: 0 0 0 2px #fff; }
@@ -355,14 +355,14 @@ function renderLandingPage(): string {
     .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; animation: pulse 1s infinite alternate-reverse; }
     @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
     header h1 { margin: 0; font-size: 18px; }
-    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; align-items: stretch; overflow: hidden; box-sizing: border-box; max-height: calc(var(--vh) - var(--header-h)); }
+    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; overflow: hidden; }
     #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
     .sidebar-title { font-size: 13px; font-weight: 600; margin: 0; color: var(--muted); }
     .workspace-list { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
     .workspace-list .path { color: var(--text); word-break: break-all; }
     .files-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); max-height: 260px; overflow-y: auto; }
-    #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; width: 100%; overflow: hidden; height: 100%; }
-    #log { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; width: 100%; }
+    #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; overflow: hidden; }
+    #log { overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; }
     .msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; align-items: flex-start; }
     .msg.user { align-items: flex-start; }
     .msg.ai { align-items: flex-start; }
@@ -401,21 +401,23 @@ function renderLandingPage(): string {
     .typing-dot:nth-child(2) { animation-delay: 0.2s; }
     .typing-dot:nth-child(3) { animation-delay: 0.4s; }
     @keyframes typing { 0% { transform: translateY(0); opacity: 0.6; } 50% { transform: translateY(-2px); opacity: 1; } 100% { transform: translateY(0); opacity: 0.6; } }
-    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); backdrop-filter: blur(18px); display: flex; align-items: center; justify-content: center; }
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); backdrop-filter: blur(18px); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
     .overlay.hidden { display: none; }
-    .overlay .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 20px 22px; width: 340px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; position: relative; z-index: 2; }
+    .overlay .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 20px; width: 100%; max-width: 340px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; }
     .overlay h2 { margin: 0; font-size: 18px; }
     .overlay p { margin: 0; color: #4b5563; font-size: 13px; }
     .overlay .row { display: flex; gap: 8px; align-items: center; }
-    .overlay input { flex: 1; padding: 10px 12px; font-size: 16px; border: 1px solid #d6d9e0; border-radius: 8px; line-height: 1.2; }
-    .overlay button { padding: 10px 14px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 16px; line-height: 1.2; white-space: nowrap; }
+    .overlay input { flex: 1; min-width: 0; padding: 10px 12px; font-size: 16px; border: 1px solid #d6d9e0; border-radius: 8px; }
+    .overlay button { padding: 10px 14px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 16px; white-space: nowrap; }
     body.locked header, body.locked main { filter: blur(18px); pointer-events: none; user-select: none; }
     @media (max-width: 640px) {
-      main { padding: 12px 10px 16px; gap: 10px; max-width: 100%; max-height: calc(var(--vh) - var(--header-h)); }
+      main { padding: 8px; gap: 8px; flex: 1; min-height: 0; overflow: hidden; }
       #sidebar { display: none; }
-      #console { width: 100%; }
-      #log { min-height: 55vh; }
-      #input { min-height: 40px; }
+      #console { width: 100%; min-width: 0; flex: 1; min-height: 0; }
+      #log { flex: 0 0 auto; min-height: 100px; }
+      #input { min-height: 40px; font-size: 16px; }
+      header { padding: 10px 12px; flex-shrink: 0; }
+      header h1 { font-size: 16px; }
     }
   </style>
 </head>
@@ -503,11 +505,13 @@ function renderLandingPage(): string {
     function applyVh() {
       const vh = viewport ? viewport.height : window.innerHeight;
       document.documentElement.style.setProperty('--vh', vh + 'px');
+      recalcLogHeight();
     }
     applyVh();
     window.addEventListener('resize', applyVh);
     if (viewport) {
       viewport.addEventListener('resize', applyVh);
+      viewport.addEventListener('scroll', () => window.scrollTo(0, 0));
     }
 
     function recalcLogHeight() {
@@ -516,18 +520,13 @@ function renderLandingPage(): string {
       const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
       const formH = formEl ? formEl.getBoundingClientRect().height : 0;
       const vh = viewport ? viewport.height : window.innerHeight;
-      const gap = 32; // padding/margins buffer
+      const gap = 24;
       const available = vh - headerH - formH - gap;
-      const min = 180;
-      const target = Math.max(min, available);
-      logEl.style.maxHeight = target + 'px';
-      logEl.style.minHeight = Math.max(min, Math.min(target, 0.6 * vh)) + 'px';
-      if (stopBtn) {
-        const bottomOffset = Math.max(10, Math.min(18, (headerH + 16) / 6));
-        stopBtn.style.bottom = bottomOffset + 'px';
-      }
+      logEl.style.height = Math.max(100, available) + 'px';
+      logEl.style.maxHeight = Math.max(100, available) + 'px';
+      logEl.scrollTop = logEl.scrollHeight;
     }
-    recalcLogHeight();
+    setTimeout(recalcLogHeight, 100);
 
     function escapeHtml(str) {
       if (!str) return '';
