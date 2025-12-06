@@ -18,6 +18,8 @@ import type { AgentEvent } from "../codex/events.js";
 import { parseSlashCommand } from "../codexConfig.js";
 import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
+import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
+import { syncWorkspaceTemplates } from "../workspace/service.js";
 
 interface WsMessage {
   type: string;
@@ -93,6 +95,28 @@ function deriveWebUserId(token: string): number {
   // Use a high offset to avoid collision with Telegram user IDs (int32)
   const value = hash.readUInt32BE(0);
   return 0x70000000 + value;
+}
+
+function truncateForLog(text: string, limit = 96): string {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 1)}…`;
+}
+
+function applyToolGuide(input: Input): Input {
+  if (typeof input === "string") {
+    return injectToolGuide(input);
+  }
+  if (Array.isArray(input)) {
+    const guide = injectToolGuide("");
+    if (guide.trim()) {
+      return [{ type: "text", text: guide }, ...input];
+    }
+    return input;
+  }
+  return input;
 }
 
 async function ensureWebPidFile(workspaceRoot: string): Promise<string> {
@@ -1246,6 +1270,11 @@ async function start(): Promise<void> {
   const wss = new WebSocketServer({ server });
 
   const workspaceRoot = detectWorkspace();
+  try {
+    syncWorkspaceTemplates();
+  } catch (error) {
+    logger.warn(`[Web] Failed to sync templates: ${(error as Error).message}`);
+  }
   await ensureWebPidFile(workspaceRoot);
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
   const clients: Set<WebSocket> = new Set();
@@ -1364,8 +1393,16 @@ async function start(): Promise<void> {
           }
         });
           try {
-          const result = await orchestrator.send(promptInput.input, { streaming: true, signal: controller.signal });
-          ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
+          const enrichedInput = applyToolGuide(promptInput.input);
+          const result = await orchestrator.send(enrichedInput, { streaming: true, signal: controller.signal });
+          const withTools = await resolveToolInvocations(result, {
+            onInvoke: (tool, payload) => logger.info(`[Tool] ${tool}: ${truncateForLog(payload)}`),
+            onResult: (summary) =>
+              logger.info(
+                `[Tool] ${summary.tool} ${summary.ok ? "ok" : "fail"}: ${truncateForLog(summary.outputPreview)}`,
+              ),
+          });
+          ws.send(JSON.stringify({ type: "result", ok: true, output: withTools.response }));
           const threadId = orchestrator.getThreadId();
           if (threadId) {
             sessionManager.saveThreadId(userId, threadId);
@@ -1414,6 +1451,11 @@ async function start(): Promise<void> {
         currentCwd = directoryManager.getUserCwd(userId);
         workspaceCache.set(clientKey, currentCwd);
         sessionManager.setUserCwd(userId, currentCwd);
+        try {
+          syncWorkspaceTemplates();
+        } catch (error) {
+          logger.warn(`[Web] Failed to sync templates after cd: ${(error as Error).message}`);
+        }
         orchestrator = sessionManager.getOrCreate(userId, currentCwd);
 
         const initStatus = checkWorkspaceInit(currentCwd);
