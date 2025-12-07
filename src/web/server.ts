@@ -386,7 +386,7 @@ function renderLandingPage(): string {
     .workspace-list .path { color: var(--text); word-break: break-all; }
     .files-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); max-height: 260px; overflow-y: auto; }
     #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; overflow: hidden; }
-    #log { overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; }
+    #log { position: relative; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; scrollbar-gutter: stable; }
     .msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; align-items: flex-start; }
     .msg.user { align-items: flex-start; }
     .msg.ai { align-items: flex-start; }
@@ -418,6 +418,10 @@ function renderLandingPage(): string {
     #input-wrapper:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
     #attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px; }
     #attachments:empty { display: none; }
+    #console-header { position: sticky; top: 0; display: flex; justify-content: flex-end; gap: 8px; padding: 4px 0 6px; margin: 0 -2px 4px; background: linear-gradient(var(--panel), rgba(255,255,255,0.9)); z-index: 2; }
+    #clear-cache-btn { background: rgba(255,255,255,0.9); border: 1px solid #e5e7eb; color: #6b7280; cursor: pointer; font-size: 12px; padding: 6px 10px; border-radius: 999px; box-shadow: 0 2px 6px rgba(15,23,42,0.06); transition: color 0.15s, border-color 0.15s, box-shadow 0.15s; }
+    #clear-cache-btn:hover { color: #ef4444; border-color: #fca5a5; box-shadow: 0 4px 10px rgba(248,113,113,0.18); }
+    #clear-cache-btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
     .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; background: #eef2ff; color: #1e1b4b; border-radius: 8px; font-size: 12px; }
     .chip button { border: none; background: transparent; cursor: pointer; color: #6b7280; }
     .typing-bubble { display: flex; gap: 6px; align-items: center; }
@@ -460,7 +464,11 @@ function renderLandingPage(): string {
       <div id="modified-files" class="files-list"></div>
     </aside>
     <section id="console">
-      <div id="log"></div>
+      <div id="log">
+        <div id="console-header">
+          <button id="clear-cache-btn" type="button" title="清空本地聊天缓存">清空历史</button>
+        </div>
+      </div>
       <form id="form">
         <div id="attachments"></div>
         <div id="input-wrapper">
@@ -498,7 +506,12 @@ function renderLandingPage(): string {
     const attachmentsEl = document.getElementById('attachments');
     const statusLabel = document.getElementById('status-label');
     const stopBtn = document.getElementById('stop-btn');
+    const clearBtn = document.getElementById('clear-cache-btn');
+    const LOG_TOOLBAR_ID = 'console-header';
     const idleMinutes = ${IDLE_MINUTES};
+    const CACHE_MAX_COUNT = 100;
+    const CACHE_MAX_BYTES = 200 * 1024;
+    const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
     const COMMAND_OUTPUT_MAX_LINES = 10;
@@ -551,6 +564,19 @@ function renderLandingPage(): string {
       logEl.scrollTop = logEl.scrollHeight;
     }
     setTimeout(recalcLogHeight, 100);
+
+    function isLogToolbar(node) {
+      return node?.id === LOG_TOOLBAR_ID;
+    }
+
+    function clearLogMessages() {
+      if (!logEl) return;
+      Array.from(logEl.children).forEach((child) => {
+        if (!isLogToolbar(child)) {
+          child.remove();
+        }
+      });
+    }
 
     function escapeHtml(str) {
       if (!str) return '';
@@ -655,10 +681,13 @@ function renderLandingPage(): string {
 
     function pruneLog() {
       if (!logEl) return;
-      while (logEl.children.length > MAX_LOG_MESSAGES) {
-        const first = logEl.firstElementChild;
+      const entries = Array.from(logEl.children).filter((child) => !isLogToolbar(child));
+      while (entries.length > MAX_LOG_MESSAGES) {
+        const first = entries.shift();
         if (!first) break;
-        logEl.removeChild(first);
+        if (first.isConnected) {
+          first.remove();
+        }
       }
       if (typingPlaceholder?.wrapper && !typingPlaceholder.wrapper.isConnected) {
         typingPlaceholder = null;
@@ -706,6 +735,9 @@ function renderLandingPage(): string {
       logEl.appendChild(wrapper);
       pruneLog();
       autoScrollIfNeeded();
+      if (!options.skipCache) {
+        recordCache(role, text, options.status ? 'status' : undefined);
+      }
       return { wrapper, bubble };
     }
 
@@ -853,6 +885,109 @@ function renderLandingPage(): string {
     }
 
     const TOKEN_KEY = 'ADS_WEB_TOKEN';
+    function getTokenKey() {
+      const token = sessionStorage.getItem(TOKEN_KEY) || '';
+      return token || 'default';
+    }
+
+    function cacheKey() {
+      return 'chat-cache::' + getTokenKey();
+    }
+
+    function estimateBytes(items) {
+      try {
+        return new TextEncoder().encode(JSON.stringify(items)).length;
+      } catch {
+        return 0;
+      }
+    }
+
+    function trimCache(items) {
+      while (items.length > CACHE_MAX_COUNT) {
+        items.shift();
+      }
+      let bytes = estimateBytes(items);
+      while (bytes > CACHE_MAX_BYTES && items.length > 0) {
+        items.shift();
+        bytes = estimateBytes(items);
+      }
+      return items;
+    }
+
+    function persistCache(items) {
+      try {
+        const payload = {
+          v: 1,
+          expiresAt: Date.now() + CACHE_TTL_MS,
+          items: trimCache(items),
+        };
+        localStorage.setItem(cacheKey(), JSON.stringify(payload));
+      } catch {
+        /* ignore storage errors */
+      }
+    }
+
+    function loadCache() {
+      try {
+        const raw = localStorage.getItem(cacheKey());
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (typeof parsed.expiresAt === 'number' && parsed.expiresAt < Date.now()) {
+          localStorage.removeItem(cacheKey());
+          return null;
+        }
+        const items = Array.isArray(parsed.items) ? parsed.items : [];
+        return trimCache(items);
+      } catch {
+        localStorage.removeItem(cacheKey());
+        return null;
+      }
+    }
+
+    function clearCacheStorage() {
+      try {
+        localStorage.removeItem(cacheKey());
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function recordCache(role, text, kind) {
+      const normalized = String(text ?? '').trim();
+      if (!normalized) return;
+      try {
+        const item = { r: role, t: normalized, ts: Date.now() };
+        if (kind) item.k = kind;
+        const existing = loadCache() || [];
+        existing.push(item);
+        persistCache(existing);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function clearCacheAndLog() {
+      clearCacheStorage();
+      clearLogMessages();
+    }
+
+    function restoreFromCache() {
+      const cached = loadCache();
+      if (!cached || cached.length === 0) return;
+      clearLogMessages();
+      cached.forEach((item) => {
+        const role = item.r || 'status';
+        const text = item.t || '';
+        const kind = item.k;
+        const isStatus = role === 'status' || kind === 'status';
+        appendMessage(role, text, { markdown: false, status: isStatus, skipCache: true });
+      });
+      pruneLog();
+      autoScrollIfNeeded();
+    }
+
+    restoreFromCache();
 
     function resetIdleTimer() {
       if (idleTimer) {
@@ -968,7 +1103,7 @@ function renderLandingPage(): string {
         setBusy(false);
         const message = err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
         if (!wsErrorMessage || !wsErrorMessage.wrapper?.isConnected) {
-          wsErrorMessage = appendMessage('ai', 'WS error: ' + message, { status: true });
+          wsErrorMessage = appendMessage('ai', 'WS error: ' + message, { status: true, skipCache: true });
         }
         scheduleReconnect();
       };
@@ -1019,6 +1154,13 @@ function renderLandingPage(): string {
         setBusy(false);
       });
       stopBtn.disabled = true;
+    }
+
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        clearCacheAndLog();
+        appendStatus('🧹 已清空本地聊天缓存');
+      });
     }
 
     formEl.addEventListener('dragover', (e) => {
@@ -1087,7 +1229,7 @@ function renderLandingPage(): string {
         clearTypingPlaceholder();
         streamState = {
           buffer: '',
-          message: appendMessage('ai', '', { markdown: false }),
+          message: appendMessage('ai', '', { markdown: false, skipCache: true }),
         };
       }
       return streamState;
@@ -1137,6 +1279,7 @@ function renderLandingPage(): string {
         const finalText = output || streamState.buffer;
         streamState.message.bubble.innerHTML = renderMarkdown(finalText);
         highlightCodeWithin(streamState.message.bubble);
+        recordCache('ai', finalText);
         streamState = null;
         autoScrollIfNeeded();
         return;
@@ -1249,6 +1392,7 @@ function renderLandingPage(): string {
       if (!token) return;
       sessionStorage.setItem(TOKEN_KEY, token);
       tokenOverlay.classList.add('hidden');
+      restoreFromCache();
       connect();
     });
 
