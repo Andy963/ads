@@ -1511,7 +1511,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const logger = sessionManager.ensureLogger(userId);
+        const sessionLogger = sessionManager.ensureLogger(userId);
         const isPrompt = parsed.type === "prompt";
         const isCommand = parsed.type === "command";
         const isInterrupt = parsed.type === "interrupt";
@@ -1532,27 +1532,27 @@ async function start(): Promise<void> {
           const imageDir = path.join(currentCwd, ".ads", "temp", "web-images");
           const promptInput = buildPromptInput(parsed.payload, imageDir);
           if (!promptInput.ok) {
-            logger?.logError(promptInput.message);
+            sessionLogger?.logError(promptInput.message);
             ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
             return;
           }
-          const userLogEntry = logger ? buildUserLogEntry(promptInput.input, currentCwd) : null;
-          if (logger && userLogEntry) {
-            logger.logInput(userLogEntry);
+          const userLogEntry = sessionLogger ? buildUserLogEntry(promptInput.input, currentCwd) : null;
+          if (sessionLogger && userLogEntry) {
+            sessionLogger.logInput(userLogEntry);
           }
           const controller = new AbortController();
           interruptControllers.set(userId, controller);
           orchestrator = sessionManager.getOrCreate(userId, currentCwd);
           const status = orchestrator.status();
           if (!status.ready) {
-            logger?.logError(status.error ?? "代理未启用");
+            sessionLogger?.logError(status.error ?? "代理未启用");
             ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
             interruptControllers.delete(userId);
             return;
           }
           orchestrator.setWorkingDirectory(currentCwd);
           const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-            logger?.logEvent(event);
+            sessionLogger?.logEvent(event);
             if (event.delta) {
               ws.send(JSON.stringify({ type: "delta", delta: event.delta }));
               return;
@@ -1583,9 +1583,9 @@ async function start(): Promise<void> {
                 ),
             });
             ws.send(JSON.stringify({ type: "result", ok: true, output: withTools.response }));
-            if (logger) {
-              logger.attachThreadId(orchestrator.getThreadId() ?? undefined);
-              logger.logOutput(typeof withTools.response === "string" ? withTools.response : String(withTools.response ?? ""));
+            if (sessionLogger) {
+              sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
+              sessionLogger.logOutput(typeof withTools.response === "string" ? withTools.response : String(withTools.response ?? ""));
             }
             const threadId = orchestrator.getThreadId();
             if (threadId) {
@@ -1596,7 +1596,7 @@ async function start(): Promise<void> {
             const message = (error as Error).message ?? String(error);
             const aborted = controller.signal.aborted;
             if (!aborted) {
-              logger?.logError(message);
+              sessionLogger?.logError(message);
             }
             ws.send(JSON.stringify({ type: "error", message: aborted ? "已中断，输出可能不完整" : message }));
           } finally {
@@ -1616,13 +1616,13 @@ async function start(): Promise<void> {
         ws.send(JSON.stringify({ type: "error", message: "Payload must be a command string" }));
         return;
       }
-      logger?.logInput(command);
+      sessionLogger?.logInput(command);
 
       const slash = parseSlashCommand(command);
       if (slash?.command === "pwd") {
         const output = `📁 当前工作目录: ${currentCwd}`;
         ws.send(JSON.stringify({ type: "result", ok: true, output }));
-        logger?.logOutput(output);
+        sessionLogger?.logOutput(output);
         return;
       }
 
@@ -1637,7 +1637,7 @@ async function start(): Promise<void> {
         if (!result.success) {
           const output = `❌ ${result.error}`;
           ws.send(JSON.stringify({ type: "result", ok: false, output }));
-          logger?.logError(output);
+          sessionLogger?.logError(output);
           return;
         }
         currentCwd = directoryManager.getUserCwd(userId);
@@ -1666,7 +1666,7 @@ async function start(): Promise<void> {
           );
         }
         ws.send(JSON.stringify({ type: "result", ok: true, output: message }));
-        logger?.logOutput(message);
+        sessionLogger?.logOutput(message);
         sendWorkspaceState(ws, currentCwd);
         return;
       }
@@ -1679,7 +1679,7 @@ async function start(): Promise<void> {
           if (agents.length === 0) {
             const output = "❌ 暂无可用代理";
             ws.send(JSON.stringify({ type: "result", ok: false, output }));
-            logger?.logOutput(output);
+            sessionLogger?.logOutput(output);
             return;
           }
           const activeId = orchestrator.getActiveAgentId();
@@ -1698,25 +1698,25 @@ async function start(): Promise<void> {
             "需要 Claude 协助时，请在消息中插入 <<<agent.claude ...>>> 指令块描述任务。",
           ].join("\n");
           ws.send(JSON.stringify({ type: "result", ok: true, output: message }));
-          logger?.logOutput(message);
+          sessionLogger?.logOutput(message);
           return;
         }
         const normalized = agentArg.toLowerCase();
         if (normalized === "auto") {
           const output = "❌ 自动模式已停用，需要 Claude 时请手动插入 <<<agent.claude ...>>> 指令块。";
           ws.send(JSON.stringify({ type: "result", ok: false, output }));
-          logger?.logOutput(output);
+          sessionLogger?.logOutput(output);
           return;
         }
         if (normalized === "manual") {
           const output = "ℹ️ 当前已经是手动协作模式，可直接继续使用。";
           ws.send(JSON.stringify({ type: "result", ok: true, output }));
-          logger?.logOutput(output);
+          sessionLogger?.logOutput(output);
           return;
         }
         const switchResult = sessionManager.switchAgent(userId, agentArg);
         ws.send(JSON.stringify({ type: "result", ok: switchResult.success, output: switchResult.message }));
-        logger?.logOutput(switchResult.message);
+        sessionLogger?.logOutput(switchResult.message);
         return;
       }
 
@@ -1745,7 +1745,7 @@ async function start(): Promise<void> {
         });
         const result = await Promise.race([runPromise, abortPromise]);
         ws.send(JSON.stringify({ type: "result", ok: result.ok, output: result.output }));
-        logger?.logOutput(result.output);
+        sessionLogger?.logOutput(result.output);
         sendWorkspaceState(ws, currentCwd);
       } catch (error) {
         const aborted = controller.signal.aborted;
@@ -1756,7 +1756,7 @@ async function start(): Promise<void> {
             runPromise.catch(() => {});
           }
           ws.send(JSON.stringify({ type: "error", message: "已中断，输出可能不完整" }));
-          logger?.logError("已中断，输出可能不完整");
+          sessionLogger?.logError("已中断，输出可能不完整");
         } else {
           ws.send(
             JSON.stringify({
@@ -1764,7 +1764,7 @@ async function start(): Promise<void> {
               message,
             }),
           );
-          logger?.logError(message);
+          sessionLogger?.logError(message);
         }
       } finally {
         if (previousWorkspaceEnv === undefined) {
