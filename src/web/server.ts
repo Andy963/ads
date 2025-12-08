@@ -657,11 +657,6 @@ function renderLandingPage(): string {
         .join('');
     }
 
-    function highlightCodeWithin(element) {
-      // no-op: code highlighting disabled
-      return;
-    }
-
     function createCodeBlockElement(content, language) {
       const pre = document.createElement('pre');
       pre.className = 'code-block';
@@ -724,10 +719,8 @@ function renderLandingPage(): string {
       bubble.className = 'bubble';
       if (options.markdown) {
         bubble.innerHTML = renderMarkdown(text);
-        highlightCodeWithin(bubble);
       } else if (options.html) {
         bubble.innerHTML = text;
-        highlightCodeWithin(bubble);
       } else {
         bubble.textContent = text;
       }
@@ -1159,7 +1152,6 @@ function renderLandingPage(): string {
     if (clearBtn) {
       clearBtn.addEventListener('click', () => {
         clearCacheAndLog();
-        appendStatus('🧹 已清空本地聊天缓存');
       });
     }
 
@@ -1278,7 +1270,6 @@ function renderLandingPage(): string {
       if (streamState) {
         const finalText = output || streamState.buffer;
         streamState.message.bubble.innerHTML = renderMarkdown(finalText);
-        highlightCodeWithin(streamState.message.bubble);
         recordCache('ai', finalText);
         streamState = null;
         autoScrollIfNeeded();
