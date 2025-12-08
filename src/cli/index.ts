@@ -1046,6 +1046,11 @@ async function handleLine(
 
 async function main(): Promise<void> {
   const logger = new ConversationLogger();
+  const START_PASTE = "\x1b[200~";
+  const END_PASTE = "\x1b[201~";
+  let pasteActive = false;
+  let pasteBuffer = "";
+  let suppressLineFromPaste = false;
 
   process.on("exit", () => logger.close());
   process.on("SIGINT", () => {
@@ -1083,10 +1088,10 @@ async function main(): Promise<void> {
 
   rl.prompt();
 
-  rl.on("line", async (line) => {
-    logger.logInput(line);
+  const handleUserInput = async (input: string) => {
+    logger.logInput(input);
     try {
-      const result = await handleLine(line, logger, agents);
+      const result = await handleLine(input, logger, agents);
       const output = normalizeOutput(result.output);
       if (output) {
         console.log(output);
@@ -1102,6 +1107,56 @@ async function main(): Promise<void> {
       logger.logError(message);
     }
     rl.prompt();
+  };
+
+  if (process.stdin.isTTY) {
+    process.stdin.setEncoding("utf8");
+    process.stdin.prependListener("data", (chunk: Buffer | string) => {
+      const dataStr = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      // Detect bracketed paste (common in modern terminals) and treat the whole block as one message
+      if (!pasteActive && !dataStr.includes(START_PASTE)) {
+        return;
+      }
+
+      let data = dataStr;
+      if (!pasteActive) {
+        const start = data.indexOf(START_PASTE);
+        if (start === -1) {
+          return;
+        }
+        pasteActive = true;
+        suppressLineFromPaste = true;
+        pasteBuffer = "";
+        data = data.slice(start + START_PASTE.length);
+      }
+
+      const end = data.indexOf(END_PASTE);
+      if (end !== -1) {
+        pasteBuffer += data.slice(0, end);
+        const remaining = data.slice(end + END_PASTE.length);
+        const block = pasteBuffer;
+        pasteActive = false;
+        pasteBuffer = "";
+        setImmediate(() => {
+          suppressLineFromPaste = false;
+        });
+        void handleUserInput(block);
+        // If user keeps typing right after paste end, push the rest back into readline
+        if (remaining) {
+          rl.write(remaining);
+        }
+        return;
+      }
+
+      pasteBuffer += data;
+    });
+  }
+
+  rl.on("line", async (line) => {
+    if (suppressLineFromPaste) {
+      return;
+    }
+    void handleUserInput(line);
   });
 
   rl.on("close", () => {
