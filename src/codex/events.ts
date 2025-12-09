@@ -165,16 +165,37 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
         : null;
     case "web_search":
       return mapWebSearch(event, item, timestamp);
-    case "todo_list":
-      return event.type === "item.started"
-        ? {
-            phase: "analysis",
-            title: "生成待办计划",
-            detail: summarizeTodoList(item),
-            timestamp,
-            raw: event,
-          }
-        : null;
+    case "todo_list": {
+      const detail = formatTodoListPreview(item);
+      if (event.type === "item.started") {
+        return {
+          phase: "analysis",
+          title: "生成任务计划",
+          detail,
+          timestamp,
+          raw: event,
+        };
+      }
+      if (event.type === "item.updated") {
+        return {
+          phase: "analysis",
+          title: "更新任务计划",
+          detail,
+          timestamp,
+          raw: event,
+        };
+      }
+      if (event.type === "item.completed") {
+        return {
+          phase: "analysis",
+          title: "任务计划完成",
+          detail,
+          timestamp,
+          raw: event,
+        };
+      }
+      return null;
+    }
     case "error":
       return {
         phase: "error",
@@ -250,13 +271,18 @@ function mapWebSearch(event: ItemEvent, item: WebSearchItem, timestamp: number):
   };
 }
 
-function summarizeTodoList(item: TodoListItem): string | undefined {
+function formatTodoListPreview(item: TodoListItem): string | undefined {
   if (!item.items?.length) {
     return undefined;
   }
   const total = item.items.length;
   const done = item.items.filter((entry) => entry.completed).length;
-  return `共 ${total} 项，已完成 ${done} 项`;
+  const preview = item.items
+    .slice(0, 3)
+    .map((entry, index) => `${entry.completed ? "✅" : "⬜"} ${entry.text || `Step ${index + 1}`}`)
+    .join(" | ");
+  const suffix = item.items.length > 3 ? " …" : "";
+  return truncate(`共 ${total} 项，已完成 ${done} 项 | ${preview}${suffix}`);
 }
 
 function truncate(text?: string, limit = DEFAULT_DETAIL_LIMIT): string | undefined {
