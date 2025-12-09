@@ -103,8 +103,8 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function deriveWebUserId(token: string): number {
-  const base = token || "default";
+function deriveWebUserId(token: string, sessionId: string): number {
+  const base = `${token || "default"}::${sessionId || "default"}`;
   const hash = crypto.createHash("sha256").update(base).digest();
   // Use a high offset to avoid collision with Telegram user IDs (int32)
   const value = hash.readUInt32BE(0);
@@ -1478,12 +1478,27 @@ async function start(): Promise<void> {
 
   wss.on("connection", (ws: WebSocket, req) => {
     const protocolHeader = req.headers["sec-websocket-protocol"];
-    const wsToken =
+    const parsedProtocols =
       Array.isArray(protocolHeader) && protocolHeader.length > 0
-        ? protocolHeader[protocolHeader.length - 1]
+        ? protocolHeader
         : typeof protocolHeader === "string"
-          ? protocolHeader.split(",").map((p) => p.trim()).pop()
-          : undefined;
+          ? protocolHeader.split(",").map((p) => p.trim())
+          : [];
+    const findValue = (key: string) => {
+      const hit = parsedProtocols.find((p) => p.startsWith(`${key}:`));
+      if (hit) return hit.split(":").slice(1).join(":");
+      return parsedProtocols.find((p) => p === key);
+    };
+    let wsToken: string | undefined;
+    let wsSession: string | undefined;
+    if (parsedProtocols.length >= 2 && parsedProtocols[0] === "ads-token") {
+      wsToken = parsedProtocols[1];
+      wsSession = findValue("ads-session") ?? undefined;
+    } else {
+      wsToken = findValue("ads-token") ?? undefined;
+      wsSession = findValue("ads-session") ?? undefined;
+    }
+    const sessionId = wsSession && wsSession.trim() ? wsSession.trim() : crypto.randomBytes(4).toString("hex");
     if (TOKEN && wsToken !== TOKEN) {
       ws.close(4401, "unauthorized");
       return;
@@ -1497,11 +1512,12 @@ async function start(): Promise<void> {
     clients.add(ws);
 
     const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
-    const userId = deriveWebUserId(clientKey);
-    const historyKey = String(userId);
+    const userId = deriveWebUserId(clientKey, sessionId);
+    const historyKey = `${clientKey}::${sessionId}`;
     const directoryManager = new DirectoryManager(allowedDirs);
 
-    const cachedWorkspace = workspaceCache.get(clientKey);
+    const cacheKey = `${clientKey}::${sessionId}`;
+    const cachedWorkspace = workspaceCache.get(cacheKey);
     const savedState = sessionManager.getSavedState(userId);
     let currentCwd = directoryManager.getUserCwd(userId);
     const preferredCwd = cachedWorkspace ?? savedState?.cwd;
@@ -1513,7 +1529,7 @@ async function start(): Promise<void> {
         currentCwd = directoryManager.getUserCwd(userId);
       }
     }
-    workspaceCache.set(clientKey, currentCwd);
+    workspaceCache.set(cacheKey, currentCwd);
     sessionManager.setUserCwd(userId, currentCwd);
 
     const resumeThread = !sessionManager.hasSession(userId);
@@ -1526,6 +1542,7 @@ async function start(): Promise<void> {
         type: "welcome",
         message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
         workspace: getWorkspaceState(currentCwd),
+        sessionId,
       }),
     );
     const cachedHistory = historyStore.get(historyKey);
