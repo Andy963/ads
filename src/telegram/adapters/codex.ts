@@ -212,6 +212,7 @@ export async function handleCodexMessage(
   let commandMessageText: string | null = null;
   let commandMessageUseMarkdown = true;
   let commandMessageRateLimitUntil = 0;
+  let lastStatusEntry: string | null = null;
 
   const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
     analysis: '💭',
@@ -409,6 +410,9 @@ export async function handleCodexMessage(
       return;
     }
     const trimmed = entry.text.trimEnd();
+    if (trimmed === lastStatusEntry) {
+      return;
+    }
     const candidate = statusMessageText ? `${statusMessageText}\n${trimmed}` : trimmed;
     if (candidate.length <= STATUS_MESSAGE_LIMIT) {
       await editStatusMessage(candidate);
@@ -418,6 +422,7 @@ export async function handleCodexMessage(
       // 状态消息超长发了新消息，重新把 plan 固定到底部
       await resendPlanToBottom();
     }
+    lastStatusEntry = trimmed;
   }
 
   function buildTodoListSignature(item: TodoListItem): string {
