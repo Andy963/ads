@@ -6,15 +6,7 @@ import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { WebSocket, RawData } from "ws";
 import childProcess from "node:child_process";
-import type {
-  CommandExecutionItem,
-  Input,
-  ItemCompletedEvent,
-  ItemStartedEvent,
-  ItemUpdatedEvent,
-  ThreadEvent,
-  TodoListItem,
-} from "@openai/codex-sdk";
+import type { CommandExecutionItem, Input } from "@openai/codex-sdk";
 
 import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
@@ -125,21 +117,6 @@ function applyToolGuide(input: Input): Input {
     return input;
   }
   return input;
-}
-
-type TodoListThreadEvent = (ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent) & {
-  item: TodoListItem;
-};
-
-function isTodoListEvent(event: ThreadEvent): event is TodoListThreadEvent {
-  if (!event || (event.type !== "item.started" && event.type !== "item.updated" && event.type !== "item.completed")) {
-    return false;
-  }
-  return (event as ItemStartedEvent).item?.type === "todo_list";
-}
-
-function buildPlanSignature(items: TodoListItem["items"]): string {
-  return items.map((entry) => `${entry.completed ? "1" : "0"}:${entry.text}`).join("|");
 }
 
 async function ensureWebPidFile(workspaceRoot: string): Promise<string> {
@@ -489,13 +466,6 @@ function renderLandingPage(): string {
     .typing-dot:nth-child(2) { animation-delay: 0.2s; }
     .typing-dot:nth-child(3) { animation-delay: 0.4s; }
     @keyframes typing { 0% { transform: translateY(0); opacity: 0.6; } 50% { transform: translateY(-2px); opacity: 1; } 100% { transform: translateY(0); opacity: 0.6; } }
-    .plan-list { display: flex; flex-direction: column; gap: 6px; }
-    .plan-item { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; background: #f9fafb; font-size: 13px; line-height: 1.5; }
-    .plan-item.done { background: #ecfdf3; border-color: #bbf7d0; color: #166534; }
-    .plan-marker { width: 18px; height: 18px; border-radius: 50%; background: #e0e7ff; color: #1d4ed8; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
-    .plan-item.done .plan-marker { background: #22c55e; color: #fff; }
-    .plan-text { flex: 1; word-break: break-word; }
-    .muted { color: var(--muted); }
     .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); backdrop-filter: blur(18px); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
     .overlay.hidden { display: none; }
     .overlay .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 20px; width: 100%; max-width: 340px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; }
@@ -529,8 +499,6 @@ function renderLandingPage(): string {
       <div id="workspace-info" class="workspace-list"></div>
       <h3 class="sidebar-title">Modified Files</h3>
       <div id="modified-files" class="files-list"></div>
-      <h3 class="sidebar-title">Plan</h3>
-      <div id="plan-list" class="files-list plan-list"></div>
     </aside>
     <section id="console">
       <div id="log">
@@ -567,7 +535,6 @@ function renderLandingPage(): string {
     const wsIndicator = document.getElementById('ws-indicator');
     const workspaceInfoEl = document.getElementById('workspace-info');
     const modifiedFilesEl = document.getElementById('modified-files');
-    const planListEl = document.getElementById('plan-list');
     const tokenOverlay = document.getElementById('token-overlay');
     const tokenInput = document.getElementById('token-input');
     const tokenSubmit = document.getElementById('token-submit');
@@ -601,7 +568,6 @@ function renderLandingPage(): string {
     let typingPlaceholder = null;
     let wsErrorMessage = null;
     let isBusy = false;
-    let planTouched = false;
 
     function setBusy(busy) {
       isBusy = !!busy;
@@ -616,7 +582,6 @@ function renderLandingPage(): string {
       recalcLogHeight();
     }
     applyVh();
-    renderPlanStatus('暂无计划');
     window.addEventListener('resize', applyVh);
     if (viewport) {
       viewport.addEventListener('resize', applyVh);
@@ -836,13 +801,9 @@ function renderLandingPage(): string {
       return typingPlaceholder;
     }
 
-    function startNewTurn(clearPlan) {
+    function startNewTurn() {
       resetCommandView(true);
       lastCommandText = '';
-      if (clearPlan) {
-        planTouched = false;
-        renderPlanStatus('生成计划中...');
-      }
     }
 
     function resetCommandView(removeWrapper) {
@@ -1120,9 +1081,6 @@ function renderLandingPage(): string {
               exitCode: cmd.exit_code,
             });
             return;
-          } else if (msg.type === 'plan') {
-            renderPlan(msg.items || []);
-            return;
           } else if (msg.type === 'welcome') {
             setWsState('connected');
             if (msg.workspace) {
@@ -1265,7 +1223,7 @@ function renderLandingPage(): string {
       const text = inputEl.value.trim();
       const hasImages = pendingImages.length > 0;
       if ((!text && !hasImages) || !ws || ws.readyState !== WebSocket.OPEN) return;
-      startNewTurn(!isCommand);
+      startNewTurn();
       const isCommand = text.startsWith('/');
       const type = isCommand ? 'command' : 'prompt';
       const payload = isCommand
@@ -1367,9 +1325,6 @@ function renderLandingPage(): string {
         return;
       }
       finalizeStream(msg.output || '');
-      if (!planTouched) {
-        renderPlanStatus('本轮未生成计划');
-      }
       resetIdleTimer();
       setBusy(false);
     }
@@ -1405,38 +1360,6 @@ function renderLandingPage(): string {
           }
         }
       }
-    }
-
-    function renderPlanStatus(text) {
-      if (!planListEl) return;
-      planListEl.innerHTML = '';
-      const span = document.createElement('span');
-      span.className = 'muted';
-      span.textContent = text;
-      planListEl.appendChild(span);
-    }
-
-    function renderPlan(items) {
-      if (!planListEl) return;
-      planTouched = true;
-      planListEl.innerHTML = '';
-      if (!items || items.length === 0) {
-        renderPlanStatus('暂无计划');
-        return;
-      }
-      items.forEach((item, idx) => {
-        const row = document.createElement('div');
-        row.className = 'plan-item' + (item.completed ? ' done' : '');
-        const marker = document.createElement('span');
-        marker.className = 'plan-marker';
-        marker.textContent = item.completed ? '✓' : String(idx + 1);
-        const text = document.createElement('span');
-        text.className = 'plan-text';
-        text.textContent = item.text || '(未命名)';
-        row.appendChild(marker);
-        row.appendChild(text);
-        planListEl.appendChild(row);
-      });
     }
 
     function renderAttachments() {
@@ -1569,7 +1492,6 @@ async function start(): Promise<void> {
 
     const resumeThread = !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
-    let lastPlanSignature: string | null = null;
 
     log("client connected");
     ws.send(
@@ -1614,7 +1536,6 @@ async function start(): Promise<void> {
             ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
             return;
           }
-          lastPlanSignature = null;
           const userLogEntry = sessionLogger ? buildUserLogEntry(promptInput.input, currentCwd) : null;
           if (sessionLogger && userLogEntry) {
             sessionLogger.logInput(userLogEntry);
@@ -1632,14 +1553,6 @@ async function start(): Promise<void> {
           orchestrator.setWorkingDirectory(currentCwd);
           const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
             sessionLogger?.logEvent(event);
-            const raw = event.raw as ThreadEvent;
-            if (isTodoListEvent(raw)) {
-              const signature = buildPlanSignature(raw.item.items);
-              if (signature !== lastPlanSignature) {
-                lastPlanSignature = signature;
-                ws.send(JSON.stringify({ type: "plan", items: raw.item.items }));
-              }
-            }
             if (event.delta) {
               ws.send(JSON.stringify({ type: "delta", delta: event.delta }));
               return;
