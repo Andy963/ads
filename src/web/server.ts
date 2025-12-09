@@ -28,6 +28,7 @@ import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
+import { HistoryStore } from "../utils/historyStore.js";
 
 interface WsMessage {
   type: string;
@@ -61,6 +62,11 @@ const webThreadStorage = new ThreadStorage({
   storagePath: path.join(process.cwd(), ".ads", "web-threads.json"),
 });
 const sessionManager = new SessionManager(undefined, undefined, "workspace-write", undefined, webThreadStorage);
+const historyStore = new HistoryStore({
+  storagePath: path.join(process.cwd(), ".ads", "web-history.json"),
+  maxEntriesPerSession: 200,
+  maxTextLength: 4000,
+});
 
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
@@ -579,9 +585,6 @@ function renderLandingPage(): string {
     const clearBtn = document.getElementById('clear-cache-btn');
     const LOG_TOOLBAR_ID = 'console-header';
     const idleMinutes = ${IDLE_MINUTES};
-    const CACHE_MAX_COUNT = 100;
-    const CACHE_MAX_BYTES = 200 * 1024;
-    const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
     const COMMAND_OUTPUT_MAX_LINES = 10;
@@ -602,6 +605,7 @@ function renderLandingPage(): string {
     let wsErrorMessage = null;
     let isBusy = false;
     let planTouched = false;
+    let allowReconnect = true;
 
     function setBusy(busy) {
       isBusy = !!busy;
@@ -771,6 +775,7 @@ function renderLandingPage(): string {
     }
 
     function scheduleReconnect() {
+      if (!allowReconnect) return;
       if (!tokenOverlay.classList.contains('hidden')) return;
       if (reconnectTimer) return;
       reconnectTimer = setTimeout(() => {
@@ -963,82 +968,19 @@ function renderLandingPage(): string {
       return 'chat-cache::' + getTokenKey();
     }
 
-    function estimateBytes(items) {
-      try {
-        return new TextEncoder().encode(JSON.stringify(items)).length;
-      } catch {
-        return 0;
+    function renderHistory(items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        return;
       }
-    }
-
-    function trimCache(items) {
-      while (items.length > CACHE_MAX_COUNT) {
-        items.shift();
-      }
-      let bytes = estimateBytes(items);
-      while (bytes > CACHE_MAX_BYTES && items.length > 0) {
-        items.shift();
-        bytes = estimateBytes(items);
-      }
-      return items;
-    }
-
-    function persistCache(items) {
-      try {
-        const payload = {
-          v: 1,
-          expiresAt: Date.now() + CACHE_TTL_MS,
-          items: trimCache(items),
-        };
-        localStorage.setItem(cacheKey(), JSON.stringify(payload));
-      } catch {
-        /* ignore storage errors */
-      }
-    }
-
-    function loadCache() {
-      try {
-        const raw = localStorage.getItem(cacheKey());
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        if (typeof parsed.expiresAt === 'number' && parsed.expiresAt < Date.now()) {
-          localStorage.removeItem(cacheKey());
-          return null;
-        }
-        const items = Array.isArray(parsed.items) ? parsed.items : [];
-        return trimCache(items);
-      } catch {
-        localStorage.removeItem(cacheKey());
-        return null;
-      }
-    }
-
-    function clearCacheStorage() {
-      try {
-        localStorage.removeItem(cacheKey());
-      } catch {
-        /* ignore */
-      }
-    }
-
-    function recordCache(role, text, kind) {
-      const normalized = String(text ?? '').trim();
-      if (!normalized) return;
-      try {
-        const item = { r: role, t: normalized, ts: Date.now() };
-        if (kind) item.k = kind;
-        const existing = loadCache() || [];
-        existing.push(item);
-        persistCache(existing);
-      } catch {
-        /* ignore */
-      }
-    }
-
-    function clearCacheAndLog() {
-      clearCacheStorage();
       clearLogMessages();
+      items.forEach((item) => {
+        const role = item.role || item.r || 'status';
+        const text = item.text || item.t || '';
+        const kind = item.kind || item.k;
+        const isStatus = role === 'status' || kind === 'status' || kind === 'plan' || kind === 'error';
+        appendMessage(role === 'status' ? 'status' : role, text, { markdown: false, status: isStatus, skipCache: true });
+      });
+      autoScrollIfNeeded();
     }
 
     function restoreFromCache() {
@@ -1055,8 +997,6 @@ function renderLandingPage(): string {
       pruneLog();
       autoScrollIfNeeded();
     }
-
-    restoreFromCache();
 
     function resetIdleTimer() {
       if (idleTimer) {
@@ -1086,6 +1026,7 @@ function renderLandingPage(): string {
       }
       tokenOverlay.classList.add('hidden');
       setLocked(false);
+      allowReconnect = true;
       const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
       setWsState('connecting');
       ws = new WebSocket(url, ['ads-token', token]);
@@ -1119,6 +1060,9 @@ function renderLandingPage(): string {
               output: cmd.aggregated_output || '',
               exitCode: cmd.exit_code,
             });
+            return;
+          } else if (msg.type === 'history') {
+            renderHistory(msg.items || []);
             return;
           } else if (msg.type === 'plan') {
             renderPlan(msg.items || []);
@@ -1164,8 +1108,12 @@ function renderLandingPage(): string {
           tokenInput.value = '';
           setLocked(true);
           appendMessage('ai', '口令无效或已过期，请重新输入', { status: true });
+          allowReconnect = false;
         } else if (ev.code === 4409) {
           appendMessage('ai', '已有新连接，当前会话被替换', { status: true });
+          allowReconnect = false;
+        } else {
+          allowReconnect = true;
         }
         renderWorkspaceInfo(null);
         scheduleReconnect();
@@ -1230,7 +1178,7 @@ function renderLandingPage(): string {
 
     if (clearBtn) {
       clearBtn.addEventListener('click', () => {
-        clearCacheAndLog();
+        clearLogMessages();
       });
     }
 
@@ -1550,6 +1498,7 @@ async function start(): Promise<void> {
 
     const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
     const userId = deriveWebUserId(clientKey);
+    const historyKey = String(userId);
     const directoryManager = new DirectoryManager(allowedDirs);
 
     const cachedWorkspace = workspaceCache.get(clientKey);
@@ -1579,6 +1528,10 @@ async function start(): Promise<void> {
         workspace: getWorkspaceState(currentCwd),
       }),
     );
+    const cachedHistory = historyStore.get(historyKey);
+    if (cachedHistory.length > 0) {
+      ws.send(JSON.stringify({ type: "history", items: cachedHistory }));
+    }
 
     ws.on("message", async (data: RawData) => {
       let parsed: WsMessage;
@@ -1620,6 +1573,9 @@ async function start(): Promise<void> {
           if (sessionLogger && userLogEntry) {
             sessionLogger.logInput(userLogEntry);
           }
+          if (userLogEntry) {
+            historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
+          }
           const controller = new AbortController();
           interruptControllers.set(userId, controller);
           orchestrator = sessionManager.getOrCreate(userId, currentCwd);
@@ -1639,6 +1595,14 @@ async function start(): Promise<void> {
               if (signature !== lastPlanSignature) {
                 lastPlanSignature = signature;
                 ws.send(JSON.stringify({ type: "plan", items: raw.item.items }));
+                historyStore.add(historyKey, {
+                  role: "status",
+                  text: `计划更新：${raw.item.items
+                    .map((entry, idx) => `${entry.completed ? "✅" : "⬜"} ${entry.text || `Step ${idx + 1}`}`)
+                    .join(" | ")}`,
+                  ts: Date.now(),
+                  kind: "plan",
+                });
               }
             }
             if (event.delta) {
@@ -1675,6 +1639,11 @@ async function start(): Promise<void> {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
               sessionLogger.logOutput(typeof withTools.response === "string" ? withTools.response : String(withTools.response ?? ""));
             }
+            historyStore.add(historyKey, {
+              role: "ai",
+              text: typeof withTools.response === "string" ? withTools.response : String(withTools.response ?? ""),
+              ts: Date.now(),
+            });
             const threadId = orchestrator.getThreadId();
             if (threadId) {
               sessionManager.saveThreadId(userId, threadId);
@@ -1685,6 +1654,9 @@ async function start(): Promise<void> {
             const aborted = controller.signal.aborted;
             if (!aborted) {
               sessionLogger?.logError(message);
+            }
+            if (!aborted) {
+              historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
             }
             ws.send(JSON.stringify({ type: "error", message: aborted ? "已中断，输出可能不完整" : message }));
           } finally {
@@ -1705,12 +1677,14 @@ async function start(): Promise<void> {
         return;
       }
       sessionLogger?.logInput(command);
+      historyStore.add(historyKey, { role: "user", text: command, ts: Date.now(), kind: "command" });
 
       const slash = parseSlashCommand(command);
       if (slash?.command === "pwd") {
         const output = `📁 当前工作目录: ${currentCwd}`;
         ws.send(JSON.stringify({ type: "result", ok: true, output }));
         sessionLogger?.logOutput(output);
+        historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
         return;
       }
 
@@ -1834,6 +1808,7 @@ async function start(): Promise<void> {
         const result = await Promise.race([runPromise, abortPromise]);
         ws.send(JSON.stringify({ type: "result", ok: result.ok, output: result.output }));
         sessionLogger?.logOutput(result.output);
+        historyStore.add(historyKey, { role: result.ok ? "ai" : "status", text: result.output, ts: Date.now(), kind: result.ok ? undefined : "command" });
         sendWorkspaceState(ws, currentCwd);
       } catch (error) {
         const aborted = controller.signal.aborted;

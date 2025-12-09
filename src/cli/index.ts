@@ -38,6 +38,7 @@ import type { WorkflowInfo } from "../workspace/context.js";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import pc from "picocolors";
 import { runReview, skipReview, showReviewReport } from "../review/service.js";
+import { HistoryStore } from "../utils/historyStore.js";
 
 interface CommandResult {
   output: string;
@@ -1046,6 +1047,12 @@ async function handleLine(
 
 async function main(): Promise<void> {
   const logger = new ConversationLogger();
+  const historyStore = new HistoryStore({
+    storagePath: path.join(process.cwd(), ".ads", "cli-history.json"),
+    maxEntriesPerSession: 300,
+    maxTextLength: 6000,
+  });
+  const historyKey = "default";
   const START_PASTE = "\x1b[200~";
   const END_PASTE = "\x1b[201~";
   let pasteActive = false;
@@ -1090,11 +1097,13 @@ async function main(): Promise<void> {
 
   const handleUserInput = async (input: string) => {
     logger.logInput(input);
+    historyStore.add(historyKey, { role: "user", text: input, ts: Date.now() });
     try {
       const result = await handleLine(input, logger, agents);
       const output = normalizeOutput(result.output);
       if (output) {
         console.log(output);
+        historyStore.add(historyKey, { role: "ai", text: output, ts: Date.now() });
       }
       logger.logOutput(output);
       if (result.exit) {
@@ -1105,6 +1114,7 @@ async function main(): Promise<void> {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`❌ ${message}`);
       logger.logError(message);
+      historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
     }
     rl.prompt();
   };

@@ -25,9 +25,15 @@ import {
   CodexThreadCorruptedError,
   shouldResetThread,
 } from '../../codex/errors.js';
+import { HistoryStore } from '../../utils/historyStore.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
+const historyStore = new HistoryStore({
+  storagePath: path.join(process.cwd(), ".ads", "telegram-history.json"),
+  maxEntriesPerSession: 300,
+  maxTextLength: 6000,
+});
 
   function chunkMessage(text: string, maxLen = 3900): string[] {
     if (text.length <= maxLen) {
@@ -104,6 +110,7 @@ export async function handleCodexMessage(
 ) {
   const userId = ctx.from!.id;
   const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
+  const historyKey = String(userId);
   const adapterLogDir = path.join(workspaceRoot, '.ads', 'logs');
   const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
   const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
@@ -878,6 +885,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     if (logger && userLogEntry) {
       logger.logInput(userLogEntry);
     }
+    if (userLogEntry) {
+      historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
+    }
 
     // 监听事件
     unsubscribe = session.onEvent((event: AgentEvent) => {
@@ -947,6 +957,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     if (logger) {
       logger.logOutput(baseOutput);
     }
+    historyStore.add(historyKey, { role: "ai", text: baseOutput, ts: Date.now() });
 
     if (markNoteEnabled && userLogEntry) {
       try {
@@ -1023,6 +1034,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     // 记录错误
     if (logger && !isInterrupt) {
       logger.logError(errorMsg);
+    }
+    if (!isInterrupt) {
+      historyStore.add(historyKey, { role: "status", text: errorMsg, ts: Date.now(), kind: "error" });
     }
 
     if (corruptedThread) {
