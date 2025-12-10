@@ -473,9 +473,16 @@ function renderLandingPage(): string {
     .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; animation: pulse 1s infinite alternate-reverse; }
     @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
     header h1 { margin: 0; font-size: 18px; }
-    .header-actions { display: inline-flex; gap: 8px; }
-    .header-actions button { width: 34px; height: 32px; border-radius: 8px; border: 1px solid #d6d9e0; background: #fff; cursor: pointer; }
-    .header-actions button:hover { border-color: #c7d2fe; background: #eef2ff; }
+    .tab-bar { display: flex; align-items: center; gap: 8px; max-width: 100%; }
+    .tabs-scroll { display: flex; gap: 6px; overflow-x: auto; padding: 4px 6px; background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; scrollbar-width: thin; }
+    .session-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    .session-tab.active { border-color: #c7d2fe; background: #eef2ff; color: #1e1b4b; }
+    .session-tab .label { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    .session-tab .close { border: none; background: transparent; cursor: pointer; color: #9ca3af; font-size: 12px; }
+    .session-tab .close:hover { color: #ef4444; }
+    .tab-icons { display: inline-flex; gap: 6px; }
+    .tab-icons button { width: 32px; height: 30px; border-radius: 8px; border: 1px solid #d6d9e0; background: #fff; cursor: pointer; }
+    .tab-icons button:hover { border-color: #c7d2fe; background: #eef2ff; }
     .session-panel { display: flex; flex-direction: column; gap: 6px; }
     .session-current { font-size: 13px; color: var(--text); word-break: break-all; }
     .session-pill { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; border-radius: 999px; background: #eef2ff; color: #312e81; font-weight: 700; min-width: 56px; }
@@ -574,11 +581,14 @@ function renderLandingPage(): string {
     <div class="header-row">
       <div class="header-left">
         <span id="ws-indicator" class="ws-indicator" title="WebSocket disconnected" aria-label="WebSocket disconnected"></span>
-        <h1>ADS Web Console</h1>
+        <h1>ADS</h1>
       </div>
-      <div class="header-actions">
-        <button id="session-new" type="button" title="新建会话">＋</button>
-        <button id="session-switch" type="button" title="切换会话">⇄</button>
+      <div class="tab-bar">
+        <div id="session-tabs" class="tabs-scroll"></div>
+        <div class="tab-icons">
+          <button id="session-new" type="button" title="新建会话">＋</button>
+          <button id="session-history" type="button" title="会话历史">⟳</button>
+        </div>
       </div>
     </div>
   </header>
@@ -655,16 +665,19 @@ function renderLandingPage(): string {
     const LOG_TOOLBAR_ID = 'console-header';
     const sessionIdEl = document.getElementById('session-id');
     const sessionNewBtn = document.getElementById('session-new');
-    const sessionSwitchBtn = document.getElementById('session-switch');
+    const sessionHistoryBtn = document.getElementById('session-history');
+    const sessionTabsEl = document.getElementById('session-tabs');
     const sessionDialog = document.getElementById('session-dialog');
     const sessionListEl = document.getElementById('session-list');
     const sessionDialogClose = document.getElementById('session-dialog-close');
     const SESSION_KEY = 'ADS_WEB_SESSION';
     const SESSION_HISTORY_KEY = 'ADS_WEB_SESSIONS';
+    const SESSION_OPEN_KEY = 'ADS_OPEN_SESSIONS';
     const idleMinutes = ${IDLE_MINUTES};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
     const MAX_SESSION_HISTORY = 15;
+    const MAX_OPEN_SESSIONS = 10;
     const COMMAND_OUTPUT_MAX_LINES = 3;
     const COMMAND_OUTPUT_MAX_CHARS = 1200;
     const viewport = window.visualViewport;
@@ -686,6 +699,7 @@ function renderLandingPage(): string {
     let allowReconnect = true;
     let suppressSwitchNotice = false;
     let currentSessionId = '';
+    let openSessions = [];
 
     function setBusy(busy) {
       isBusy = !!busy;
@@ -702,6 +716,8 @@ function renderLandingPage(): string {
     applyVh();
     renderPlanStatus('暂无计划');
     renderSessionList();
+    openSessions = loadOpenSessions();
+    renderSessionTabs();
     window.addEventListener('resize', applyVh);
     if (viewport) {
       viewport.addEventListener('resize', applyVh);
@@ -1105,12 +1121,51 @@ function renderLandingPage(): string {
       }
     }
 
+    function loadOpenSessions() {
+      try {
+        const raw = localStorage.getItem(SESSION_OPEN_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string' && id.trim()) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveOpenSessions(list) {
+      try {
+        localStorage.setItem(SESSION_OPEN_KEY, JSON.stringify(list.slice(0, MAX_OPEN_SESSIONS)));
+      } catch {
+        /* ignore */
+      }
+    }
+
     function rememberSession(id) {
       if (!id) return;
       const list = loadSessionHistory().filter((entry) => entry?.id !== id);
       list.unshift({ id, ts: Date.now() });
       saveSessionHistory(list);
       renderSessionList();
+    }
+
+    function ensureOpenSession(id) {
+      if (!id) return;
+      openSessions = openSessions.filter((entry) => entry && entry !== id);
+      openSessions.unshift(id);
+      if (openSessions.length > MAX_OPEN_SESSIONS) {
+        openSessions = openSessions.slice(0, MAX_OPEN_SESSIONS);
+      }
+      saveOpenSessions(openSessions);
+      renderSessionTabs();
+    }
+
+    function removeOpenSession(id) {
+      openSessions = openSessions.filter((entry) => entry && entry !== id);
+      if (openSessions.length === 0 && currentSessionId) {
+        openSessions = [currentSessionId];
+      }
+      saveOpenSessions(openSessions);
+      renderSessionTabs();
     }
 
     function renderSessionList() {
@@ -1141,6 +1196,7 @@ function renderLandingPage(): string {
             suppressSwitchNotice = true;
             ws.close(4409, 'switch session');
           }
+          ensureOpenSession(item.id);
           clearLogMessages();
           restoreFromCache(item.id);
           connect(item.id);
@@ -1149,6 +1205,41 @@ function renderLandingPage(): string {
           }
         });
         sessionListEl.appendChild(row);
+      });
+    }
+
+    function renderSessionTabs() {
+      if (!sessionTabsEl) return;
+      sessionTabsEl.innerHTML = '';
+      if (!openSessions.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = '暂无会话';
+        sessionTabsEl.appendChild(empty);
+        return;
+      }
+      openSessions.forEach((id) => {
+        const tab = document.createElement('div');
+        tab.className = 'session-tab' + (id === currentSessionId ? ' active' : '');
+        tab.title = id;
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = id;
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'close';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeSessionTab(id);
+        });
+        tab.appendChild(label);
+        tab.appendChild(closeBtn);
+        tab.addEventListener('click', () => {
+          if (id === currentSessionId) return;
+          switchSession(id);
+        });
+        sessionTabsEl.appendChild(tab);
       });
     }
 
@@ -1206,6 +1297,7 @@ function renderLandingPage(): string {
         sessionIdEl.textContent = currentSessionId || '--';
       }
       rememberSession(currentSessionId);
+      ensureOpenSession(currentSessionId);
     }
 
     function saveSession(id) {
@@ -1234,6 +1326,26 @@ function renderLandingPage(): string {
 
     function newSessionId() {
       return Math.random().toString(36).slice(2, 8);
+    }
+
+    function switchSession(targetId) {
+      if (!targetId) return;
+      saveSession(targetId);
+      updateSessionLabel(targetId);
+      clearLogMessages();
+      restoreFromCache(targetId);
+      connect(targetId);
+    }
+
+    function closeSessionTab(id) {
+      const wasActive = id === currentSessionId;
+      removeOpenSession(id);
+      if (wasActive) {
+        const fallback = openSessions[0] || newSessionId();
+        switchSession(fallback);
+      } else {
+        renderSessionTabs();
+      }
     }
 
     function connect(sessionIdOverride) {
@@ -1703,15 +1815,12 @@ function renderLandingPage(): string {
           ws.close(4409, 'switch session');
         }
         const nextId = newSessionId();
-        saveSession(nextId);
-        clearLogMessages();
-        restoreFromCache(nextId);
-        connect(nextId);
+        switchSession(nextId);
       });
     }
 
-    if (sessionSwitchBtn) {
-      sessionSwitchBtn.addEventListener('click', () => {
+    if (sessionHistoryBtn) {
+      sessionHistoryBtn.addEventListener('click', () => {
         renderSessionList();
         if (sessionDialog) {
           sessionDialog.classList.remove('hidden');
