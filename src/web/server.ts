@@ -465,27 +465,29 @@ function renderLandingPage(): string {
     * { box-sizing: border-box; }
     html { height: 100%; width: 100%; overflow: hidden; }
     body { font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; display: flex; flex-direction: column; }
-    header { padding: 14px 18px; background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 1px 3px rgba(15,23,42,0.06); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-    .header-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; width: 100%; }
-    .header-left { display: flex; align-items: center; gap: 8px; }
+    header { padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 1px 3px rgba(15,23,42,0.06); display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+    .header-row { display: flex; align-items: center; gap: 10px; justify-content: flex-start; width: 100%; }
+    .header-left { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .ws-indicator { width: 12px; height: 12px; border-radius: 999px; background: #ef4444; border: 1px solid #e5e7eb; box-shadow: 0 0 0 2px #fff; }
     .ws-indicator.connecting { background: #f59e0b; box-shadow: 0 0 0 2px #fef3c7; animation: pulse 1s infinite alternate; }
     .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; animation: pulse 1s infinite alternate-reverse; }
     @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
-    header h1 { margin: 0; font-size: 18px; }
-    .tab-bar { display: flex; align-items: center; gap: 8px; max-width: 100%; }
-    .tabs-scroll { display: flex; gap: 6px; overflow-x: auto; padding: 4px 6px; background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; scrollbar-width: thin; }
-    .session-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; font-size: 13px; cursor: pointer; white-space: nowrap; }
-    .session-tab.active { border-color: #c7d2fe; background: #eef2ff; color: #1e1b4b; }
+    header h1 { margin: 0; font-size: 16px; }
+    .tab-bar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+    .tabs-scroll { display: flex; gap: 6px; overflow-x: auto; padding: 0 2px; background: transparent; border: none; scrollbar-width: thin; flex: 1; min-width: 0; }
+    .session-tab { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; font-size: 12px; line-height: 1.2; cursor: pointer; white-space: nowrap; }
+    .session-tab.active { border-color: #c7d2fe; background: #eef2ff; color: #1e1b4b; box-shadow: 0 1px 2px rgba(31,41,55,0.08); }
     .session-tab .label { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-    .session-tab .close { border: none; background: transparent; cursor: pointer; color: #9ca3af; font-size: 12px; }
+    .session-tab .close { border: none; background: transparent; cursor: pointer; color: #9ca3af; font-size: 11px; }
     .session-tab .close:hover { color: #ef4444; }
-    .tab-icons { display: inline-flex; gap: 6px; }
-    .tab-icons button { width: 32px; height: 30px; border-radius: 8px; border: 1px solid #d6d9e0; background: #fff; cursor: pointer; }
+    .tab-icons { display: inline-flex; gap: 6px; flex-shrink: 0; }
+    .tab-icons button { width: 30px; height: 28px; border-radius: 8px; border: 1px solid #d6d9e0; background: #fff; cursor: pointer; }
     .tab-icons button:hover { border-color: #c7d2fe; background: #eef2ff; }
     .session-panel { display: flex; flex-direction: column; gap: 6px; }
-    .session-current { font-size: 13px; color: var(--text); word-break: break-all; }
-    .session-pill { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; border-radius: 999px; background: #eef2ff; color: #312e81; font-weight: 700; min-width: 56px; }
+    .session-current { font-size: 13px; color: var(--text); word-break: break-all; display: flex; align-items: center; gap: 6px; }
+    .session-pill { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; border-radius: 999px; background: #eef2ff; color: #312e81; font-weight: 700; min-width: 56px; max-width: 100%; }
+    .session-rename { border: 1px solid #d6d9e0; background: #fff; color: #4b5563; border-radius: 8px; padding: 4px 6px; font-size: 12px; cursor: pointer; }
+    .session-rename:hover { border-color: #c7d2fe; color: #312e81; }
     main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; overflow: hidden; }
     #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
     .sidebar-title { font-size: 13px; font-weight: 600; margin: 0; color: var(--muted); }
@@ -543,6 +545,8 @@ function renderLandingPage(): string {
     .plan-item.done .plan-marker { background: #22c55e; color: #fff; }
     .plan-text { flex: 1; word-break: break-word; }
     .muted { color: var(--muted); }
+    #session-views { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+    .session-view { display: flex; flex-direction: column; gap: 12px; width: 100%; }
     .session-panel { display: flex; flex-direction: column; gap: 8px; }
     .session-current { font-size: 13px; color: var(--text); word-break: break-all; }
     .session-actions { display: flex; gap: 8px; }
@@ -598,7 +602,8 @@ function renderLandingPage(): string {
       <div class="session-panel">
         <div class="session-current">
           <span class="muted">当前：</span>
-          <span id="session-id" class="session-pill">--</span>
+          <span id="session-id" class="session-pill" title="--">--</span>
+          <button id="session-rename" class="session-rename" type="button" title="重命名当前会话">✎</button>
         </div>
       </div>
       <h3 class="sidebar-title">Workspace</h3>
@@ -609,21 +614,25 @@ function renderLandingPage(): string {
       <div id="plan-list" class="files-list plan-list"></div>
     </aside>
     <section id="console">
-      <div id="log">
-        <div id="console-header">
-          <button id="clear-cache-btn" type="button" title="清空本地聊天缓存">清空历史</button>
+      <div id="session-views">
+        <div class="session-view active" data-session="__initial__">
+          <div id="log">
+            <div id="console-header">
+              <button id="clear-cache-btn" type="button" title="清空本地聊天缓存">清空历史</button>
+            </div>
+          </div>
+          <form id="form">
+            <div id="attachments"></div>
+            <div id="input-wrapper">
+              <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
+              <button id="attach-btn" type="button" title="添加图片">+</button>
+              <button id="stop-btn" type="button" title="停止当前回复">■</button>
+            </div>
+            <input id="image-input" type="file" accept="image/*" multiple hidden />
+            <span id="status-label" style="display:none;">已断开</span>
+          </form>
         </div>
       </div>
-      <form id="form">
-        <div id="attachments"></div>
-        <div id="input-wrapper">
-          <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
-          <button id="attach-btn" type="button" title="添加图片">+</button>
-          <button id="stop-btn" type="button" title="停止当前回复">■</button>
-        </div>
-        <input id="image-input" type="file" accept="image/*" multiple hidden />
-        <span id="status-label" style="display:none;">已断开</span>
-      </form>
     </section>
   </main>
   <div id="token-overlay" class="overlay">
@@ -646,9 +655,12 @@ function renderLandingPage(): string {
     </div>
   </div>
   <script>
-    const logEl = document.getElementById('log');
-    const inputEl = document.getElementById('input');
-    const formEl = document.getElementById('form');
+    const sessionViewHost = document.getElementById('session-views');
+    const SESSION_PLACEHOLDER = '__initial__';
+    const sessionViewTemplate = sessionViewHost?.querySelector('.session-view')?.cloneNode(true);
+    let logEl = document.getElementById('log');
+    let inputEl = document.getElementById('input');
+    let formEl = document.getElementById('form');
     const wsIndicator = document.getElementById('ws-indicator');
     const workspaceInfoEl = document.getElementById('workspace-info');
     const modifiedFilesEl = document.getElementById('modified-files');
@@ -656,14 +668,15 @@ function renderLandingPage(): string {
     const tokenOverlay = document.getElementById('token-overlay');
     const tokenInput = document.getElementById('token-input');
     const tokenSubmit = document.getElementById('token-submit');
-    const attachBtn = document.getElementById('attach-btn');
-    const imageInput = document.getElementById('image-input');
-    const attachmentsEl = document.getElementById('attachments');
-    const statusLabel = document.getElementById('status-label');
-    const stopBtn = document.getElementById('stop-btn');
-    const clearBtn = document.getElementById('clear-cache-btn');
+    let attachBtn = document.getElementById('attach-btn');
+    let imageInput = document.getElementById('image-input');
+    let attachmentsEl = document.getElementById('attachments');
+    let statusLabel = document.getElementById('status-label');
+    let stopBtn = document.getElementById('stop-btn');
+    let clearBtn = document.getElementById('clear-cache-btn');
     const LOG_TOOLBAR_ID = 'console-header';
     const sessionIdEl = document.getElementById('session-id');
+    const sessionRenameBtn = document.getElementById('session-rename');
     const sessionNewBtn = document.getElementById('session-new');
     const sessionHistoryBtn = document.getElementById('session-history');
     const sessionTabsEl = document.getElementById('session-tabs');
@@ -673,6 +686,8 @@ function renderLandingPage(): string {
     const SESSION_KEY = 'ADS_WEB_SESSION';
     const SESSION_HISTORY_KEY = 'ADS_WEB_SESSIONS';
     const SESSION_OPEN_KEY = 'ADS_OPEN_SESSIONS';
+    const SESSION_ALIAS_KEY = 'ADS_SESSION_ALIASES';
+    const PLAN_CACHE_PREFIX = 'plan-cache::';
     const idleMinutes = ${IDLE_MINUTES};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
@@ -681,7 +696,16 @@ function renderLandingPage(): string {
     const COMMAND_OUTPUT_MAX_LINES = 3;
     const COMMAND_OUTPUT_MAX_CHARS = 1200;
     const viewport = window.visualViewport;
+    function getScopedStorage() {
+      try {
+        return window.sessionStorage;
+      } catch {
+        return window.localStorage;
+      }
+    }
+    const scopedStorage = getScopedStorage();
     let ws;
+    let wsGeneration = 0;
     let sendQueue = [];
     let streamState = null;
     let autoScroll = true;
@@ -699,7 +723,283 @@ function renderLandingPage(): string {
     let allowReconnect = true;
     let suppressSwitchNotice = false;
     let currentSessionId = '';
+    let currentViewId = SESSION_PLACEHOLDER;
+    const sessionViews = new Map();
+    const sessionStates = new Map();
     let openSessions = [];
+    let sessionAliases = {};
+
+    const initialView = sessionViewHost?.querySelector('.session-view');
+    if (initialView) {
+      initialView.dataset.session = SESSION_PLACEHOLDER;
+      sessionViews.set(SESSION_PLACEHOLDER, initialView);
+    }
+
+    function defaultUiState() {
+      return {
+        pendingImages: [],
+        autoScroll: true,
+        typingPlaceholder: null,
+        streamState: null,
+        activeCommandView: null,
+        activeCommandSignature: null,
+        activeCommandId: null,
+        lastCommandText: '',
+        isBusy: false,
+        planTouched: false,
+        inputDraft: '',
+      };
+    }
+
+    function bindViewElements(container) {
+      if (!container) return;
+      logEl = container.querySelector('#log');
+      formEl = container.querySelector('#form');
+      inputEl = container.querySelector('#input');
+      attachBtn = container.querySelector('#attach-btn');
+      imageInput = container.querySelector('#image-input');
+      attachmentsEl = container.querySelector('#attachments');
+      statusLabel = container.querySelector('#status-label');
+      stopBtn = container.querySelector('#stop-btn');
+      clearBtn = container.querySelector('#clear-cache-btn');
+    }
+
+    function saveUiState(id) {
+      if (!id) return;
+      sessionStates.set(id, {
+        pendingImages: [...pendingImages],
+        autoScroll,
+        typingPlaceholder,
+        streamState,
+        activeCommandView,
+        activeCommandSignature,
+        activeCommandId,
+        lastCommandText,
+        isBusy,
+        planTouched,
+        inputDraft: inputEl?.value || '',
+      });
+    }
+
+    function restoreUiState(id) {
+      const state = sessionStates.get(id) || defaultUiState();
+      pendingImages = [...(state.pendingImages || [])];
+      autoScroll = state.autoScroll ?? true;
+      typingPlaceholder = state.typingPlaceholder || null;
+      streamState = state.streamState || null;
+      activeCommandView = state.activeCommandView || null;
+      activeCommandSignature = state.activeCommandSignature || null;
+      activeCommandId = state.activeCommandId || null;
+      lastCommandText = state.lastCommandText || '';
+      isBusy = state.isBusy || false;
+      planTouched = state.planTouched || false;
+      if (inputEl) {
+        inputEl.value = state.inputDraft || '';
+        autoResizeInput();
+      }
+      renderAttachments();
+      setBusy(isBusy);
+    }
+
+    function handleLogScroll() {
+      if (!logEl) return;
+      autoScroll = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80;
+      const state = sessionStates.get(currentSessionId);
+      if (state) {
+        state.autoScroll = autoScroll;
+      }
+    }
+
+    function handleInputKeydown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (formEl?.requestSubmit) {
+          formEl.requestSubmit();
+        } else if (formEl) {
+          formEl.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        }
+      }
+      resetIdleTimer();
+    }
+
+    function handleDragOver(e) {
+      e.preventDefault();
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      addImagesFromFiles(e.dataTransfer?.files || []);
+    }
+
+    function handlePaste(e) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageFiles = [];
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addImagesFromFiles(imageFiles);
+      }
+    }
+
+    function handleStop() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !isBusy) return;
+      ws.send(JSON.stringify({ type: 'interrupt' }));
+      appendStatus('⛔ 已请求停止，输出可能不完整');
+      setBusy(false);
+    }
+
+    function handleSubmit(e) {
+      e.preventDefault();
+      const text = inputEl?.value?.trim() || '';
+      const hasImages = pendingImages.length > 0;
+      if ((!text && !hasImages) || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const isCommand = text.startsWith('/');
+      const cmdId = isCommand ? Date.now().toString(36) + Math.random().toString(36).slice(2, 6) : null;
+      startNewTurn(!isCommand);
+      const type = isCommand ? 'command' : 'prompt';
+      const payload = isCommand
+        ? text
+        : {
+            text,
+            images: hasImages ? pendingImages : undefined,
+          };
+      autoScroll = true;
+      ws.send(JSON.stringify({ type, payload }));
+      sendQueue.push(type);
+      setBusy(true);
+      if (isCommand) {
+        lastCommandText = text;
+        renderCommandView({ id: cmdId, commandText: text, status: 'in_progress' });
+      } else {
+        lastCommandText = '';
+        activeCommandView = null;
+        activeCommandSignature = null;
+        activeCommandId = null;
+        appendMessage('user', text || '(图片)');
+        appendTypingPlaceholder();
+        streamState = null;
+      }
+      if (inputEl) {
+        inputEl.value = '';
+        inputEl.style.height = '44px';
+      }
+      clearAttachments();
+      inputEl?.focus();
+      resetIdleTimer();
+      recalcLogHeight();
+    }
+
+    function handleClearLog() {
+      clearLogMessages();
+    }
+
+    function wireSessionView(container) {
+      if (!container || container.dataset.wired) return;
+      container.dataset.wired = '1';
+      const logNode = container.querySelector('#log');
+      const inputNode = container.querySelector('#input');
+      const formNode = container.querySelector('#form');
+      const attachNode = container.querySelector('#attach-btn');
+      const imageNode = container.querySelector('#image-input');
+      const stopNode = container.querySelector('#stop-btn');
+      const clearNode = container.querySelector('#clear-cache-btn');
+
+      logNode?.addEventListener('scroll', handleLogScroll);
+      inputNode?.addEventListener('keydown', handleInputKeydown);
+      inputNode?.addEventListener('input', autoResizeInput);
+      inputNode?.addEventListener('focus', recalcLogHeight);
+      inputNode?.addEventListener('blur', recalcLogHeight);
+      formNode?.addEventListener('dragover', handleDragOver);
+      formNode?.addEventListener('drop', handleDrop);
+      inputNode?.addEventListener('paste', handlePaste);
+      formNode?.addEventListener('submit', handleSubmit);
+      attachNode?.addEventListener('click', () => imageNode?.click());
+      imageNode?.addEventListener('change', () => addImagesFromFiles(imageNode.files));
+      stopNode?.addEventListener('click', handleStop);
+      if (stopNode) stopNode.disabled = true;
+      clearNode?.addEventListener('click', handleClearLog);
+    }
+
+    function ensureSessionView(id) {
+      if (!id) return null;
+      if (sessionViews.has(id)) {
+        return sessionViews.get(id);
+      }
+      if (sessionViews.has(SESSION_PLACEHOLDER)) {
+        const placeholderView = sessionViews.get(SESSION_PLACEHOLDER);
+        sessionViews.delete(SESSION_PLACEHOLDER);
+        if (placeholderView) {
+          placeholderView.dataset.session = id;
+          sessionViews.set(id, placeholderView);
+          return placeholderView;
+        }
+      }
+      if (!sessionViewTemplate) return null;
+      const clone = sessionViewTemplate.cloneNode(true);
+      clone.dataset.session = id;
+      const cloneLog = clone.querySelector('#log');
+      if (cloneLog) {
+        Array.from(cloneLog.children).forEach((child) => {
+          if (!isLogToolbar(child)) {
+            child.remove();
+          }
+        });
+      }
+      const cloneInput = clone.querySelector('#input');
+      if (cloneInput) {
+        cloneInput.value = '';
+      }
+      const cloneAttachments = clone.querySelector('#attachments');
+      if (cloneAttachments) {
+        cloneAttachments.innerHTML = '';
+      }
+      wireSessionView(clone);
+      sessionViews.set(id, clone);
+      return clone;
+    }
+
+    function sessionHasContent(container) {
+      const logNode = container?.querySelector('#log');
+      if (!logNode) return false;
+      const validChildren = Array.from(logNode.children).filter((child) => !isLogToolbar(child));
+      return validChildren.length > 0;
+    }
+
+    function restoreSessionView(sessionId) {
+      const view = ensureSessionView(sessionId);
+      if (!view || !sessionViewHost) return false;
+      saveUiState(currentSessionId);
+      sessionViewHost.innerHTML = '';
+      sessionViewHost.appendChild(view);
+      currentViewId = sessionId;
+      bindViewElements(view);
+      restoreUiState(sessionId);
+      autoResizeInput();
+      recalcLogHeight();
+      autoScrollIfNeeded();
+      return sessionHasContent(view);
+    }
+
+    function stashSessionView() {
+      if (!currentSessionId) return;
+      saveUiState(currentSessionId);
+      const view = sessionViews.get(currentSessionId);
+      if (view && sessionViewHost?.contains(view)) {
+        sessionViewHost.removeChild(view);
+      }
+    }
+
+    if (initialView) {
+      wireSessionView(initialView);
+      bindViewElements(initialView);
+      restoreUiState(SESSION_PLACEHOLDER);
+    }
 
     function setBusy(busy) {
       isBusy = !!busy;
@@ -714,6 +1014,7 @@ function renderLandingPage(): string {
       recalcLogHeight();
     }
     applyVh();
+    sessionAliases = loadSessionAliases();
     renderPlanStatus('暂无计划');
     renderSessionList();
     openSessions = loadOpenSessions();
@@ -944,6 +1245,7 @@ function renderLandingPage(): string {
       if (clearPlan) {
         planTouched = false;
         renderPlanStatus('生成计划中...');
+        savePlanCache([], currentSessionId);
       }
     }
 
@@ -969,11 +1271,8 @@ function renderLandingPage(): string {
 
     function renderCommandView(options = {}) {
       const cmdId = options.id || null;
-      if (cmdId && activeCommandId && cmdId !== activeCommandId) {
-        // 新命令到来时保留旧气泡，只重置活跃视图指针
-        activeCommandView = null;
-        activeCommandSignature = null;
-      }
+      // 同一次对话内的多条命令复用同一个气泡（覆盖显示）
+      // 新对话开始时在 form submit 处已重置指针，会创建新气泡
       if (cmdId) {
         activeCommandId = cmdId;
       }
@@ -1076,7 +1375,7 @@ function renderLandingPage(): string {
 
     function loadCache(sessionId) {
       try {
-        const raw = localStorage.getItem(cacheKey(sessionId));
+        const raw = scopedStorage.getItem(cacheKey(sessionId));
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
@@ -1087,7 +1386,7 @@ function renderLandingPage(): string {
 
     function saveCache(items, sessionId) {
       try {
-        localStorage.setItem(cacheKey(sessionId), JSON.stringify(items.slice(-MAX_LOG_MESSAGES)));
+        scopedStorage.setItem(cacheKey(sessionId), JSON.stringify(items.slice(-MAX_LOG_MESSAGES)));
       } catch {
         /* ignore */
       }
@@ -1102,9 +1401,113 @@ function renderLandingPage(): string {
       saveCache(items);
     }
 
+    function planCacheKey(sessionId) {
+      return PLAN_CACHE_PREFIX + getTokenKey() + '::' + resolveSessionIdForCache(sessionId);
+    }
+
+    function loadPlanCache(sessionId) {
+      try {
+        const raw = scopedStorage.getItem(planCacheKey(sessionId));
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function savePlanCache(items, sessionId) {
+      try {
+        const key = planCacheKey(sessionId);
+        if (!items || items.length === 0) {
+          scopedStorage.removeItem(key);
+          return;
+        }
+        scopedStorage.setItem(key, JSON.stringify(items));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function restorePlanFromCache(sessionId) {
+      const planItems = loadPlanCache(sessionId);
+      if (planItems && planItems.length > 0) {
+        renderPlan(planItems);
+        return;
+      }
+      planTouched = false;
+      renderPlanStatus('暂无计划');
+    }
+
+    function aliasStorageKey() {
+      return SESSION_ALIAS_KEY + '::' + getTokenKey();
+    }
+
+    function loadSessionAliases() {
+      try {
+        const raw = scopedStorage.getItem(aliasStorageKey());
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const normalized = {};
+          for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === 'string' && key) {
+              normalized[key] = value;
+            }
+          }
+          return normalized;
+        }
+      } catch {
+        /* ignore */
+      }
+      return {};
+    }
+
+    function saveSessionAliases(map = sessionAliases) {
+      try {
+        scopedStorage.setItem(aliasStorageKey(), JSON.stringify(map));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function getSessionAlias(id) {
+      if (!id) return '';
+      return sessionAliases[id] || '';
+    }
+
+    function setSessionAlias(id, name) {
+      if (!id) return;
+      const trimmed = (name || '').trim();
+      if (trimmed) {
+        sessionAliases[id] = trimmed;
+      } else {
+        delete sessionAliases[id];
+      }
+      saveSessionAliases();
+      renderSessionTabs();
+      renderSessionList();
+      updateSessionLabel(currentSessionId);
+    }
+
+    function resolveSessionLabel(id) {
+      if (!id) return '--';
+      const alias = getSessionAlias(id);
+      return alias || id;
+    }
+
+    function resolveSessionTitle(id) {
+      if (!id) return '--';
+      const alias = getSessionAlias(id);
+      if (alias && alias !== id) {
+        return alias + ' (' + id + ')';
+      }
+      return id;
+    }
+
     function loadSessionHistory() {
       try {
-        const raw = localStorage.getItem(SESSION_HISTORY_KEY);
+        const raw = scopedStorage.getItem(SESSION_HISTORY_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
@@ -1115,7 +1518,7 @@ function renderLandingPage(): string {
 
     function saveSessionHistory(list) {
       try {
-        localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(list.slice(0, MAX_SESSION_HISTORY)));
+        scopedStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(list.slice(0, MAX_SESSION_HISTORY)));
       } catch {
         /* ignore */
       }
@@ -1123,7 +1526,7 @@ function renderLandingPage(): string {
 
     function loadOpenSessions() {
       try {
-        const raw = localStorage.getItem(SESSION_OPEN_KEY);
+        const raw = scopedStorage.getItem(SESSION_OPEN_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string' && id.trim()) : [];
@@ -1134,7 +1537,7 @@ function renderLandingPage(): string {
 
     function saveOpenSessions(list) {
       try {
-        localStorage.setItem(SESSION_OPEN_KEY, JSON.stringify(list.slice(0, MAX_OPEN_SESSIONS)));
+        scopedStorage.setItem(SESSION_OPEN_KEY, JSON.stringify(list.slice(0, MAX_OPEN_SESSIONS)));
       } catch {
         /* ignore */
       }
@@ -1150,10 +1553,13 @@ function renderLandingPage(): string {
 
     function ensureOpenSession(id) {
       if (!id) return;
-      openSessions = openSessions.filter((entry) => entry && entry !== id);
-      openSessions.unshift(id);
-      if (openSessions.length > MAX_OPEN_SESSIONS) {
-        openSessions = openSessions.slice(0, MAX_OPEN_SESSIONS);
+      const exists = openSessions.includes(id);
+      if (!exists) {
+        openSessions.push(id); // 新会话追加到末尾，保持 tab 顺序稳定
+        if (openSessions.length > MAX_OPEN_SESSIONS) {
+          // 如果超过上限，移除最旧的会话（队列前端）
+          openSessions = openSessions.slice(-MAX_OPEN_SESSIONS);
+        }
       }
       saveOpenSessions(openSessions);
       renderSessionTabs();
@@ -1184,25 +1590,21 @@ function renderLandingPage(): string {
         row.className = 'session-item';
         const idEl = document.createElement('span');
         idEl.className = 'id';
-        idEl.textContent = item.id;
+        const alias = getSessionAlias(item.id);
+        idEl.textContent = alias || item.id;
+        idEl.title = resolveSessionTitle(item.id);
         const meta = document.createElement('span');
         meta.className = 'meta';
         const ts = item.ts ? new Date(item.ts) : null;
-        meta.textContent = ts ? ts.toLocaleString() : '';
+        const tsText = ts ? ts.toLocaleString() : '';
+        meta.textContent = alias ? [item.id, tsText].filter(Boolean).join(' · ') : tsText;
         row.appendChild(idEl);
         row.appendChild(meta);
         row.addEventListener('click', () => {
-          if (ws) {
-            suppressSwitchNotice = true;
-            ws.close(4409, 'switch session');
-          }
-          ensureOpenSession(item.id);
-          clearLogMessages();
-          restoreFromCache(item.id);
-          connect(item.id);
           if (sessionDialog) {
             sessionDialog.classList.add('hidden');
           }
+          switchSession(item.id);
         });
         sessionListEl.appendChild(row);
       });
@@ -1221,10 +1623,10 @@ function renderLandingPage(): string {
       openSessions.forEach((id) => {
         const tab = document.createElement('div');
         tab.className = 'session-tab' + (id === currentSessionId ? ' active' : '');
-        tab.title = id;
+        tab.title = resolveSessionTitle(id);
         const label = document.createElement('span');
         label.className = 'label';
-        label.textContent = id;
+        label.textContent = resolveSessionLabel(id);
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'close';
@@ -1294,7 +1696,8 @@ function renderLandingPage(): string {
     function updateSessionLabel(id) {
       currentSessionId = id || '';
       if (sessionIdEl) {
-        sessionIdEl.textContent = currentSessionId || '--';
+        sessionIdEl.textContent = resolveSessionLabel(currentSessionId);
+        sessionIdEl.title = resolveSessionTitle(currentSessionId);
       }
       rememberSession(currentSessionId);
       ensureOpenSession(currentSessionId);
@@ -1328,21 +1731,39 @@ function renderLandingPage(): string {
       return Math.random().toString(36).slice(2, 8);
     }
 
-    function switchSession(targetId) {
-      if (!targetId) return;
+    function switchSession(targetId, skipStash) {
+      if (!targetId || targetId === currentSessionId) return;
+      if (!skipStash) {
+        stashSessionView();
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        suppressSwitchNotice = true;
+        ws.close(4409, 'switch session');
+      }
+      sendQueue = [];
       saveSession(targetId);
       updateSessionLabel(targetId);
-      clearLogMessages();
-      restoreFromCache(targetId);
+      restorePlanFromCache(targetId);
+      const restored = restoreSessionView(targetId);
+      if (!restored) {
+        restoreFromCache(targetId);
+        if (inputEl) {
+          inputEl.value = '';
+          autoResizeInput();
+        }
+      }
+      setBusy(isBusy);
       connect(targetId);
     }
 
     function closeSessionTab(id) {
       const wasActive = id === currentSessionId;
+      sessionViews.delete(id);
+      sessionStates.delete(id);
       removeOpenSession(id);
       if (wasActive) {
         const fallback = openSessions[0] || newSessionId();
-        switchSession(fallback);
+        switchSession(fallback, true);
       } else {
         renderSessionTabs();
       }
@@ -1352,6 +1773,8 @@ function renderLandingPage(): string {
       const sessionIdToUse = sessionIdOverride || currentSessionId || loadSession() || newSessionId();
       saveSession(sessionIdToUse);
       updateSessionLabel(sessionIdToUse);
+      restoreSessionView(sessionIdToUse);
+      restorePlanFromCache(sessionIdToUse);
       let token = sessionStorage.getItem(TOKEN_KEY) || '';
       if (!token) {
         tokenOverlay.classList.remove('hidden');
@@ -1363,9 +1786,20 @@ function renderLandingPage(): string {
       setLocked(false);
       allowReconnect = true;
       const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        suppressSwitchNotice = true;
+        ws.close(4409, 'switch session');
+      }
+      ws = null;
+      sendQueue = [];
+      streamState = null;
+      clearTypingPlaceholder();
+      resetCommandView(false);
+      const socketId = ++wsGeneration;
       setWsState('connecting');
       ws = new WebSocket(url, ['ads-token', token, 'ads-session', sessionIdToUse]);
       ws.onopen = () => {
+        if (socketId !== wsGeneration) return;
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
           reconnectTimer = null;
@@ -1379,6 +1813,7 @@ function renderLandingPage(): string {
         setLocked(false);
       };
       ws.onmessage = (ev) => {
+        if (socketId !== wsGeneration) return;
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'result') {
@@ -1437,6 +1872,7 @@ function renderLandingPage(): string {
         }
       };
       ws.onclose = (ev) => {
+        if (socketId !== wsGeneration) return;
         setWsState('disconnected');
         if (idleTimer) {
           clearTimeout(idleTimer);
@@ -1463,6 +1899,7 @@ function renderLandingPage(): string {
         scheduleReconnect();
       };
       ws.onerror = (err) => {
+        if (socketId !== wsGeneration) return;
         setWsState('disconnected');
         setBusy(false);
         const message = err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
@@ -1485,112 +1922,6 @@ function renderLandingPage(): string {
       inputEl.style.height = newHeight + 'px';
       recalcLogHeight();
     }
-
-    inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        if (formEl.requestSubmit) {
-          formEl.requestSubmit();
-        } else {
-          formEl.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-        }
-      }
-      resetIdleTimer();
-    });
-
-    inputEl.addEventListener('input', autoResizeInput);
-    inputEl.addEventListener('focus', recalcLogHeight);
-    inputEl.addEventListener('blur', recalcLogHeight);
-
-    if (attachBtn && imageInput) {
-      attachBtn.addEventListener('click', () => imageInput.click());
-    }
-
-    if (imageInput) {
-      imageInput.addEventListener('change', () => addImagesFromFiles(imageInput.files));
-    }
-
-    if (stopBtn) {
-      stopBtn.addEventListener('click', () => {
-        if (!ws || ws.readyState !== WebSocket.OPEN || !isBusy) return;
-        ws.send(JSON.stringify({ type: 'interrupt' }));
-        appendStatus('⛔ 已请求停止，输出可能不完整');
-        setBusy(false);
-      });
-      stopBtn.disabled = true;
-    }
-
-    if (clearBtn) {
-      clearBtn.addEventListener('click', () => {
-        clearLogMessages();
-      });
-    }
-
-    formEl.addEventListener('dragover', (e) => {
-      e.preventDefault();
-    });
-
-    formEl.addEventListener('drop', (e) => {
-      e.preventDefault();
-      addImagesFromFiles(e.dataTransfer?.files || []);
-    });
-
-    // 支持粘贴图片
-    inputEl.addEventListener('paste', (e) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      const imageFiles = [];
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
-          const file = item.getAsFile();
-          if (file) imageFiles.push(file);
-        }
-      }
-      if (imageFiles.length > 0) {
-        e.preventDefault();
-        addImagesFromFiles(imageFiles);
-      }
-    });
-
-    formEl.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const text = inputEl.value.trim();
-      const hasImages = pendingImages.length > 0;
-      if ((!text && !hasImages) || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const isCommand = text.startsWith('/');
-      const cmdId = isCommand ? Date.now().toString(36) + Math.random().toString(36).slice(2, 6) : null;
-      startNewTurn(!isCommand);
-      const type = isCommand ? 'command' : 'prompt';
-      const payload = isCommand
-        ? text
-        : {
-            text,
-            images: hasImages ? pendingImages : undefined,
-          };
-      autoScroll = true;
-      ws.send(JSON.stringify({ type, payload }));
-      sendQueue.push(type);
-      setBusy(true);
-      if (isCommand) {
-        lastCommandText = text;
-        renderCommandView({ id: cmdId, commandText: text, status: 'in_progress' });
-      } else {
-        lastCommandText = '';
-        // 新 prompt 时重置命令视图指针，保留旧气泡，让新命令创建新气泡
-        activeCommandView = null;
-        activeCommandSignature = null;
-        activeCommandId = null;
-        appendMessage('user', text || '(图片)');
-        appendTypingPlaceholder();
-        streamState = null;
-      }
-      inputEl.value = '';
-      inputEl.style.height = '44px';
-      clearAttachments();
-      inputEl.focus();
-      resetIdleTimer();
-      recalcLogHeight();
-    });
 
     function ensureStream() {
       if (!streamState) {
@@ -1717,6 +2048,7 @@ function renderLandingPage(): string {
     function renderPlan(items) {
       if (!planListEl) return;
       planTouched = true;
+      savePlanCache(items || [], currentSessionId);
       planListEl.innerHTML = '';
       if (!items || items.length === 0) {
         renderPlanStatus('暂无计划');
@@ -1794,8 +2126,13 @@ function renderLandingPage(): string {
       const token = tokenInput.value.trim();
       if (!token) return;
       sessionStorage.setItem(TOKEN_KEY, token);
+      sessionAliases = loadSessionAliases();
+      renderSessionTabs();
+      renderSessionList();
+      updateSessionLabel(currentSessionId);
       tokenOverlay.classList.add('hidden');
       restoreFromCache();
+      restorePlanFromCache();
       connect();
     });
 
@@ -1816,6 +2153,16 @@ function renderLandingPage(): string {
         }
         const nextId = newSessionId();
         switchSession(nextId);
+      });
+    }
+
+    if (sessionRenameBtn) {
+      sessionRenameBtn.addEventListener('click', () => {
+        if (!currentSessionId) return;
+        const existing = getSessionAlias(currentSessionId);
+        const name = prompt('为当前会话设置名称（留空恢复默认）', existing || '');
+        if (name === null) return;
+        setSessionAlias(currentSessionId, name);
       });
     }
 

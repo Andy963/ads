@@ -8,10 +8,15 @@ export interface CodexOverrides {
   apiKey?: string;
 }
 
+export type CodexAuthMode = "apiKey" | "deviceAuth";
+
 export interface CodexResolvedConfig {
-  baseUrl: string;
-  apiKey: string;
+  baseUrl?: string;
+  apiKey?: string;
+  authMode: CodexAuthMode;
 }
+
+const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
 export function resolveCodexConfig(
   overrides: CodexOverrides = {}
@@ -25,27 +30,34 @@ export function resolveCodexConfig(
     process.env.OPENAI_API_KEY ||
     process.env.CCHAT_OPENAI_API_KEY;
 
-  const { baseUrl: configBaseUrl, apiKey: configApiKey } = loadCodexFiles();
+  const { baseUrl: configBaseUrl, apiKey: configApiKey, hasDeviceAuthTokens } = loadCodexFiles();
 
-  const baseUrl = overrides.baseUrl || envBaseUrl || configBaseUrl;
+  const baseUrl =
+    overrides.baseUrl ||
+    envBaseUrl ||
+    configBaseUrl ||
+    (envApiKey || configApiKey || overrides.apiKey ? DEFAULT_BASE_URL : undefined);
   const apiKey = overrides.apiKey || envApiKey || configApiKey;
 
-  if (!baseUrl) {
+  const authMode: CodexAuthMode | undefined = apiKey
+    ? "apiKey"
+    : hasDeviceAuthTokens
+      ? "deviceAuth"
+      : undefined;
+
+  if (!authMode) {
     throw new Error(
-      "Codex base URL not found. Provide --base-url, set CODEX_BASE_URL, or configure ~/.codex/config.toml."
+      "Codex credentials not found. Provide --api-key (or CODEX_API_KEY), or sign in with `codex login` to use saved access/refresh tokens in ~/.codex/auth.json."
     );
   }
 
-  if (!apiKey) {
-    throw new Error(
-      "Codex API key not found. Provide --api-key, set CODEX_API_KEY, or configure ~/.codex/auth.json."
-    );
-  }
-
-  return { baseUrl, apiKey };
+  return { baseUrl, apiKey, authMode };
 }
 
-export function maskKey(key: string): string {
+export function maskKey(key?: string): string {
+  if (!key) {
+    return "(none)";
+  }
   if (key.length <= 8) {
     return key;
   }
@@ -74,13 +86,15 @@ export function parseSlashCommand(
   };
 }
 
-function loadCodexFiles(): Partial<CodexResolvedConfig> {
+function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens: boolean } {
   const home = homedir();
   const codexDir = join(home, ".codex");
   const configPath = join(codexDir, "config.toml");
   const authPath = join(codexDir, "auth.json");
 
-  const result: Partial<CodexResolvedConfig> = {};
+  const result: Partial<CodexResolvedConfig> & { hasDeviceAuthTokens: boolean } = {
+    hasDeviceAuthTokens: false,
+  };
 
   if (existsSync(configPath)) {
     try {
@@ -124,10 +138,20 @@ function loadCodexFiles(): Partial<CodexResolvedConfig> {
   if (existsSync(authPath)) {
     try {
       const rawAuth = readFileSync(authPath, "utf-8");
-      const parsedAuth = JSON.parse(rawAuth) as Record<string, string>;
+      const parsedAuth = JSON.parse(rawAuth) as Record<string, unknown>;
       const keyFromAuth = parsedAuth["OPENAI_API_KEY"];
       if (typeof keyFromAuth === "string") {
         result.apiKey = result.apiKey || keyFromAuth;
+      }
+
+      const tokens = parsedAuth["tokens"];
+      if (tokens && typeof tokens === "object") {
+        const tokenRecord = tokens as Record<string, unknown>;
+        const hasAccessToken = typeof tokenRecord["access_token"] === "string";
+        const hasRefreshToken = typeof tokenRecord["refresh_token"] === "string";
+        if (hasAccessToken && hasRefreshToken) {
+          result.hasDeviceAuthTokens = true;
+        }
       }
     } catch (err) {
       console.warn(`Failed to parse ${authPath}:`, err);

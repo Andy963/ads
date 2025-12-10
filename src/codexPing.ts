@@ -61,11 +61,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`[codex-ping] Using base URL: ${config.baseUrl}`);
-  console.log(`[codex-ping] Using API key: ${maskKey(config.apiKey)}`);
+  const baseUrlLabel = config.baseUrl ?? "(Codex default)";
+  console.log(`[codex-ping] Using base URL: ${baseUrlLabel}`);
+  if (config.authMode === "apiKey") {
+    console.log(`[codex-ping] Using API key: ${maskKey(config.apiKey)}`);
+  } else {
+    console.log("[codex-ping] Using device-auth tokens from ~/.codex/auth.json");
+  }
   console.log(`[codex-ping] Prompt: ${prompt}`);
 
-  const codex = new Codex();
+  const codex = new Codex({
+    ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+    ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+  });
 
   try {
     const thread = codex.startThread({
