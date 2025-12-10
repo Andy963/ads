@@ -439,12 +439,19 @@ function renderLandingPage(): string {
     html { height: 100%; width: 100%; overflow: hidden; }
     body { font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; display: flex; flex-direction: column; }
     header { padding: 14px 18px; background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 1px 3px rgba(15,23,42,0.06); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-    .header-row { display: flex; align-items: center; gap: 8px; }
+    .header-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; width: 100%; }
+    .header-left { display: flex; align-items: center; gap: 8px; }
     .ws-indicator { width: 12px; height: 12px; border-radius: 999px; background: #ef4444; border: 1px solid #e5e7eb; box-shadow: 0 0 0 2px #fff; }
     .ws-indicator.connecting { background: #f59e0b; box-shadow: 0 0 0 2px #fef3c7; animation: pulse 1s infinite alternate; }
     .ws-indicator.connected { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; animation: pulse 1s infinite alternate-reverse; }
     @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
     header h1 { margin: 0; font-size: 18px; }
+    .header-actions { display: inline-flex; gap: 8px; }
+    .header-actions button { width: 34px; height: 32px; border-radius: 8px; border: 1px solid #d6d9e0; background: #fff; cursor: pointer; }
+    .header-actions button:hover { border-color: #c7d2fe; background: #eef2ff; }
+    .session-panel { display: flex; flex-direction: column; gap: 6px; }
+    .session-current { font-size: 13px; color: var(--text); word-break: break-all; }
+    .session-pill { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; border-radius: 999px; background: #eef2ff; color: #312e81; font-weight: 700; min-width: 56px; }
     main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; overflow: hidden; }
     #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
     .sidebar-title { font-size: 13px; font-weight: 600; margin: 0; color: var(--muted); }
@@ -502,6 +509,19 @@ function renderLandingPage(): string {
     .plan-item.done .plan-marker { background: #22c55e; color: #fff; }
     .plan-text { flex: 1; word-break: break-word; }
     .muted { color: var(--muted); }
+    .session-panel { display: flex; flex-direction: column; gap: 8px; }
+    .session-current { font-size: 13px; color: var(--text); word-break: break-all; }
+    .session-actions { display: flex; gap: 8px; }
+    .session-actions button { flex: 1; border: 1px solid var(--border); background: #eef2ff; color: #312e81; border-radius: 8px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+    .session-actions button:hover { border-color: #c7d2fe; }
+    .session-dialog { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 16px; }
+    .session-dialog.hidden { display: none; }
+    .session-dialog .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 16px; width: 100%; max-width: 420px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; }
+    .session-list { max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .session-item { padding: 8px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+    .session-item:hover { border-color: #c7d2fe; background: #f8fafc; }
+    .session-item .id { font-weight: 700; }
+    .session-item .meta { font-size: 12px; color: var(--muted); }
     .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); backdrop-filter: blur(18px); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
     .overlay.hidden { display: none; }
     .overlay .card { background: #fff; border: 1px solid #d6d9e0; border-radius: 12px; padding: 20px; width: 100%; max-width: 340px; box-shadow: 0 12px 30px rgba(15,23,42,0.12); display: flex; flex-direction: column; gap: 12px; }
@@ -525,12 +545,25 @@ function renderLandingPage(): string {
 <body>
   <header>
     <div class="header-row">
-      <span id="ws-indicator" class="ws-indicator" title="WebSocket disconnected" aria-label="WebSocket disconnected"></span>
-      <h1>ADS Web Console</h1>
+      <div class="header-left">
+        <span id="ws-indicator" class="ws-indicator" title="WebSocket disconnected" aria-label="WebSocket disconnected"></span>
+        <h1>ADS Web Console</h1>
+      </div>
+      <div class="header-actions">
+        <button id="session-new" type="button" title="新建会话">＋</button>
+        <button id="session-switch" type="button" title="切换会话">⇄</button>
+      </div>
     </div>
   </header>
   <main>
     <aside id="sidebar">
+      <h3 class="sidebar-title">Session</h3>
+      <div class="session-panel">
+        <div class="session-current">
+          <span class="muted">当前：</span>
+          <span id="session-id" class="session-pill">--</span>
+        </div>
+      </div>
       <h3 class="sidebar-title">Workspace</h3>
       <div id="workspace-info" class="workspace-list"></div>
       <h3 class="sidebar-title">Modified Files</h3>
@@ -566,6 +599,15 @@ function renderLandingPage(): string {
       </div>
     </div>
   </div>
+  <div id="session-dialog" class="session-dialog hidden">
+    <div class="card">
+      <h3 style="margin:0;">选择会话</h3>
+      <div id="session-list" class="session-list"></div>
+      <div class="session-actions">
+        <button id="session-dialog-close" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
   <script>
     const logEl = document.getElementById('log');
     const inputEl = document.getElementById('input');
@@ -584,9 +626,18 @@ function renderLandingPage(): string {
     const stopBtn = document.getElementById('stop-btn');
     const clearBtn = document.getElementById('clear-cache-btn');
     const LOG_TOOLBAR_ID = 'console-header';
+    const sessionIdEl = document.getElementById('session-id');
+    const sessionNewBtn = document.getElementById('session-new');
+    const sessionSwitchBtn = document.getElementById('session-switch');
+    const sessionDialog = document.getElementById('session-dialog');
+    const sessionListEl = document.getElementById('session-list');
+    const sessionDialogClose = document.getElementById('session-dialog-close');
+    const SESSION_KEY = 'ADS_WEB_SESSION';
+    const SESSION_HISTORY_KEY = 'ADS_WEB_SESSIONS';
     const idleMinutes = ${IDLE_MINUTES};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
+    const MAX_SESSION_HISTORY = 15;
     const COMMAND_OUTPUT_MAX_LINES = 10;
     const COMMAND_OUTPUT_MAX_CHARS = 1200;
     const viewport = window.visualViewport;
@@ -606,6 +657,8 @@ function renderLandingPage(): string {
     let isBusy = false;
     let planTouched = false;
     let allowReconnect = true;
+    let suppressSwitchNotice = false;
+    let currentSessionId = '';
 
     function setBusy(busy) {
       isBusy = !!busy;
@@ -621,6 +674,7 @@ function renderLandingPage(): string {
     }
     applyVh();
     renderPlanStatus('暂无计划');
+    renderSessionList();
     window.addEventListener('resize', applyVh);
     if (viewport) {
       viewport.addEventListener('resize', applyVh);
@@ -964,8 +1018,109 @@ function renderLandingPage(): string {
       return token || 'default';
     }
 
-    function cacheKey() {
-      return 'chat-cache::' + getTokenKey();
+    function resolveSessionIdForCache(sessionId) {
+      if (sessionId) return sessionId;
+      if (currentSessionId) return currentSessionId;
+      const stored = loadSession();
+      return stored || 'default';
+    }
+
+    function cacheKey(sessionId) {
+      return 'chat-cache::' + getTokenKey() + '::' + resolveSessionIdForCache(sessionId);
+    }
+
+    function loadCache(sessionId) {
+      try {
+        const raw = localStorage.getItem(cacheKey(sessionId));
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveCache(items, sessionId) {
+      try {
+        localStorage.setItem(cacheKey(sessionId), JSON.stringify(items.slice(-MAX_LOG_MESSAGES)));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function recordCache(role, text, kind) {
+      const items = loadCache();
+      items.push({ r: role, t: text, k: kind });
+      if (items.length > MAX_LOG_MESSAGES) {
+        items.shift();
+      }
+      saveCache(items);
+    }
+
+    function loadSessionHistory() {
+      try {
+        const raw = localStorage.getItem(SESSION_HISTORY_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveSessionHistory(list) {
+      try {
+        localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(list.slice(0, MAX_SESSION_HISTORY)));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function rememberSession(id) {
+      if (!id) return;
+      const list = loadSessionHistory().filter((entry) => entry?.id !== id);
+      list.unshift({ id, ts: Date.now() });
+      saveSessionHistory(list);
+      renderSessionList();
+    }
+
+    function renderSessionList() {
+      if (!sessionListEl) return;
+      const list = loadSessionHistory();
+      sessionListEl.innerHTML = '';
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = '暂无会话记录';
+        sessionListEl.appendChild(empty);
+        return;
+      }
+      list.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'session-item';
+        const idEl = document.createElement('span');
+        idEl.className = 'id';
+        idEl.textContent = item.id;
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        const ts = item.ts ? new Date(item.ts) : null;
+        meta.textContent = ts ? ts.toLocaleString() : '';
+        row.appendChild(idEl);
+        row.appendChild(meta);
+        row.addEventListener('click', () => {
+          if (ws) {
+            suppressSwitchNotice = true;
+            ws.close(4409, 'switch session');
+          }
+          clearLogMessages();
+          restoreFromCache(item.id);
+          connect(item.id);
+          if (sessionDialog) {
+            sessionDialog.classList.add('hidden');
+          }
+        });
+        sessionListEl.appendChild(row);
+      });
     }
 
     function renderHistory(items) {
@@ -983,8 +1138,8 @@ function renderLandingPage(): string {
       autoScrollIfNeeded();
     }
 
-    function restoreFromCache() {
-      const cached = loadCache();
+    function restoreFromCache(sessionId) {
+      const cached = loadCache(sessionId);
       if (!cached || cached.length === 0) return;
       clearLogMessages();
       cached.forEach((item) => {
@@ -1016,7 +1171,46 @@ function renderLandingPage(): string {
       }, idleMinutes * 60 * 1000);
     }
 
-    function connect() {
+    function updateSessionLabel(id) {
+      currentSessionId = id || '';
+      if (sessionIdEl) {
+        sessionIdEl.textContent = currentSessionId || '--';
+      }
+      rememberSession(currentSessionId);
+    }
+
+    function saveSession(id) {
+      try {
+        sessionStorage.setItem(SESSION_KEY, id);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function loadSession() {
+      try {
+        return sessionStorage.getItem(SESSION_KEY) || '';
+      } catch {
+        return '';
+      }
+    }
+
+    function clearSession() {
+      try {
+        sessionStorage.removeItem(SESSION_KEY);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function newSessionId() {
+      return Math.random().toString(36).slice(2, 8);
+    }
+
+    function connect(sessionIdOverride) {
+      const sessionIdToUse = sessionIdOverride || currentSessionId || loadSession() || newSessionId();
+      saveSession(sessionIdToUse);
+      updateSessionLabel(sessionIdToUse);
       let token = sessionStorage.getItem(TOKEN_KEY) || '';
       if (!token) {
         tokenOverlay.classList.remove('hidden');
@@ -1029,7 +1223,7 @@ function renderLandingPage(): string {
       allowReconnect = true;
       const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
       setWsState('connecting');
-      ws = new WebSocket(url, ['ads-token', token]);
+      ws = new WebSocket(url, ['ads-token', token, 'ads-session', sessionIdToUse]);
       ws.onopen = () => {
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
@@ -1069,6 +1263,10 @@ function renderLandingPage(): string {
             return;
           } else if (msg.type === 'welcome') {
             setWsState('connected');
+            if (msg.sessionId) {
+              updateSessionLabel(msg.sessionId);
+              saveSession(msg.sessionId);
+            }
             if (msg.workspace) {
               renderWorkspaceInfo(msg.workspace);
             }
@@ -1108,9 +1306,13 @@ function renderLandingPage(): string {
           tokenInput.value = '';
           setLocked(true);
           appendMessage('ai', '口令无效或已过期，请重新输入', { status: true });
+          clearSession();
           allowReconnect = false;
         } else if (ev.code === 4409) {
-          appendMessage('ai', '已有新连接，当前会话被替换', { status: true });
+          if (!suppressSwitchNotice) {
+            appendMessage('ai', '已有新连接，当前会话被替换', { status: true });
+          }
+          suppressSwitchNotice = false;
           allowReconnect = false;
         } else {
           allowReconnect = true;
@@ -1457,6 +1659,35 @@ function renderLandingPage(): string {
     });
 
     connect();
+
+    if (sessionNewBtn) {
+      sessionNewBtn.addEventListener('click', () => {
+        if (ws) {
+          suppressSwitchNotice = true;
+          ws.close(4409, 'switch session');
+        }
+        const nextId = newSessionId();
+        saveSession(nextId);
+        clearLogMessages();
+        restoreFromCache(nextId);
+        connect(nextId);
+      });
+    }
+
+    if (sessionSwitchBtn) {
+      sessionSwitchBtn.addEventListener('click', () => {
+        renderSessionList();
+        if (sessionDialog) {
+          sessionDialog.classList.remove('hidden');
+        }
+      });
+    }
+
+    if (sessionDialogClose) {
+      sessionDialogClose.addEventListener('click', () => {
+        sessionDialog?.classList.add('hidden');
+      });
+    }
   </script>
 </body>
 </html>`;
@@ -1484,20 +1715,33 @@ async function start(): Promise<void> {
         : typeof protocolHeader === "string"
           ? protocolHeader.split(",").map((p) => p.trim())
           : [];
-    const findValue = (key: string) => {
-      const hit = parsedProtocols.find((p) => p.startsWith(`${key}:`));
-      if (hit) return hit.split(":").slice(1).join(":");
-      return parsedProtocols.find((p) => p === key);
+
+    const parseProtocols = (protocols: string[]): { token?: string; session?: string } => {
+      let token: string | undefined;
+      let session: string | undefined;
+
+      for (let i = 0; i < protocols.length; i++) {
+        const entry = protocols[i];
+        if (entry.startsWith("ads-token:")) {
+          token = entry.split(":").slice(1).join(":");
+          continue;
+        }
+        if (entry === "ads-token" && i + 1 < protocols.length) {
+          token = protocols[i + 1];
+          continue;
+        }
+        if (entry.startsWith("ads-session:")) {
+          session = entry.split(":").slice(1).join(":");
+          continue;
+        }
+        if (entry === "ads-session" && i + 1 < protocols.length) {
+          session = protocols[i + 1];
+        }
+      }
+      return { token, session };
     };
-    let wsToken: string | undefined;
-    let wsSession: string | undefined;
-    if (parsedProtocols.length >= 2 && parsedProtocols[0] === "ads-token") {
-      wsToken = parsedProtocols[1];
-      wsSession = findValue("ads-session") ?? undefined;
-    } else {
-      wsToken = findValue("ads-token") ?? undefined;
-      wsSession = findValue("ads-session") ?? undefined;
-    }
+
+    const { token: wsToken, session: wsSession } = parseProtocols(parsedProtocols);
     const sessionId = wsSession && wsSession.trim() ? wsSession.trim() : crypto.randomBytes(4).toString("hex");
     if (TOKEN && wsToken !== TOKEN) {
       ws.close(4401, "unauthorized");
