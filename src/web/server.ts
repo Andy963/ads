@@ -665,7 +665,7 @@ function renderLandingPage(): string {
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
     const MAX_SESSION_HISTORY = 15;
-    const COMMAND_OUTPUT_MAX_LINES = 10;
+    const COMMAND_OUTPUT_MAX_LINES = 3;
     const COMMAND_OUTPUT_MAX_CHARS = 1200;
     const viewport = window.visualViewport;
     let ws;
@@ -923,7 +923,7 @@ function renderLandingPage(): string {
     }
 
     function startNewTurn(clearPlan) {
-      resetCommandView(true);
+      // 新回合不再清理命令气泡，保留上一条命令输出
       lastCommandText = '';
       if (clearPlan) {
         planTouched = false;
@@ -954,7 +954,9 @@ function renderLandingPage(): string {
     function renderCommandView(options = {}) {
       const cmdId = options.id || null;
       if (cmdId && activeCommandId && cmdId !== activeCommandId) {
-        resetCommandView(true);
+        // 新命令到来时保留旧气泡，只重置活跃视图指针
+        activeCommandView = null;
+        activeCommandSignature = null;
       }
       if (cmdId) {
         activeCommandId = cmdId;
@@ -1272,6 +1274,7 @@ function renderLandingPage(): string {
           } else if (msg.type === 'delta') {
             handleDelta(msg.delta || '');
           } else if (msg.type === 'command') {
+            console.log('[WS] command message received:', msg);
             const cmd = msg.command || {};
             renderCommandView({
               id: cmd.id,
@@ -1443,6 +1446,7 @@ function renderLandingPage(): string {
       const hasImages = pendingImages.length > 0;
       if ((!text && !hasImages) || !ws || ws.readyState !== WebSocket.OPEN) return;
       const isCommand = text.startsWith('/');
+      const cmdId = isCommand ? Date.now().toString(36) + Math.random().toString(36).slice(2, 6) : null;
       startNewTurn(!isCommand);
       const type = isCommand ? 'command' : 'prompt';
       const payload = isCommand
@@ -1457,9 +1461,13 @@ function renderLandingPage(): string {
       setBusy(true);
       if (isCommand) {
         lastCommandText = text;
-        renderCommandView({ commandText: text, status: 'in_progress' });
+        renderCommandView({ id: cmdId, commandText: text, status: 'in_progress' });
       } else {
         lastCommandText = '';
+        // 新 prompt 时重置命令视图指针，保留旧气泡，让新命令创建新气泡
+        activeCommandView = null;
+        activeCommandSignature = null;
+        activeCommandId = null;
         appendMessage('user', text || '(图片)');
         appendTypingPlaceholder();
         streamState = null;
@@ -1513,6 +1521,7 @@ function renderLandingPage(): string {
     function appendCommandResult(ok, output, commandText, exitCode) {
       const normalizedCommand = typeof commandText === 'string' ? commandText : '';
       renderCommandView({
+        id: activeCommandId,
         commandText: normalizedCommand || lastCommandText,
         status: ok ? 'completed' : 'failed',
         output,
@@ -1882,6 +1891,7 @@ async function start(): Promise<void> {
           orchestrator.setWorkingDirectory(currentCwd);
           const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
             sessionLogger?.logEvent(event);
+            logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
             const raw = event.raw as ThreadEvent;
             if (isTodoListEvent(raw)) {
               const signature = buildPlanSignature(raw.item.items);
@@ -1904,6 +1914,7 @@ async function start(): Promise<void> {
             }
             if (event.phase === "command") {
               const commandPayload = extractCommandPayload(event);
+              logger.info(`[Command Event] sending command: ${JSON.stringify({ detail: event.detail ?? event.title, command: commandPayload })}`);
               ws.send(
                 JSON.stringify({
                   type: "command",
