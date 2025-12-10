@@ -30,6 +30,31 @@ import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 
+function loadCwdStore(filePath: string): Map<string, string> {
+  try {
+    if (!fs.existsSync(filePath)) return new Map();
+    const raw = fs.readFileSync(filePath, "utf8");
+    const data = JSON.parse(raw) as Record<string, string>;
+    return new Map(Object.entries(data || {}));
+  } catch {
+    return new Map();
+  }
+}
+
+function persistCwdStore(filePath: string, store: Map<string, string>): void {
+  try {
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const obj: Record<string, string> = {};
+    for (const [k, v] of store.entries()) {
+      obj[k] = v;
+    }
+    fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), "utf8");
+  } catch {
+    /* ignore */
+  }
+}
+
 interface WsMessage {
   type: string;
   payload?: unknown;
@@ -67,6 +92,8 @@ const historyStore = new HistoryStore({
   maxEntriesPerSession: 200,
   maxTextLength: 4000,
 });
+const cwdStorePath = path.join(process.cwd(), ".ads", "web-cwd.json");
+const cwdStore = loadCwdStore(cwdStorePath);
 
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
@@ -1763,18 +1790,23 @@ async function start(): Promise<void> {
     const cacheKey = `${clientKey}::${sessionId}`;
     const cachedWorkspace = workspaceCache.get(cacheKey);
     const savedState = sessionManager.getSavedState(userId);
+    const storedCwd = cwdStore.get(String(userId));
     let currentCwd = directoryManager.getUserCwd(userId);
-    const preferredCwd = cachedWorkspace ?? savedState?.cwd;
+    const preferredCwd = cachedWorkspace ?? savedState?.cwd ?? storedCwd;
     if (preferredCwd) {
       const restoreResult = directoryManager.setUserCwd(userId, preferredCwd);
       if (!restoreResult.success) {
         logger.warn(`[Web][WorkspaceRestore] failed path=${preferredCwd} reason=${restoreResult.error}`);
       } else {
         currentCwd = directoryManager.getUserCwd(userId);
+        cwdStore.set(String(userId), currentCwd);
+        persistCwdStore(cwdStorePath, cwdStore);
       }
     }
     workspaceCache.set(cacheKey, currentCwd);
     sessionManager.setUserCwd(userId, currentCwd);
+    cwdStore.set(String(userId), currentCwd);
+    persistCwdStore(cwdStorePath, cwdStore);
 
     const resumeThread = !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
@@ -1964,7 +1996,9 @@ async function start(): Promise<void> {
           return;
         }
         currentCwd = directoryManager.getUserCwd(userId);
-        workspaceCache.set(clientKey, currentCwd);
+        workspaceCache.set(cacheKey, currentCwd);
+        cwdStore.set(String(userId), currentCwd);
+        persistCwdStore(cwdStorePath, cwdStore);
         sessionManager.setUserCwd(userId, currentCwd);
         try {
           syncWorkspaceTemplates();
