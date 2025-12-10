@@ -28,8 +28,8 @@ const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
     description: "查看最近的 workflow commit 日志，可指定条数与工作流",
   },
   {
-    usage: "/ads.new <title> [--template_id=unified]",
-    description: "基于模板创建新的工作流，可附加描述",
+    usage: "/ads.new <title>",
+    description: "创建新的工作流（使用统一模板），可附加描述",
   },
   {
     usage: "/ads.commit <step>",

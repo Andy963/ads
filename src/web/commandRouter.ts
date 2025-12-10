@@ -202,16 +202,10 @@ export async function runAdsCommandLine(input: string, _activeAgent?: AgentAdapt
     }
 
     case "ads.new": {
-      let templateArg = params.template_id?.trim();
-      let titleArg = params.title?.trim();
-      if (positional.length > 0 && !titleArg && !templateArg && positional.length >= 2) {
-        templateArg = positional.shift()!.trim();
-        titleArg = positional.join(" ").trim();
-      } else if (positional.length > 0 && !titleArg) {
-        titleArg = positional.join(" ").trim();
-      }
+      const titleArg = (params.title ?? positional.join(" ")).trim();
+      const templateArg = params.template_id?.trim();
       if (!titleArg) {
-        return { ok: false, output: "❌ 用法: /ads.new <标题> 或 /ads.new --title=... [--template_id=unified]" };
+        return { ok: false, output: "❌ 用法: /ads.new <标题>" };
       }
       const response = await createWorkflowFromTemplate({
         template_id: templateArg,

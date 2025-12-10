@@ -68,7 +68,7 @@
 - `/ads.checkout <workflow>`：按标题、ID 或序号切换活动工作流。
 - `/ads.status`：查看当前工作流的步骤状态与下一步提示。
 - `/ads.log [limit] [workflow]`：查看最近提交记录，可指定数量或工作流。
-- `/ads.new <title> [--template_id=unified]`：基于模板创建新工作流（会生成 spec 目录与节点）。
+- `/ads.new <title>`：创建新工作流（统一模板，会生成 spec 目录与节点）。
 - `/ads.commit <step>`：在用户确认后定稿指定步骤并记录版本。
 - `/ads.review [--skip=<reason>] [--show] [--spec] [--commit[=<ref>]]`：触发 Review 或查看/跳过 Review 结果，默认仅检查代码 diff，可指定最新提交或附带 spec。
 - `/ads.rules [category]`：读取项目规则或按类别筛选。

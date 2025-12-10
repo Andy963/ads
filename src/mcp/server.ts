@@ -210,7 +210,6 @@ server.registerTool(
 
 const newWorkflowSchema = workspaceParam.extend({
   title: z.string().min(1, "title is required"),
-  template_id: z.string().optional(),
   description: z.string().optional(),
   format: z.enum(["cli", "markdown"]).optional(),
 });
@@ -219,14 +218,13 @@ server.registerTool(
   "ads_new",
   {
     title: "Create a new workflow",
-    description: "Generate a workflow using the unified template (or another template).",
+    description: "Generate a workflow using the unified template.",
     inputSchema: newWorkflowSchema,
   },
-  withHandler(newWorkflowSchema, async ({ workspace_path, title, template_id, description, format }) => {
+  withHandler(newWorkflowSchema, async ({ workspace_path, title, description, format }) => {
     const text = await createWorkflowFromTemplate({
       workspace_path,
       title,
-      template_id: template_id?.trim() || undefined,
       description,
       format: format ?? "cli",
     });

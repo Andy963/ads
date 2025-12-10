@@ -25,7 +25,7 @@ export async function getActiveWorkflowSummary(params: {
       "❌ 没有活动的工作流",
       "",
       "💡 开始使用：",
-      `    - 创建新工作流: ${CMD_NEW} <type> <title>`,
+      `    - 创建新工作流: ${CMD_NEW} <title>`,
       `    - 查看所有工作流: ${CMD_BRANCH}`,
     ].join("\n");
   }
