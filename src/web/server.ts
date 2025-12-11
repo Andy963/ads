@@ -1675,13 +1675,18 @@ function renderLandingPage(): string {
     }
 
     function getWorkspaceForSession(id) {
-      if (!id) return '';
-      return sessionWorkspaces[id] || '';
+      if (id && sessionWorkspaces[id]) {
+        return sessionWorkspaces[id];
+      }
+      return sessionWorkspaces.__last || '';
     }
 
     function setWorkspaceForSession(id, path) {
-      if (!id || !path) return;
-      sessionWorkspaces[id] = path;
+      if (!path) return;
+      if (id) {
+        sessionWorkspaces[id] = path;
+      }
+      sessionWorkspaces.__last = path; // 记录 token 下的最近工作目录，防止 sessionId 变化导致丢失
       saveSessionWorkspaces();
     }
 
