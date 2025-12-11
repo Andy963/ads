@@ -368,13 +368,24 @@ function persistIncomingImage(image: IncomingImage, imageDir: string): { ok: tru
   return { ok: true, path: filePath };
 }
 
-function buildPromptInput(payload: unknown, imageDir: string): { ok: true; input: Input } | { ok: false; message: string } {
+function cleanupTempFiles(paths: string[]): void {
+  for (const p of paths) {
+    try {
+      fs.unlinkSync(p);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function buildPromptInput(payload: unknown, imageDir: string): { ok: true; input: Input; attachments: string[] } | { ok: false, message: string } {
+  const tempPaths: string[] = [];
   if (typeof payload === "string") {
     const text = sanitizeInput(payload);
     if (!text) {
       return { ok: false, message: "Payload must be a text prompt" };
     }
-    return { ok: true, input: text };
+    return { ok: true, input: text, attachments: tempPaths };
   }
   const inputParts: Exclude<Input, string> = [];
   const parsed = (payload ?? {}) as PromptPayload;
@@ -387,20 +398,23 @@ function buildPromptInput(payload: unknown, imageDir: string): { ok: true; input
     for (const image of parsed.images) {
       const result = persistIncomingImage(image, imageDir);
       if (!result.ok) {
+        cleanupTempFiles(tempPaths);
         return { ok: false, message: result.message };
       }
+      tempPaths.push(result.path);
       inputParts.push({ type: "local_image", path: result.path });
     }
   }
 
   if (inputParts.length === 0) {
+    cleanupTempFiles(tempPaths);
     return { ok: false, message: "payload 不能为空" };
   }
 
   if (inputParts.length === 1 && inputParts[0].type === "text") {
-    return { ok: true, input: inputParts[0].text };
+    return { ok: true, input: inputParts[0].text, attachments: tempPaths };
   }
-  return { ok: true, input: inputParts };
+  return { ok: true, input: inputParts, attachments: tempPaths };
 }
 
 function formatAttachmentList(paths: string[], cwd: string): string {
@@ -488,7 +502,7 @@ function renderLandingPage(): string {
     .session-pill { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; border-radius: 999px; background: #eef2ff; color: #312e81; font-weight: 700; min-width: 56px; max-width: 100%; }
     .session-rename { border: 1px solid #d6d9e0; background: #fff; color: #4b5563; border-radius: 8px; padding: 4px 6px; font-size: 12px; cursor: pointer; }
     .session-rename:hover { border-color: #c7d2fe; color: #312e81; }
-    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 16px 12px 20px; display: flex; gap: 14px; flex: 1; min-height: 0; overflow: hidden; }
+    main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 10px 12px 8px; display: flex; gap: 10px; flex: 1; min-height: 0; overflow: hidden; }
     #sidebar { width: 240px; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 10px; }
     .sidebar-title { font-size: 13px; font-weight: 600; margin: 0; color: var(--muted); }
     .workspace-list { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
@@ -654,6 +668,19 @@ function renderLandingPage(): string {
       </div>
     </div>
   </div>
+  <div id="alias-overlay" class="overlay hidden">
+    <div class="card">
+      <h2 style="margin:0;">设置会话名称</h2>
+      <p style="margin:0;color:#4b5563;font-size:13px;">留空恢复默认</p>
+      <div class="row">
+        <input id="alias-input" type="text" placeholder="新名称" />
+      </div>
+      <div class="row" style="justify-content:flex-end;">
+        <button id="alias-cancel" type="button" style="background:#e5e7eb;color:#111827;">取消</button>
+        <button id="alias-save" type="button">保存</button>
+      </div>
+    </div>
+  </div>
   <script>
     const sessionViewHost = document.getElementById('session-views');
     const SESSION_PLACEHOLDER = '__initial__';
@@ -674,6 +701,7 @@ function renderLandingPage(): string {
     let statusLabel = document.getElementById('status-label');
     let stopBtn = document.getElementById('stop-btn');
     let clearBtn = document.getElementById('clear-cache-btn');
+    const TOKEN_KEY = 'ADS_WEB_TOKEN';
     const LOG_TOOLBAR_ID = 'console-header';
     const sessionIdEl = document.getElementById('session-id');
     const sessionRenameBtn = document.getElementById('session-rename');
@@ -683,6 +711,10 @@ function renderLandingPage(): string {
     const sessionDialog = document.getElementById('session-dialog');
     const sessionListEl = document.getElementById('session-list');
     const sessionDialogClose = document.getElementById('session-dialog-close');
+    const aliasOverlay = document.getElementById('alias-overlay');
+    const aliasInput = document.getElementById('alias-input');
+    const aliasSave = document.getElementById('alias-save');
+    const aliasCancel = document.getElementById('alias-cancel');
     const SESSION_KEY = 'ADS_WEB_SESSION';
     const SESSION_HISTORY_KEY = 'ADS_WEB_SESSIONS';
     const SESSION_OPEN_KEY = 'ADS_OPEN_SESSIONS';
@@ -700,13 +732,18 @@ function renderLandingPage(): string {
       try {
         return window.sessionStorage;
       } catch {
-        return window.localStorage;
+        // 存储不可用时降级为 noop（不再使用 localStorage）
+        return {
+          getItem: () => null,
+          setItem: () => {},
+          removeItem: () => {},
+        };
       }
     }
     const scopedStorage = getScopedStorage();
-    let ws;
-    let wsGeneration = 0;
-    let sendQueue = [];
+    const messageCache = new Map();
+    // 连接表：每个会话维护独立 WS 及其状态
+    const connections = new Map();
     let streamState = null;
     let autoScroll = true;
     let activeCommandView = null;
@@ -714,20 +751,34 @@ function renderLandingPage(): string {
     let activeCommandId = null;
     let lastCommandText = '';
     let idleTimer = null;
-    let reconnectTimer = null;
     let pendingImages = [];
     let typingPlaceholder = null;
-    let wsErrorMessage = null;
     let isBusy = false;
     let planTouched = false;
-    let allowReconnect = true;
-    let suppressSwitchNotice = false;
+    let wsIndicatorSuspended = false;
     let currentSessionId = '';
     let currentViewId = SESSION_PLACEHOLDER;
     const sessionViews = new Map();
     const sessionStates = new Map();
     let openSessions = [];
     let sessionAliases = {};
+
+    function ensureConnection(sessionId) {
+      if (!connections.has(sessionId)) {
+        connections.set(sessionId, {
+          sessionId,
+          ws: null,
+          generation: 0,
+          reconnectTimer: null,
+          allowReconnect: true,
+          pendingSends: [],
+          wsErrorMessage: null,
+          switchNoticeShown: false,
+          suppressSwitchNotice: false,
+        });
+      }
+      return connections.get(sessionId);
+    }
 
     const initialView = sessionViewHost?.querySelector('.session-view');
     if (initialView) {
@@ -748,6 +799,7 @@ function renderLandingPage(): string {
         isBusy: false,
         planTouched: false,
         inputDraft: '',
+        sendQueue: [],
       };
     }
 
@@ -766,6 +818,7 @@ function renderLandingPage(): string {
 
     function saveUiState(id) {
       if (!id) return;
+      const conn = connections.get(id);
       sessionStates.set(id, {
         pendingImages: [...pendingImages],
         autoScroll,
@@ -778,11 +831,13 @@ function renderLandingPage(): string {
         isBusy,
         planTouched,
         inputDraft: inputEl?.value || '',
+        sendQueue: conn?.pendingSends ? [...conn.pendingSends.map((entry) => entry.type || entry.kind || entry)] : [],
       });
     }
 
     function restoreUiState(id) {
       const state = sessionStates.get(id) || defaultUiState();
+      const conn = ensureConnection(id);
       pendingImages = [...(state.pendingImages || [])];
       autoScroll = state.autoScroll ?? true;
       typingPlaceholder = state.typingPlaceholder || null;
@@ -793,12 +848,50 @@ function renderLandingPage(): string {
       lastCommandText = state.lastCommandText || '';
       isBusy = state.isBusy || false;
       planTouched = state.planTouched || false;
+      conn.pendingSends = Array.isArray(state.sendQueue)
+        ? state.sendQueue.map((kind) => ({ type: kind, payload: null }))
+        : conn.pendingSends || [];
       if (inputEl) {
         inputEl.value = state.inputDraft || '';
         autoResizeInput();
       }
       renderAttachments();
       setBusy(isBusy);
+    }
+
+    function withSessionContext(sessionId, fn) {
+      if (!sessionId) return fn();
+      const activeId = currentSessionId;
+      if (sessionId === activeId) {
+        return fn();
+      }
+      const suppressUi = sessionId !== activeId;
+      if (suppressUi) wsIndicatorSuspended = true;
+      saveUiState(activeId);
+      // 记住当前会话的计划，避免其他会话的计划更新覆盖 UI
+      const restoreActivePlan = () => {
+        if (activeId) {
+          restorePlanFromCache(activeId);
+        }
+      };
+      const view = ensureSessionView(sessionId);
+      if (!view) return;
+      bindViewElements(view);
+      currentSessionId = sessionId;
+      currentViewId = sessionId;
+      restoreUiState(sessionId);
+      const result = fn();
+      saveUiState(sessionId);
+      const activeView = ensureSessionView(activeId);
+      if (activeView) {
+        bindViewElements(activeView);
+        currentSessionId = activeId;
+        currentViewId = activeId;
+        restoreUiState(activeId);
+        restoreActivePlan();
+      }
+      if (suppressUi) wsIndicatorSuspended = false;
+      return result;
     }
 
     function handleLogScroll() {
@@ -847,9 +940,16 @@ function renderLandingPage(): string {
       }
     }
 
+    function persistDraft() {
+      const state = sessionStates.get(currentSessionId) || defaultUiState();
+      state.inputDraft = inputEl?.value || '';
+      sessionStates.set(currentSessionId, state);
+    }
+
     function handleStop() {
-      if (!ws || ws.readyState !== WebSocket.OPEN || !isBusy) return;
-      ws.send(JSON.stringify({ type: 'interrupt' }));
+      const conn = ensureConnection(currentSessionId);
+      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN || !isBusy) return;
+      conn.ws.send(JSON.stringify({ type: 'interrupt' }));
       appendStatus('⛔ 已请求停止，输出可能不完整');
       setBusy(false);
     }
@@ -858,7 +958,6 @@ function renderLandingPage(): string {
       e.preventDefault();
       const text = inputEl?.value?.trim() || '';
       const hasImages = pendingImages.length > 0;
-      if ((!text && !hasImages) || !ws || ws.readyState !== WebSocket.OPEN) return;
       const isCommand = text.startsWith('/');
       const cmdId = isCommand ? Date.now().toString(36) + Math.random().toString(36).slice(2, 6) : null;
       startNewTurn(!isCommand);
@@ -869,9 +968,19 @@ function renderLandingPage(): string {
             text,
             images: hasImages ? pendingImages : undefined,
           };
+      if (!text && !hasImages) return;
+      const conn = ensureConnection(currentSessionId);
+      if (!conn.ws || conn.ws.readyState === WebSocket.CLOSING || conn.ws.readyState === WebSocket.CLOSED) {
+        connect(currentSessionId);
+      }
+      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+        appendStatus('当前会话未连接，已尝试重连');
+        conn.pendingSends.push({ type, payload });
+        return;
+      }
       autoScroll = true;
-      ws.send(JSON.stringify({ type, payload }));
-      sendQueue.push(type);
+      conn.ws.send(JSON.stringify({ type, payload }));
+      conn.pendingSends.push({ type, payload });
       setBusy(true);
       if (isCommand) {
         lastCommandText = text;
@@ -912,7 +1021,10 @@ function renderLandingPage(): string {
 
       logNode?.addEventListener('scroll', handleLogScroll);
       inputNode?.addEventListener('keydown', handleInputKeydown);
-      inputNode?.addEventListener('input', autoResizeInput);
+      inputNode?.addEventListener('input', () => {
+        autoResizeInput();
+        persistDraft();
+      });
       inputNode?.addEventListener('focus', recalcLogHeight);
       inputNode?.addEventListener('blur', recalcLogHeight);
       formNode?.addEventListener('dragover', handleDragOver);
@@ -1004,7 +1116,8 @@ function renderLandingPage(): string {
     function setBusy(busy) {
       isBusy = !!busy;
       if (stopBtn) {
-        const canUse = isBusy && ws && ws.readyState === WebSocket.OPEN;
+        const conn = ensureConnection(currentSessionId);
+        const canUse = isBusy && conn.ws && conn.ws.readyState === WebSocket.OPEN;
         stopBtn.disabled = !canUse;
       }
     }
@@ -1028,11 +1141,16 @@ function renderLandingPage(): string {
     function recalcLogHeight() {
       if (!logEl) return;
       const headerEl = document.querySelector('header');
+      const mainEl = document.querySelector('main');
       const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
       const formH = formEl ? formEl.getBoundingClientRect().height : 0;
+      const mainStyle = mainEl ? window.getComputedStyle(mainEl) : null;
+      const paddingY =
+        (mainStyle ? Number.parseFloat(mainStyle.paddingTop || '0') : 0) +
+        (mainStyle ? Number.parseFloat(mainStyle.paddingBottom || '0') : 0);
       const vh = viewport ? viewport.height : window.innerHeight;
-      const gap = 24;
-      const available = vh - headerH - formH - gap;
+      const gap = 12;
+      const available = vh - headerH - formH - gap - paddingY;
       logEl.style.height = Math.max(100, available) + 'px';
       logEl.style.maxHeight = Math.max(100, available) + 'px';
       logEl.scrollTop = logEl.scrollHeight;
@@ -1050,6 +1168,9 @@ function renderLandingPage(): string {
           child.remove();
         }
       });
+      // 清空当前会话的内存缓存
+      saveCache([], currentSessionId);
+      savePlanCache([], currentSessionId);
     }
 
     function escapeHtml(str) {
@@ -1172,13 +1293,14 @@ function renderLandingPage(): string {
       document.body.classList.toggle('locked', !!locked);
     }
 
-    function scheduleReconnect() {
-      if (!allowReconnect) return;
+    function scheduleReconnect(sessionId) {
+      const conn = ensureConnection(sessionId);
+      if (!conn.allowReconnect) return;
       if (!tokenOverlay.classList.contains('hidden')) return;
-      if (reconnectTimer) return;
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect();
+      if (conn.reconnectTimer) return;
+      conn.reconnectTimer = setTimeout(() => {
+        conn.reconnectTimer = null;
+        connect(sessionId);
       }, 1500);
     }
 
@@ -1323,7 +1445,11 @@ function renderLandingPage(): string {
       }
     }
 
-    function setWsState(state) {
+    function setWsState(state, sessionId) {
+      if (wsIndicatorSuspended) return;
+      if (sessionId && sessionId !== currentSessionId) {
+        return;
+      }
       if (wsIndicator) {
         wsIndicator.classList.remove('connected', 'connecting');
         if (state === 'connected') {
@@ -1356,7 +1482,6 @@ function renderLandingPage(): string {
       }
     }
 
-    const TOKEN_KEY = 'ADS_WEB_TOKEN';
     function getTokenKey() {
       const token = sessionStorage.getItem(TOKEN_KEY) || '';
       return token || 'default';
@@ -1374,8 +1499,11 @@ function renderLandingPage(): string {
     }
 
     function loadCache(sessionId) {
+      const key = cacheKey(sessionId);
+      const memo = messageCache.get(key);
+      if (Array.isArray(memo)) return [...memo];
       try {
-        const raw = scopedStorage.getItem(cacheKey(sessionId));
+        const raw = scopedStorage.getItem(key);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
@@ -1385,8 +1513,11 @@ function renderLandingPage(): string {
     }
 
     function saveCache(items, sessionId) {
+      const key = cacheKey(sessionId);
+      const trimmed = items.slice(-MAX_LOG_MESSAGES);
+      messageCache.set(key, trimmed);
       try {
-        scopedStorage.setItem(cacheKey(sessionId), JSON.stringify(items.slice(-MAX_LOG_MESSAGES)));
+        scopedStorage.setItem(key, JSON.stringify(trimmed));
       } catch {
         /* ignore */
       }
@@ -1439,33 +1570,38 @@ function renderLandingPage(): string {
       renderPlanStatus('暂无计划');
     }
 
-    function aliasStorageKey() {
-      return SESSION_ALIAS_KEY + '::' + getTokenKey();
+    function aliasStorageKey(tokenKey = getTokenKey()) {
+      return SESSION_ALIAS_KEY + '::' + tokenKey;
     }
 
     function loadSessionAliases() {
-      try {
-        const raw = scopedStorage.getItem(aliasStorageKey());
-        if (!raw) return {};
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          const normalized = {};
-          for (const [key, value] of Object.entries(parsed)) {
-            if (typeof value === 'string' && key) {
-              normalized[key] = value;
+      const merged = {};
+      const loadOne = (key) => {
+        try {
+          const raw = scopedStorage.getItem(key);
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            for (const [k, v] of Object.entries(parsed)) {
+              if (typeof v === 'string' && k) {
+                merged[k] = v;
+              }
             }
           }
-          return normalized;
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
-      }
-      return {};
+      };
+      loadOne(aliasStorageKey()); // token scoped
+      loadOne(aliasStorageKey('global')); // fallback to last-saved aliases without token约束
+      return merged;
     }
 
     function saveSessionAliases(map = sessionAliases) {
       try {
-        scopedStorage.setItem(aliasStorageKey(), JSON.stringify(map));
+        const payload = JSON.stringify(map);
+        scopedStorage.setItem(aliasStorageKey(), payload);
+        scopedStorage.setItem(aliasStorageKey('global'), payload);
       } catch {
         /* ignore */
       }
@@ -1682,9 +1818,11 @@ function renderLandingPage(): string {
       idleTimer = setTimeout(() => {
         const reason = '空闲超过 ' + idleMinutes + ' 分钟，已锁定';
         sessionStorage.removeItem(TOKEN_KEY);
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.close(4400, "idle timeout");
-        }
+        connections.forEach((conn) => {
+          if (conn?.ws && conn.ws.readyState === WebSocket.OPEN) {
+            conn.ws.close(4400, "idle timeout");
+          }
+        });
         tokenOverlay.classList.remove('hidden');
         tokenInput.value = '';
         setLocked(true);
@@ -1736,11 +1874,6 @@ function renderLandingPage(): string {
       if (!skipStash) {
         stashSessionView();
       }
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        suppressSwitchNotice = true;
-        ws.close(4409, 'switch session');
-      }
-      sendQueue = [];
       saveSession(targetId);
       updateSessionLabel(targetId);
       restorePlanFromCache(targetId);
@@ -1769,59 +1902,15 @@ function renderLandingPage(): string {
       }
     }
 
-    function connect(sessionIdOverride) {
-      const sessionIdToUse = sessionIdOverride || currentSessionId || loadSession() || newSessionId();
-      saveSession(sessionIdToUse);
-      updateSessionLabel(sessionIdToUse);
-      restoreSessionView(sessionIdToUse);
-      restorePlanFromCache(sessionIdToUse);
-      let token = sessionStorage.getItem(TOKEN_KEY) || '';
-      if (!token) {
-        tokenOverlay.classList.remove('hidden');
-        tokenInput.focus();
-        setLocked(true);
-        return;
-      }
-      tokenOverlay.classList.add('hidden');
-      setLocked(false);
-      allowReconnect = true;
-      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        suppressSwitchNotice = true;
-        ws.close(4409, 'switch session');
-      }
-      ws = null;
-      sendQueue = [];
-      streamState = null;
-      clearTypingPlaceholder();
-      resetCommandView(false);
-      const socketId = ++wsGeneration;
-      setWsState('connecting');
-      ws = new WebSocket(url, ['ads-token', token, 'ads-session', sessionIdToUse]);
-      ws.onopen = () => {
-        if (socketId !== wsGeneration) return;
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-        if (wsErrorMessage?.wrapper?.isConnected) {
-          wsErrorMessage.wrapper.remove();
-          wsErrorMessage = null;
-        }
-        setWsState('connected');
-        resetIdleTimer();
-        setLocked(false);
-      };
-      ws.onmessage = (ev) => {
-        if (socketId !== wsGeneration) return;
+    function handleWsMessageForSession(sessionId, conn, ev) {
+      withSessionContext(sessionId, () => {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'result') {
-            handleResult(msg);
+            handleResult(msg, conn);
           } else if (msg.type === 'delta') {
             handleDelta(msg.delta || '');
           } else if (msg.type === 'command') {
-            console.log('[WS] command message received:', msg);
             const cmd = msg.command || {};
             renderCommandView({
               id: cmd.id,
@@ -1839,7 +1928,7 @@ function renderLandingPage(): string {
             renderPlan(msg.items || []);
             return;
           } else if (msg.type === 'welcome') {
-            setWsState('connected');
+            setWsState('connected', sessionId);
             if (msg.sessionId) {
               updateSessionLabel(msg.sessionId);
               saveSession(msg.sessionId);
@@ -1850,7 +1939,8 @@ function renderLandingPage(): string {
           } else if (msg.type === 'workspace') {
             renderWorkspaceInfo(msg.data);
           } else if (msg.type === 'error') {
-            const failedKind = sendQueue.shift() || 'prompt';
+            const queued = conn.pendingSends.shift() || { type: 'prompt' };
+            const failedKind = queued.type || queued;
             if (failedKind === 'command') {
               renderCommandView({
                 commandText: lastCommandText || '',
@@ -1870,44 +1960,123 @@ function renderLandingPage(): string {
         } catch {
           appendMessage('ai', ev.data, { status: true });
         }
+      });
+    }
+
+    function connect(sessionIdOverride) {
+      const activeId = currentSessionId;
+      const sessionIdToUse = sessionIdOverride || activeId || loadSession() || newSessionId();
+      const conn = ensureConnection(sessionIdToUse);
+      saveSession(sessionIdToUse);
+      if (!activeId) {
+        updateSessionLabel(sessionIdToUse);
+      }
+      if (sessionIdToUse === activeId || !activeId) {
+        restoreSessionView(sessionIdToUse);
+        restorePlanFromCache(sessionIdToUse);
+      } else {
+        ensureSessionView(sessionIdToUse);
+      }
+      const token = sessionStorage.getItem(TOKEN_KEY) || '';
+      if (!token) {
+        tokenOverlay.classList.remove('hidden');
+        tokenInput.focus();
+        setLocked(true);
+        return null;
+      }
+      tokenOverlay.classList.add('hidden');
+      setLocked(false);
+      if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) {
+        return conn.ws;
+      }
+      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
+      conn.generation += 1;
+      const socketId = conn.generation;
+      conn.pendingSends = conn.pendingSends || [];
+      withSessionContext(sessionIdToUse, () => {
+        streamState = null;
+        clearTypingPlaceholder();
+        resetCommandView(false);
+        setWsState('connecting', sessionIdToUse);
+      });
+      conn.ws = new WebSocket(url, ['ads-token', token, 'ads-session', sessionIdToUse]);
+      conn.ws.onopen = () => {
+        if (socketId !== conn.generation) return;
+        if (conn.reconnectTimer) {
+          clearTimeout(conn.reconnectTimer);
+          conn.reconnectTimer = null;
+        }
+        if (conn.wsErrorMessage?.wrapper?.isConnected) {
+          conn.wsErrorMessage.wrapper.remove();
+          conn.wsErrorMessage = null;
+        }
+        conn.switchNoticeShown = false;
+        setWsState('connected', sessionIdToUse);
+        resetIdleTimer();
+        setLocked(false);
+        // flush pending sends
+        const pending = [...conn.pendingSends];
+        conn.pendingSends = [];
+        pending.forEach(({ type, payload }) => {
+          try {
+            conn.ws?.send(JSON.stringify({ type, payload }));
+          } catch {
+            /* ignore */
+          }
+        });
       };
-      ws.onclose = (ev) => {
-        if (socketId !== wsGeneration) return;
-        setWsState('disconnected');
+      conn.ws.onmessage = (ev) => {
+        if (socketId !== conn.generation) return;
+        handleWsMessageForSession(sessionIdToUse, conn, ev);
+      };
+      conn.ws.onclose = (ev) => {
+        if (socketId !== conn.generation) return;
+        withSessionContext(sessionIdToUse, () => {
+          setWsState('disconnected', sessionIdToUse);
+          setBusy(false);
+        });
         if (idleTimer) {
           clearTimeout(idleTimer);
         }
-        setBusy(false);
         if (ev.code === 4401) {
           sessionStorage.removeItem(TOKEN_KEY);
           tokenOverlay.classList.remove('hidden');
           tokenInput.value = '';
           setLocked(true);
-          appendMessage('ai', '口令无效或已过期，请重新输入', { status: true });
+          withSessionContext(sessionIdToUse, () => {
+            appendMessage('ai', '口令无效或已过期，请重新输入', { status: true });
+          });
           clearSession();
-          allowReconnect = false;
+          conn.allowReconnect = false;
         } else if (ev.code === 4409) {
-          if (!suppressSwitchNotice) {
-            appendMessage('ai', '已有新连接，当前会话被替换', { status: true });
+          if (!conn.suppressSwitchNotice && !conn.switchNoticeShown) {
+            withSessionContext(sessionIdToUse, () => {
+              appendMessage('ai', '已有新连接，当前会话被替换或已达上限', { status: true, skipCache: true });
+            });
+            conn.switchNoticeShown = true;
           }
-          suppressSwitchNotice = false;
-          allowReconnect = false;
+          conn.suppressSwitchNotice = false;
+          conn.allowReconnect = false;
         } else {
-          allowReconnect = true;
+          conn.allowReconnect = true;
         }
         renderWorkspaceInfo(null);
-        scheduleReconnect();
+        scheduleReconnect(sessionIdToUse);
       };
-      ws.onerror = (err) => {
-        if (socketId !== wsGeneration) return;
-        setWsState('disconnected');
-        setBusy(false);
-        const message = err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
-        if (!wsErrorMessage || !wsErrorMessage.wrapper?.isConnected) {
-          wsErrorMessage = appendMessage('ai', 'WS error: ' + message, { status: true, skipCache: true });
-        }
-        scheduleReconnect();
+      conn.ws.onerror = (err) => {
+        if (socketId !== conn.generation) return;
+        withSessionContext(sessionIdToUse, () => {
+          setWsState('disconnected', sessionIdToUse);
+          setBusy(false);
+          const message =
+            err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
+          if (!conn.wsErrorMessage || !conn.wsErrorMessage.wrapper?.isConnected) {
+            conn.wsErrorMessage = appendMessage('ai', 'WS error: ' + message, { status: true, skipCache: true });
+          }
+        });
+        scheduleReconnect(sessionIdToUse);
       };
+      return conn.ws;
     }
 
     // 自动调整输入框高度，最多6行
@@ -1986,8 +2155,9 @@ function renderLandingPage(): string {
       appendMessage('ai', output || '(无输出)', { markdown: true });
     }
 
-    function handleResult(msg) {
-      const kind = sendQueue.shift() || 'prompt';
+    function handleResult(msg, conn) {
+      const queued = conn?.pendingSends?.shift() || { type: 'prompt' };
+      const kind = queued.type || queued;
       clearTypingPlaceholder();
       if (kind === 'command') {
         appendCommandResult(Boolean(msg.ok), msg.output || '', msg.command, msg.exit_code);
@@ -2147,10 +2317,6 @@ function renderLandingPage(): string {
 
     if (sessionNewBtn) {
       sessionNewBtn.addEventListener('click', () => {
-        if (ws) {
-          suppressSwitchNotice = true;
-          ws.close(4409, 'switch session');
-        }
         const nextId = newSessionId();
         switchSession(nextId);
       });
@@ -2160,9 +2326,13 @@ function renderLandingPage(): string {
       sessionRenameBtn.addEventListener('click', () => {
         if (!currentSessionId) return;
         const existing = getSessionAlias(currentSessionId);
-        const name = prompt('为当前会话设置名称（留空恢复默认）', existing || '');
-        if (name === null) return;
-        setSessionAlias(currentSessionId, name);
+        if (aliasInput) {
+          aliasInput.value = existing || '';
+          setTimeout(() => aliasInput?.focus(), 0);
+        }
+        if (aliasOverlay) {
+          aliasOverlay.classList.remove('hidden');
+        }
       });
     }
 
@@ -2180,6 +2350,32 @@ function renderLandingPage(): string {
         sessionDialog?.classList.add('hidden');
       });
     }
+
+    function closeAliasOverlay() {
+      aliasOverlay?.classList.add('hidden');
+    }
+
+    function submitAlias() {
+      if (!currentSessionId) {
+        closeAliasOverlay();
+        return;
+      }
+      const name = aliasInput?.value || '';
+      setSessionAlias(currentSessionId, name);
+      closeAliasOverlay();
+    }
+
+    aliasSave?.addEventListener('click', submitAlias);
+    aliasCancel?.addEventListener('click', closeAliasOverlay);
+    aliasInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitAlias();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeAliasOverlay();
+      }
+    });
   </script>
 </body>
 </html>`;
@@ -2241,9 +2437,8 @@ async function start(): Promise<void> {
     }
 
     if (clients.size >= MAX_CLIENTS) {
-      const [first] = clients;
-      first?.close(4409, "replaced by new connection");
-      clients.delete(first as WebSocket);
+      ws.close(4409, `max clients reached (${MAX_CLIENTS})`);
+      return;
     }
     clients.add(ws);
 
@@ -2325,6 +2520,8 @@ async function start(): Promise<void> {
             ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
             return;
           }
+          const tempAttachments = promptInput.attachments || [];
+          const cleanupAttachments = () => cleanupTempFiles(tempAttachments);
           // 清空本轮的计划签名，等待新的 todo_list
           lastPlanSignature = null;
           const userLogEntry = sessionLogger ? buildUserLogEntry(promptInput.input, currentCwd) : null;
@@ -2342,6 +2539,7 @@ async function start(): Promise<void> {
             sessionLogger?.logError(status.error ?? "代理未启用");
             ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
             interruptControllers.delete(userId);
+            cleanupAttachments();
             return;
           }
           orchestrator.setWorkingDirectory(currentCwd);
@@ -2422,6 +2620,7 @@ async function start(): Promise<void> {
           } finally {
             unsubscribe();
             interruptControllers.delete(userId);
+            cleanupAttachments();
           }
           return;
         }
