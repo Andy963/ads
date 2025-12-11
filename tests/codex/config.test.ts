@@ -47,6 +47,60 @@ describe("codexConfig", () => {
     assert.equal(maskKey("abcdefghijk"), "abcd…hijk");
   });
 
+  it("defaults baseUrl when API key is present but no base is provided", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    const cfg = resolveCodexConfig({ apiKey: "sk-temp-123" });
+    assert.equal(cfg.baseUrl, "https://api.openai.com/v1");
+    assert.equal(cfg.apiKey, "sk-temp-123");
+    assert.equal(cfg.authMode, "apiKey");
+  });
+
+  it("throws when no credentials are available", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    process.env.HOME = tempHomeDir;
+    process.env.USERPROFILE = tempHomeDir;
+    assert.throws(
+      () => resolveCodexConfig(),
+      /Codex credentials not found/i
+    );
+  });
+
+  it("loads baseUrl and apiKey from config.toml provider section", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const codexDir = join(tempHomeDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        'model_provider = "test"',
+        "[model_providers.test]",
+        'base_url = "https://from-config.example.com/v1"',
+        'api_key = "sk-from-config"',
+      ].join("\n"),
+      "utf-8"
+    );
+    process.env.HOME = tempHomeDir;
+    process.env.USERPROFILE = tempHomeDir;
+
+    const cfg = resolveCodexConfig();
+    assert.equal(cfg.baseUrl, "https://from-config.example.com/v1");
+    assert.equal(cfg.apiKey, "sk-from-config");
+    assert.equal(cfg.authMode, "apiKey");
+  });
+
   it("falls back to device-auth tokens when API key is missing", () => {
     delete process.env.CODEX_BASE_URL;
     delete process.env.OPENAI_BASE_URL;
