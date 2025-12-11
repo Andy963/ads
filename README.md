@@ -126,6 +126,12 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
   - `ADS_RULES_REINJECTION_TURNS`（默认 `1`，即每轮重新注入 workspace 规则，可调大以降低频率）
   - `CLI_REINJECTION_*` / `TELEGRAM_REINJECTION_*` 可覆盖对应入口。
 
+### Codex 配置
+
+- 优先级：CLI 传参 `--base-url`/`--api-key` > 环境变量 `CODEX_BASE_URL`/`OPENAI_BASE_URL`、`CODEX_API_KEY`/`OPENAI_API_KEY` > `~/.codex/config.toml` 的 provider 配置 > `~/.codex/auth.json` 中的 API Key 或 `codex login` 生成的 `tokens`（access/refresh token）。
+- 若只提供 API Key 而未指定 baseUrl，默认使用 `https://api.openai.com/v1`；仅使用 `codex login` 的设备令牌时可不填 baseUrl。
+- 建议：使用 `codex login` 或设置 `CODEX_API_KEY`，避免在仓库中保存明文密钥。
+
 ### Claude Agent（实验性）
 
 Claude 集成正在逐步落地，可通过以下环境变量启用实验特性：
@@ -171,7 +177,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 - 使用统一的 services 脚本启动（构建后）：`npm run services -- start web`
 - 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ALLOWED_DIRS` 控制（Web/Telegram 共用）。
 - 浏览器访问对应地址即可与 CLI 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
-- 聊天日志支持本地缓存（按 token 隔离，约 100 条/200KB，TTL 1 天），顶部“清空历史”按钮可同时清理日志与缓存。
+- 聊天日志支持本地缓存（按 token 隔离，约 100 条/200KB，TTL 1 天），顶部“清空历史”按钮可同时清理日志与缓存；会话标签支持重命名并按 token 记住工作目录，重连/切换时自动恢复；流式回复的“正在输入”占位符按会话隔离。
 
 ### 📱 Telegram Bot 远程编程
 

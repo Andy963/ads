@@ -57,6 +57,13 @@ describe("codexConfig", () => {
     assert.equal(cfg.authMode, "apiKey");
   });
 
+  it("keeps existing baseUrl if provided alongside apiKey", () => {
+    const cfg = resolveCodexConfig({ baseUrl: "https://custom.example.com/v1", apiKey: "sk-inline" });
+    assert.equal(cfg.baseUrl, "https://custom.example.com/v1");
+    assert.equal(cfg.apiKey, "sk-inline");
+    assert.equal(cfg.authMode, "apiKey");
+  });
+
   it("throws when no credentials are available", () => {
     delete process.env.CODEX_BASE_URL;
     delete process.env.OPENAI_BASE_URL;
@@ -70,6 +77,31 @@ describe("codexConfig", () => {
       () => resolveCodexConfig(),
       /Codex credentials not found/i
     );
+  });
+
+  it("throws when baseUrl exists but no apiKey and no tokens", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const codexDir = join(tempHomeDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        'model_provider = "test"',
+        "[model_providers.test]",
+        'base_url = "https://only-base.example.com/v1"',
+      ].join("\n"),
+      "utf-8"
+    );
+    process.env.HOME = tempHomeDir;
+    process.env.USERPROFILE = tempHomeDir;
+
+    assert.throws(() => resolveCodexConfig(), /credentials not found/i);
   });
 
   it("loads baseUrl and apiKey from config.toml provider section", () => {
@@ -98,6 +130,53 @@ describe("codexConfig", () => {
     const cfg = resolveCodexConfig();
     assert.equal(cfg.baseUrl, "https://from-config.example.com/v1");
     assert.equal(cfg.apiKey, "sk-from-config");
+    assert.equal(cfg.authMode, "apiKey");
+  });
+
+  it("falls back to first provider baseUrl when model_provider is missing", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    process.env.CODEX_API_KEY = "sk-env-provider";
+
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const codexDir = join(tempHomeDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        "[model_providers.first]",
+        'base_url = "https://first.example.com/v1"',
+        'api_key = "sk-first-ignored"',
+        "[model_providers.second]",
+        'base_url = "https://second.example.com/v1"',
+        'api_key = "sk-second-ignored"',
+      ].join("\n"),
+      "utf-8"
+    );
+    process.env.HOME = tempHomeDir;
+    process.env.USERPROFILE = tempHomeDir;
+
+    const cfg = resolveCodexConfig();
+    assert.equal(cfg.baseUrl, "https://first.example.com/v1");
+    assert.equal(cfg.apiKey, "sk-env-provider");
+    assert.equal(cfg.authMode, "apiKey");
+  });
+
+  it("ignores malformed auth/config files and still prefers env", () => {
+    process.env.CODEX_BASE_URL = "https://env.example.com/v1";
+    process.env.CODEX_API_KEY = "sk-env";
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const codexDir = join(tempHomeDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(join(codexDir, "config.toml"), "not=toml", "utf-8");
+    writeFileSync(join(codexDir, "auth.json"), "{not-json", "utf-8");
+    process.env.HOME = tempHomeDir;
+    process.env.USERPROFILE = tempHomeDir;
+
+    const cfg = resolveCodexConfig();
+    assert.equal(cfg.baseUrl, "https://env.example.com/v1");
+    assert.equal(cfg.apiKey, "sk-env");
     assert.equal(cfg.authMode, "apiKey");
   });
 
@@ -137,5 +216,7 @@ describe("codexConfig", () => {
     assert.deepEqual(parseSlashCommand("/ads.status"), { command: "ads.status", body: "" });
     assert.deepEqual(parseSlashCommand("/ads.new Hello World"), { command: "ads.new", body: "Hello World" });
     assert.equal(parseSlashCommand("not a command"), null);
+    assert.equal(parseSlashCommand("/   "), null);
+    assert.deepEqual(parseSlashCommand("/ads.new    spaced   body "), { command: "ads.new", body: "spaced   body" });
   });
 });

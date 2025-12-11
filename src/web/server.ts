@@ -1008,6 +1008,14 @@ function renderLandingPage(): string {
 
     function handleClearLog() {
       clearLogMessages();
+      const conn = connections.get(currentSessionId);
+      if (conn?.ws && conn.ws.readyState === WebSocket.OPEN) {
+        try {
+          conn.ws.send(JSON.stringify({ type: 'clear_history' }));
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
     function wireSessionView(container) {
@@ -2607,6 +2615,12 @@ async function start(): Promise<void> {
           } else {
             ws.send(JSON.stringify({ type: "error", message: "当前没有正在执行的任务" }));
           }
+          return;
+        }
+
+        if (parsed.type === "clear_history") {
+          historyStore.clear(historyKey);
+          ws.send(JSON.stringify({ type: "result", ok: true, output: "已清空历史缓存" }));
           return;
         }
 
