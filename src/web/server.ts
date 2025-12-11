@@ -720,6 +720,7 @@ function renderLandingPage(): string {
     const SESSION_OPEN_KEY = 'ADS_OPEN_SESSIONS';
     const SESSION_ALIAS_KEY = 'ADS_SESSION_ALIASES';
     const PLAN_CACHE_PREFIX = 'plan-cache::';
+    const WORKSPACE_CACHE_PREFIX = 'ws-cache::';
     const idleMinutes = ${IDLE_MINUTES};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
@@ -763,6 +764,7 @@ function renderLandingPage(): string {
     const sessionStates = new Map();
     let openSessions = [];
     let sessionAliases = {};
+    let sessionWorkspaces = {};
 
     function ensureConnection(sessionId) {
       if (!connections.has(sessionId)) {
@@ -1129,6 +1131,7 @@ function renderLandingPage(): string {
     }
     applyVh();
     sessionAliases = loadSessionAliases();
+    sessionWorkspaces = loadSessionWorkspaces();
     renderPlanStatus('暂无计划');
     renderSessionList();
     openSessions = loadOpenSessions();
@@ -1580,6 +1583,10 @@ function renderLandingPage(): string {
       return SESSION_ALIAS_KEY + '::' + tokenKey;
     }
 
+    function workspaceStorageKey(tokenKey = getTokenKey()) {
+      return WORKSPACE_CACHE_PREFIX + tokenKey;
+    }
+
     function loadSessionAliases() {
       const merged = {};
       const loadOne = (key) => {
@@ -1603,11 +1610,44 @@ function renderLandingPage(): string {
       return merged;
     }
 
+    function loadSessionWorkspaces() {
+      const merged = {};
+      const loadOne = (key) => {
+        try {
+          const raw = scopedStorage.getItem(key);
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            for (const [k, v] of Object.entries(parsed)) {
+              if (typeof v === 'string' && k) {
+                merged[k] = v;
+              }
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+      loadOne(workspaceStorageKey());
+      loadOne(workspaceStorageKey('global'));
+      return merged;
+    }
+
     function saveSessionAliases(map = sessionAliases) {
       try {
         const payload = JSON.stringify(map);
         scopedStorage.setItem(aliasStorageKey(), payload);
         scopedStorage.setItem(aliasStorageKey('global'), payload);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    function saveSessionWorkspaces(map = sessionWorkspaces) {
+      try {
+        const payload = JSON.stringify(map);
+        scopedStorage.setItem(workspaceStorageKey(), payload);
+        scopedStorage.setItem(workspaceStorageKey('global'), payload);
       } catch {
         /* ignore */
       }
@@ -1630,6 +1670,35 @@ function renderLandingPage(): string {
       renderSessionTabs();
       renderSessionList();
       updateSessionLabel(currentSessionId);
+    }
+
+    function getWorkspaceForSession(id) {
+      if (!id) return '';
+      return sessionWorkspaces[id] || '';
+    }
+
+    function setWorkspaceForSession(id, path) {
+      if (!id || !path) return;
+      sessionWorkspaces[id] = path;
+      saveSessionWorkspaces();
+    }
+
+    function maybeRestoreWorkspace(sessionId, serverPath, conn) {
+      const cached = getWorkspaceForSession(sessionId);
+      if (!cached || cached === serverPath) return;
+      const payload = { type: 'command', payload: '/ads.cd ' + cached };
+      const targetConn = conn || ensureConnection(sessionId);
+      targetConn.pendingSends = targetConn.pendingSends || [];
+      // 如果已连接，立即发送；否则排队
+      if (targetConn.ws && targetConn.ws.readyState === WebSocket.OPEN) {
+        try {
+          targetConn.ws.send(JSON.stringify(payload));
+        } catch {
+          targetConn.pendingSends.push(payload);
+        }
+      } else {
+        targetConn.pendingSends.push(payload);
+      }
     }
 
     function resolveSessionLabel(id) {
@@ -1940,9 +2009,16 @@ function renderLandingPage(): string {
               saveSession(msg.sessionId);
             }
             if (msg.workspace) {
+              if (msg.workspace.path) {
+                setWorkspaceForSession(sessionId, msg.workspace.path);
+                maybeRestoreWorkspace(sessionId, msg.workspace.path, conn);
+              }
               renderWorkspaceInfo(msg.workspace);
             }
           } else if (msg.type === 'workspace') {
+            if (msg.data?.path) {
+              setWorkspaceForSession(sessionId, msg.data.path);
+            }
             renderWorkspaceInfo(msg.data);
           } else if (msg.type === 'error') {
             const queued = conn.pendingSends.shift() || { type: 'prompt' };
@@ -2184,6 +2260,9 @@ function renderLandingPage(): string {
       workspaceInfoEl.innerHTML = '';
       if (modifiedFilesEl) modifiedFilesEl.innerHTML = '';
       if (!info) return;
+      if (info.path) {
+        setWorkspaceForSession(currentSessionId, info.path);
+      }
       if (info.path) {
         const span = document.createElement('span');
         span.className = 'path';
