@@ -752,6 +752,7 @@ function renderLandingPage(): string {
     let lastCommandText = '';
     let idleTimer = null;
     let pendingImages = [];
+    const typingPlaceholders = new Map();
     let typingPlaceholder = null;
     let isBusy = false;
     let planTouched = false;
@@ -790,7 +791,6 @@ function renderLandingPage(): string {
       return {
         pendingImages: [],
         autoScroll: true,
-        typingPlaceholder: null,
         streamState: null,
         activeCommandView: null,
         activeCommandSignature: null,
@@ -822,7 +822,6 @@ function renderLandingPage(): string {
       sessionStates.set(id, {
         pendingImages: [...pendingImages],
         autoScroll,
-        typingPlaceholder,
         streamState,
         activeCommandView,
         activeCommandSignature,
@@ -840,7 +839,6 @@ function renderLandingPage(): string {
       const conn = ensureConnection(id);
       pendingImages = [...(state.pendingImages || [])];
       autoScroll = state.autoScroll ?? true;
-      typingPlaceholder = state.typingPlaceholder || null;
       streamState = state.streamState || null;
       activeCommandView = state.activeCommandView || null;
       activeCommandSignature = state.activeCommandSignature || null;
@@ -1092,6 +1090,7 @@ function renderLandingPage(): string {
       currentViewId = sessionId;
       bindViewElements(view);
       restoreUiState(sessionId);
+      typingPlaceholder = typingPlaceholders.get(sessionId) || null;
       autoResizeInput();
       recalcLogHeight();
       autoScrollIfNeeded();
@@ -1279,7 +1278,9 @@ function renderLandingPage(): string {
           first.remove();
         }
       }
-      if (typingPlaceholder?.wrapper && !typingPlaceholder.wrapper.isConnected) {
+      const currentTyping = typingPlaceholders.get(currentSessionId);
+      if (currentTyping?.wrapper && !currentTyping.wrapper.isConnected) {
+        typingPlaceholders.delete(currentSessionId);
         typingPlaceholder = null;
       }
       if (activeCommandView && !activeCommandView.wrapper?.isConnected) {
@@ -1336,9 +1337,11 @@ function renderLandingPage(): string {
     }
 
     function clearTypingPlaceholder() {
-      if (typingPlaceholder?.wrapper?.isConnected) {
-        typingPlaceholder.wrapper.remove();
+      const currentTyping = typingPlaceholders.get(currentSessionId) || typingPlaceholder;
+      if (currentTyping?.wrapper?.isConnected) {
+        currentTyping.wrapper.remove();
       }
+      typingPlaceholders.delete(currentSessionId);
       typingPlaceholder = null;
     }
 
@@ -1358,6 +1361,7 @@ function renderLandingPage(): string {
       pruneLog();
       autoScrollIfNeeded();
       typingPlaceholder = { wrapper, bubble };
+      typingPlaceholders.set(currentSessionId, typingPlaceholder);
       return typingPlaceholder;
     }
 
