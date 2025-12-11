@@ -877,6 +877,7 @@ function renderLandingPage(): string {
       bindViewElements(view);
       currentSessionId = sessionId;
       currentViewId = sessionId;
+      typingPlaceholder = typingPlaceholders.get(sessionId) || null;
       restoreUiState(sessionId);
       const result = fn();
       saveUiState(sessionId);
@@ -885,6 +886,7 @@ function renderLandingPage(): string {
         bindViewElements(activeView);
         currentSessionId = activeId;
         currentViewId = activeId;
+        typingPlaceholder = typingPlaceholders.get(activeId) || null;
         restoreUiState(activeId);
         restoreActivePlan();
       }
