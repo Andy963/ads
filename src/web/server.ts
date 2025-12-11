@@ -1341,13 +1341,15 @@ function renderLandingPage(): string {
       return appendMessage('status', text, { status: true });
     }
 
-    function clearTypingPlaceholder() {
-      const currentTyping = typingPlaceholders.get(currentSessionId) || typingPlaceholder;
+    function clearTypingPlaceholder(sessionId = currentSessionId) {
+      const currentTyping = typingPlaceholders.get(sessionId) || typingPlaceholder;
       if (currentTyping?.wrapper?.isConnected) {
         currentTyping.wrapper.remove();
       }
-      typingPlaceholders.delete(currentSessionId);
-      typingPlaceholder = null;
+      typingPlaceholders.delete(sessionId);
+      if (sessionId === currentSessionId) {
+        typingPlaceholder = null;
+      }
     }
 
     function appendTypingPlaceholder() {
@@ -2021,6 +2023,8 @@ function renderLandingPage(): string {
             }
             renderWorkspaceInfo(msg.data);
           } else if (msg.type === 'error') {
+            clearTypingPlaceholder();
+            streamState = null;
             const queued = conn.pendingSends.shift() || { type: 'prompt' };
             const failedKind = queued.type || queued;
             if (failedKind === 'command') {
@@ -2116,6 +2120,8 @@ function renderLandingPage(): string {
         withSessionContext(sessionIdToUse, () => {
           setWsState('disconnected', sessionIdToUse);
           setBusy(false);
+          clearTypingPlaceholder(sessionIdToUse);
+          streamState = null;
         });
         if (idleTimer) {
           clearTimeout(idleTimer);
@@ -2150,6 +2156,8 @@ function renderLandingPage(): string {
         withSessionContext(sessionIdToUse, () => {
           setWsState('disconnected', sessionIdToUse);
           setBusy(false);
+          clearTypingPlaceholder(sessionIdToUse);
+          streamState = null;
           const message =
             err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
           if (!conn.wsErrorMessage || !conn.wsErrorMessage.wrapper?.isConnected) {
