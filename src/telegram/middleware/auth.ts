@@ -1,20 +1,39 @@
 import type { Context, NextFunction } from 'grammy';
 
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('TelegramAuth');
+
 export function createAuthMiddleware(allowedUsers: number[]) {
   return async (ctx: Context, next: NextFunction) => {
-    const userId = ctx.from?.id;
-    
-    if (!userId) {
-      console.warn('[Auth] Message without user ID');
-      return;
-    }
+    try {
+      const userId = ctx.from?.id;
 
-    if (!allowedUsers.includes(userId)) {
-      await ctx.reply('您未获得授权访问此 Bot');
-      console.warn(`[Auth] Unauthorized access attempt`);
-      return;
-    }
+      if (!userId) {
+        logger.warn('Message without user ID');
+        return;
+      }
 
-    await next();
+      if (!allowedUsers.includes(userId)) {
+        try {
+          await ctx.reply('您未获得授权访问此 Bot');
+        } catch (error) {
+          logger.warn('Failed to send unauthorized reply', error);
+        }
+        logger.warn('Unauthorized access attempt');
+        return;
+      }
+
+      await next();
+    } catch (error) {
+      logger.error('Unhandled middleware error', error);
+      try {
+        if (ctx.chat) {
+          await ctx.reply('❌ 处理请求时发生错误，请稍后重试');
+        }
+      } catch (replyError) {
+        logger.warn('Failed to send error reply', replyError);
+      }
+    }
   };
 }
