@@ -4,7 +4,7 @@ import type { IntakeClassification } from "../intake/types.js";
 
 export type AgentCapability = "text" | "images" | "files" | "commands";
 
-export type AgentIdentifier = "codex" | "claude" | string;
+export type AgentIdentifier = "codex" | "claude" | "gemini" | string;
 
 export interface AgentMetadata {
   id: AgentIdentifier;

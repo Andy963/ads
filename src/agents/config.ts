@@ -16,6 +16,12 @@ export interface ClaudeAgentConfig {
   baseUrl?: string;
 }
 
+export interface GeminiAgentConfig {
+  enabled: boolean;
+  apiKey?: string;
+  model: string;
+}
+
 interface ClaudeFileConfig {
   enabled?: boolean;
   apiKey?: string;
@@ -26,6 +32,7 @@ interface ClaudeFileConfig {
 }
 
 const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4.5";
+const GEMINI_DEFAULT_MODEL = "gemini-2.0-flash";
 
 function parseBoolean(value: string | undefined, defaultValue = false): boolean {
   if (value === undefined) {
@@ -161,9 +168,10 @@ export function getAgentFeatureFlags(): AgentFeatureFlags {
   const fileConfig = loadClaudeConfigFiles();
   const envApiKey = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
   const effectiveKey = envApiKey || fileConfig.apiKey;
+  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   return {
     claudeEnabled: resolveEnabledFlag(process.env.ENABLE_CLAUDE_AGENT, fileConfig.enabled, Boolean(effectiveKey)),
-    geminiEnabled: parseBoolean(process.env.ENABLE_GEMINI_AGENT, false),
+    geminiEnabled: resolveEnabledFlag(process.env.ENABLE_GEMINI_AGENT, undefined, Boolean(geminiApiKey)),
   };
 }
 
@@ -190,5 +198,14 @@ export function resolveClaudeAgentConfig(): ClaudeAgentConfig {
     workdir: defaultWorkdir,
     toolAllowlist,
     baseUrl,
+  };
+}
+
+export function resolveGeminiAgentConfig(): GeminiAgentConfig {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  return {
+    enabled: resolveEnabledFlag(process.env.ENABLE_GEMINI_AGENT, undefined, Boolean(apiKey)),
+    apiKey,
+    model: process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL,
   };
 }

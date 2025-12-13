@@ -142,7 +142,14 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 - `CLAUDE_WORKDIR`：Claude Agent Runner 的工作目录，默认 `/tmp/ads-claude-agent`
 - `CLAUDE_TOOL_ALLOWLIST`：逗号分隔的工具白名单，占位用于后续阶段
 - `CLAUDE_BASE_URL` / `ANTHROPIC_BASE_URL`：如采用自托管 Claude Code endpoint，可在此指定 API 基础地址
-- `ENABLE_GEMINI_AGENT`：预留开关，暂不生效
+
+### Gemini Agent（实验性）
+
+Gemini 目前以“协作代理”的角色接入（输出建议/计划，不直接执行命令或修改文件），可通过以下环境变量启用：
+
+- `ENABLE_GEMINI_AGENT=1`：显式打开 Gemini 适配器（默认关闭；若检测到 API Key 也会自动启用）
+- `GEMINI_API_KEY`：Google AI Studio API Key（也支持 `GOOGLE_API_KEY`）
+- `GEMINI_MODEL`：Gemini 模型名称，默认 `gemini-2.0-flash`
 
 也可以像 Codex 一样在主目录放置配置文件：
 
@@ -159,18 +166,23 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 
 （可选）在 `~/.claude/auth.json` 中保存 `{"ANTHROPIC_API_KEY": "..."}` 以与 `config.json` 分离密钥。
 
-配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude API Key（环境变量、`~/.claude/{config,auth,settings}.json`）则默认启用 Claude，CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex 与 Claude 之间切换。
+配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini API Key（环境变量或 Claude 配置文件）则默认启用对应适配器；CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
 
-### Claude 协作（手动触发）
+### 协作代理（手动触发）
 
-- 在 Codex 输出中插入以下指令块即可请求 Claude 帮忙：
+- 在 Codex 输出中插入以下指令块即可请求协作代理帮忙：
   ```
   <<<agent.claude
   需要 Claude 协助的任务说明（提供上下文、约束、期望输出）
   >>>
   ```
-- ADS 会捕获该指令、调用 Claude、并把结果原位插回；你再继续执行命令或整合输出。
-- 系统不会再自动切换代理，如需 Claude 必须显式写出上述指令块（Telegram/CLI 均适用）。
+  ```
+  <<<agent.gemini
+  需要 Gemini 协助的任务说明（提供上下文、约束、期望输出）
+  >>>
+  ```
+- ADS 会捕获该指令、调用对应协作代理、并把结果原位插回；你再继续执行命令或整合输出。
+- 系统不会自动切换主代理；如需协作代理必须显式写出上述指令块（Telegram/CLI 均适用）。
 
 ### 🌐 Web Console（实验性）
 

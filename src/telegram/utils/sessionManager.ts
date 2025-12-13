@@ -1,12 +1,13 @@
 import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
 import { ClaudeAgentAdapter } from '../../agents/adapters/claudeAdapter.js';
+import { GeminiAgentAdapter } from '../../agents/adapters/geminiAdapter.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import { ThreadStorage } from './threadStorage.js';
 import type { SandboxMode } from '../config.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { createLogger } from '../../utils/logger.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
-import { resolveClaudeAgentConfig } from '../../agents/config.js';
+import { resolveClaudeAgentConfig, resolveGeminiAgentConfig } from '../../agents/config.js';
 import type { AgentAdapter } from '../../agents/types.js';
 
 interface SessionRecord {
@@ -26,6 +27,7 @@ export class SessionManager {
   private readonly reinjectionConfig = resolveReinjectionConfig("TELEGRAM");
   private readonly logger = createLogger("SessionManager");
   private readonly claudeConfig = resolveClaudeAgentConfig();
+  private readonly geminiConfig = resolveGeminiAgentConfig();
 
   constructor(
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000, // 30分钟
@@ -89,6 +91,10 @@ export class SessionManager {
 
     if (this.claudeConfig.enabled) {
       adapters.push(new ClaudeAgentAdapter({ config: this.claudeConfig }));
+    }
+
+    if (this.geminiConfig.enabled) {
+      adapters.push(new GeminiAgentAdapter({ config: this.geminiConfig }));
     }
 
     const orchestrator = new HybridOrchestrator({

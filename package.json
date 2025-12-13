@@ -34,7 +34,7 @@
     "mcp": "node dist/src/mcp/server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "bin": {
     "ads": "./dist/src/ads.js",
@@ -42,9 +42,11 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.59",
+    "@google/genai": "^1.33.0",
     "@grammyjs/types": "^3.22.2",
     "@modelcontextprotocol/sdk": "^1.22.0",
     "@openai/codex-sdk": "^0.65.0",
+    "@tavily/core": "^0.5.4",
     "better-sqlite3": "^9.6.0",
     "grammy": "^1.38.3",
     "picocolors": "^1.0.0",
@@ -52,8 +54,7 @@
     "toml": "^3.0.0",
     "ws": "^8.18.0",
     "yaml": "^2.6.0",
-    "zod": "^3.23.8",
-    "@tavily/core": "^0.5.4"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

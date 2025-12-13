@@ -27,11 +27,12 @@ import { syncAllNodesToFiles } from "../graph/service.js";
 import { ConversationLogger } from "../utils/conversationLogger.js";
 import { CodexAgentAdapter } from "../agents/adapters/codexAdapter.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
+import { GeminiAgentAdapter } from "../agents/adapters/geminiAdapter.js";
 import { HybridOrchestrator } from "../agents/orchestrator.js";
 import { injectDelegationGuide, resolveDelegations } from "../agents/delegation.js";
 import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
 import type { AgentEvent, AgentPhase } from "../codex/events.js";
-import { resolveClaudeAgentConfig } from "../agents/config.js";
+import { resolveClaudeAgentConfig, resolveGeminiAgentConfig } from "../agents/config.js";
 import type { AgentAdapter } from "../agents/types.js";
 import { WorkflowContext } from "../workspace/context.js";
 import type { WorkflowInfo } from "../workspace/context.js";
@@ -204,6 +205,11 @@ function createAgentController(
   const claudeConfig = resolveClaudeAgentConfig();
   if (claudeConfig.enabled) {
     adapters.push(new ClaudeAgentAdapter({ config: claudeConfig }));
+  }
+
+  const geminiConfig = resolveGeminiAgentConfig();
+  if (geminiConfig.enabled) {
+    adapters.push(new GeminiAgentAdapter({ config: geminiConfig }));
   }
 
   return new HybridOrchestrator({
@@ -449,11 +455,11 @@ async function handleAgentInteraction(
           ),
       });
       const delegated = await resolveDelegations(withTools, orchestrator, {
-        onInvoke: (prompt) => {
-          logger.logOutput(`[Auto] 调用 Claude 协助：${truncateForLog(prompt)}`);
+        onInvoke: (agentId, prompt) => {
+          logger.logOutput(`[Auto] 调用 ${agentId} 协助：${truncateForLog(prompt)}`);
         },
         onResult: (summary) => {
-          logger.logOutput(`[Auto] Claude 完成：${truncateForLog(summary.prompt)}`);
+          logger.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`);
         },
       });
       const elapsed = (Date.now() - startTime) / 1000;
@@ -925,7 +931,7 @@ function formatAgentList(orchestrator: HybridOrchestrator): string {
     lines.push(`${prefix} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`);
   }
   lines.push(
-    "\n使用 /agent <id> 切换当前主代理，例如 /agent claude；需要 Claude 协助时，请插入 <<<agent.claude ...>>> 指令块。",
+    "\n使用 /agent <id> 切换当前主代理，例如 /agent gemini；需要协作代理时，请插入 <<<agent.claude ...>>> 或 <<<agent.gemini ...>>> 指令块。",
   );
   return lines.join("\n");
 }

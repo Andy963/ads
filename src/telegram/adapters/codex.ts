@@ -927,8 +927,8 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     const result = await session.send(input, { streaming: true, signal });
     const delegation = await resolveDelegations(result, session, {
-      onInvoke: (prompt) => logger?.logOutput(`[Auto] 调用 Claude：${truncateForStatus(prompt)}`),
-      onResult: (summary) => logger?.logOutput(`[Auto] Claude 完成：${truncateForStatus(summary.prompt)}`),
+      onInvoke: (agentId, prompt) => logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForStatus(prompt)}`),
+      onResult: (summary) => logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForStatus(summary.prompt)}`),
     });
 
     await finalizeStatusUpdates();
