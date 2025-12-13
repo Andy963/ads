@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
-import toml from "toml";
 
 import { detectWorkspace, getWorkspaceDbPath } from "../workspace/detector.js";
 
@@ -12,15 +11,15 @@ let cachedDbs: Map<string, DatabaseType> = new Map();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
-function readPyProjectName(): string | null {
-  const pyprojectPath = path.join(PROJECT_ROOT, "pyproject.toml");
-  if (!fs.existsSync(pyprojectPath)) {
+function readPackageName(): string | null {
+  const pkgPath = path.join(PROJECT_ROOT, "package.json");
+  if (!fs.existsSync(pkgPath)) {
     return null;
   }
   try {
-    const content = fs.readFileSync(pyprojectPath, "utf-8");
-    const parsed = toml.parse(content);
-    return parsed?.project?.name ?? null;
+    const content = fs.readFileSync(pkgPath, "utf-8");
+    const parsed = JSON.parse(content) as { name?: string };
+    return parsed?.name ?? null;
   } catch {
     return null;
   }
@@ -32,7 +31,7 @@ function resolveDatabasePath(workspacePath?: string): string {
     return envDb.replace(/^sqlite:\/\//, "");
   }
 
-  const projectName = readPyProjectName();
+  const projectName = readPackageName();
   if (projectName === "ads") {
     return path.join(PROJECT_ROOT, "ads.db");
   }
