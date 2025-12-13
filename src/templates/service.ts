@@ -1,12 +1,23 @@
 import path from "node:path";
 
+import { z } from "zod";
+
 import { TemplateLoader } from "./loader.js";
 import { TemplateRenderer } from "./renderer.js";
 import { detectWorkspace } from "../workspace/detector.js";
 import { createNode, createEdge } from "../graph/crud.js";
 import { generateNodeId } from "../graph/workflowConfig.js";
 import { saveNodeToFile } from "../graph/fileManager.js";
-import { safeStringify } from "../utils/json.js";
+import { parseJsonWithSchema, safeStringify } from "../utils/json.js";
+
+const variablesSchema = z.record(z.unknown());
+
+function parseVariables(payload?: string): Record<string, unknown> {
+  if (!payload) {
+    return {};
+  }
+  return parseJsonWithSchema(payload, variablesSchema);
+}
 
 export async function listTemplates(params: { workspace_path?: string }): Promise<string> {
   try {
@@ -70,7 +81,7 @@ export async function renderTemplate(params: {
   variables: string;
 }): Promise<string> {
   try {
-    const variables = JSON.parse(params.variables);
+    const variables = parseVariables(params.variables);
     const rendered = TemplateRenderer.render(params.template_content, variables);
     return safeStringify({
       success: true,
@@ -86,7 +97,7 @@ export async function validateTemplate(params: {
   variables?: string;
 }): Promise<string> {
   try {
-    const variables = params.variables ? JSON.parse(params.variables) : {};
+    const variables = parseVariables(params.variables);
     const result = TemplateRenderer.validate(params.template_content, variables);
     return safeStringify(result);
   } catch (error) {
@@ -103,7 +114,7 @@ export async function createNodeFromTemplate(params: {
 }): Promise<string> {
   try {
     const workspace = path.resolve(params.workspace_path);
-    const variables = JSON.parse(params.variables);
+    const variables = parseVariables(params.variables);
     const template = TemplateLoader.getNodeTemplate(workspace, params.template_name);
     if (!template) {
       return safeStringify({ error: `模板不存在: ${params.template_name}` });

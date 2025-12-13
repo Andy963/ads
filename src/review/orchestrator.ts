@@ -5,6 +5,28 @@ import type { WorkflowInfo } from "../workspace/context.js";
 import type { ReviewReport, ReviewIssue } from "./types.js";
 import { resolveClaudeAgentConfig } from "../agents/config.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
+import { z } from "zod";
+
+import { safeParseJsonWithSchema } from "../utils/json.js";
+
+const reviewIssueSchema = z
+  .object({
+    severity: z.enum(["error", "warning"]).catch("error"),
+    file: z.string().optional(),
+    line: z.union([z.number().int(), z.null()]).optional(),
+    message: z.string().catch(""),
+    suggestion: z.string().optional(),
+  })
+  .passthrough();
+
+const reviewReportSchema = z
+  .object({
+    verdict: z.enum(["approved", "blocked", "failed"]).catch("blocked"),
+    summary: z.string().catch(""),
+    issues: z.array(reviewIssueSchema).catch([]),
+    notes: z.string().optional(),
+  })
+  .passthrough();
 
 const REVIEW_PROMPT = (
   bundleDir: string,
@@ -113,12 +135,25 @@ export async function runReviewerAgent(options: {
 
   try {
     const result = await orchestrator.send(prompt, { streaming: false });
-    const parsed = safeParseJson(result.response.trim());
+    const parsed = safeParseJsonWithSchema(result.response.trim(), reviewReportSchema);
     if (!parsed) {
       throw new Error("Reviewer 未返回有效 JSON。");
     }
-    validateReport(parsed);
-    return { report: parsed, agentId: defaultAgentId, warnings };
+
+    const report: ReviewReport = {
+      verdict: parsed.verdict,
+      summary: parsed.summary,
+      issues: parsed.issues.map((issue): ReviewIssue => ({
+        severity: issue.severity,
+        file: issue.file,
+        line: typeof issue.line === "number" ? issue.line : undefined,
+        message: issue.message,
+        suggestion: issue.suggestion,
+      })),
+      notes: parsed.notes,
+    };
+
+    return { report, agentId: defaultAgentId, warnings };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -132,35 +167,4 @@ export async function runReviewerAgent(options: {
       warnings,
     };
   }
-}
-
-function safeParseJson(text: string): ReviewReport | null {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-function validateReport(report: ReviewReport): void {
-  if (report.verdict !== "approved" && report.verdict !== "blocked" && report.verdict !== "failed") {
-    throw new Error("verdict 字段无效。");
-  }
-  if (!Array.isArray(report.issues)) {
-    report.issues = [];
-  } else {
-    report.issues = report.issues.map(normalizeIssue);
-  }
-  report.summary = report.summary ?? "";
-}
-
-function normalizeIssue(issue: ReviewIssue): ReviewIssue {
-  const severity = issue.severity === "warning" ? "warning" : "error";
-  return {
-    severity,
-    file: issue.file,
-    line: typeof issue.line === "number" ? issue.line : undefined,
-    message: issue.message ?? "",
-    suggestion: issue.suggestion,
-  };
 }

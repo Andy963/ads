@@ -1,9 +1,20 @@
 import path from "node:path";
 
+import { z } from "zod";
+
 import { CommandLoader } from "./loader.js";
 import { CommandExecutor } from "./executor.js";
 import { detectWorkspace } from "../workspace/detector.js";
-import { safeStringify } from "../utils/json.js";
+import { parseJsonWithSchema, safeStringify } from "../utils/json.js";
+
+const variablesSchema = z.record(z.coerce.string());
+
+function parseVariables(payload?: string): Record<string, string> {
+  if (!payload) {
+    return {};
+  }
+  return parseJsonWithSchema(payload, variablesSchema);
+}
 
 export async function listCommands(params: { workspace_path?: string }): Promise<string> {
   try {
@@ -50,7 +61,7 @@ export async function executeCommand(params: {
 }): Promise<string> {
   try {
     const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
-    const variables = params.variables ? JSON.parse(params.variables) : {};
+    const variables = parseVariables(params.variables);
     const content = CommandExecutor.executeForWorkspace(workspace, params.command_name, variables);
     return safeStringify({
       success: true,
@@ -69,7 +80,7 @@ export async function validateCommand(params: {
 }): Promise<string> {
   try {
     const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
-    const variables = params.variables ? JSON.parse(params.variables) : {};
+    const variables = parseVariables(params.variables);
     const result = CommandExecutor.validateCommand(workspace, params.command_name, variables);
     return safeStringify(result);
   } catch (error) {
