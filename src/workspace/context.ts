@@ -11,6 +11,7 @@ import {
 import type { GraphNode } from "../graph/types.js";
 import type { ReviewState as WorkflowReviewState } from "../review/types.js";
 import { getNodeFilePath } from "../graph/fileManager.js";
+import { safeParseJson } from "../utils/json.js";
 
 type WorkflowSteps = Record<string, string>;
 
@@ -91,12 +92,19 @@ export class WorkflowContext {
    * Helper function to map database row to GraphNode format
    */
   private static mapDbRowToNode(row: NodeDbRow): GraphNode {
-    const metadata: Record<string, unknown> = typeof row.metadata === 'string'
-      ? JSON.parse(row.metadata || '{}')
-      : (row.metadata ?? {});
-    const position: Record<string, unknown> = typeof row.position === 'string'
-      ? JSON.parse(row.position || '{}')
-      : (row.position ?? { x: 0, y: 0 });
+    const metadataValue =
+      typeof row.metadata === "string" ? safeParseJson<unknown>(row.metadata) : row.metadata;
+    const metadata =
+      metadataValue && typeof metadataValue === "object" && !Array.isArray(metadataValue)
+        ? (metadataValue as Record<string, unknown>)
+        : {};
+
+    const positionValue =
+      typeof row.position === "string" ? safeParseJson<unknown>(row.position) : row.position;
+    const position =
+      positionValue && typeof positionValue === "object" && !Array.isArray(positionValue)
+        ? (positionValue as Record<string, unknown>)
+        : { x: 0, y: 0 };
     const draftMessageId =
       typeof row.draft_message_id === 'number'
         ? row.draft_message_id
