@@ -14,6 +14,8 @@ import { listRules, readRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
 import { runReview, skipReview, showReviewReport } from "../review/service.js";
 import { WorkflowContext } from "../workspace/context.js";
+import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams.js";
+import { normalizeOutput } from "../utils/text.js";
 
 export interface CommandResult {
   ok: boolean;
@@ -31,39 +33,6 @@ const REVIEW_LOCK_SAFE_COMMANDS = new Set([
   "ads.branch",
   "ads.checkout",
 ]);
-
-function parseBooleanParam(value: string | undefined): boolean | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "" || normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
-    return true;
-  }
-  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
-    return false;
-  }
-  return undefined;
-}
-
-function resolveCommitRefParam(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const bool = parseBooleanParam(value);
-  if (bool === undefined) {
-    const trimmed = value.trim();
-    return trimmed || undefined;
-  }
-  return bool ? "HEAD" : undefined;
-}
-
-function normalizeOutput(text: string): string {
-  if (typeof text !== "string") {
-    return "(无输出)";
-  }
-  return text.trim() ? text : "(无输出)";
-}
 
 function formatResponse(text: string): string {
   if (!text.trim()) {

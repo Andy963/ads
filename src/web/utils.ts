@@ -15,6 +15,8 @@ import type {
   PromptInputOutcome,
 } from "./types.js";
 
+export { truncateForLog } from "../utils/text.js";
+
 export const ALLOWED_IMAGE_MIME = new Set([
   "image/jpeg",
   "image/png",
@@ -88,14 +90,6 @@ export function deriveWebUserId(token: string, sessionId: string): number {
   const hash = crypto.createHash("sha256").update(base).digest();
   const value = hash.readUInt32BE(0);
   return 0x70000000 + value;
-}
-
-export function truncateForLog(text: string, limit = 96): string {
-  const normalized = text.trim().replace(/\s+/g, " ");
-  if (normalized.length <= limit) {
-    return normalized;
-  }
-  return `${normalized.slice(0, limit - 1)}…`;
 }
 
 export function resolveAllowedDirs(workspaceRoot: string): string[] {

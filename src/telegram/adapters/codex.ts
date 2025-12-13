@@ -26,6 +26,7 @@ import {
   shouldResetThread,
 } from '../../codex/errors.js';
 import { HistoryStore } from '../../utils/historyStore.js';
+import { truncateForLog } from '../../utils/text.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -89,14 +90,6 @@ const historyStore = new HistoryStore({
     flushChunk();
     return chunks;
   }
-
-function truncateForStatus(text: string, limit = 96): string {
-  const trimmed = text.trim().replace(/\s+/g, ' ');
-  if (trimmed.length <= limit) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, limit - 1)}…`;
-}
 
 export async function handleCodexMessage(
   ctx: Context,
@@ -927,8 +920,8 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     const result = await session.send(input, { streaming: true, signal });
     const delegation = await resolveDelegations(result, session, {
-      onInvoke: (agentId, prompt) => logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForStatus(prompt)}`),
-      onResult: (summary) => logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForStatus(summary.prompt)}`),
+      onInvoke: (agentId, prompt) => logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForLog(prompt)}`),
+      onResult: (summary) => logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`),
     });
 
     await finalizeStatusUpdates();
