@@ -100,24 +100,24 @@ export async function getActiveWorkflowSummary(params: {
 
   const lines: string[] = [];
   lines.push("```");
-  lines.push("✓ Active workflow:");
-  lines.push(`    Title: ${workflow.title ?? "Unknown"}`);
-  lines.push(`    Template: ${workflow.template ?? "Unknown"}`);
+  lines.push("✓ 当前工作流:");
+  lines.push(`    标题: ${workflow.title ?? "（未命名）"}`);
+  lines.push(`    模板: ${workflow.template ?? "unknown"}`);
   lines.push(`    ID: ${workflow.workflow_id}`);
   if (workflow.current_step) {
-    lines.push(`    Current step: ${workflow.current_step}`);
+    lines.push(`    当前步骤: ${workflow.current_step}`);
   }
   const steps = workflow.steps ?? {};
   const stepNames = Object.keys(steps);
   if (stepNames.length > 0) {
     lines.push("");
-    lines.push(`    Steps (${stepNames.length} total):`);
+    lines.push(`    步骤（共 ${stepNames.length} 个）:`);
     for (const stepName of stepNames) {
-      lines.push(`        - ${stepName}: ${steps[stepName] ?? "(not created)"}`);
+      lines.push(`        - ${stepName}: ${steps[stepName] ?? "(未创建)"}`);
     }
   }
   lines.push("");
-  lines.push(`💡 For detailed status, use: ${CMD_STATUS}`);
+  lines.push(`💡 查看详细状态请用: ${CMD_STATUS}`);
   lines.push("```");
   return lines.join("\n");
 }
@@ -132,21 +132,21 @@ export async function getWorkflowStatusSummary(params: {
   if (!workflowStatus) {
     if (format === "markdown") {
       return [
-        "**❌ No active workflow**",
+        "**❌ 没有活动的工作流**",
         "",
-        "💡 To get started:",
+        "💡 开始使用：",
         `- 使用 \`${CMD_BRANCH}\` 查看现有工作流`,
         `- 使用 \`${CMD_NEW}\` 创建新工作流`,
         `- 使用 \`${CMD_CHECKOUT} <workflow>\` 切换到指定工作流`,
       ].join("\n");
     }
     return [
-      "❌ No active workflow",
+      "❌ 没有活动的工作流",
       "",
-      `💡 To get started:`,
-      `    - List existing workflows: ${CMD_BRANCH}`,
-      `    - Create new workflow: ${CMD_NEW} <type> <title>`,
-      `    - Switch to workflow: ${CMD_CHECKOUT} <workflow>`,
+      `💡 开始使用：`,
+      `    - 查看现有工作流: ${CMD_BRANCH}`,
+      `    - 创建新工作流: ${CMD_NEW} <type> <title>`,
+      `    - 切换到工作流: ${CMD_CHECKOUT} <workflow>`,
     ].join("\n");
   }
 
@@ -156,12 +156,12 @@ export async function getWorkflowStatusSummary(params: {
   const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
   const stepOrder = Object.keys(stepMapping);
   const nextActions: Array<{ label: string; command: string }> = [
-    { label: "Finalize step", command: `${CMD_COMMIT} <step>` },
+    { label: "完成步骤", command: `${CMD_COMMIT} <step>` },
   ];
 
   const reviewState = workflow.review;
   if (!reviewState || reviewState.status === "blocked" || reviewState.status === "failed" || reviewState.status === "skipped") {
-    nextActions.unshift({ label: "Run review", command: "/ads.review" });
+    nextActions.unshift({ label: "执行代码审查", command: "/ads.review" });
   } else if (reviewState.status === "running" || reviewState.status === "pending") {
     nextActions.unshift({ label: "查看 review 进度", command: "/ads.review --show" });
   }

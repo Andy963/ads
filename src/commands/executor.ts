@@ -24,7 +24,7 @@ export class CommandExecutor {
     if (!command) {
       return {
         valid: false,
-        errors: [`Command not found: ${commandName}`],
+        errors: [`命令不存在: ${commandName}`],
         missing_variables: [],
       };
     }
@@ -44,7 +44,7 @@ export class CommandExecutor {
     const loader = new CommandLoader(workspace);
     const command = loader.loadCommand(commandName);
     if (!command) {
-      throw new Error(`Command not found: ${commandName}`);
+      throw new Error(`命令不存在: ${commandName}`);
     }
 
     const vars = variables ?? {};

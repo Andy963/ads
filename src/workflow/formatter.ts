@@ -94,7 +94,7 @@ export function formatWorkflowList(entries: WorkflowListEntry[], options: { form
     lines.push("现有工作流：");
     entries.forEach((wf, index) => {
       lines.push(
-        `${index + 1}. [${wf.template}] ${wf.title} (nodes: ${wf.node_count}, finalized: ${wf.finalized_count}) - ${wf.workflow_id}`,
+        `${index + 1}. [${wf.template}] ${wf.title} (节点: ${wf.node_count}, 已定稿: ${wf.finalized_count}) - ${wf.workflow_id}`,
       );
     });
     return lines.join("\n");
@@ -146,7 +146,7 @@ export function formatWorkflowStatusSummary(
   }
 
   lines.push("");
-  lines.push(helpers.section("Steps"));
+  lines.push(helpers.section("步骤"));
 
   if (orderedSteps.length === 0) {
     lines.push(helpers.info("暂无可用步骤"));
@@ -154,11 +154,11 @@ export function formatWorkflowStatusSummary(
     for (const stepName of orderedSteps) {
       const info = stepLookup.get(stepName);
       if (!info) {
-        lines.push(helpers.info(`○ ${helpers.escape(stepName)} ${helpers.muted("(not created)")}`));
+        lines.push(helpers.info(`○ ${helpers.escape(stepName)} ${helpers.muted("(未创建)")}`));
         continue;
       }
       const statusIcon = info.status === "finalized" ? "✅" : "📝";
-      const currentMark = info.is_current ? ` ${helpers.muted("(current)")}` : "";
+      const currentMark = info.is_current ? ` ${helpers.muted("(当前)")}` : "";
       const label = info.label ?? stepName;
       const line = `${statusIcon} ${helpers.escape(stepName)}: ${helpers.escape(label)}${currentMark}`;
       lines.push(helpers.info(line));
@@ -176,14 +176,14 @@ export function formatWorkflowStatusSummary(
   const progress = totalSteps > 0 ? Math.round((finalizedCount / totalSteps) * 100) : 0;
 
   lines.push("");
-  lines.push(helpers.section("Progress"));
+  lines.push(helpers.section("进度"));
   lines.push(helpers.info(`${progress}% (${finalizedCount}/${totalSteps || 0})`));
   if (progress === 100) {
-    lines.push(helpers.info("🎉 This workflow is complete!"));
+    lines.push(helpers.info("🎉 工作流已完成！"));
   }
 
   lines.push("");
-  lines.push(helpers.section("Review"));
+  lines.push(helpers.section("代码审查"));
   if (workflow.review) {
     const statusLabel = helpers.code(workflow.review.status);
     const updated = workflow.review.updated_at ? ` · ${helpers.escape(workflow.review.updated_at)}` : "";
@@ -195,7 +195,7 @@ export function formatWorkflowStatusSummary(
       lines.push(helpers.info(`跳过原因: ${helpers.escape(workflow.review.skip_reason)}`));
     }
   } else {
-    lines.push(helpers.info("尚未执行 Review。使用 /ads.review 触发检查。"));
+    lines.push(helpers.info("尚未执行代码审查。使用 /ads.review 触发检查。"));
   }
 
   if (allWorkflows.length > 0) {
@@ -206,8 +206,8 @@ export function formatWorkflowStatusSummary(
       const prefix = isCurrent ? "★" : "•";
       const workflowSegment = `${prefix} ${helpers.code(wf.workflow_id)}`;
       const titleSegment = helpers.escape(wf.title ?? "(未命名)");
-      const templateSegment = `template:${helpers.code(wf.template ?? "unknown")}`;
-      const statsSegment = `nodes:${wf.node_count} finalized:${wf.finalized_count}`;
+      const templateSegment = `模板:${helpers.code(wf.template ?? "unknown")}`;
+      const statsSegment = `节点:${wf.node_count} 已定稿:${wf.finalized_count}`;
       const label = `${workflowSegment} ${titleSegment} ${templateSegment} ${statsSegment}`;
       lines.push(helpers.info(isCurrent ? helpers.accent(label) : label));
     }
@@ -215,7 +215,7 @@ export function formatWorkflowStatusSummary(
 
   if (nextActions.length > 0) {
     lines.push("");
-    lines.push(helpers.section("💡 Next actions"));
+    lines.push(helpers.section("💡 下一步"));
     for (const action of nextActions) {
       lines.push(helpers.info(`${helpers.escape(action.label)}: ${helpers.code(action.command)}`));
     }
