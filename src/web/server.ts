@@ -1220,11 +1220,26 @@ function renderLandingPage(): string {
 
       const inlineCode = new RegExp(BT + "([^" + BT + "]+)" + BT, "g");
 
+      // 验证 URL 是否安全（防止 javascript: 等协议注入）
+      function isSafeUrl(url) {
+        if (!url) return false;
+        const trimmed = url.trim().toLowerCase();
+        if (trimmed.startsWith('javascript:') || trimmed.startsWith('data:') || trimmed.startsWith('vbscript:')) {
+          return false;
+        }
+        return true;
+      }
+
       const renderInline = (text) =>
         text
           .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
           .replace(inlineCode, '<code>$1</code>')
-          .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+          .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, (match, linkText, url) => {
+            if (!isSafeUrl(url)) {
+              return escapeHtml(linkText);
+            }
+            return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(linkText) + '</a>';
+          });
 
       const renderParagraph = (block) => {
         const trimmed = block.trim();

@@ -495,6 +495,16 @@ export class WorkflowContext {
     matches: WorkflowSummary[];
     message: string;
   } {
+    const normalizedId = (workflowIdentifier ?? "").toString();
+    if (!normalizedId.trim()) {
+      return {
+        success: false,
+        workflow: null,
+        matches: [],
+        message: "未找到匹配 '' 的工作流",
+      };
+    }
+
     const allWorkflows = WorkflowContext.listAllWorkflows(workspace);
     if (allWorkflows.length === 0) {
       return {
@@ -506,44 +516,43 @@ export class WorkflowContext {
     }
 
     let matched: WorkflowSummary | undefined = allWorkflows.find(
-      (wf) => wf.workflow_id === workflowIdentifier,
+      (wf) => wf.workflow_id === normalizedId,
     );
 
     // 支持序号选择（1-based index）
     if (!matched) {
-      const index = parseInt(workflowIdentifier, 10);
+      const index = parseInt(normalizedId, 10);
       if (!isNaN(index) && index >= 1 && index <= allWorkflows.length) {
         matched = allWorkflows[index - 1];
       }
     }
 
     if (!matched) {
-      matched = allWorkflows.find((wf) => wf.title === workflowIdentifier);
+      matched = allWorkflows.find((wf) => wf.title === normalizedId);
     }
 
     let matches: WorkflowSummary[] = [];
 
     if (!matched) {
-      const templateType = WorkflowContext.TYPE_KEYWORDS[workflowIdentifier.toLowerCase()];
+      const templateType = WorkflowContext.TYPE_KEYWORDS[normalizedId.toLowerCase()];
       if (templateType) {
         matches = allWorkflows.filter((wf) => wf.template === templateType);
-        if (matches.length === 1) {
+        if (matches.length > 0) {
+          // 当存在多个同模板工作流时，选取最近创建的一个（listAllWorkflows 已按创建时间倒序）
           matched = matches[0];
-        } else if (matches.length > 1) {
-          return {
-            success: false,
-            workflow: null,
-            matches,
-            message: `找到 ${matches.length} 个 '${templateType}' 类型的工作流，请指定具体的工作流`,
-          };
         }
       }
     }
 
     if (!matched) {
-      matched = allWorkflows.find((wf) =>
-        wf.title.toLowerCase().includes(workflowIdentifier.toLowerCase()),
-      );
+      matched = allWorkflows.find((wf) => {
+        const title = wf.title ?? "";
+        return title.toLowerCase().includes(normalizedId.toLowerCase());
+      });
+    }
+
+    if (!matched && normalizedId.toLowerCase() === "unified") {
+      matched = allWorkflows.find((wf) => wf.template === "unified");
     }
 
     if (!matched) {
@@ -551,7 +560,7 @@ export class WorkflowContext {
         success: false,
         workflow: null,
         matches: [],
-        message: `未找到匹配 '${workflowIdentifier}' 的工作流`,
+        message: `未找到匹配 '${normalizedId}' 的工作流`,
       };
     }
 

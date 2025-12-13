@@ -2,6 +2,7 @@ import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 
 const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'url-downloads');
+let dnsResolveOverride: ((hostname: string) => Promise<string[]>) | null = null;
 
 /**
  * URL 类型
@@ -117,7 +118,8 @@ async function assertUrlSafe(parsed: URL): Promise<void> {
 
   try {
     const dns = await import('node:dns/promises');
-    const addresses = await dns.resolve(parsed.hostname);
+    const resolver = dnsResolveOverride ?? dns.resolve.bind(dns);
+    const addresses = await resolver(parsed.hostname);
     for (const addr of addresses) {
       if (isPrivateIP(addr)) {
         throw new Error(`域名 ${parsed.hostname} 解析到内网地址: ${addr}`);
@@ -153,6 +155,11 @@ function createTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number)
   };
 
   return { signal: controller.signal, cleanup };
+}
+
+// 仅用于测试注入自定义 DNS 解析行为
+export function setDnsResolver(resolver: ((hostname: string) => Promise<string[]>) | null): void {
+  dnsResolveOverride = resolver;
 }
 
 /**

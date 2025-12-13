@@ -10,10 +10,14 @@ export interface ClientResult {
   error?: SearchError;
 }
 
-async function loadTavilyCtor(): Promise<new (opts: { apiKey: string }) => TavilyClientAdapter> {
+type TavilyClientCtor = new (opts: { apiKey: string }) => TavilyClientAdapter;
+
+async function loadTavilyCtor(): Promise<TavilyClientCtor> {
   try {
     const mod = await import("@tavily/core");
-    const ctor = (mod as any).TavilyClient ?? (mod as any).default;
+    // 模块可能导出 TavilyClient 或作为 default
+    const modRecord = mod as Record<string, unknown>;
+    const ctor = (modRecord.TavilyClient ?? modRecord.default) as TavilyClientCtor | undefined;
     if (!ctor) {
       throw new Error("TavilyClient export not found");
     }

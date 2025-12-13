@@ -32,12 +32,24 @@ export function resolveCodexConfig(
 
   const { baseUrl: configBaseUrl, apiKey: configApiKey, hasDeviceAuthTokens } = loadCodexFiles();
 
+  const apiKey = overrides.apiKey || envApiKey || configApiKey;
+  const apiKeySource = overrides.apiKey
+    ? "override"
+    : envApiKey
+      ? "env"
+      : configApiKey
+        ? "config"
+        : null;
+
+  const overrideApiKeyProvided = overrides.apiKey !== undefined;
   const baseUrl =
     overrides.baseUrl ||
-    envBaseUrl ||
-    configBaseUrl ||
-    (envApiKey || configApiKey || overrides.apiKey ? DEFAULT_BASE_URL : undefined);
-  const apiKey = overrides.apiKey || envApiKey || configApiKey;
+    // 如果显式提供了 apiKey 但未指定 baseUrl，则跳过环境/配置 base，直接使用默认
+    (overrideApiKeyProvided ? undefined : envBaseUrl) ||
+    // 当 baseUrl 来自配置文件时，仅在未显式 override base 且（存在配置 base 或提供了非 override apiKey）时使用
+    (configBaseUrl && !overrideApiKeyProvided && apiKeySource !== "override" ? configBaseUrl : undefined) ||
+    // 有 apiKey 或设备令牌但没有显式 baseUrl 时，回落到默认 OpenAI 入口
+    (apiKey || hasDeviceAuthTokens ? DEFAULT_BASE_URL : undefined);
 
   const authMode: CodexAuthMode | undefined = apiKey
     ? "apiKey"

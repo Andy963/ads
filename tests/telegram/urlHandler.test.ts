@@ -1,8 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { extractUrls, detectUrlType, UrlType } from '../../src/telegram/utils/urlHandler.js';
-
-const dnsPromises = await import('node:dns/promises');
+import { extractUrls, detectUrlType, UrlType, setDnsResolver } from '../../src/telegram/utils/urlHandler.js';
 
 function stubFetch(impl: typeof fetch) {
   const original = global.fetch;
@@ -11,15 +9,6 @@ function stubFetch(impl: typeof fetch) {
   return () => {
     // @ts-expect-error restore
     global.fetch = original;
-  };
-}
-
-function stubDnsResolve(impl: typeof dnsPromises.resolve) {
-  const original = dnsPromises.resolve;
-  // @ts-expect-error override for tests
-  dnsPromises.resolve = impl;
-  return () => {
-    dnsPromises.resolve = original;
   };
 }
 
@@ -68,14 +57,14 @@ describe('UrlHandler', () => {
         calls.push({ url: String(url) });
         throw new Error('fetch should not be called for private IP');
       });
-      const restoreDns = stubDnsResolve(dnsPromises.resolve);
+      setDnsResolver(async () => ['127.0.0.1']);
       try {
         const info = await detectUrlType('http://127.0.0.1/secret');
         assert.strictEqual(info.type, UrlType.WEBPAGE);
         assert.strictEqual(calls.length, 0, 'HEAD request should be skipped');
       } finally {
         restoreFetch();
-        restoreDns();
+        setDnsResolver(null);
       }
     });
 
@@ -85,14 +74,14 @@ describe('UrlHandler', () => {
         calls.push({ url: String(url) });
         throw new Error('fetch should not be called for private DNS');
       });
-      const restoreDns = stubDnsResolve(async () => ['10.0.0.1']);
+      setDnsResolver(async () => ['10.0.0.1']);
       try {
         const info = await detectUrlType('http://example.internal/resource');
         assert.strictEqual(info.type, UrlType.WEBPAGE);
         assert.strictEqual(calls.length, 0, 'HEAD request should be skipped');
       } finally {
         restoreFetch();
-        restoreDns();
+        setDnsResolver(null);
       }
     });
 
@@ -106,7 +95,7 @@ describe('UrlHandler', () => {
           },
         } as any;
       });
-      const restoreDns = stubDnsResolve(async () => ['93.184.216.34']);
+      setDnsResolver(async () => ['93.184.216.34']);
       try {
         const info = await detectUrlType('https://example.com/photo');
         assert.strictEqual(info.type, UrlType.IMAGE);
@@ -116,7 +105,7 @@ describe('UrlHandler', () => {
         assert.ok(calls[0].signal instanceof AbortSignal, 'HEAD should receive an AbortSignal');
       } finally {
         restoreFetch();
-        restoreDns();
+        setDnsResolver(null);
       }
     });
   });

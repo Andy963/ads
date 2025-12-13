@@ -167,6 +167,20 @@ function ensureInitialized<T>(provider: () => T, message: () => string): T {
 
 export function getWorkspaceDbPath(workspace?: string): string {
   const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+
+  // 始终尊重环境变量覆盖（测试场景依赖 ADS_DATABASE_PATH）
+  const envDb = process.env.ADS_DATABASE_PATH || process.env.DATABASE_URL;
+  if (envDb) {
+    const normalized = envDb.replace(/^sqlite:\/\//, "");
+    const resolved = path.isAbsolute(normalized) ? normalized : path.resolve(normalized);
+    const dir = path.dirname(resolved);
+    fs.mkdirSync(dir, { recursive: true });
+    if (!existsSync(resolved)) {
+      fs.writeFileSync(resolved, "");
+    }
+    return resolved;
+  }
+
   const dbPath = path.join(root, ".ads", "ads.db");
   if (!existsSync(path.dirname(dbPath))) {
     throw new Error(`工作空间未初始化: ${root}`);
@@ -189,35 +203,28 @@ export function getWorkspaceRulesDir(workspace?: string): string {
 }
 
 export function getWorkspaceSpecsDir(workspace?: string): string {
-  return ensureInitialized(() => {
-    const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
-    const specDir = path.join(root, "docs", "spec");
-    if (existsSync(specDir)) {
-      return specDir;
-    }
+  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  const specDir = path.join(root, "docs", "spec");
+  if (existsSync(specDir)) {
+    return specDir;
+  }
 
-    const docsDir = path.join(root, "docs");
-    if (!existsSync(docsDir)) {
-      throw new Error(`Specs 目录不存在: ${specDir}`);
-    }
-
-    const legacyDir = path.join(root, "docs", "specs");
-    if (existsSync(legacyDir)) {
-      try {
-        fs.mkdirSync(specDir, { recursive: true });
-      } catch (error) {
-        throw new Error(`无法创建新的 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
-      }
-      return specDir;
-    }
-
+  const legacyDir = path.join(root, "docs", "specs");
+  if (existsSync(legacyDir)) {
     try {
       fs.mkdirSync(specDir, { recursive: true });
     } catch (error) {
-      throw new Error(`无法创建 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
+      throw new Error(`无法创建新的 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
     }
     return specDir;
-  }, () => `工作空间未初始化: ${workspace ?? detectWorkspace()}`);
+  }
+
+  try {
+    fs.mkdirSync(specDir, { recursive: true });
+  } catch (error) {
+    throw new Error(`无法创建 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
+  }
+  return specDir;
 }
 
 export function isWorkspaceInitialized(workspace?: string): boolean {

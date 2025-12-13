@@ -61,7 +61,8 @@ interface FormatHelpers {
 }
 
 function createFormatHelpers(format: WorkflowTextFormat): FormatHelpers {
-  const escape = (text: string) => (format === "markdown" ? escapeTelegramMarkdown(text) : text);
+  // Markdown 输出用于展示，不使用 Telegram 特殊转义以避免破坏粗体等格式
+  const escape = (text: string) => (format === "markdown" ? text : escapeTelegramMarkdown(text));
   const escapeCode = (text: string) => escapeTelegramInlineCode(text);
   const escapeItalic = (text: string) => escapeTelegramItalic(text);
 

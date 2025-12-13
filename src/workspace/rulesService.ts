@@ -120,6 +120,15 @@ export async function checkRuleViolation(params: {
 
   if (operation === "git_commit") {
     const message = String(details.message ?? "");
+    const explicit = details.user_explicit_request === true;
+    if (!explicit) {
+      violations.push({
+        rule: "提交必须由用户显式请求",
+        severity: "critical",
+        message: "缺少用户明确授权，已阻止自动提交",
+        action: "stop",
+      });
+    }
     if (message.includes("Co-authored-by")) {
       violations.push({
         rule: "禁止添加 Co-authored-by",

@@ -13,6 +13,7 @@ export class ConversationLogger {
   private readonly filePath: string;
   private readonly stream: fs.WriteStream;
   private recordedThreadId: string | null;
+  private closed = false;
 
   constructor(workspacePath?: string, _userId?: number, threadId?: string) {
     this.workspace = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
@@ -33,6 +34,11 @@ export class ConversationLogger {
     this.recordedThreadId = threadId ?? null;
 
     this.stream = fs.createWriteStream(this.filePath, { flags: "a" });
+
+    // 处理流错误，防止未捕获异常
+    this.stream.on("error", (err) => {
+      console.error(`[ConversationLogger] Stream error for ${this.filePath}:`, err.message);
+    });
 
     // 只有新文件才写标题
     if (!fileExists) {
@@ -82,7 +88,15 @@ export class ConversationLogger {
   }
 
   close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
     this.stream.end();
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   /**

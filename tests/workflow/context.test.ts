@@ -79,6 +79,7 @@ describe("workflow/context", () => {
       label: "需求A",
       content: "A",
       isDraft: false,
+      metadata: { workflow_template: "unified" },
     });
     const second = createNode({
       id: "req_b",
@@ -86,6 +87,7 @@ describe("workflow/context", () => {
       label: "需求B",
       content: "B",
       isDraft: false,
+      metadata: { workflow_template: "unified" },
     });
     createEdge({ id: "edge_a_b", source: first.id, target: second.id, edgeType: "next" });
 
@@ -98,5 +100,10 @@ describe("workflow/context", () => {
     result = WorkflowContext.switchWorkflow(second.workflow_id, workspace);
     assert.equal(result.success, true);
     assert.equal(result.workflow?.workflow_id, second.id);
+
+    // fallback by template keyword when id/title don't match
+    const templateResult = WorkflowContext.switchWorkflow("unified", workspace);
+    assert.equal(templateResult.success, true);
+    assert.equal(templateResult.workflow?.workflow_id, first.id);
   });
 });

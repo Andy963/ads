@@ -16,7 +16,7 @@ describe('Telegram Config', () => {
   it('should load valid configuration', () => {
     process.env.TELEGRAM_BOT_TOKEN = 'test-token';
     process.env.TELEGRAM_ALLOWED_USERS = '123456,789012';
-    process.env.TELEGRAM_ALLOWED_DIRS = '/home/test,/project';
+    process.env.ALLOWED_DIRS = '/home/test,/project';
 
     const config = loadTelegramConfig();
 

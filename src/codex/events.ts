@@ -13,6 +13,13 @@ import type {
   TodoListItem,
 } from "@openai/codex-sdk";
 
+// SDK 中 agent_message 类型的 item 结构
+interface AgentMessageItem {
+  type: "agent_message";
+  id?: string;
+  text?: string;
+}
+
 export type AgentPhase =
   | "boot"
   | "analysis"
@@ -133,22 +140,25 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
       return mapFileChange(event, item, timestamp);
     case "mcp_tool_call":
       return mapToolCall(event, item, timestamp);
-    case "agent_message":
-      if (event.type === "item.updated" && typeof (item as any).text === "string" && (item as any).text.trim()) {
+    case "agent_message": {
+      const msgItem = item as AgentMessageItem;
+      if (event.type === "item.updated" && typeof msgItem.text === "string" && msgItem.text.trim()) {
         return {
           phase: "responding",
           title: "生成回复",
           detail: undefined,
-          delta: (item as any).text as string,
+          delta: msgItem.text,
           timestamp,
           raw: event,
         };
       }
+    }
       return event.type === "item.completed"
         ? {
             phase: "responding",
             title: "生成回复",
-            detail: typeof (item as any).text === "string" ? truncate((item as any).text as string) : undefined,
+            // 对完成事件不再携带 detail，保持与增量事件一致
+            detail: undefined,
             timestamp,
             raw: event,
           }

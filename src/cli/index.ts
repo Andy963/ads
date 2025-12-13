@@ -970,6 +970,32 @@ function updateStatusLine(message: string): void {
   process.stdout.write(message);
 }
 
+function enableBracketedPaste(): () => void {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return () => {};
+  }
+
+  let disabled = false;
+  try {
+    // Ask the terminal to wrap pasted text with \x1b[200~ ... \x1b[201~ so we can treat it as one block.
+    process.stdout.write("\u001b[?2004h");
+  } catch {
+    // ignore
+  }
+
+  return () => {
+    if (disabled) {
+      return;
+    }
+    disabled = true;
+    try {
+      process.stdout.write("\u001b[?2004l");
+    } catch {
+      // ignore
+    }
+  };
+}
+
 async function handleLine(
   line: string,
   logger: ConversationLogger,
@@ -1048,12 +1074,22 @@ async function main(): Promise<void> {
   const historyKey = "default";
   const START_PASTE = "\x1b[200~";
   const END_PASTE = "\x1b[201~";
+  const PASTE_MARKER_TAIL = Math.max(START_PASTE.length, END_PASTE.length) - 1;
+  const PASTE_LINE_WINDOW_MS = 32;
   let pasteActive = false;
   let pasteBuffer = "";
   let suppressLineFromPaste = false;
+  let pendingPasteStart = "";
+  let lineBuffer: string[] = [];
+  let lineFlushTimer: NodeJS.Timeout | null = null;
+  const disableBracketedPaste = enableBracketedPaste();
 
-  process.on("exit", () => logger.close());
+  process.on("exit", () => {
+    disableBracketedPaste();
+    logger.close();
+  });
   process.on("SIGINT", () => {
+    disableBracketedPaste();
     logger.close();
     process.exit(0);
   });
@@ -1112,46 +1148,67 @@ async function main(): Promise<void> {
     rl.prompt();
   };
 
+  const flushBufferedLines = () => {
+    if (lineFlushTimer) {
+      clearTimeout(lineFlushTimer);
+      lineFlushTimer = null;
+    }
+    if (lineBuffer.length === 0) {
+      return;
+    }
+    const combined = lineBuffer.join("\n");
+    lineBuffer = [];
+    void handleUserInput(combined);
+  };
+
+  const enqueueLine = (line: string) => {
+    lineBuffer.push(line);
+    if (lineFlushTimer) {
+      return;
+    }
+    lineFlushTimer = setTimeout(flushBufferedLines, PASTE_LINE_WINDOW_MS);
+  };
+
   if (process.stdin.isTTY) {
     process.stdin.setEncoding("utf8");
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
       const dataStr = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      // Detect bracketed paste (common in modern terminals) and treat the whole block as one message
-      if (!pasteActive && !dataStr.includes(START_PASTE)) {
-        return;
-      }
-
-      let data = dataStr;
+      // Detect bracketed paste (common in modern terminals) even if the markers are split across multiple chunks
       if (!pasteActive) {
-        const start = data.indexOf(START_PASTE);
-        if (start === -1) {
+        pendingPasteStart += dataStr;
+        const startIdx = pendingPasteStart.indexOf(START_PASTE);
+        if (startIdx === -1) {
+          // keep a short tail so we can still match if the marker is split across chunks
+          if (pendingPasteStart.length > PASTE_MARKER_TAIL) {
+            pendingPasteStart = pendingPasteStart.slice(-PASTE_MARKER_TAIL);
+          }
           return;
         }
         pasteActive = true;
         suppressLineFromPaste = true;
-        pasteBuffer = "";
-        data = data.slice(start + START_PASTE.length);
+        pasteBuffer = pendingPasteStart.slice(startIdx + START_PASTE.length);
+        pendingPasteStart = "";
+      } else {
+        pasteBuffer += dataStr;
       }
 
-      const end = data.indexOf(END_PASTE);
-      if (end !== -1) {
-        pasteBuffer += data.slice(0, end);
-        const remaining = data.slice(end + END_PASTE.length);
-        const block = pasteBuffer;
-        pasteActive = false;
-        pasteBuffer = "";
-        setImmediate(() => {
-          suppressLineFromPaste = false;
-        });
-        void handleUserInput(block);
-        // If user keeps typing right after paste end, push the rest back into readline
-        if (remaining) {
-          rl.write(remaining);
-        }
+      const endIdx = pasteBuffer.indexOf(END_PASTE);
+      if (endIdx === -1) {
         return;
       }
 
-      pasteBuffer += data;
+      const block = pasteBuffer.slice(0, endIdx);
+      const remaining = pasteBuffer.slice(endIdx + END_PASTE.length);
+      pasteActive = false;
+      pasteBuffer = "";
+      setImmediate(() => {
+        suppressLineFromPaste = false;
+      });
+      void handleUserInput(block);
+      // If user keeps typing right after paste end, push the rest back into readline
+      if (remaining) {
+        rl.write(remaining);
+      }
     });
   }
 
@@ -1159,10 +1216,12 @@ async function main(): Promise<void> {
     if (suppressLineFromPaste) {
       return;
     }
-    void handleUserInput(line);
+    enqueueLine(line);
   });
 
   rl.on("close", () => {
+    flushBufferedLines();
+    disableBracketedPaste();
     logger.close();
     process.exit(0);
   });

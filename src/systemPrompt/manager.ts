@@ -127,14 +127,18 @@ export class SystemPromptManager {
   }
 
   maybeInject(): PromptInjection | null {
+    // 先刷新缓存以捕获指令/规则变更，确保 pendingReason 在本次判断前就绪
+    const instructionsCache = this.readInstructions();
+    const rulesCache = this.readRules();
+
     const reason = this.computeInjectionReason();
     if (!reason) {
       return null;
     }
 
     const rulesOnly = reason.startsWith("rules-only");
-    const instructions = rulesOnly ? null : this.readInstructions();
-    const rules = this.readRules();
+    const instructions = rulesOnly ? null : instructionsCache;
+    const rules = rulesCache;
 
     const textParts: string[] = [];
     if (!rulesOnly && instructions && instructions.content.trim()) {
@@ -149,10 +153,13 @@ export class SystemPromptManager {
     const text = textParts.join("\n\n\n");
 
     this.hasInjected = true;
-    this.lastInjectionTurn = this.turnCount;
+    // 只有在注入了 instructions 时才刷新指令注入计数，避免 rules-only 流程阻塞周期性指令注入
+    if (!rulesOnly) {
+      this.lastInjectionTurn = this.turnCount;
+    }
     this.lastRulesInjectionTurn = this.turnCount;
     if (!rulesOnly && instructions) {
-    this.lastInstructionsHash = instructions.hash;
+      this.lastInstructionsHash = instructions.hash;
     }
     this.lastRulesHash = rules.hash;
     this.logger.info(
@@ -183,18 +190,18 @@ export class SystemPromptManager {
     }
 
     if (
-      this.rulesReinjectionTurns > 0 &&
-      this.turnCount - this.lastRulesInjectionTurn >= this.rulesReinjectionTurns
-    ) {
-      return `rules-only-${this.turnCount}`;
-    }
-
-    if (
       this.reinjection.enabled &&
       this.reinjection.turns > 0 &&
       this.turnCount - this.lastInjectionTurn >= this.reinjection.turns
     ) {
       return `turn-${this.turnCount}`;
+    }
+
+    if (
+      this.rulesReinjectionTurns > 0 &&
+      this.turnCount - this.lastRulesInjectionTurn >= this.rulesReinjectionTurns
+    ) {
+      return `rules-only-${this.turnCount}`;
     }
     return null;
   }

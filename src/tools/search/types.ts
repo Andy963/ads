@@ -41,11 +41,8 @@ export interface SearchError extends Error {
 }
 
 export function createSearchError(type: SearchErrorType, message: string, cause?: unknown): SearchError {
-  const error = new Error(message) as SearchError;
+  const error = new Error(message, cause !== undefined ? { cause } : undefined) as SearchError;
   error.type = type;
-  if (cause !== undefined) {
-    (error as any).cause = cause;
-  }
   return error;
 }
 

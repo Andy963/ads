@@ -209,7 +209,46 @@ describe("codexConfig", () => {
     const cfg = resolveCodexConfig();
     assert.equal(cfg.authMode, "deviceAuth");
     assert.equal(cfg.apiKey, undefined);
-    assert.equal(cfg.baseUrl, undefined);
+    assert.equal(cfg.baseUrl, "https://api.openai.com/v1");
+  });
+
+  it("uses config baseUrl with device tokens when no API key", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const codexDir = join(tempHomeDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        'model_provider = "test"',
+        "[model_providers.test]",
+        'base_url = "https://config-only.example.com/v1"',
+      ].join("\n"),
+      "utf-8"
+    );
+    writeFileSync(
+      join(codexDir, "auth.json"),
+      JSON.stringify({
+        tokens: {
+          access_token: "access",
+          refresh_token: "refresh",
+          id_token: "id",
+        },
+      }),
+      "utf-8"
+    );
+    process.env.HOME = tempHomeDir;
+    process.env.USERPROFILE = tempHomeDir;
+
+    const cfg = resolveCodexConfig();
+    assert.equal(cfg.authMode, "deviceAuth");
+    assert.equal(cfg.apiKey, undefined);
+    assert.equal(cfg.baseUrl, "https://config-only.example.com/v1");
   });
 
   it("parses slash commands", () => {
