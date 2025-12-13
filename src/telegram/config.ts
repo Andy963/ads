@@ -27,8 +27,8 @@ export function loadTelegramConfig(): TelegramConfig {
     .split(',')
     .map(id => {
       const num = parseInt(id.trim(), 10);
-      if (!Number.isFinite(num)) {
-        throw new Error(`Invalid user ID in TELEGRAM_ALLOWED_USERS: ${id}`);
+      if (!Number.isSafeInteger(num) || num <= 0) {
+        throw new Error(`Invalid user ID in TELEGRAM_ALLOWED_USERS (must be a positive integer): ${id}`);
       }
       return num;
     });
