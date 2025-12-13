@@ -8,6 +8,13 @@ const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-files');
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB Telegram 限制
 const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20MB Bot API 限制
 
+function redactTelegramToken(value: string, token: string): string {
+  if (!value || !token) {
+    return value;
+  }
+  return value.replaceAll(token, '<redacted>');
+}
+
 /**
  * 确保下载目录存在
  */
@@ -67,7 +74,8 @@ export async function downloadTelegramFile(
       abortError.name = 'AbortError';
       throw abortError;
     }
-    throw new Error(`文件下载失败: ${(error as Error).message}`);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`文件下载失败: ${redactTelegramToken(message, api.token)}`);
   }
 }
 
@@ -114,7 +122,8 @@ export async function uploadFileToTelegram(
     
     console.log(`[FileHandler] Uploaded file: ${fileName}`);
   } catch (error) {
-    throw new Error(`文件上传失败: ${(error as Error).message}`);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`文件上传失败: ${redactTelegramToken(message, api.token)}`);
   }
 }
 
