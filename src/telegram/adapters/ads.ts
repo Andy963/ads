@@ -24,7 +24,8 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
     const escaped = escapeTelegramMarkdownV2(text);
     try {
       await ctx.reply(escaped, { parse_mode: 'MarkdownV2', ...extra });
-    } catch {
+    } catch (error) {
+      logger.debug('[TelegramADS] Failed to send MarkdownV2 reply, falling back to plain text', error);
       await ctx.reply(text, extra);
     }
   };
@@ -329,7 +330,8 @@ function formatAdsResponse(response: unknown): string {
 async function replyWithAdsText(ctx: Context, response: unknown, _options?: { markdown?: boolean }) {
   const text = formatAdsResponse(response);
   const escaped = escapeTelegramMarkdownV2(text);
-  await ctx.reply(escaped, { parse_mode: 'MarkdownV2' }).catch(async () => {
+  await ctx.reply(escaped, { parse_mode: 'MarkdownV2' }).catch(async (error) => {
+    logger.debug('[TelegramADS] Failed to send MarkdownV2 response, falling back to plain text', error);
     await ctx.reply(text);
   });
 }

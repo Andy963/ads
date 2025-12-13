@@ -158,11 +158,16 @@ export async function handleCodexMessage(
   }
 
   const startTyping = () => {
+    let typingErrorLogged = false;
     const sendTyping = async () => {
       try {
         await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
-      } catch {
-        /* ignore */
+      } catch (error) {
+        if (!typingErrorLogged) {
+          typingErrorLogged = true;
+          logWarning('[Telegram] Failed to send typing action; disabling typing indicator', error);
+        }
+        stopTyping();
       }
     };
     void sendTyping();
@@ -991,8 +996,11 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await ctx.reply(escapedV2, {
         parse_mode: 'MarkdownV2',
         disable_notification: silentNotifications,
-      }).catch(async () => {
+      }).catch(async (error) => {
         recordFallback('chunk_markdownv2_failed', chunkText, escapedV2);
+        if (!fallbackNotified) {
+          logWarning('[Telegram] Failed to send MarkdownV2 chunk; falling back to plain text', error);
+        }
         await notifyFallback();
         await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch((error) => {
           logWarning('[Telegram] Failed to send fallback chunk', error);
@@ -1048,8 +1056,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     await ctx.reply(escapedV2, {
       parse_mode: 'MarkdownV2',
       disable_notification: silentNotifications,
-    }).catch(async () => {
+    }).catch(async (error) => {
       recordFallback('error_markdownv2_failed', replyText, escapedV2);
+      logWarning('[Telegram] Failed to send MarkdownV2 error message; falling back to plain text', error);
       await ctx.reply(replyText, { disable_notification: silentNotifications }).catch((error) => {
         logWarning('[Telegram] Failed to send fallback error message', error);
       });
