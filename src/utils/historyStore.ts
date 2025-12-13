@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { createLogger } from "./logger.js";
+
 export interface HistoryEntry {
   role: string;
   text: string;
@@ -13,6 +15,8 @@ interface HistoryStoreOptions {
   maxEntriesPerSession?: number;
   maxTextLength?: number;
 }
+
+const logger = createLogger("HistoryStore");
 
 export class HistoryStore {
   private storagePath: string;
@@ -91,8 +95,8 @@ export class HistoryStore {
         }
       }
       this.store = next;
-    } catch {
-      // ignore malformed history
+    } catch (error) {
+      logger.warn(`[HistoryStore] Failed to load ${this.storagePath}, resetting`, error);
       this.store = new Map();
     }
   }
@@ -106,8 +110,8 @@ export class HistoryStore {
         obj[key] = this.trim(items);
       }
       fs.writeFileSync(this.storagePath, JSON.stringify(obj, null, 2), "utf8");
-    } catch {
-      // ignore persistence errors
+    } catch (error) {
+      logger.warn(`[HistoryStore] Failed to persist ${this.storagePath}`, error);
     }
   }
 }

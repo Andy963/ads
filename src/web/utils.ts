@@ -15,6 +15,8 @@ import type {
   PromptInputOutcome,
 } from "./types.js";
 
+import { createLogger } from "../utils/logger.js";
+
 export { truncateForLog } from "../utils/text.js";
 
 export const ALLOWED_IMAGE_MIME = new Set([
@@ -28,13 +30,16 @@ export const ALLOWED_IMAGE_MIME = new Set([
 
 export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
+const logger = createLogger("WebUtils");
+
 export function loadCwdStore(filePath: string): Map<string, string> {
   try {
     if (!fs.existsSync(filePath)) return new Map();
     const raw = fs.readFileSync(filePath, "utf8");
     const data = JSON.parse(raw) as Record<string, string>;
     return new Map(Object.entries(data || {}));
-  } catch {
+  } catch (error) {
+    logger.warn(`[WebUtils] Failed to load cwd store ${filePath}`, error);
     return new Map();
   }
 }
@@ -48,8 +53,8 @@ export function persistCwdStore(filePath: string, store: Map<string, string>): v
       obj[k] = v;
     }
     fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), "utf8");
-  } catch {
-    /* ignore */
+  } catch (error) {
+    logger.warn(`[WebUtils] Failed to persist cwd store ${filePath}`, error);
   }
 }
 
