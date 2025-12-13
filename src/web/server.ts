@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 
 import { WebSocketServer } from "ws";
 import type { WebSocket, RawData } from "ws";
+import { z } from "zod";
 import type {
   CommandExecutionItem,
   Input,
@@ -29,7 +30,6 @@ import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 
-import type { WsMessage } from "./types.js";
 import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
 
 import {
@@ -70,6 +70,11 @@ const historyStore = new HistoryStore({
 });
 const cwdStorePath = path.join(process.cwd(), ".ads", "web-cwd.json");
 const cwdStore = loadCwdStore(cwdStorePath);
+
+const wsMessageSchema = z.object({
+  type: z.string(),
+  payload: z.unknown().optional(),
+});
 
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
@@ -320,13 +325,19 @@ async function start(): Promise<void> {
     }
 
     ws.on("message", async (data: RawData) => {
-      let parsed: WsMessage;
+      let parsed: z.infer<typeof wsMessageSchema>;
       try {
-        parsed = JSON.parse(String(data)) as WsMessage;
-      } catch {
-          ws.send(JSON.stringify({ type: "error", message: "Invalid JSON message" }));
+        const raw = JSON.parse(String(data)) as unknown;
+        const result = wsMessageSchema.safeParse(raw);
+        if (!result.success) {
+          ws.send(JSON.stringify({ type: "error", message: "Invalid message payload" }));
           return;
         }
+        parsed = result.data;
+      } catch {
+        ws.send(JSON.stringify({ type: "error", message: "Invalid JSON message" }));
+        return;
+      }
 
         const sessionLogger = sessionManager.ensureLogger(userId);
         const isPrompt = parsed.type === "prompt";
