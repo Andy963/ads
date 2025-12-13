@@ -101,9 +101,7 @@ export async function handleCodexMessage(
   cwd?: string,
   options?: { markNoteEnabled?: boolean; silentNotifications?: boolean }
 ) {
-  const userId = ctx.from!.id;
   const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
-  const historyKey = String(userId);
   const adapterLogDir = path.join(workspaceRoot, '.ads', 'logs');
   const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
   const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
@@ -149,6 +147,30 @@ export async function handleCodexMessage(
     }
   };
 
+  const rawUserId = ctx.from?.id;
+  if (typeof rawUserId !== 'number') {
+    logWarning('[Telegram] Missing user id (ctx.from.id) in update');
+    if (ctx.chat) {
+      try {
+        await ctx.reply('❌ 无法识别用户信息（可能是匿名/频道消息），请用普通用户身份发送消息后重试。', {
+          disable_notification: silentNotifications,
+        });
+      } catch (error) {
+        logWarning('[Telegram] Failed to reply about missing user id', error);
+      }
+    }
+    return;
+  }
+
+  const userId = rawUserId;
+  const historyKey = String(userId);
+  const rawChatId = ctx.chat?.id;
+  if (typeof rawChatId !== 'number') {
+    logWarning('[Telegram] Missing chat id (ctx.chat.id) in update');
+    return;
+  }
+  const chatId = rawChatId;
+
   // 检查是否有活跃请求
   if (interruptManager.hasActiveRequest(userId)) {
     await ctx.reply('⚠️ 已有请求正在执行，请等待完成或使用 /esc 中断', {
@@ -161,7 +183,7 @@ export async function handleCodexMessage(
     let typingErrorLogged = false;
     const sendTyping = async () => {
       try {
-        await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
+        await ctx.api.sendChatAction(chatId, 'typing');
       } catch (error) {
         if (!typingErrorLogged) {
           typingErrorLogged = true;
@@ -341,13 +363,13 @@ export async function handleCodexMessage(
       const options = statusMessageUseMarkdown
         ? { parse_mode: 'MarkdownV2' as const }
         : { link_preview_options: { is_disabled: true as const } };
-      await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, content, options);
+      await ctx.api.editMessageText(chatId, statusMessageId, content, options);
       rateLimitUntil = 0;
     } catch (error) {
       if (isParseEntityError(error)) {
         logWarning('[Telegram] Status markdown parse failed, falling back to plain text', error);
         statusMessageUseMarkdown = false;
-        await ctx.api.editMessageText(ctx.chat!.id, statusMessageId, text, {
+        await ctx.api.editMessageText(chatId, statusMessageId, text, {
           link_preview_options: { is_disabled: true as const },
         });
         statusMessageText = text;
@@ -514,7 +536,7 @@ export async function handleCodexMessage(
       return;
     }
     try {
-      await ctx.api.editMessageText(ctx.chat!.id, planMessageId, text);
+      await ctx.api.editMessageText(chatId, planMessageId, text);
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 400) {
         planMessageId = null;
@@ -530,7 +552,7 @@ export async function handleCodexMessage(
       return;
     }
     try {
-      await ctx.api.deleteMessage(ctx.chat!.id, planMessageId);
+      await ctx.api.deleteMessage(chatId, planMessageId);
     } catch (error) {
       // 消息可能已被删除，忽略错误
       if (!(error instanceof GrammyError && error.error_code === 400)) {
@@ -731,14 +753,14 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       const options = commandMessageUseMarkdown
         ? { parse_mode: 'MarkdownV2' as const }
         : { link_preview_options: { is_disabled: true as const } };
-      await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, content, options);
+      await ctx.api.editMessageText(chatId, commandMessageId, content, options);
       commandMessageText = content;
       commandMessageRateLimitUntil = 0;
     } catch (error) {
       if (isParseEntityError(error)) {
         logWarning('[Telegram] Command log markdown parse failed, falling back to plain text', error);
         commandMessageUseMarkdown = false;
-        await ctx.api.editMessageText(ctx.chat!.id, commandMessageId, text, {
+        await ctx.api.editMessageText(chatId, commandMessageId, text, {
           link_preview_options: { is_disabled: true as const },
         });
         commandMessageText = text;
@@ -1074,8 +1096,12 @@ export async function sendFileToUser(
   filePath: string,
   caption?: string
 ): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (typeof chatId !== 'number') {
+    throw new Error('发送文件失败: 无法识别 chat.id');
+  }
   try {
-    await uploadFileToTelegram(ctx.api, ctx.chat!.id, filePath, caption);
+    await uploadFileToTelegram(ctx.api, chatId, filePath, caption);
   } catch (error) {
     throw new Error(`发送文件失败: ${(error as Error).message}`);
   }

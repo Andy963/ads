@@ -23,6 +23,18 @@ import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
 
+async function requireUserId(ctx: Context, action: string): Promise<number | null> {
+  const userId = ctx.from?.id;
+  if (typeof userId === 'number') {
+    return userId;
+  }
+  logger.warn(`[Telegram] Missing ctx.from for ${action}`);
+  if (ctx.chat) {
+    await ctx.reply('❌ 无法识别用户信息（可能是匿名/频道消息），请用普通用户身份发送消息后重试。');
+  }
+  return null;
+}
+
 const AFFIRMATIVE_RESPONSES = new Set([
   'y',
   'yes',
@@ -286,7 +298,8 @@ async function main() {
   });
 
   bot.command('status', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/status');
+    if (userId === null) return;
     const stats = sessionManager.getStats();
     const cwd = directoryManager.getUserCwd(userId);
     const orchestrator = sessionManager.getOrCreate(userId, cwd, false);
@@ -319,13 +332,15 @@ async function main() {
   });
 
   bot.command('reset', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/reset');
+    if (userId === null) return;
     sessionManager.reset(userId);
     await ctx.reply('✅ 代理会话已重置，新对话已开始');
   });
 
   bot.command('resume', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/resume');
+    if (userId === null) return;
     
     if (!sessionManager.hasSavedThread(userId)) {
       await ctx.reply('❌ 没有保存的对话可恢复');
@@ -342,7 +357,8 @@ async function main() {
   });
 
   bot.command('mark', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/mark');
+    if (userId === null) return;
     const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
     const current = markStates.get(userId) ?? false;
     let nextState: boolean | null = null;
@@ -375,7 +391,8 @@ async function main() {
   });
 
   bot.command('model', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/model');
+    if (userId === null) return;
     const args = ctx.message?.text.split(' ').slice(1) || [];
     
     if (args.length === 0) {
@@ -404,7 +421,8 @@ async function main() {
   });
 
   bot.command('agent', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/agent');
+    if (userId === null) return;
     const args = ctx.message?.text.split(' ').slice(1) || [];
     const cwd = directoryManager.getUserCwd(userId);
     const orchestrator = sessionManager.getOrCreate(userId, cwd, false);
@@ -445,7 +463,8 @@ async function main() {
   });
 
   bot.command('esc', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/esc');
+    if (userId === null) return;
     const interrupted = interruptExecution(userId);
 
     if (interrupted) {
@@ -456,13 +475,15 @@ async function main() {
   });
 
   bot.command('pwd', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/pwd');
+    if (userId === null) return;
     const cwd = directoryManager.getUserCwd(userId);
     await ctx.reply(`📁 当前工作目录: ${cwd}`);
   });
 
   bot.command('cd', async (ctx) => {
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, '/cd');
+    if (userId === null) return;
     const args = ctx.message?.text?.split(/\s+/).slice(1);
 
     if (!args || args.length === 0) {
@@ -512,7 +533,8 @@ async function main() {
   bot.command('ads', async (ctx) => {
     const inlineArgs = parseInlineAdsCommand(ctx.message?.text);
     if (inlineArgs) {
-      const userId = ctx.from!.id;
+      const userId = await requireUserId(ctx, '/ads');
+      if (userId === null) return;
       const cwd = directoryManager.getUserCwd(userId);
       const subcommand = inlineArgs[0];
       if (subcommand === 'init') {
@@ -542,7 +564,8 @@ async function main() {
   bot.on('message:photo', async (ctx) => {
     const caption = ctx.message.caption || '请描述这张图片';
     const photos = ctx.message.photo;
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, 'message:photo');
+    if (userId === null) return;
     const cwd = directoryManager.getUserCwd(userId);
     const initStatus = checkWorkspaceInit(cwd);
     if (!initStatus.initialized) {
@@ -572,7 +595,8 @@ async function main() {
   bot.on('message:document', async (ctx) => {
     const doc = ctx.message.document;
     const caption = ctx.message.caption || '';
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, 'message:document');
+    if (userId === null) return;
     const cwd = directoryManager.getUserCwd(userId);
     const initStatus = checkWorkspaceInit(cwd);
     if (!initStatus.initialized) {
@@ -604,7 +628,8 @@ async function main() {
   // 处理普通文本消息 - Codex 对话
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
-    const userId = ctx.from!.id;
+    const userId = await requireUserId(ctx, 'message:text');
+    if (userId === null) return;
     const cwd = directoryManager.getUserCwd(userId);
     const initStatus = checkWorkspaceInit(cwd);
 
