@@ -13,19 +13,8 @@ import { syncAllNodesToFiles } from '../../graph/service.js';
 import { buildAdsHelpMessage } from '../../workflow/commands.js';
 import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
 import { runReview, skipReview, showReviewReport } from '../../review/service.js';
+import { REVIEW_LOCK_SAFE_COMMANDS } from '../../utils/reviewLock.js';
 import { WorkflowContext } from '../../workspace/context.js';
-
-const REVIEW_LOCK_SAFE_COMMANDS = new Set([
-  'ads.init',
-  'ads.review',
-  'ads.status',
-  'ads.log',
-  'ads.help',
-  'ads.rules',
-  'ads.workspace',
-  'ads.branch',
-  'ads.checkout',
-]);
 
 export async function handleAdsCommand(ctx: Context, args: string[], options?: { workspacePath?: string }) {
   const replyMarkdownV2 = async (text: string, extra?: Parameters<Context['reply']>[1]) => {

@@ -16,23 +16,12 @@ import { runReview, skipReview, showReviewReport } from "../review/service.js";
 import { WorkflowContext } from "../workspace/context.js";
 import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams.js";
 import { normalizeOutput } from "../utils/text.js";
+import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
 
 export interface CommandResult {
   ok: boolean;
   output: string;
 }
-
-const REVIEW_LOCK_SAFE_COMMANDS = new Set([
-  "ads.init",
-  "ads.review",
-  "ads.status",
-  "ads.log",
-  "ads.help",
-  "ads.rules",
-  "ads.workspace",
-  "ads.branch",
-  "ads.checkout",
-]);
 
 function formatResponse(text: string): string {
   if (!text.trim()) {

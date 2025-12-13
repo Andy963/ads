@@ -42,6 +42,7 @@ import { runReview, skipReview, showReviewReport } from "../review/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams.js";
 import { normalizeOutput, truncateForLog } from "../utils/text.js";
+import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
 
 interface CommandResult {
   output: string;
@@ -49,17 +50,6 @@ interface CommandResult {
 }
 
 const PROMPT = "ADS> ";
-const REVIEW_LOCK_SAFE_COMMANDS = new Set([
-  "ads.init",
-  "ads.review",
-  "ads.status",
-  "ads.log",
-  "ads.help",
-  "ads.rules",
-  "ads.workspace",
-  "ads.branch",
-  "ads.checkout",
-]);
 
 interface TemplateMetadata {
   id?: string;
