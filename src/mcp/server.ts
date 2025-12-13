@@ -1,9 +1,13 @@
 import { createRequire } from "node:module";
 
+import "../utils/logSink.js";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+
+import { createLogger } from "../utils/logger.js";
 
 import {
   listWorkflows,
@@ -21,6 +25,7 @@ import { search } from "../tools/search/index.js";
 
 const require = createRequire(import.meta.url);
 const { version: packageVersion } = require("../../package.json") as { version: string };
+const logger = createLogger("MCP");
 
 const server = new McpServer({
   name: "ads-mcp",
@@ -326,7 +331,7 @@ server.server.onclose = () => {
 };
 
 server.server.onerror = (error) => {
-  console.error("[MCP] Transport error:", error);
+  logger.error("Transport error", error);
 };
 
 async function shutdown(code = 0): Promise<void> {
@@ -338,12 +343,12 @@ async function shutdown(code = 0): Promise<void> {
   try {
     await server.close();
   } catch (error) {
-    console.error("[MCP] Error closing server:", error);
+    logger.error("Error closing server", error);
   }
   try {
     await transport.close();
   } catch (error) {
-    console.error("[MCP] Error closing transport:", error);
+    logger.error("Error closing transport", error);
   }
   process.exit(code);
 }
@@ -363,6 +368,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error("[MCP] Fatal error:", error);
+  logger.error("Fatal error", error);
   void shutdown(1);
 });

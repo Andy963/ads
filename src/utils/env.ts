@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { createLogger } from "./logger.js";
+
+const logger = createLogger("Env");
+
 let loaded = false;
 
 function findEnvFile(startDir: string = process.cwd()): string | null {
@@ -75,8 +79,7 @@ export function loadEnv(): void {
       applyEnvFile(localPath, true);
     }
   } catch (error) {
-    // eslint-disable-next-line no-console
-    console.warn(`[Env] Failed to load ${envPath}: ${(error as Error).message}`);
+    logger.warn(`Failed to load ${envPath}: ${(error as Error).message}`, error);
   } finally {
     loaded = true;
   }

@@ -5,7 +5,10 @@ import { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import type { Api } from 'grammy';
 
+import { createLogger } from '../../utils/logger.js';
+
 const TEMP_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-images');
+const logger = createLogger('TelegramImageHandler');
 
 // 确保临时目录存在
 function ensureTempDir() {
@@ -58,7 +61,7 @@ export async function downloadTelegramImage(
     throw error;
   }
 
-  console.log(`[ImageHandler] Downloaded image to ${localPath}`);
+  logger.info(`Downloaded image to ${localPath}`);
   return localPath;
 }
 
@@ -66,10 +69,10 @@ export function cleanupImage(path: string): void {
   try {
     if (existsSync(path)) {
       unlinkSync(path);
-      console.log(`[ImageHandler] Cleaned up ${path}`);
+      logger.debug(`Cleaned up ${path}`);
     }
   } catch (error) {
-    console.warn(`[ImageHandler] Failed to cleanup ${path}:`, error);
+    logger.warn(`Failed to cleanup ${path}`, error);
   }
 }
 

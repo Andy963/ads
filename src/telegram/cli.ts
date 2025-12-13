@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import '../utils/env.js';
 import '../utils/logSink.js';
+import '../utils/env.js';
 
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -15,21 +15,29 @@ const command = process.argv[2] || 'start';
 
 const botPath = join(__dirname, 'bot.js');
 
+const writeStdout = (text: string): void => {
+  process.stdout.write(text.endsWith('\n') ? text : `${text}\n`);
+};
+
+const writeStderr = (text: string): void => {
+  process.stderr.write(text.endsWith('\n') ? text : `${text}\n`);
+};
+
 if (!existsSync(botPath)) {
-  console.error('❌ Bot file not found. Please run: npm run build');
+  writeStderr('❌ Bot file not found. Please run: npm run build');
   process.exit(1);
 }
 
 switch (command) {
-  case 'start': {
-    console.log('🚀 Starting Telegram bot...');
+	case 'start': {
+    writeStdout('🚀 Starting Telegram bot...');
     const bot = spawn('node', [botPath], {
       stdio: 'inherit',
       detached: false,
     });
 
     bot.on('error', (error) => {
-      console.error('❌ Failed to start bot:', error);
+      writeStderr(`❌ Failed to start bot: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     });
 
@@ -40,11 +48,11 @@ switch (command) {
     break;
   }
 
-  case 'help':
-  case '--help':
-  case '-h':
-    console.log(`
-Telegram Bot CLI
+	case 'help':
+	case '--help':
+	case '-h':
+    writeStdout(`
+	Telegram Bot CLI
 
 Usage:
   ads-telegram [command]
@@ -67,21 +75,21 @@ Quick Start:
   1. Create .env file with your configuration (shared by Telegram & web)
   2. Run: ads-telegram start
 
-Documentation:
-  https://github.com/your-repo/ads-js#telegram-bot
+	Documentation:
+	  https://github.com/your-repo/ads-js#telegram-bot
 `);
     break;
 
   case 'version':
   case '--version':
-  case '-v': {
+	case '-v': {
     const pkg = await import('../../package.json', { assert: { type: 'json' } });
-    console.log(`Telegram Bot v${pkg.default.version}`);
+    writeStdout(`Telegram Bot v${pkg.default.version}`);
     break;
   }
 
   default:
-    console.error(`❌ Unknown command: ${command}`);
-    console.log('Run "ads-telegram help" for usage information');
+    writeStderr(`❌ Unknown command: ${command}`);
+    writeStdout('Run "ads-telegram help" for usage information');
     process.exit(1);
 }

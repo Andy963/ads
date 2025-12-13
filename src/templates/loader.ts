@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 import yaml from "yaml";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("TemplateLoader");
 
 export interface NodeTemplate {
   name: string;
@@ -202,7 +205,7 @@ export class TemplateLoader {
       try {
         results.push(parseNodeTemplateMarkdown(fullPath));
       } catch (error) {
-        console.warn(`Failed to parse node template ${entry}: ${(error as Error).message}`);
+        logger.warn(`Failed to parse node template ${entry}: ${(error as Error).message}`, error);
       }
     }
     return results;
@@ -223,7 +226,7 @@ export class TemplateLoader {
       try {
         results.push(parseWorkflowTemplateYaml(fullPath));
       } catch (error) {
-        console.warn(`Failed to parse workflow template ${entry}: ${(error as Error).message}`);
+        logger.warn(`Failed to parse workflow template ${entry}: ${(error as Error).message}`, error);
       }
     }
     return results;

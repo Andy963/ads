@@ -15,6 +15,9 @@ import {
 } from "../codex/errors.js";
 import type { IntakeClassification } from "../intake/types.js";
 import { SystemPromptManager } from "../systemPrompt/manager.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("CodexSession");
 
 export interface CodexSessionOptions {
   overrides?: Partial<CodexResolvedConfig>;
@@ -89,14 +92,14 @@ export class CodexSession {
         networkAccessEnabled: this.options.networkAccessEnabled ?? true,
       };
 
-      console.log(`[CodexSession] Creating thread with networkAccessEnabled=${threadOptions.networkAccessEnabled}`);
+      logger.debug(`Creating thread with networkAccessEnabled=${threadOptions.networkAccessEnabled}`);
 
       if (this.options.resumeThreadId) {
         try {
           this.thread = this.codex.resumeThread(this.options.resumeThreadId, threadOptions);
-          console.log(`[CodexSession] Resumed thread ${this.options.resumeThreadId}`);
+          logger.debug(`Resumed thread ${this.options.resumeThreadId}`);
         } catch (error) {
-          console.warn(`[CodexSession] Failed to resume thread, creating new one:`, error);
+          logger.warn("Failed to resume thread, creating new one", error);
           this.thread = this.codex.startThread(threadOptions);
         }
       } else {
@@ -115,7 +118,7 @@ export class CodexSession {
       try {
         handler(event);
       } catch (err) {
-        console.warn("事件回调异常", err);
+        logger.warn("事件回调异常", err);
       }
     }
   }

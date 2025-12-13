@@ -1,5 +1,5 @@
-import '../utils/env.js';
 import '../utils/logSink.js';
+import '../utils/env.js';
 
 import { Bot, type Context } from 'grammy';
 import { loadTelegramConfig, validateConfig } from './config.js';
@@ -714,23 +714,23 @@ async function main() {
   });
 
   // 启动 Bot
-  console.log('[Bot] Starting long polling...');
+  logger.info('Starting long polling...');
   bot.start({
     onStart: () => {
-      console.log('[Bot] ✅ Bot is running!');
+      logger.info('✅ Bot is running!');
     },
   });
 
   // 优雅退出
   process.once('SIGINT', () => {
-    console.log('\n[Bot] Shutting down...');
+    logger.info('Shutting down...');
     sessionManager.destroy();
     bot.stop();
     process.exit(0);
   });
 
   process.once('SIGTERM', () => {
-    console.log('\n[Bot] Shutting down...');
+    logger.info('Shutting down...');
     sessionManager.destroy();
     bot.stop();
     process.exit(0);
@@ -738,6 +738,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('[Bot] Fatal error:', error);
+  logger.error('Fatal error', error);
   process.exit(1);
 });

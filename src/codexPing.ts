@@ -8,6 +8,14 @@ import {
   type CodexOverrides,
 } from "./codexConfig.js";
 
+const writeStdout = (text: string): void => {
+  process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+};
+
+const writeStderr = (text: string): void => {
+  process.stderr.write(text.endsWith("\n") ? text : `${text}\n`);
+};
+
 function parseArgs(): {
   prompt: string;
   overrides: CodexOverrides;
@@ -53,22 +61,23 @@ async function main(): Promise<void> {
   try {
     config = resolveCodexConfig(overrides);
   } catch (error) {
-    console.error(
-      "[codex-ping] Failed to resolve Codex configuration:",
-      error instanceof Error ? error.message : error,
+    writeStderr(
+      `[codex-ping] Failed to resolve Codex configuration: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
     process.exitCode = 1;
     return;
   }
 
   const baseUrlLabel = config.baseUrl ?? "(Codex default)";
-  console.log(`[codex-ping] Using base URL: ${baseUrlLabel}`);
+  writeStdout(`[codex-ping] Using base URL: ${baseUrlLabel}`);
   if (config.authMode === "apiKey") {
-    console.log(`[codex-ping] Using API key: ${maskKey(config.apiKey)}`);
+    writeStdout(`[codex-ping] Using API key: ${maskKey(config.apiKey)}`);
   } else {
-    console.log("[codex-ping] Using device-auth tokens from ~/.codex/auth.json");
+    writeStdout("[codex-ping] Using device-auth tokens from ~/.codex/auth.json");
   }
-  console.log(`[codex-ping] Prompt: ${prompt}`);
+  writeStdout(`[codex-ping] Prompt: ${prompt}`);
 
   const codex = new Codex({
     ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
@@ -80,24 +89,21 @@ async function main(): Promise<void> {
       skipGitRepoCheck: true,
     });
     const turn = await thread.run(prompt);
-    console.log("[codex-ping] finalResponse:");
-    console.log(turn.finalResponse);
+    writeStdout("[codex-ping] finalResponse:");
+    writeStdout(turn.finalResponse);
     if (turn.items?.length) {
-      console.log("[codex-ping] items:");
+      writeStdout("[codex-ping] items:");
       for (const item of turn.items) {
-        console.log(JSON.stringify(item, null, 2));
+        writeStdout(JSON.stringify(item, null, 2));
       }
     }
   } catch (error) {
-    console.error(
-      "[codex-ping] Request failed:",
-      error instanceof Error ? error.message : error,
-    );
+    writeStderr(`[codex-ping] Request failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   }
 }
 
 main().catch((error) => {
-  console.error("[codex-ping] Unexpected failure:", error);
+  writeStderr(`[codex-ping] Unexpected failure: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 });

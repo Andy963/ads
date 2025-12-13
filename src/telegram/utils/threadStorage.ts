@@ -2,6 +2,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 
+import { createLogger } from '../../utils/logger.js';
+
 interface ThreadStorageOptions {
   namespace?: string;
   storagePath?: string;
@@ -23,6 +25,8 @@ interface ThreadState {
   threadId: string;
   cwd?: string;
 }
+
+const logger = createLogger('ThreadStorage');
 
 export class ThreadStorage {
   private readonly namespace: string;
@@ -93,9 +97,9 @@ export class ThreadStorage {
         });
       }
 
-      console.log(`[ThreadStorage] Loaded ${this.threads.size} thread records`);
+      logger.info(`Loaded ${this.threads.size} thread records`);
     } catch (error) {
-      console.warn('[ThreadStorage] Failed to load:', error);
+      logger.warn('Failed to load', error);
     }
   }
 
@@ -120,7 +124,7 @@ export class ThreadStorage {
       
       writeFileSync(this.storagePath, JSON.stringify(records, null, 2), 'utf-8');
     } catch (error) {
-      console.warn('[ThreadStorage] Failed to save:', error);
+      logger.warn('Failed to save', error);
     }
   }
 
@@ -137,7 +141,7 @@ export class ThreadStorage {
       cwd: existing?.cwd,
     });
     this.save();
-    console.log(`[ThreadStorage] Saved thread ${threadId}`);
+    logger.debug(`Saved thread ${threadId}`);
   }
 
   getRecord(userId: number): ThreadState | undefined {
@@ -147,15 +151,13 @@ export class ThreadStorage {
   setRecord(userId: number, state: ThreadState): void {
     this.threads.set(this.hashUserId(userId), state);
     this.save();
-    console.log(
-      `[ThreadStorage] Saved state (ns=${this.namespace} thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`,
-    );
+    logger.debug(`Saved state (ns=${this.namespace} thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`);
   }
 
   removeThread(userId: number): void {
     this.threads.delete(this.hashUserId(userId));
     this.save();
-    console.log(`[ThreadStorage] Removed thread`);
+    logger.debug('Removed thread');
   }
 
   clear(): void {

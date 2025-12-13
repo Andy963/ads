@@ -3,6 +3,9 @@ import path from "node:path";
 
 import { detectWorkspace } from "../workspace/detector.js";
 import type { AgentEvent } from "../codex/events.js";
+import { createLogger } from "./logger.js";
+
+const logger = createLogger("ConversationLogger");
 
 function sanitizeTimestamp(date: Date): string {
   return date.toISOString().replace(/[:.]/g, "-");
@@ -37,7 +40,7 @@ export class ConversationLogger {
 
     // 处理流错误，防止未捕获异常
     this.stream.on("error", (err) => {
-      console.error(`[ConversationLogger] Stream error for ${this.filePath}:`, err.message);
+      logger.error(`Stream error for ${this.filePath}: ${err.message}`, err);
     });
 
     // 只有新文件才写标题

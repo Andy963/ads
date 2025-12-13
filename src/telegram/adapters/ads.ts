@@ -270,7 +270,7 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     await replyMarkdownV2(`❌ 命令执行失败: ${errorMsg}`);
-    console.error('[ADS] Command error:', error);
+    logger.error('Command error', error);
   }
 }
 

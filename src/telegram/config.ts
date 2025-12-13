@@ -12,6 +12,10 @@ export interface TelegramConfig {
   proxyUrl?: string;
 }
 
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("TelegramConfig");
+
 export function loadTelegramConfig(): TelegramConfig {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
@@ -106,7 +110,7 @@ export function validateConfig(config: TelegramConfig): void {
 
   for (const dir of config.allowedDirs) {
     if (!dir.startsWith('/')) {
-      console.warn(`[Config] Directory "${dir}" is not an absolute path`);
+      logger.warn(`Directory "${dir}" is not an absolute path`);
     }
   }
 }

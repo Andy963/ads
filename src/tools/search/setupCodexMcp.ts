@@ -11,6 +11,9 @@ import os from "node:os";
 
 const CODEX_CONFIG_DIR = path.join(os.homedir(), ".codex");
 const CODEX_CONFIG_FILE = path.join(CODEX_CONFIG_DIR, "config.toml");
+const writeStdout = (text: string): void => {
+  process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+};
 
 interface SetupResult {
   success: boolean;
@@ -167,19 +170,19 @@ if (process.argv[1]?.endsWith("setupCodexMcp.js") || process.argv[1]?.endsWith("
   if (command === "status" || command === "check") {
     const status = checkTavilySetup();
     if (status.configured) {
-      console.log(`✅ Tavily MCP configured (${status.mode} mode)`);
-      console.log(`   Config: ${status.configPath}`);
+      writeStdout(`✅ Tavily MCP configured (${status.mode} mode)`);
+      writeStdout(`   Config: ${status.configPath}`);
     } else {
-      console.log("❌ Tavily MCP not configured");
-      console.log(`   Config path: ${status.configPath}`);
-      console.log("\nRun: npx ts-node src/tools/search/setupCodexMcp.ts setup");
+      writeStdout("❌ Tavily MCP not configured");
+      writeStdout(`   Config path: ${status.configPath}`);
+      writeStdout("\nRun: npx ts-node src/tools/search/setupCodexMcp.ts setup");
     }
     process.exit(status.configured ? 0 : 1);
   }
 
   if (command === "remove") {
     const result = removeTavilyConfig();
-    console.log(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
+    writeStdout(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
     process.exit(result.success ? 0 : 1);
   }
 
@@ -190,11 +193,11 @@ if (process.argv[1]?.endsWith("setupCodexMcp.js") || process.argv[1]?.endsWith("
     const apiKey = apiKeyIndex !== -1 ? args[apiKeyIndex + 1] : undefined;
 
     const result = setupTavilyForCodex({ apiKey, useRemote, force });
-    console.log(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
+    writeStdout(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
     process.exit(result.success ? 0 : 1);
   }
 
-  console.log(`
+  writeStdout(`
 Usage: npx ts-node src/tools/search/setupCodexMcp.ts <command>
 
 Commands:

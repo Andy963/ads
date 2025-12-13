@@ -4,9 +4,12 @@ import { join, basename } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 
+import { createLogger } from '../../utils/logger.js';
+
 const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-files');
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB Telegram 限制
 const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20MB Bot API 限制
+const logger = createLogger('TelegramFileHandler');
 
 function redactTelegramToken(value: string, token: string): string {
   if (!value || !token) {
@@ -66,7 +69,7 @@ export async function downloadTelegramFile(
     const fs = await import('node:fs/promises');
     await fs.writeFile(localPath, Buffer.from(buffer));
     
-    console.log(`[FileHandler] Downloaded file: ${localPath} (${formatFileSize(buffer.byteLength)})`);
+    logger.info(`Downloaded file: ${localPath} (${formatFileSize(buffer.byteLength)})`);
     return localPath;
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
@@ -105,7 +108,7 @@ export async function uploadFileToTelegram(
     const compressedStats = statSync(compressed);
     
     if (compressedStats.size < stats.size * 0.8) {
-      console.log(`[FileHandler] Compressed ${formatFileSize(stats.size)} -> ${formatFileSize(compressedStats.size)}`);
+      logger.info(`Compressed ${formatFileSize(stats.size)} -> ${formatFileSize(compressedStats.size)}`);
       filePath = compressed;
     }
   }
@@ -120,7 +123,7 @@ export async function uploadFileToTelegram(
       disable_notification: true,
     });
     
-    console.log(`[FileHandler] Uploaded file: ${fileName}`);
+    logger.info(`Uploaded file: ${fileName}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`文件上传失败: ${redactTelegramToken(message, api.token)}`);
@@ -149,10 +152,10 @@ export function cleanupFile(filePath: string): void {
   try {
     if (existsSync(filePath)) {
       unlinkSync(filePath);
-      console.log(`[FileHandler] Cleaned up: ${filePath}`);
+      logger.debug(`Cleaned up: ${filePath}`);
     }
   } catch (error) {
-    console.warn(`[FileHandler] Failed to cleanup ${filePath}:`, error);
+    logger.warn(`Failed to cleanup ${filePath}`, error);
   }
 }
 
@@ -193,7 +196,7 @@ export function cleanupAllTempFiles(): void {
   }
   
   if (cleaned > 0) {
-    console.log(`[FileHandler] Cleaned up ${cleaned} old temp files`);
+    logger.debug(`Cleaned up ${cleaned} old temp files`);
   }
 }
 

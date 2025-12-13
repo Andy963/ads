@@ -1,8 +1,11 @@
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 
+import { createLogger } from '../../utils/logger.js';
+
 const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'url-downloads');
 let dnsResolveOverride: ((hostname: string) => Promise<string[]>) | null = null;
+const logger = createLogger('TelegramUrlHandler');
 
 /**
  * URL 类型
@@ -79,7 +82,7 @@ export async function detectUrlType(url: string, signal?: AbortSignal): Promise<
       return { url, type: UrlType.FILE, extension: ext || '.bin' };
     }
   } catch (error) {
-    console.warn('[UrlHandler] Failed to detect URL type:', error);
+    logger.warn('Failed to detect URL type', error);
   }
   
   // 默认当作网页
@@ -191,7 +194,7 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
   }
   
   try {
-    console.log(`[UrlHandler] Downloading ${url}...`);
+    logger.info(`Downloading ${url}...`);
     
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
@@ -230,7 +233,7 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
     }
     fileStream.end();
     
-    console.log(`[UrlHandler] Downloaded to ${localPath}`);
+    logger.info(`Downloaded to ${localPath}`);
     return localPath;
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
@@ -292,7 +295,7 @@ export async function processUrls(text: string, signal?: AbortSignal): Promise<{
         webpageUrls.push(url);
       }
     } catch (error) {
-      console.warn(`[UrlHandler] Failed to process URL ${url}:`, error);
+      logger.warn(`Failed to process URL ${url}`, error);
       // 失败的 URL 保留在文本中
     }
   }

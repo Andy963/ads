@@ -1088,7 +1088,7 @@ async function main(): Promise<void> {
       const result = await handleLine(input, logger, agents);
       const output = normalizeOutput(result.output);
       if (output) {
-        console.log(output);
+        process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
         historyStore.add(historyKey, { role: "ai", text: output, ts: Date.now() });
       }
       logger.logOutput(output);
@@ -1098,7 +1098,7 @@ async function main(): Promise<void> {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`❌ ${message}`);
+      process.stderr.write(`❌ ${message}\n`);
       logger.logError(message);
       historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
     }
@@ -1185,6 +1185,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error("启动失败:", error);
+  cliLogger.error("启动失败", error);
   process.exit(1);
 });

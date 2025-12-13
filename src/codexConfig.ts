@@ -2,6 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseToml } from "toml";
+import { createLogger } from "./utils/logger.js";
+
+const logger = createLogger("CodexConfig");
 
 export interface CodexOverrides {
   baseUrl?: string;
@@ -143,7 +146,7 @@ function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens:
         }
       }
     } catch (err) {
-      console.warn(`Failed to parse ${configPath}:`, err);
+      logger.warn(`Failed to parse ${configPath}`, err);
     }
   }
 
@@ -166,7 +169,7 @@ function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens:
         }
       }
     } catch (err) {
-      console.warn(`Failed to parse ${authPath}:`, err);
+      logger.warn(`Failed to parse ${authPath}`, err);
     }
   }
 

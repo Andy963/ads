@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createLogger } from "../utils/logger.js";
+
 const WORKSPACE_MARKER = ".ads/workspace.json";
 const GIT_MARKER = ".git";
 
@@ -17,6 +19,7 @@ const REQUIRED_TEMPLATE_FILES = [
   "workflow.yaml",
 ];
 const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];
+const logger = createLogger("WorkspaceDetector");
 
 function existsSync(target: string): boolean {
   try {
@@ -38,7 +41,7 @@ function listTemplateFiles(): string[] {
   const entries = fs.readdirSync(TEMPLATE_ROOT_DIR, { withFileTypes: true });
   const unexpectedDirs = entries.filter((entry) => entry.isDirectory());
   if (unexpectedDirs.length > 0) {
-    console.warn(
+    logger.warn(
       `[Workspace] templates/ 目录包含未使用的子目录: ${unexpectedDirs
         .map((entry) => entry.name)
         .join(", ")}`
@@ -66,7 +69,7 @@ function backupLegacyTemplates(dir: string): void {
   }
   const backupDir = `${dir}_legacy_${Date.now()}`;
   fs.renameSync(dir, backupDir);
-  console.warn(`[Workspace] 发现旧模板结构，已备份到 ${backupDir}`);
+  logger.warn(`[Workspace] 发现旧模板结构，已备份到 ${backupDir}`);
 }
 
 function filesEqual(a: string, b: string): boolean {

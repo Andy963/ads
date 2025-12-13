@@ -65,8 +65,8 @@ export class SessionManager {
     // 使用时间戳和随机数生成唯一的会话ID（不暴露用户信息）
     const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    console.log(
-      `[SessionManager] Creating new session (id: ${sessionId})${
+    this.logger.info(
+      `Creating new session (id: ${sessionId})${
         savedThreadId ? ` (resuming thread ${savedThreadId})` : ''
       } with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
     );
@@ -179,7 +179,7 @@ export class SessionManager {
     if (this.threadStorage.getThreadId(userId)) {
       this.threadStorage.removeThread(userId);
     }
-    console.log(`[SessionManager] Switched to model: ${model}`);
+    this.logger.info(`Switched to model: ${model}`);
   }
 
   getUserModel(userId: number): string {
@@ -200,9 +200,9 @@ export class SessionManager {
       }
       record.orchestrator.reset();
       record.lastActivity = Date.now();
-      console.log(`[SessionManager] Session reset`);
+      this.logger.info('Session reset');
     } else {
-      console.log(`[SessionManager] Reset requested without active session`);
+      this.logger.debug('Reset requested without active session');
     }
 
     if (this.threadStorage.getThreadId(userId)) {
@@ -320,7 +320,7 @@ export class SessionManager {
         record.logger.close();
       }
       this.sessions.delete(userId);
-      console.log(`[SessionManager] Cleaned up idle session`);
+      this.logger.debug('Cleaned up idle session');
     }
   }
 

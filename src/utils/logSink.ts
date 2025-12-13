@@ -76,7 +76,8 @@ export function initGlobalConsoleLogger(options?: GlobalConsoleLoggerOptions): v
 
   const mirrorToStdoutEnv = process.env.ADS_LOG_STDOUT;
   const mirrorToStdout =
-    options?.mirrorToStdout ?? (mirrorToStdoutEnv === undefined ? true : mirrorToStdoutEnv !== "0");
+    options?.mirrorToStdout ??
+    (mirrorToStdoutEnv === undefined ? Boolean(process.stdout.isTTY) : mirrorToStdoutEnv !== "0");
 
   let stream: fs.WriteStream | null = null;
   try {

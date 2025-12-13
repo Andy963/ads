@@ -5,6 +5,9 @@ import { getAllNodes, getEdgesFromNode, getNodeById, getParentNodes } from "./cr
 import type { GraphNode } from "./types.js";
 import { getNodeTypeConfig } from "./workflowConfig.js";
 import { getWorkspaceSpecsDir } from "../workspace/detector.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("GraphFileManager");
 
 function ensureDirectory(target: string): void {
   fs.mkdirSync(target, { recursive: true });
@@ -210,7 +213,7 @@ export function syncAllNodes(workspacePath?: string): {
       stats.files.push(filePath);
     } catch (error) {
       stats.errors += 1;
-      console.warn(`Error syncing node ${node.id}: ${(error as Error).message}`);
+      logger.warn(`Error syncing node ${node.id}: ${(error as Error).message}`, error);
     }
   }
 
@@ -219,7 +222,7 @@ export function syncAllNodes(workspacePath?: string): {
     stats.workflows = indices.length;
     stats.indices = indices;
   } catch (error) {
-    console.warn(`Error generating indices: ${(error as Error).message}`);
+    logger.warn(`Error generating indices: ${(error as Error).message}`, error);
   }
 
   return stats;

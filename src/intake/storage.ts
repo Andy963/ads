@@ -3,6 +3,9 @@ import path from "node:path";
 
 import { detectWorkspace } from "../workspace/detector.js";
 import type { IntakeState } from "./types.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("IntakeStorage");
 
 const STATE_FILENAME = "intake-state.json";
 
@@ -26,7 +29,7 @@ export async function loadIntakeState(workspacePath?: string): Promise<IntakeSta
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
     }
-    console.warn("读取 intake 状态失败:", error);
+    logger.warn("读取 intake 状态失败", error);
     return null;
   }
 }
@@ -49,7 +52,7 @@ export async function clearIntakeState(workspacePath?: string): Promise<void> {
     await fs.unlink(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn("清理 intake 状态失败:", error);
+      logger.warn("清理 intake 状态失败", error);
     }
   }
 }

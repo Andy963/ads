@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createLogger } from "../utils/logger.js";
+
 export interface AgentFeatureFlags {
   claudeEnabled: boolean;
   geminiEnabled: boolean;
@@ -33,6 +35,7 @@ interface ClaudeFileConfig {
 
 const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4.5";
 const GEMINI_DEFAULT_MODEL = "gemini-2.0-flash";
+const logger = createLogger("AgentConfig");
 
 function parseBoolean(value: string | undefined, defaultValue = false): boolean {
   if (value === undefined) {
@@ -112,7 +115,7 @@ function loadClaudeConfigFiles(): ClaudeFileConfig {
         result.baseUrl = baseUrl;
       }
     } catch (error) {
-      console.warn(`[ClaudeConfig] Failed to parse ${configPath}:`, error);
+      logger.warn(`[ClaudeConfig] Failed to parse ${configPath}`, error);
     }
   }
 
@@ -128,7 +131,7 @@ function loadClaudeConfigFiles(): ClaudeFileConfig {
         result.apiKey = authKey;
       }
     } catch (error) {
-      console.warn(`[ClaudeConfig] Failed to parse ${authPath}:`, error);
+      logger.warn(`[ClaudeConfig] Failed to parse ${authPath}`, error);
     }
   }
 
@@ -157,7 +160,7 @@ function loadClaudeConfigFiles(): ClaudeFileConfig {
         }
       }
     } catch (error) {
-      console.warn(`[ClaudeConfig] Failed to parse ${settingsPath}:`, error);
+      logger.warn(`[ClaudeConfig] Failed to parse ${settingsPath}`, error);
     }
   }
 

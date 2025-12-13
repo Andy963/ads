@@ -27,9 +27,11 @@ import {
 } from '../../codex/errors.js';
 import { HistoryStore } from '../../utils/historyStore.js';
 import { truncateForLog } from '../../utils/text.js';
+import { createLogger } from '../../utils/logger.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
+const adapterLogger = createLogger('TelegramCodexAdapter');
 const historyStore = new HistoryStore({
   storagePath: path.join(process.cwd(), ".ads", "telegram-history.json"),
   maxEntriesPerSession: 300,
@@ -131,9 +133,9 @@ export async function handleCodexMessage(
         `${timestamp} WARN ${message}${detail ? ` | ${detail}` : ''}\n`,
       );
     } catch (fileError) {
-      console.warn('[CodexAdapter] Failed to write adapter log:', fileError);
+      adapterLogger.warn('Failed to write adapter log', fileError);
     }
-    console.warn(message, error);
+    adapterLogger.warn(message, error);
   };
 
   const recordFallback = (stage: string, original: string, escapedV2: string) => {
@@ -143,7 +145,7 @@ export async function handleCodexMessage(
       const entry = `${timestamp} ${stage}\nORIGINAL:\n${original}\n---\nMARKDOWN_V2:\n${escapedV2}\n\n`;
       fs.appendFileSync(fallbackLogFile, entry);
     } catch (fileError) {
-      console.warn('[CodexAdapter] Failed to record fallback:', fileError);
+      adapterLogger.warn('Failed to record fallback', fileError);
     }
   };
 

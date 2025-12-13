@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 import yaml from "yaml";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("CommandLoader");
 
 export interface CommandDefinition {
   name: string;
@@ -133,7 +136,7 @@ export class CommandLoader {
           const command = parseCommandFile(fullPath);
           commands[command.name] = command;
         } catch (error) {
-          console.warn(`Failed to load command ${fullPath}: ${(error as Error).message}`);
+          logger.warn(`Failed to load command ${fullPath}: ${(error as Error).message}`, error);
         }
       }
     }

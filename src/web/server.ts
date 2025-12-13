@@ -16,6 +16,7 @@ import type {
   TodoListItem,
 } from "@openai/codex-sdk";
 
+import "../utils/logSink.js";
 import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
 import { detectWorkspace } from "../workspace/detector.js";
@@ -664,7 +665,6 @@ async function start(): Promise<void> {
 }
 
 start().catch((error) => {
-  // eslint-disable-next-line no-console
-  console.error("[web] fatal error", error);
+  logger.error("[web] fatal error", error);
   process.exit(1);
 });

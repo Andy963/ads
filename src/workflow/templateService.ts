@@ -13,6 +13,7 @@ import { detectWorkspace, getWorkspaceSpecsDir } from "../workspace/detector.js"
 import { WorkflowContext } from "../workspace/context.js";
 import { listRules } from "../workspace/rulesService.js";
 import { safeStringify } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
 import { saveNodeToFile } from "../graph/fileManager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,7 @@ const TEMPLATE_ROOT = path.join(PROJECT_ROOT, "templates");
 const REQUIREMENT_TEMPLATE = path.join(TEMPLATE_ROOT, "requirement.md");
 const DESIGN_TEMPLATE = path.join(TEMPLATE_ROOT, "design.md");
 const IMPLEMENTATION_TEMPLATE = path.join(TEMPLATE_ROOT, "implementation.md");
+const logger = createLogger("WorkflowTemplateService");
 
 async function withWorkspaceEnv<T>(workspace: string, fn: () => Promise<T> | T): Promise<T> {
   const previous = process.env.AD_WORKSPACE;
@@ -242,7 +244,7 @@ export async function createWorkflowFromTemplate(params: {
           steps,
         });
       } catch (error) {
-        console.warn("Warning: Failed to set active workflow:", error);
+        logger.warn("Failed to set active workflow", error);
       }
 
       // 获取工作流状态回显
