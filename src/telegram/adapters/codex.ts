@@ -968,7 +968,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       fallbackNotified = true;
       await ctx.reply('⚠️ 本条消息的 Markdown 渲染发生降级，内容已记录便于排查。', {
         disable_notification: silentNotifications,
-      }).catch(() => {});
+      }).catch((error) => {
+        logWarning('[Telegram] Failed to send markdown fallback notice', error);
+      });
     };
     
     const chunks = chunkMessage(renderText);
@@ -992,7 +994,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       }).catch(async () => {
         recordFallback('chunk_markdownv2_failed', chunkText, escapedV2);
         await notifyFallback();
-        await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch(() => {});
+        await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch((error) => {
+          logWarning('[Telegram] Failed to send fallback chunk', error);
+        });
       });
       sentChunks.add(chunkText);
     }
@@ -1046,7 +1050,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       disable_notification: silentNotifications,
     }).catch(async () => {
       recordFallback('error_markdownv2_failed', replyText, escapedV2);
-      await ctx.reply(replyText, { disable_notification: silentNotifications }).catch(() => {});
+      await ctx.reply(replyText, { disable_notification: silentNotifications }).catch((error) => {
+        logWarning('[Telegram] Failed to send fallback error message', error);
+      });
     });
   }
 }

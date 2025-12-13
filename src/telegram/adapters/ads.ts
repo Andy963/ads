@@ -14,7 +14,10 @@ import { buildAdsHelpMessage } from '../../workflow/commands.js';
 import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
 import { runReview, skipReview, showReviewReport } from '../../review/service.js';
 import { REVIEW_LOCK_SAFE_COMMANDS } from '../../utils/reviewLock.js';
+import { createLogger } from '../../utils/logger.js';
 import { WorkflowContext } from '../../workspace/context.js';
+
+const logger = createLogger('TelegramADS');
 
 export async function handleAdsCommand(ctx: Context, args: string[], options?: { workspacePath?: string }) {
   const replyMarkdownV2 = async (text: string, extra?: Parameters<Context['reply']>[1]) => {
@@ -347,14 +350,29 @@ function startReviewSpinner(
   let frameIndex = 0;
   const updateText = () => `🔍 正在执行 Review | 模式: ${modeLabel}${frames[frameIndex]}`;
   let timer: NodeJS.Timeout | undefined;
+  let editFailed = false;
+
+  const safeEdit = (text: string, stage: string) => {
+    if (editFailed) {
+      return;
+    }
+    ctx.api.editMessageText(chatId, messageId, text, { parse_mode: 'MarkdownV2' }).catch((error) => {
+      editFailed = true;
+      logger.warn(`[TelegramADS] Failed to update review spinner (${stage})`, error);
+      if (timer) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    });
+  };
 
   const tick = () => {
     frameIndex = (frameIndex + 1) % frames.length;
     const escaped = escapeTelegramMarkdownV2(updateText());
-    ctx.api.editMessageText(chatId, messageId, escaped, { parse_mode: 'MarkdownV2' }).catch(() => {});
+    safeEdit(escaped, 'tick');
   };
   const firstText = escapeTelegramMarkdownV2(updateText());
-  ctx.api.editMessageText(chatId, messageId, firstText, { parse_mode: 'MarkdownV2' }).catch(() => {});
+  safeEdit(firstText, 'init');
   timer = setInterval(tick, 1000);
 
   return async (finalText?: string) => {
@@ -364,7 +382,9 @@ function startReviewSpinner(
     }
     if (finalText) {
       const escaped = escapeTelegramMarkdownV2(finalText);
-      await ctx.api.editMessageText(chatId, messageId, escaped, { parse_mode: 'MarkdownV2' }).catch(() => {});
+      await ctx.api.editMessageText(chatId, messageId, escaped, { parse_mode: 'MarkdownV2' }).catch((error) => {
+        logger.warn('[TelegramADS] Failed to finalize review status message', error);
+      });
     }
   };
 }

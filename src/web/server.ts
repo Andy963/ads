@@ -616,7 +616,10 @@ async function start(): Promise<void> {
         if (aborted) {
           // runPromise may still settle; swallow to avoid unhandled rejection
           if (runPromise) {
-            runPromise.catch(() => {});
+            void runPromise.catch((innerError) => {
+              const detail = innerError instanceof Error ? innerError.message : String(innerError);
+              logger.debug(`[Web] runAdsCommandLine settled after abort: ${detail}`);
+            });
           }
           ws.send(JSON.stringify({ type: "error", message: "已中断，输出可能不完整" }));
           sessionLogger?.logError("已中断，输出可能不完整");
