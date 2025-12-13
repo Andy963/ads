@@ -254,10 +254,8 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
     "utf-8"
   );
 
-  const dbPath = path.join(adsDir, "ads.db");
-  if (!existsSync(dbPath)) {
-    fs.writeFileSync(dbPath, "");
-  }
+  // Database will be initialized by getDatabase() when first accessed
+  // Don't create empty file as it would be invalid SQLite database
 
   copyDefaultTemplates(root);
 

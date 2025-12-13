@@ -6,7 +6,7 @@ import os from "node:os";
 
 import { createWorkflowFromTemplate } from "../../src/workflow/templateService.js";
 import { getAllNodes, getNodeById } from "../../src/graph/crud.js";
-import { resetDatabaseForTests } from "../../src/storage/database.js";
+import { resetDatabaseForTests, getDatabase } from "../../src/storage/database.js";
 import { initializeWorkspace } from "../../src/workspace/detector.js";
 
 interface WorkflowCreationResponse {
@@ -35,6 +35,10 @@ describe("createWorkflowFromTemplate", () => {
     workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "ads-workspace-"));
     initializeWorkspace(workspaceDir, "Test Workspace");
     resetDatabaseForTests();
+    // Set workspace env so getDatabase uses the test workspace
+    process.env.AD_WORKSPACE = workspaceDir;
+    // Initialize database tables for the test workspace
+    getDatabase(workspaceDir);
   });
 
   afterEach(async () => {
@@ -52,7 +56,7 @@ describe("createWorkflowFromTemplate", () => {
     });
     const parsed = JSON.parse(response) as WorkflowCreationResponse;
 
-    assert.equal(parsed.success, true);
+    assert.equal(parsed.success, true, `Expected success=true but got: ${response}`);
     assert.ok(parsed.workflow?.root_node_id, "should return root node id");
 
     // Switch context to the test workspace for read operations

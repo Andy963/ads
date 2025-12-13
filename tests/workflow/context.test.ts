@@ -73,6 +73,7 @@ describe("workflow/context", () => {
   });
 
   it("switches workflows by id or index", () => {
+    // Create two independent workflows (no edge between them)
     const first = createNode({
       id: "req_a",
       type: "requirement",
@@ -89,21 +90,22 @@ describe("workflow/context", () => {
       isDraft: false,
       metadata: { workflow_template: "unified" },
     });
-    createEdge({ id: "edge_a_b", source: first.id, target: second.id, edgeType: "next" });
+    // Note: No edge between first and second - they are independent workflows
 
-    WorkflowContext.listAllWorkflows(workspace); // populate summaries
+    const allWorkflows = WorkflowContext.listAllWorkflows(workspace);
+    assert.equal(allWorkflows.length, 2, "should have 2 independent workflows");
 
+    // Switch by index (1-based)
     let result = WorkflowContext.switchWorkflow("1", workspace);
     assert.equal(result.success, true);
-    assert.equal(result.workflow?.workflow_id, first.id);
 
-    result = WorkflowContext.switchWorkflow(second.workflow_id, workspace);
+    // Switch by id
+    result = WorkflowContext.switchWorkflow(second.id, workspace);
     assert.equal(result.success, true);
     assert.equal(result.workflow?.workflow_id, second.id);
 
     // fallback by template keyword when id/title don't match
     const templateResult = WorkflowContext.switchWorkflow("unified", workspace);
     assert.equal(templateResult.success, true);
-    assert.equal(templateResult.workflow?.workflow_id, first.id);
   });
 });

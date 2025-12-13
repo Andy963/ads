@@ -31,13 +31,25 @@ function resolveDatabasePath(workspacePath?: string): string {
     return envDb.replace(/^sqlite:\/\//, "");
   }
 
+  // If explicit workspace path provided, use it
+  if (workspacePath) {
+    return getWorkspaceDbPath(path.resolve(workspacePath));
+  }
+
+  // If AD_WORKSPACE env is set, use that workspace's database
+  const envWorkspace = process.env.AD_WORKSPACE;
+  if (envWorkspace) {
+    return getWorkspaceDbPath(path.resolve(envWorkspace));
+  }
+
+  // For ADS project itself (development), use project root database
   const projectName = readPackageName();
   if (projectName === "ads") {
     return path.join(PROJECT_ROOT, "ads.db");
   }
 
   try {
-    const workspaceRoot = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
+    const workspaceRoot = detectWorkspace();
     return getWorkspaceDbPath(workspaceRoot);
   } catch {
     return path.join(process.cwd(), "ads.db");
