@@ -51,6 +51,47 @@ interface EdgeRow {
   updated_at?: SqlDateValue;
 }
 
+function normalizeNodeRow(raw: unknown): NodeRow {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid node row: expected object");
+  }
+  const row = raw as Record<string, unknown>;
+  if (typeof row.id !== "string" || !row.id) {
+    throw new Error("Invalid node row: missing id");
+  }
+  if (typeof row.type !== "string" || !row.type) {
+    throw new Error(`Invalid node row ${row.id}: missing type`);
+  }
+
+  return {
+    ...(raw as NodeRow),
+    id: row.id,
+    type: row.type,
+    label: typeof row.label === "string" ? row.label : String(row.label ?? ""),
+  };
+}
+
+function normalizeEdgeRow(raw: unknown): EdgeRow {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid edge row: expected object");
+  }
+  const row = raw as Record<string, unknown>;
+  if (typeof row.id !== "string" || !row.id) {
+    throw new Error("Invalid edge row: missing id");
+  }
+  if (typeof row.source !== "string" || !row.source) {
+    throw new Error(`Invalid edge row ${row.id}: missing source`);
+  }
+  if (typeof row.target !== "string" || !row.target) {
+    throw new Error(`Invalid edge row ${row.id}: missing target`);
+  }
+  if (typeof row.edge_type !== "string" || !row.edge_type) {
+    throw new Error(`Invalid edge row ${row.id}: missing edge_type`);
+  }
+
+  return raw as EdgeRow;
+}
+
 function normalizeDate(value: SqlDateValue): Date | null {
   if (value === null || value === undefined) {
     return null;
@@ -128,17 +169,17 @@ function mapEdge(row: EdgeRow): GraphEdge {
 
 export function getAllNodes(): GraphNode[] {
   const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all() as NodeRow[];
-  return rows.map(mapNode);
+  const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all() as unknown[];
+  return rows.map((row) => mapNode(normalizeNodeRow(row)));
 }
 
 export function getNodeById(nodeId: string): GraphNode | null {
   const db = getDatabase();
-  const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as NodeRow | undefined;
+  const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(nodeId) as unknown;
   if (!row) {
     return null;
   }
-  return mapNode(row);
+  return mapNode(normalizeNodeRow(row));
 }
 
 export function createNode(input: CreateNodeInput): GraphNode {
@@ -284,8 +325,8 @@ export function deleteNode(nodeId: string): boolean {
 
 export function getAllEdges(): GraphEdge[] {
   const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM edges ORDER BY created_at ASC").all() as EdgeRow[];
-  return rows.map((row) => mapEdge(row));
+  const rows = db.prepare("SELECT * FROM edges ORDER BY created_at ASC").all() as unknown[];
+  return rows.map((row) => mapEdge(normalizeEdgeRow(row)));
 }
 
 export function createEdge(input: {
@@ -338,8 +379,8 @@ export function createEdge(input: {
     updated_at: now,
   });
 
-  const row = db.prepare("SELECT * FROM edges WHERE id = ?").get(input.id) as EdgeRow;
-  return mapEdge(row);
+  const row = db.prepare("SELECT * FROM edges WHERE id = ?").get(input.id) as unknown;
+  return mapEdge(normalizeEdgeRow(row));
 }
 
 export function deleteEdge(edgeId: string): boolean {
@@ -350,8 +391,8 @@ export function deleteEdge(edgeId: string): boolean {
 
 export function getEdgesFromNode(nodeId: string): GraphEdge[] {
   const db = getDatabase();
-  const rows = db.prepare("SELECT * FROM edges WHERE source = ?").all(nodeId) as EdgeRow[];
-  return rows.map((row) => mapEdge(row));
+  const rows = db.prepare("SELECT * FROM edges WHERE source = ?").all(nodeId) as unknown[];
+  return rows.map((row) => mapEdge(normalizeEdgeRow(row)));
 }
 
 export function getNextNode(nodeId: string): GraphNode | null {
