@@ -5,11 +5,15 @@ import { fileURLToPath } from "node:url";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
 import { detectWorkspace, getWorkspaceDbPath } from "../workspace/detector.js";
+import { migrations } from "./migrations.js";
 
 let cachedDbs: Map<string, DatabaseType> = new Map();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+
+/** 当前 schema 版本（等于 migrations 数组长度） */
+export const SCHEMA_VERSION = migrations.length;
 
 function readPackageName(): string | null {
   const pkgPath = path.join(PROJECT_ROOT, "package.json");
@@ -56,100 +60,76 @@ function resolveDatabasePath(workspacePath?: string): string {
   }
 }
 
-function initializeDatabase(db: DatabaseType): void {
-  // Create nodes table
+/**
+ * 获取当前数据库 schema 版本
+ */
+function getSchemaVersion(db: DatabaseType): number {
+  // 创建 schema_version 表（如果不存在）
   db.exec(`
-    CREATE TABLE IF NOT EXISTS nodes (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      label TEXT NOT NULL,
-      content TEXT,
-      metadata TEXT,
-      position TEXT,
-      current_version INTEGER DEFAULT 0,
-      draft_content TEXT,
-      draft_source_type TEXT,
-      draft_conversation_id TEXT,
-      draft_message_id INTEGER,
-      draft_based_on_version INTEGER,
-      draft_ai_original_content TEXT,
-      is_draft INTEGER DEFAULT 1,
-      draft_updated_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      workspace_id INTEGER
-    )
-  `);
-
-  // Create node_versions table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS node_versions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      node_id TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      content TEXT NOT NULL,
-      source_type TEXT NOT NULL,
-      conversation_id TEXT,
-      message_id INTEGER,
-      based_on_version INTEGER,
-      change_description TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
-    )
-  `);
-
-  // Create indexes for node_versions
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS ix_node_versions_node_id ON node_versions(node_id)
-  `);
-
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS ix_node_versions_version ON node_versions(node_id, version)
-  `);
-
-  // Create edges table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS edges (
-      id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      target TEXT NOT NULL,
-      source_handle TEXT DEFAULT 'right',
-      target_handle TEXT DEFAULT 'left',
-      label TEXT,
-      edge_type TEXT DEFAULT 'next',
-      animated INTEGER DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    CREATE TABLE IF NOT EXISTS schema_version (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      version INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
 
-  // Create workflow commits table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS workflow_commits (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      workflow_id TEXT NOT NULL,
-      workflow_title TEXT,
-      template TEXT,
-      node_id TEXT NOT NULL,
-      step_name TEXT NOT NULL,
-      node_label TEXT,
-      version INTEGER NOT NULL,
-      change_description TEXT,
-      file_path TEXT,
-      created_at TEXT NOT NULL
-    )
-  `);
+  const row = db.prepare("SELECT version FROM schema_version WHERE id = 1").get() as
+    | { version: number }
+    | undefined;
 
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS ix_workflow_commits_workflow_id_created_at
-      ON workflow_commits(workflow_id, created_at DESC)
-  `);
+  if (!row) {
+    // 检查是否是已有数据库（有 nodes 表但没有版本记录）
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'").get();
+    if (tables) {
+      // 已有数据库，假设是版本 1
+      db.prepare("INSERT INTO schema_version (id, version) VALUES (1, 1)").run();
+      return 1;
+    }
+    // 新数据库，版本为 0
+    db.prepare("INSERT INTO schema_version (id, version) VALUES (1, 0)").run();
+    return 0;
+  }
 
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS ix_workflow_commits_created_at
-      ON workflow_commits(created_at DESC)
-  `);
+  return row.version;
+}
+
+/**
+ * 更新 schema 版本号
+ */
+function setSchemaVersion(db: DatabaseType, version: number): void {
+  db.prepare("UPDATE schema_version SET version = ?, updated_at = datetime('now') WHERE id = 1").run(version);
+}
+
+/**
+ * 运行数据库迁移
+ */
+function runMigrations(db: DatabaseType): void {
+  const currentVersion = getSchemaVersion(db);
+  const targetVersion = migrations.length;
+
+  if (currentVersion >= targetVersion) {
+    return; // 已是最新版本
+  }
+
+  // 按顺序执行未运行的迁移
+  for (let i = currentVersion; i < targetVersion; i++) {
+    const migration = migrations[i];
+    try {
+      migration.up(db);
+      setSchemaVersion(db, migration.version);
+    } catch (error) {
+      throw new Error(
+        `Migration ${migration.version} (${migration.description}) failed: ${(error as Error).message}`,
+      );
+    }
+  }
+}
+
+/**
+ * 初始化数据库（运行迁移）
+ */
+function initializeDatabase(db: DatabaseType): void {
+  runMigrations(db);
 }
 
 export function getDatabase(workspacePath?: string): DatabaseType {
@@ -177,4 +157,25 @@ export function resetDatabaseForTests(): void {
     }
   }
   cachedDbs = new Map();
+}
+
+/**
+ * 获取数据库版本信息
+ */
+export function getDatabaseInfo(workspacePath?: string): {
+  path: string;
+  schemaVersion: number;
+  latestVersion: number;
+  needsMigration: boolean;
+} {
+  const db = getDatabase(workspacePath);
+  const dbPath = resolveDatabasePath(workspacePath);
+  const schemaVersion = getSchemaVersion(db);
+
+  return {
+    path: dbPath,
+    schemaVersion,
+    latestVersion: SCHEMA_VERSION,
+    needsMigration: schemaVersion < SCHEMA_VERSION,
+  };
 }
