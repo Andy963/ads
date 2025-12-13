@@ -13,6 +13,7 @@ import { detectWorkspace, getWorkspaceSpecsDir } from "../workspace/detector.js"
 import { WorkflowContext } from "../workspace/context.js";
 import { listRules } from "../workspace/rulesService.js";
 import { safeStringify } from "../utils/json.js";
+import { getErrorMessage } from "../utils/error.js";
 import { createLogger } from "../utils/logger.js";
 import { saveNodeToFile } from "../graph/fileManager.js";
 
@@ -50,7 +51,7 @@ export async function listWorkflowTemplates(): Promise<string> {
 
     return safeStringify({ templates: result });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -65,7 +66,7 @@ export async function getWorkflowTemplateDetails(templateId: string): Promise<st
 
     return safeStringify(template);
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -77,7 +78,7 @@ export async function getNodeTypeConfig(nodeType: string): Promise<string> {
     }
     return safeStringify(config);
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -277,6 +278,6 @@ export async function createWorkflowFromTemplate(params: {
       });
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }

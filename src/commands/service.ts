@@ -6,6 +6,7 @@ import { CommandLoader } from "./loader.js";
 import { CommandExecutor } from "./executor.js";
 import { detectWorkspace } from "../workspace/detector.js";
 import { parseJsonWithSchema, safeStringify } from "../utils/json.js";
+import { getErrorMessage } from "../utils/error.js";
 
 const variablesSchema = z.record(z.coerce.string());
 
@@ -26,7 +27,7 @@ export async function listCommands(params: { workspace_path?: string }): Promise
       count: commands.length,
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -50,7 +51,7 @@ export async function getCommand(params: {
       file_path: command.filePath,
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -69,7 +70,7 @@ export async function executeCommand(params: {
       expanded_content: content,
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
 
@@ -84,6 +85,6 @@ export async function validateCommand(params: {
     const result = CommandExecutor.validateCommand(workspace, params.command_name, variables);
     return safeStringify(result);
   } catch (error) {
-    return safeStringify({ valid: false, error: (error as Error).message });
+    return safeStringify({ valid: false, error: getErrorMessage(error) });
   }
 }

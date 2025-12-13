@@ -9,6 +9,7 @@ import { createNode, createEdge } from "../graph/crud.js";
 import { generateNodeId } from "../graph/workflowConfig.js";
 import { saveNodeToFile } from "../graph/fileManager.js";
 import { parseJsonWithSchema, safeStringify } from "../utils/json.js";
+import { getErrorMessage } from "../utils/error.js";
 
 const variablesSchema = z.record(z.unknown());
 
@@ -30,7 +31,7 @@ export async function listTemplates(params: { workspace_path?: string }): Promis
       workflow_template_count: templates.workflow_templates.length,
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -55,7 +56,7 @@ export async function getNodeTemplateDetails(params: {
       file_path: template.filePath,
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -72,7 +73,7 @@ export async function getWorkflowTemplateDetails(params: {
 
     return safeStringify(template);
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -88,7 +89,7 @@ export async function renderTemplate(params: {
       rendered_content: rendered,
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
 
@@ -101,7 +102,7 @@ export async function validateTemplate(params: {
     const result = TemplateRenderer.validate(params.template_content, variables);
     return safeStringify(result);
   } catch (error) {
-    return safeStringify({ valid: false, error: (error as Error).message });
+    return safeStringify({ valid: false, error: getErrorMessage(error) });
   }
 }
 
@@ -157,6 +158,6 @@ export async function createNodeFromTemplate(params: {
       file: filePath,
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }

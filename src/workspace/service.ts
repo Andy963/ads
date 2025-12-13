@@ -7,6 +7,7 @@ import {
   ensureDefaultTemplates,
 } from "./detector.js";
 import { safeStringify } from "../utils/json.js";
+import { getErrorMessage } from "../utils/error.js";
 
 export async function initWorkspace(params: { name?: string; workspace_path?: string }): Promise<string> {
   try {
@@ -27,7 +28,7 @@ export async function initWorkspace(params: { name?: string; workspace_path?: st
     };
     return safeStringify(result);
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
 
@@ -38,7 +39,7 @@ export async function getCurrentWorkspace(): Promise<string> {
     const info = getWorkspaceInfo(workspace);
     return safeStringify(info);
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 

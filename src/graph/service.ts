@@ -16,6 +16,7 @@ import {
 import { syncAllNodes, saveNodeToFile } from "./fileManager.js";
 import { generateNodeId } from "./workflowConfig.js";
 import { safeStringify } from "../utils/json.js";
+import { getErrorMessage } from "../utils/error.js";
 import type { GraphNode } from "./types.js";
 import { detectWorkspace } from "../workspace/detector.js";
 import { finalizeNode as finalizeGraphNodeHelper } from "./finalizeHelper.js";
@@ -89,7 +90,7 @@ export async function getWorkspaceInfo(params: { workspace_path?: string }): Pro
       });
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -125,7 +126,7 @@ export async function listNodes(params: {
       total: nodes.length,
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -150,7 +151,7 @@ export async function getNode(nodeId: string): Promise<string> {
       },
     });
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -185,7 +186,7 @@ export async function getNodeContext(nodeId: string): Promise<string> {
 
     return text;
   } catch (error) {
-    return safeStringify({ error: (error as Error).message });
+    return safeStringify({ error: getErrorMessage(error) });
   }
 }
 
@@ -236,7 +237,7 @@ export async function createGraphNode(params: {
       });
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
 
@@ -275,7 +276,7 @@ export async function updateGraphNode(params: {
       file: filePath,
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
 
@@ -302,7 +303,7 @@ export async function createGraphEdge(params: {
       },
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
 
@@ -322,7 +323,7 @@ export async function finalizeGraphNode(nodeId: string): Promise<string> {
       file: filePath,
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
 
@@ -342,6 +343,6 @@ export async function syncAllNodesToFiles(params: { workspace_path?: string }): 
       message: `成功同步 ${stats.synced} 个节点到 ${stats.workflows} 个工作流`,
     });
   } catch (error) {
-    return safeStringify({ success: false, error: (error as Error).message });
+    return safeStringify({ success: false, error: getErrorMessage(error) });
   }
 }
