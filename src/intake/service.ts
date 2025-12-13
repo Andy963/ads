@@ -1,6 +1,8 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
+import { z } from "zod";
+
 import { createWorkflowFromTemplate } from "../workflow/templateService.js";
 import { WorkflowContext } from "../workspace/context.js";
 import { detectWorkspace } from "../workspace/detector.js";
@@ -11,6 +13,14 @@ import { clearIntakeState, loadIntakeState, saveIntakeState } from "./storage.js
 
 const SUMMARY_START = "<!-- intake:auto:start -->";
 const SUMMARY_END = "<!-- intake:auto:end -->";
+
+const createWorkflowResponseSchema = z
+  .object({
+    success: z.boolean().optional(),
+    message: z.string().optional(),
+    error: z.string().optional(),
+  })
+  .passthrough();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -101,9 +111,25 @@ export async function startIntake(initialInput: string): Promise<IntakeResult> {
     description,
   });
 
-  const parsed = JSON.parse(responseJson) as Record<string, unknown>;
+  let parsed: z.infer<typeof createWorkflowResponseSchema>;
+  try {
+    const raw = JSON.parse(responseJson) as unknown;
+    const result = createWorkflowResponseSchema.safeParse(raw);
+    if (!result.success) {
+      return {
+        messages: ["❌ 创建工作流失败：返回数据格式无效"],
+        done: true,
+      };
+    }
+    parsed = result.data;
+  } catch {
+    return {
+      messages: ["❌ 创建工作流失败：返回内容无法解析"],
+      done: true,
+    };
+  }
   if (!parsed.success) {
-    const message = typeof parsed.message === "string" ? parsed.message : "创建工作流失败";
+    const message = parsed.message || parsed.error || "创建工作流失败";
     return {
       messages: [`❌ ${message}`],
       done: true,
