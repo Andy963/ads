@@ -1020,8 +1020,11 @@ async function handleLine(
 
 async function main(): Promise<void> {
   const logger = new ConversationLogger();
+  const legacyHistoryPath = path.join(process.cwd(), ".ads", "cli-history.json");
   const historyStore = new HistoryStore({
-    storagePath: path.join(process.cwd(), ".ads", "cli-history.json"),
+    storagePath: path.join(process.cwd(), ".ads", "state.db"),
+    namespace: "cli",
+    migrateFromPaths: [legacyHistoryPath],
     maxEntriesPerSession: 300,
     maxTextLength: 6000,
   });

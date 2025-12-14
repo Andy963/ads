@@ -65,7 +65,9 @@ const webThreadStorage = new ThreadStorage({
 });
 const sessionManager = new SessionManager(undefined, undefined, "workspace-write", undefined, webThreadStorage);
 const historyStore = new HistoryStore({
-  storagePath: path.join(process.cwd(), ".ads", "web-history.json"),
+  storagePath: path.join(process.cwd(), ".ads", "state.db"),
+  namespace: "web",
+  migrateFromPaths: [path.join(process.cwd(), ".ads", "web-history.json")],
   maxEntriesPerSession: 200,
   maxTextLength: 4000,
 });

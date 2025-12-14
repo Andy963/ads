@@ -33,7 +33,9 @@ import { createLogger } from '../../utils/logger.js';
 const interruptManager = new InterruptManager();
 const adapterLogger = createLogger('TelegramCodexAdapter');
 const historyStore = new HistoryStore({
-  storagePath: path.join(process.cwd(), ".ads", "telegram-history.json"),
+  storagePath: path.join(process.cwd(), ".ads", "state.db"),
+  namespace: "telegram",
+  migrateFromPaths: [path.join(process.cwd(), ".ads", "telegram-history.json")],
   maxEntriesPerSession: 300,
   maxTextLength: 6000,
 });
