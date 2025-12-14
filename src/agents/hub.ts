@@ -54,6 +54,32 @@ function isStatefulAgent(agentId: AgentIdentifier): boolean {
   return agentId === "codex";
 }
 
+function parseMaxRounds(raw: string | undefined): number | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (["0", "off", "none", "unlimited", "infinite", "inf"].includes(normalized)) {
+    return 0;
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+function resolveDefaultMaxToolRounds(): number {
+  const parsed =
+    parseMaxRounds(process.env.ADS_AGENT_MAX_TOOL_ROUNDS) ??
+    parseMaxRounds(process.env.AGENT_MAX_TOOL_ROUNDS);
+  // 默认不限制：避免轻易打断“主代理执行完整任务”的闭环
+  return parsed ?? 0;
+}
+
 function normalizeInputToText(input: Input): string {
   if (typeof input === "string") {
     return input;
@@ -110,14 +136,12 @@ async function runAgentTurnWithTools(
   options: { maxToolRounds: number; toolContext: ToolExecutionContext; toolHooks?: ToolHooks },
 ): Promise<AgentRunResult> {
   let result = await orchestrator.invokeAgent(agentId, input, sendOptions);
-  if (options.maxToolRounds <= 0) {
-    return result;
-  }
 
   const stateful = isStatefulAgent(agentId);
   const basePrompt = stateful ? "" : normalizeInputToText(input).trim();
+  const unlimited = options.maxToolRounds <= 0;
 
-  for (let round = 1; round <= options.maxToolRounds; round += 1) {
+  for (let round = 1; unlimited || round <= options.maxToolRounds; round += 1) {
     const executed = await executeToolBlocks(result.response, options.toolHooks, options.toolContext);
     if (executed.results.length === 0) {
       return result;
@@ -142,16 +166,7 @@ async function runAgentTurnWithTools(
   }
 
   logger.warn(`[AgentHub] Tool loop reached max rounds (${options.maxToolRounds}) for agent=${agentId}`);
-  return {
-    ...result,
-    response: [
-      stripToolBlocks(result.response).trim(),
-      `⚠️ 已达到工具执行轮次上限（${options.maxToolRounds}），剩余工具调用未执行。`,
-    ]
-      .filter(Boolean)
-      .join("\n\n")
-      .trim(),
-  };
+  return { ...result, response: stripToolBlocks(result.response).trim() };
 }
 
 function stripDelegationBlocks(text: string): string {
@@ -335,7 +350,7 @@ export async function runCollaborativeTurn(
 ): Promise<CollaborativeTurnResult> {
   const maxSupervisorRounds = options.maxSupervisorRounds ?? 2;
   const maxDelegations = options.maxDelegations ?? 6;
-  const maxToolRounds = options.maxToolRounds ?? 4;
+  const maxToolRounds = options.maxToolRounds ?? resolveDefaultMaxToolRounds();
   const activeAgentId = orchestrator.getActiveAgentId();
   const supervisorName = resolveAgentName(orchestrator, activeAgentId);
 

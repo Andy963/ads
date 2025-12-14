@@ -195,6 +195,7 @@ Vertex AI（可选）：
   - `ENABLE_AGENT_EXEC_TOOL=1`：允许 `<<<tool.exec ...>>>` 执行本机命令（可选用 `AGENT_EXEC_TOOL_ALLOWLIST` 限制命令；设置为 `*` 表示不限制）
   - `ENABLE_AGENT_FILE_TOOLS=1`：允许 `<<<tool.read ...>>>` / `<<<tool.write ...>>>` 读写文件（受 `ALLOWED_DIRS` 目录白名单限制）
   - `ENABLE_AGENT_APPLY_PATCH=1`：允许 `<<<tool.apply_patch ...>>>` 应用 unified diff（需要 `git`；受 `ALLOWED_DIRS` 限制）
+  - `ADS_AGENT_MAX_TOOL_ROUNDS=0`：工具闭环的最大回合数（0=不限制）
   ```
   <<<tool.exec
   npm test
