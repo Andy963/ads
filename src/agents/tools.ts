@@ -22,6 +22,13 @@ export interface ToolCallSummary {
   outputPreview: string;
 }
 
+export interface ToolExecutionResult {
+  tool: string;
+  payload: string;
+  ok: boolean;
+  output: string;
+}
+
 export interface ToolHooks {
   onInvoke?: (tool: string, payload: string) => void | Promise<void>;
   onResult?: (summary: ToolCallSummary) => void | Promise<void>;
@@ -134,6 +141,15 @@ function extractToolInvocations(text: string): ToolInvocation[] {
     });
   }
   return matches;
+}
+
+export function stripToolBlocks(text: string): string {
+  if (!text) {
+    return text;
+  }
+  const regex = new RegExp(TOOL_BLOCK_REGEX.source, TOOL_BLOCK_REGEX.flags);
+  const stripped = text.replace(regex, "").trim();
+  return stripped.replace(/\n{3,}/g, "\n\n");
 }
 
 function parseStringArray(value: unknown): string[] | undefined {
@@ -834,6 +850,53 @@ async function runTool(name: string, payload: string, context: ToolExecutionCont
   }
 }
 
+export async function executeToolBlocks(
+  text: string,
+  hooks?: ToolHooks,
+  context: ToolExecutionContext = {},
+): Promise<{ replacedText: string; strippedText: string; results: ToolExecutionResult[]; summaries: ToolCallSummary[] }> {
+  const invocations = extractToolInvocations(text);
+  if (invocations.length === 0) {
+    return { replacedText: text, strippedText: text, results: [], summaries: [] };
+  }
+
+  let replacedText = text;
+  const results: ToolExecutionResult[] = [];
+  const summaries: ToolCallSummary[] = [];
+
+  for (const invocation of invocations) {
+    await hooks?.onInvoke?.(invocation.name, invocation.payload);
+    try {
+      const output = await runTool(invocation.name, invocation.payload, context);
+      replacedText = replacedText.replace(invocation.raw, output);
+      results.push({ tool: invocation.name, payload: invocation.payload, ok: true, output });
+      const summary: ToolCallSummary = {
+        tool: invocation.name,
+        ok: true,
+        inputPreview: truncate(invocation.payload),
+        outputPreview: truncate(output),
+      };
+      summaries.push(summary);
+      await hooks?.onResult?.(summary);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallback = `⚠️ 工具 ${invocation.name} 失败：${message}`;
+      replacedText = replacedText.replace(invocation.raw, fallback);
+      results.push({ tool: invocation.name, payload: invocation.payload, ok: false, output: fallback });
+      const summary: ToolCallSummary = {
+        tool: invocation.name,
+        ok: false,
+        inputPreview: truncate(invocation.payload),
+        outputPreview: truncate(fallback),
+      };
+      summaries.push(summary);
+      await hooks?.onResult?.(summary);
+    }
+  }
+
+  return { replacedText, strippedText: stripToolBlocks(text), results, summaries };
+}
+
 export function injectToolGuide(
   input: string,
   options?: {
@@ -925,46 +988,12 @@ export async function resolveToolInvocations(
   hooks?: ToolHooks,
   context: ToolExecutionContext = {},
 ): Promise<ToolResolutionOutcome> {
-  const invocations = extractToolInvocations(result.response);
-  if (invocations.length === 0) {
-    return { ...result, toolSummaries: [] };
-  }
-
-  let resolvedText = result.response;
-  const summaries: ToolCallSummary[] = [];
-
-  for (const invocation of invocations) {
-    await hooks?.onInvoke?.(invocation.name, invocation.payload);
-    try {
-      const output = await runTool(invocation.name, invocation.payload, context);
-      resolvedText = resolvedText.replace(invocation.raw, output);
-      const summary: ToolCallSummary = {
-        tool: invocation.name,
-        ok: true,
-        inputPreview: truncate(invocation.payload),
-        outputPreview: truncate(output),
-      };
-      summaries.push(summary);
-      await hooks?.onResult?.(summary);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const fallback = `⚠️ 工具 ${invocation.name} 失败：${message}`;
-      resolvedText = resolvedText.replace(invocation.raw, fallback);
-      const summary: ToolCallSummary = {
-        tool: invocation.name,
-        ok: false,
-        inputPreview: truncate(invocation.payload),
-        outputPreview: truncate(fallback),
-      };
-      summaries.push(summary);
-      await hooks?.onResult?.(summary);
-    }
-  }
+  const outcome = await executeToolBlocks(result.response, hooks, context);
 
   return {
-    response: resolvedText,
+    response: outcome.replacedText,
     usage: result.usage,
     agentId: result.agentId,
-    toolSummaries: summaries,
+    toolSummaries: outcome.summaries,
   };
 }

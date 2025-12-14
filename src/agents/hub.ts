@@ -1,7 +1,7 @@
 import type { Input } from "@openai/codex-sdk";
 
 import { injectDelegationGuide } from "./delegation.js";
-import { injectToolGuide } from "./tools.js";
+import { executeToolBlocks, injectToolGuide, stripToolBlocks, type ToolExecutionContext, type ToolExecutionResult, type ToolHooks } from "./tools.js";
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
@@ -30,6 +30,9 @@ export interface CollaborationHooks {
 export interface CollaborativeTurnOptions extends AgentSendOptions {
   maxSupervisorRounds?: number;
   maxDelegations?: number;
+  maxToolRounds?: number;
+  toolContext?: ToolExecutionContext;
+  toolHooks?: ToolHooks;
   hooks?: CollaborationHooks;
 }
 
@@ -41,6 +44,100 @@ export interface CollaborativeTurnResult extends AgentRunResult {
 const logger = createLogger("AgentHub");
 
 const DELEGATION_REGEX = /<<<agent\.(claude|gemini)[\t ]*\n([\s\S]*?)>>>/gi;
+
+function isStatefulAgent(agentId: AgentIdentifier): boolean {
+  return agentId === "codex";
+}
+
+function normalizeInputToText(input: Input): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (Array.isArray(input)) {
+    return input
+      .map((part) => {
+        const current = part as { type?: string; text?: string; path?: string };
+        if (current.type === "text" && typeof current.text === "string") {
+          return current.text;
+        }
+        if (current.type === "local_image") {
+          return `[image:${current.path ?? "blob"}]`;
+        }
+        return current.type ? `[${current.type}]` : "[content]";
+      })
+      .join("\n\n");
+  }
+  return String(input);
+}
+
+function buildToolFeedbackPrompt(toolResults: ToolExecutionResult[], round: number): string {
+  const truncatePayload = (text: string, limit = 1200) => {
+    const trimmed = text.trim();
+    if (trimmed.length <= limit) {
+      return trimmed;
+    }
+    return `${trimmed.slice(0, Math.max(0, limit - 1))}…`;
+  };
+
+  const header = [
+    "系统已执行你上一条回复中的工具调用，并返回结果。",
+    "请基于这些结果继续完成任务；如果仍需调用工具，请继续输出 <<<tool.*>>> 指令块。",
+    `（工具回合：${round}）`,
+    "",
+  ].join("\n");
+
+  const body = toolResults
+    .map((result, idx) => {
+      const title = `【工具结果 ${idx + 1}】tool.${result.tool} (${result.ok ? "ok" : "fail"})`;
+      const payloadLine = result.payload ? `payload:\n${truncatePayload(result.payload)}` : "";
+      return [title, payloadLine, result.output.trim()].filter(Boolean).join("\n\n");
+    })
+    .join("\n\n---\n\n");
+
+  return [header, body].filter(Boolean).join("\n").trim();
+}
+
+async function runAgentTurnWithTools(
+  orchestrator: HybridOrchestrator,
+  agentId: AgentIdentifier,
+  input: Input,
+  sendOptions: AgentSendOptions,
+  options: { maxToolRounds: number; toolContext: ToolExecutionContext; toolHooks?: ToolHooks },
+): Promise<AgentRunResult> {
+  let result = await orchestrator.invokeAgent(agentId, input, sendOptions);
+  if (options.maxToolRounds <= 0) {
+    return result;
+  }
+
+  const stateful = isStatefulAgent(agentId);
+  const basePrompt = stateful ? "" : normalizeInputToText(input).trim();
+
+  for (let round = 1; round <= options.maxToolRounds; round += 1) {
+    const executed = await executeToolBlocks(result.response, options.toolHooks, options.toolContext);
+    if (executed.results.length === 0) {
+      return result;
+    }
+
+    const feedback = buildToolFeedbackPrompt(executed.results, round);
+    const nextInput = stateful
+      ? feedback
+      : [
+          basePrompt,
+          "",
+          "你上一条回复（已去掉工具块）：",
+          stripToolBlocks(result.response).trim(),
+          "",
+          feedback,
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+          .trim();
+
+    result = await orchestrator.invokeAgent(agentId, nextInput, sendOptions);
+  }
+
+  return result;
+}
 
 function stripDelegationBlocks(text: string): string {
   if (!text) {
@@ -206,6 +303,7 @@ export async function runCollaborativeTurn(
 ): Promise<CollaborativeTurnResult> {
   const maxSupervisorRounds = options.maxSupervisorRounds ?? 2;
   const maxDelegations = options.maxDelegations ?? 6;
+  const maxToolRounds = options.maxToolRounds ?? 4;
   const activeAgentId = orchestrator.getActiveAgentId();
 
   const sendOptions: AgentSendOptions = {
@@ -213,9 +311,14 @@ export async function runCollaborativeTurn(
     outputSchema: options.outputSchema,
     signal: options.signal,
   };
+  const toolContext: ToolExecutionContext = options.toolContext ?? { cwd: process.cwd() };
 
   const prompt = applyGuides(input, orchestrator);
-  let result: AgentRunResult = await orchestrator.send(prompt, sendOptions);
+  let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
+    maxToolRounds,
+    toolContext,
+    toolHooks: options.toolHooks,
+  });
 
   if (activeAgentId !== "codex") {
     return { ...result, delegations: [], supervisorRounds: 0 };
@@ -243,7 +346,11 @@ export async function runCollaborativeTurn(
       break;
     }
 
-    result = await orchestrator.send(supervisorPrompt, sendOptions);
+    result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
+      maxToolRounds,
+      toolContext,
+      toolHooks: options.toolHooks,
+    });
   }
 
   const finalResponse = stripDelegationBlocks(result.response);
