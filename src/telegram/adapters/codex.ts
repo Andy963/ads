@@ -19,6 +19,7 @@ import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
 import { runCollaborativeTurn } from '../../agents/hub.js';
+import { resolveToolInvocations } from '../../agents/tools.js';
 import { appendMarkNoteEntry } from '../utils/noteLogger.js';
 import {
   CODEX_THREAD_RESET_HINT,
@@ -959,6 +960,11 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
           logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`),
       },
     });
+    const withTools = await resolveToolInvocations(result, {
+      onInvoke: (tool, payload) => logger?.logOutput(`[Tool] ${tool}: ${truncateForLog(payload)}`),
+      onResult: (summary) =>
+        logger?.logOutput(`[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`),
+    }, { cwd: workspaceRoot });
 
     await finalizeStatusUpdates();
     stopTyping();
@@ -969,9 +975,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     saveThreadIdIfNeeded();
 
-    const baseOutput = typeof result.response === 'string'
-      ? result.response
-      : String(result.response ?? '');
+    const baseOutput = typeof withTools.response === 'string'
+      ? withTools.response
+      : String(withTools.response ?? '');
 
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
     if (!logger) {
