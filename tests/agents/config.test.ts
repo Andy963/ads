@@ -1,10 +1,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 import { getAgentFeatureFlags, resolveClaudeAgentConfig, resolveGeminiAgentConfig } from "../../src/agents/config.js";
 
 describe("agents/config", () => {
   const originalEnv: Record<string, string | undefined> = {};
+  let geminiConfigDir: string | null = null;
 
   const setEnv = (key: string, value: string | undefined) => {
     if (value === undefined) {
@@ -26,6 +29,7 @@ describe("agents/config", () => {
     originalEnv.GEMINI_API_KEY = process.env.GEMINI_API_KEY;
     originalEnv.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
     originalEnv.GEMINI_MODEL = process.env.GEMINI_MODEL;
+    originalEnv.GEMINI_CONFIG_DIR = process.env.GEMINI_CONFIG_DIR;
 
     setEnv("ENABLE_CLAUDE_AGENT", "1");
     setEnv("CLAUDE_API_KEY", "sk-ant-test");
@@ -38,6 +42,11 @@ describe("agents/config", () => {
     setEnv("GEMINI_API_KEY", undefined);
     setEnv("GOOGLE_API_KEY", undefined);
     setEnv("GEMINI_MODEL", undefined);
+
+    const scratchRoot = path.join(process.cwd(), ".ads-test-tmp");
+    fs.mkdirSync(scratchRoot, { recursive: true });
+    geminiConfigDir = fs.mkdtempSync(path.join(scratchRoot, "gemini-config-"));
+    setEnv("GEMINI_CONFIG_DIR", geminiConfigDir);
   });
 
   afterEach(() => {
@@ -52,6 +61,12 @@ describe("agents/config", () => {
     setEnv("GEMINI_API_KEY", originalEnv.GEMINI_API_KEY);
     setEnv("GOOGLE_API_KEY", originalEnv.GOOGLE_API_KEY);
     setEnv("GEMINI_MODEL", originalEnv.GEMINI_MODEL);
+    setEnv("GEMINI_CONFIG_DIR", originalEnv.GEMINI_CONFIG_DIR);
+
+    if (geminiConfigDir) {
+      fs.rmSync(geminiConfigDir, { recursive: true, force: true });
+      geminiConfigDir = null;
+    }
   });
 
   it("respects env feature flags when present", () => {
@@ -85,5 +100,32 @@ describe("agents/config", () => {
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.apiKey, "gm-test");
     assert.equal(cfg.model, "gemini-custom");
+  });
+
+  it("loads Gemini config from ~/.gemini/.ven when present", () => {
+    assert.ok(geminiConfigDir);
+    fs.writeFileSync(path.join(geminiConfigDir, ".ven"), "GEMINI_API_KEY=gm-from-ven\nGEMINI_MODEL=gemini-from-ven\n");
+    const cfg = resolveGeminiAgentConfig();
+    assert.equal(cfg.enabled, true);
+    assert.equal(cfg.apiKey, "gm-from-ven");
+    assert.equal(cfg.model, "gemini-from-ven");
+  });
+
+  it("prefers ~/.gemini/.ven.local over ~/.gemini/.ven", () => {
+    assert.ok(geminiConfigDir);
+    fs.writeFileSync(path.join(geminiConfigDir, ".ven"), "GEMINI_API_KEY=gm-from-ven\nGEMINI_MODEL=base\n");
+    fs.writeFileSync(path.join(geminiConfigDir, ".ven.local"), "GEMINI_MODEL=override\n");
+    const cfg = resolveGeminiAgentConfig();
+    assert.equal(cfg.apiKey, "gm-from-ven");
+    assert.equal(cfg.model, "override");
+  });
+
+  it("prefers ~/.gemini/.ven over config.json", () => {
+    assert.ok(geminiConfigDir);
+    fs.writeFileSync(path.join(geminiConfigDir, "config.json"), JSON.stringify({ api_key: "gm-from-config", model: "config" }));
+    fs.writeFileSync(path.join(geminiConfigDir, ".ven"), "GEMINI_API_KEY=gm-from-ven\nGEMINI_MODEL=ven\n");
+    const cfg = resolveGeminiAgentConfig();
+    assert.equal(cfg.apiKey, "gm-from-ven");
+    assert.equal(cfg.model, "ven");
   });
 });

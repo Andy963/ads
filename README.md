@@ -143,17 +143,9 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 - `CLAUDE_TOOL_ALLOWLIST`：逗号分隔的工具白名单，占位用于后续阶段
 - `CLAUDE_BASE_URL` / `ANTHROPIC_BASE_URL`：如采用自托管 Claude Code endpoint，可在此指定 API 基础地址
 
-### Gemini Agent（实验性）
+也支持从主目录读取配置（用于避免把密钥写进仓库）：
 
-Gemini 目前以“协作代理”的角色接入（输出建议/计划，不直接执行命令或修改文件），可通过以下环境变量启用：
-
-- `ENABLE_GEMINI_AGENT=1`：显式打开 Gemini 适配器（默认关闭；若检测到 API Key 也会自动启用）
-- `GEMINI_API_KEY`：Google AI Studio API Key（也支持 `GOOGLE_API_KEY`）
-- `GEMINI_MODEL`：Gemini 模型名称，默认 `gemini-2.0-flash`
-
-也可以像 Codex 一样在主目录放置配置文件：
-
-`~/.claude/config.json`（或 `settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN`）
+`~/.claude/config.json`（或 `settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN`）：
 ```json
 {
   "enabled": true,
@@ -165,6 +157,32 @@ Gemini 目前以“协作代理”的角色接入（输出建议/计划，不直
 ```
 
 （可选）在 `~/.claude/auth.json` 中保存 `{"ANTHROPIC_API_KEY": "..."}` 以与 `config.json` 分离密钥。
+
+### Gemini Agent（实验性）
+
+Gemini 目前以“协作代理”的角色接入（输出建议/计划，不直接执行命令或修改文件）。
+
+环境变量（优先级最高）：
+
+- `ENABLE_GEMINI_AGENT=1`：显式打开 Gemini 适配器（默认关闭；若检测到可用凭据也会自动启用）
+- `GEMINI_API_KEY`：Google AI Studio API Key（也支持 `GOOGLE_API_KEY`）
+- `GEMINI_MODEL`：Gemini 模型名称，默认 `gemini-2.0-flash`
+- （可选）`GEMINI_BASE_URL`：自定义 API Base URL（如代理/自托管）
+- （可选）`GEMINI_API_VERSION`：如 `v1beta` / `v1`
+- （可选）`GEMINI_ACCESS_TOKEN`：OAuth Access Token（通常用于 Vertex AI 或受控环境）
+
+主目录配置（默认 `~/.gemini`，也可用 `GEMINI_CONFIG_DIR` 覆盖目录）：
+
+- `.env` / `.env.local`（也兼容旧文件名 `.ven` / `.ven.local`）
+- `config.json`（结构化配置）
+- `auth.json`（密钥/凭据，优先级最低；若为 `authorized_user` JSON 会作为 `GOOGLE_APPLICATION_CREDENTIALS` 使用）
+
+Vertex AI（可选）：
+
+- `GOOGLE_GENAI_USE_VERTEXAI=true`
+- `GOOGLE_CLOUD_PROJECT=your-project-id`
+- `GOOGLE_CLOUD_LOCATION=us-central1`
+- （可选）`GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json`
 
 配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini API Key（环境变量或 Claude 配置文件）则默认启用对应适配器；CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
 
