@@ -45,18 +45,6 @@ const EXEC_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const FILE_DEFAULT_MAX_BYTES = 200 * 1024;
 const FILE_DEFAULT_MAX_WRITE_BYTES = 1024 * 1024;
 const PATCH_DEFAULT_MAX_BYTES = 512 * 1024;
-const DEFAULT_EXEC_ALLOWLIST = [
-  "git",
-  "npm",
-  "pnpm",
-  "yarn",
-  "node",
-  "npx",
-  "tsx",
-  "tsc",
-  "eslint",
-  "rg",
-];
 
 const logger = createLogger("AgentTools");
 
@@ -121,13 +109,21 @@ function getPatchMaxBytes(): number {
   return parsePositiveInt(process.env.AGENT_APPLY_PATCH_MAX_BYTES, PATCH_DEFAULT_MAX_BYTES);
 }
 
-function getExecAllowlist(): string[] {
+function getExecAllowlist(): string[] | null {
   const env = process.env.AGENT_EXEC_TOOL_ALLOWLIST;
-  const parsed = parseCsv(env).map((entry) => entry.toLowerCase());
-  if (parsed.length > 0) {
-    return parsed;
+  if (env === undefined) {
+    return null;
   }
-  return DEFAULT_EXEC_ALLOWLIST;
+  const parsed = parseCsv(env)
+    .map((entry) => entry.toLowerCase())
+    .filter(Boolean);
+  if (parsed.length === 0) {
+    return null;
+  }
+  if (parsed.includes("*") || parsed.includes("all")) {
+    return null;
+  }
+  return parsed;
 }
 
 function extractToolInvocations(text: string): ToolInvocation[] {
@@ -295,6 +291,21 @@ function resolvePathForTool(targetPath: string, context: ToolExecutionContext): 
   return resolved;
 }
 
+function findGitRoot(startDir: string): string | null {
+  let current = path.resolve(startDir);
+  while (true) {
+    const marker = path.join(current, ".git");
+    if (fs.existsSync(marker)) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
 function splitCommandLine(commandLine: string): { cmd: string; args: string[] } {
   const tokens: string[] = [];
   let current = "";
@@ -398,8 +409,8 @@ async function runExecTool(payload: string, context: ToolExecutionContext): Prom
   const cwd = resolveBaseDir(context);
   const executable = path.basename(rawCmd).toLowerCase();
   const allowlist = getExecAllowlist();
-  if (!allowlist.includes(executable)) {
-    throw new Error(`不允许执行命令: ${executable}（可用 AGENT_EXEC_TOOL_ALLOWLIST 配置白名单）`);
+  if (allowlist && !allowlist.includes(executable)) {
+    throw new Error(`不允许执行命令: ${executable}（可用 AGENT_EXEC_TOOL_ALLOWLIST 配置白名单；'*' 表示不限制）`);
   }
 
   const commandLine = [rawCmd, ...args].join(" ").trim();
@@ -762,7 +773,10 @@ function validatePatchPaths(paths: string[], context: ToolExecutionContext): voi
     if (!normalized || normalized === "." || normalized === "/") {
       throw new Error(`patch 路径无效: ${rawPath}`);
     }
-    if (normalized.startsWith("/") || normalized.startsWith("../") || normalized === "..") {
+    if (normalized.includes("\0")) {
+      throw new Error(`patch 路径包含非法字符: ${rawPath}`);
+    }
+    if (normalized.startsWith("/")) {
       throw new Error(`patch 路径不安全: ${rawPath}`);
     }
     const absolute = path.resolve(baseDir, normalized);
@@ -780,9 +794,20 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
     throw new Error("apply_patch 工具未启用（设置 ENABLE_AGENT_APPLY_PATCH=1 打开）");
   }
 
-  const patchText = payload.trim();
+  let patchText = payload.replaceAll("\r\n", "\n");
+  const lines = patchText.split("\n");
+  while (lines.length > 0 && lines[0]?.trim() === "") {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1]?.trim() === "") {
+    lines.pop();
+  }
+  patchText = lines.join("\n");
   if (!patchText) {
     throw new Error("apply_patch payload 为空");
+  }
+  if (!patchText.endsWith("\n")) {
+    patchText += "\n";
   }
   const patchBytes = Buffer.byteLength(patchText, "utf8");
   const maxBytes = getPatchMaxBytes();
@@ -799,7 +824,14 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
   logger.info(`[tool.apply_patch] cwd=${cwd} bytes=${patchBytes} files=${patchPaths.length}`);
 
   return await new Promise<string>((resolve, reject) => {
-    const child = spawn("git", ["apply", "--whitespace=nowarn"], {
+    const gitRoot = findGitRoot(cwd);
+    const prefixRaw = gitRoot ? path.relative(gitRoot, cwd) : "";
+    const prefix = prefixRaw && prefixRaw !== "." ? prefixRaw.split(path.sep).join("/") : "";
+    const args = ["apply", "--whitespace=nowarn"];
+    if (prefix) {
+      args.push(`--directory=${prefix}`);
+    }
+    const child = spawn("git", args, {
       cwd,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
@@ -964,7 +996,7 @@ export function injectToolGuide(
   if (activeAgentId !== "codex" && isExecToolEnabled()) {
     guideLines.push(
       [
-        "exec - 在本机执行命令（需要 ENABLE_AGENT_EXEC_TOOL=1，受白名单限制），格式：",
+        "exec - 在本机执行命令（需要 ENABLE_AGENT_EXEC_TOOL=1；可选用 AGENT_EXEC_TOOL_ALLOWLIST 限制命令，'*' 表示不限制），格式：",
         "<<<tool.exec",
         "npm test",
         ">>>",

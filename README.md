@@ -160,7 +160,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 
 ### Gemini Agent（实验性）
 
-Gemini 默认以“协作代理”的角色接入（输出建议/计划）。如需让 Claude/Gemini 也能执行本机命令，可开启 `ENABLE_AGENT_EXEC_TOOL=1`（详见下文工具协议）。
+Gemini 默认以“协作代理”的角色接入（输出建议/计划）。如需让 Claude/Gemini 也能执行本机命令/读写文件，可开启对应工具开关（详见下文工具协议）。
 
 环境变量（优先级最高）：
 
@@ -186,12 +186,15 @@ Vertex AI（可选）：
 
 配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini 可用凭据（环境变量或主目录配置文件）则默认启用对应适配器；CLI/Web/Telegram 均支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
 
-### 协作代理（Codex 主管自动调度）
+### 协作代理（主代理自动调度/委派）
 
 - 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。
 - 你无需手写 `<<<agent.*>>>` 指令块；直接用自然语言描述需求即可。若想强制让 Codex 调用某个协作代理，可在需求里明确写“请让 Claude/Gemini 帮我做 X，并给出补丁/差异说明”。
-- 仅当当前主代理为 Codex 时会进行协作调度；如果你 `/agent claude` 或 `/agent gemini` 切换主代理，则变为单代理对话（不会再触发 Codex→协作代理调度）。
-- （可选）启用 `ENABLE_AGENT_EXEC_TOOL=1` 后，Claude/Gemini 也可通过工具块执行白名单内的本机命令（默认白名单含 `git`/`npm`/`node`/`npx`/`pnpm`/`yarn`/`tsx`/`tsc`/`eslint`/`rg`；可用 `AGENT_EXEC_TOOL_ALLOWLIST` 覆盖）：
+- 当前主代理为任意 Agent 时，只要输出包含 `<<<agent.<id>>>` 指令块，就会触发协作调度；系统会执行并把协作结果回注给主代理继续整合。
+- （可选）启用工具开关后，Claude/Gemini 也可通过工具块执行命令/读写文件（工具输出会自动回注给当前主代理继续，多轮直到无新工具块或达到上限）：
+  - `ENABLE_AGENT_EXEC_TOOL=1`：允许 `<<<tool.exec ...>>>` 执行本机命令（可选用 `AGENT_EXEC_TOOL_ALLOWLIST` 限制命令；设置为 `*` 表示不限制）
+  - `ENABLE_AGENT_FILE_TOOLS=1`：允许 `<<<tool.read ...>>>` / `<<<tool.write ...>>>` 读写文件（受 `ALLOWED_DIRS` 目录白名单限制）
+  - `ENABLE_AGENT_APPLY_PATCH=1`：允许 `<<<tool.apply_patch ...>>>` 应用 unified diff（需要 `git`；受 `ALLOWED_DIRS` 限制）
   ```
   <<<tool.exec
   npm test
