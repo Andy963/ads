@@ -76,12 +76,12 @@ function resolveAgentName(orchestrator: HybridOrchestrator, agentId: DelegationA
 
 function applyGuides(input: Input, orchestrator: HybridOrchestrator): Input {
   if (typeof input === "string") {
-    const withTools = injectToolGuide(input);
+    const withTools = injectToolGuide(input, { activeAgentId: orchestrator.getActiveAgentId() });
     return injectDelegationGuide(withTools, orchestrator);
   }
 
   if (Array.isArray(input)) {
-    const toolGuide = injectToolGuide("").trim();
+    const toolGuide = injectToolGuide("", { activeAgentId: orchestrator.getActiveAgentId() }).trim();
     const delegationGuide = injectDelegationGuide("", orchestrator).trim();
     const guide = [toolGuide, delegationGuide].filter(Boolean).join("\n\n").trim();
     if (!guide) {

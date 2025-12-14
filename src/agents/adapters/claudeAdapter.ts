@@ -19,8 +19,12 @@ const DEFAULT_METADATA: AgentMetadata = {
 
 const DEFAULT_SYSTEM_PROMPT = [
   "You are Claude assisting the ADS automation platform as a supporting agent.",
-  "Always respond with actionable plans, diffs, or insights. You cannot run shell commands or apply patches yourself.",
-  "If file edits or commands are required, describe the exact steps so Codex can execute them safely.",
+  "Always respond with actionable plans, diffs, or insights.",
+  "If you need to execute a command, emit a tool block (requires ENABLE_AGENT_EXEC_TOOL=1):",
+  "<<<tool.exec",
+  "npm test",
+  ">>>",
+  "Tool output will be injected back into the conversation by ADS.",
 ].join("\n");
 
 function mapUsage(result: SDKResultMessage): Usage | null {

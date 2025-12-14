@@ -61,7 +61,8 @@ export function injectDelegationGuide(
 
   const guide = [
     "【协作代理指令】",
-    "Codex 负责命令/后端；协作代理用于补充建议、审阅与长文本输出（不直接执行命令/修改文件）。",
+    "默认由 Codex 负责执行命令/修改文件；协作代理用于补充建议、审阅与长文本输出。",
+    "（可选）若启用 ENABLE_AGENT_EXEC_TOOL=1，Claude/Gemini 也可通过 <<<tool.exec ...>>> 执行白名单内命令。",
     "当需要协作代理协助时，请输出以下格式的指令块：",
     ...availableAgents.flatMap((agent) => [
       `<<<agent.${agent.id}`,

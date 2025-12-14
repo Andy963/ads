@@ -411,7 +411,7 @@ async function handleAgentInteraction(
           logger.logOutput(
             `[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`,
           ),
-      });
+      }, { cwd: process.cwd() });
       const elapsed = (Date.now() - startTime) / 1000;
       renderer.finish();
       if (!streamingConfig.enabled) {

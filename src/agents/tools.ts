@@ -1,8 +1,13 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+
 import type { AgentRunResult } from "./types.js";
 import { SearchTool } from "../tools/index.js";
 import { ensureApiKeys, resolveSearchConfig } from "../tools/search/config.js";
 import { checkTavilySetup } from "../tools/search/setupCodexMcp.js";
 import type { SearchParams, SearchResponse } from "../tools/search/types.js";
+import { createLogger } from "../utils/logger.js";
 
 interface ToolInvocation {
   name: string;
@@ -28,6 +33,22 @@ export interface ToolResolutionOutcome extends AgentRunResult {
 
 const TOOL_BLOCK_REGEX = /<<<tool\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
 const SNIPPET_LIMIT = 180;
+const EXEC_MAX_OUTPUT_BYTES = 48 * 1024;
+const EXEC_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_EXEC_ALLOWLIST = [
+  "git",
+  "npm",
+  "pnpm",
+  "yarn",
+  "node",
+  "npx",
+  "tsx",
+  "tsc",
+  "eslint",
+  "rg",
+];
+
+const logger = createLogger("AgentTools");
 
 function truncate(text: string, limit = SNIPPET_LIMIT): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -35,6 +56,37 @@ function truncate(text: string, limit = SNIPPET_LIMIT): string {
     return normalized;
   }
   return `${normalized.slice(0, limit - 1)}…`;
+}
+
+function parseBoolean(value: string | undefined, defaultValue = false): boolean {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function parseCsv(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function isExecToolEnabled(): boolean {
+  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, false);
+}
+
+function getExecAllowlist(): string[] {
+  const env = process.env.AGENT_EXEC_TOOL_ALLOWLIST;
+  const parsed = parseCsv(env).map((entry) => entry.toLowerCase());
+  if (parsed.length > 0) {
+    return parsed;
+  }
+  return DEFAULT_EXEC_ALLOWLIST;
 }
 
 function extractToolInvocations(text: string): ToolInvocation[] {
@@ -146,46 +198,298 @@ async function handleSearchTool(payload: string): Promise<string> {
   return formatSearchResults(params.query, result);
 }
 
-async function runTool(name: string, payload: string): Promise<string> {
+export interface ToolExecutionContext {
+  cwd?: string;
+  allowedDirs?: string[];
+}
+
+function resolveExecCwd(context: ToolExecutionContext): string {
+  const cwd = context.cwd ? path.resolve(context.cwd) : process.cwd();
+  if (!fs.existsSync(cwd)) {
+    throw new Error(`工作目录不存在: ${cwd}`);
+  }
+  const stat = fs.statSync(cwd);
+  if (!stat.isDirectory()) {
+    throw new Error(`工作目录不是文件夹: ${cwd}`);
+  }
+  if (context.allowedDirs && context.allowedDirs.length > 0) {
+    const resolvedAllowed = context.allowedDirs.map((dir) => path.resolve(dir));
+    const ok = resolvedAllowed.some((dir) => {
+      const rel = path.relative(dir, cwd);
+      return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+    });
+    if (!ok) {
+      throw new Error(`工作目录不在白名单内: ${cwd}`);
+    }
+  }
+  return cwd;
+}
+
+function splitCommandLine(commandLine: string): { cmd: string; args: string[] } {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escape = false;
+
+  const push = () => {
+    if (current.length > 0) {
+      tokens.push(current);
+      current = "";
+    }
+  };
+
+  for (const ch of commandLine.trim()) {
+    if (escape) {
+      current += ch;
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      push();
+      continue;
+    }
+    current += ch;
+  }
+  push();
+
+  const cmd = tokens.shift() ?? "";
+  return { cmd, args: tokens };
+}
+
+function parseExecPayload(payload: string): {
+  cmd: string;
+  args: string[];
+  timeoutMs: number;
+} {
+  const trimmed = payload.trim();
+  if (!trimmed) {
+    throw new Error("exec payload 为空");
+  }
+
+  if (trimmed.startsWith("{")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (error) {
+      throw new Error("exec payload JSON 解析失败", { cause: error instanceof Error ? error : undefined });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("exec payload 必须是 JSON 对象");
+    }
+    const record = parsed as Record<string, unknown>;
+    const cmdRaw = record.cmd ?? record.command;
+    const cmd = typeof cmdRaw === "string" ? cmdRaw.trim() : "";
+    if (!cmd) {
+      throw new Error("exec payload 缺少 cmd/command");
+    }
+    const argsRaw = record.args ?? record.argv;
+    const args = Array.isArray(argsRaw)
+      ? argsRaw.map((entry) => String(entry))
+      : typeof argsRaw === "string"
+        ? splitCommandLine(argsRaw).args
+        : [];
+    const timeoutRaw = record.timeoutMs ?? record.timeout_ms;
+    const timeoutMs =
+      typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) && timeoutRaw > 0
+        ? Math.floor(timeoutRaw)
+        : EXEC_DEFAULT_TIMEOUT_MS;
+    return { cmd, args, timeoutMs };
+  }
+
+  const { cmd, args } = splitCommandLine(trimmed);
+  if (!cmd) {
+    throw new Error("exec payload 缺少命令");
+  }
+  return { cmd, args, timeoutMs: EXEC_DEFAULT_TIMEOUT_MS };
+}
+
+async function runExecTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  if (!isExecToolEnabled()) {
+    throw new Error("exec 工具未启用（设置 ENABLE_AGENT_EXEC_TOOL=1 打开）");
+  }
+
+  const { cmd: rawCmd, args, timeoutMs } = parseExecPayload(payload);
+  const cwd = resolveExecCwd(context);
+  const executable = path.basename(rawCmd).toLowerCase();
+  const allowlist = getExecAllowlist();
+  if (!allowlist.includes(executable)) {
+    throw new Error(`不允许执行命令: ${executable}（可用 AGENT_EXEC_TOOL_ALLOWLIST 配置白名单）`);
+  }
+
+  const commandLine = [rawCmd, ...args].join(" ").trim();
+  logger.info(`[tool.exec] cwd=${cwd} cmd=${commandLine}`);
+
+  return await new Promise<string>((resolve, reject) => {
+    const startedAt = Date.now();
+    const child = spawn(rawCmd, args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let truncatedStdout = false;
+    let truncatedStderr = false;
+    let timedOut = false;
+
+    const append = (
+      target: Buffer<ArrayBufferLike>,
+      chunk: Buffer<ArrayBufferLike>,
+      kind: "stdout" | "stderr",
+    ): Buffer<ArrayBufferLike> => {
+      if (target.length >= EXEC_MAX_OUTPUT_BYTES) {
+        if (kind === "stdout") truncatedStdout = true;
+        if (kind === "stderr") truncatedStderr = true;
+        return target;
+      }
+      const remaining = EXEC_MAX_OUTPUT_BYTES - target.length;
+      if (chunk.length > remaining) {
+        if (kind === "stdout") truncatedStdout = true;
+        if (kind === "stderr") truncatedStderr = true;
+        return Buffer.concat([target, chunk.subarray(0, remaining)]);
+      }
+      return Buffer.concat([target, chunk]);
+    };
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGKILL");
+      } catch (error) {
+        logger.warn("[tool.exec] Failed to kill timed-out process", error);
+      }
+    }, Math.max(1, timeoutMs));
+
+    child.stdout?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
+      stdout = append(stdout, chunk, "stdout");
+    });
+    child.stderr?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
+      stderr = append(stderr, chunk, "stderr");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timeout);
+      const elapsedMs = Date.now() - startedAt;
+      const lines: string[] = [];
+      lines.push(`$ ${commandLine}`);
+      if (timedOut) {
+        lines.push(`⏱️ timeout after ${timeoutMs}ms`);
+      }
+      lines.push(`exit=${code ?? "null"} signal=${signal ?? "null"} elapsed=${elapsedMs}ms`);
+
+      const outText = stdout.toString("utf8").trimEnd();
+      const errText = stderr.toString("utf8").trimEnd();
+
+      if (outText) {
+        lines.push("");
+        lines.push("stdout:");
+        lines.push("```");
+        lines.push(outText + (truncatedStdout ? "\n…(truncated)" : ""));
+        lines.push("```");
+      }
+      if (errText) {
+        lines.push("");
+        lines.push("stderr:");
+        lines.push("```");
+        lines.push(errText + (truncatedStderr ? "\n…(truncated)" : ""));
+        lines.push("```");
+      }
+      resolve(lines.join("\n").trim());
+    });
+  });
+}
+
+async function runTool(name: string, payload: string, context: ToolExecutionContext): Promise<string> {
   switch (name) {
     case "search":
       return handleSearchTool(payload);
+    case "exec":
+      return runExecTool(payload, context);
     default:
       throw new Error(`未知工具: ${name}`);
   }
 }
 
-export function injectToolGuide(input: string): string {
-  // 如果 Codex 已配置 Tavily MCP，不需要注入文本协议指南
-  // 模型会通过原生工具调用使用搜索
-  const mcpStatus = checkTavilySetup();
-  if (mcpStatus.configured) {
-    return input;
+export function injectToolGuide(
+  input: string,
+  options?: {
+    activeAgentId?: string;
+  },
+): string {
+  const activeAgentId = options?.activeAgentId ?? "codex";
+  const wantsSearchGuide = () => {
+    const searchEnabled = !ensureApiKeys(resolveSearchConfig());
+    if (!searchEnabled) {
+      return false;
+    }
+    if (activeAgentId !== "codex") {
+      return true;
+    }
+    const mcpStatus = checkTavilySetup();
+    return !mcpStatus.configured;
+  };
+
+  const guideLines: string[] = [];
+
+  if (wantsSearchGuide()) {
+    guideLines.push(
+      [
+        "【可用工具】",
+        "search - 调用 Tavily 搜索，格式：",
+        "<<<tool.search",
+        '{"query":"关键词","maxResults":5,"lang":"en"}',
+        ">>>",
+      ].join("\n"),
+    );
   }
 
-  // 检查是否有 API keys（备用的文本协议方式）
-  const searchEnabled = !ensureApiKeys(resolveSearchConfig());
-  if (!searchEnabled) {
-    return input;
+  if (activeAgentId !== "codex" && isExecToolEnabled()) {
+    guideLines.push(
+      [
+        "exec - 在本机执行命令（受白名单限制），格式：",
+        "<<<tool.exec",
+        "npm test",
+        ">>>",
+        "（可选 JSON）",
+        "<<<tool.exec",
+        '{"cmd":"npm","args":["run","build"],"timeoutMs":600000}',
+        ">>>",
+      ].join("\n"),
+    );
   }
 
-  // 旧的文本协议方式（不推荐，仅作为备用）
-  // 注意：这种方式可能不被模型识别，建议配置 Codex MCP
-  const guide = [
-    "【可用工具 - 备用方式，建议配置 Codex MCP】",
-    "search - 调用 Tavily 搜索，格式：",
-    "<<<tool.search",
-    '{"query":"关键词","maxResults":5,"lang":"en"}',
-    ">>>",
-    "注意：推荐运行 `npx ts-node src/tools/search/setupCodexMcp.ts setup` 配置原生 MCP 支持。",
-  ].join("\n");
-
+  const guide = guideLines.filter(Boolean).join("\n\n").trim();
+  if (!guide) {
+    return input;
+  }
   return `${input}\n\n${guide}`;
 }
 
 export async function resolveToolInvocations(
   result: AgentRunResult,
   hooks?: ToolHooks,
+  context: ToolExecutionContext = {},
 ): Promise<ToolResolutionOutcome> {
   const invocations = extractToolInvocations(result.response);
   if (invocations.length === 0) {
@@ -198,7 +502,7 @@ export async function resolveToolInvocations(
   for (const invocation of invocations) {
     await hooks?.onInvoke?.(invocation.name, invocation.payload);
     try {
-      const output = await runTool(invocation.name, invocation.payload);
+      const output = await runTool(invocation.name, invocation.payload, context);
       resolvedText = resolvedText.replace(invocation.raw, output);
       const summary: ToolCallSummary = {
         tool: invocation.name,

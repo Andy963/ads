@@ -440,7 +440,7 @@ async function start(): Promise<void> {
                 logger.info(
                   `[Tool] ${summary.tool} ${summary.ok ? "ok" : "fail"}: ${truncateForLog(summary.outputPreview)}`,
                 ),
-            });
+            }, { cwd: currentCwd, allowedDirs });
             ws.send(JSON.stringify({ type: "result", ok: true, output: withTools.response }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
