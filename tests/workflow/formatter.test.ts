@@ -54,7 +54,7 @@ const sampleWorkflows = [
   },
 ];
 
-const nextActions = [{ label: "Finalize step", command: "/ads.commit <step>" }];
+const nextActions = [{ label: "完成步骤", command: "/ads.commit <step>" }];
 
 describe("workflow formatter", () => {
   test("produces ANSI-colored CLI status output", () => {
@@ -70,8 +70,8 @@ describe("workflow formatter", () => {
     );
 
     assert.match(output, /当前工作流:/);
-    assert.match(output, /template:/, "cli output should include template info");
-    assert.match(output, /💡 Next actions:/);
+    assert.match(output, /模板:/, "cli output should include template info");
+    assert.match(output, /💡 下一步:/);
   });
 
   test("produces Markdown-safe status output", () => {
@@ -89,7 +89,7 @@ describe("workflow formatter", () => {
     assert.match(output, /\*\*当前工作流\*\*/);
     assert.ok(!output.includes("\u001b"), "markdown output should not contain ANSI codes");
     assert.match(output, /`\/ads\.commit <step>`/);
-    assert.ok(output.includes("template:`unified`"), "template should be rendered as inline code");
+    assert.ok(output.includes("模板: `unified`"), "template should be rendered as inline code");
     assert.ok(!output.includes("[unified]"), "template should not use square bracket syntax");
   });
 
