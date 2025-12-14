@@ -71,7 +71,7 @@ const historyStore = new HistoryStore({
   maxEntriesPerSession: 200,
   maxTextLength: 4000,
 });
-const cwdStorePath = path.join(process.cwd(), ".ads", "web-cwd.json");
+const cwdStorePath = path.join(process.cwd(), ".ads", "state.db");
 const cwdStore = loadCwdStore(cwdStorePath);
 
 const wsMessageSchema = z.object({

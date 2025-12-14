@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import childProcess from "node:child_process";
 import type { Input } from "@openai/codex-sdk";
+import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import type {
   IncomingImage,
@@ -16,6 +17,7 @@ import type {
 } from "./types.js";
 
 import { createLogger } from "../utils/logger.js";
+import { getStateDatabase } from "../state/database.js";
 
 export { truncateForLog } from "../utils/text.js";
 
@@ -32,7 +34,85 @@ export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
 const logger = createLogger("WebUtils");
 
+type SqliteStatement = StatementType<unknown[], unknown>;
+
+function isSqlitePath(storagePath: string): boolean {
+  const lowered = storagePath.trim().toLowerCase();
+  return lowered.endsWith(".db") || lowered.endsWith(".sqlite") || lowered.endsWith(".sqlite3");
+}
+
+function migrateLegacyCwdJson(db: DatabaseType, stateDbPath: string): void {
+  const legacyPath = path.join(path.dirname(stateDbPath), "web-cwd.json");
+  if (!fs.existsSync(legacyPath)) {
+    return;
+  }
+
+  const marker = `cwd:web:${path.basename(legacyPath)}`;
+  const getMarkerStmt: SqliteStatement = db.prepare(
+    `SELECT value FROM kv_state WHERE namespace = 'migrations' AND key = ?`,
+  );
+  const setMarkerStmt: SqliteStatement = db.prepare(
+    `INSERT INTO kv_state (namespace, key, value, updated_at)
+     VALUES ('migrations', ?, ?, ?)
+     ON CONFLICT(namespace, key)
+     DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  );
+
+  try {
+    const existing = getMarkerStmt.get(marker) as { value?: string } | undefined;
+    if (existing?.value) {
+      return;
+    }
+  } catch (error) {
+    logger.warn(`[WebUtils] Failed to read cwd migration marker ${marker}`, error);
+  }
+
+  const upsertStmt: SqliteStatement = db.prepare(
+    `INSERT INTO kv_state (namespace, key, value, updated_at)
+     VALUES ('web_cwd', ?, ?, ?)
+     ON CONFLICT(namespace, key)
+     DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  );
+
+  try {
+    const raw = fs.readFileSync(legacyPath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+
+    const tx = db.transaction(() => {
+      for (const [key, value] of Object.entries(obj)) {
+        const normalizedKey = String(key ?? "").trim();
+        const cwd = typeof value === "string" ? value.trim() : "";
+        if (!normalizedKey || !cwd) {
+          continue;
+        }
+        upsertStmt.run(normalizedKey, cwd, Date.now());
+      }
+    });
+    tx();
+    setMarkerStmt.run(marker, "1", Date.now());
+    logger.info(`[WebUtils] Migrated legacy cwd store from ${legacyPath} -> state.db`);
+  } catch (error) {
+    logger.warn(`[WebUtils] Failed to migrate legacy cwd store ${legacyPath}`, error);
+  }
+}
+
 export function loadCwdStore(filePath: string): Map<string, string> {
+  if (isSqlitePath(filePath)) {
+    const db = getStateDatabase(filePath);
+    migrateLegacyCwdJson(db, filePath);
+    try {
+      const rows = db.prepare(`SELECT key, value FROM kv_state WHERE namespace = 'web_cwd'`).all() as Array<{
+        key: string;
+        value: string;
+      }>;
+      return new Map(rows.map((row) => [row.key, row.value]));
+    } catch (error) {
+      logger.warn(`[WebUtils] Failed to load cwd store from state.db ${filePath}`, error);
+      return new Map();
+    }
+  }
+
   try {
     if (!fs.existsSync(filePath)) return new Map();
     const raw = fs.readFileSync(filePath, "utf8");
@@ -45,6 +125,32 @@ export function loadCwdStore(filePath: string): Map<string, string> {
 }
 
 export function persistCwdStore(filePath: string, store: Map<string, string>): void {
+  if (isSqlitePath(filePath)) {
+    const db = getStateDatabase(filePath);
+    const upsertStmt: SqliteStatement = db.prepare(
+      `INSERT INTO kv_state (namespace, key, value, updated_at)
+       VALUES ('web_cwd', ?, ?, ?)
+       ON CONFLICT(namespace, key)
+       DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    );
+    try {
+      const tx = db.transaction(() => {
+        for (const [key, cwd] of store.entries()) {
+          const normalizedKey = String(key ?? "").trim();
+          const normalizedCwd = typeof cwd === "string" ? cwd.trim() : "";
+          if (!normalizedKey || !normalizedCwd) {
+            continue;
+          }
+          upsertStmt.run(normalizedKey, normalizedCwd, Date.now());
+        }
+      });
+      tx();
+    } catch (error) {
+      logger.warn(`[WebUtils] Failed to persist cwd store to state.db ${filePath}`, error);
+    }
+    return;
+  }
+
   try {
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
