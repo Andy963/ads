@@ -1029,7 +1029,9 @@ async function main(): Promise<void> {
   const START_PASTE = "\x1b[200~";
   const END_PASTE = "\x1b[201~";
   const PASTE_MARKER_TAIL = Math.max(START_PASTE.length, END_PASTE.length) - 1;
-  const PASTE_LINE_WINDOW_MS = 32;
+  const pasteWindowEnv = Number(process.env.ADS_CLI_PASTE_WINDOW_MS);
+  const PASTE_LINE_WINDOW_MS =
+    Number.isFinite(pasteWindowEnv) && pasteWindowEnv >= 0 ? pasteWindowEnv : 160;
   let pasteActive = false;
   let pasteBuffer = "";
   let suppressLineFromPaste = false;
@@ -1063,7 +1065,9 @@ async function main(): Promise<void> {
   const activeLabel = describeActiveAgent(agents);
   const initialStatus = agents.status();
   if (initialStatus.ready) {
-    cliLogger.info(`[${activeLabel}] 已连接，需要 Claude 时请插入 <<<agent.claude ...>>> 指令块。`);
+    cliLogger.info(
+      `[${activeLabel}] 已连接。默认由 Codex 主管按需调度 Claude/Gemini 协作；用 /agent 查看/切换主代理。`,
+    );
   } else {
     cliLogger.warn(
       `[${activeLabel}] 未启用: ${initialStatus.error ?? "请配置 CODEX_API_KEY 或 ~/.codex"}`,
@@ -1118,7 +1122,8 @@ async function main(): Promise<void> {
   const enqueueLine = (line: string) => {
     lineBuffer.push(line);
     if (lineFlushTimer) {
-      return;
+      clearTimeout(lineFlushTimer);
+      lineFlushTimer = null;
     }
     lineFlushTimer = setTimeout(flushBufferedLines, PASTE_LINE_WINDOW_MS);
   };
