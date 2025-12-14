@@ -504,7 +504,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
 
     function escapeHtml(str) {
       if (!str) return '';
-      return str.replace(/[&<>\"']/g, (ch) => {
+      return str.replace(/[&<>"']/g, (ch) => {
         switch (ch) {
           case '&': return '&amp;';
           case '<': return '&lt;';
