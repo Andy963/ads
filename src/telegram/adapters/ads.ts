@@ -327,8 +327,13 @@ function formatAdsResponse(response: unknown): string {
   return JSON.stringify(response, null, 2);
 }
 
-async function replyWithAdsText(ctx: Context, response: unknown, _options?: { markdown?: boolean }) {
+async function replyWithAdsText(ctx: Context, response: unknown, options?: { markdown?: boolean }) {
   const text = formatAdsResponse(response);
+  const wantsMarkdown = options?.markdown ?? true;
+  if (!wantsMarkdown) {
+    await ctx.reply(text);
+    return;
+  }
   const escaped = escapeTelegramMarkdownV2(text);
   await ctx.reply(escaped, { parse_mode: 'MarkdownV2' }).catch(async (error) => {
     logger.debug('[TelegramADS] Failed to send MarkdownV2 response, falling back to plain text', error);

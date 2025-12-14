@@ -74,7 +74,7 @@ describe("workflow/context", () => {
 
   it("switches workflows by id or index", () => {
     // Create two independent workflows (no edge between them)
-    const first = createNode({
+    createNode({
       id: "req_a",
       type: "requirement",
       label: "需求A",

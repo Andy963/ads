@@ -1,4 +1,3 @@
-import type { AgentAdapter } from "../agents/types.js";
 import { parseSlashCommand } from "../codexConfig.js";
 import { createWorkflowFromTemplate } from "../workflow/templateService.js";
 import {
@@ -44,7 +43,7 @@ function formatResponse(text: string): string {
   }
 }
 
-export async function runAdsCommandLine(input: string, _activeAgent?: AgentAdapter | null): Promise<CommandResult> {
+export async function runAdsCommandLine(input: string): Promise<CommandResult> {
   const trimmed = input.trim();
   if (!trimmed) {
     return { ok: true, output: "" };
