@@ -8,7 +8,6 @@ import type { WebSocket, RawData } from "ws";
 import { z } from "zod";
 import type {
   CommandExecutionItem,
-  Input,
   ItemCompletedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
@@ -27,7 +26,8 @@ import type { AgentEvent } from "../codex/events.js";
 import { parseSlashCommand } from "../codexConfig.js";
 import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
-import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
+import { runCollaborativeTurn } from "../agents/hub.js";
+import { resolveToolInvocations } from "../agents/tools.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 
@@ -79,20 +79,6 @@ const wsMessageSchema = z.object({
 
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
-}
-
-function applyToolGuide(input: Input): Input {
-  if (typeof input === "string") {
-    return injectToolGuide(input);
-  }
-  if (Array.isArray(input)) {
-    const guide = injectToolGuide("");
-    if (guide.trim()) {
-      return [{ type: "text", text: guide }, ...input];
-    }
-    return input;
-  }
-  return input;
 }
 
 type TodoListThreadEvent = (ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent) & {
@@ -414,7 +400,7 @@ async function start(): Promise<void> {
               }
             }
             if (event.delta) {
-              ws.send(JSON.stringify({ type: "delta", delta: event.delta }));
+              // 协作回合可能触发多轮 agent_message；避免前端收到混杂的增量内容
               return;
             }
             if (event.phase === "command") {
@@ -434,8 +420,18 @@ async function start(): Promise<void> {
             }
           });
           try {
-            const enrichedInput = applyToolGuide(promptInput.input);
-            const result = await orchestrator.send(enrichedInput, { streaming: true, signal: controller.signal });
+            const result = await runCollaborativeTurn(orchestrator, promptInput.input, {
+              streaming: true,
+              signal: controller.signal,
+              hooks: {
+                onSupervisorRound: (round, directives) =>
+                  logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
+                onDelegationStart: ({ agentId, agentName, prompt }) =>
+                  logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`),
+                onDelegationResult: (summary) =>
+                  logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`),
+              },
+            });
             const withTools = await resolveToolInvocations(result, {
               onInvoke: (tool, payload) => logger.info(`[Tool] ${tool}: ${truncateForLog(payload)}`),
               onResult: (summary) =>
@@ -446,7 +442,11 @@ async function start(): Promise<void> {
             ws.send(JSON.stringify({ type: "result", ok: true, output: withTools.response }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
-              sessionLogger.logOutput(typeof withTools.response === "string" ? withTools.response : String(withTools.response ?? ""));
+              sessionLogger.logOutput(
+                typeof withTools.response === "string"
+                  ? withTools.response
+                  : String(withTools.response ?? ""),
+              );
             }
             historyStore.add(historyKey, {
               role: "ai",
@@ -547,7 +547,7 @@ async function start(): Promise<void> {
 
       if (slash?.command === "agent") {
         orchestrator = sessionManager.getOrCreate(userId, currentCwd);
-        const agentArg = slash.body.trim();
+        let agentArg = slash.body.trim();
         if (!agentArg) {
           const agents = orchestrator.listAgents();
           if (agents.length === 0) {
@@ -568,25 +568,16 @@ async function start(): Promise<void> {
             "🤖 可用代理：",
             lines,
             "",
-            "使用 /agent <id> 切换代理，如 /agent claude。",
-            "需要 Claude 协助时，请在消息中插入 <<<agent.claude ...>>> 指令块描述任务。",
+            "使用 /agent <id> 切换代理，如 /agent gemini。",
+            "提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。",
           ].join("\n");
           ws.send(JSON.stringify({ type: "result", ok: true, output: message }));
           sessionLogger?.logOutput(message);
           return;
         }
         const normalized = agentArg.toLowerCase();
-        if (normalized === "auto") {
-          const output = "❌ 自动模式已停用，需要 Claude 时请手动插入 <<<agent.claude ...>>> 指令块。";
-          ws.send(JSON.stringify({ type: "result", ok: false, output }));
-          sessionLogger?.logOutput(output);
-          return;
-        }
-        if (normalized === "manual") {
-          const output = "ℹ️ 当前已经是手动协作模式，可直接继续使用。";
-          ws.send(JSON.stringify({ type: "result", ok: true, output }));
-          sessionLogger?.logOutput(output);
-          return;
+        if (normalized === "auto" || normalized === "manual") {
+          agentArg = "codex";
         }
         const switchResult = sessionManager.switchAgent(userId, agentArg);
         ws.send(JSON.stringify({ type: "result", ok: switchResult.success, output: switchResult.message }));

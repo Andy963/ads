@@ -29,8 +29,8 @@ import { CodexAgentAdapter } from "../agents/adapters/codexAdapter.js";
 import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 import { GeminiAgentAdapter } from "../agents/adapters/geminiAdapter.js";
 import { HybridOrchestrator } from "../agents/orchestrator.js";
-import { injectDelegationGuide, resolveDelegations } from "../agents/delegation.js";
-import { injectToolGuide, resolveToolInvocations } from "../agents/tools.js";
+import { runCollaborativeTurn } from "../agents/hub.js";
+import { resolveToolInvocations } from "../agents/tools.js";
 import type { AgentEvent, AgentPhase } from "../codex/events.js";
 import { resolveClaudeAgentConfig, resolveGeminiAgentConfig } from "../agents/config.js";
 import type { AgentAdapter } from "../agents/types.js";
@@ -394,24 +394,23 @@ async function handleAgentInteraction(
     }
     promptSections.push(`用户输入: ${trimmed}`);
     const basePrompt = promptSections.join("\n\n");
-    const promptWithTools = injectToolGuide(basePrompt);
-    const finalPrompt = injectDelegationGuide(promptWithTools, orchestrator);
     try {
-      const result = await orchestrator.send(finalPrompt);
+      const result = await runCollaborativeTurn(orchestrator, basePrompt, {
+        hooks: {
+          onSupervisorRound: (round, directives) =>
+            logger.logOutput(`[Auto] 协作轮次 ${round}（指令块 ${directives}）`),
+          onDelegationStart: ({ agentId, prompt }) =>
+            logger.logOutput(`[Auto] 调用 ${agentId} 协助：${truncateForLog(prompt)}`),
+          onDelegationResult: (summary) =>
+            logger.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`),
+        },
+      });
       const withTools = await resolveToolInvocations(result, {
         onInvoke: (tool, payload) => logger.logOutput(`[Tool] ${tool}: ${truncateForLog(payload)}`),
         onResult: (summary) =>
           logger.logOutput(
             `[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`,
           ),
-      });
-      const delegated = await resolveDelegations(withTools, orchestrator, {
-        onInvoke: (agentId, prompt) => {
-          logger.logOutput(`[Auto] 调用 ${agentId} 协助：${truncateForLog(prompt)}`);
-        },
-        onResult: (summary) => {
-          logger.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`);
-        },
       });
       const elapsed = (Date.now() - startTime) / 1000;
       renderer.finish();
@@ -420,7 +419,7 @@ async function handleAgentInteraction(
         cliLogger.info(summary);
         logger.logOutput(summary);
       }
-      const finalText = delegated.response || "(代理无响应)";
+      const finalText = withTools.response || "(代理无响应)";
       return { output: finalText };
     } finally {
       unsubscribe();
@@ -882,7 +881,7 @@ function formatAgentList(orchestrator: HybridOrchestrator): string {
     lines.push(`${prefix} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`);
   }
   lines.push(
-    "\n使用 /agent <id> 切换当前主代理，例如 /agent gemini；需要协作代理时，请插入 <<<agent.claude ...>>> 或 <<<agent.gemini ...>>> 指令块。",
+    "\n使用 /agent <id> 切换当前主代理（如 /agent gemini）。当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。",
   );
   return lines.join("\n");
 }
@@ -996,22 +995,20 @@ async function handleLine(
         };
       }
       case "agent": {
-        const agentArg = slash.body.trim();
+        let agentArg = slash.body.trim();
         if (!agentArg) {
           return { output: formatAgentList(orchestrator) };
         }
         const normalized = agentArg.toLowerCase();
-        if (normalized === "auto") {
-          return {
-            output: "❌ 自动模式已停用。需要 Claude 协助时，请在回复中插入 <<<agent.claude ...>>> 指令块。",
-          };
+        const aliasMode = normalized === "auto" || normalized === "manual";
+        if (aliasMode) {
+          agentArg = "codex";
         }
-        if (normalized === "manual") {
-          return {
-            output: "ℹ️ 当前已处于手动协作模式，请按需使用 <<<agent.claude ...>>> 调用 Claude。",
-          };
+        const switchResult = switchAgent(orchestrator, agentArg);
+        if (aliasMode) {
+          return { output: `${switchResult.output}\nℹ️ 协作代理由 Codex 按需自动调用。` };
         }
-        return switchAgent(orchestrator, agentArg);
+        return switchResult;
       }
   default:
     return handleAgentInteraction(trimmed, orchestrator, logger);

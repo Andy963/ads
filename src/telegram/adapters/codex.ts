@@ -18,7 +18,7 @@ import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../uti
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
-import { injectDelegationGuide, resolveDelegations } from '../../agents/delegation.js';
+import { runCollaborativeTurn } from '../../agents/hub.js';
 import { appendMarkNoteEntry } from '../utils/noteLogger.js';
 import {
   CODEX_THREAD_RESET_HINT,
@@ -936,8 +936,6 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       }
     }
 
-    enhancedText = injectDelegationGuide(enhancedText, session);
-
     if (imagePaths.length > 0) {
       input = [
         { type: 'text', text: enhancedText },
@@ -947,10 +945,17 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       input = enhancedText;
     }
 
-    const result = await session.send(input, { streaming: true, signal });
-    const delegation = await resolveDelegations(result, session, {
-      onInvoke: (agentId, prompt) => logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForLog(prompt)}`),
-      onResult: (summary) => logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`),
+    const result = await runCollaborativeTurn(session, input, {
+      streaming: true,
+      signal,
+      hooks: {
+        onSupervisorRound: (round, directives) =>
+          logger?.logOutput(`[Auto] 协作轮次 ${round}（指令块 ${directives}）`),
+        onDelegationStart: ({ agentId, prompt }) =>
+          logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForLog(prompt)}`),
+        onDelegationResult: (summary) =>
+          logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`),
+      },
     });
 
     await finalizeStatusUpdates();
@@ -962,10 +967,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     saveThreadIdIfNeeded();
 
-    const baseOutput =
-      typeof delegation.response === 'string'
-        ? delegation.response
-        : String(delegation.response ?? '');
+    const baseOutput = typeof result.response === 'string'
+      ? result.response
+      : String(result.response ?? '');
 
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
     if (!logger) {

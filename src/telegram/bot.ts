@@ -442,24 +442,21 @@ async function main() {
         .join('\n');
       await ctx.reply(
         `🤖 可用代理：\n${lines}\n\n` +
-        `使用 /agent <id> 切换代理，如 /agent claude。\n` +
-        `需要 Claude 协助时，请在消息中插入 <<<agent.claude ...>>> 指令块描述任务。`
+        `使用 /agent <id> 切换代理，如 /agent gemini。\n` +
+        `提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。`
       );
       return;
     }
 
-    const normalized = args[0].toLowerCase();
-    if (normalized === 'auto') {
-      await ctx.reply('❌ 自动模式已停用，需要 Claude 时请手动插入 <<<agent.claude ...>>> 指令块。');
-      return;
-    }
-    if (normalized === 'manual') {
-      await ctx.reply('ℹ️ 当前已经是手动协作模式，可直接继续使用。');
-      return;
+    let agentArg = args[0];
+    const normalized = agentArg.toLowerCase();
+    const aliasMode = normalized === 'auto' || normalized === 'manual';
+    if (aliasMode) {
+      agentArg = 'codex';
     }
 
-    const result = sessionManager.switchAgent(userId, args[0]);
-    await ctx.reply(result.message);
+    const result = sessionManager.switchAgent(userId, agentArg);
+    await ctx.reply(`${result.message}${aliasMode ? '\nℹ️ 协作代理由 Codex 按需自动调用。' : ''}`);
   });
 
   bot.command('esc', async (ctx) => {
