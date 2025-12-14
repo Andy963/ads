@@ -184,11 +184,14 @@ Vertex AI（可选）：
 - `GOOGLE_CLOUD_LOCATION=us-central1`
 - （可选）`GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json`
 
-配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini API Key（环境变量或 Claude 配置文件）则默认启用对应适配器；CLI 与 Telegram Bot 支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
+配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini 可用凭据（环境变量或主目录配置文件）则默认启用对应适配器；CLI/Web/Telegram 均支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
 
-### 协作代理（手动触发）
+### 协作代理（Codex 主管自动调度）
 
-- 在 Codex 输出中插入以下指令块即可请求协作代理帮忙：
+- 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。
+- 你无需手写 `<<<agent.*>>>` 指令块；直接用自然语言描述需求即可。若想强制让 Codex 调用某个协作代理，可在需求里明确写“请让 Claude/Gemini 帮我做 X，并给出补丁/差异说明”。
+- 仅当当前主代理为 Codex 时会进行协作调度；如果你 `/agent claude` 或 `/agent gemini` 切换主代理，则变为单代理对话（不会再触发 Codex→协作代理调度）。
+- （高级）如需显式触发协作代理，可要求 Codex 在输出中生成指令块（系统会执行，但最终回复会自动剔除指令块，避免泄露中间过程）：
   ```
   <<<agent.claude
   需要 Claude 协助的任务说明（提供上下文、约束、期望输出）
@@ -199,8 +202,6 @@ Vertex AI（可选）：
   需要 Gemini 协助的任务说明（提供上下文、约束、期望输出）
   >>>
   ```
-- ADS 会捕获该指令、调用对应协作代理、并把结果原位插回；你再继续执行命令或整合输出。
-- 系统不会自动切换主代理；如需协作代理必须显式写出上述指令块（Telegram/CLI 均适用）。
 
 ### 🌐 Web Console（实验性）
 
@@ -243,7 +244,7 @@ npm run services -- status
 | `/esc` | 中断当前任务（Agent 保持运行） |
 | `/reset` | 重置会话，开始新对话 |
 | `/mark [on\|off]` | 记录对话到 `YYYY-MM-DD-note.md`（可省略参数切换状态） |
-| `/agent [name]` | 查看或切换代理（Codex/Claude） |
+| `/agent [name]` | 查看或切换代理（Codex/Claude/Gemini） |
 | `/cd <path>` | 切换工作目录 |
 
 **特性**：
