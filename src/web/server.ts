@@ -27,7 +27,6 @@ import { parseSlashCommand } from "../codexConfig.js";
 import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { runCollaborativeTurn } from "../agents/hub.js";
-import { resolveToolInvocations } from "../agents/tools.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 
@@ -433,26 +432,27 @@ async function start(): Promise<void> {
                 onDelegationResult: (summary) =>
                   logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`),
               },
+              toolHooks: {
+                onInvoke: (tool, payload) => logger.info(`[Tool] ${tool}: ${truncateForLog(payload)}`),
+                onResult: (summary) =>
+                  logger.info(
+                    `[Tool] ${summary.tool} ${summary.ok ? "ok" : "fail"}: ${truncateForLog(summary.outputPreview)}`,
+                  ),
+              },
+              toolContext: { cwd: currentCwd, allowedDirs },
             });
-            const withTools = await resolveToolInvocations(result, {
-              onInvoke: (tool, payload) => logger.info(`[Tool] ${tool}: ${truncateForLog(payload)}`),
-              onResult: (summary) =>
-                logger.info(
-                  `[Tool] ${summary.tool} ${summary.ok ? "ok" : "fail"}: ${truncateForLog(summary.outputPreview)}`,
-                ),
-            }, { cwd: currentCwd, allowedDirs });
-            ws.send(JSON.stringify({ type: "result", ok: true, output: withTools.response }));
+            ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
               sessionLogger.logOutput(
-                typeof withTools.response === "string"
-                  ? withTools.response
-                  : String(withTools.response ?? ""),
+                typeof result.response === "string"
+                  ? result.response
+                  : String(result.response ?? ""),
               );
             }
             historyStore.add(historyKey, {
               role: "ai",
-              text: typeof withTools.response === "string" ? withTools.response : String(withTools.response ?? ""),
+              text: typeof result.response === "string" ? result.response : String(result.response ?? ""),
               ts: Date.now(),
             });
             const threadId = orchestrator.getThreadId();

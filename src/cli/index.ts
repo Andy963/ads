@@ -30,7 +30,6 @@ import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 import { GeminiAgentAdapter } from "../agents/adapters/geminiAdapter.js";
 import { HybridOrchestrator } from "../agents/orchestrator.js";
 import { runCollaborativeTurn } from "../agents/hub.js";
-import { resolveToolInvocations } from "../agents/tools.js";
 import type { AgentEvent, AgentPhase } from "../codex/events.js";
 import { resolveClaudeAgentConfig, resolveGeminiAgentConfig } from "../agents/config.js";
 import type { AgentAdapter } from "../agents/types.js";
@@ -404,14 +403,20 @@ async function handleAgentInteraction(
           onDelegationResult: (summary) =>
             logger.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`),
         },
+        toolHooks: {
+          onInvoke: (tool, payload) => logger.logOutput(`[Tool] ${tool}: ${truncateForLog(payload)}`),
+          onResult: (summary) =>
+            logger.logOutput(
+              `[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`,
+            ),
+        },
+        toolContext: {
+          cwd: process.cwd(),
+          allowedDirs: process.env.ALLOWED_DIRS
+            ? process.env.ALLOWED_DIRS.split(",").map((dir) => dir.trim()).filter(Boolean)
+            : [process.cwd()],
+        },
       });
-      const withTools = await resolveToolInvocations(result, {
-        onInvoke: (tool, payload) => logger.logOutput(`[Tool] ${tool}: ${truncateForLog(payload)}`),
-        onResult: (summary) =>
-          logger.logOutput(
-            `[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`,
-          ),
-      }, { cwd: process.cwd() });
       const elapsed = (Date.now() - startTime) / 1000;
       renderer.finish();
       if (!streamingConfig.enabled) {
@@ -419,7 +424,7 @@ async function handleAgentInteraction(
         cliLogger.info(summary);
         logger.logOutput(summary);
       }
-      const finalText = withTools.response || "(代理无响应)";
+      const finalText = result.response || "(代理无响应)";
       return { output: finalText };
     } finally {
       unsubscribe();

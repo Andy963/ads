@@ -141,7 +141,17 @@ async function runAgentTurnWithTools(
     result = await orchestrator.invokeAgent(agentId, nextInput, sendOptions);
   }
 
-  return result;
+  logger.warn(`[AgentHub] Tool loop reached max rounds (${options.maxToolRounds}) for agent=${agentId}`);
+  return {
+    ...result,
+    response: [
+      stripToolBlocks(result.response).trim(),
+      `⚠️ 已达到工具执行轮次上限（${options.maxToolRounds}），剩余工具调用未执行。`,
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+      .trim(),
+  };
 }
 
 function stripDelegationBlocks(text: string): string {
