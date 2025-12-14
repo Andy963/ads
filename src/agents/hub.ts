@@ -1,28 +1,33 @@
 import type { Input } from "@openai/codex-sdk";
 
 import { injectDelegationGuide } from "./delegation.js";
-import { executeToolBlocks, injectToolGuide, stripToolBlocks, type ToolExecutionContext, type ToolExecutionResult, type ToolHooks } from "./tools.js";
+import {
+  executeToolBlocks,
+  injectToolGuide,
+  stripToolBlocks,
+  type ToolExecutionContext,
+  type ToolExecutionResult,
+  type ToolHooks,
+} from "./tools.js";
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
 
-type DelegationAgentId = "claude" | "gemini";
-
 interface DelegationDirective {
   raw: string;
-  agentId: DelegationAgentId;
+  agentId: AgentIdentifier;
   prompt: string;
 }
 
 export interface DelegationSummary {
-  agentId: DelegationAgentId;
+  agentId: AgentIdentifier;
   agentName: string;
   prompt: string;
   response: string;
 }
 
 export interface CollaborationHooks {
-  onDelegationStart?: (summary: { agentId: DelegationAgentId; agentName: string; prompt: string }) => void | Promise<void>;
+  onDelegationStart?: (summary: { agentId: AgentIdentifier; agentName: string; prompt: string }) => void | Promise<void>;
   onDelegationResult?: (summary: DelegationSummary) => void | Promise<void>;
   onSupervisorRound?: (round: number, directives: number) => void | Promise<void>;
 }
@@ -43,7 +48,7 @@ export interface CollaborativeTurnResult extends AgentRunResult {
 
 const logger = createLogger("AgentHub");
 
-const DELEGATION_REGEX = /<<<agent\.(claude|gemini)[\t ]*\n([\s\S]*?)>>>/gi;
+const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
 
 function isStatefulAgent(agentId: AgentIdentifier): boolean {
   return agentId === "codex";
@@ -148,37 +153,41 @@ function stripDelegationBlocks(text: string): string {
   return stripped.replace(/\n{3,}/g, "\n\n");
 }
 
-function extractDelegationDirectives(text: string): DelegationDirective[] {
+function extractDelegationDirectives(text: string, excludeAgentId?: AgentIdentifier): DelegationDirective[] {
   const directives: DelegationDirective[] = [];
+  const regex = new RegExp(DELEGATION_REGEX.source, DELEGATION_REGEX.flags);
   let match: RegExpExecArray | null;
-  while ((match = DELEGATION_REGEX.exec(text)) !== null) {
-    const agentId = (match[1] ?? "").trim().toLowerCase() as DelegationAgentId;
+  while ((match = regex.exec(text)) !== null) {
+    const agentId = (match[1] ?? "").trim().toLowerCase();
     const prompt = (match[2] ?? "").trim();
     if (!prompt) {
       continue;
     }
+    if (excludeAgentId && agentId === excludeAgentId) {
+      continue;
+    }
     directives.push({
       raw: match[0],
-      agentId: agentId === "gemini" ? "gemini" : "claude",
+      agentId,
       prompt,
     });
   }
   return directives;
 }
 
-function resolveAgentName(orchestrator: HybridOrchestrator, agentId: DelegationAgentId): string {
+function resolveAgentName(orchestrator: HybridOrchestrator, agentId: AgentIdentifier): string {
   const descriptor = orchestrator.listAgents().find((entry) => entry.metadata.id === agentId);
   return descriptor?.metadata.name ?? agentId;
 }
 
-function applyGuides(input: Input, orchestrator: HybridOrchestrator): Input {
+function applyGuides(input: Input, orchestrator: HybridOrchestrator, agentId: AgentIdentifier): Input {
   if (typeof input === "string") {
-    const withTools = injectToolGuide(input, { activeAgentId: orchestrator.getActiveAgentId() });
+    const withTools = injectToolGuide(input, { activeAgentId: agentId });
     return injectDelegationGuide(withTools, orchestrator);
   }
 
   if (Array.isArray(input)) {
-    const toolGuide = injectToolGuide("", { activeAgentId: orchestrator.getActiveAgentId() }).trim();
+    const toolGuide = injectToolGuide("", { activeAgentId: agentId }).trim();
     const delegationGuide = injectDelegationGuide("", orchestrator).trim();
     const guide = [toolGuide, delegationGuide].filter(Boolean).join("\n\n").trim();
     if (!guide) {
@@ -193,14 +202,15 @@ function applyGuides(input: Input, orchestrator: HybridOrchestrator): Input {
 function buildSupervisorPrompt(
   summaries: DelegationSummary[],
   rounds: number,
+  supervisorName: string,
 ): string {
   const header = [
     "系统已执行你上一轮输出的协作代理指令块，并拿到了结果。",
-    "你仍然是主管（Codex）：需要整合、落地并验收这些结果，确保与现有后端/接口对接一致。",
+    `你仍然是主管（${supervisorName}）：需要整合、落地并验收这些结果。`,
     "要求：",
     "- 只要可以落地，就直接修改代码/运行必要命令（你有权限）。",
     "- 验收：检查前端/后端接口契约是否一致、类型/字段是否匹配、错误处理是否到位。",
-    "- 若仍需协作代理继续（例如需要补充 UI、文案、组件、样式、可访问性等），可以继续输出 <<<agent.gemini ...>>> / <<<agent.claude ...>>>。",
+    "- 若仍需协作代理继续，可以继续输出 <<<agent.{agentId} ...>>> 指令块。",
     "- 若不再需要协作代理，则不要输出任何 <<<agent.*>>> 指令块，直接给用户最终结果与下一步验证方式。",
     "",
     `（协作轮次：${rounds}）`,
@@ -225,9 +235,16 @@ function buildSupervisorPrompt(
 async function runDelegationQueue(
   orchestrator: HybridOrchestrator,
   initialText: string,
-  options: { maxDelegations: number; hooks?: CollaborationHooks },
+  options: {
+    maxDelegations: number;
+    hooks?: CollaborationHooks;
+    supervisorAgentId: AgentIdentifier;
+    maxToolRounds: number;
+    toolContext: ToolExecutionContext;
+    toolHooks?: ToolHooks;
+  },
 ): Promise<DelegationSummary[]> {
-  const queue: DelegationDirective[] = extractDelegationDirectives(initialText);
+  const queue: DelegationDirective[] = extractDelegationDirectives(initialText, options.supervisorAgentId);
   if (queue.length === 0) {
     return [];
   }
@@ -262,7 +279,12 @@ async function runDelegationQueue(
     const agentName = resolveAgentName(orchestrator, next.agentId);
     await options.hooks?.onDelegationStart?.({ agentId: next.agentId, agentName, prompt: next.prompt });
     try {
-      const agentResult = await orchestrator.invokeAgent(next.agentId, next.prompt, { streaming: false });
+      const delegateInput = injectToolGuide(next.prompt, { activeAgentId: next.agentId });
+      const agentResult = await runAgentTurnWithTools(orchestrator, next.agentId, delegateInput, { streaming: false }, {
+        maxToolRounds: options.maxToolRounds,
+        toolContext: options.toolContext,
+        toolHooks: options.toolHooks,
+      });
       const summary: DelegationSummary = {
         agentId: next.agentId,
         agentName,
@@ -272,7 +294,7 @@ async function runDelegationQueue(
       results.push(summary);
       await options.hooks?.onDelegationResult?.(summary);
 
-      const nested = extractDelegationDirectives(agentResult.response);
+      const nested = extractDelegationDirectives(agentResult.response, options.supervisorAgentId);
       for (const directive of nested) {
         queue.push(directive);
       }
@@ -305,6 +327,7 @@ export async function runCollaborativeTurn(
   const maxDelegations = options.maxDelegations ?? 6;
   const maxToolRounds = options.maxToolRounds ?? 4;
   const activeAgentId = orchestrator.getActiveAgentId();
+  const supervisorName = resolveAgentName(orchestrator, activeAgentId);
 
   const sendOptions: AgentSendOptions = {
     streaming: options.streaming,
@@ -313,22 +336,18 @@ export async function runCollaborativeTurn(
   };
   const toolContext: ToolExecutionContext = options.toolContext ?? { cwd: process.cwd() };
 
-  const prompt = applyGuides(input, orchestrator);
+  const prompt = applyGuides(input, orchestrator, activeAgentId);
   let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
     maxToolRounds,
     toolContext,
     toolHooks: options.toolHooks,
   });
 
-  if (activeAgentId !== "codex") {
-    return { ...result, delegations: [], supervisorRounds: 0 };
-  }
-
   let rounds = 0;
   const allDelegations: DelegationSummary[] = [];
 
   while (rounds < maxSupervisorRounds) {
-    const directives = extractDelegationDirectives(result.response);
+    const directives = extractDelegationDirectives(result.response, activeAgentId);
     if (directives.length === 0) {
       break;
     }
@@ -338,10 +357,14 @@ export async function runCollaborativeTurn(
     const delegations = await runDelegationQueue(orchestrator, result.response, {
       maxDelegations,
       hooks: options.hooks,
+      supervisorAgentId: activeAgentId,
+      maxToolRounds,
+      toolContext,
+      toolHooks: options.toolHooks,
     });
     allDelegations.push(...delegations);
 
-    const supervisorPrompt = buildSupervisorPrompt(delegations, rounds);
+    const supervisorPrompt = buildSupervisorPrompt(delegations, rounds, supervisorName);
     if (!supervisorPrompt.trim()) {
       break;
     }

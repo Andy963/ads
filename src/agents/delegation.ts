@@ -1,29 +1,25 @@
 import type { Usage } from "@openai/codex-sdk";
+import type { AgentIdentifier } from "./types.js";
 import type { AgentRunResult } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 
-const CLAUDE_AGENT_ID = "claude";
-const GEMINI_AGENT_ID = "gemini";
-const CODEX_AGENT_ID = "codex";
-const AGENT_DELEGATION_REGEX = /<<<agent\.(claude|gemini)[\t ]*\n([\s\S]*?)>>>/gi;
-
-type DelegationAgentId = typeof CLAUDE_AGENT_ID | typeof GEMINI_AGENT_ID;
+const AGENT_DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
 
 interface DelegationDirective {
   raw: string;
-  agentId: DelegationAgentId;
+  agentId: AgentIdentifier;
   prompt: string;
 }
 
 export interface DelegationSummary {
-  agentId: DelegationAgentId;
+  agentId: AgentIdentifier;
   agentName: string;
   prompt: string;
   response: string;
 }
 
 export interface DelegationHooks {
-  onInvoke?: (agentId: DelegationAgentId, prompt: string) => void | Promise<void>;
+  onInvoke?: (agentId: AgentIdentifier, prompt: string) => void | Promise<void>;
   onResult?: (summary: DelegationSummary) => void | Promise<void>;
 }
 
@@ -34,10 +30,8 @@ export interface DelegationOutcome {
 }
 
 export function supportsAutoDelegation(orchestrator: HybridOrchestrator): boolean {
-  return (
-    (orchestrator.hasAgent?.(CLAUDE_AGENT_ID) ?? false) ||
-    (orchestrator.hasAgent?.(GEMINI_AGENT_ID) ?? false)
-  );
+  const agents = orchestrator.listAgents?.() ?? [];
+  return agents.length > 1;
 }
 
 export function injectDelegationGuide(
@@ -47,22 +41,17 @@ export function injectDelegationGuide(
   if (!supportsAutoDelegation(orchestrator)) {
     return input;
   }
-  if (orchestrator.getActiveAgentId?.() !== CODEX_AGENT_ID) {
-    return input;
-  }
+  const activeAgentId = orchestrator.getActiveAgentId?.();
+  const availableAgents = (orchestrator.listAgents?.() ?? [])
+    .filter((agent) => agent.metadata.id !== activeAgentId)
+    .map((agent) => ({ id: agent.metadata.id, name: agent.metadata.name }));
 
-  const availableAgents: { id: DelegationAgentId; name: string }[] = [];
-  if (orchestrator.hasAgent?.(CLAUDE_AGENT_ID)) {
-    availableAgents.push({ id: CLAUDE_AGENT_ID, name: "Claude" });
-  }
-  if (orchestrator.hasAgent?.(GEMINI_AGENT_ID)) {
-    availableAgents.push({ id: GEMINI_AGENT_ID, name: "Gemini" });
+  if (availableAgents.length === 0) {
+    return input;
   }
 
   const guide = [
     "【协作代理指令】",
-    "默认由 Codex 负责执行命令/修改文件；协作代理用于补充建议、审阅与长文本输出。",
-    "（可选）若启用 ENABLE_AGENT_EXEC_TOOL=1，Claude/Gemini 也可通过 <<<tool.exec ...>>> 执行白名单内命令。",
     "当需要协作代理协助时，请输出以下格式的指令块：",
     ...availableAgents.flatMap((agent) => [
       `<<<agent.${agent.id}`,
@@ -80,10 +69,7 @@ export async function resolveDelegations(
   orchestrator: HybridOrchestrator,
   hooks?: DelegationHooks,
 ): Promise<DelegationOutcome> {
-  if (
-    result.agentId !== CODEX_AGENT_ID ||
-    !supportsAutoDelegation(orchestrator)
-  ) {
+  if (!supportsAutoDelegation(orchestrator)) {
     return { response: result.response, usage: result.usage, summaries: [] };
   }
 
@@ -91,7 +77,7 @@ export async function resolveDelegations(
   let finalResponse = result.response;
   const summaries: DelegationSummary[] = [];
 
-  const runDelegation = async (agentId: DelegationAgentId, prompt: string) => {
+  const runDelegation = async (agentId: AgentIdentifier, prompt: string) => {
     if (!orchestrator.invokeAgent) {
       return null;
     }
@@ -151,11 +137,10 @@ export async function resolveDelegations(
 
 function extractDelegationBlocks(response: string): DelegationDirective[] {
   const directives: DelegationDirective[] = [];
+  const regex = new RegExp(AGENT_DELEGATION_REGEX.source, AGENT_DELEGATION_REGEX.flags);
   let match: RegExpExecArray | null;
-  while ((match = AGENT_DELEGATION_REGEX.exec(response)) !== null) {
-    const rawAgentId = (match[1] ?? "").trim().toLowerCase();
-    const agentId =
-      rawAgentId === GEMINI_AGENT_ID ? GEMINI_AGENT_ID : CLAUDE_AGENT_ID;
+  while ((match = regex.exec(response)) !== null) {
+    const agentId = (match[1] ?? "").trim().toLowerCase();
     directives.push({
       raw: match[0],
       agentId,
@@ -165,7 +150,7 @@ function extractDelegationBlocks(response: string): DelegationDirective[] {
   return directives;
 }
 
-function resolveAgentName(orchestrator: HybridOrchestrator, agentId: DelegationAgentId): string {
+function resolveAgentName(orchestrator: HybridOrchestrator, agentId: AgentIdentifier): string {
   const descriptor = orchestrator.listAgents?.().find((entry) => entry.metadata.id === agentId);
   return descriptor?.metadata.name ?? agentId;
 }
