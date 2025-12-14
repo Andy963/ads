@@ -82,6 +82,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
     let openSessions = [];
     let sessionAliases = {};
     let sessionWorkspaces = {};
+    let sessionWorkspaceInfos = {};
 
     function ensureConnection(sessionId) {
       if (!connections.has(sessionId)) {
@@ -1259,6 +1260,13 @@ export function renderLandingPageScript(idleMinutes: number): string {
         sessionIdEl.textContent = resolveSessionLabel(currentSessionId);
         sessionIdEl.title = resolveSessionTitle(currentSessionId);
       }
+      const cachedInfo = currentSessionId ? sessionWorkspaceInfos[currentSessionId] : null;
+      if (cachedInfo) {
+        renderWorkspaceInfo(cachedInfo);
+      } else {
+        const cachedPath = currentSessionId ? getWorkspaceForSession(currentSessionId) : '';
+        renderWorkspaceInfo(cachedPath ? { path: cachedPath } : null);
+      }
       rememberSession(currentSessionId);
       ensureOpenSession(currentSessionId);
     }
@@ -1325,6 +1333,8 @@ export function renderLandingPageScript(idleMinutes: number): string {
     }
 
     function handleWsMessageForSession(sessionId, conn, ev) {
+      const activeSessionId = currentSessionId;
+      const isActiveSession = !activeSessionId || sessionId === activeSessionId;
       withSessionContext(sessionId, () => {
         try {
           const msg = JSON.parse(ev.data);
@@ -1351,22 +1361,30 @@ export function renderLandingPageScript(idleMinutes: number): string {
             return;
           } else if (msg.type === 'welcome') {
             setWsState('connected', sessionId);
-            if (msg.sessionId) {
+            if (isActiveSession && msg.sessionId) {
               updateSessionLabel(msg.sessionId);
               saveSession(msg.sessionId);
             }
             if (msg.workspace) {
+              sessionWorkspaceInfos[sessionId] = msg.workspace;
               if (msg.workspace.path) {
                 setWorkspaceForSession(sessionId, msg.workspace.path);
                 maybeRestoreWorkspace(sessionId, msg.workspace.path, conn);
               }
-              renderWorkspaceInfo(msg.workspace);
+              if (isActiveSession) {
+                renderWorkspaceInfo(msg.workspace);
+              }
             }
           } else if (msg.type === 'workspace') {
             if (msg.data?.path) {
               setWorkspaceForSession(sessionId, msg.data.path);
             }
-            renderWorkspaceInfo(msg.data);
+            if (msg.data) {
+              sessionWorkspaceInfos[sessionId] = msg.data;
+            }
+            if (isActiveSession) {
+              renderWorkspaceInfo(msg.data);
+            }
           } else if (msg.type === 'error') {
             clearTypingPlaceholder();
             streamState = null;
@@ -1398,7 +1416,10 @@ export function renderLandingPageScript(idleMinutes: number): string {
       const activeId = currentSessionId;
       const sessionIdToUse = sessionIdOverride || activeId || loadSession() || newSessionId();
       const conn = ensureConnection(sessionIdToUse);
-      saveSession(sessionIdToUse);
+      const shouldPersistSession = !activeId || sessionIdToUse === activeId;
+      if (shouldPersistSession) {
+        saveSession(sessionIdToUse);
+      }
       if (!activeId) {
         updateSessionLabel(sessionIdToUse);
       }
@@ -1493,7 +1514,9 @@ export function renderLandingPageScript(idleMinutes: number): string {
         } else {
           conn.allowReconnect = true;
         }
-        renderWorkspaceInfo(null);
+        if (sessionIdToUse === currentSessionId) {
+          renderWorkspaceInfo(null);
+        }
         scheduleReconnect(sessionIdToUse);
       };
       conn.ws.onerror = (err) => {
