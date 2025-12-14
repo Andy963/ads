@@ -160,7 +160,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 
 ### Gemini Agent（实验性）
 
-Gemini 默认以“协作代理”的角色接入（输出建议/计划）。如需让 Claude/Gemini 也能执行本机命令/读写文件，可开启对应工具开关（详见下文工具协议）。
+Gemini 适配器基于官方 SDK `@google/genai`，并使用 Gemini 的 Function Calling 调用 ADS 内置工具（`exec` / `read` / `write` / `apply_patch` / `search`）。因此当 Gemini 作为主代理时，不需要、也不应输出 `<<<tool.*>>>` 文本工具块。
 
 环境变量（优先级最高）：
 
@@ -191,7 +191,7 @@ Vertex AI（可选）：
 - 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。
 - 你无需手写 `<<<agent.*>>>` 指令块；直接用自然语言描述需求即可。若想强制让 Codex 调用某个协作代理，可在需求里明确写“请让 Claude/Gemini 帮我做 X，并给出补丁/差异说明”。
 - 当前主代理为任意 Agent 时，只要输出包含 `<<<agent.<id>>>` 指令块，就会触发协作调度；系统会执行并把协作结果回注给主代理继续整合。
-- （可选）启用工具开关后，Claude/Gemini 也可通过工具块执行命令/读写文件（工具输出会自动回注给当前主代理继续，多轮直到无新工具块或达到上限）：
+- （可选）启用工具开关后，Gemini 会通过 Function Calling 自动调用工具；`<<<tool.*>>>` 文本工具块仅作为兼容协议保留（主要用于自定义/调试代理）。工具输出会自动回注给当前主代理继续，多轮直到无新工具块或达到上限：
   - `ENABLE_AGENT_EXEC_TOOL=1`：允许 `<<<tool.exec ...>>>` 执行本机命令（可选用 `AGENT_EXEC_TOOL_ALLOWLIST` 限制命令；设置为 `*` 表示不限制）
   - `ENABLE_AGENT_FILE_TOOLS=1`：允许 `<<<tool.read ...>>>` / `<<<tool.write ...>>>` 读写文件（受 `ALLOWED_DIRS` 目录白名单限制）
   - `ENABLE_AGENT_APPLY_PATCH=1`：允许 `<<<tool.apply_patch ...>>>` 应用 unified diff（需要 `git`；受 `ALLOWED_DIRS` 限制）

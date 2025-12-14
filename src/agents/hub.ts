@@ -135,7 +135,12 @@ async function runAgentTurnWithTools(
   sendOptions: AgentSendOptions,
   options: { maxToolRounds: number; toolContext: ToolExecutionContext; toolHooks?: ToolHooks },
 ): Promise<AgentRunResult> {
-  let result = await orchestrator.invokeAgent(agentId, input, sendOptions);
+  const agentSendOptions: AgentSendOptions = {
+    ...sendOptions,
+    toolContext: options.toolContext,
+    toolHooks: options.toolHooks,
+  };
+  let result = await orchestrator.invokeAgent(agentId, input, agentSendOptions);
 
   const stateful = isStatefulAgent(agentId);
   const basePrompt = stateful ? "" : normalizeInputToText(input).trim();
@@ -162,7 +167,7 @@ async function runAgentTurnWithTools(
           .join("\n\n")
           .trim();
 
-    result = await orchestrator.invokeAgent(agentId, nextInput, sendOptions);
+    result = await orchestrator.invokeAgent(agentId, nextInput, agentSendOptions);
   }
 
   logger.warn(`[AgentHub] Tool loop reached max rounds (${options.maxToolRounds}) for agent=${agentId}`);

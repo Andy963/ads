@@ -27,6 +27,7 @@ export interface ToolExecutionResult {
   payload: string;
   ok: boolean;
   output: string;
+  error?: string;
 }
 
 export interface ToolHooks {
@@ -882,6 +883,39 @@ async function runTool(name: string, payload: string, context: ToolExecutionCont
   }
 }
 
+export async function executeToolInvocation(
+  tool: string,
+  payload: string,
+  context: ToolExecutionContext = {},
+  hooks?: ToolHooks,
+): Promise<ToolExecutionResult> {
+  await hooks?.onInvoke?.(tool, payload);
+  try {
+    const output = await runTool(tool, payload, context);
+    const result: ToolExecutionResult = { tool, payload, ok: true, output };
+    const summary: ToolCallSummary = {
+      tool,
+      ok: true,
+      inputPreview: truncate(payload),
+      outputPreview: truncate(output),
+    };
+    await hooks?.onResult?.(summary);
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const output = `⚠️ 工具 ${tool} 失败：${message}`;
+    const result: ToolExecutionResult = { tool, payload, ok: false, output, error: message };
+    const summary: ToolCallSummary = {
+      tool,
+      ok: false,
+      inputPreview: truncate(payload),
+      outputPreview: truncate(output),
+    };
+    await hooks?.onResult?.(summary);
+    return result;
+  }
+}
+
 export async function executeToolBlocks(
   text: string,
   hooks?: ToolHooks,
@@ -914,7 +948,7 @@ export async function executeToolBlocks(
       const message = error instanceof Error ? error.message : String(error);
       const fallback = `⚠️ 工具 ${invocation.name} 失败：${message}`;
       replacedText = replacedText.replace(invocation.raw, fallback);
-      results.push({ tool: invocation.name, payload: invocation.payload, ok: false, output: fallback });
+      results.push({ tool: invocation.name, payload: invocation.payload, ok: false, output: fallback, error: message });
       const summary: ToolCallSummary = {
         tool: invocation.name,
         ok: false,
@@ -936,6 +970,7 @@ export function injectToolGuide(
   },
 ): string {
   const activeAgentId = options?.activeAgentId ?? "codex";
+  const usesToolBlocks = activeAgentId !== "gemini" && activeAgentId !== "claude";
   const wantsSearchGuide = () => {
     const searchEnabled = !ensureApiKeys(resolveSearchConfig());
     if (!searchEnabled) {
@@ -950,7 +985,7 @@ export function injectToolGuide(
 
   const guideLines: string[] = [];
 
-  if (wantsSearchGuide()) {
+  if (usesToolBlocks && wantsSearchGuide()) {
     guideLines.push(
       [
         "【可用工具】",
@@ -962,7 +997,7 @@ export function injectToolGuide(
     );
   }
 
-  if (activeAgentId !== "codex" && isFileToolsEnabled()) {
+  if (usesToolBlocks && activeAgentId !== "codex" && isFileToolsEnabled()) {
     guideLines.push(
       [
         "read - 读取本地文件（需要 ENABLE_AGENT_FILE_TOOLS=1，受目录白名单限制），格式：",
@@ -993,7 +1028,7 @@ export function injectToolGuide(
     }
   }
 
-  if (activeAgentId !== "codex" && isExecToolEnabled()) {
+  if (usesToolBlocks && activeAgentId !== "codex" && isExecToolEnabled()) {
     guideLines.push(
       [
         "exec - 在本机执行命令（需要 ENABLE_AGENT_EXEC_TOOL=1；可选用 AGENT_EXEC_TOOL_ALLOWLIST 限制命令，'*' 表示不限制），格式：",

@@ -1,8 +1,19 @@
 import type { Input, Usage } from "@openai/codex-sdk";
-import { GoogleGenAI, type GenerateContentResponseUsageMetadata } from "@google/genai";
+import {
+  GoogleGenAI,
+  ApiError,
+  FunctionCallingConfigMode,
+  createPartFromFunctionResponse,
+  type CallableTool,
+  type FunctionCall,
+  type FunctionDeclaration,
+  type GenerateContentResponseUsageMetadata,
+  type Part,
+} from "@google/genai";
 import { OAuth2Client } from "google-auth-library";
 import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../types.js";
 import type { GeminiAgentConfig } from "../config.js";
+import { executeToolInvocation, type ToolExecutionContext, type ToolHooks } from "../tools.js";
 
 type CodexInputPart = Exclude<Input, string>[number];
 
@@ -10,17 +21,21 @@ const DEFAULT_METADATA: AgentMetadata = {
   id: "gemini",
   name: "Gemini",
   vendor: "Google",
-  capabilities: ["text"],
+  capabilities: ["text", "files", "commands"],
 };
 
 const DEFAULT_SYSTEM_PROMPT = [
-  "You are Gemini assisting the ADS automation platform as a supporting agent.",
-  "Always respond with actionable plans, diffs, or insights.",
-  "If you need to execute a command, emit a tool block (requires ENABLE_AGENT_EXEC_TOOL=1):",
-  "<<<tool.exec",
-  "npm test",
-  ">>>",
-  "Tool output will be injected back into the conversation by ADS.",
+  "You are Gemini running inside the ADS automation platform.",
+  "Your job: execute the user's request end-to-end (plan, inspect code, make changes, run checks) unless constraints prevent it.",
+  "",
+  "Tooling:",
+  "- You may have access to function tools (exec/read/write/apply_patch/search) that run on the host.",
+  "- Use tools to inspect and modify the codebase; do not ask the user to run commands when you can run them.",
+  "- Prefer apply_patch for code changes; only use write for new files or small edits.",
+  "",
+  "Output rules:",
+  "- Do NOT output <<<tool.*>>> blocks; use function tools instead.",
+  "- When finished, respond with a concise summary and next verification steps.",
 ].join("\n");
 
 function normalizeInput(input: Input): string {
@@ -63,6 +78,197 @@ export interface GeminiAgentAdapterOptions {
   systemPrompt?: string;
 }
 
+function parseBoolean(value: string | undefined, defaultValue = false): boolean {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function resolveAllowedDirsFallback(cwd: string): string[] {
+  const raw = process.env.ALLOWED_DIRS;
+  if (!raw) {
+    return [cwd];
+  }
+  const dirs = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return dirs.length > 0 ? dirs : [cwd];
+}
+
+function isExecToolEnabled(): boolean {
+  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, false);
+}
+
+function isFileToolsEnabled(): boolean {
+  return parseBoolean(process.env.ENABLE_AGENT_FILE_TOOLS, false);
+}
+
+function isApplyPatchEnabled(): boolean {
+  return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, false);
+}
+
+function buildAdsFunctionDeclarations(): FunctionDeclaration[] {
+  const declarations: FunctionDeclaration[] = [];
+
+  declarations.push({
+    name: "search",
+    description: "Web search via ADS (Tavily). Returns a concise result list.",
+    parametersJsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", description: "Search query." },
+        maxResults: { type: "integer", description: "Max results to return." },
+        lang: { type: "string", description: "Language hint, e.g. 'en' or 'zh'." },
+        includeDomains: { type: "array", items: { type: "string" } },
+        excludeDomains: { type: "array", items: { type: "string" } },
+      },
+      required: ["query"],
+    },
+  });
+
+  if (isFileToolsEnabled()) {
+    declarations.push(
+      {
+        name: "read",
+        description: "Read a local text file (restricted to allowed directories).",
+        parametersJsonSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            path: { type: "string", description: "File path (absolute or relative to current working directory)." },
+            startLine: { type: "integer", description: "1-based line number to start reading." },
+            endLine: { type: "integer", description: "1-based line number to end reading." },
+            maxBytes: { type: "integer", description: "Optional byte limit override." },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "write",
+        description: "Write a local file (restricted to allowed directories).",
+        parametersJsonSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            path: { type: "string", description: "File path (absolute or relative to current working directory)." },
+            content: { type: "string", description: "Full file content to write." },
+            append: { type: "boolean", description: "Append instead of overwrite." },
+          },
+          required: ["path", "content"],
+        },
+      },
+    );
+
+    if (isApplyPatchEnabled()) {
+      declarations.push({
+        name: "apply_patch",
+        description: "Apply a git-style unified diff patch in the current repository.",
+        parametersJsonSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            patch: { type: "string", description: "Unified diff patch text (git apply compatible)." },
+          },
+          required: ["patch"],
+        },
+      });
+    }
+  }
+
+  if (isExecToolEnabled()) {
+    declarations.push({
+      name: "exec",
+      description: "Execute a local command (no shell), with optional args and timeout.",
+      parametersJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          cmd: { type: "string", description: "Executable to run, e.g. 'npm' or 'git'." },
+          args: { type: "array", items: { type: "string" }, description: "Argument list." },
+          timeoutMs: { type: "integer", description: "Timeout in milliseconds." },
+        },
+        required: ["cmd"],
+      },
+    });
+  }
+
+  return declarations;
+}
+
+function resolveToolPayload(call: FunctionCall): { tool: string; payload: string } {
+  const name = (call.name ?? "").trim();
+  const args = call.args ?? {};
+
+  if (name === "apply_patch") {
+    const patch = typeof args.patch === "string" ? args.patch : "";
+    return { tool: name, payload: patch };
+  }
+
+  if (name === "exec") {
+    const cmdRaw = args.cmd;
+    const cmd = typeof cmdRaw === "string" ? cmdRaw : "";
+    const argsRaw = args.args;
+    const argv = Array.isArray(argsRaw) ? argsRaw.map((entry) => String(entry)) : [];
+    const timeoutRaw = args.timeoutMs;
+    const timeoutMs =
+      typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) && timeoutRaw > 0
+        ? Math.floor(timeoutRaw)
+        : undefined;
+    const payloadObj = timeoutMs ? { cmd, args: argv, timeoutMs } : { cmd, args: argv };
+    return { tool: name, payload: JSON.stringify(payloadObj) };
+  }
+
+  return { tool: name, payload: JSON.stringify(args) };
+}
+
+function buildCallableAdsTool(context: ToolExecutionContext, hooks?: ToolHooks): CallableTool {
+  const declarations = buildAdsFunctionDeclarations();
+  return {
+    tool: async () => ({ functionDeclarations: declarations }),
+    callTool: async (functionCalls: FunctionCall[]): Promise<Part[]> => {
+      const parts: Part[] = [];
+      for (let idx = 0; idx < functionCalls.length; idx += 1) {
+        const call = functionCalls[idx];
+        const id = call.id ?? `${call.name ?? "tool"}-${Date.now()}-${idx}`;
+        const name = (call.name ?? "").trim();
+        if (!name) {
+          parts.push(
+            createPartFromFunctionResponse(id, "unknown", {
+              error: "Missing function name",
+              output: "",
+            }),
+          );
+          continue;
+        }
+
+        const resolved = resolveToolPayload(call);
+        if (!resolved.tool) {
+          parts.push(
+            createPartFromFunctionResponse(id, name, {
+              error: "Invalid tool name",
+              output: "",
+            }),
+          );
+          continue;
+        }
+
+        const result = await executeToolInvocation(resolved.tool, resolved.payload, context, hooks);
+        parts.push(
+          createPartFromFunctionResponse(id, name, {
+            ...(result.ok ? {} : { error: result.error ?? "Tool failed" }),
+            output: result.output,
+          }),
+        );
+      }
+      return parts;
+    },
+  };
+}
+
 export class GeminiAgentAdapter implements AgentAdapter {
   readonly id: string;
   readonly metadata: AgentMetadata;
@@ -71,6 +277,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
   private workingDirectory?: string;
   private model?: string;
   private ai: GoogleGenAI | null = null;
+  private chat: ReturnType<GoogleGenAI["chats"]["create"]> | null = null;
 
   constructor(options: GeminiAgentAdapterOptions) {
     this.config = options.config;
@@ -166,36 +373,118 @@ export class GeminiAgentAdapter implements AgentAdapter {
   }
 
   reset(): void {
-    // Stateless adapter
+    this.chat = null;
   }
 
   setWorkingDirectory(workingDirectory?: string): void {
-    this.workingDirectory = workingDirectory;
+    if (this.workingDirectory !== workingDirectory) {
+      this.workingDirectory = workingDirectory;
+      this.reset();
+    }
   }
 
   setModel(model?: string): void {
-    this.model = model;
+    if (this.model !== model) {
+      this.model = model;
+      this.reset();
+    }
   }
 
   getThreadId(): string | null {
     return null;
   }
 
+  private getChat(model: string) {
+    if (!this.chat) {
+      this.chat = this.getClient().chats.create({ model });
+    }
+    return this.chat;
+  }
+
+  private resolveToolContext(options?: AgentSendOptions): ToolExecutionContext {
+    if (options?.toolContext) {
+      return options.toolContext;
+    }
+    const cwd = this.workingDirectory || process.cwd();
+    return { cwd, allowedDirs: resolveAllowedDirsFallback(cwd) };
+  }
+
+  private resolveToolHooks(options?: AgentSendOptions): ToolHooks | undefined {
+    return options?.toolHooks;
+  }
+
+  private async sendWithRetry<T>(fn: () => Promise<T>, canRetry: () => boolean): Promise<T> {
+    const maxAttempts = 5;
+    let attempt = 0;
+    let lastError: unknown;
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        const status =
+          error instanceof ApiError
+            ? error.status
+            : typeof (error as { status?: unknown }).status === "number"
+              ? (error as { status: number }).status
+              : null;
+        if (status !== 429 && status !== 503) {
+          throw error;
+        }
+        if (!canRetry()) {
+          throw error;
+        }
+        if (attempt >= maxAttempts) {
+          break;
+        }
+        const baseMs = 400 * 2 ** (attempt - 1);
+        const jitter = Math.floor(Math.random() * 200);
+        const waitMs = Math.min(8000, baseMs + jitter);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+    throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? "Gemini request failed")));
+  }
+
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
     this.requireReady();
     const prompt = normalizeInput(input);
     const model = this.model || this.config.model;
+    const toolContext = this.resolveToolContext(options);
+    const toolHooks = this.resolveToolHooks(options);
+    const retryState = { toolCalls: 0 };
+    const callableTool = buildCallableAdsTool(
+      toolContext,
+      {
+        onInvoke: async (tool, payload) => {
+          retryState.toolCalls += 1;
+          await toolHooks?.onInvoke?.(tool, payload);
+        },
+        onResult: (summary) => toolHooks?.onResult?.(summary),
+      },
+    );
     const systemInstruction = this.workingDirectory
       ? `${this.systemPrompt}\n\nWorking directory: ${this.workingDirectory}`
       : this.systemPrompt;
-    const response = await this.getClient().models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        abortSignal: options?.signal,
-        systemInstruction,
-      },
-    });
+    const chat = this.getChat(model);
+    const response = await this.sendWithRetry(
+      () =>
+        chat.sendMessage({
+          message: prompt,
+          config: {
+            abortSignal: options?.signal,
+            systemInstruction,
+            tools: [callableTool],
+            toolConfig: {
+              functionCallingConfig: {
+                mode: FunctionCallingConfigMode.AUTO,
+              },
+            },
+          },
+        }),
+      () => retryState.toolCalls === 0,
+    );
 
     return {
       response: response.text || "(Gemini 无响应)",
