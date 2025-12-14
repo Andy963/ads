@@ -38,16 +38,29 @@ function truncate(value: string, limit = QUERY_LOG_LIMIT): string {
   return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }
 
-function normalizeResults(raw: Record<string, any>): SearchResult[] {
-  const items: Array<Record<string, any>> = Array.isArray(raw.results) ? raw.results : [];
-  return items.map((item) => ({
-    title: item.title ?? item.url ?? "Untitled",
-    url: item.url ?? "",
-    content: item.content ?? item.snippet ?? item.result,
-    snippet: item.snippet ?? item.content ?? item.result,
-    score: typeof item.score === "number" ? item.score : undefined,
+function normalizeResults(raw: Record<string, unknown>): SearchResult[] {
+  const rawResults = raw.results;
+  const items = Array.isArray(rawResults) ? rawResults : [];
+
+  return items.map((item) => {
+    const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+    const title = typeof record.title === "string"
+      ? record.title
+      : typeof record.url === "string"
+        ? record.url
+        : "Untitled";
+    const url = typeof record.url === "string" ? record.url : "";
+    const contentCandidate = record.content ?? record.snippet ?? record.result;
+    const snippetCandidate = record.snippet ?? record.content ?? record.result;
+    return {
+      title,
+      url,
+      content: typeof contentCandidate === "string" ? contentCandidate : undefined,
+      snippet: typeof snippetCandidate === "string" ? snippetCandidate : undefined,
+      score: typeof record.score === "number" ? record.score : undefined,
     source: "tavily",
-  }));
+    };
+  });
 }
 
 function buildPayload(params: SearchParams, maxResults: number): Record<string, unknown> {

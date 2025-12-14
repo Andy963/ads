@@ -38,19 +38,19 @@ describe("search service", () => {
     cleanupLog();
   });
 
-  it("returns config error when no keys are provided", async () => {
-    await assert.rejects(
-      () =>
-        search(
-          { query: "hello world" },
-          { config: resolveSearchConfig({ apiKeys: [], logPath: tmpLog, retries: 0 }) },
-        ),
-      (error: any) => {
-        assert.equal(error.type, "config");
-        return true;
-      },
-    );
-  });
+	  it("returns config error when no keys are provided", async () => {
+	    await assert.rejects(
+	      () =>
+	        search(
+	          { query: "hello world" },
+	          { config: resolveSearchConfig({ apiKeys: [], logPath: tmpLog, retries: 0 }) },
+	        ),
+	      (error: unknown) => {
+	        assert.equal((error as { type?: unknown }).type, "config");
+	        return true;
+	      },
+	    );
+	  });
 
   it("clips maxResults to limit and returns structured response", async () => {
     const factory = makeFactory({
@@ -107,27 +107,27 @@ describe("search service", () => {
     assert.equal(second.resultCount, 1);
   });
 
-  it("does not retry on input error", async () => {
-    let calls = 0;
-    const factory = makeFactory({
-      key1: async () => {
+	  it("does not retry on input error", async () => {
+	    let calls = 0;
+	    const factory = makeFactory({
+	      key1: async () => {
         calls += 1;
         const err = Object.assign(new Error("bad request"), { status: 400 });
         throw err;
       },
     });
 
-    await assert.rejects(
-      () =>
-        search(
-          { query: "bad" },
-          { config: resolveSearchConfig({ apiKeys: ["key1"], logPath: tmpLog }), clientFactory: factory },
-        ),
-      (error: any) => {
-        assert.equal(error.type, "input");
-        return true;
-      },
-    );
+	    await assert.rejects(
+	      () =>
+	        search(
+	          { query: "bad" },
+	          { config: resolveSearchConfig({ apiKeys: ["key1"], logPath: tmpLog }), clientFactory: factory },
+	        ),
+	      (error: unknown) => {
+	        assert.equal((error as { type?: unknown }).type, "input");
+	        return true;
+	      },
+	    );
 
     assert.equal(calls, 1);
   });

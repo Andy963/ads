@@ -85,19 +85,15 @@ describe('UrlHandler', () => {
       }
     });
 
-    it('should perform HEAD for safe URLs with timeout signal', async () => {
-      const calls: Array<{ url: string; method?: string; signal?: AbortSignal }> = [];
-      const restoreFetch = stubFetch(async (url, options) => {
-        calls.push({ url: String(url), method: (options as any)?.method, signal: (options as any)?.signal });
-        return {
-          headers: {
-            get: () => 'image/png',
-          },
-        } as any;
-      });
-      setDnsResolver(async () => ['93.184.216.34']);
-      try {
-        const info = await detectUrlType('https://example.com/photo');
+	    it('should perform HEAD for safe URLs with timeout signal', async () => {
+	      const calls: Array<{ url: string; method?: string; signal?: AbortSignal }> = [];
+	      const restoreFetch = stubFetch(async (url, options) => {
+	        calls.push({ url: String(url), method: options?.method, signal: options?.signal });
+	        return new Response('', { headers: { 'content-type': 'image/png' } });
+	      });
+	      setDnsResolver(async () => ['93.184.216.34']);
+	      try {
+	        const info = await detectUrlType('https://example.com/photo');
         assert.strictEqual(info.type, UrlType.IMAGE);
         assert.strictEqual(info.extension, '.jpg'); // falls back when no extension in URL
         assert.strictEqual(calls.length, 1, 'HEAD request should be made once');
@@ -107,6 +103,6 @@ describe('UrlHandler', () => {
         restoreFetch();
         setDnsResolver(null);
       }
-    });
-  });
-});
+	    });
+	  });
+	});
