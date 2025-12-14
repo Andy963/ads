@@ -1,13 +1,17 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { randomBytes, createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 
+import type { Database as DatabaseType, Statement as StatementType } from 'better-sqlite3';
+
+import { getStateDatabase } from '../../state/database.js';
 import { createLogger } from '../../utils/logger.js';
 
 interface ThreadStorageOptions {
   namespace?: string;
-  storagePath?: string;
-  saltPath?: string;
+  storagePath?: string; // legacy json path
+  saltPath?: string; // legacy salt file path
+  stateDbPath?: string;
 }
 
 interface ThreadRecord {
@@ -28,140 +32,240 @@ interface ThreadState {
 
 const logger = createLogger('ThreadStorage');
 
+type SqliteStatement = StatementType<unknown[], unknown>;
+
 export class ThreadStorage {
   private readonly namespace: string;
-  private readonly storagePath: string;
-  private readonly saltPath: string;
-  private readonly storageDir: string;
-  private threads = new Map<string, ThreadState>();
-  private salt: string;
+  private readonly legacyStoragePath: string;
+  private readonly legacySaltPath: string;
+  private readonly stateDbPath?: string;
+  private readonly db: DatabaseType;
+  private readonly salt: string;
+
+  private readonly getStmt: SqliteStatement;
+  private readonly upsertStmt: SqliteStatement;
+  private readonly deleteStmt: SqliteStatement;
+  private readonly clearNamespaceStmt: SqliteStatement;
+
+  private readonly getKvStmt: SqliteStatement;
+  private readonly setKvStmt: SqliteStatement;
+  private readonly getMigrationMarkerStmt: SqliteStatement;
+  private readonly setMigrationMarkerStmt: SqliteStatement;
 
   constructor(options: ThreadStorageOptions = {}) {
     this.namespace = options.namespace?.trim() || 'tg';
-    const storageDir = join(process.cwd(), '.ads');
-    this.storagePath = options.storagePath ?? join(storageDir, this.namespace === 'tg' ? 'telegram-threads.json' : `${this.namespace}-threads.json`);
-    this.saltPath = options.saltPath ?? join(storageDir, 'thread-storage-salt');
-    this.storageDir = dirname(this.storagePath);
+    const adsDir = path.join(process.cwd(), '.ads');
+    this.legacyStoragePath =
+      options.storagePath ??
+      path.join(adsDir, this.namespace === 'tg' ? 'telegram-threads.json' : `${this.namespace}-threads.json`);
+    this.legacySaltPath = options.saltPath ?? path.join(adsDir, 'thread-storage-salt');
+    this.stateDbPath = options.stateDbPath;
+    this.db = getStateDatabase(this.stateDbPath);
+
+    this.getStmt = this.db.prepare(
+      `SELECT thread_id as threadId, cwd
+       FROM thread_state
+       WHERE namespace = ? AND user_hash = ?`,
+    );
+    this.upsertStmt = this.db.prepare(
+      `INSERT INTO thread_state (namespace, user_hash, thread_id, cwd, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(namespace, user_hash)
+       DO UPDATE SET thread_id = excluded.thread_id,
+                     cwd = excluded.cwd,
+                     updated_at = excluded.updated_at`,
+    );
+    this.deleteStmt = this.db.prepare(
+      `DELETE FROM thread_state WHERE namespace = ? AND user_hash = ?`,
+    );
+    this.clearNamespaceStmt = this.db.prepare(
+      `DELETE FROM thread_state WHERE namespace = ?`,
+    );
+
+    this.getKvStmt = this.db.prepare(
+      `SELECT value FROM kv_state WHERE namespace = ? AND key = ?`,
+    );
+    this.setKvStmt = this.db.prepare(
+      `INSERT INTO kv_state (namespace, key, value, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(namespace, key)
+       DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    );
+    this.getMigrationMarkerStmt = this.db.prepare(
+      `SELECT value FROM kv_state WHERE namespace = 'migrations' AND key = ?`,
+    );
+    this.setMigrationMarkerStmt = this.db.prepare(
+      `INSERT INTO kv_state (namespace, key, value, updated_at)
+       VALUES ('migrations', ?, ?, ?)
+       ON CONFLICT(namespace, key)
+       DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    );
+
     this.salt = this.loadSalt();
-    this.load();
+    this.migrateLegacyThreads();
   }
 
   private loadSalt(): string {
+    const kvNamespace = 'thread_storage';
+    const kvKey = 'salt';
+
     try {
-      if (existsSync(this.saltPath)) {
-        const existing = readFileSync(this.saltPath, 'utf-8').trim();
+      if (fs.existsSync(this.legacySaltPath)) {
+        const existing = fs.readFileSync(this.legacySaltPath, 'utf-8').trim();
         if (existing) {
+          this.persistSaltToDb(kvNamespace, kvKey, existing);
           return existing;
         }
       }
-    } catch {
-      // fall through to regenerate salt
+    } catch (error) {
+      logger.warn(`[ThreadStorage] Failed to read legacy salt file ${this.legacySaltPath}`, error);
     }
 
-    const generated = randomBytes(32).toString('hex');
     try {
-      if (!existsSync(this.storageDir)) {
-        mkdirSync(this.storageDir, { recursive: true });
+      const row = this.getKvStmt.get(kvNamespace, kvKey) as { value?: string } | undefined;
+      if (row?.value) {
+        return String(row.value);
       }
-      writeFileSync(this.saltPath, generated, 'utf-8');
-    } catch {
-      // ignore write errors; regenerated next time
+    } catch (error) {
+      logger.warn('[ThreadStorage] Failed to read salt from state.db', error);
     }
+
+    const generated = crypto.randomBytes(32).toString('hex');
+    this.persistSaltToDb(kvNamespace, kvKey, generated);
+
+    try {
+      fs.mkdirSync(path.dirname(this.legacySaltPath), { recursive: true });
+      fs.writeFileSync(this.legacySaltPath, generated, 'utf-8');
+    } catch (error) {
+      logger.warn(`[ThreadStorage] Failed to persist legacy salt file ${this.legacySaltPath}`, error);
+    }
+
     return generated;
   }
 
   private hashUserId(userId: number): string {
-    return createHash('sha256').update(String(userId)).update(':').update(this.salt).digest('hex');
+    return crypto.createHash('sha256').update(String(userId)).update(':').update(this.salt).digest('hex');
   }
 
-  private load(): void {
-    if (!existsSync(this.storagePath)) {
+  private persistSaltToDb(namespace: string, key: string, value: string): void {
+    try {
+      this.setKvStmt.run(namespace, key, value, Date.now());
+    } catch (error) {
+      logger.warn('[ThreadStorage] Failed to persist salt to state.db', error);
+    }
+  }
+
+  private migrateLegacyThreads(): void {
+    const legacyPath = this.legacyStoragePath ? path.resolve(this.legacyStoragePath) : '';
+    if (!legacyPath || !fs.existsSync(legacyPath)) {
       return;
     }
 
+    const marker = `threads:${this.namespace}:${path.basename(legacyPath)}`;
     try {
-      const content = readFileSync(this.storagePath, 'utf-8');
-      const data: ThreadRecord[] = JSON.parse(content);
-
-      for (const record of data) {
-        if (record.namespace && record.namespace !== this.namespace) {
-          continue;
-        }
-        const key = record.userHash ?? (record.userId !== undefined ? this.hashUserId(record.userId) : null);
-        if (!key) {
-          continue;
-        }
-        this.threads.set(key, {
-          threadId: record.threadId,
-          cwd: record.cwd,
-        });
+      const existing = this.getMigrationMarkerStmt.get(marker) as { value?: string } | undefined;
+      if (existing?.value) {
+        return;
       }
-
-      logger.info(`Loaded ${this.threads.size} thread records`);
     } catch (error) {
-      logger.warn('Failed to load', error);
+      logger.warn(`[ThreadStorage] Failed to read migration marker ${marker}`, error);
     }
-  }
 
-  private save(): void {
-    const records: ThreadRecord[] = [];
+    try {
+      const raw = fs.readFileSync(legacyPath, 'utf-8');
+      const parsed = JSON.parse(raw) as unknown;
+      const records = Array.isArray(parsed) ? (parsed as ThreadRecord[]) : [];
 
-    for (const [userHash, state] of this.threads.entries()) {
-      records.push({
-        userHash,
-        threadId: state.threadId,
-        lastActivity: Date.now(),
-        cwd: state.cwd,
-        namespace: this.namespace,
+      const tx = this.db.transaction(() => {
+        for (const record of records) {
+          if (!record || typeof record !== 'object') {
+            continue;
+          }
+          if (record.namespace && record.namespace !== this.namespace) {
+            continue;
+          }
+
+          const userHash =
+            typeof record.userHash === 'string' && record.userHash.trim()
+              ? record.userHash.trim()
+              : typeof record.userId === 'number'
+                ? this.hashUserId(record.userId)
+                : '';
+          const threadId = typeof record.threadId === 'string' ? record.threadId.trim() : '';
+          if (!userHash || !threadId) {
+            continue;
+          }
+          const cwd = typeof record.cwd === 'string' && record.cwd.trim() ? record.cwd.trim() : null;
+          this.upsertStmt.run(this.namespace, userHash, threadId, cwd, Date.now());
+        }
       });
-    }
+      tx();
 
-    try {
-      const dir = dirname(this.storagePath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      
-      writeFileSync(this.storagePath, JSON.stringify(records, null, 2), 'utf-8');
+      this.setMigrationMarkerStmt.run(marker, '1', Date.now());
+      logger.info(`[ThreadStorage] Migrated legacy threads from ${legacyPath} -> state.db (${this.namespace})`);
     } catch (error) {
-      logger.warn('Failed to save', error);
+      logger.warn(`[ThreadStorage] Failed to migrate legacy threads ${legacyPath}`, error);
     }
   }
 
   getThreadId(userId: number): string | undefined {
-    const key = this.hashUserId(userId);
-    return this.threads.get(key)?.threadId;
+    return this.getRecord(userId)?.threadId;
   }
 
   setThreadId(userId: number, threadId: string): void {
-    const key = this.hashUserId(userId);
-    const existing = this.threads.get(key);
-    this.threads.set(key, {
-      threadId,
-      cwd: existing?.cwd,
-    });
-    this.save();
-    logger.debug(`Saved thread ${threadId}`);
+    const existing = this.getRecord(userId);
+    this.setRecord(userId, { threadId, cwd: existing?.cwd });
   }
 
   getRecord(userId: number): ThreadState | undefined {
-    return this.threads.get(this.hashUserId(userId));
+    const userHash = this.hashUserId(userId);
+    try {
+      const row = this.getStmt.get(this.namespace, userHash) as
+        | { threadId: string; cwd: string | null }
+        | undefined;
+      if (!row || !row.threadId) {
+        return undefined;
+      }
+      const cwd = row.cwd && typeof row.cwd === 'string' ? row.cwd : undefined;
+      return { threadId: row.threadId, cwd };
+    } catch (error) {
+      logger.warn(`[ThreadStorage] Failed to read thread record (ns=${this.namespace})`, error);
+      return undefined;
+    }
   }
 
   setRecord(userId: number, state: ThreadState): void {
-    this.threads.set(this.hashUserId(userId), state);
-    this.save();
-    logger.debug(`Saved state (ns=${this.namespace} thread=${state.threadId}${state.cwd ? `, cwd=${state.cwd}` : ''})`);
+    const userHash = this.hashUserId(userId);
+    const threadId = String(state.threadId ?? '').trim();
+    if (!threadId) {
+      return;
+    }
+    const cwd = typeof state.cwd === 'string' && state.cwd.trim() ? state.cwd.trim() : null;
+    try {
+      this.upsertStmt.run(this.namespace, userHash, threadId, cwd, Date.now());
+      logger.debug(
+        `Saved state (ns=${this.namespace} thread=${threadId}${cwd ? `, cwd=${cwd}` : ''})`,
+      );
+    } catch (error) {
+      logger.warn(`[ThreadStorage] Failed to persist thread record (ns=${this.namespace})`, error);
+    }
   }
 
   removeThread(userId: number): void {
-    this.threads.delete(this.hashUserId(userId));
-    this.save();
-    logger.debug('Removed thread');
+    const userHash = this.hashUserId(userId);
+    try {
+      this.deleteStmt.run(this.namespace, userHash);
+      logger.debug('Removed thread');
+    } catch (error) {
+      logger.warn(`[ThreadStorage] Failed to remove thread (ns=${this.namespace})`, error);
+    }
   }
 
   clear(): void {
-    this.threads.clear();
-    this.save();
+    try {
+      this.clearNamespaceStmt.run(this.namespace);
+    } catch (error) {
+      logger.warn(`[ThreadStorage] Failed to clear namespace threads (ns=${this.namespace})`, error);
+    }
   }
 }
