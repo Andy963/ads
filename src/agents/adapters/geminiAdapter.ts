@@ -17,6 +17,8 @@ import { executeToolInvocation, type ToolExecutionContext, type ToolHooks } from
 
 type CodexInputPart = Exclude<Input, string>[number];
 
+const DEFAULT_MIN_REQUEST_INTERVAL_MS = 1200;
+
 const DEFAULT_METADATA: AgentMetadata = {
   id: "gemini",
   name: "Gemini",
@@ -87,6 +89,17 @@ function parseBoolean(value: string | undefined, defaultValue = false): boolean 
   }
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 function resolveAllowedDirsFallback(cwd: string): string[] {
@@ -281,12 +294,17 @@ export class GeminiAgentAdapter implements AgentAdapter {
   private model?: string;
   private ai: GoogleGenAI | null = null;
   private chat: ReturnType<GoogleGenAI["chats"]["create"]> | null = null;
+  private readonly minRequestIntervalMs: number;
+  private nextAvailableAt = 0;
+  private sendQueue: Promise<void> = Promise.resolve();
 
   constructor(options: GeminiAgentAdapterOptions) {
     this.config = options.config;
     this.systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.metadata = { ...DEFAULT_METADATA, defaultModel: this.config.model };
     this.id = this.metadata.id;
+    const envInterval = parsePositiveInt(process.env.GEMINI_MIN_REQUEST_INTERVAL_MS, DEFAULT_MIN_REQUEST_INTERVAL_MS);
+    this.minRequestIntervalMs = Math.min(Math.max(envInterval, 0), 10000);
   }
 
   private requireReady(): void {
@@ -416,6 +434,34 @@ export class GeminiAgentAdapter implements AgentAdapter {
     return options?.toolHooks;
   }
 
+  private async throttleRequests(): Promise<void> {
+    if (this.minRequestIntervalMs <= 0) {
+      return;
+    }
+    const now = Date.now();
+    const delay = this.nextAvailableAt - now;
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  private async enqueueSend<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.sendQueue;
+    let release: (() => void) | null = null;
+    this.sendQueue = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      await this.throttleRequests();
+      const result = await fn();
+      this.nextAvailableAt = Date.now() + this.minRequestIntervalMs;
+      return result;
+    } finally {
+      release?.();
+    }
+  }
+
   private extractRetryAfterMs(error: ApiError): number | null {
     const header =
       (error.response as { headers?: Record<string, string> } | undefined)?.headers?.["retry-after"] ??
@@ -471,6 +517,10 @@ export class GeminiAgentAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    return this.enqueueSend(() => this.runSend(input, options));
+  }
+
+  private async runSend(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
     this.requireReady();
     const prompt = normalizeInput(input);
     const model = this.model || this.config.model;
