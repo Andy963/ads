@@ -109,6 +109,11 @@ describe("SystemPromptManager rule reinjection", () => {
       assert.equal(injection.reason, "initial");
       assert.notEqual(injection.instructionsHash, "missing");
       assert.ok(injection.text.trim().length > 0, "fallback instructions should not be empty");
+      assert.match(
+        injection.text,
+        /workspace\.json 缺失|ads init/i,
+        "should surface init warning in prompt",
+      );
     } finally {
       fs.rmSync(tempWorkspace, { recursive: true, force: true });
     }

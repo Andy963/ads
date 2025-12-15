@@ -88,6 +88,7 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
 
 export class SystemPromptManager {
   private workspaceRoot: string;
+  private workspaceInitialized: boolean;
   private readonly logger: Logger;
   private readonly reinjection: ReinjectionConfig;
   private readonly rulesReinjectionTurns: number;
@@ -101,10 +102,12 @@ export class SystemPromptManager {
   private lastInstructionsHash: string | null = null;
   private lastRulesHash: string | null = null;
   private instructionsWarningLogged = false;
+  private workspaceWarningLogged = false;
   private rulesWarningLogged = false;
 
   constructor(options: SystemPromptManagerOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
+    this.workspaceInitialized = this.checkWorkspaceInitialized(this.workspaceRoot);
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
       turns: options.reinjection?.turns ?? 6,
@@ -126,8 +129,12 @@ export class SystemPromptManager {
       return;
     }
     this.workspaceRoot = normalized;
+    this.workspaceInitialized = this.checkWorkspaceInitialized(normalized);
     this.instructionsCache = null;
     this.rulesCache = null;
+    this.instructionsWarningLogged = false;
+    this.workspaceWarningLogged = false;
+    this.rulesWarningLogged = false;
     this.pendingReason = "workspace-changed";
     this.logger.info(`[SystemPrompt] Workspace switched to ${normalized}`);
   }
@@ -147,6 +154,10 @@ export class SystemPromptManager {
     const rules = rulesCache;
 
     const textParts: string[] = [];
+    const workspaceNotice = this.buildWorkspaceNotice();
+    if (workspaceNotice) {
+      textParts.push(workspaceNotice);
+    }
     if (!rulesOnly && instructions && instructions.content.trim()) {
       textParts.push(instructions.content.trim());
     }
@@ -256,6 +267,33 @@ export class SystemPromptManager {
       this.pendingReason = this.pendingReason ?? "instructions-updated";
     }
     return cache;
+  }
+
+  private checkWorkspaceInitialized(workspaceRoot: string): boolean {
+    return fs.existsSync(path.join(workspaceRoot, ".ads", "workspace.json"));
+  }
+
+  private buildWorkspaceNotice(): string | null {
+    if (!this.workspaceInitialized) {
+      const nowInitialized = this.checkWorkspaceInitialized(this.workspaceRoot);
+      if (nowInitialized) {
+        this.workspaceInitialized = true;
+        this.workspaceWarningLogged = false;
+      }
+    }
+    if (this.workspaceInitialized) {
+      return null;
+    }
+    if (!this.workspaceWarningLogged) {
+      this.logger.warn(
+        `[SystemPrompt] workspace not initialized at ${this.workspaceRoot}; instructions/rules falling back to built-in templates. Run 'ads init' to set up .ads/`,
+      );
+      this.workspaceWarningLogged = true;
+    }
+    return [
+      "[ADS Notice] 当前工作区尚未初始化 (.ads/workspace.json 缺失)。",
+      "已回退使用内置 templates/ 指令与规则；请尽快运行 'ads init' 生成 .ads/ 配置与模板。",
+    ].join("\n");
   }
 
   private readRules(): FileCache {

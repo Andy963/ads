@@ -27,6 +27,9 @@ const DEFAULT_METADATA: AgentMetadata = {
 const DEFAULT_SYSTEM_PROMPT = [
   "You are Gemini running inside the ADS automation platform.",
   "Your job: execute the user's request end-to-end (plan, inspect code, make changes, run checks) unless constraints prevent it.",
+  "- Plan before acting: outline the steps, then group file reads/writes instead of issuing many tiny calls.",
+  "- When reading code, prefer whole files or meaningful blocks, not line-by-line snippets.",
+  "- Minimize tool invocations; combine edits into apply_patch where possible to avoid extra API calls.",
   "",
   "Tooling:",
   "- You may have access to function tools (exec/read/write/apply_patch/search) that run on the host.",
@@ -413,8 +416,27 @@ export class GeminiAgentAdapter implements AgentAdapter {
     return options?.toolHooks;
   }
 
+  private extractRetryAfterMs(error: ApiError): number | null {
+    const header =
+      (error.response as { headers?: Record<string, string> } | undefined)?.headers?.["retry-after"] ??
+      (error as { retryAfter?: number }).retryAfter;
+    if (!header) {
+      return null;
+    }
+    const parsed = Number(header);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed * 1000;
+    }
+    const date = Date.parse(header);
+    if (Number.isFinite(date)) {
+      const delta = date - Date.now();
+      return delta > 0 ? delta : null;
+    }
+    return null;
+  }
+
   private async sendWithRetry<T>(fn: () => Promise<T>, canRetry: () => boolean): Promise<T> {
-    const maxAttempts = 5;
+    const maxAttempts = 3;
     let attempt = 0;
     let lastError: unknown;
     while (attempt < maxAttempts) {
@@ -438,7 +460,8 @@ export class GeminiAgentAdapter implements AgentAdapter {
         if (attempt >= maxAttempts) {
           break;
         }
-        const baseMs = 400 * 2 ** (attempt - 1);
+        const retryAfterMs = error instanceof ApiError ? this.extractRetryAfterMs(error) : null;
+        const baseMs = retryAfterMs ?? 400 * 2 ** (attempt - 1);
         const jitter = Math.floor(Math.random() * 200);
         const waitMs = Math.min(8000, baseMs + jitter);
         await new Promise((resolve) => setTimeout(resolve, waitMs));
