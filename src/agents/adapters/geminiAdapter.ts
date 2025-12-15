@@ -1,5 +1,7 @@
 import type { Input, Usage } from "@openai/codex-sdk";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   GoogleGenAI,
   ApiError,
@@ -17,6 +19,7 @@ import { OAuth2Client } from "google-auth-library";
 import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../types.js";
 import type { GeminiAgentConfig } from "../config.js";
 import { executeToolInvocation, type ToolExecutionContext, type ToolHooks } from "../tools.js";
+import { truncateForLog } from "../../utils/text.js";
 
 type CodexInputPart = Exclude<Input, string>[number];
 
@@ -24,6 +27,7 @@ const DEFAULT_MIN_REQUEST_INTERVAL_MS = 1000;
 const DEFAULT_MAX_RPM = 0;
 const DEFAULT_MAX_RETRY_WAIT_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS = 5;
+const DEFAULT_LOG_FILE = "gemini.log";
 
 class AbortError extends Error {
   name = "AbortError";
@@ -77,6 +81,27 @@ function resolveLimiterKey(config: GeminiAgentConfig): string {
     return `gemini_keyfile:${config.googleAuthKeyFile}:${baseUrl}`;
   }
   return `gemini:unknown:${baseUrl}`;
+}
+
+type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify({ error: "unserializable" });
+  }
+}
+
+function maskPathForLog(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (trimmed.length <= 180) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 90)}…${trimmed.slice(-60)}`;
 }
 
 class GeminiRequestLimiter {
@@ -389,6 +414,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
   private readonly limiter: GeminiRequestLimiter;
   private history: Content[] = [];
   private sendQueue: Promise<void> = Promise.resolve();
+  private readonly instanceId: string;
 
   constructor(options: GeminiAgentAdapterOptions) {
     this.config = options.config;
@@ -400,6 +426,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
     const maxRpm = Math.max(0, parsePositiveInt(process.env.GEMINI_MAX_RPM, DEFAULT_MAX_RPM));
     this.limiterKey = resolveLimiterKey(this.config);
     this.limiter = this.getLimiter({ minIntervalMs, maxRpm });
+    this.instanceId = Math.random().toString(36).slice(2, 10);
   }
 
   private getLimiter(options: { minIntervalMs: number; maxRpm: number }): GeminiRequestLimiter {
@@ -507,6 +534,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
     if (this.workingDirectory !== workingDirectory) {
       this.workingDirectory = workingDirectory;
       this.reset();
+      this.log("INFO", "working directory changed", { cwd: workingDirectory ?? "" });
     }
   }
 
@@ -514,11 +542,45 @@ export class GeminiAgentAdapter implements AgentAdapter {
     if (this.model !== model) {
       this.model = model;
       this.reset();
+      this.log("INFO", "model changed", { model: model ?? "" });
     }
   }
 
   getThreadId(): string | null {
     return null;
+  }
+
+  private resolveLogFilePath(): string | null {
+    const baseDir = this.workingDirectory ? path.resolve(this.workingDirectory) : null;
+    const fallback = path.join(process.cwd(), ".ads", "logs", DEFAULT_LOG_FILE);
+    if (!baseDir) {
+      return fallback;
+    }
+    return path.join(baseDir, ".ads", "logs", DEFAULT_LOG_FILE);
+  }
+
+  private log(level: LogLevel, message: string, data?: Record<string, unknown>): void {
+    const filePath = this.resolveLogFilePath();
+    if (!filePath) {
+      return;
+    }
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      const entry = {
+        ts: new Date().toISOString(),
+        level,
+        agent: "gemini",
+        instance: this.instanceId,
+        limiter: this.limiterKey,
+        workspace: this.workingDirectory ? maskPathForLog(this.workingDirectory) : undefined,
+        model: this.model ?? this.config.model,
+        message,
+        ...(data ? { data } : {}),
+      };
+      fs.appendFileSync(filePath, `${safeJson(entry)}\n`, "utf-8");
+    } catch {
+      // ignore file logging failures
+    }
   }
 
   private resolveToolContext(options?: AgentSendOptions): ToolExecutionContext {
@@ -595,6 +657,12 @@ export class GeminiAgentAdapter implements AgentAdapter {
               ? (error as { status: number }).status
               : null;
         if (status !== 429 && status !== 503) {
+          this.log("ERROR", "request failed", {
+            status,
+            attempt,
+            maxAttempts,
+            error: error instanceof Error ? error.message : String(error),
+          });
           throw error;
         }
         if (attempt >= maxAttempts) {
@@ -605,9 +673,22 @@ export class GeminiAgentAdapter implements AgentAdapter {
         const jitter = Math.floor(Math.random() * 200);
         const waitMs = Math.min(maxWaitMs, baseMs + jitter);
         this.limiter.penalize(waitMs);
-        await sleepMs(Math.min(waitMs, 1_000), options?.signal);
+        this.log("WARN", "rate limited; backing off", {
+          status,
+          attempt,
+          maxAttempts,
+          waitMs,
+          retryAfterMs,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await sleepMs(waitMs, options?.signal);
       }
     }
+    this.log("ERROR", "request failed after retries", {
+      attempts: attempt,
+      maxAttempts,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
     throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? "Gemini request failed")));
   }
 
@@ -624,6 +705,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);
+      this.log("ERROR", "send failed", { error: message });
       const hint = [
         "建议：",
         "- 等待片刻后重试；或临时切换到 codex/claude。",
@@ -647,6 +729,11 @@ export class GeminiAgentAdapter implements AgentAdapter {
       : this.systemPrompt;
 
     const contents: Content[] = [...this.history, { role: "user", parts: [{ text: prompt }] }];
+    this.log("INFO", "send start", {
+      model,
+      historyEntries: this.history.length,
+      promptPreview: truncateForLog(prompt, 256),
+    });
 
     const runModelRequest = async (
       mode: FunctionCallingConfigMode = FunctionCallingConfigMode.AUTO,
@@ -686,7 +773,11 @@ export class GeminiAgentAdapter implements AgentAdapter {
       );
 
       const candidate = response.candidates?.[0];
-      const responseText = response.text || candidate?.content?.parts?.map((p) => p.text).join("\n") || "";
+      const responseText =
+        (candidate?.content?.parts ?? [])
+          .map((part) => (typeof part.text === "string" ? part.text : ""))
+          .filter((text) => Boolean(text))
+          .join("\n") || "";
       const functionCalls =
         response.functionCalls ??
         candidate?.content?.parts
@@ -717,6 +808,11 @@ export class GeminiAgentAdapter implements AgentAdapter {
       }
 
       const functionCalls = modelResult.functionCalls ?? [];
+      this.log("DEBUG", "model response", {
+        pass,
+        functionCalls: functionCalls.length,
+        responsePreview: truncateForLog(lastResponse ?? "", 256),
+      });
       if (!functionCalls.length) {
         completed = true;
         break;
@@ -729,8 +825,19 @@ export class GeminiAgentAdapter implements AgentAdapter {
         const name = (call.name ?? "").trim();
         const resolved = resolveToolPayload(call);
         retryState.toolCalls += 1;
-        await toolHooks?.onInvoke?.(resolved.tool, resolved.payload);
+        this.log("INFO", "tool invoke", {
+          pass,
+          tool: resolved.tool,
+          payloadPreview: truncateForLog(resolved.payload, 512),
+        });
         const result = await executeToolInvocation(resolved.tool, resolved.payload, toolContext, toolHooks);
+        this.log("INFO", "tool result", {
+          pass,
+          tool: resolved.tool,
+          ok: result.ok,
+          error: result.ok ? undefined : result.error ?? "Tool failed",
+          outputPreview: truncateForLog(result.output, 512),
+        });
         functionResponseParts.push(
           createPartFromFunctionResponse(id, name, {
             ...(result.ok ? {} : { error: result.error ?? "Tool failed" }),
@@ -762,6 +869,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
     }
 
     this.history = contents;
+    this.log("INFO", "send complete", { toolCalls: retryState.toolCalls, completed, usage: usage ?? undefined });
 
     return {
       response: lastResponse ?? "(Gemini 无响应)",
