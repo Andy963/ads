@@ -4,7 +4,7 @@ import {
   ApiError,
   FunctionCallingConfigMode,
   createPartFromFunctionResponse,
-  type CallableTool,
+  type Content,
   type FunctionCall,
   type FunctionDeclaration,
   type GenerateContentResponseUsageMetadata,
@@ -241,50 +241,6 @@ function resolveToolPayload(call: FunctionCall): { tool: string; payload: string
   return { tool: name, payload: JSON.stringify(args) };
 }
 
-function buildCallableAdsTool(context: ToolExecutionContext, hooks?: ToolHooks): CallableTool {
-  const declarations = buildAdsFunctionDeclarations();
-  return {
-    tool: async () => ({ functionDeclarations: declarations }),
-    callTool: async (functionCalls: FunctionCall[]): Promise<Part[]> => {
-      const parts: Part[] = [];
-      for (let idx = 0; idx < functionCalls.length; idx += 1) {
-        const call = functionCalls[idx];
-        const id = call.id ?? `${call.name ?? "tool"}-${Date.now()}-${idx}`;
-        const name = (call.name ?? "").trim();
-        if (!name) {
-          parts.push(
-            createPartFromFunctionResponse(id, "unknown", {
-              error: "Missing function name",
-              output: "",
-            }),
-          );
-          continue;
-        }
-
-        const resolved = resolveToolPayload(call);
-        if (!resolved.tool) {
-          parts.push(
-            createPartFromFunctionResponse(id, name, {
-              error: "Invalid tool name",
-              output: "",
-            }),
-          );
-          continue;
-        }
-
-        const result = await executeToolInvocation(resolved.tool, resolved.payload, context, hooks);
-        parts.push(
-          createPartFromFunctionResponse(id, name, {
-            ...(result.ok ? {} : { error: result.error ?? "Tool failed" }),
-            output: result.output,
-          }),
-        );
-      }
-      return parts;
-    },
-  };
-}
-
 export class GeminiAgentAdapter implements AgentAdapter {
   readonly id: string;
   readonly metadata: AgentMetadata;
@@ -293,7 +249,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
   private workingDirectory?: string;
   private model?: string;
   private ai: GoogleGenAI | null = null;
-  private chat: ReturnType<GoogleGenAI["chats"]["create"]> | null = null;
+  private history: Content[] = [];
   private readonly minRequestIntervalMs: number;
   private nextAvailableAt = 0;
   private sendQueue: Promise<void> = Promise.resolve();
@@ -394,7 +350,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
   }
 
   reset(): void {
-    this.chat = null;
+    this.history = [];
   }
 
   setWorkingDirectory(workingDirectory?: string): void {
@@ -413,13 +369,6 @@ export class GeminiAgentAdapter implements AgentAdapter {
 
   getThreadId(): string | null {
     return null;
-  }
-
-  private getChat(model: string) {
-    if (!this.chat) {
-      this.chat = this.getClient().chats.create({ model });
-    }
-    return this.chat;
   }
 
   private resolveToolContext(options?: AgentSendOptions): ToolExecutionContext {
@@ -447,9 +396,9 @@ export class GeminiAgentAdapter implements AgentAdapter {
 
   private async enqueueSend<T>(fn: () => Promise<T>): Promise<T> {
     const previous = this.sendQueue;
-    let release: (() => void) | null = null;
-    this.sendQueue = new Promise((resolve) => {
-      release = resolve;
+    let release: (() => void) | undefined;
+    this.sendQueue = new Promise<void>((resolve) => {
+      release = () => resolve();
     });
     await previous.catch(() => undefined);
     try {
@@ -463,12 +412,16 @@ export class GeminiAgentAdapter implements AgentAdapter {
   }
 
   private extractRetryAfterMs(error: ApiError): number | null {
-    const header =
-      (error.response as { headers?: Record<string, string> } | undefined)?.headers?.["retry-after"] ??
-      (error as { retryAfter?: number }).retryAfter;
-    if (!header) {
+    const responseHeaders =
+      (error as { response?: { headers?: Record<string, string> } }).response?.headers ??
+      (error as { headers?: Record<string, string> }).headers;
+    const retryAfterValue =
+      responseHeaders?.["retry-after"] ??
+      (error as { retryAfter?: number | string }).retryAfter;
+    if (!retryAfterValue) {
       return null;
     }
+    const header = String(retryAfterValue);
     const parsed = Number(header);
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed * 1000;
@@ -516,6 +469,15 @@ export class GeminiAgentAdapter implements AgentAdapter {
     throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? "Gemini request failed")));
   }
 
+  private async withRateLimit<T>(fn: () => Promise<T>): Promise<T> {
+    await this.throttleRequests();
+    try {
+      return await fn();
+    } finally {
+      this.nextAvailableAt = Date.now() + this.minRequestIntervalMs;
+    }
+  }
+
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
     return this.enqueueSend(() => this.runSend(input, options));
   }
@@ -527,41 +489,103 @@ export class GeminiAgentAdapter implements AgentAdapter {
     const toolContext = this.resolveToolContext(options);
     const toolHooks = this.resolveToolHooks(options);
     const retryState = { toolCalls: 0 };
-    const callableTool = buildCallableAdsTool(
-      toolContext,
-      {
-        onInvoke: async (tool, payload) => {
-          retryState.toolCalls += 1;
-          await toolHooks?.onInvoke?.(tool, payload);
-        },
-        onResult: (summary) => toolHooks?.onResult?.(summary),
-      },
-    );
+    const functionDeclarations = buildAdsFunctionDeclarations();
     const systemInstruction = this.workingDirectory
       ? `${this.systemPrompt}\n\nWorking directory: ${this.workingDirectory}`
       : this.systemPrompt;
-    const chat = this.getChat(model);
-    const response = await this.sendWithRetry(
-      () =>
-        chat.sendMessage({
-          message: prompt,
-          config: {
-            abortSignal: options?.signal,
-            systemInstruction,
-            tools: [callableTool],
-            toolConfig: {
-              functionCallingConfig: {
-                mode: FunctionCallingConfigMode.AUTO,
+
+    const contents: Content[] = [...this.history, { role: "user", parts: [{ text: prompt }] }];
+
+    const runModelRequest = async (): Promise<{
+      responseText: string;
+      usage: Usage | null;
+      modelContent?: Content;
+      functionCalls?: FunctionCall[];
+      functionResponses?: Part[];
+    }> => {
+      const response = await this.sendWithRetry(
+        () =>
+          this.withRateLimit(() =>
+            this.getClient().models.generateContent({
+              model,
+              contents,
+              config: {
+                abortSignal: options?.signal,
+                systemInstruction,
+                tools: [{ functionDeclarations }],
+                toolConfig: {
+                  functionCallingConfig: { mode: FunctionCallingConfigMode.AUTO },
+                },
+                automaticFunctionCalling: { disable: true },
               },
-            },
-          },
-        }),
-      () => retryState.toolCalls === 0,
-    );
+            }),
+          ),
+        () => retryState.toolCalls === 0,
+      );
+
+      const candidate = response.candidates?.[0];
+      const responseText = response.text || candidate?.content?.parts?.map((p) => p.text).join("\n") || "";
+      const functionCalls =
+        response.functionCalls ??
+        candidate?.content?.parts
+          ?.map((part) => part.functionCall)
+          .filter((call): call is FunctionCall => Boolean(call));
+
+      return {
+        responseText: responseText || "(Gemini 无响应)",
+        usage: mapUsage(response.usageMetadata),
+        modelContent: candidate?.content,
+        functionCalls,
+        functionResponses: undefined,
+      };
+    };
+
+    let lastResponse: string | null = null;
+    let usage: Usage | null = null;
+    const maxToolPasses = Math.max(1, parsePositiveInt(process.env.GEMINI_MAX_TOOL_PASSES, 6));
+
+    for (let pass = 0; pass < maxToolPasses; pass += 1) {
+      const modelResult = await runModelRequest();
+      lastResponse = modelResult.responseText;
+      usage = modelResult.usage ?? usage;
+
+      const functionCalls = modelResult.functionCalls ?? [];
+      if (!functionCalls.length) {
+        if (modelResult.modelContent) {
+          contents.push(modelResult.modelContent);
+        }
+        break;
+      }
+
+      if (modelResult.modelContent) {
+        contents.push(modelResult.modelContent);
+      }
+
+      const functionResponseParts: Part[] = [];
+      for (let idx = 0; idx < functionCalls.length; idx += 1) {
+        const call = functionCalls[idx];
+        const id = call.id ?? `${call.name ?? "tool"}-${Date.now()}-${idx}`;
+        const name = (call.name ?? "").trim();
+        const resolved = resolveToolPayload(call);
+        retryState.toolCalls += 1;
+        await toolHooks?.onInvoke?.(resolved.tool, resolved.payload);
+        const result = await executeToolInvocation(resolved.tool, resolved.payload, toolContext, toolHooks);
+        functionResponseParts.push(
+          createPartFromFunctionResponse(id, name, {
+            ...(result.ok ? {} : { error: result.error ?? "Tool failed" }),
+            output: result.output,
+          }),
+        );
+      }
+
+      contents.push({ role: "user", parts: functionResponseParts });
+    }
+
+    this.history = contents;
 
     return {
-      response: response.text || "(Gemini 无响应)",
-      usage: mapUsage(response.usageMetadata),
+      response: lastResponse ?? "(Gemini 无响应)",
+      usage,
       agentId: this.id,
     };
   }
