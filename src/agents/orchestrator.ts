@@ -139,7 +139,13 @@ export class HybridOrchestrator {
     if (!injection) {
       return input;
     }
-    return this.mergeSystemPrompt(injection.text, input);
+    const entry = this.adapters.get(agentId);
+    const agentName = entry?.metadata.name ?? agentId;
+    const aliasNote =
+      `You are ${agentName} (id: ${agentId}), the active ADS agent. ` +
+      `If the following instructions mention "Codex", treat them as referring to you.`;
+    const decorated = `${aliasNote}\n\n${injection.text}`;
+    return this.mergeSystemPrompt(decorated, input);
   }
 
   private completeTurn(agentId: AgentIdentifier): void {
