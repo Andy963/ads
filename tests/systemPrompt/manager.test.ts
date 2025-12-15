@@ -99,4 +99,18 @@ describe("SystemPromptManager rule reinjection", () => {
 
     fs.rmSync(nextWorkspace, { recursive: true, force: true });
   });
+
+  it("falls back to default templates when workspace is not initialized", () => {
+    const tempWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-uninit-"));
+    try {
+      const manager = new SystemPromptManager({ workspaceRoot: tempWorkspace });
+      const injection = manager.maybeInject();
+      assert(injection, "should inject fallback instructions");
+      assert.equal(injection.reason, "initial");
+      assert.notEqual(injection.instructionsHash, "missing");
+      assert.ok(injection.text.trim().length > 0, "fallback instructions should not be empty");
+    } finally {
+      fs.rmSync(tempWorkspace, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../utils/logger.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const DEFAULT_INSTRUCTIONS_PATH = path.join(PROJECT_ROOT, "templates", "instructions.md");
 
 export interface ReinjectionConfig {
   enabled: boolean;
@@ -95,6 +100,7 @@ export class SystemPromptManager {
   private pendingReason: string | null = null;
   private lastInstructionsHash: string | null = null;
   private lastRulesHash: string | null = null;
+  private instructionsWarningLogged = false;
   private rulesWarningLogged = false;
 
   constructor(options: SystemPromptManagerOptions) {
@@ -208,14 +214,45 @@ export class SystemPromptManager {
 
   private readInstructions(): FileCache {
     const instructionsPath = path.join(this.workspaceRoot, ".ads", "templates", "instructions.md");
-    const cache = this.readFileWithCache(
+
+    // Always check workspace instructions first to allow hot-loading after fallback
+    const workspaceCache = this.readFileWithCache(
       instructionsPath,
-      true,
+      false,
       "instructions",
-      this.instructionsCache,
+      this.instructionsCache?.path === instructionsPath ? this.instructionsCache : null,
     );
+
+    let cache = workspaceCache;
+
+    if (workspaceCache.hash === "missing") {
+      const fallbackCache = this.readFileWithCache(
+        DEFAULT_INSTRUCTIONS_PATH,
+        false,
+        "default instructions",
+        this.instructionsCache?.path === DEFAULT_INSTRUCTIONS_PATH ? this.instructionsCache : null,
+      );
+
+      if (fallbackCache.hash !== "missing") {
+        cache = fallbackCache;
+        if (!this.instructionsWarningLogged) {
+          this.logger.warn(
+            `[SystemPrompt] workspace instructions missing at ${instructionsPath}, using built-in templates/instructions.md`,
+          );
+          this.instructionsWarningLogged = true;
+        }
+      } else if (!this.instructionsWarningLogged) {
+        this.logger.warn(
+          `[SystemPrompt] instructions missing at ${instructionsPath}, and no default templates/instructions.md found`,
+        );
+        this.instructionsWarningLogged = true;
+      }
+    } else {
+      this.instructionsWarningLogged = false;
+    }
+
     this.instructionsCache = cache;
-    if (this.lastInstructionsHash && cache.hash !== this.lastInstructionsHash) {
+    if (this.lastInstructionsHash && cache.hash !== this.lastInstructionsHash && cache.hash !== "missing") {
       this.pendingReason = this.pendingReason ?? "instructions-updated";
     }
     return cache;
