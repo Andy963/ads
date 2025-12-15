@@ -124,6 +124,7 @@ export async function runReviewerAgent(options: {
     adapters,
     defaultAgentId,
     initialWorkingDirectory: workspace,
+    systemPromptManager,
   });
 
   const prompt = [

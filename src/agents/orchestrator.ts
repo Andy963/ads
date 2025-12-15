@@ -7,6 +7,7 @@ import type {
   AgentSendOptions,
   AgentStatus,
 } from "./types.js";
+import type { SystemPromptManager } from "../systemPrompt/manager.js";
 
 interface AgentEntry {
   adapter: AgentAdapter;
@@ -18,6 +19,7 @@ export interface HybridOrchestratorOptions {
   defaultAgentId?: AgentIdentifier;
   initialWorkingDirectory?: string;
   initialModel?: string;
+  systemPromptManager?: SystemPromptManager;
 }
 
 export interface AgentDescriptor {
@@ -30,11 +32,13 @@ export class HybridOrchestrator {
   private activeAgentId: AgentIdentifier;
   private workingDirectory?: string;
   private model?: string;
+  private readonly systemPromptManager?: SystemPromptManager;
 
   constructor(options: HybridOrchestratorOptions) {
     if (!options.adapters.length) {
       throw new Error("HybridOrchestrator requires at least one agent adapter");
     }
+    this.systemPromptManager = options.systemPromptManager;
 
     for (const adapter of options.adapters) {
       this.registerAdapter(adapter);
@@ -110,6 +114,45 @@ export class HybridOrchestrator {
     return entry;
   }
 
+  private mergeSystemPrompt(systemText: string, input: Input): Input {
+    if (!systemText.trim()) {
+      return input;
+    }
+    if (typeof input === "string") {
+      return `${systemText}\n\n${input}`;
+    }
+    if (Array.isArray(input)) {
+      return [{ type: "text", text: systemText }, ...input];
+    }
+    return `${systemText}\n\n${String(input ?? "")}`;
+  }
+
+  private applySystemPrompt(agentId: AgentIdentifier, input: Input): Input {
+    if (!this.systemPromptManager) {
+      return input;
+    }
+    // Codex already handles system prompt injection itself
+    if (agentId === "codex") {
+      return input;
+    }
+    const injection = this.systemPromptManager.maybeInject();
+    if (!injection) {
+      return input;
+    }
+    return this.mergeSystemPrompt(injection.text, input);
+  }
+
+  private completeTurn(agentId: AgentIdentifier): void {
+    if (!this.systemPromptManager) {
+      return;
+    }
+    if (agentId === "codex") {
+      // Codex session manages turn completion internally
+      return;
+    }
+    this.systemPromptManager.completeTurn();
+  }
+
   getStreamingConfig(): { enabled: boolean; throttleMs: number } {
     return this.activeEntry.adapter.getStreamingConfig();
   }
@@ -130,7 +173,12 @@ export class HybridOrchestrator {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
-    return this.activeEntry.adapter.send(input, options);
+    const prompt = this.applySystemPrompt(this.activeAgentId, input);
+    try {
+      return await this.activeEntry.adapter.send(prompt, options);
+    } finally {
+      this.completeTurn(this.activeAgentId);
+    }
   }
 
   async invokeAgent(agentId: AgentIdentifier, input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
@@ -138,11 +186,17 @@ export class HybridOrchestrator {
     if (!entry) {
       throw new Error(`Agent "${agentId}" is not registered`);
     }
-    return entry.adapter.send(input, options);
+    const prompt = this.applySystemPrompt(agentId, input);
+    try {
+      return await entry.adapter.send(prompt, options);
+    } finally {
+      this.completeTurn(agentId);
+    }
   }
 
   setWorkingDirectory(workingDirectory?: string): void {
     this.workingDirectory = workingDirectory;
+    this.systemPromptManager?.setWorkspaceRoot(workingDirectory ?? process.cwd());
     this.broadcastWorkingDirectory(workingDirectory);
   }
 

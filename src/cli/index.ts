@@ -207,6 +207,7 @@ function createAgentController(
     adapters,
     defaultAgentId: "codex",
     initialWorkingDirectory: workspaceRoot,
+    systemPromptManager,
   });
 }
 

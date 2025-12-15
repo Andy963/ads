@@ -102,6 +102,7 @@ export class SessionManager {
       defaultAgentId: "codex",
       initialWorkingDirectory: effectiveCwd,
       initialModel: userModel,
+      systemPromptManager,
     });
 
     this.sessions.set(userId, {
