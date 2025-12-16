@@ -8,7 +8,7 @@ import {
 } from "@openai/codex-sdk";
 
 import { resolveCodexConfig, type CodexResolvedConfig } from "../codexConfig.js";
-import { mapThreadEventToAgentEvent, type AgentEvent } from "../codex/events.js";
+import { mapThreadEventToAgentEvent, parseReconnectingMessage, type AgentEvent } from "../codex/events.js";
 import {
   CodexThreadCorruptedError,
   isEncryptedThreadError,
@@ -18,6 +18,17 @@ import { SystemPromptManager } from "../systemPrompt/manager.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("CodexSession");
+const ABORT_ERROR_MESSAGE = "用户中断了请求";
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function createAbortError(): Error {
+  const abortError = new Error(ABORT_ERROR_MESSAGE);
+  abortError.name = "AbortError";
+  return abortError;
+}
 
 export interface CodexSessionOptions {
   overrides?: Partial<CodexResolvedConfig>;
@@ -205,11 +216,15 @@ export class CodexSession {
     }
   }
 
-  private buildTurnOptions(options: CodexSendOptions): TurnOptions | undefined {
-    if (options.outputSchema === undefined) {
-      return undefined;
+  private buildTurnOptions(options: CodexSendOptions = {}): TurnOptions | undefined {
+    const turnOptions: TurnOptions = {};
+    if (options.outputSchema !== undefined) {
+      turnOptions.outputSchema = options.outputSchema;
     }
-    return { outputSchema: options.outputSchema } satisfies TurnOptions;
+    if (options.signal) {
+      turnOptions.signal = options.signal;
+    }
+    return Object.keys(turnOptions).length ? turnOptions : undefined;
   }
 
   private applySystemPrompt(prompt: Input): Input {
@@ -241,30 +256,20 @@ export class CodexSession {
   ): Promise<CodexSendResult> {
     this.emitSynthetic("analysis", "开始处理请求", undefined, "turn.started");
     try {
-      // SDK 不支持 signal 参数，使用 Promise.race 实现中断
-      const runPromise = thread.run(prompt, turnOptions);
-      
-      if (signal) {
-        const abortPromise = new Promise<never>((_, reject) => {
-          signal.addEventListener('abort', () => {
-            reject(new Error('用户中断了请求'));
-          });
-        });
-        const result = await Promise.race([runPromise, abortPromise]);
-        this.emitSynthetic("completed", "处理完成", undefined, "turn.completed");
-        return {
-          response: this.normalizeResponse(result.finalResponse),
-          usage: result.usage,
-        };
+      if (signal?.aborted) {
+        throw createAbortError();
       }
-      
-      const result = await runPromise;
+
+      const result = await thread.run(prompt, turnOptions);
       this.emitSynthetic("completed", "处理完成", undefined, "turn.completed");
       return {
         response: this.normalizeResponse(result.finalResponse),
         usage: result.usage,
       };
     } catch (error) {
+      if (signal?.aborted || isAbortError(error)) {
+        throw error instanceof Error ? error : createAbortError();
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.emitSynthetic("error", "执行失败", message, "turn.failed");
       throw error;
@@ -277,32 +282,24 @@ export class CodexSession {
     turnOptions: TurnOptions | undefined,
     signal?: AbortSignal,
   ): Promise<CodexSendResult> {
-    // SDK 不支持 signal 参数，使用 Promise.race 实现中断
-    const streamedPromise = thread.runStreamed(prompt, turnOptions);
-    
-    if (signal) {
-      const abortPromise = new Promise<never>((_, reject) => {
-        signal.addEventListener('abort', () => {
-          reject(new Error('用户中断了请求'));
-        });
-      });
-      const streamed = await Promise.race([streamedPromise, abortPromise]);
-      return this.processStreamedResult(streamed, signal);
+    if (signal?.aborted) {
+      throw createAbortError();
     }
-    
-    const streamed = await streamedPromise;
+    const streamed = await thread.runStreamed(prompt, turnOptions);
     return this.processStreamedResult(streamed, signal);
   }
 
   private async processStreamedResult(
     streamed: Awaited<ReturnType<ReturnType<Codex["startThread"]>["runStreamed"]>>,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<CodexSendResult> {
-    void _signal;
     const aggregator = new StreamAggregator();
 
     try {
       for await (const event of streamed.events) {
+        if (signal?.aborted) {
+          throw createAbortError();
+        }
         const mapped = mapThreadEventToAgentEvent(event);
         if (mapped) {
           // 过滤掉重复的 thread.started 事件（已经恢复或创建过的线程）
@@ -317,6 +314,9 @@ export class CodexSession {
         aggregator.consume(event);
       }
     } catch (error) {
+      if (signal?.aborted || isAbortError(error)) {
+        throw error instanceof Error ? error : createAbortError();
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.emitSynthetic("error", "事件流异常", message, "error");
       throw error;
@@ -423,6 +423,12 @@ class StreamAggregator {
         this.failure = new Error(event.error.message);
         break;
       case "error":
+        if (event.message) {
+          const reconnect = parseReconnectingMessage(event.message);
+          if (reconnect) {
+            break;
+          }
+        }
         this.failure = new Error(event.message);
         break;
       default:
