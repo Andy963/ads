@@ -26,7 +26,32 @@ function toTelegramMarkdown(
   if (!text) {
     return "";
   }
-  return telegramifyMarkdown(text, strategy);
+  const telegramMarkdown = telegramifyMarkdown(text, strategy);
+  return sanitizeTelegramMarkdownV2(telegramMarkdown);
+}
+
+function sanitizeTelegramMarkdownV2(text: string): string {
+  if (!text) {
+    return "";
+  }
+
+  const lines = text.split("\n");
+  let inFence = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+
+    if (!inFence && /^\s*\*{3,}\s*$/.test(line)) {
+      lines[index] = "────────";
+    }
+  }
+
+  return lines.join("\n");
 }
 
 /**
