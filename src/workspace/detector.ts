@@ -138,6 +138,20 @@ function findMarker(marker: string, startDir: string, maxDepth = 10): string | n
   return null;
 }
 
+export function detectWorkspaceFrom(startDir: string): string {
+  const markerDir = findMarker(WORKSPACE_MARKER, startDir);
+  if (markerDir) {
+    return markerDir;
+  }
+
+  const gitDir = findMarker(GIT_MARKER, startDir);
+  if (gitDir) {
+    return gitDir;
+  }
+
+  return resolveAbsolute(startDir);
+}
+
 export function detectWorkspace(): string {
   const envWorkspace = process.env.AD_WORKSPACE;
   if (envWorkspace && existsSync(envWorkspace)) {

@@ -7,6 +7,7 @@ import os from "node:os";
 import {
   initializeWorkspace,
   detectWorkspace,
+  detectWorkspaceFrom,
   getWorkspaceDbPath,
   getWorkspaceSpecsDir,
   isWorkspaceInitialized,
@@ -54,5 +55,14 @@ describe("workspace/detector", () => {
     const files = fs.readdirSync(templatesDir);
     assert.ok(files.includes("instructions.md"), "instructions template should exist");
     assert.ok(files.includes("rules.md"), "rules template should exist");
+  });
+
+  it("detects workspace root from a nested directory", () => {
+    initializeWorkspace(workspace, "Nested Detector Test");
+    const nested = path.join(workspace, "nested", "dir");
+    fs.mkdirSync(nested, { recursive: true });
+
+    const detected = detectWorkspaceFrom(nested);
+    assert.equal(detected, path.resolve(workspace));
   });
 });

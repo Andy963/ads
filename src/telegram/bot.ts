@@ -16,9 +16,11 @@ import { checkWorkspaceInit } from './utils/workspaceInitChecker.js';
 import { parseInlineAdsCommand, parsePlainAdsCommand } from './utils/adsCommand.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
 import { getDailyNoteFilePath } from './utils/noteLogger.js';
-import { initializeWorkspace } from '../workspace/detector.js';
+import { detectWorkspaceFrom, initializeWorkspace } from '../workspace/detector.js';
 import type { WorkspaceInitStatus } from './utils/workspaceInitChecker.js';
 import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
+import { getWorkspaceHistoryConfig } from '../utils/workspaceHistoryConfig.js';
+import { searchWorkspaceHistory } from '../utils/workspaceSearch.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
@@ -246,6 +248,7 @@ async function main() {
       { command: 'agent', description: '查看/切换代理' },
       { command: 'pwd', description: '当前目录' },
       { command: 'cd', description: '切换目录' },
+      { command: 'search', description: '搜索历史' },
     ]);
     logger.info('Telegram commands registered');
   } catch (error) {
@@ -261,6 +264,7 @@ async function main() {
       '/status - 查看系统状态\n' +
       '/reset - 重置会话\n' +
       '/mark - 切换对话标记，记录到当天 note\n' +
+      '/search <query> - 搜索 workspace 历史\n' +
       '/pwd - 查看当前目录\n' +
       '/cd <path> - 切换目录\n' +
       '/agent [name] - 查看或切换可用代理\n' +
@@ -279,6 +283,7 @@ async function main() {
       '/reset - 重置会话（开始新对话）\n' +
       '/resume - 恢复之前的对话\n' +
       '/mark - 切换对话标记（记录每日 note）\n' +
+      '/search <query> - 搜索 workspace 历史\n' +
       '/model [name] - 查看/切换模型\n' +
       '/agent [name] - 查看/切换代理\n' +
       '/esc - 中断当前任务（Agent 保持运行）\n\n' +
@@ -341,18 +346,14 @@ async function main() {
   bot.command('resume', async (ctx) => {
     const userId = await requireUserId(ctx, '/resume');
     if (userId === null) return;
-    
+
     if (!sessionManager.hasSavedThread(userId)) {
       await ctx.reply('❌ 没有保存的对话可恢复');
       return;
     }
 
     const threadId = sessionManager.getSavedThreadId(userId);
-    sessionManager.reset(userId); // 清空当前 session
-    
-    // 创建新 session 并恢复 thread
     sessionManager.getOrCreate(userId, directoryManager.getUserCwd(userId), true);
-    
     await ctx.reply(`✅ 已恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)`);
   });
 
@@ -476,6 +477,29 @@ async function main() {
     if (userId === null) return;
     const cwd = directoryManager.getUserCwd(userId);
     await ctx.reply(`📁 当前工作目录: ${cwd}`);
+  });
+
+  bot.command('search', async (ctx) => {
+    const userId = await requireUserId(ctx, '/search');
+    if (userId === null) return;
+    const args = ctx.message?.text?.split(/\s+/).slice(1);
+    if (!args || args.length === 0) {
+      await ctx.reply('用法: /search <query>');
+      return;
+    }
+    const query = args.join(' ');
+    const cwd = directoryManager.getUserCwd(userId);
+    const workspaceRoot = detectWorkspaceFrom(cwd);
+    const config = getWorkspaceHistoryConfig();
+    const result = searchWorkspaceHistory({
+      workspaceRoot,
+      query,
+      engine: config.searchEngine,
+      scanLimit: config.searchScanLimit,
+      maxResults: config.searchMaxResults,
+      maxChars: config.maxChars,
+    });
+    await ctx.reply(result.output, { disable_notification: silentNotifications });
   });
 
   bot.command('cd', async (ctx) => {
@@ -676,23 +700,6 @@ async function main() {
         await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
       }
       return;
-    }
-
-    // 检查是否有保存的对话但当前没有活跃 session
-    // 如果有保存的 thread 且当前没有 session，自动恢复
-    const hasActiveSession = sessionManager.hasSession(userId);
-    
-    if (sessionManager.hasSavedThread(userId) && !hasActiveSession) {
-      const threadId = sessionManager.getSavedThreadId(userId);
-      
-      // 自动恢复之前的对话
-      sessionManager.getOrCreate(userId, directoryManager.getUserCwd(userId), true);
-      
-      await ctx.reply(
-        `💡 自动恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)\n\n` +
-        '💬 正在处理您的消息...\n\n' +
-        '提示：使用 /reset 可以开始新对话'
-      );
     }
 
     await handleCodexMessage(

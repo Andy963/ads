@@ -42,10 +42,35 @@ import { HistoryStore } from "../utils/historyStore.js";
 import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams.js";
 import { normalizeOutput, truncateForLog } from "../utils/text.js";
 import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
+import { setStatusLineManager } from "../utils/statusLineManager.js";
+import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
+import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
+import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
+import {
+  buildCandidateMemory,
+  buildRecallFollowupMessage,
+  parseRecallDecision,
+  safeLogPreview,
+  shouldTriggerRecall,
+} from "../utils/workspaceRecall.js";
 
 interface CommandResult {
   output: string;
   exit?: boolean;
+  reset?: boolean;
+  history?: {
+    role: string;
+    kind?: string;
+  };
+}
+
+interface PendingRecall {
+  originalInput: string;
+  memoryForPrompt: string;
+}
+
+interface RecallState {
+  pending: PendingRecall | null;
 }
 
 const PROMPT = "ADS> ";
@@ -355,6 +380,7 @@ async function handleAgentInteraction(
   input: string,
   orchestrator: HybridOrchestrator,
   logger: ConversationLogger,
+  options?: { memory?: string },
 ): Promise<CommandResult> {
   const trimmed = input.trim();
   if (!trimmed) {
@@ -391,6 +417,9 @@ async function handleAgentInteraction(
     }
     if (clarification) {
       promptSections.push(clarification);
+    }
+    if (options?.memory?.trim()) {
+      promptSections.push(`Memory (user-confirmed):\n${options.memory.trim()}`);
     }
     promptSections.push(`用户输入: ${trimmed}`);
     const basePrompt = promptSections.join("\n\n");
@@ -623,10 +652,23 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       if (!params.skip && positional[0]?.toLowerCase() === "skip") {
         params.skip = positional.slice(1).join(" ");
       }
+      if (params.skip === "true" && positional.length > 0) {
+        params.skip = positional.join(" ");
+      }
       const wantsShow = params.show === "true" || positional[0]?.toLowerCase() === "show";
-      const workflowArg =
-        params.workflow ??
-        (wantsShow ? positional.slice(1).join(" ") : undefined);
+
+      if (wantsShow) {
+        const workflowCandidate =
+          positional[0]?.toLowerCase() === "show" ? positional.slice(1).join(" ") : positional.join(" ");
+        const workflowId = (params.workflow ?? workflowCandidate).trim();
+        const response = await showReviewReport({ workflowId: workflowId || undefined });
+        return { output: response };
+      }
+
+      if (params.skip) {
+        const response = await skipReview({ reason: params.skip, requestedBy: "cli" });
+        return { output: response };
+      }
 
       const agent =
         (params.agent as "codex" | "claude" | undefined) ??
@@ -653,16 +695,6 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
       }
       if (commitRef) {
         commitRef = commitRef.trim() || "HEAD";
-      }
-
-      if (wantsShow) {
-        const response = await showReviewReport({ workflowId: workflowArg });
-        return { output: response };
-      }
-
-      if (params.skip) {
-        const response = await skipReview({ reason: params.skip, requestedBy: "cli" });
-        return { output: response };
       }
 
       const response = await runReview({ requestedBy: "cli", agent, includeSpec, commitRef, specMode });
@@ -700,6 +732,25 @@ function createStatusRenderer(
 
   const isActivePhase = (phase: AgentPhase) =>
     phase !== "completed" && phase !== "error";
+
+  if (streamingEnabled) {
+    setStatusLineManager({
+      isActive: () => Boolean(process.stdout.isTTY && dirty && lastRendered),
+      clear: () => {
+        if (!process.stdout.isTTY) {
+          return;
+        }
+        readline.clearLine(process.stdout, 0);
+        readline.cursorTo(process.stdout, 0);
+      },
+      render: () => {
+        if (!process.stdout.isTTY || !dirty || !lastRendered) {
+          return;
+        }
+        updateStatusLine(lastRendered);
+      },
+    });
+  }
 
   const hideCursor = () => {
     if (!cursorHidden) {
@@ -813,6 +864,7 @@ function createStatusRenderer(
     if (!streamingEnabled) {
       return;
     }
+    setStatusLineManager(null);
     readline.clearLine(process.stdout, 0);
     readline.cursorTo(process.stdout, 0);
     stopSpinner();
@@ -918,10 +970,35 @@ function formatAgentStatus(
   agentLabel: string,
 ): string {
   const phaseLabel = PHASE_LABEL[event.phase] ?? event.phase;
-  const detail = event.detail ? ` (${event.detail})` : "";
   const timePart = elapsedSeconds !== undefined ? ` | ${elapsedSeconds.toFixed(1)}s` : "";
   const indicator = spinner ? `${spinner} ` : "";
-  const base = `[${agentLabel}] ${indicator}${phaseLabel}${detail}${timePart}`;
+  const prefix = `[${agentLabel}] ${indicator}${phaseLabel}`;
+
+  const columns = process.stdout.isTTY ? process.stdout.columns : undefined;
+  const maxCols =
+    typeof columns === "number" && Number.isFinite(columns) && columns > 0 ? Math.max(20, Math.floor(columns)) : null;
+
+  const timeWidth = stringDisplayWidth(timePart);
+  let renderedPrefix = prefix;
+  if (maxCols && stringDisplayWidth(renderedPrefix) + timeWidth > maxCols) {
+    renderedPrefix = truncateToWidth(renderedPrefix, Math.max(0, maxCols - timeWidth));
+  }
+
+  let detail = "";
+  const normalizeDetail = (text: string) => text.trim().replace(/\s+/g, " ");
+  if (event.detail) {
+    const softLimit = maxCols ?? 80;
+    const baseWidth = stringDisplayWidth(renderedPrefix) + timeWidth;
+    const available = Math.max(0, softLimit - baseWidth - 3 /* space + () */);
+    if (available >= 8) {
+      const trimmed = truncateToWidth(normalizeDetail(event.detail), available);
+      detail = ` (${trimmed})`;
+    }
+  }
+
+  const softLimit = maxCols ?? 80;
+  let base = `${renderedPrefix}${detail}${timePart}`;
+  base = truncateToWidth(base, softLimit);
   const colorize = PHASE_COLOR[event.phase];
   return colorize ? colorize(base) : base;
 }
@@ -962,6 +1039,8 @@ async function handleLine(
   line: string,
   logger: ConversationLogger,
   orchestrator: HybridOrchestrator,
+  workspaceRoot: string,
+  recallState: RecallState,
 ): Promise<CommandResult> {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -978,6 +1057,36 @@ async function handleLine(
 
   const slash = parseSlashCommand(trimmed);
 
+  if (recallState.pending) {
+    if (slash?.command === "search") {
+      const query = slash.body.trim();
+      const config = getWorkspaceHistoryConfig();
+      const result = searchWorkspaceHistory({
+        workspaceRoot,
+        query,
+        engine: config.searchEngine,
+        scanLimit: config.searchScanLimit,
+        maxResults: config.searchMaxResults,
+        maxChars: config.maxChars,
+      });
+      return { output: result.output, history: { role: "status", kind: "command" } };
+    }
+
+    const decision = parseRecallDecision(trimmed);
+    if (!decision) {
+      return { output: buildRecallFollowupMessage(), history: { role: "status", kind: "recall" } };
+    }
+    const pending = recallState.pending;
+    recallState.pending = null;
+    const memory =
+      decision.action === "accept"
+        ? pending.memoryForPrompt
+        : decision.action === "edit"
+          ? decision.text
+          : undefined;
+    return handleAgentInteraction(pending.originalInput, orchestrator, logger, { memory });
+  }
+
   if (slash && slash.command.startsWith("ads.")) {
     const parts = trimmed.split(/\s+/);
     const rawArgs = parts.slice(1);
@@ -986,10 +1095,23 @@ async function handleLine(
 
   if (slash) {
     switch (slash.command) {
+      case "search": {
+        const query = slash.body.trim();
+        const config = getWorkspaceHistoryConfig();
+        const result = searchWorkspaceHistory({
+          workspaceRoot,
+          query,
+          engine: config.searchEngine,
+          scanLimit: config.searchScanLimit,
+          maxResults: config.searchMaxResults,
+          maxChars: config.maxChars,
+        });
+        return { output: result.output, history: { role: "status", kind: "command" } };
+      }
       case "reset":
       case "codex.reset":
         orchestrator.reset();
-        return { output: "✅ 已重置代理会话" };
+        return { output: "✅ 已重置代理会话", reset: true };
       case "codex.status":
       case "agent.status": {
         const status = orchestrator.status();
@@ -1016,10 +1138,40 @@ async function handleLine(
         }
         return switchResult;
       }
-  default:
-    return handleAgentInteraction(trimmed, orchestrator, logger);
+      default:
+        break;
+    }
   }
-}
+
+  const config = getWorkspaceHistoryConfig();
+  let classification: "task" | "chat" | "unknown" | undefined;
+  if (config.classifyEnabled) {
+    try {
+      classification = await orchestrator.classifyInput(trimmed);
+    } catch {
+      classification = undefined;
+    }
+  }
+
+  if (
+    shouldTriggerRecall({
+      text: trimmed,
+      classifyEnabled: config.classifyEnabled,
+      classification,
+    })
+  ) {
+    const candidate = buildCandidateMemory({
+      workspaceRoot,
+      inputText: trimmed,
+      config: { lookbackTurns: config.lookbackTurns, maxChars: config.maxChars },
+      excludeLatestUserText: trimmed,
+    });
+    if (candidate) {
+      recallState.pending = { originalInput: trimmed, memoryForPrompt: candidate.memoryForPrompt };
+      safeLogPreview(candidate.previewForUser);
+      return { output: candidate.previewForUser, history: { role: "status", kind: "recall" } };
+    }
+  }
 
   return handleAgentInteraction(trimmed, orchestrator, logger);
 }
@@ -1035,6 +1187,7 @@ async function main(): Promise<void> {
     maxTextLength: 6000,
   });
   const historyKey = "default";
+  const recallState: RecallState = { pending: null };
   const START_PASTE = "\x1b[200~";
   const END_PASTE = "\x1b[201~";
   const PASTE_MARKER_TAIL = Math.max(START_PASTE.length, END_PASTE.length) - 1;
@@ -1095,11 +1248,16 @@ async function main(): Promise<void> {
     logger.logInput(input);
     historyStore.add(historyKey, { role: "user", text: input, ts: Date.now() });
     try {
-      const result = await handleLine(input, logger, agents);
+      const result = await handleLine(input, logger, agents, workspaceRoot, recallState);
       const output = normalizeOutput(result.output);
       if (output) {
         process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
-        historyStore.add(historyKey, { role: "ai", text: output, ts: Date.now() });
+        historyStore.add(historyKey, {
+          role: result.history?.role ?? "ai",
+          text: output,
+          ts: Date.now(),
+          kind: result.history?.kind,
+        });
       }
       logger.logOutput(output);
       if (result.exit) {

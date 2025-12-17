@@ -8,6 +8,7 @@ import type { WebSocket, RawData } from "ws";
 import { z } from "zod";
 import type {
   CommandExecutionItem,
+  Input,
   ItemCompletedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
@@ -18,7 +19,7 @@ import type {
 import "../utils/logSink.js";
 import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
-import { detectWorkspace } from "../workspace/detector.js";
+import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
 import { DirectoryManager } from "../telegram/utils/directoryManager.js";
 import { checkWorkspaceInit } from "../telegram/utils/workspaceInitChecker.js";
 import { createLogger } from "../utils/logger.js";
@@ -29,6 +30,16 @@ import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { runCollaborativeTurn } from "../agents/hub.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
+import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
+import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
+import {
+  buildCandidateMemory,
+  buildRecallFollowupMessage,
+  parseRecallDecision,
+  shouldTriggerRecall,
+} from "../utils/workspaceRecall.js";
+import { extractTextFromInput } from "../utils/inputText.js";
+import { injectUserConfirmedMemory } from "../utils/memoryInjection.js";
 
 import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
 
@@ -58,6 +69,13 @@ const logger = createLogger("WebSocket");
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
 const workspaceCache = new Map<string, string>();
 const interruptControllers = new Map<number, AbortController>();
+type PendingRecall = {
+  originalInput: Input;
+  cwd: string;
+  attachments: string[];
+  memoryForPrompt: string;
+};
+const pendingRecallByUser = new Map<number, PendingRecall>();
 const webThreadStorage = new ThreadStorage({
   namespace: "web",
   storagePath: path.join(process.cwd(), ".ads", "web-threads.json"),
@@ -369,18 +387,106 @@ async function start(): Promise<void> {
           if (userLogEntry) {
             historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
           }
+          const promptText = extractTextFromInput(promptInput.input).trim();
+          const historyWorkspaceRoot = detectWorkspaceFrom(currentCwd);
+          const config = getWorkspaceHistoryConfig();
+
+          const promptSlash = parseSlashCommand(promptText);
+          if (promptSlash?.command === "search") {
+            const query = promptSlash.body.trim();
+            const result = searchWorkspaceHistory({
+              workspaceRoot: historyWorkspaceRoot,
+              query,
+              engine: config.searchEngine,
+              scanLimit: config.searchScanLimit,
+              maxResults: config.searchMaxResults,
+              maxChars: config.maxChars,
+            });
+            ws.send(JSON.stringify({ type: "result", ok: true, output: result.output }));
+            sessionLogger?.logOutput(result.output);
+            historyStore.add(historyKey, { role: "status", text: result.output, ts: Date.now(), kind: "command" });
+            cleanupAttachments();
+            return;
+          }
+
+          let inputToSend: Input = promptInput.input;
+          let cleanupAfter = cleanupAttachments;
+          let turnCwd = currentCwd;
+
+          const pendingRecall = pendingRecallByUser.get(userId);
+          if (pendingRecall) {
+            const decision = parseRecallDecision(promptText);
+            if (!decision) {
+              const output = buildRecallFollowupMessage();
+              ws.send(JSON.stringify({ type: "result", ok: true, output }));
+              sessionLogger?.logOutput(output);
+              historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
+              cleanupAttachments();
+              return;
+            }
+
+            const memory =
+              decision.action === "accept"
+                ? pendingRecall.memoryForPrompt
+                : decision.action === "edit"
+                  ? decision.text
+                  : "";
+            pendingRecallByUser.delete(userId);
+            cleanupAttachments();
+
+            inputToSend = injectUserConfirmedMemory(pendingRecall.originalInput, memory);
+            cleanupAfter = () => cleanupTempFiles(pendingRecall.attachments);
+            turnCwd = pendingRecall.cwd;
+          } else {
+            let classification: "task" | "chat" | "unknown" | undefined;
+            if (config.classifyEnabled) {
+              try {
+                classification = await orchestrator.classifyInput(promptText);
+              } catch {
+                classification = undefined;
+              }
+            }
+
+            if (
+              shouldTriggerRecall({
+                text: promptText,
+                classifyEnabled: config.classifyEnabled,
+                classification,
+              })
+            ) {
+              const candidate = buildCandidateMemory({
+                workspaceRoot: historyWorkspaceRoot,
+                inputText: promptText,
+                config: { lookbackTurns: config.lookbackTurns, maxChars: config.maxChars },
+                excludeLatestUserText: userLogEntry ?? promptText,
+              });
+              if (candidate) {
+                pendingRecallByUser.set(userId, {
+                  originalInput: promptInput.input,
+                  cwd: currentCwd,
+                  attachments: tempAttachments,
+                  memoryForPrompt: candidate.memoryForPrompt,
+                });
+                ws.send(JSON.stringify({ type: "result", ok: true, output: candidate.previewForUser }));
+                sessionLogger?.logOutput(candidate.previewForUser);
+                historyStore.add(historyKey, { role: "status", text: candidate.previewForUser, ts: Date.now(), kind: "status" });
+                return;
+              }
+            }
+          }
+
           const controller = new AbortController();
           interruptControllers.set(userId, controller);
-          orchestrator = sessionManager.getOrCreate(userId, currentCwd);
+          orchestrator = sessionManager.getOrCreate(userId, turnCwd);
           const status = orchestrator.status();
           if (!status.ready) {
             sessionLogger?.logError(status.error ?? "代理未启用");
             ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
             interruptControllers.delete(userId);
-            cleanupAttachments();
+            cleanupAfter();
             return;
           }
-          orchestrator.setWorkingDirectory(currentCwd);
+          orchestrator.setWorkingDirectory(turnCwd);
           const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
             sessionLogger?.logEvent(event);
             logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
@@ -421,7 +527,7 @@ async function start(): Promise<void> {
             }
           });
           try {
-            const result = await runCollaborativeTurn(orchestrator, promptInput.input, {
+            const result = await runCollaborativeTurn(orchestrator, inputToSend, {
               streaming: true,
               signal: controller.signal,
               hooks: {
@@ -439,7 +545,7 @@ async function start(): Promise<void> {
                     `[Tool] ${summary.tool} ${summary.ok ? "ok" : "fail"}: ${truncateForLog(summary.outputPreview)}`,
                   ),
               },
-              toolContext: { cwd: currentCwd, allowedDirs },
+              toolContext: { cwd: turnCwd, allowedDirs },
             });
             ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
             if (sessionLogger) {
@@ -459,7 +565,7 @@ async function start(): Promise<void> {
             if (threadId) {
               sessionManager.saveThreadId(userId, threadId);
             }
-            sendWorkspaceState(ws, currentCwd);
+            sendWorkspaceState(ws, turnCwd);
           } catch (error) {
             const message = (error as Error).message ?? String(error);
             const aborted = controller.signal.aborted;
@@ -473,7 +579,7 @@ async function start(): Promise<void> {
           } finally {
             unsubscribe();
             interruptControllers.delete(userId);
-            cleanupAttachments();
+            cleanupAfter();
           }
           return;
         }
@@ -492,6 +598,23 @@ async function start(): Promise<void> {
       historyStore.add(historyKey, { role: "user", text: command, ts: Date.now(), kind: "command" });
 
       const slash = parseSlashCommand(command);
+      if (slash?.command === "search") {
+        const query = slash.body.trim();
+        const workspaceRoot = detectWorkspaceFrom(currentCwd);
+        const config = getWorkspaceHistoryConfig();
+        const result = searchWorkspaceHistory({
+          workspaceRoot,
+          query,
+          engine: config.searchEngine,
+          scanLimit: config.searchScanLimit,
+          maxResults: config.searchMaxResults,
+          maxChars: config.maxChars,
+        });
+        ws.send(JSON.stringify({ type: "result", ok: true, output: result.output }));
+        sessionLogger?.logOutput(result.output);
+        historyStore.add(historyKey, { role: "status", text: result.output, ts: Date.now(), kind: "command" });
+        return;
+      }
       if (slash?.command === "pwd") {
         const output = `📁 当前工作目录: ${currentCwd}`;
         ws.send(JSON.stringify({ type: "result", ok: true, output }));

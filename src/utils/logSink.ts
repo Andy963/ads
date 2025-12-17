@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import util from "node:util";
 
+import { withStatusLineSuppressed } from "./statusLineManager.js";
+
 type ConsoleMethod = (...args: unknown[]) => void;
 
 let initialized = false;
@@ -56,7 +58,7 @@ function createWriter(stream: fs.WriteStream, mirror: boolean, original: Console
     const message = args.map(formatArg).join(" ");
     stream.write(`${timestamp} ${level.padEnd(5)} ${message}\n`);
     if (mirror) {
-      original(...args);
+      withStatusLineSuppressed(() => original(...args));
     }
   };
 }

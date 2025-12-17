@@ -28,6 +28,15 @@ import {
 import { HistoryStore } from '../../utils/historyStore.js';
 import { truncateForLog } from '../../utils/text.js';
 import { createLogger } from '../../utils/logger.js';
+import { getWorkspaceHistoryConfig } from '../../utils/workspaceHistoryConfig.js';
+import {
+  buildCandidateMemory,
+  buildRecallFollowupMessage,
+  parseRecallDecision,
+  shouldTriggerRecall,
+} from '../../utils/workspaceRecall.js';
+import { injectUserConfirmedMemory } from '../../utils/memoryInjection.js';
+import { detectWorkspaceFrom } from '../../workspace/detector.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -39,6 +48,15 @@ const historyStore = new HistoryStore({
   maxEntriesPerSession: 300,
   maxTextLength: 6000,
 });
+
+type PendingRecall = {
+  text: string;
+  cwd?: string;
+  imageFileIds?: string[];
+  documentFileId?: string;
+  memoryForPrompt: string;
+};
+const pendingRecallByUser = new Map<number, PendingRecall>();
 
   function chunkMessage(text: string, maxLen = 3900): string[] {
     if (text.length <= maxLen) {
@@ -105,7 +123,7 @@ export async function handleCodexMessage(
   cwd?: string,
   options?: { markNoteEnabled?: boolean; silentNotifications?: boolean }
 ) {
-  const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
+  let workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
   const adapterLogDir = path.join(workspaceRoot, '.ads', 'logs');
   const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
   const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
@@ -216,6 +234,74 @@ export async function handleCodexMessage(
       sessionManager.saveThreadId(userId, threadId);
     }
   };
+
+  const historyWorkspaceRoot = detectWorkspaceFrom(workspaceRoot);
+  const config = getWorkspaceHistoryConfig();
+  const pendingRecall = pendingRecallByUser.get(userId);
+  let memoryForThisTurn = "";
+  let skipUserHistoryWrite = false;
+
+  if (pendingRecall) {
+    const decision = parseRecallDecision(text);
+    if (!decision) {
+      const output = buildRecallFollowupMessage();
+      await ctx.reply(output, { disable_notification: silentNotifications });
+      historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
+      return;
+    }
+
+    pendingRecallByUser.delete(userId);
+    memoryForThisTurn =
+      decision.action === "accept"
+        ? pendingRecall.memoryForPrompt
+        : decision.action === "edit"
+          ? decision.text
+          : "";
+    historyStore.add(historyKey, { role: "user", text: text.trim(), ts: Date.now() });
+
+    text = pendingRecall.text;
+    imageFileIds = pendingRecall.imageFileIds;
+    documentFileId = pendingRecall.documentFileId;
+    cwd = pendingRecall.cwd;
+    workspaceRoot = cwd ? path.resolve(cwd) : workspaceRoot;
+    skipUserHistoryWrite = true;
+  } else {
+    let classification: "task" | "chat" | "unknown" | undefined;
+    if (config.classifyEnabled) {
+      try {
+        classification = await session.classifyInput(text);
+      } catch {
+        classification = undefined;
+      }
+    }
+
+    if (
+      shouldTriggerRecall({
+        text,
+        classifyEnabled: config.classifyEnabled,
+        classification,
+      })
+    ) {
+      const candidate = buildCandidateMemory({
+        workspaceRoot: historyWorkspaceRoot,
+        inputText: text,
+        config: { lookbackTurns: config.lookbackTurns, maxChars: config.maxChars },
+      });
+      if (candidate) {
+        pendingRecallByUser.set(userId, {
+          text,
+          cwd,
+          imageFileIds,
+          documentFileId,
+          memoryForPrompt: candidate.memoryForPrompt,
+        });
+        await ctx.reply(candidate.previewForUser, { disable_notification: silentNotifications });
+        historyStore.add(historyKey, { role: "user", text: text.trim(), ts: Date.now() });
+        historyStore.add(historyKey, { role: "status", text: candidate.previewForUser, ts: Date.now(), kind: "status" });
+        return;
+      }
+    }
+  }
 
   // 尝试获取或创建 logger（如果 threadId 还没有，也会先写入日志）
   let logger = sessionManager.ensureLogger(userId);
@@ -906,10 +992,10 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     // 记录用户输入（使用原始文本 + 附件概览，不带系统注入）
     userLogEntry = buildUserLogEntry(text, imagePaths, filePaths);
-    if (logger && userLogEntry) {
+    if (logger && userLogEntry && !skipUserHistoryWrite) {
       logger.logInput(userLogEntry);
     }
-    if (userLogEntry) {
+    if (userLogEntry && !skipUserHistoryWrite) {
       historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
     }
 
@@ -946,6 +1032,8 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     } else {
       input = enhancedText;
     }
+
+    input = injectUserConfirmedMemory(input, memoryForThisTurn);
 
     const result = await runCollaborativeTurn(session, input, {
       streaming: true,
