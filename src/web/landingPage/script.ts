@@ -1213,7 +1213,10 @@ export function renderLandingPageScript(idleMinutes: number): string {
         const role = item.role || item.r || 'status';
         const text = item.text || item.t || '';
         const kind = item.kind || item.k;
-        const isStatus = role === 'status' || kind === 'status' || kind === 'plan' || kind === 'error';
+        if (kind === 'plan') {
+          return;
+        }
+        const isStatus = role === 'status' || kind === 'status' || kind === 'error';
         appendMessage(role === 'status' ? 'status' : role, text, { markdown: false, status: isStatus, skipCache: true });
       });
       autoScrollIfNeeded();

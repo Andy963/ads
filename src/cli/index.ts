@@ -41,6 +41,7 @@ import { runReview, skipReview, showReviewReport } from "../review/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams.js";
 import { normalizeOutput, truncateForLog } from "../utils/text.js";
+import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
 import { setStatusLineManager } from "../utils/statusLineManager.js";
 import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
@@ -1250,16 +1251,18 @@ async function main(): Promise<void> {
     try {
       const result = await handleLine(input, logger, agents, workspaceRoot, recallState);
       const output = normalizeOutput(result.output);
-      if (output) {
-        process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
+      const role = result.history?.role ?? "ai";
+      const cleanedOutput = role === "ai" ? stripLeadingTranslation(output) : output;
+      if (cleanedOutput) {
+        process.stdout.write(cleanedOutput.endsWith("\n") ? cleanedOutput : `${cleanedOutput}\n`);
         historyStore.add(historyKey, {
-          role: result.history?.role ?? "ai",
-          text: output,
+          role,
+          text: cleanedOutput,
           ts: Date.now(),
           kind: result.history?.kind,
         });
       }
-      logger.logOutput(output);
+      logger.logOutput(cleanedOutput);
       if (result.exit) {
         rl.close();
         return;

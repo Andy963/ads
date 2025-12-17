@@ -5,6 +5,7 @@ import type { Database as DatabaseType, Statement as StatementType } from "bette
 
 import { getStateDatabase } from "../state/database.js";
 import { createLogger } from "./logger.js";
+import { stripLeadingTranslation } from "./assistantText.js";
 import { loadWorkspaceHistoryRows, type WorkspaceHistoryRow } from "./workspaceHistory.js";
 import type { WorkspaceHistorySearchEngine } from "./workspaceHistoryConfig.js";
 
@@ -174,7 +175,7 @@ function formatRowSnippet(row: WorkspaceHistoryRow, query: string): string {
   const tsPart = formatTimestamp(row.ts);
   const prefixParts = [`[${row.namespace}]`, tsPart ? tsPart : null, roleLabel].filter(Boolean);
   const prefix = prefixParts.join(" ");
-  const text = row.text.replace(/\s+/g, " ").trim();
+  const text = stripLeadingTranslation(row.text).replace(/\s+/g, " ").trim();
   const maxSnippet = 180;
 
   const idx = query ? text.toLowerCase().indexOf(query.toLowerCase()) : -1;
@@ -214,7 +215,18 @@ function tryFtsSearch(db: DatabaseType, params: WorkspaceSearchParams): Workspac
     return [];
   }
 
+
+  const queryTokens = params.query
+    .trim()
+    .split(/\s+/)
+    .map((part) => normalizeQueryToken(part))
+    .filter(Boolean)
+    .slice(0, 8);
+  const normalizedRawQuery = params.query.trim().toLowerCase();
+  const normalizedQueryTokens = queryTokens.map((token) => token.toLowerCase());
+
   let stmt: SqliteStatement;
+  const rawLimit = Math.min(Math.max(params.maxResults * 4, params.maxResults), 80);
   try {
     stmt = db.prepare(
       `SELECT h.id, h.namespace, h.session_id, h.role, h.text, h.ts, h.kind
@@ -231,7 +243,7 @@ function tryFtsSearch(db: DatabaseType, params: WorkspaceSearchParams): Workspac
   }
 
   try {
-    const rows = stmt.all(preparedQuery, params.maxResults) as Array<{
+    const rows = stmt.all(preparedQuery, rawLimit) as Array<{
       id: number;
       namespace: string;
       session_id: string;
@@ -240,15 +252,31 @@ function tryFtsSearch(db: DatabaseType, params: WorkspaceSearchParams): Workspac
       ts: number;
       kind: string | null;
     }>;
-    return rows.map((row) => ({
-      id: row.id,
-      namespace: row.namespace,
-      session_id: row.session_id,
-      role: row.role,
-      text: row.text,
-      ts: row.ts,
-      kind: row.kind ?? undefined,
-    }));
+    const hits: WorkspaceHistoryRow[] = [];
+    for (const row of rows) {
+      if (hits.length >= params.maxResults) {
+        break;
+      }
+      const cleanedText = stripLeadingTranslation(row.text);
+      const normalizedCleaned = cleanedText.toLowerCase();
+      const matchesQuery =
+        normalizedQueryTokens.length === 0
+          ? normalizedRawQuery === "" || normalizedCleaned.includes(normalizedRawQuery)
+          : normalizedQueryTokens.every((token) => normalizedCleaned.includes(token));
+      if (!matchesQuery) {
+        continue;
+      }
+      hits.push({
+        id: row.id,
+        namespace: row.namespace,
+        session_id: row.session_id,
+        role: row.role,
+        text: row.text,
+        ts: row.ts,
+        kind: row.kind ?? undefined,
+      });
+    }
+    return hits;
   } catch (error) {
     logger.warn("[WorkspaceSearch] FTS query failed", error);
     return [];
@@ -272,7 +300,7 @@ function windowScanSearch(params: WorkspaceSearchParams): WorkspaceHistoryRow[] 
     if (hits.length >= params.maxResults) {
       break;
     }
-    if (row.text.toLowerCase().includes(normalizedQuery)) {
+    if (stripLeadingTranslation(row.text).toLowerCase().includes(normalizedQuery)) {
       hits.push(row);
     }
   }

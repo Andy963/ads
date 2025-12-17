@@ -1,4 +1,5 @@
 import { createLogger } from "./logger.js";
+import { stripLeadingTranslation } from "./assistantText.js";
 import { loadWorkspaceHistoryRows, type WorkspaceHistoryRow } from "./workspaceHistory.js";
 
 const logger = createLogger("WorkspaceRecall");
@@ -75,7 +76,8 @@ function scoreTurn(turn: WorkspaceTurn, keywords: string[]): number {
   if (keywords.length === 0) {
     return 0;
   }
-  const combined = `${turn.user.text}\n${turn.ai?.text ?? ""}`;
+  const aiText = turn.ai ? stripLeadingTranslation(turn.ai.text) : "";
+  const combined = `${turn.user.text}\n${aiText}`;
   const normalized = normalizeForMatch(combined);
   let score = 0;
   for (const keyword of keywords) {
@@ -148,7 +150,8 @@ function detectPotentialConflicts(turns: WorkspaceTurn[], keywords: string[]): s
 
   const conflicts: string[] = [];
   for (const turn of turns) {
-    const combined = `${turn.user.text}\n${turn.ai?.text ?? ""}`;
+    const aiText = turn.ai ? stripLeadingTranslation(turn.ai.text) : "";
+    const combined = `${turn.user.text}\n${aiText}`;
     const normalized = normalizeForMatch(combined);
     const hasMarker = negativeMarkers.some((marker) => normalized.includes(normalizeForMatch(marker)));
     if (!hasMarker) {
@@ -242,7 +245,7 @@ export function buildCandidateMemory(params: {
   const memoryLines: string[] = [];
   for (const turn of selected) {
     const userLine = `- [${turn.namespace}] U: ${formatSnippet(turn.user.text, 180)}`;
-    const aiLine = turn.ai ? `  A: ${formatSnippet(turn.ai.text, 220)}` : null;
+    const aiLine = turn.ai ? `  A: ${formatSnippet(stripLeadingTranslation(turn.ai.text), 220)}` : null;
 
     const block = aiLine ? `${userLine}\n${aiLine}` : userLine;
     const next = memoryLines.length === 0 ? block : `${memoryLines.join("\n")}\n${block}`;

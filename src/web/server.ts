@@ -32,6 +32,7 @@ import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
+import { stripLeadingTranslation } from "../utils/assistantText.js";
 import {
   buildCandidateMemory,
   buildRecallFollowupMessage,
@@ -327,7 +328,17 @@ async function start(): Promise<void> {
     );
     const cachedHistory = historyStore.get(historyKey);
     if (cachedHistory.length > 0) {
-      ws.send(JSON.stringify({ type: "history", items: cachedHistory }));
+      const sanitizedHistory = cachedHistory.map((entry) => {
+        if (entry.role !== "ai") {
+          return entry;
+        }
+        const cleanedText = stripLeadingTranslation(entry.text);
+        if (cleanedText === entry.text) {
+          return entry;
+        }
+        return { ...entry, text: cleanedText };
+      });
+      ws.send(JSON.stringify({ type: "history", items: sanitizedHistory }));
     }
 
     ws.on("message", async (data: RawData) => {
@@ -496,14 +507,6 @@ async function start(): Promise<void> {
               if (signature !== lastPlanSignature) {
                 lastPlanSignature = signature;
                 ws.send(JSON.stringify({ type: "plan", items: raw.item.items }));
-                historyStore.add(historyKey, {
-                  role: "status",
-                  text: `计划更新：${raw.item.items
-                    .map((entry, idx) => `${entry.completed ? "✅" : "⬜"} ${entry.text || `Step ${idx + 1}`}`)
-                    .join(" | ")}`,
-                  ts: Date.now(),
-                  kind: "plan",
-                });
               }
             }
             if (event.delta) {
@@ -526,6 +529,7 @@ async function start(): Promise<void> {
               ws.send(JSON.stringify({ type: "error", message: event.detail ?? event.title }));
             }
           });
+
           try {
             const result = await runCollaborativeTurn(orchestrator, inputToSend, {
               streaming: true,
@@ -547,18 +551,18 @@ async function start(): Promise<void> {
               },
               toolContext: { cwd: turnCwd, allowedDirs },
             });
-            ws.send(JSON.stringify({ type: "result", ok: true, output: result.response }));
+
+            const rawResponse =
+              typeof result.response === "string" ? result.response : String(result.response ?? "");
+            const cleanedResponse = stripLeadingTranslation(rawResponse);
+            ws.send(JSON.stringify({ type: "result", ok: true, output: cleanedResponse }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
-              sessionLogger.logOutput(
-                typeof result.response === "string"
-                  ? result.response
-                  : String(result.response ?? ""),
-              );
+              sessionLogger.logOutput(cleanedResponse);
             }
             historyStore.add(historyKey, {
               role: "ai",
-              text: typeof result.response === "string" ? result.response : String(result.response ?? ""),
+              text: cleanedResponse,
               ts: Date.now(),
             });
             const threadId = orchestrator.getThreadId();

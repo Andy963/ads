@@ -28,6 +28,7 @@ import {
 import { HistoryStore } from '../../utils/historyStore.js';
 import { truncateForLog } from '../../utils/text.js';
 import { createLogger } from '../../utils/logger.js';
+import { stripLeadingTranslation } from '../../utils/assistantText.js';
 import { getWorkspaceHistoryConfig } from '../../utils/workspaceHistoryConfig.js';
 import {
   buildCandidateMemory,
@@ -1065,9 +1066,11 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     saveThreadIdIfNeeded();
 
-    const baseOutput = typeof result.response === 'string'
-      ? result.response
-      : String(result.response ?? '');
+    const baseOutput =
+      typeof result.response === 'string'
+        ? result.response
+        : String(result.response ?? '');
+    const cleanedOutput = stripLeadingTranslation(baseOutput);
 
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
     if (!logger) {
@@ -1079,20 +1082,20 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     // 记录 AI 回复（不含 token 统计，除非开启）
     if (logger) {
-      logger.logOutput(baseOutput);
+      logger.logOutput(cleanedOutput);
     }
-    historyStore.add(historyKey, { role: "ai", text: baseOutput, ts: Date.now() });
+    historyStore.add(historyKey, { role: "ai", text: cleanedOutput, ts: Date.now() });
 
     if (markNoteEnabled && userLogEntry) {
       try {
-        appendMarkNoteEntry(workspaceRoot, userLogEntry, baseOutput);
+        appendMarkNoteEntry(workspaceRoot, userLogEntry, cleanedOutput);
       } catch (error) {
         logWarning('[CodexAdapter] Failed to append mark note', error);
       }
     }
 
     // 发送最终响应
-    const renderText = baseOutput;
+    const renderText = cleanedOutput;
     let fallbackNotified = false;
     const notifyFallback = async () => {
       if (fallbackNotified) return;
