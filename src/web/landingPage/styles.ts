@@ -47,10 +47,11 @@ export const LANDING_PAGE_CSS = `    :root {
     #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; overflow: hidden; }
     #log { position: relative; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; scrollbar-gutter: stable; }
     .msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; align-items: flex-start; }
-    .msg.user { align-items: flex-start; }
-    .msg.ai { align-items: flex-start; }
+    .msg.user { align-items: flex-start; min-width: min(100%, 280px); }
+    .msg.ai { align-items: flex-start; min-width: min(100%, 280px); }
     .msg.status { align-items: flex-start; }
     .bubble { border-radius: 12px; padding: 12px 14px; line-height: 1.6; font-size: 14px; color: var(--text); max-width: 100%; word-break: break-word; overflow-wrap: anywhere; }
+    .msg.user .bubble, .msg.ai .bubble { width: 100%; }
     .user .bubble { background: var(--user); }
     .ai .bubble { background: var(--ai); }
     .status .bubble { background: var(--status); color: var(--muted); font-size: 13px; }
@@ -63,6 +64,11 @@ export const LANDING_PAGE_CSS = `    :root {
     .bubble ul { margin: 0 0 8px 18px; padding: 0; }
     .bubble a { color: var(--accent); text-decoration: none; }
     .bubble a:hover { text-decoration: underline; }
+    .bubble-footer { display: flex; justify-content: flex-start; margin-top: 6px; }
+    .copy-btn { background: transparent; border: none; padding: 4px; color: #9ca3af; cursor: pointer; transition: all 0.15s; line-height: 1; }
+    .copy-btn:hover { color: #2563eb; }
+    .copy-btn.copied { color: #22c55e; }
+    .copy-btn svg { width: 14px; height: 14px; display: block; }
     .cmd-details summary { cursor: pointer; color: var(--accent); }
     #form { flex-shrink: 0; padding: 0; background: transparent; border: none; box-shadow: none; display: flex; flex-direction: column; gap: 8px; width: 100%; box-sizing: border-box; }
     #input-wrapper { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 2px 8px rgba(15,23,42,0.06); }
