@@ -22,6 +22,7 @@ import { listRules, readRules } from "../workspace/rulesService.js";
 import { initWorkspace } from "../workspace/service.js";
 import { syncAllNodesToFiles, getWorkspaceInfo as getGraphWorkspaceInfo } from "../graph/service.js";
 import { search } from "../tools/search/index.js";
+import { searchHistoryForAgent, formatConflictWarning } from "../utils/historySearchTool.js";
 
 const require = createRequire(import.meta.url);
 const { version: packageVersion } = require("../../package.json") as { version: string };
@@ -315,6 +316,42 @@ server.registerTool(
   withHandler(helpSchema, async () => {
     const text = buildAdsHelpMessage("cli");
     return asToolResult(text);
+  })
+);
+
+const searchHistorySchema = workspaceParam.extend({
+  query: z.string().min(1, "query is required"),
+  max_results: z.number().int().positive().max(20).optional(),
+});
+
+server.registerTool(
+  "ads_search_history",
+  {
+    title: "Search conversation history",
+    description:
+      "Search past conversations in the workspace. Use this to recall previous discussions, decisions, or instructions. " +
+      "Returns matching results and warns if conflicting instructions are detected. " +
+      "You decide when and what to search based on the current task context.",
+    inputSchema: searchHistorySchema,
+  },
+  withHandler(searchHistorySchema, async ({ workspace_path, query, max_results }) => {
+    const workspaceRoot = workspace_path ?? process.cwd();
+    const result = searchHistoryForAgent({
+      workspaceRoot,
+      query,
+      maxResults: max_results,
+    });
+
+    let output = result.results;
+    if (result.hasConflicts) {
+      output += "\n\n" + formatConflictWarning(result.conflicts);
+    }
+
+    return asToolResult(output, {
+      found: result.found,
+      hasConflicts: result.hasConflicts,
+      conflicts: result.conflicts,
+    });
   })
 );
 

@@ -33,14 +33,7 @@ import { HistoryStore } from "../utils/historyStore.js";
 import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
-import {
-  buildCandidateMemory,
-  buildRecallFollowupMessage,
-  parseRecallDecision,
-  shouldTriggerRecall,
-} from "../utils/workspaceRecall.js";
 import { extractTextFromInput } from "../utils/inputText.js";
-import { injectUserConfirmedMemory } from "../utils/memoryInjection.js";
 
 import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
 
@@ -70,13 +63,6 @@ const logger = createLogger("WebSocket");
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
 const workspaceCache = new Map<string, string>();
 const interruptControllers = new Map<number, AbortController>();
-type PendingRecall = {
-  originalInput: Input;
-  cwd: string;
-  attachments: string[];
-  memoryForPrompt: string;
-};
-const pendingRecallByUser = new Map<number, PendingRecall>();
 const webThreadStorage = new ThreadStorage({
   namespace: "web",
   storagePath: path.join(process.cwd(), ".ads", "web-threads.json"),
@@ -420,71 +406,9 @@ async function start(): Promise<void> {
             return;
           }
 
-          let inputToSend: Input = promptInput.input;
-          let cleanupAfter = cleanupAttachments;
-          let turnCwd = currentCwd;
-
-          const pendingRecall = pendingRecallByUser.get(userId);
-          if (pendingRecall) {
-            const decision = parseRecallDecision(promptText);
-            if (!decision) {
-              const output = buildRecallFollowupMessage();
-              ws.send(JSON.stringify({ type: "result", ok: true, output }));
-              sessionLogger?.logOutput(output);
-              historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
-              cleanupAttachments();
-              return;
-            }
-
-            const memory =
-              decision.action === "accept"
-                ? pendingRecall.memoryForPrompt
-                : decision.action === "edit"
-                  ? decision.text
-                  : "";
-            pendingRecallByUser.delete(userId);
-            cleanupAttachments();
-
-            inputToSend = injectUserConfirmedMemory(pendingRecall.originalInput, memory);
-            cleanupAfter = () => cleanupTempFiles(pendingRecall.attachments);
-            turnCwd = pendingRecall.cwd;
-          } else {
-            let classification: "task" | "chat" | "unknown" | undefined;
-            if (config.classifyEnabled) {
-              try {
-                classification = await orchestrator.classifyInput(promptText);
-              } catch {
-                classification = undefined;
-              }
-            }
-
-            if (
-              shouldTriggerRecall({
-                text: promptText,
-                classifyEnabled: config.classifyEnabled,
-                classification,
-              })
-            ) {
-              const candidate = buildCandidateMemory({
-                workspaceRoot: historyWorkspaceRoot,
-                inputText: promptText,
-                config: { lookbackTurns: config.lookbackTurns, maxChars: config.maxChars },
-                excludeLatestUserText: userLogEntry ?? promptText,
-              });
-              if (candidate) {
-                pendingRecallByUser.set(userId, {
-                  originalInput: promptInput.input,
-                  cwd: currentCwd,
-                  attachments: tempAttachments,
-                  memoryForPrompt: candidate.memoryForPrompt,
-                });
-                ws.send(JSON.stringify({ type: "result", ok: true, output: candidate.previewForUser }));
-                sessionLogger?.logOutput(candidate.previewForUser);
-                historyStore.add(historyKey, { role: "status", text: candidate.previewForUser, ts: Date.now(), kind: "status" });
-                return;
-              }
-            }
-          }
+          const inputToSend: Input = promptInput.input;
+          const cleanupAfter = cleanupAttachments;
+          const turnCwd = currentCwd;
 
           const controller = new AbortController();
           interruptControllers.set(userId, controller);

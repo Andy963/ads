@@ -47,13 +47,6 @@ import { setStatusLineManager } from "../utils/statusLineManager.js";
 import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
 import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
-import {
-  buildCandidateMemory,
-  buildRecallFollowupMessage,
-  parseRecallDecision,
-  safeLogPreview,
-  shouldTriggerRecall,
-} from "../utils/workspaceRecall.js";
 
 interface CommandResult {
   output: string;
@@ -63,15 +56,6 @@ interface CommandResult {
     role: string;
     kind?: string;
   };
-}
-
-interface PendingRecall {
-  originalInput: string;
-  memoryForPrompt: string;
-}
-
-interface RecallState {
-  pending: PendingRecall | null;
 }
 
 const PROMPT = "ADS> ";
@@ -1041,7 +1025,6 @@ async function handleLine(
   logger: ConversationLogger,
   orchestrator: HybridOrchestrator,
   workspaceRoot: string,
-  recallState: RecallState,
 ): Promise<CommandResult> {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -1057,36 +1040,6 @@ async function handleLine(
   }
 
   const slash = parseSlashCommand(trimmed);
-
-  if (recallState.pending) {
-    if (slash?.command === "search") {
-      const query = slash.body.trim();
-      const config = getWorkspaceHistoryConfig();
-      const result = searchWorkspaceHistory({
-        workspaceRoot,
-        query,
-        engine: config.searchEngine,
-        scanLimit: config.searchScanLimit,
-        maxResults: config.searchMaxResults,
-        maxChars: config.maxChars,
-      });
-      return { output: result.output, history: { role: "status", kind: "command" } };
-    }
-
-    const decision = parseRecallDecision(trimmed);
-    if (!decision) {
-      return { output: buildRecallFollowupMessage(), history: { role: "status", kind: "recall" } };
-    }
-    const pending = recallState.pending;
-    recallState.pending = null;
-    const memory =
-      decision.action === "accept"
-        ? pending.memoryForPrompt
-        : decision.action === "edit"
-          ? decision.text
-          : undefined;
-    return handleAgentInteraction(pending.originalInput, orchestrator, logger, { memory });
-  }
 
   if (slash && slash.command.startsWith("ads.")) {
     const parts = trimmed.split(/\s+/);
@@ -1144,36 +1097,6 @@ async function handleLine(
     }
   }
 
-  const config = getWorkspaceHistoryConfig();
-  let classification: "task" | "chat" | "unknown" | undefined;
-  if (config.classifyEnabled) {
-    try {
-      classification = await orchestrator.classifyInput(trimmed);
-    } catch {
-      classification = undefined;
-    }
-  }
-
-  if (
-    shouldTriggerRecall({
-      text: trimmed,
-      classifyEnabled: config.classifyEnabled,
-      classification,
-    })
-  ) {
-    const candidate = buildCandidateMemory({
-      workspaceRoot,
-      inputText: trimmed,
-      config: { lookbackTurns: config.lookbackTurns, maxChars: config.maxChars },
-      excludeLatestUserText: trimmed,
-    });
-    if (candidate) {
-      recallState.pending = { originalInput: trimmed, memoryForPrompt: candidate.memoryForPrompt };
-      safeLogPreview(candidate.previewForUser);
-      return { output: candidate.previewForUser, history: { role: "status", kind: "recall" } };
-    }
-  }
-
   return handleAgentInteraction(trimmed, orchestrator, logger);
 }
 
@@ -1188,7 +1111,6 @@ async function main(): Promise<void> {
     maxTextLength: 6000,
   });
   const historyKey = "default";
-  const recallState: RecallState = { pending: null };
   const START_PASTE = "\x1b[200~";
   const END_PASTE = "\x1b[201~";
   const PASTE_MARKER_TAIL = Math.max(START_PASTE.length, END_PASTE.length) - 1;
@@ -1249,7 +1171,7 @@ async function main(): Promise<void> {
     logger.logInput(input);
     historyStore.add(historyKey, { role: "user", text: input, ts: Date.now() });
     try {
-      const result = await handleLine(input, logger, agents, workspaceRoot, recallState);
+      const result = await handleLine(input, logger, agents, workspaceRoot);
       const output = normalizeOutput(result.output);
       const role = result.history?.role ?? "ai";
       const cleanedOutput = role === "ai" ? stripLeadingTranslation(output) : output;

@@ -14,6 +14,7 @@ import {
   type FunctionDeclaration,
   type GenerateContentResponseUsageMetadata,
   type Part,
+  type Tool,
 } from "@google/genai";
 import { OAuth2Client } from "google-auth-library";
 import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../types.js";
@@ -283,6 +284,10 @@ function isFileToolsEnabled(): boolean {
 
 function isApplyPatchEnabled(): boolean {
   return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, false);
+}
+
+function isGoogleSearchEnabled(): boolean {
+  return parseBoolean(process.env.GEMINI_WEB_SEARCH, true);
 }
 
 function buildAdsFunctionDeclarations(): FunctionDeclaration[] {
@@ -724,6 +729,10 @@ export class GeminiAgentAdapter implements AgentAdapter {
     const toolHooks = this.resolveToolHooks(options);
     const retryState = { toolCalls: 0 };
     const functionDeclarations = buildAdsFunctionDeclarations();
+    const tools: Tool[] = [{ functionDeclarations }];
+    if (isGoogleSearchEnabled()) {
+      tools.push({ googleSearch: {} });
+    }
     const systemInstruction = this.workingDirectory
       ? `${this.systemPrompt}\n\nWorking directory: ${this.workingDirectory}`
       : this.systemPrompt;
@@ -733,6 +742,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
       model,
       historyEntries: this.history.length,
       promptPreview: truncateForLog(prompt, 256),
+      googleSearchEnabled: isGoogleSearchEnabled(),
     });
 
     const runModelRequest = async (
@@ -754,7 +764,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
                 config: {
                   abortSignal: options?.signal,
                   systemInstruction,
-                  tools: [{ functionDeclarations }],
+                  tools,
                   toolConfig: {
                     functionCallingConfig: { mode },
                   },

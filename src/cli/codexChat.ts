@@ -39,7 +39,8 @@ export interface CodexSessionOptions {
   model?: string;
   workingDirectory?: string;
   systemPromptManager?: SystemPromptManager;
-   networkAccessEnabled?: boolean;
+  networkAccessEnabled?: boolean;
+  webSearchEnabled?: boolean;
 }
 
 export interface CodexSendOptions {
@@ -95,15 +96,19 @@ export class CodexSession {
 
   private ensureThread(): ReturnType<Codex["startThread"]> {
     if (!this.thread && this.codex) {
+      const webSearchEnv = process.env.ADS_CODEX_WEB_SEARCH;
+      const webSearchDefault = webSearchEnv !== undefined ? webSearchEnv !== "0" && webSearchEnv.toLowerCase() !== "false" : true;
+
       const threadOptions = {
         skipGitRepoCheck: true,
         sandboxMode: this.options.sandboxMode,
         model: this.options.model,
         workingDirectory: this.options.workingDirectory,
         networkAccessEnabled: this.options.networkAccessEnabled ?? true,
+        webSearchEnabled: this.options.webSearchEnabled ?? webSearchDefault,
       };
 
-      logger.debug(`Creating thread with networkAccessEnabled=${threadOptions.networkAccessEnabled}`);
+      logger.debug(`Creating thread with networkAccessEnabled=${threadOptions.networkAccessEnabled}, webSearchEnabled=${threadOptions.webSearchEnabled}`);
 
       if (this.options.resumeThreadId) {
         try {
