@@ -49,6 +49,22 @@ const PATCH_DEFAULT_MAX_BYTES = 512 * 1024;
 
 const logger = createLogger("AgentTools");
 
+function createAbortError(message = "用户中断了请求"): Error {
+  const abortError = new Error(message);
+  abortError.name = "AbortError";
+  return abortError;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
 function truncate(text: string, limit = SNIPPET_LIMIT): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) {
@@ -248,6 +264,7 @@ async function handleSearchTool(payload: string): Promise<string> {
 export interface ToolExecutionContext {
   cwd?: string;
   allowedDirs?: string[];
+  signal?: AbortSignal;
 }
 
 function resolveBaseDir(context: ToolExecutionContext): string {
@@ -405,6 +422,7 @@ async function runExecTool(payload: string, context: ToolExecutionContext): Prom
   if (!isExecToolEnabled()) {
     throw new Error("exec 工具未启用（设置 ENABLE_AGENT_EXEC_TOOL=1 打开）");
   }
+  throwIfAborted(context.signal);
 
   const { cmd: rawCmd, args, timeoutMs } = parseExecPayload(payload);
   const cwd = resolveBaseDir(context);
@@ -419,6 +437,7 @@ async function runExecTool(payload: string, context: ToolExecutionContext): Prom
 
   return await new Promise<string>((resolve, reject) => {
     const startedAt = Date.now();
+    const signal = context.signal;
     const child = spawn(rawCmd, args, {
       cwd,
       shell: false,
@@ -431,6 +450,8 @@ async function runExecTool(payload: string, context: ToolExecutionContext): Prom
     let truncatedStdout = false;
     let truncatedStderr = false;
     let timedOut = false;
+    let settled = false;
+    let abortKillTimer: NodeJS.Timeout | null = null;
 
     const append = (
       target: Buffer<ArrayBufferLike>,
@@ -460,6 +481,43 @@ async function runExecTool(payload: string, context: ToolExecutionContext): Prom
       }
     }, Math.max(1, timeoutMs));
 
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      timedOut = false;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      abortKillTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, 1200);
+      cleanup();
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
     child.stdout?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
       stdout = append(stdout, chunk, "stdout");
     });
@@ -467,11 +525,27 @@ async function runExecTool(payload: string, context: ToolExecutionContext): Prom
       stderr = append(stderr, chunk, "stderr");
     });
     child.on("error", (error) => {
-      clearTimeout(timeout);
+      if (abortKillTimer) {
+        clearTimeout(abortKillTimer);
+        abortKillTimer = null;
+      }
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
       reject(error);
     });
     child.on("close", (code, signal) => {
-      clearTimeout(timeout);
+      if (abortKillTimer) {
+        clearTimeout(abortKillTimer);
+        abortKillTimer = null;
+      }
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
       const elapsedMs = Date.now() - startedAt;
       const lines: string[] = [];
       lines.push(`$ ${commandLine}`);
@@ -794,6 +868,7 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
   if (!isApplyPatchEnabled()) {
     throw new Error("apply_patch 工具未启用（设置 ENABLE_AGENT_APPLY_PATCH=1 打开）");
   }
+  throwIfAborted(context.signal);
 
   let patchText = payload.replaceAll("\r\n", "\n");
   const lines = patchText.split("\n");
@@ -825,6 +900,7 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
   logger.info(`[tool.apply_patch] cwd=${cwd} bytes=${patchBytes} files=${patchPaths.length}`);
 
   return await new Promise<string>((resolve, reject) => {
+    const signal = context.signal;
     const gitRoot = findGitRoot(cwd);
     const prefixRaw = gitRoot ? path.relative(gitRoot, cwd) : "";
     const prefix = prefixRaw && prefixRaw !== "." ? prefixRaw.split(path.sep).join("/") : "";
@@ -839,6 +915,8 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
       env: process.env,
     });
 
+    let settled = false;
+
     const buffers = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     const append = (key: "stdout" | "stderr", chunk: Buffer<ArrayBufferLike>) => {
       const current = buffers[key];
@@ -846,10 +924,50 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
       buffers[key] = next.length > EXEC_MAX_OUTPUT_BYTES ? next.subarray(0, EXEC_MAX_OUTPUT_BYTES) : next;
     };
 
+    const cleanup = () => {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      cleanup();
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
     child.stdout?.on("data", (chunk: Buffer<ArrayBufferLike>) => append("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer<ArrayBufferLike>) => append("stderr", chunk));
-    child.on("error", (error) => reject(error));
+    child.on("error", (error) => {
+      cleanup();
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
     child.on("close", (code) => {
+      cleanup();
+      if (settled) {
+        return;
+      }
+      settled = true;
       if (code === 0) {
         const filesPart = patchPaths.length > 0 ? ` files=${patchPaths.join(", ")}` : "";
         resolve(`✅ Patch applied.${filesPart}`);
@@ -867,6 +985,7 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
 }
 
 async function runTool(name: string, payload: string, context: ToolExecutionContext): Promise<string> {
+  throwIfAborted(context.signal);
   switch (name) {
     case "search":
       return handleSearchTool(payload);
@@ -889,8 +1008,10 @@ export async function executeToolInvocation(
   context: ToolExecutionContext = {},
   hooks?: ToolHooks,
 ): Promise<ToolExecutionResult> {
+  throwIfAborted(context.signal);
   await hooks?.onInvoke?.(tool, payload);
   try {
+    throwIfAborted(context.signal);
     const output = await runTool(tool, payload, context);
     const result: ToolExecutionResult = { tool, payload, ok: true, output };
     const summary: ToolCallSummary = {
@@ -902,6 +1023,9 @@ export async function executeToolInvocation(
     await hooks?.onResult?.(summary);
     return result;
   } catch (error) {
+    if (context.signal?.aborted || isAbortError(error)) {
+      throw error instanceof Error ? error : createAbortError();
+    }
     const message = error instanceof Error ? error.message : String(error);
     const output = `⚠️ 工具 ${tool} 失败：${message}`;
     const result: ToolExecutionResult = { tool, payload, ok: false, output, error: message };
@@ -931,8 +1055,10 @@ export async function executeToolBlocks(
   const summaries: ToolCallSummary[] = [];
 
   for (const invocation of invocations) {
+    throwIfAborted(context.signal);
     await hooks?.onInvoke?.(invocation.name, invocation.payload);
     try {
+      throwIfAborted(context.signal);
       const output = await runTool(invocation.name, invocation.payload, context);
       replacedText = replacedText.replace(invocation.raw, output);
       results.push({ tool: invocation.name, payload: invocation.payload, ok: true, output });
@@ -945,6 +1071,9 @@ export async function executeToolBlocks(
       summaries.push(summary);
       await hooks?.onResult?.(summary);
     } catch (error) {
+      if (context.signal?.aborted || isAbortError(error)) {
+        throw error instanceof Error ? error : createAbortError();
+      }
       const message = error instanceof Error ? error.message : String(error);
       const fallback = `⚠️ 工具 ${invocation.name} 失败：${message}`;
       replacedText = replacedText.replace(invocation.raw, fallback);

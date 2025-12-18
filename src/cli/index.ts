@@ -59,6 +59,7 @@ interface CommandResult {
 }
 
 const PROMPT = "ADS> ";
+const SHOW_ELAPSED_TIME = process.env.ADS_CLI_SHOW_TIME === "1";
 
 interface TemplateMetadata {
   id?: string;
@@ -80,6 +81,27 @@ interface WorkspaceInfoFields {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+  if (error instanceof Error) {
+    if (error.name === "AbortError") {
+      return true;
+    }
+    const message = error.message.toLowerCase();
+    return (
+      message.includes("aborted") ||
+      message.includes("abort") ||
+      message.includes("interrupted") ||
+      message.includes("用户中断") ||
+      message.includes("中断")
+    );
+  }
+  const record = error as { name?: unknown; message?: unknown };
+  return record.name === "AbortError";
 }
 
 function normalizeTemplateEntry(entry: unknown): TemplateMetadata | null {
@@ -365,7 +387,7 @@ async function handleAgentInteraction(
   input: string,
   orchestrator: HybridOrchestrator,
   logger: ConversationLogger,
-  options?: { memory?: string },
+  options?: { memory?: string; signal?: AbortSignal },
 ): Promise<CommandResult> {
   const trimmed = input.trim();
   if (!trimmed) {
@@ -410,6 +432,7 @@ async function handleAgentInteraction(
     const basePrompt = promptSections.join("\n\n");
     try {
       const result = await runCollaborativeTurn(orchestrator, basePrompt, {
+        signal: options?.signal,
         hooks: {
           onSupervisorRound: (round, directives) =>
             logger.logOutput(`[Auto] 协作轮次 ${round}（指令块 ${directives}）`),
@@ -430,11 +453,12 @@ async function handleAgentInteraction(
           allowedDirs: process.env.ALLOWED_DIRS
             ? process.env.ALLOWED_DIRS.split(",").map((dir) => dir.trim()).filter(Boolean)
             : [process.cwd()],
+          signal: options?.signal,
         },
       });
-      const elapsed = (Date.now() - startTime) / 1000;
       renderer.finish();
-      if (!streamingConfig.enabled) {
+      if (!streamingConfig.enabled && SHOW_ELAPSED_TIME) {
+        const elapsed = (Date.now() - startTime) / 1000;
         const summary = `[${renderer.getAgentLabel()}] 耗时 ${elapsed.toFixed(1)}s`;
         cliLogger.info(summary);
         logger.logOutput(summary);
@@ -446,6 +470,9 @@ async function handleAgentInteraction(
       renderer.cleanup();
     }
   } catch (error) {
+    if (isAbortError(error)) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
     const message = error instanceof Error ? error.message : String(error);
     return { output: `❌ 代理调用失败: ${message}` };
   }
@@ -767,18 +794,26 @@ function createStatusRenderer(
     }
     hideCursor();
     const now = Date.now();
-    const elapsedSeconds = (now - startTime) / 1000;
-    const spinner = isActivePhase(currentEvent.phase) ? spinnerFrames[spinnerIndex] : undefined;
+    const elapsedSeconds = SHOW_ELAPSED_TIME ? (now - startTime) / 1000 : undefined;
+    // In non-TTY mode, don't show spinner animation
+    const spinner = process.stdout.isTTY && isActivePhase(currentEvent.phase)
+      ? spinnerFrames[spinnerIndex]
+      : undefined;
     agentLabel = describeActiveAgent(orchestrator);
     const message = formatAgentStatus(currentEvent, elapsedSeconds, spinner, agentLabel);
     if (force || message !== lastRendered) {
-      updateStatusLine(message);
+      // force=true means significant state change, output in non-TTY mode
+      updateStatusLine(message, force);
       lastRendered = message;
       dirty = true;
     }
   };
 
   const startSpinner = () => {
+    // Only animate spinner in TTY mode to avoid log flooding
+    if (!process.stdout.isTTY) {
+      return;
+    }
     if (!streamingEnabled || spinnerTimer || !currentEvent || !isActivePhase(currentEvent.phase)) {
       return;
     }
@@ -841,7 +876,11 @@ function createStatusRenderer(
     }
     stopSpinner();
     showCursor();
-    process.stdout.write("\n");
+    // In TTY mode, we need newline to finalize the status line
+    // In non-TTY mode, we already output newlines with each status update
+    if (process.stdout.isTTY) {
+      process.stdout.write("\n");
+    }
     dirty = false;
   };
 
@@ -988,10 +1027,15 @@ function formatAgentStatus(
   return colorize ? colorize(base) : base;
 }
 
-function updateStatusLine(message: string): void {
-  readline.clearLine(process.stdout, 0);
-  readline.cursorTo(process.stdout, 0);
-  process.stdout.write(message);
+function updateStatusLine(message: string, forceNewLine = false): void {
+  if (process.stdout.isTTY) {
+    readline.clearLine(process.stdout, 0);
+    readline.cursorTo(process.stdout, 0);
+    process.stdout.write(message);
+  } else if (forceNewLine) {
+    // In non-TTY mode, only output on significant state changes (not spinner updates)
+    process.stdout.write(`${message}\n`);
+  }
 }
 
 function enableBracketedPaste(): () => void {
@@ -1025,6 +1069,7 @@ async function handleLine(
   logger: ConversationLogger,
   orchestrator: HybridOrchestrator,
   workspaceRoot: string,
+  signal?: AbortSignal,
 ): Promise<CommandResult> {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -1097,7 +1142,7 @@ async function handleLine(
     }
   }
 
-  return handleAgentInteraction(trimmed, orchestrator, logger);
+  return handleAgentInteraction(trimmed, orchestrator, logger, { signal });
 }
 
 async function main(): Promise<void> {
@@ -1124,12 +1169,17 @@ async function main(): Promise<void> {
   let lineBuffer: string[] = [];
   let lineFlushTimer: NodeJS.Timeout | null = null;
   const disableBracketedPaste = enableBracketedPaste();
+  let handleInterrupt: (() => void) | null = null;
 
   process.on("exit", () => {
     disableBracketedPaste();
     logger.close();
   });
   process.on("SIGINT", () => {
+    if (handleInterrupt) {
+      handleInterrupt();
+      return;
+    }
     disableBracketedPaste();
     logger.close();
     process.exit(0);
@@ -1167,11 +1217,26 @@ async function main(): Promise<void> {
 
   rl.prompt();
 
-  const handleUserInput = async (input: string) => {
+  let activeAbortController: AbortController | null = null;
+  const pendingInputs: string[] = [];
+  let processingInputs = false;
+  let interruptInFlight = false;
+  let skipPromptOnce = false;
+
+  const clearBufferedInput = () => {
+    pendingInputs.length = 0;
+    lineBuffer = [];
+    if (lineFlushTimer) {
+      clearTimeout(lineFlushTimer);
+      lineFlushTimer = null;
+    }
+  };
+
+  const handleUserInput = async (input: string, signal: AbortSignal) => {
     logger.logInput(input);
     historyStore.add(historyKey, { role: "user", text: input, ts: Date.now() });
     try {
-      const result = await handleLine(input, logger, agents, workspaceRoot);
+      const result = await handleLine(input, logger, agents, workspaceRoot, signal);
       const output = normalizeOutput(result.output);
       const role = result.history?.role ?? "ai";
       const cleanedOutput = role === "ai" ? stripLeadingTranslation(output) : output;
@@ -1190,12 +1255,54 @@ async function main(): Promise<void> {
         return;
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`❌ ${message}\n`);
-      logger.logError(message);
-      historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
+      if (signal.aborted || isAbortError(error)) {
+        const message = "⏹ 已中止";
+        if (!interruptInFlight) {
+          process.stdout.write(`${message}\n`);
+          logger.logOutput(message);
+          historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "abort" });
+        }
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`❌ ${message}\n`);
+        logger.logError(message);
+        historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
+      }
+    }
+    interruptInFlight = false;
+    if (skipPromptOnce) {
+      skipPromptOnce = false;
+      return;
     }
     rl.prompt();
+  };
+
+  const processInputQueue = async () => {
+    if (processingInputs) {
+      return;
+    }
+    processingInputs = true;
+    try {
+      while (pendingInputs.length > 0) {
+        const next = pendingInputs.shift();
+        if (!next) {
+          continue;
+        }
+        activeAbortController = new AbortController();
+        try {
+          await handleUserInput(next, activeAbortController.signal);
+        } finally {
+          activeAbortController = null;
+        }
+      }
+    } finally {
+      processingInputs = false;
+    }
+  };
+
+  const enqueueUserInput = (input: string) => {
+    pendingInputs.push(input);
+    void processInputQueue();
   };
 
   const flushBufferedLines = () => {
@@ -1208,7 +1315,7 @@ async function main(): Promise<void> {
     }
     const combined = lineBuffer.join("\n");
     lineBuffer = [];
-    void handleUserInput(combined);
+    enqueueUserInput(combined);
   };
 
   const enqueueLine = (line: string) => {
@@ -1220,8 +1327,53 @@ async function main(): Promise<void> {
     lineFlushTimer = setTimeout(flushBufferedLines, PASTE_LINE_WINDOW_MS);
   };
 
+  const requestInterrupt = () => {
+    const controller = activeAbortController;
+    const shouldAbort = Boolean(controller && !controller.signal.aborted);
+    interruptInFlight = shouldAbort;
+    if (shouldAbort) {
+      skipPromptOnce = true;
+    }
+    clearBufferedInput();
+    if (shouldAbort) {
+      controller?.abort();
+    }
+    if (process.stdin.isTTY) {
+      rl.write("", { ctrl: true, name: "u" });
+    }
+    rl.prompt();
+  };
+
+  handleInterrupt = requestInterrupt;
+  rl.on("SIGINT", requestInterrupt);
+
   if (process.stdin.isTTY) {
     process.stdin.setEncoding("utf8");
+    readline.emitKeypressEvents(process.stdin, rl);
+    process.stdin.on("keypress", (_chunk: string, key: { name?: string; sequence?: string } | undefined) => {
+      if (!key) {
+        return;
+      }
+      if (key.name !== "escape") {
+        return;
+      }
+      const maybePastePrefix = (() => {
+        const tail = pendingPasteStart;
+        if (!tail) {
+          return false;
+        }
+        for (let len = 1; len < START_PASTE.length; len += 1) {
+          if (tail.endsWith(START_PASTE.slice(0, len))) {
+            return true;
+          }
+        }
+        return false;
+      })();
+      if (pasteActive || suppressLineFromPaste || maybePastePrefix) {
+        return;
+      }
+      requestInterrupt();
+    });
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
       const dataStr = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       // Detect bracketed paste (common in modern terminals) even if the markers are split across multiple chunks
@@ -1255,7 +1407,7 @@ async function main(): Promise<void> {
       setImmediate(() => {
         suppressLineFromPaste = false;
       });
-      void handleUserInput(block);
+      enqueueUserInput(block);
       // If user keeps typing right after paste end, push the rest back into readline
       if (remaining) {
         rl.write(remaining);

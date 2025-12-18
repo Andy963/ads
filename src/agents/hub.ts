@@ -50,6 +50,18 @@ const logger = createLogger("AgentHub");
 
 const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
 
+function createAbortError(message = "用户中断了请求"): Error {
+  const abortError = new Error(message);
+  abortError.name = "AbortError";
+  return abortError;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
 function isStatefulAgent(agentId: AgentIdentifier): boolean {
   return agentId === "codex";
 }
@@ -135,6 +147,7 @@ async function runAgentTurnWithTools(
   sendOptions: AgentSendOptions,
   options: { maxToolRounds: number; toolContext: ToolExecutionContext; toolHooks?: ToolHooks },
 ): Promise<AgentRunResult> {
+  throwIfAborted(sendOptions.signal);
   const agentSendOptions: AgentSendOptions = {
     ...sendOptions,
     toolContext: options.toolContext,
@@ -147,6 +160,7 @@ async function runAgentTurnWithTools(
   const unlimited = options.maxToolRounds <= 0;
 
   for (let round = 1; unlimited || round <= options.maxToolRounds; round += 1) {
+    throwIfAborted(sendOptions.signal);
     const executed = await executeToolBlocks(result.response, options.toolHooks, options.toolContext);
     if (executed.results.length === 0) {
       return result;
@@ -272,6 +286,7 @@ async function runDelegationQueue(
     maxToolRounds: number;
     toolContext: ToolExecutionContext;
     toolHooks?: ToolHooks;
+    signal?: AbortSignal;
   },
 ): Promise<DelegationSummary[]> {
   const queue: DelegationDirective[] = extractDelegationDirectives(initialText, options.supervisorAgentId);
@@ -283,6 +298,7 @@ async function runDelegationQueue(
   const seen = new Set<string>();
 
   while (queue.length > 0 && results.length < options.maxDelegations) {
+    throwIfAborted(options.signal);
     const next = queue.shift();
     if (!next) {
       break;
@@ -310,11 +326,17 @@ async function runDelegationQueue(
     await options.hooks?.onDelegationStart?.({ agentId: next.agentId, agentName, prompt: next.prompt });
     try {
       const delegateInput = injectToolGuide(next.prompt, { activeAgentId: next.agentId });
-      const agentResult = await runAgentTurnWithTools(orchestrator, next.agentId, delegateInput, { streaming: false }, {
-        maxToolRounds: options.maxToolRounds,
-        toolContext: options.toolContext,
-        toolHooks: options.toolHooks,
-      });
+      const agentResult = await runAgentTurnWithTools(
+        orchestrator,
+        next.agentId,
+        delegateInput,
+        { streaming: false, signal: options.signal },
+        {
+          maxToolRounds: options.maxToolRounds,
+          toolContext: options.toolContext,
+          toolHooks: options.toolHooks,
+        },
+      );
       const summary: DelegationSummary = {
         agentId: next.agentId,
         agentName,
@@ -377,6 +399,7 @@ export async function runCollaborativeTurn(
   const allDelegations: DelegationSummary[] = [];
 
   while (rounds < maxSupervisorRounds) {
+    throwIfAborted(options.signal);
     const directives = extractDelegationDirectives(result.response, activeAgentId);
     if (directives.length === 0) {
       break;
@@ -391,6 +414,7 @@ export async function runCollaborativeTurn(
       maxToolRounds,
       toolContext,
       toolHooks: options.toolHooks,
+      signal: options.signal,
     });
     allDelegations.push(...delegations);
 
