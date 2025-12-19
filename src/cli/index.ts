@@ -1177,8 +1177,6 @@ async function main(): Promise<void> {
   const pasteWindowEnv = Number(process.env.ADS_CLI_PASTE_WINDOW_MS);
   const PASTE_LINE_WINDOW_MS =
     Number.isFinite(pasteWindowEnv) && pasteWindowEnv >= 0 ? pasteWindowEnv : 160;
-  const pasteModeEnv = (process.env.ADS_CLI_PASTE_MODE ?? "draft").trim().toLowerCase();
-  const CLI_PASTE_MODE: "submit" | "draft" = pasteModeEnv === "submit" ? "submit" : "draft";
   let pasteActive = false;
   let pasteBuffer = "";
   let suppressLineFromPaste = false;
@@ -1380,7 +1378,7 @@ async function main(): Promise<void> {
     const combined = lineBuffer.join("\n");
     const bufferedCount = lineBuffer.length;
     lineBuffer = [];
-    if (CLI_PASTE_MODE === "draft" && bufferedCount > 1) {
+    if (bufferedCount > 1) {
       beginDraft("检测到多行粘贴");
       appendDraft(combined);
       rl.prompt();
@@ -1478,12 +1476,13 @@ async function main(): Promise<void> {
       setImmediate(() => {
         suppressLineFromPaste = false;
       });
-      if (CLI_PASTE_MODE === "submit") {
-        enqueueUserInput(block);
-      } else if (block.includes("\n") || block.includes("\r")) {
+      if (block.includes("\n") || block.includes("\r")) {
         beginDraft("检测到多行粘贴");
         appendDraft(block);
         rl.prompt();
+      } else if (block) {
+        // 单行粘贴：仅插入到当前输入，不自动提交
+        rl.write(block);
       }
       // If user keeps typing right after paste end, push the rest back into readline
       if (remaining) {
