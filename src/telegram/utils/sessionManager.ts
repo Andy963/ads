@@ -19,7 +19,7 @@ interface SessionRecord {
 
 export class SessionManager {
   private sessions = new Map<number, SessionRecord>();
-  private cleanupInterval: NodeJS.Timeout;
+  private cleanupInterval?: NodeJS.Timeout;
   private threadStorage: ThreadStorage;
   private sandboxMode: SandboxMode;
   private defaultModel?: string;
@@ -30,6 +30,7 @@ export class SessionManager {
   private readonly geminiConfig = resolveGeminiAgentConfig();
 
   constructor(
+    // <= 0 表示禁用 session 超时清理（会话将一直保留，直到进程退出或显式 reset/destroy）
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000, // 30分钟
     private readonly cleanupIntervalMs: number = 5 * 60 * 1000,  // 5分钟检查一次
     sandboxMode: SandboxMode = 'workspace-write',
@@ -39,9 +40,11 @@ export class SessionManager {
     this.threadStorage = threadStorage ?? new ThreadStorage();
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
-    this.cleanupInterval = setInterval(() => {
-      this.cleanup();
-    }, this.cleanupIntervalMs);
+    if (this.sessionTimeoutMs > 0 && this.cleanupIntervalMs > 0) {
+      this.cleanupInterval = setInterval(() => {
+        this.cleanup();
+      }, this.cleanupIntervalMs);
+    }
   }
 
   getOrCreate(userId: number, cwd?: string, resumeThread?: boolean): HybridOrchestrator {
@@ -288,6 +291,16 @@ export class SessionManager {
     let active = 0;
     let idle = 0;
 
+    if (this.sessionTimeoutMs <= 0) {
+      return {
+        total: this.sessions.size,
+        active: this.sessions.size,
+        idle: 0,
+        sandboxMode: this.sandboxMode,
+        defaultModel: this.defaultModel || 'default',
+      };
+    }
+
     for (const record of this.sessions.values()) {
       if (now - record.lastActivity < this.sessionTimeoutMs) {
         active++;
@@ -306,6 +319,9 @@ export class SessionManager {
   }
 
   private cleanup(): void {
+    if (this.sessionTimeoutMs <= 0) {
+      return;
+    }
     const now = Date.now();
     const expiredUsers: number[] = [];
 
@@ -326,7 +342,9 @@ export class SessionManager {
   }
 
   destroy(): void {
-    clearInterval(this.cleanupInterval);
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+    }
 
     // 保存所有活跃 session 的 thread ID 并关闭 logger
     for (const [userId, record] of this.sessions.entries()) {

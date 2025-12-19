@@ -58,7 +58,9 @@ const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "0.0.0.0";
 const TOKEN = (process.env.ADS_WEB_TOKEN ?? "").trim();
 const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
-const IDLE_MINUTES = Math.max(1, Number(process.env.ADS_WEB_IDLE_MINUTES ?? 15));
+// <= 0 disables web idle auto-lock / websocket close.
+const idleMinutesRaw = Number(process.env.ADS_WEB_IDLE_MINUTES ?? 0);
+const IDLE_MINUTES = Number.isFinite(idleMinutesRaw) ? Math.max(0, idleMinutesRaw) : 0;
 const logger = createLogger("WebSocket");
 
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
@@ -68,7 +70,8 @@ const webThreadStorage = new ThreadStorage({
   namespace: "web",
   storagePath: path.join(process.cwd(), ".ads", "web-threads.json"),
 });
-const sessionManager = new SessionManager(undefined, undefined, "workspace-write", undefined, webThreadStorage);
+// Disable in-memory session timeout cleanup for Web (keep sessions until process exit / explicit reset).
+const sessionManager = new SessionManager(0, 0, "workspace-write", undefined, webThreadStorage);
 const historyStore = new HistoryStore({
   storagePath: path.join(process.cwd(), ".ads", "state.db"),
   namespace: "web",

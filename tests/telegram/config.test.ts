@@ -45,6 +45,7 @@ describe('Telegram Config', () => {
     const config = loadTelegramConfig();
 
     assert.strictEqual(config.maxRequestsPerMinute, 10);
-    assert.ok(config.sessionTimeoutMs > 0);
+    // Default disables session timeout cleanup.
+    assert.strictEqual(config.sessionTimeoutMs, 0);
   });
 });

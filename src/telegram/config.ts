@@ -49,9 +49,9 @@ export function loadTelegramConfig(): TelegramConfig {
     throw new Error('TELEGRAM_MAX_RPM must be a positive number');
   }
 
-  const sessionTimeoutMs = parseInt(process.env.TELEGRAM_SESSION_TIMEOUT || '1800000', 10);
-  if (!Number.isFinite(sessionTimeoutMs) || sessionTimeoutMs <= 0) {
-    throw new Error('TELEGRAM_SESSION_TIMEOUT must be a positive number');
+  const sessionTimeoutMs = parseInt(process.env.TELEGRAM_SESSION_TIMEOUT || '0', 10);
+  if (!Number.isFinite(sessionTimeoutMs) || sessionTimeoutMs < 0) {
+    throw new Error('TELEGRAM_SESSION_TIMEOUT must be a non-negative number (0 disables timeout)');
   }
 
   const streamUpdateIntervalMs = parseInt(process.env.TELEGRAM_STREAM_UPDATE_INTERVAL || '1500', 10);

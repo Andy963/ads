@@ -1264,6 +1264,13 @@ export function renderLandingPageScript(idleMinutes: number): string {
     }
 
     function resetIdleTimer() {
+      if (idleMinutes <= 0) {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+        return;
+      }
       if (idleTimer) {
         clearTimeout(idleTimer);
       }
