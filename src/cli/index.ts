@@ -1177,6 +1177,8 @@ async function main(): Promise<void> {
   const pasteWindowEnv = Number(process.env.ADS_CLI_PASTE_WINDOW_MS);
   const PASTE_LINE_WINDOW_MS =
     Number.isFinite(pasteWindowEnv) && pasteWindowEnv >= 0 ? pasteWindowEnv : 160;
+  const pasteModeEnv = (process.env.ADS_CLI_PASTE_MODE ?? "draft").trim().toLowerCase();
+  const CLI_PASTE_MODE: "submit" | "draft" = pasteModeEnv === "submit" ? "submit" : "draft";
   let pasteActive = false;
   let pasteBuffer = "";
   let suppressLineFromPaste = false;
@@ -1237,6 +1239,53 @@ async function main(): Promise<void> {
   let processingInputs = false;
   let interruptInFlight = false;
   let skipPromptOnce = false;
+  const DRAFT_PROMPT = "… ";
+  let draftActive = false;
+  let draftBuffer = "";
+
+  const showDraftHint = (reason?: string) => {
+    const prefix = "📝 已进入多行草稿模式";
+    const detail = reason ? `（${reason}）` : "";
+    process.stdout.write(`${prefix}${detail}：继续输入；空行或 /send 发送；/cancel 取消。\n`);
+  };
+
+  const beginDraft = (reason?: string) => {
+    if (draftActive) {
+      return;
+    }
+    draftActive = true;
+    rl.setPrompt(DRAFT_PROMPT);
+    showDraftHint(reason);
+  };
+
+  const appendDraft = (text: string) => {
+    const normalized = text.replace(/\r\n/g, "\n");
+    if (!draftBuffer) {
+      draftBuffer = normalized;
+      return;
+    }
+    const separator = draftBuffer.endsWith("\n") || normalized.startsWith("\n") ? "" : "\n";
+    draftBuffer = `${draftBuffer}${separator}${normalized}`;
+  };
+
+  const cancelDraft = () => {
+    if (!draftActive) {
+      return;
+    }
+    draftActive = false;
+    draftBuffer = "";
+    rl.setPrompt(PROMPT);
+    process.stdout.write("🗑️ 已取消草稿\n");
+    rl.prompt();
+  };
+
+  const flushDraft = () => {
+    const payload = draftBuffer;
+    draftActive = false;
+    draftBuffer = "";
+    rl.setPrompt(PROMPT);
+    enqueueUserInput(payload);
+  };
 
   const clearBufferedInput = () => {
     pendingInputs.length = 0;
@@ -1329,7 +1378,14 @@ async function main(): Promise<void> {
       return;
     }
     const combined = lineBuffer.join("\n");
+    const bufferedCount = lineBuffer.length;
     lineBuffer = [];
+    if (CLI_PASTE_MODE === "draft" && bufferedCount > 1) {
+      beginDraft("检测到多行粘贴");
+      appendDraft(combined);
+      rl.prompt();
+      return;
+    }
     enqueueUserInput(combined);
   };
 
@@ -1422,7 +1478,13 @@ async function main(): Promise<void> {
       setImmediate(() => {
         suppressLineFromPaste = false;
       });
-      enqueueUserInput(block);
+      if (CLI_PASTE_MODE === "submit") {
+        enqueueUserInput(block);
+      } else if (block.includes("\n") || block.includes("\r")) {
+        beginDraft("检测到多行粘贴");
+        appendDraft(block);
+        rl.prompt();
+      }
       // If user keeps typing right after paste end, push the rest back into readline
       if (remaining) {
         rl.write(remaining);
@@ -1432,6 +1494,28 @@ async function main(): Promise<void> {
 
   rl.on("line", async (line) => {
     if (suppressLineFromPaste) {
+      return;
+    }
+    if (draftActive) {
+      const trimmed = line.trim();
+      if (trimmed === "/send") {
+        flushDraft();
+        return;
+      }
+      if (trimmed === "/cancel") {
+        cancelDraft();
+        return;
+      }
+      if (!trimmed) {
+        if (draftBuffer.trim()) {
+          flushDraft();
+        } else {
+          cancelDraft();
+        }
+        return;
+      }
+      appendDraft(line);
+      rl.prompt();
       return;
     }
     enqueueLine(line);
