@@ -92,15 +92,15 @@ function parseCsv(value: string | undefined): string[] {
 }
 
 function isExecToolEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, false);
+  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, true);
 }
 
 function isFileToolsEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_FILE_TOOLS, false);
+  return parseBoolean(process.env.ENABLE_AGENT_FILE_TOOLS, true);
 }
 
 function isApplyPatchEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, false);
+  return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, true);
 }
 
 function parsePositiveInt(value: string | undefined, defaultValue: number): number {
@@ -420,7 +420,7 @@ function parseExecPayload(payload: string): {
 
 async function runExecTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isExecToolEnabled()) {
-    throw new Error("exec 工具未启用（设置 ENABLE_AGENT_EXEC_TOOL=1 打开）");
+    throw new Error("exec 工具已禁用（设置 ENABLE_AGENT_EXEC_TOOL=1 重新启用）");
   }
   throwIfAborted(context.signal);
 
@@ -705,7 +705,7 @@ function formatReadToolOutput(
 
 async function runReadTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isFileToolsEnabled()) {
-    throw new Error("file 工具未启用（设置 ENABLE_AGENT_FILE_TOOLS=1 打开）");
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
   }
 
   const baseDir = resolveBaseDir(context);
@@ -790,7 +790,7 @@ function parseWritePayload(payload: string): { path: string; content: string; ap
 
 async function runWriteTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isFileToolsEnabled()) {
-    throw new Error("file 工具未启用（设置 ENABLE_AGENT_FILE_TOOLS=1 打开）");
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
   }
 
   const baseDir = resolveBaseDir(context);
@@ -863,10 +863,10 @@ function validatePatchPaths(paths: string[], context: ToolExecutionContext): voi
 
 async function runApplyPatchTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isFileToolsEnabled()) {
-    throw new Error("file 工具未启用（设置 ENABLE_AGENT_FILE_TOOLS=1 打开）");
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
   }
   if (!isApplyPatchEnabled()) {
-    throw new Error("apply_patch 工具未启用（设置 ENABLE_AGENT_APPLY_PATCH=1 打开）");
+    throw new Error("apply_patch 工具已禁用（设置 ENABLE_AGENT_APPLY_PATCH=1 重新启用）");
   }
   throwIfAborted(context.signal);
 
@@ -1129,11 +1129,11 @@ export function injectToolGuide(
   if (usesToolBlocks && activeAgentId !== "codex" && isFileToolsEnabled()) {
     guideLines.push(
       [
-        "read - 读取本地文件（需要 ENABLE_AGENT_FILE_TOOLS=1，受目录白名单限制），格式：",
+        "read - 读取本地文件（默认启用；可用 ENABLE_AGENT_FILE_TOOLS=0 禁用；受目录白名单限制），格式：",
         "<<<tool.read",
         '{"path":"src/index.ts","startLine":1,"endLine":120}',
         ">>>",
-        "write - 写入本地文件（需要 ENABLE_AGENT_FILE_TOOLS=1，受目录白名单限制），格式：",
+        "write - 写入本地文件（默认启用；可用 ENABLE_AGENT_FILE_TOOLS=0 禁用；受目录白名单限制），格式：",
         "<<<tool.write",
         '{"path":"src/example.txt","content":"hello"}',
         ">>>",
@@ -1142,7 +1142,7 @@ export function injectToolGuide(
     if (isApplyPatchEnabled()) {
       guideLines.push(
         [
-          "apply_patch - 通过 unified diff 应用补丁（需要 ENABLE_AGENT_APPLY_PATCH=1 + git，受目录白名单限制），格式：",
+          "apply_patch - 通过 unified diff 应用补丁（默认启用；可用 ENABLE_AGENT_APPLY_PATCH=0 禁用；需要 git；受目录白名单限制），格式：",
           "<<<tool.apply_patch",
           "diff --git a/src/a.ts b/src/a.ts",
           "index 0000000..1111111 100644",
@@ -1160,7 +1160,7 @@ export function injectToolGuide(
   if (usesToolBlocks && activeAgentId !== "codex" && isExecToolEnabled()) {
     guideLines.push(
       [
-        "exec - 在本机执行命令（需要 ENABLE_AGENT_EXEC_TOOL=1；可选用 AGENT_EXEC_TOOL_ALLOWLIST 限制命令，'*' 表示不限制），格式：",
+        "exec - 在本机执行命令（默认启用；可用 ENABLE_AGENT_EXEC_TOOL=0 禁用；可选用 AGENT_EXEC_TOOL_ALLOWLIST 限制命令，'*' 表示不限制），格式：",
         "<<<tool.exec",
         "npm test",
         ">>>",

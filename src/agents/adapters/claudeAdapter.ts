@@ -20,12 +20,25 @@ const DEFAULT_METADATA: AgentMetadata = {
 const DEFAULT_SYSTEM_PROMPT = [
   "You are Claude assisting the ADS automation platform as a supporting agent.",
   "Always respond with actionable plans, diffs, or insights.",
-  "If you need to execute a command, emit a tool block (requires ENABLE_AGENT_EXEC_TOOL=1):",
+  "If you need to execute a command, emit a tool block:",
   "<<<tool.exec",
   "npm test",
   ">>>",
   "Tool output will be injected back into the conversation by ADS.",
 ].join("\n");
+
+function resolveAllowedTools(toolAllowlist: string[]): string[] | undefined {
+  const normalized = toolAllowlist
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  if (normalized.includes("*") || normalized.includes("all")) {
+    return undefined;
+  }
+  return toolAllowlist;
+}
 
 function mapUsage(result: SDKResultMessage): Usage | null {
   if (!result.usage) {
@@ -149,7 +162,7 @@ export class ClaudeAgentAdapter implements AgentAdapter {
         abortController,
         cwd: this.workingDirectory || this.config.workdir,
         model: this.model || this.config.model,
-        allowedTools: this.config.toolAllowlist,
+        allowedTools: resolveAllowedTools(this.config.toolAllowlist),
         systemPrompt: this.systemPrompt,
         env: {
           ...process.env,

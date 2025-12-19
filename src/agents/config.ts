@@ -424,10 +424,11 @@ export function resolveClaudeAgentConfig(): ClaudeAgentConfig {
   const defaultWorkdir =
     process.env.CLAUDE_WORKDIR || fileConfig.workdir || join(tmpdir(), "ads-claude-agent");
   const envToolList = process.env.CLAUDE_TOOL_ALLOWLIST;
-  const toolAllowlist =
+  const toolAllowlistRaw =
     envToolList !== undefined
       ? parseList(envToolList)
-      : fileConfig.toolAllowlist ?? [];
+      : fileConfig.toolAllowlist;
+  const toolAllowlist = toolAllowlistRaw && toolAllowlistRaw.length > 0 ? toolAllowlistRaw : ["*"];
   return {
     enabled: resolveEnabledFlag(process.env.ENABLE_CLAUDE_AGENT, fileConfig.enabled, Boolean(apiKey)),
     apiKey,

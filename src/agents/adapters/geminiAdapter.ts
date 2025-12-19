@@ -275,15 +275,15 @@ function resolveAllowedDirsFallback(cwd: string): string[] {
 }
 
 function isExecToolEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, false);
+  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, true);
 }
 
 function isFileToolsEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_FILE_TOOLS, false);
+  return parseBoolean(process.env.ENABLE_AGENT_FILE_TOOLS, true);
 }
 
 function isApplyPatchEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, false);
+  return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, true);
 }
 
 function isGoogleSearchEnabled(): boolean {

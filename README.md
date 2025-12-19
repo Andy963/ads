@@ -140,7 +140,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 - `CLAUDE_API_KEY`：Anthropic API Key（若未设置，依次回退查找 `ANTHROPIC_API_KEY` 或 `~/.claude/auth.json`）
 - `CLAUDE_MODEL`：Claude 模型名称，默认 `claude-sonnet-4.5`
 - `CLAUDE_WORKDIR`：Claude Agent Runner 的工作目录，默认 `/tmp/ads-claude-agent`
-- `CLAUDE_TOOL_ALLOWLIST`：逗号分隔的工具白名单，占位用于后续阶段
+- `CLAUDE_TOOL_ALLOWLIST`：逗号分隔的工具白名单（默认 `*`=不限制；需要限制时再显式配置）
 - `CLAUDE_BASE_URL` / `ANTHROPIC_BASE_URL`：如采用自托管 Claude Code endpoint，可在此指定 API 基础地址
 
 也支持从主目录读取配置（用于避免把密钥写进仓库）：
@@ -191,10 +191,10 @@ Vertex AI（可选）：
 - 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。
 - 你无需手写 `<<<agent.*>>>` 指令块；直接用自然语言描述需求即可。若想强制让 Codex 调用某个协作代理，可在需求里明确写“请让 Claude/Gemini 帮我做 X，并给出补丁/差异说明”。
 - 当前主代理为任意 Agent 时，只要输出包含 `<<<agent.<id>>>` 指令块，就会触发协作调度；系统会执行并把协作结果回注给主代理继续整合。
-- （可选）启用工具开关后，Gemini 会通过 Function Calling 自动调用工具；`<<<tool.*>>>` 文本工具块仅作为兼容协议保留（主要用于自定义/调试代理）。工具输出会自动回注给当前主代理继续，多轮直到无新工具块或达到上限：
-  - `ENABLE_AGENT_EXEC_TOOL=1`：允许 `<<<tool.exec ...>>>` 执行本机命令（可选用 `AGENT_EXEC_TOOL_ALLOWLIST` 限制命令；设置为 `*` 表示不限制）
-  - `ENABLE_AGENT_FILE_TOOLS=1`：允许 `<<<tool.read ...>>>` / `<<<tool.write ...>>>` 读写文件（受 `ALLOWED_DIRS` 目录白名单限制）
-  - `ENABLE_AGENT_APPLY_PATCH=1`：允许 `<<<tool.apply_patch ...>>>` 应用 unified diff（需要 `git`；受 `ALLOWED_DIRS` 限制）
+- 工具默认开启：Gemini 会通过 Function Calling 自动调用工具；`<<<tool.*>>>` 文本工具块主要用于自定义/调试代理。工具输出会自动回注给当前主代理继续，多轮直到无新工具块或达到上限；如需禁用可设置：
+  - `ENABLE_AGENT_EXEC_TOOL=0`：禁用 `<<<tool.exec ...>>>` 执行本机命令（可选用 `AGENT_EXEC_TOOL_ALLOWLIST` 限制命令；`*` 表示不限制）
+  - `ENABLE_AGENT_FILE_TOOLS=0`：禁用 `<<<tool.read ...>>>` / `<<<tool.write ...>>>` 读写文件（受 `ALLOWED_DIRS` 目录白名单限制）
+  - `ENABLE_AGENT_APPLY_PATCH=0`：禁用 `<<<tool.apply_patch ...>>>` 应用 unified diff（需要 `git`；受 `ALLOWED_DIRS` 限制）
   - `ADS_AGENT_MAX_TOOL_ROUNDS=0`：工具闭环的最大回合数（0=不限制）
   ```
   <<<tool.exec
