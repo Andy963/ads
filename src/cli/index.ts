@@ -1237,53 +1237,8 @@ async function main(): Promise<void> {
   let processingInputs = false;
   let interruptInFlight = false;
   let skipPromptOnce = false;
-  const DRAFT_PROMPT = "… ";
-  let draftActive = false;
-  let draftBuffer = "";
-
-  const showDraftHint = (reason?: string) => {
-    const prefix = "📝 已进入多行草稿模式";
-    const detail = reason ? `（${reason}）` : "";
-    process.stdout.write(`${prefix}${detail}：继续输入；空行或 /send 发送；/cancel 取消。\n`);
-  };
-
-  const beginDraft = (reason?: string) => {
-    if (draftActive) {
-      return;
-    }
-    draftActive = true;
-    rl.setPrompt(DRAFT_PROMPT);
-    showDraftHint(reason);
-  };
-
-  const appendDraft = (text: string) => {
-    const normalized = text.replace(/\r\n/g, "\n");
-    if (!draftBuffer) {
-      draftBuffer = normalized;
-      return;
-    }
-    const separator = draftBuffer.endsWith("\n") || normalized.startsWith("\n") ? "" : "\n";
-    draftBuffer = `${draftBuffer}${separator}${normalized}`;
-  };
-
-  const cancelDraft = () => {
-    if (!draftActive) {
-      return;
-    }
-    draftActive = false;
-    draftBuffer = "";
-    rl.setPrompt(PROMPT);
-    process.stdout.write("🗑️ 已取消草稿\n");
-    rl.prompt();
-  };
-
-  const flushDraft = () => {
-    const payload = draftBuffer;
-    draftActive = false;
-    draftBuffer = "";
-    rl.setPrompt(PROMPT);
-    enqueueUserInput(payload);
-  };
+  const pendingMultilineLines: string[] = [];
+  let pasteLinePrefix = "";
 
   const clearBufferedInput = () => {
     pendingInputs.length = 0;
@@ -1292,6 +1247,8 @@ async function main(): Promise<void> {
       clearTimeout(lineFlushTimer);
       lineFlushTimer = null;
     }
+    pendingMultilineLines.length = 0;
+    pasteLinePrefix = "";
   };
 
   const handleUserInput = async (input: string, signal: AbortSignal) => {
@@ -1375,16 +1332,13 @@ async function main(): Promise<void> {
     if (lineBuffer.length === 0) {
       return;
     }
-    const combined = lineBuffer.join("\n");
-    const bufferedCount = lineBuffer.length;
+    const bufferedLines = lineBuffer;
     lineBuffer = [];
-    if (bufferedCount > 1) {
-      beginDraft("检测到多行粘贴");
-      appendDraft(combined);
-      rl.prompt();
+    if (bufferedLines.length > 1) {
+      pendingMultilineLines.push(...bufferedLines);
       return;
     }
-    enqueueUserInput(combined);
+    enqueueUserInput(bufferedLines[0] ?? "");
   };
 
   const enqueueLine = (line: string) => {
@@ -1458,6 +1412,11 @@ async function main(): Promise<void> {
         }
         pasteActive = true;
         suppressLineFromPaste = true;
+        const rlState = rl as unknown as { line?: unknown; cursor?: unknown };
+        const currentLine = typeof rlState.line === "string" ? String(rlState.line) : "";
+        const cursor =
+          typeof rlState.cursor === "number" && Number.isFinite(rlState.cursor) ? rlState.cursor : currentLine.length;
+        pasteLinePrefix = currentLine.slice(0, Math.max(0, Math.min(cursor, currentLine.length)));
         pasteBuffer = pendingPasteStart.slice(startIdx + START_PASTE.length);
         pendingPasteStart = "";
       } else {
@@ -1473,17 +1432,20 @@ async function main(): Promise<void> {
       const remaining = pasteBuffer.slice(endIdx + END_PASTE.length);
       pasteActive = false;
       pasteBuffer = "";
-      setImmediate(() => {
+      queueMicrotask(() => {
         suppressLineFromPaste = false;
       });
       if (block.includes("\n") || block.includes("\r")) {
-        beginDraft("检测到多行粘贴");
-        appendDraft(block);
-        rl.prompt();
-      } else if (block) {
-        // 单行粘贴：仅插入到当前输入，不自动提交
-        rl.write(block);
+        const normalized = block.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        const lines = normalized.split("\n");
+        if (lines.length > 1) {
+          const firstLine = `${pasteLinePrefix}${lines[0] ?? ""}`;
+          pendingMultilineLines.push(firstLine, ...lines.slice(1, -1));
+        } else if (lines[0]) {
+          pendingMultilineLines.push(`${pasteLinePrefix}${lines[0]}`);
+        }
       }
+      pasteLinePrefix = "";
       // If user keeps typing right after paste end, push the rest back into readline
       if (remaining) {
         rl.write(remaining);
@@ -1495,26 +1457,10 @@ async function main(): Promise<void> {
     if (suppressLineFromPaste) {
       return;
     }
-    if (draftActive) {
-      const trimmed = line.trim();
-      if (trimmed === "/send") {
-        flushDraft();
-        return;
-      }
-      if (trimmed === "/cancel") {
-        cancelDraft();
-        return;
-      }
-      if (!trimmed) {
-        if (draftBuffer.trim()) {
-          flushDraft();
-        } else {
-          cancelDraft();
-        }
-        return;
-      }
-      appendDraft(line);
-      rl.prompt();
+    if (pendingMultilineLines.length > 0) {
+      const payload = [...pendingMultilineLines, line].join("\n");
+      pendingMultilineLines.length = 0;
+      enqueueUserInput(payload);
       return;
     }
     enqueueLine(line);
