@@ -29,7 +29,7 @@ import { HistoryStore } from '../../utils/historyStore.js';
 import { truncateForLog } from '../../utils/text.js';
 import { createLogger } from '../../utils/logger.js';
 import { stripLeadingTranslation } from '../../utils/assistantText.js';
-import { formatExploredTree } from '../../utils/activityTracker.js';
+import { formatExploredEntry, type ExploredEntry } from '../../utils/activityTracker.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -226,9 +226,6 @@ export async function handleCodexMessage(
   const signal = interruptManager.registerRequest(userId).signal;
 
   const STATUS_MESSAGE_LIMIT = 3600; // Telegram 限 4096，预留安全空间
-  const COMMAND_TEXT_MAX_LINES = 5;
-  const COMMAND_OUTPUT_MAX_LINES = 10;
-  const COMMAND_OUTPUT_MAX_CHARS = 1200;
   const sentMsg = await ctx.reply(`💭 [${activeAgentLabel}] 开始处理...`, {
     disable_notification: silentNotifications,
   });
@@ -241,11 +238,10 @@ export async function handleCodexMessage(
   let planMessageId: number | null = null;
   let lastPlanContent: string | null = null;
   let lastTodoSignature: string | null = null;
-  let commandMessageId: number | null = null;
-  let commandMessageText: string | null = null;
-  let commandMessageUseMarkdown = true;
-  let commandMessageRateLimitUntil = 0;
   let lastStatusEntry: string | null = null;
+  let exploredMessageId: number | null = null;
+  let exploredMessageText: string | null = null;
+  const exploredEntries: ExploredEntry[] = [];
 
   const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
     analysis: '💭',
@@ -279,16 +275,6 @@ export async function handleCodexMessage(
   function formatCodeBlock(text: string): string {
     const safe = text.replace(/```/g, '`​``');
     return ['```', safe || '\u200b', '```'].join('\n');
-  }
-
-  function truncateCommandText(text: string, maxLines = 3): { text: string; truncated: boolean } {
-    const lines = text.split(/\r?\n/);
-    if (lines.length <= maxLines) {
-      return { text, truncated: false };
-    }
-    const kept = lines.slice(0, maxLines);
-    kept[kept.length - 1] = `${kept[kept.length - 1]} …`;
-    return { text: kept.join('\n'), truncated: true };
   }
 
   interface StatusEntry {
@@ -598,84 +584,7 @@ export async function handleCodexMessage(
     await upsertPlanMessage(message);
   }
 
-  async function maybeUpdateCommandLog(event: AgentEvent): Promise<void> {
-    const commandItem = getCommandExecutionItem(event.raw);
-    if (!commandItem) {
-      return;
-    }
-    const message = buildCommandLogMessage(commandItem, event.detail);
-    if (!message) {
-      return;
-    }
-    await upsertCommandLogMessage(message);
-  }
-
-  function buildCommandLogMessage(rawItem: CommandExecutionItem, fallbackDetail?: string): string | null {
-    const commandLine =
-      (typeof rawItem.command === 'string' && rawItem.command.trim())
-        ? rawItem.command.trim()
-        : (fallbackDetail?.trim() ?? '');
-    if (!commandLine) {
-      return null;
-    }
-    const { text: truncatedCommand } = truncateCommandText(commandLine, COMMAND_TEXT_MAX_LINES);
-    const statusLabel = buildCommandStatusLabel(rawItem);
-    const sections: string[] = [
-      `⚙️ 命令:\n${formatCodeBlock(truncatedCommand)}`,
-    ];
-    const outputSnippet = formatCommandOutput(rawItem.aggregated_output);
-    if (outputSnippet) {
-      sections.push(`输出:\n${formatCodeBlock(outputSnippet)}`);
-    }
-    sections.push(`状态：${statusLabel}`);
-    return sections.join('\n\n');
-  }
-
-  function buildCommandStatusLabel(rawItem: CommandExecutionItem): string {
-    const exitText = rawItem.exit_code === undefined ? '' : ` (exit ${rawItem.exit_code})`;
-    if (rawItem.status === 'failed') {
-      return `❌ 失败${exitText}`;
-    }
-    if (rawItem.status === 'completed') {
-      return `✅ 已完成${exitText}`;
-    }
-    return `⏳ 执行中${exitText}`;
-  }
-
-  function formatCommandOutput(
-    output?: string | null,
-  ): string | null {
-    if (!output) {
-      return null;
-    }
-    const trimmed = output.trim();
-    if (!trimmed) {
-      return null;
-    }
-    const lines = trimmed.split(/\r?\n/);
-    const keptLines = lines.slice(0, COMMAND_OUTPUT_MAX_LINES);
-    let snippet = keptLines.join('\n');
-    let truncated = lines.length > COMMAND_OUTPUT_MAX_LINES;
-    if (snippet.length > COMMAND_OUTPUT_MAX_CHARS) {
-      snippet = snippet.slice(0, COMMAND_OUTPUT_MAX_CHARS);
-      truncated = true;
-    }
-    if (truncated) {
-      snippet = `${snippet.trimEnd()}\n…`;
-    }
-    return snippet;
-  }
-
-  async function upsertCommandLogMessage(text: string): Promise<void> {
-    if (commandMessageId) {
-      if (commandMessageText === text) {
-        return;
-      }
-      await editCommandLogMessage(text);
-    } else {
-      await sendCommandLogMessage(text);
-    }
-  }
+  // Command log functions removed - replaced by real-time explored display
 
   function formatAttachmentList(paths: string[]): string {
     if (!paths.length) {
@@ -705,100 +614,63 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
   return lines.join('\n');
 }
 
-  async function sendCommandLogMessage(text: string): Promise<void> {
-    const now = Date.now();
-    if (now < commandMessageRateLimitUntil) {
-      await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
-    }
+  async function updateExploredMessage(): Promise<void> {
+    if (exploredEntries.length === 0) return;
+    
+    const lines = ['Explored'];
+    exploredEntries.forEach((entry, idx) => {
+      lines.push(formatExploredEntry(entry, idx === exploredEntries.length - 1));
+    });
+    const text = lines.join('\n');
+    
+    if (text === exploredMessageText) return;
+    
     try {
-      const content = commandMessageUseMarkdown ? escapeTelegramMarkdownV2(text) : text;
-      const options = commandMessageUseMarkdown
-        ? { disable_notification: silentNotifications, parse_mode: 'MarkdownV2' as const }
-        : {
-            disable_notification: silentNotifications,
-            link_preview_options: { is_disabled: true as const },
-          };
-      const newMsg = await ctx.reply(content, options);
-      commandMessageId = newMsg.message_id;
-      commandMessageText = content;
-      commandMessageRateLimitUntil = 0;
-    } catch (error) {
-      if (isParseEntityError(error)) {
-        logWarning('[Telegram] Command log markdown parse failed, sending plain text', error);
-        commandMessageUseMarkdown = false;
-        const newMsg = await ctx.reply(text, {
-          disable_notification: silentNotifications,
-          link_preview_options: { is_disabled: true as const },
-        });
-        commandMessageId = newMsg.message_id;
-        commandMessageText = text;
-        commandMessageRateLimitUntil = 0;
-        return;
-      }
-      if (error instanceof GrammyError && error.error_code === 429) {
-        const retryAfter = error.parameters?.retry_after ?? 1;
-        commandMessageRateLimitUntil = Date.now() + retryAfter * 1000;
-        logWarning(`[Telegram] Command log rate limited, retry after ${retryAfter}s`);
-        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
-        await sendCommandLogMessage(text);
+      if (exploredMessageId) {
+        const escaped = escapeTelegramMarkdownV2('```text\n' + text + '\n```');
+        await ctx.api.editMessageText(chatId, exploredMessageId, escaped, { parse_mode: 'MarkdownV2' });
+        exploredMessageText = text;
       } else {
-        logWarning('[CodexAdapter] Failed to send command log message', error);
+        const escaped = escapeTelegramMarkdownV2('```text\n' + text + '\n```');
+        const msg = await ctx.reply(escaped, { parse_mode: 'MarkdownV2', disable_notification: silentNotifications });
+        exploredMessageId = msg.message_id;
+        exploredMessageText = text;
       }
-    }
-  }
-
-  async function editCommandLogMessage(text: string): Promise<void> {
-    if (!commandMessageId) {
-      await sendCommandLogMessage(text);
-      return;
-    }
-    if (commandMessageText === text) {
-      return;
-    }
-    const now = Date.now();
-    if (now < commandMessageRateLimitUntil) {
-      await new Promise((resolve) => setTimeout(resolve, commandMessageRateLimitUntil - now));
-    }
-    try {
-      const content = commandMessageUseMarkdown ? escapeTelegramMarkdownV2(text) : text;
-      const options = commandMessageUseMarkdown
-        ? { parse_mode: 'MarkdownV2' as const }
-        : { link_preview_options: { is_disabled: true as const } };
-      await ctx.api.editMessageText(chatId, commandMessageId, content, options);
-      commandMessageText = content;
-      commandMessageRateLimitUntil = 0;
     } catch (error) {
-      if (isParseEntityError(error)) {
-        logWarning('[Telegram] Command log markdown parse failed, falling back to plain text', error);
-        commandMessageUseMarkdown = false;
-        await ctx.api.editMessageText(chatId, commandMessageId, text, {
-          link_preview_options: { is_disabled: true as const },
-        });
-        commandMessageText = text;
-        return;
-      }
       if (error instanceof GrammyError) {
         if (error.error_code === 400 && error.description?.includes('message is not modified')) {
           return;
         }
-        if (error.error_code === 400 && error.description?.includes('message to edit not found')) {
-          commandMessageId = null;
-          commandMessageText = null;
-          await sendCommandLogMessage(text);
-          return;
-        }
         if (error.error_code === 429) {
-          const retryAfter = error.parameters?.retry_after ?? 1;
-          commandMessageRateLimitUntil = Date.now() + retryAfter * 1000;
-          logWarning(`[Telegram] Command log edit rate limited, retry after ${retryAfter}s`);
-          await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
-          await editCommandLogMessage(text);
+          // Rate limited, skip this update
           return;
         }
       }
-      logWarning('[CodexAdapter] Failed to edit command log message', error);
+      // Fallback to plain text if markdown fails
+      try {
+        if (exploredMessageId) {
+          await ctx.api.editMessageText(chatId, exploredMessageId, text);
+          exploredMessageText = text;
+        } else {
+          const msg = await ctx.reply(text, { disable_notification: silentNotifications });
+          exploredMessageId = msg.message_id;
+          exploredMessageText = text;
+        }
+      } catch {
+        // ignore fallback errors
+      }
     }
   }
+
+  function handleExploredEntry(entry: ExploredEntry): void {
+    exploredEntries.push(entry);
+    eventQueue = eventQueue
+      .then(() => updateExploredMessage())
+      .catch((error) => {
+        logWarning('[CodexAdapter] Explored update error', error);
+      });
+  }
+
   function queueEvent(event: AgentEvent): void {
     eventQueue = eventQueue
       .then(async () => {
@@ -807,7 +679,8 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         }
 
         await maybeSendTodoListUpdate(event);
-        await maybeUpdateCommandLog(event);
+        // Command log is now replaced by real-time explored display
+        // await maybeUpdateCommandLog(event);
         const entry = formatStatusEntry(event);
         if (!entry) {
           return;
@@ -957,6 +830,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     const result = await runCollaborativeTurn(session, input, {
       streaming: true,
       signal,
+      onExploredEntry: handleExploredEntry,
       hooks: {
         onSupervisorRound: (round, directives) =>
           logger?.logOutput(`[Auto] 协作轮次 ${round}（指令块 ${directives}）`),
@@ -989,7 +863,6 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         ? result.response
         : String(result.response ?? '');
     const cleanedOutput = stripLeadingTranslation(baseOutput);
-    const explored = result.explored;
 
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
     if (!logger) {
@@ -1057,23 +930,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       sentChunks.add(chunkText);
     }
 
-    if (explored?.length) {
-      const exploredText = formatExploredTree(explored);
-      if (exploredText) {
-        const exploredMarkdown = `\`\`\`text\n${exploredText}\n\`\`\``;
-        const escapedV2 = escapeTelegramMarkdownV2(exploredMarkdown);
-        await ctx.reply(escapedV2, {
-          parse_mode: 'MarkdownV2',
-          disable_notification: silentNotifications,
-        }).catch(async (error) => {
-          recordFallback('explored_markdownv2_failed', exploredMarkdown, escapedV2);
-          logWarning('[Telegram] Failed to send explored MarkdownV2; falling back to plain text', error);
-          await ctx.reply(exploredText, { disable_notification: silentNotifications }).catch((error) => {
-            logWarning('[Telegram] Failed to send explored fallback', error);
-          });
-        });
-      }
-    }
+    // Explored is now displayed in real-time via handleExploredEntry
     stopTyping();
   } catch (error) {
     stopTyping();

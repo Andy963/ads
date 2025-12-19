@@ -1371,6 +1371,8 @@ export function renderLandingPageScript(idleMinutes: number): string {
             handleResult(msg, conn);
           } else if (msg.type === 'delta') {
             handleDelta(msg.delta || '');
+          } else if (msg.type === 'explored') {
+            handleExploredEntry(msg);
           } else if (msg.type === 'command') {
             const cmd = msg.command || {};
             renderCommandView({
@@ -1642,6 +1644,49 @@ export function renderLandingPageScript(idleMinutes: number): string {
       appendMessage('ai', output || '(无输出)', { markdown: true });
     }
 
+    let exploredContainer = null;
+    let exploredEntries = [];
+
+    function handleExploredEntry(msg) {
+      const entry = msg.entry;
+      if (!entry || (!entry.category && !entry.summary)) return;
+      
+      exploredEntries.push(entry);
+      
+      if (msg.header || !exploredContainer) {
+        // Create new explored container
+        exploredContainer = document.createElement('div');
+        exploredContainer.className = 'explored-container';
+        const header = document.createElement('div');
+        header.className = 'explored-header';
+        header.textContent = 'Explored';
+        exploredContainer.appendChild(header);
+        messagesContainer.appendChild(exploredContainer);
+      }
+      
+      const line = document.createElement('div');
+      line.className = 'explored-entry';
+      const prefix = document.createElement('span');
+      prefix.className = 'explored-prefix';
+      prefix.textContent = '  ├ ';
+      const category = document.createElement('span');
+      category.className = 'explored-category';
+      category.textContent = entry.category || '';
+      const summary = document.createElement('span');
+      summary.className = 'explored-summary';
+      summary.textContent = ' ' + (entry.summary || '');
+      line.appendChild(prefix);
+      line.appendChild(category);
+      line.appendChild(summary);
+      exploredContainer.appendChild(line);
+      autoScrollIfNeeded();
+    }
+
+    function clearExploredState() {
+      exploredContainer = null;
+      exploredEntries = [];
+    }
+
     function renderExplored(entries) {
       if (!Array.isArray(entries) || entries.length === 0) return '';
       const filtered = entries.filter(entry => entry && (entry.category || entry.summary));
@@ -1653,8 +1698,8 @@ export function renderLandingPageScript(idleMinutes: number): string {
         const prefix = idx === filtered.length - 1 ? '  └ ' : '  ├ ';
         lines.push(prefix + category + (summary ? ' ' + summary : ''));
       });
-      const text = lines.join('\\n');
-      return '<pre class=\"code-block\"><code>' + escapeHtml(text) + '</code></pre>';
+      const text = lines.join('\n');
+      return '<pre class="code-block"><code>' + escapeHtml(text) + '</code></pre>';
     }
 
     function handleResult(msg, conn) {
@@ -1668,10 +1713,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
         return;
       }
       finalizeStream(msg.output || '');
-      const exploredHtml = renderExplored(msg.explored);
-      if (exploredHtml) {
-        appendMessage('status', exploredHtml, { html: true, status: true, skipCache: true });
-      }
+      clearExploredState();
       if (!planTouched) {
         renderPlanStatus('本轮未生成计划');
       }

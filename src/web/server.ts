@@ -28,6 +28,7 @@ import { parseSlashCommand } from "../codexConfig.js";
 import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { runCollaborativeTurn } from "../agents/hub.js";
+import type { ExploredEntry } from "../utils/activityTracker.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
 import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
@@ -454,10 +455,25 @@ async function start(): Promise<void> {
             }
           });
 
+          let exploredHeaderSent = false;
+          const handleExploredEntry = (entry: ExploredEntry) => {
+            try {
+              ws.send(JSON.stringify({
+                type: "explored",
+                header: !exploredHeaderSent,
+                entry: { category: entry.category, summary: entry.summary },
+              }));
+              exploredHeaderSent = true;
+            } catch {
+              // ignore send errors
+            }
+          };
+
           try {
             const result = await runCollaborativeTurn(orchestrator, inputToSend, {
               streaming: true,
               signal: controller.signal,
+              onExploredEntry: handleExploredEntry,
               hooks: {
                 onSupervisorRound: (round, directives) =>
                   logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
@@ -479,7 +495,7 @@ async function start(): Promise<void> {
             const rawResponse =
               typeof result.response === "string" ? result.response : String(result.response ?? "");
             const cleanedResponse = stripLeadingTranslation(rawResponse);
-            ws.send(JSON.stringify({ type: "result", ok: true, output: cleanedResponse, explored: result.explored }));
+            ws.send(JSON.stringify({ type: "result", ok: true, output: cleanedResponse }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
               sessionLogger.logOutput(cleanedResponse);

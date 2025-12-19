@@ -455,9 +455,16 @@ function compactExploredEntries(entries: ExploredEntry[], dedupe: ExploredConfig
   return out;
 }
 
+export type ExploredEntryCallback = (entry: ExploredEntry) => void;
+
 export class ActivityTracker {
   private readonly entries: ExploredEntry[] = [];
   private readonly seen = new Set<string>();
+  private readonly onEntryCallback?: ExploredEntryCallback;
+
+  constructor(onEntry?: ExploredEntryCallback) {
+    this.onEntryCallback = onEntry;
+  }
 
   ingestThreadEvent(event: ThreadEvent): void {
     if (!event || typeof event !== "object") {
@@ -679,12 +686,23 @@ export class ActivityTracker {
     if (!summary) {
       return;
     }
-    this.entries.push({
+    const full: ExploredEntry = {
       ...entry,
       summary,
       ts: Date.now(),
-    });
+    };
+    this.entries.push(full);
+    try {
+      this.onEntryCallback?.(full);
+    } catch {
+      // ignore callback errors
+    }
   }
+}
+
+export function formatExploredEntry(entry: ExploredEntry, isLast = false): string {
+  const prefix = isLast ? "  └ " : "  ├ ";
+  return `${prefix}${entry.category} ${entry.summary}`;
 }
 
 export function formatExploredTree(entries: ExploredEntry[]): string {
@@ -697,8 +715,7 @@ export function formatExploredTree(entries: ExploredEntry[]): string {
   }
   const lines: string[] = ["Explored"];
   filtered.forEach((entry, idx) => {
-    const prefix = idx === filtered.length - 1 ? "  └ " : "  ├ ";
-    lines.push(`${prefix}${entry.category} ${entry.summary}`);
+    lines.push(formatExploredEntry(entry, idx === filtered.length - 1));
   });
   return lines.join("\n");
 }

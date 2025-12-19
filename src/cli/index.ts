@@ -47,7 +47,7 @@ import { setStatusLineManager, withStatusLineSuppressed } from "../utils/statusL
 import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
 import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
-import { formatExploredTree } from "../utils/activityTracker.js";
+import { formatExploredEntry, type ExploredEntry } from "../utils/activityTracker.js";
 
 interface CommandResult {
   output: string;
@@ -431,9 +431,20 @@ async function handleAgentInteraction(
     }
     promptSections.push(`用户输入: ${trimmed}`);
     const basePrompt = promptSections.join("\n\n");
+    let exploredHeaderPrinted = false;
+    const handleExploredEntry = (entry: ExploredEntry) => {
+      withStatusLineSuppressed(() => {
+        if (!exploredHeaderPrinted) {
+          process.stdout.write("Explored\n");
+          exploredHeaderPrinted = true;
+        }
+        process.stdout.write(`${formatExploredEntry(entry)}\n`);
+      });
+    };
     try {
       const result = await runCollaborativeTurn(orchestrator, basePrompt, {
         signal: options?.signal,
+        onExploredEntry: handleExploredEntry,
         hooks: {
           onSupervisorRound: (round, directives) =>
             logger.logOutput(`[Auto] 协作轮次 ${round}（指令块 ${directives}）`),
@@ -458,14 +469,8 @@ async function handleAgentInteraction(
         },
       });
       renderer.finish();
-      if (result.explored?.length) {
-        const exploredText = formatExploredTree(result.explored);
-        if (exploredText) {
-          withStatusLineSuppressed(() => {
-            process.stdout.write(`${exploredText}\n\n`);
-          });
-          logger.logOutput(exploredText);
-        }
+      if (exploredHeaderPrinted) {
+        process.stdout.write("\n");
       }
       if (!streamingConfig.enabled && SHOW_ELAPSED_TIME) {
         const elapsed = (Date.now() - startTime) / 1000;

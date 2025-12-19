@@ -13,7 +13,7 @@ import {
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
-import { ActivityTracker, resolveExploredConfig, type ExploredEntry } from "../utils/activityTracker.js";
+import { ActivityTracker, resolveExploredConfig, type ExploredEntry, type ExploredEntryCallback } from "../utils/activityTracker.js";
 
 interface DelegationDirective {
   raw: string;
@@ -41,6 +41,7 @@ export interface CollaborativeTurnOptions extends AgentSendOptions {
   toolContext?: ToolExecutionContext;
   toolHooks?: ToolHooks;
   hooks?: CollaborationHooks;
+  onExploredEntry?: ExploredEntryCallback;
 }
 
 export interface CollaborativeTurnResult extends AgentRunResult {
@@ -379,7 +380,7 @@ export async function runCollaborativeTurn(
   options: CollaborativeTurnOptions = {},
 ): Promise<CollaborativeTurnResult> {
   const exploredConfig = resolveExploredConfig();
-  const exploredTracker = exploredConfig.enabled ? new ActivityTracker() : null;
+  const exploredTracker = exploredConfig.enabled ? new ActivityTracker(options.onExploredEntry) : null;
   const toolHooks = (() => {
     if (!exploredTracker) {
       return options.toolHooks;

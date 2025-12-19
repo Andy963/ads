@@ -125,6 +125,12 @@ export const LANDING_PAGE_CSS = `    :root {
     .overlay input { flex: 1; min-width: 0; padding: 10px 12px; font-size: 16px; border: 1px solid #d6d9e0; border-radius: 8px; }
     .overlay button { padding: 10px 14px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 16px; white-space: nowrap; }
     body.locked header, body.locked main { filter: blur(18px); pointer-events: none; user-select: none; }
+    .explored-container { background: var(--status); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-family: 'SF Mono', Monaco, 'Cascadia Code', Consolas, monospace; font-size: 12px; line-height: 1.5; }
+    .explored-header { font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+    .explored-entry { display: flex; color: var(--text); }
+    .explored-prefix { color: var(--muted); white-space: pre; }
+    .explored-category { color: var(--accent); font-weight: 500; }
+    .explored-summary { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     @media (max-width: 640px) {
       main { padding: 8px; gap: 8px; flex: 1; min-height: 0; overflow: hidden; }
       #sidebar { display: none; }
