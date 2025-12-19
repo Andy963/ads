@@ -5,6 +5,7 @@ import {
   executeToolBlocks,
   injectToolGuide,
   stripToolBlocks,
+  type ToolCallSummary,
   type ToolExecutionContext,
   type ToolExecutionResult,
   type ToolHooks,
@@ -12,6 +13,7 @@ import {
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
+import { ActivityTracker, resolveExploredConfig, type ExploredEntry } from "../utils/activityTracker.js";
 
 interface DelegationDirective {
   raw: string;
@@ -44,6 +46,7 @@ export interface CollaborativeTurnOptions extends AgentSendOptions {
 export interface CollaborativeTurnResult extends AgentRunResult {
   delegations: DelegationSummary[];
   supervisorRounds: number;
+  explored?: ExploredEntry[];
 }
 
 const logger = createLogger("AgentHub");
@@ -375,6 +378,37 @@ export async function runCollaborativeTurn(
   input: Input,
   options: CollaborativeTurnOptions = {},
 ): Promise<CollaborativeTurnResult> {
+  const exploredConfig = resolveExploredConfig();
+  const exploredTracker = exploredConfig.enabled ? new ActivityTracker() : null;
+  const toolHooks = (() => {
+    if (!exploredTracker) {
+      return options.toolHooks;
+    }
+    return {
+      onInvoke: async (tool: string, payload: string) => {
+        try {
+          exploredTracker.ingestToolInvoke(tool, payload);
+        } catch {
+          // ignore
+        }
+        await options.toolHooks?.onInvoke?.(tool, payload);
+      },
+      onResult: async (summary: ToolCallSummary) => {
+        await options.toolHooks?.onResult?.(summary);
+      },
+    };
+  })();
+
+  const unsubscribeExplored = exploredTracker
+    ? orchestrator.onEvent((event) => {
+        try {
+          exploredTracker.ingestThreadEvent(event.raw);
+        } catch {
+          // ignore
+        }
+      })
+    : () => undefined;
+
   const maxSupervisorRounds = options.maxSupervisorRounds ?? 2;
   const maxDelegations = options.maxDelegations ?? 6;
   const maxToolRounds = options.maxToolRounds ?? resolveDefaultMaxToolRounds();
@@ -389,49 +423,56 @@ export async function runCollaborativeTurn(
   const toolContext: ToolExecutionContext = options.toolContext ?? { cwd: process.cwd() };
 
   const prompt = applyGuides(input, orchestrator, activeAgentId);
-  let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
-    maxToolRounds,
-    toolContext,
-    toolHooks: options.toolHooks,
-  });
-
-  let rounds = 0;
-  const allDelegations: DelegationSummary[] = [];
-
-  while (rounds < maxSupervisorRounds) {
-    throwIfAborted(options.signal);
-    const directives = extractDelegationDirectives(result.response, activeAgentId);
-    if (directives.length === 0) {
-      break;
-    }
-
-    rounds += 1;
-    await options.hooks?.onSupervisorRound?.(rounds, directives.length);
-    const delegations = await runDelegationQueue(orchestrator, result.response, {
-      maxDelegations,
-      hooks: options.hooks,
-      supervisorAgentId: activeAgentId,
+  try {
+    let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
       maxToolRounds,
       toolContext,
-      toolHooks: options.toolHooks,
-      signal: options.signal,
+      toolHooks,
     });
-    allDelegations.push(...delegations);
 
-    const supervisorPrompt = buildSupervisorPrompt(delegations, rounds, supervisorName);
-    if (!supervisorPrompt.trim()) {
-      break;
+    let rounds = 0;
+    const allDelegations: DelegationSummary[] = [];
+
+    while (rounds < maxSupervisorRounds) {
+      throwIfAborted(options.signal);
+      const directives = extractDelegationDirectives(result.response, activeAgentId);
+      if (directives.length === 0) {
+        break;
+      }
+
+      rounds += 1;
+      await options.hooks?.onSupervisorRound?.(rounds, directives.length);
+      const delegations = await runDelegationQueue(orchestrator, result.response, {
+        maxDelegations,
+        hooks: options.hooks,
+        supervisorAgentId: activeAgentId,
+        maxToolRounds,
+        toolContext,
+        toolHooks,
+        signal: options.signal,
+      });
+      allDelegations.push(...delegations);
+
+      const supervisorPrompt = buildSupervisorPrompt(delegations, rounds, supervisorName);
+      if (!supervisorPrompt.trim()) {
+        break;
+      }
+
+      result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
+        maxToolRounds,
+        toolContext,
+        toolHooks,
+      });
     }
 
-    result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
-      maxToolRounds,
-      toolContext,
-      toolHooks: options.toolHooks,
-    });
+    const explored = exploredTracker
+      ? exploredTracker.compact({ maxItems: exploredConfig.maxItems, dedupe: exploredConfig.dedupe })
+      : undefined;
+    const finalResponse = stripDelegationBlocks(result.response);
+    return { ...result, response: finalResponse, delegations: allDelegations, supervisorRounds: rounds, explored };
+  } finally {
+    unsubscribeExplored();
   }
-
-  const finalResponse = stripDelegationBlocks(result.response);
-  return { ...result, response: finalResponse, delegations: allDelegations, supervisorRounds: rounds };
 }
 
 export function isExecutorAgent(agentId: AgentIdentifier): boolean {

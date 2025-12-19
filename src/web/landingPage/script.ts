@@ -1642,6 +1642,21 @@ export function renderLandingPageScript(idleMinutes: number): string {
       appendMessage('ai', output || '(无输出)', { markdown: true });
     }
 
+    function renderExplored(entries) {
+      if (!Array.isArray(entries) || entries.length === 0) return '';
+      const filtered = entries.filter(entry => entry && (entry.category || entry.summary));
+      if (filtered.length === 0) return '';
+      const lines = ['Explored'];
+      filtered.forEach((entry, idx) => {
+        const category = entry.category || '';
+        const summary = entry.summary || '';
+        const prefix = idx === filtered.length - 1 ? '  └ ' : '  ├ ';
+        lines.push(prefix + category + (summary ? ' ' + summary : ''));
+      });
+      const text = lines.join('\\n');
+      return '<pre class=\"code-block\"><code>' + escapeHtml(text) + '</code></pre>';
+    }
+
     function handleResult(msg, conn) {
       const queued = conn?.pendingSends?.shift() || { type: 'prompt' };
       const kind = queued.type || queued;
@@ -1653,6 +1668,10 @@ export function renderLandingPageScript(idleMinutes: number): string {
         return;
       }
       finalizeStream(msg.output || '');
+      const exploredHtml = renderExplored(msg.explored);
+      if (exploredHtml) {
+        appendMessage('status', exploredHtml, { html: true, status: true, skipCache: true });
+      }
       if (!planTouched) {
         renderPlanStatus('本轮未生成计划');
       }

@@ -29,6 +29,7 @@ import { HistoryStore } from '../../utils/historyStore.js';
 import { truncateForLog } from '../../utils/text.js';
 import { createLogger } from '../../utils/logger.js';
 import { stripLeadingTranslation } from '../../utils/assistantText.js';
+import { formatExploredTree } from '../../utils/activityTracker.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -988,6 +989,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         ? result.response
         : String(result.response ?? '');
     const cleanedOutput = stripLeadingTranslation(baseOutput);
+    const explored = result.explored;
 
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
     if (!logger) {
@@ -1053,6 +1055,24 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         });
       });
       sentChunks.add(chunkText);
+    }
+
+    if (explored?.length) {
+      const exploredText = formatExploredTree(explored);
+      if (exploredText) {
+        const exploredMarkdown = `\`\`\`text\n${exploredText}\n\`\`\``;
+        const escapedV2 = escapeTelegramMarkdownV2(exploredMarkdown);
+        await ctx.reply(escapedV2, {
+          parse_mode: 'MarkdownV2',
+          disable_notification: silentNotifications,
+        }).catch(async (error) => {
+          recordFallback('explored_markdownv2_failed', exploredMarkdown, escapedV2);
+          logWarning('[Telegram] Failed to send explored MarkdownV2; falling back to plain text', error);
+          await ctx.reply(exploredText, { disable_notification: silentNotifications }).catch((error) => {
+            logWarning('[Telegram] Failed to send explored fallback', error);
+          });
+        });
+      }
     }
     stopTyping();
   } catch (error) {

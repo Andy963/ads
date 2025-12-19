@@ -43,10 +43,11 @@ import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams
 import { normalizeOutput, truncateForLog } from "../utils/text.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
-import { setStatusLineManager } from "../utils/statusLineManager.js";
+import { setStatusLineManager, withStatusLineSuppressed } from "../utils/statusLineManager.js";
 import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
 import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
+import { formatExploredTree } from "../utils/activityTracker.js";
 
 interface CommandResult {
   output: string;
@@ -457,6 +458,15 @@ async function handleAgentInteraction(
         },
       });
       renderer.finish();
+      if (result.explored?.length) {
+        const exploredText = formatExploredTree(result.explored);
+        if (exploredText) {
+          withStatusLineSuppressed(() => {
+            process.stdout.write(`${exploredText}\n\n`);
+          });
+          logger.logOutput(exploredText);
+        }
+      }
       if (!streamingConfig.enabled && SHOW_ELAPSED_TIME) {
         const elapsed = (Date.now() - startTime) / 1000;
         const summary = `[${renderer.getAgentLabel()}] 耗时 ${elapsed.toFixed(1)}s`;

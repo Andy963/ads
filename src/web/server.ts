@@ -479,7 +479,7 @@ async function start(): Promise<void> {
             const rawResponse =
               typeof result.response === "string" ? result.response : String(result.response ?? "");
             const cleanedResponse = stripLeadingTranslation(rawResponse);
-            ws.send(JSON.stringify({ type: "result", ok: true, output: cleanedResponse }));
+            ws.send(JSON.stringify({ type: "result", ok: true, output: cleanedResponse, explored: result.explored }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
               sessionLogger.logOutput(cleanedResponse);
