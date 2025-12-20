@@ -522,7 +522,7 @@ async function start(): Promise<void> {
             });
             const threadId = orchestrator.getThreadId();
             if (threadId) {
-              sessionManager.saveThreadId(userId, threadId);
+              sessionManager.saveThreadId(userId, threadId, orchestrator.getActiveAgentId());
             }
             sendWorkspaceState(ws, turnCwd);
           } catch (error) {

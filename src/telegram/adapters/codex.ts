@@ -216,7 +216,8 @@ export async function handleCodexMessage(
   const saveThreadIdIfNeeded = () => {
     const threadId = session.getThreadId();
     if (threadId) {
-      sessionManager.saveThreadId(userId, threadId);
+      const agentId = session.getActiveAgentId();
+      sessionManager.saveThreadId(userId, threadId, agentId);
     }
   };
 

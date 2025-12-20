@@ -347,12 +347,14 @@ async function main() {
     const userId = await requireUserId(ctx, '/resume');
     if (userId === null) return;
 
-    if (!sessionManager.hasSavedThread(userId)) {
+    const savedCodexThreadId = sessionManager.getSavedThreadId(userId, "codex");
+    const savedClaudeSessionId = sessionManager.getSavedThreadId(userId, "claude");
+    if (!savedCodexThreadId && !savedClaudeSessionId) {
       await ctx.reply('❌ 没有保存的对话可恢复');
       return;
     }
 
-    const threadId = sessionManager.getSavedThreadId(userId);
+    const threadId = savedCodexThreadId || savedClaudeSessionId;
     sessionManager.getOrCreate(userId, directoryManager.getUserCwd(userId), true);
     await ctx.reply(`✅ 已恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)`);
   });

@@ -26,8 +26,9 @@ interface ThreadRecord {
 }
 
 interface ThreadState {
-  threadId: string;
+  threadId?: string;
   cwd?: string;
+  agentThreads?: Record<string, string>;
 }
 
 const logger = createLogger('ThreadStorage');
@@ -208,13 +209,73 @@ export class ThreadStorage {
     }
   }
 
-  getThreadId(userId: number): string | undefined {
-    return this.getRecord(userId)?.threadId;
+  private parseThreadIdValue(raw: string): { codex?: string; agentThreads: Record<string, string> } {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return { agentThreads: {} };
+    }
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const agentThreads: Record<string, string> = {};
+          for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === "string" && value.trim()) {
+              agentThreads[key] = value.trim();
+            }
+          }
+          return { codex: agentThreads.codex, agentThreads };
+        }
+      } catch {
+        // fall back to legacy string format
+      }
+    }
+    return { codex: trimmed, agentThreads: { codex: trimmed } };
   }
 
-  setThreadId(userId: number, threadId: string): void {
+  private serializeThreadIdValue(state: ThreadState): string | null {
+    const agentThreads: Record<string, string> = { ...(state.agentThreads ?? {}) };
+    if (state.threadId) {
+      agentThreads.codex = String(state.threadId).trim();
+    }
+    for (const [key, value] of Object.entries(agentThreads)) {
+      if (!value || !value.trim()) {
+        delete agentThreads[key];
+      } else {
+        agentThreads[key] = value.trim();
+      }
+    }
+    const keys = Object.keys(agentThreads);
+    if (keys.length === 0) {
+      return null;
+    }
+    if (keys.length === 1 && keys[0] === "codex") {
+      return agentThreads.codex ?? null;
+    }
+    return JSON.stringify(agentThreads);
+  }
+
+  getThreadId(userId: number, agentId = "codex"): string | undefined {
+    const record = this.getRecord(userId);
+    if (!record) {
+      return undefined;
+    }
+    if (agentId === "codex") {
+      return record.threadId ?? record.agentThreads?.codex;
+    }
+    return record.agentThreads?.[agentId];
+  }
+
+  setThreadId(userId: number, threadId: string, agentId = "codex"): void {
     const existing = this.getRecord(userId);
-    this.setRecord(userId, { threadId, cwd: existing?.cwd });
+    const agentThreads = { ...(existing?.agentThreads ?? {}) };
+    const cleaned = String(threadId ?? "").trim();
+    if (!cleaned) {
+      return;
+    }
+    agentThreads[agentId] = cleaned;
+    const codexId = agentThreads.codex ?? (agentId === "codex" ? cleaned : existing?.threadId);
+    this.setRecord(userId, { threadId: codexId, cwd: existing?.cwd, agentThreads });
   }
 
   getRecord(userId: number): ThreadState | undefined {
@@ -226,8 +287,9 @@ export class ThreadStorage {
       if (!row || !row.threadId) {
         return undefined;
       }
+      const parsed = this.parseThreadIdValue(row.threadId);
       const cwd = row.cwd && typeof row.cwd === 'string' ? row.cwd : undefined;
-      return { threadId: row.threadId, cwd };
+      return { threadId: parsed.codex, cwd, agentThreads: parsed.agentThreads };
     } catch (error) {
       logger.warn(`[ThreadStorage] Failed to read thread record (ns=${this.namespace})`, error);
       return undefined;
@@ -236,7 +298,7 @@ export class ThreadStorage {
 
   setRecord(userId: number, state: ThreadState): void {
     const userHash = this.hashUserId(userId);
-    const threadId = String(state.threadId ?? '').trim();
+    const threadId = this.serializeThreadIdValue(state);
     if (!threadId) {
       return;
     }

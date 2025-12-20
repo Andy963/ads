@@ -60,7 +60,8 @@ export class SessionManager {
     }
 
     // 只有明确要求时才恢复 thread
-    const savedThreadId = resumeThread ? this.threadStorage.getThreadId(userId) : undefined;
+    const savedThreadId = resumeThread ? this.threadStorage.getThreadId(userId, "codex") : undefined;
+    const savedClaudeSessionId = resumeThread ? this.threadStorage.getThreadId(userId, "claude") : undefined;
     
     const userModel = this.userModels.get(userId) || this.defaultModel;
     const effectiveCwd = cwd || process.cwd();
@@ -93,7 +94,7 @@ export class SessionManager {
     ];
 
     if (this.claudeConfig.enabled) {
-      adapters.push(new ClaudeAgentAdapter({ config: this.claudeConfig }));
+      adapters.push(new ClaudeAgentAdapter({ config: this.claudeConfig, resumeSessionId: savedClaudeSessionId }));
     }
 
     if (this.geminiConfig.enabled) {
@@ -153,18 +154,29 @@ export class SessionManager {
     return record.logger;
   }
 
-  hasSavedThread(userId: number): boolean {
-    return !!this.threadStorage.getThreadId(userId);
+  hasSavedThread(userId: number, agentId = "codex"): boolean {
+    return !!this.threadStorage.getThreadId(userId, agentId);
   }
   
-  getSavedThreadId(userId: number): string | undefined {
-    return this.threadStorage.getThreadId(userId);
+  getSavedThreadId(userId: number, agentId = "codex"): string | undefined {
+    return this.threadStorage.getThreadId(userId, agentId);
   }
   
-  saveThreadId(userId: number, threadId: string): void {
+  saveThreadId(userId: number, threadId: string, agentId = "codex"): void {
     const record = this.sessions.get(userId);
-    const cwd = record?.cwd;
-    this.threadStorage.setRecord(userId, { threadId, cwd });
+    if (record?.cwd) {
+      const existing = this.threadStorage.getRecord(userId);
+      this.threadStorage.setRecord(userId, {
+        threadId: existing?.threadId,
+        cwd: record.cwd,
+        agentThreads: {
+          ...(existing?.agentThreads ?? {}),
+          [agentId]: threadId,
+        },
+      });
+      return;
+    }
+    this.threadStorage.setThreadId(userId, threadId, agentId);
   }
   
   getSavedState(userId: number): { threadId?: string; cwd?: string } | undefined {
@@ -180,7 +192,7 @@ export class SessionManager {
       record.orchestrator.setModel(model);
       record.lastActivity = Date.now();
     }
-    if (this.threadStorage.getThreadId(userId)) {
+    if (this.threadStorage.getRecord(userId)) {
       this.threadStorage.removeThread(userId);
     }
     this.logger.info(`Switched to model: ${model}`);
@@ -209,7 +221,7 @@ export class SessionManager {
       this.logger.debug('Reset requested without active session');
     }
 
-    if (this.threadStorage.getThreadId(userId)) {
+    if (this.threadStorage.getRecord(userId)) {
       this.threadStorage.removeThread(userId);
     }
   }
@@ -225,11 +237,12 @@ export class SessionManager {
     }
 
     const threadId = record.orchestrator.getThreadId();
+    const activeAgentId = record.orchestrator.getActiveAgentId();
 
     if (record.cwd === cwd) {
       if (threadId) {
         // 确保最新 cwd 被持久化
-        this.saveThreadId(userId, threadId);
+        this.saveThreadId(userId, threadId, activeAgentId);
       }
       return;
     }
@@ -238,7 +251,7 @@ export class SessionManager {
     record.orchestrator.setWorkingDirectory(cwd);
 
     if (threadId) {
-      this.saveThreadId(userId, threadId);
+      this.saveThreadId(userId, threadId, activeAgentId);
     }
   }
 
@@ -349,8 +362,19 @@ export class SessionManager {
     // 保存所有活跃 session 的 thread ID 并关闭 logger
     for (const [userId, record] of this.sessions.entries()) {
       const threadId = record.orchestrator.getThreadId();
+      const activeAgentId = record.orchestrator.getActiveAgentId();
+      const existing = this.threadStorage.getRecord(userId);
       if (threadId) {
-        this.threadStorage.setRecord(userId, { threadId, cwd: record.cwd });
+        const agentThreads = { ...(existing?.agentThreads ?? {}) };
+        agentThreads[activeAgentId] = threadId;
+        const codexThreadId = activeAgentId === "codex" ? threadId : existing?.threadId;
+        this.threadStorage.setRecord(userId, {
+          threadId: codexThreadId,
+          cwd: record.cwd,
+          agentThreads,
+        });
+      } else if (existing && record.cwd) {
+        this.threadStorage.setRecord(userId, { ...existing, cwd: record.cwd });
       }
       if (record.logger) {
         record.logger.close();
