@@ -70,6 +70,10 @@ function isStatefulAgent(agentId: AgentIdentifier): boolean {
   return agentId === "codex";
 }
 
+function shouldRunToolLoop(agentId: AgentIdentifier): boolean {
+  return agentId !== "claude";
+}
+
 function parseMaxRounds(raw: string | undefined): number | null {
   if (raw === undefined) {
     return null;
@@ -162,6 +166,9 @@ async function runAgentTurnWithTools(
   const stateful = isStatefulAgent(agentId);
   const basePrompt = stateful ? "" : normalizeInputToText(input).trim();
   const unlimited = options.maxToolRounds <= 0;
+  if (!shouldRunToolLoop(agentId)) {
+    return result;
+  }
 
   for (let round = 1; unlimited || round <= options.maxToolRounds; round += 1) {
     throwIfAborted(sendOptions.signal);

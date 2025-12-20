@@ -145,5 +145,34 @@ describe("agents/hub", () => {
     assert.equal(result.delegations[0]?.agentId, "codex");
     assert.equal(result.delegations[0]?.response, "hello from codex");
   });
-});
 
+  it("skips tool loop for Claude", async () => {
+    assert.ok(tmpDir);
+    const adapter = new QueueAgentAdapter({
+      id: "claude",
+      name: "Claude",
+      queue: [
+        [
+          "Attempt tool call.",
+          "<<<tool.write",
+          '{"path":"ignored.txt","content":"nope"}',
+          ">>>",
+        ].join("\n"),
+      ],
+    });
+    const orchestrator = new HybridOrchestrator({
+      adapters: [adapter],
+      defaultAgentId: "claude",
+      initialWorkingDirectory: tmpDir,
+    });
+
+    const result = await runCollaborativeTurn(orchestrator, "test", {
+      maxSupervisorRounds: 0,
+      maxToolRounds: 2,
+      toolContext: { cwd: tmpDir, allowedDirs: [tmpDir] },
+    });
+
+    assert.equal(result.response.includes("<<<tool.write"), true);
+    assert.equal(fs.existsSync(path.join(tmpDir, "ignored.txt")), false);
+  });
+});
