@@ -1654,6 +1654,8 @@ export function renderLandingPageScript(idleMinutes: number): string {
       exploredEntries.push(entry);
       
       if (msg.header || !exploredContainer) {
+        // 有实际活动了，清除 typing placeholder
+        clearTypingPlaceholder();
         // Create new explored container
         exploredContainer = document.createElement('div');
         exploredContainer.className = 'explored-container';
