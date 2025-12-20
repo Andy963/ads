@@ -21,6 +21,7 @@ import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } fr
 import type { GeminiAgentConfig } from "../config.js";
 import { executeToolInvocation, type ToolExecutionContext, type ToolHooks } from "../tools.js";
 import { truncateForLog } from "../../utils/text.js";
+import type { AgentEvent } from "../../codex/events.js";
 
 type CodexInputPart = Exclude<Input, string>[number];
 
@@ -29,6 +30,8 @@ const DEFAULT_MAX_RPM = 0;
 const DEFAULT_MAX_RETRY_WAIT_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_LOG_FILE = "gemini.log";
+const DEFAULT_STREAM_THROTTLE_MS = 200;
+const STREAM_STATUS_TITLE = "生成回复";
 
 class AbortError extends Error {
   name = "AbortError";
@@ -183,7 +186,7 @@ const DEFAULT_METADATA: AgentMetadata = {
   id: "gemini",
   name: "Gemini",
   vendor: "Google",
-  capabilities: ["text", "files", "commands"],
+  capabilities: ["text", "images", "files", "commands"],
 };
 
 const DEFAULT_SYSTEM_PROMPT = [
@@ -215,6 +218,9 @@ function normalizeInput(input: Input): string {
       }
       if (current.type === "local_image") {
         return `[image:${current.path ?? "blob"}]`;
+      }
+      if (current.type === "local_file") {
+        return `[file:${current.path ?? "blob"}]`;
       }
       return current.type ? `[${current.type}]` : "[content]";
     })
@@ -420,6 +426,10 @@ export class GeminiAgentAdapter implements AgentAdapter {
   private history: Content[] = [];
   private sendQueue: Promise<void> = Promise.resolve();
   private readonly instanceId: string;
+  private readonly streamingEnabled: boolean;
+  private readonly streamThrottleMs: number;
+  private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private readonly uploadedFileParts = new Map<string, Part>();
 
   constructor(options: GeminiAgentAdapterOptions) {
     this.config = options.config;
@@ -432,6 +442,11 @@ export class GeminiAgentAdapter implements AgentAdapter {
     this.limiterKey = resolveLimiterKey(this.config);
     this.limiter = this.getLimiter({ minIntervalMs, maxRpm });
     this.instanceId = Math.random().toString(36).slice(2, 10);
+    this.streamingEnabled = parseBoolean(process.env.ADS_GEMINI_STREAMING, true);
+    this.streamThrottleMs = parsePositiveInt(
+      process.env.ADS_GEMINI_STREAM_THROTTLE_MS,
+      DEFAULT_STREAM_THROTTLE_MS,
+    );
   }
 
   private getLimiter(options: { minIntervalMs: number; maxRpm: number }): GeminiRequestLimiter {
@@ -502,37 +517,37 @@ export class GeminiAgentAdapter implements AgentAdapter {
   }
 
   getStreamingConfig(): { enabled: boolean; throttleMs: number } {
-    return { enabled: false, throttleMs: 0 };
+    return { enabled: this.streamingEnabled, throttleMs: this.streamThrottleMs };
   }
 
   status() {
     if (!this.config.enabled) {
-      return { ready: false, streaming: false, error: "Gemini agent disabled" };
+      return { ready: false, streaming: this.streamingEnabled, error: "Gemini agent disabled" };
     }
     if (this.config.vertexai) {
       if (!this.config.project || !this.config.location) {
         return {
           ready: false,
-          streaming: false,
+          streaming: this.streamingEnabled,
           error: "Vertex AI 模式缺少 GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION",
         };
       }
-      return { ready: true, streaming: false };
+      return { ready: true, streaming: this.streamingEnabled };
     }
     if (!this.config.apiKey && !this.config.accessToken && !this.config.googleAuthKeyFile) {
-      return { ready: false, streaming: false, error: "缺少 GEMINI_API_KEY / GOOGLE_API_KEY" };
+      return { ready: false, streaming: this.streamingEnabled, error: "缺少 GEMINI_API_KEY / GOOGLE_API_KEY" };
     }
-    return { ready: true, streaming: false };
+    return { ready: true, streaming: this.streamingEnabled };
   }
 
   onEvent(handler: Parameters<AgentAdapter["onEvent"]>[0]): () => void {
-    void handler;
-    // Streaming events are not yet supported for Gemini
-    return () => undefined;
+    this.listeners.add(handler);
+    return () => this.listeners.delete(handler);
   }
 
   reset(): void {
     this.history = [];
+    this.uploadedFileParts.clear();
   }
 
   setWorkingDirectory(workingDirectory?: string): void {
@@ -553,6 +568,40 @@ export class GeminiAgentAdapter implements AgentAdapter {
 
   getThreadId(): string | null {
     return null;
+  }
+
+  private emitEvent(event: AgentEvent): void {
+    for (const handler of this.listeners) {
+      try {
+        handler(event);
+      } catch {
+        // ignore handler errors
+      }
+    }
+  }
+
+  private emitPhase(
+    phase: AgentEvent["phase"],
+    title: string,
+    detail?: string,
+    rawType: "turn.started" | "turn.completed" | "turn.failed" | "error" | "item.updated" = "turn.started",
+  ): void {
+    const raw = { type: rawType } as AgentEvent["raw"];
+    this.emitEvent({ phase, title, detail, timestamp: Date.now(), raw });
+  }
+
+  private emitDelta(delta: string, messageId: string): void {
+    const raw = {
+      type: "item.updated",
+      item: { id: messageId, type: "agent_message", text: delta },
+    } as AgentEvent["raw"];
+    this.emitEvent({
+      phase: "responding",
+      title: STREAM_STATUS_TITLE,
+      delta,
+      timestamp: Date.now(),
+      raw,
+    });
   }
 
   private resolveLogFilePath(): string | null {
@@ -598,6 +647,115 @@ export class GeminiAgentAdapter implements AgentAdapter {
 
   private resolveToolHooks(options?: AgentSendOptions): ToolHooks | undefined {
     return options?.toolHooks;
+  }
+
+  private guessMimeType(filePath: string): string | undefined {
+    const ext = path.extname(filePath).toLowerCase();
+    switch (ext) {
+      case ".png":
+        return "image/png";
+      case ".jpg":
+      case ".jpeg":
+        return "image/jpeg";
+      case ".gif":
+        return "image/gif";
+      case ".webp":
+        return "image/webp";
+      case ".bmp":
+        return "image/bmp";
+      case ".svg":
+        return "image/svg+xml";
+      case ".pdf":
+        return "application/pdf";
+      case ".json":
+        return "application/json";
+      case ".csv":
+        return "text/csv";
+      case ".md":
+        return "text/markdown";
+      case ".txt":
+      case ".log":
+      case ".ts":
+      case ".tsx":
+      case ".js":
+      case ".jsx":
+      case ".py":
+      case ".rb":
+      case ".go":
+      case ".java":
+        return "text/plain";
+      default:
+        return undefined;
+    }
+  }
+
+  private readInlinePart(filePath: string, mimeType: string): Part {
+    const data = fs.readFileSync(filePath).toString("base64");
+    return { inlineData: { data, mimeType } };
+  }
+
+  private async createFilePart(filePath: string, mimeType?: string): Promise<Part> {
+    const resolved = path.resolve(filePath);
+    const cached = this.uploadedFileParts.get(resolved);
+    if (cached) {
+      return cached;
+    }
+    if (!fs.existsSync(resolved)) {
+      return { text: `[missing file: ${path.basename(resolved)}]` };
+    }
+    const resolvedMime = mimeType || this.guessMimeType(resolved) || "application/octet-stream";
+    if (this.config.vertexai) {
+      const inlinePart = this.readInlinePart(resolved, resolvedMime);
+      this.uploadedFileParts.set(resolved, inlinePart);
+      return inlinePart;
+    }
+    try {
+      const file = await this.getClient().files.upload({
+        file: resolved,
+        config: { mimeType: resolvedMime },
+      });
+      const fileUri = file.uri ?? file.name;
+      if (fileUri) {
+        const part: Part = { fileData: { fileUri, mimeType: file.mimeType ?? resolvedMime } };
+        this.uploadedFileParts.set(resolved, part);
+        return part;
+      }
+    } catch (error) {
+      this.log("WARN", "file upload failed; using inline data", {
+        path: maskPathForLog(resolved),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const fallbackPart = this.readInlinePart(resolved, resolvedMime);
+    this.uploadedFileParts.set(resolved, fallbackPart);
+    return fallbackPart;
+  }
+
+  private async buildUserParts(input: Input): Promise<Part[]> {
+    if (typeof input === "string") {
+      return [{ text: input }];
+    }
+    const parts: Part[] = [];
+    for (const part of input as CodexInputPart[]) {
+      const current = part as { type?: string; text?: string; path?: string; mimeType?: string };
+      if (current.type === "text" && typeof current.text === "string") {
+        parts.push({ text: current.text });
+        continue;
+      }
+      if (
+        (current.type === "local_image" || current.type === "local_file") &&
+        typeof current.path === "string"
+      ) {
+        parts.push(await this.createFilePart(current.path, current.mimeType));
+        continue;
+      }
+      if (current.type) {
+        parts.push({ text: `[${current.type}]` });
+      } else {
+        parts.push({ text: "[content]" });
+      }
+    }
+    return parts.length > 0 ? parts : [{ text: "" }];
   }
 
   private async enqueueSend<T>(fn: () => Promise<T>): Promise<T> {
@@ -702,8 +860,9 @@ export class GeminiAgentAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    const useStreaming = options?.streaming ?? this.streamingEnabled;
     try {
-      return await this.enqueueSend(() => this.runSend(input, options));
+      return await this.enqueueSend(() => this.runSend(input, options, useStreaming));
     } catch (error) {
       const aborted = options?.signal?.aborted;
       if (aborted) {
@@ -711,6 +870,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
       }
       const message = error instanceof Error ? error.message : String(error);
       this.log("ERROR", "send failed", { error: message });
+      this.emitPhase("error", "执行失败", message, "turn.failed");
       const hint = [
         "建议：",
         "- 等待片刻后重试；或临时切换到 codex/claude。",
@@ -721,9 +881,14 @@ export class GeminiAgentAdapter implements AgentAdapter {
     }
   }
 
-  private async runSend(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+  private async runSend(
+    input: Input,
+    options: AgentSendOptions | undefined,
+    useStreaming: boolean,
+  ): Promise<AgentRunResult> {
     this.requireReady();
     const prompt = normalizeInput(input);
+    const parts = await this.buildUserParts(input);
     const model = this.model || this.config.model;
     const toolContext = this.resolveToolContext(options);
     const toolHooks = this.resolveToolHooks(options);
@@ -737,13 +902,31 @@ export class GeminiAgentAdapter implements AgentAdapter {
       ? `${this.systemPrompt}\n\nWorking directory: ${this.workingDirectory}`
       : this.systemPrompt;
 
-    const contents: Content[] = [...this.history, { role: "user", parts: [{ text: prompt }] }];
+    const contents: Content[] = [...this.history, { role: "user", parts }];
     this.log("INFO", "send start", {
       model,
       historyEntries: this.history.length,
       promptPreview: truncateForLog(prompt, 256),
       googleSearchEnabled: isGoogleSearchEnabled(),
     });
+
+    const outputSchema = options?.outputSchema;
+    const messageId = `gemini-${Date.now()}`;
+    let pendingDelta = "";
+    let lastDeltaAt = 0;
+    const flushDelta = (force = false) => {
+      if (!useStreaming || !pendingDelta) {
+        return;
+      }
+      const now = Date.now();
+      if (!force && now - lastDeltaAt < this.streamThrottleMs) {
+        return;
+      }
+      this.emitDelta(pendingDelta, messageId);
+      pendingDelta = "";
+      lastDeltaAt = now;
+    };
+    this.emitPhase("analysis", "开始处理请求", undefined, "turn.started");
 
     const runModelRequest = async (
       mode: FunctionCallingConfigMode = FunctionCallingConfigMode.AUTO,
@@ -754,50 +937,120 @@ export class GeminiAgentAdapter implements AgentAdapter {
       functionCalls?: FunctionCall[];
       functionResponses?: Part[];
     }> => {
-      const response = await this.sendWithRetry(
+      const config = {
+        abortSignal: options?.signal,
+        systemInstruction,
+        tools,
+        toolConfig: {
+          functionCallingConfig: { mode },
+        },
+        automaticFunctionCalling: { disable: true },
+        ...(outputSchema
+          ? {
+              responseMimeType: "application/json",
+              responseJsonSchema: outputSchema,
+            }
+          : {}),
+        safetySettings: [
+          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ],
+      };
+
+      if (!useStreaming) {
+        const response = await this.sendWithRetry(
+          () =>
+            this.withRateLimit(
+              () =>
+                this.getClient().models.generateContent({
+                  model,
+                  contents,
+                  config,
+                }),
+              options?.signal,
+            ),
+          { signal: options?.signal },
+        );
+
+        const candidate = response.candidates?.[0];
+        const responseText =
+          (candidate?.content?.parts ?? [])
+            .map((part) => (typeof part.text === "string" ? part.text : ""))
+            .filter((text) => Boolean(text))
+            .join("\n") || "";
+        const functionCalls =
+          response.functionCalls ??
+          candidate?.content?.parts
+            ?.map((part) => part.functionCall)
+            .filter((call): call is FunctionCall => Boolean(call));
+
+        return {
+          responseText: responseText || "(Gemini 无响应)",
+          usage: mapUsage(response.usageMetadata),
+          modelContent: candidate?.content,
+          functionCalls,
+          functionResponses: undefined,
+        };
+      }
+
+      const stream = await this.sendWithRetry(
         () =>
           this.withRateLimit(
             () =>
-              this.getClient().models.generateContent({
+              this.getClient().models.generateContentStream({
                 model,
                 contents,
-                config: {
-                  abortSignal: options?.signal,
-                  systemInstruction,
-                  tools,
-                  toolConfig: {
-                    functionCallingConfig: { mode },
-                  },
-                  automaticFunctionCalling: { disable: true },
-                  safetySettings: [
-                    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                  ],
-                },
+                config,
               }),
             options?.signal,
           ),
         { signal: options?.signal },
       );
 
-      const candidate = response.candidates?.[0];
-      const responseText =
-        (candidate?.content?.parts ?? [])
-          .map((part) => (typeof part.text === "string" ? part.text : ""))
-          .filter((text) => Boolean(text))
-          .join("\n") || "";
-      const functionCalls =
-        response.functionCalls ??
-        candidate?.content?.parts
-          ?.map((part) => part.functionCall)
-          .filter((call): call is FunctionCall => Boolean(call));
+      let streamedText = "";
+      let usage: Usage | null = null;
+      let modelContent: Content | undefined;
+      let functionCalls: FunctionCall[] | undefined;
+
+      for await (const chunk of stream) {
+        const chunkText = chunk.text ?? "";
+        if (chunkText) {
+          let delta = chunkText;
+          if (chunkText.startsWith(streamedText)) {
+            delta = chunkText.slice(streamedText.length);
+            streamedText = chunkText;
+          } else {
+            streamedText += chunkText;
+          }
+          if (delta) {
+            pendingDelta += delta;
+            flushDelta();
+          }
+        }
+        const candidate = chunk.candidates?.[0];
+        const chunkCalls =
+          chunk.functionCalls ??
+          candidate?.content?.parts
+            ?.map((part) => part.functionCall)
+            .filter((call): call is FunctionCall => Boolean(call));
+        if (chunkCalls?.length) {
+          functionCalls = chunkCalls;
+        }
+        if (candidate?.content) {
+          modelContent = candidate.content;
+        }
+        if (chunk.usageMetadata) {
+          usage = mapUsage(chunk.usageMetadata) ?? usage;
+        }
+      }
+      flushDelta(true);
 
       return {
-        responseText: responseText || "(Gemini 无响应)",
-        usage: mapUsage(response.usageMetadata),
-        modelContent: candidate?.content,
+        responseText: streamedText || "(Gemini 无响应)",
+        usage,
+        modelContent,
         functionCalls,
         functionResponses: undefined,
       };
@@ -880,6 +1133,7 @@ export class GeminiAgentAdapter implements AgentAdapter {
 
     this.history = contents;
     this.log("INFO", "send complete", { toolCalls: retryState.toolCalls, completed, usage: usage ?? undefined });
+    this.emitPhase("completed", "处理完成", undefined, "turn.completed");
 
     return {
       response: lastResponse ?? "(Gemini 无响应)",
