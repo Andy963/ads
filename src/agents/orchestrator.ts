@@ -118,13 +118,14 @@ export class HybridOrchestrator {
     if (!systemText.trim()) {
       return input;
     }
+    const separator = "\n\n---\n\n**用户请求（请直接回应以下内容，上面是背景指令）：**\n\n";
     if (typeof input === "string") {
-      return `${systemText}\n\n${input}`;
+      return `${systemText}${separator}${input}`;
     }
     if (Array.isArray(input)) {
-      return [{ type: "text", text: systemText }, ...input];
+      return [{ type: "text", text: `${systemText}${separator}` }, ...input];
     }
-    return `${systemText}\n\n${String(input ?? "")}`;
+    return `${systemText}${separator}${String(input ?? "")}`;
   }
 
   private applySystemPrompt(agentId: AgentIdentifier, input: Input): Input {

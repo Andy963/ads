@@ -307,6 +307,7 @@ async function start(): Promise<void> {
     const resumeThread = !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
     let lastPlanSignature: string | null = null;
+    let lastPlanItems: TodoListItem["items"] | null = null;
 
     log("client connected");
     ws.send(
@@ -382,6 +383,7 @@ async function start(): Promise<void> {
           const cleanupAttachments = () => cleanupTempFiles(tempAttachments);
           // 清空本轮的计划签名，等待新的 todo_list
           lastPlanSignature = null;
+          // 不重置 lastPlanItems，保留上一轮的 plan 状态以便续传
           const userLogEntry = sessionLogger ? buildUserLogEntry(promptInput.input, currentCwd) : null;
           if (sessionLogger && userLogEntry) {
             sessionLogger.logInput(userLogEntry);
@@ -433,6 +435,7 @@ async function start(): Promise<void> {
             const raw = event.raw as ThreadEvent;
             if (isTodoListEvent(raw)) {
               const signature = buildPlanSignature(raw.item.items);
+              lastPlanItems = raw.item.items;
               if (signature !== lastPlanSignature) {
                 lastPlanSignature = signature;
                 ws.send(JSON.stringify({ type: "plan", items: raw.item.items }));
@@ -507,8 +510,12 @@ async function start(): Promise<void> {
               const signature = buildPlanSignature(structured.plan);
               if (signature !== lastPlanSignature) {
                 lastPlanSignature = signature;
+                lastPlanItems = structured.plan;
                 ws.send(JSON.stringify({ type: "plan", items: structured.plan }));
               }
+            } else if (lastPlanItems) {
+              // 确保 result 返回时发送最新的 plan 状态（可能最后一步已完成但签名比较跳过了）
+              ws.send(JSON.stringify({ type: "plan", items: lastPlanItems }));
             }
             ws.send(JSON.stringify({ type: "result", ok: true, output: finalOutput }));
             if (sessionLogger) {
