@@ -30,6 +30,7 @@ import { truncateForLog } from '../../utils/text.js';
 import { createLogger } from '../../utils/logger.js';
 import { stripLeadingTranslation } from '../../utils/assistantText.js';
 import { formatExploredEntry, type ExploredEntry } from '../../utils/activityTracker.js';
+import { ADS_STRUCTURED_OUTPUT_SCHEMA, parseStructuredOutput, type StructuredPlanItem } from '../../utils/structuredOutput.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -503,6 +504,48 @@ export async function handleCodexMessage(
       .join('\n');
   }
 
+  function formatStructuredPlan(items: StructuredPlanItem[]): string | null {
+    if (items.length === 0) {
+      return null;
+    }
+    const completed = items.filter((entry) => entry.completed).length;
+    const lines = items.slice(0, 8).map((entry, index) => {
+      const marker = entry.completed ? '✅' : '⬜️';
+      const text = entry.text?.trim() || `步骤 ${index + 1}`;
+      return `${marker} ${index + 1}. ${text}`;
+    });
+    const more = items.length > 8 ? `... 还有 ${items.length - 8} 项` : '';
+    return [
+      `📋 任务计划 (${completed}/${items.length})`,
+      ...lines,
+      more,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function buildStructuredPlanSignature(items: StructuredPlanItem[]): string {
+    return JSON.stringify(
+      items.map((entry) => ({
+        text: entry.text ?? '',
+        completed: !!entry.completed,
+      })),
+    );
+  }
+
+  async function maybeSendStructuredPlan(items: StructuredPlanItem[]): Promise<void> {
+    const signature = buildStructuredPlanSignature(items);
+    if (signature === lastTodoSignature) {
+      return;
+    }
+    const message = formatStructuredPlan(items);
+    if (!message) {
+      return;
+    }
+    lastTodoSignature = signature;
+    await upsertPlanMessage(message);
+  }
+
   async function sendPlanMessage(text: string): Promise<void> {
     const now = Date.now();
     if (now < rateLimitUntil) {
@@ -808,6 +851,8 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     // 构建输入
     let input: Input;
     let enhancedText = urlData ? urlData.processedText : text;
+    const activeAgentId = session.getActiveAgentId();
+    const attachFiles = activeAgentId === 'gemini';
 
     // 如果有文件，添加文件信息到提示
     if (filePaths.length > 0) {
@@ -818,18 +863,27 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       }
     }
 
+    const inputParts: Array<{ type: string; text?: string; path?: string }> = [];
+    if (enhancedText.trim()) {
+      inputParts.push({ type: 'text', text: enhancedText });
+    }
     if (imagePaths.length > 0) {
-      input = [
-        { type: 'text', text: enhancedText },
-        ...imagePaths.map((path) => ({ type: 'local_image' as const, path })),
-      ];
+      inputParts.push(...imagePaths.map((path) => ({ type: 'local_image', path })));
+    }
+    if (attachFiles && filePaths.length > 0) {
+      inputParts.push(...filePaths.map((path) => ({ type: 'local_file', path })));
+    }
+
+    if (inputParts.length === 1 && inputParts[0].type === 'text') {
+      input = inputParts[0].text ?? '';
     } else {
-      input = enhancedText;
+      input = inputParts as Input;
     }
 
     const result = await runCollaborativeTurn(session, input, {
       streaming: true,
       signal,
+      outputSchema: ADS_STRUCTURED_OUTPUT_SCHEMA,
       onExploredEntry: handleExploredEntry,
       hooks: {
         onSupervisorRound: (round, directives) =>
@@ -863,6 +917,12 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         ? result.response
         : String(result.response ?? '');
     const cleanedOutput = stripLeadingTranslation(baseOutput);
+    const structured = parseStructuredOutput(cleanedOutput);
+    const finalOutput =
+      structured?.answer?.trim() ? structured.answer.trim() : cleanedOutput;
+    if (structured?.plan?.length) {
+      await maybeSendStructuredPlan(structured.plan);
+    }
 
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
     if (!logger) {
@@ -874,20 +934,20 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     // 记录 AI 回复（不含 token 统计，除非开启）
     if (logger) {
-      logger.logOutput(cleanedOutput);
+      logger.logOutput(finalOutput);
     }
-    historyStore.add(historyKey, { role: "ai", text: cleanedOutput, ts: Date.now() });
+    historyStore.add(historyKey, { role: "ai", text: finalOutput, ts: Date.now() });
 
     if (markNoteEnabled && userLogEntry) {
       try {
-        appendMarkNoteEntry(workspaceRoot, userLogEntry, cleanedOutput);
+        appendMarkNoteEntry(workspaceRoot, userLogEntry, finalOutput);
       } catch (error) {
         logWarning('[CodexAdapter] Failed to append mark note', error);
       }
     }
 
     // 发送最终响应
-    const renderText = cleanedOutput;
+    const renderText = finalOutput;
     let fallbackNotified = false;
     const notifyFallback = async () => {
       if (fallbackNotified) return;

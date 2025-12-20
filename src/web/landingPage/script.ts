@@ -744,8 +744,8 @@ export function renderLandingPageScript(idleMinutes: number): string {
       lastCommandText = '';
       if (clearPlan) {
         planTouched = false;
-        renderPlanStatus('生成计划中...');
-        savePlanCache([], currentSessionId);
+        // 不清空现有 plan，保留上一轮的计划直到收到新计划
+        // 避免每次发消息都闪烁
       }
     }
 
@@ -1381,15 +1381,8 @@ export function renderLandingPageScript(idleMinutes: number): string {
           } else if (msg.type === 'explored') {
             handleExploredEntry(msg);
           } else if (msg.type === 'command') {
-            const cmd = msg.command || {};
-            renderCommandView({
-              id: cmd.id,
-              commandText: cmd.command || msg.detail || '',
-              detail: msg.detail,
-              status: cmd.status || 'in_progress',
-              output: cmd.aggregated_output || '',
-              exitCode: cmd.exit_code,
-            });
+            // Agent 执行的命令通过 Explored 显示，不再单独渲染 commandView
+            // 避免重复显示和 ANSI 乱码
             return;
           } else if (msg.type === 'history') {
             renderHistory(msg.items || []);
@@ -1668,7 +1661,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
         header.className = 'explored-header';
         header.textContent = 'Explored';
         exploredContainer.appendChild(header);
-        messagesContainer.appendChild(exploredContainer);
+        logEl.appendChild(exploredContainer);
       }
       
       const line = document.createElement('div');
@@ -1705,7 +1698,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
         const prefix = idx === filtered.length - 1 ? '  └ ' : '  ├ ';
         lines.push(prefix + category + (summary ? ' ' + summary : ''));
       });
-      const text = lines.join('\n');
+      const text = lines.join('\\n');
       return '<pre class="code-block"><code>' + escapeHtml(text) + '</code></pre>';
     }
 
@@ -1721,8 +1714,12 @@ export function renderLandingPageScript(idleMinutes: number): string {
       }
       finalizeStream(msg.output || '');
       clearExploredState();
+      // 保留现有 plan，只有当没有缓存且本轮没有新 plan 时才显示提示
       if (!planTouched) {
-        renderPlanStatus('本轮未生成计划');
+        const cachedPlan = loadPlanCache(currentSessionId);
+        if (!cachedPlan || cachedPlan.length === 0) {
+          renderPlanStatus('本轮未生成计划');
+        }
       }
       resetIdleTimer();
       setBusy(false);

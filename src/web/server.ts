@@ -35,6 +35,7 @@ import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { extractTextFromInput } from "../utils/inputText.js";
+import { ADS_STRUCTURED_OUTPUT_SCHEMA, parseStructuredOutput } from "../utils/structuredOutput.js";
 
 import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
 
@@ -476,6 +477,7 @@ async function start(): Promise<void> {
             const result = await runCollaborativeTurn(orchestrator, inputToSend, {
               streaming: true,
               signal: controller.signal,
+              outputSchema: ADS_STRUCTURED_OUTPUT_SCHEMA,
               onExploredEntry: handleExploredEntry,
               hooks: {
                 onSupervisorRound: (round, directives) =>
@@ -498,14 +500,24 @@ async function start(): Promise<void> {
             const rawResponse =
               typeof result.response === "string" ? result.response : String(result.response ?? "");
             const cleanedResponse = stripLeadingTranslation(rawResponse);
-            ws.send(JSON.stringify({ type: "result", ok: true, output: cleanedResponse }));
+            const structured = parseStructuredOutput(cleanedResponse);
+            const finalOutput =
+              structured?.answer?.trim() ? structured.answer.trim() : cleanedResponse;
+            if (structured?.plan) {
+              const signature = buildPlanSignature(structured.plan);
+              if (signature !== lastPlanSignature) {
+                lastPlanSignature = signature;
+                ws.send(JSON.stringify({ type: "plan", items: structured.plan }));
+              }
+            }
+            ws.send(JSON.stringify({ type: "result", ok: true, output: finalOutput }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
-              sessionLogger.logOutput(cleanedResponse);
+              sessionLogger.logOutput(finalOutput);
             }
             historyStore.add(historyKey, {
               role: "ai",
-              text: cleanedResponse,
+              text: finalOutput,
               ts: Date.now(),
             });
             const threadId = orchestrator.getThreadId();

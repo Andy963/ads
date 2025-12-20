@@ -42,6 +42,7 @@ import { HistoryStore } from "../utils/historyStore.js";
 import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams.js";
 import { normalizeOutput, truncateForLog } from "../utils/text.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
+import { ADS_STRUCTURED_OUTPUT_SCHEMA, formatPlanForCli, parseStructuredOutput } from "../utils/structuredOutput.js";
 import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
 import { setStatusLineManager, withStatusLineSuppressed } from "../utils/statusLineManager.js";
 import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
@@ -444,6 +445,7 @@ async function handleAgentInteraction(
     try {
       const result = await runCollaborativeTurn(orchestrator, basePrompt, {
         signal: options?.signal,
+        outputSchema: ADS_STRUCTURED_OUTPUT_SCHEMA,
         onExploredEntry: handleExploredEntry,
         hooks: {
           onSupervisorRound: (round, directives) =>
@@ -478,8 +480,15 @@ async function handleAgentInteraction(
         cliLogger.info(summary);
         logger.logOutput(summary);
       }
-      const finalText = result.response || "(代理无响应)";
-      return { output: finalText };
+      const rawResponse =
+        typeof result.response === "string" ? result.response : String(result.response ?? "");
+      const cleanedResponse = stripLeadingTranslation(rawResponse);
+      const structured = parseStructuredOutput(cleanedResponse);
+      const finalAnswer =
+        structured?.answer?.trim() ? structured.answer.trim() : cleanedResponse;
+      const planText = structured?.plan?.length ? formatPlanForCli(structured.plan) : null;
+      const finalText = planText ? `${planText}\n\n${finalAnswer}` : finalAnswer;
+      return { output: finalText || "(代理无响应)" };
     } finally {
       unsubscribe();
       renderer.cleanup();
