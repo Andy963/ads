@@ -5,6 +5,7 @@ import {
   type Usage,
   type SandboxMode,
   type Input,
+  type ModelReasoningEffort,
 } from "@openai/codex-sdk";
 
 import { resolveCodexConfig, type CodexResolvedConfig } from "../codexConfig.js";
@@ -37,6 +38,7 @@ export interface CodexSessionOptions {
   resumeThreadId?: string;
   sandboxMode?: SandboxMode;
   model?: string;
+  modelReasoningEffort?: ModelReasoningEffort;
   workingDirectory?: string;
   systemPromptManager?: SystemPromptManager;
   networkAccessEnabled?: boolean;
@@ -59,6 +61,7 @@ export class CodexSession {
   private thread: ReturnType<Codex["startThread"]> | null = null;
   private ready = false;
   private lastError: string | null = null;
+  private resolvedConfig?: CodexResolvedConfig;
   private readonly streamingEnabled: boolean;
   private readonly streamThrottleMs: number;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
@@ -87,6 +90,7 @@ export class CodexSession {
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
       });
+      this.resolvedConfig = config;
       this.ready = true;
       this.lastError = null;
     } catch (error) {
@@ -103,6 +107,7 @@ export class CodexSession {
         skipGitRepoCheck: true,
         sandboxMode: this.options.sandboxMode,
         model: this.options.model,
+        modelReasoningEffort: this.options.modelReasoningEffort ?? this.resolvedConfig?.modelReasoningEffort,
         workingDirectory: this.options.workingDirectory,
         networkAccessEnabled: this.options.networkAccessEnabled ?? true,
         webSearchEnabled: this.options.webSearchEnabled ?? webSearchDefault,

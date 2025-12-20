@@ -133,6 +133,34 @@ describe("codexConfig", () => {
     assert.equal(cfg.authMode, "apiKey");
   });
 
+  it("loads modelReasoningEffort from config.toml", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const codexDir = join(tempHomeDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      join(codexDir, "config.toml"),
+      [
+        'model_provider = "test"',
+        "[model_providers.test]",
+        'base_url = "https://from-config.example.com/v1"',
+        'api_key = "sk-from-config"',
+        'model_reasoning_effort = "high"',
+      ].join("\n"),
+      "utf-8"
+    );
+    process.env.HOME = tempHomeDir;
+    process.env.USERPROFILE = tempHomeDir;
+
+    const cfg = resolveCodexConfig();
+    assert.equal(cfg.modelReasoningEffort, "high");
+  });
+
   it("falls back to first provider baseUrl when model_provider is missing", () => {
     delete process.env.CODEX_BASE_URL;
     delete process.env.OPENAI_BASE_URL;
