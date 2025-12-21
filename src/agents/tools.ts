@@ -984,6 +984,349 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
   });
 }
 
+const GREP_DEFAULT_MAX_RESULTS = 50;
+const FIND_DEFAULT_MAX_RESULTS = 50;
+
+interface GrepParams {
+  pattern: string;
+  path?: string;
+  glob?: string;
+  ignoreCase?: boolean;
+  maxResults?: number;
+}
+
+function parseGrepPayload(payload: string): GrepParams {
+  const trimmed = payload.trim();
+  if (!trimmed) {
+    throw new Error("grep payload 为空");
+  }
+
+  let parsed: unknown = trimmed;
+  if (trimmed.startsWith("{")) {
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      // Treat as plain pattern if not valid JSON
+    }
+  }
+
+  if (typeof parsed === "string") {
+    return { pattern: parsed.trim() };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("grep payload 必须是 pattern 字符串或 JSON 对象");
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const pattern = typeof record.pattern === "string" ? record.pattern.trim() : "";
+  if (!pattern) {
+    throw new Error("grep payload 缺少 pattern");
+  }
+
+  return {
+    pattern,
+    path: typeof record.path === "string" ? record.path.trim() : undefined,
+    glob: typeof record.glob === "string" ? record.glob.trim() : undefined,
+    ignoreCase: typeof record.ignoreCase === "boolean" ? record.ignoreCase : undefined,
+    maxResults: typeof record.maxResults === "number" && record.maxResults > 0
+      ? Math.floor(record.maxResults)
+      : undefined,
+  };
+}
+
+async function runGrepTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  if (!isFileToolsEnabled()) {
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
+  }
+  throwIfAborted(context.signal);
+
+  const params = parseGrepPayload(payload);
+  const cwd = resolveBaseDir(context);
+  const searchPath = params.path
+    ? resolvePathForTool(params.path, context)
+    : cwd;
+
+  const maxResults = params.maxResults ?? GREP_DEFAULT_MAX_RESULTS;
+  const args = ["--no-heading", "--line-number", "--color=never"];
+
+  if (params.ignoreCase) {
+    args.push("--ignore-case");
+  }
+  if (params.glob) {
+    args.push("--glob", params.glob);
+  }
+  args.push("--max-count", String(maxResults * 2)); // Get more to account for context
+  args.push("--", params.pattern, searchPath);
+
+  logger.info(`[tool.grep] cwd=${cwd} pattern=${params.pattern} path=${searchPath}`);
+
+  return await new Promise<string>((resolve, reject) => {
+    const signal = context.signal;
+    const child = spawn("rg", args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let settled = false;
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < EXEC_MAX_OUTPUT_BYTES) {
+        stdout = Buffer.concat([stdout, chunk]);
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < EXEC_MAX_OUTPUT_BYTES) {
+        stderr = Buffer.concat([stderr, chunk]);
+      }
+    });
+
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+      // If ripgrep is not installed, suggest using exec with grep
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(new Error("ripgrep (rg) 未安装。请使用 exec 工具执行 grep 命令。"));
+        return;
+      }
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+
+      const outText = stdout.toString("utf8").trim();
+      const errText = stderr.toString("utf8").trim();
+
+      // rg returns 1 when no matches found, 2 on error
+      if (code === 1 && !errText) {
+        resolve(`🔍 grep: "${params.pattern}" - 未找到匹配`);
+        return;
+      }
+      if (code !== 0 && code !== 1) {
+        reject(new Error(errText || `rg exited with code ${code}`));
+        return;
+      }
+
+      const lines = outText.split("\n").filter(Boolean);
+      const truncated = lines.length > maxResults;
+      const displayLines = lines.slice(0, maxResults);
+
+      const result = [
+        `🔍 grep: "${params.pattern}" (${lines.length} matches${truncated ? ", showing " + maxResults : ""})`,
+        "",
+        ...displayLines,
+        truncated ? `\n…(${lines.length - maxResults} more matches)` : "",
+      ].filter(Boolean).join("\n");
+
+      resolve(result);
+    });
+  });
+}
+
+interface FindParams {
+  pattern: string;
+  path?: string;
+  maxResults?: number;
+}
+
+function parseFindPayload(payload: string): FindParams {
+  const trimmed = payload.trim();
+  if (!trimmed) {
+    throw new Error("find payload 为空");
+  }
+
+  let parsed: unknown = trimmed;
+  if (trimmed.startsWith("{")) {
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      // Treat as plain pattern if not valid JSON
+    }
+  }
+
+  if (typeof parsed === "string") {
+    return { pattern: parsed.trim() };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("find payload 必须是 pattern 字符串或 JSON 对象");
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const pattern = typeof record.pattern === "string" ? record.pattern.trim() : "";
+  if (!pattern) {
+    throw new Error("find payload 缺少 pattern");
+  }
+
+  return {
+    pattern,
+    path: typeof record.path === "string" ? record.path.trim() : undefined,
+    maxResults: typeof record.maxResults === "number" && record.maxResults > 0
+      ? Math.floor(record.maxResults)
+      : undefined,
+  };
+}
+
+async function runFindTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  if (!isFileToolsEnabled()) {
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
+  }
+  throwIfAborted(context.signal);
+
+  const params = parseFindPayload(payload);
+  const cwd = resolveBaseDir(context);
+  const searchPath = params.path
+    ? resolvePathForTool(params.path, context)
+    : cwd;
+
+  const maxResults = params.maxResults ?? FIND_DEFAULT_MAX_RESULTS;
+
+  // Use fd if available, fallback to find
+  const useFd = true; // Prefer fd for better glob support
+  const args = useFd
+    ? ["--type", "f", "--glob", params.pattern, searchPath]
+    : [searchPath, "-type", "f", "-name", params.pattern];
+  const cmd = useFd ? "fd" : "find";
+
+  logger.info(`[tool.find] cwd=${cwd} pattern=${params.pattern} path=${searchPath}`);
+
+  return await new Promise<string>((resolve, reject) => {
+    const signal = context.signal;
+    const child = spawn(cmd, args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let settled = false;
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < EXEC_MAX_OUTPUT_BYTES) {
+        stdout = Buffer.concat([stdout, chunk]);
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < EXEC_MAX_OUTPUT_BYTES) {
+        stderr = Buffer.concat([stderr, chunk]);
+      }
+    });
+
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+      // If fd is not installed, fall back to find
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && useFd) {
+        // Retry with standard find
+        const findArgs = [searchPath, "-type", "f", "-name", params.pattern];
+        const findChild = spawn("find", findArgs, {
+          cwd,
+          shell: false,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: process.env,
+        });
+
+        let findStdout = Buffer.alloc(0);
+        findChild.stdout?.on("data", (chunk: Buffer) => {
+          if (findStdout.length < EXEC_MAX_OUTPUT_BYTES) {
+            findStdout = Buffer.concat([findStdout, chunk]);
+          }
+        });
+
+        findChild.on("close", (code) => {
+          if (code !== 0) {
+            reject(new Error(`find exited with code ${code}`));
+            return;
+          }
+          const outText = findStdout.toString("utf8").trim();
+          if (!outText) {
+            resolve(`📁 find: "${params.pattern}" - 未找到文件`);
+            return;
+          }
+          const files = outText.split("\n").filter(Boolean);
+          const truncated = files.length > maxResults;
+          const displayFiles = files.slice(0, maxResults);
+          resolve([
+            `📁 find: "${params.pattern}" (${files.length} files${truncated ? ", showing " + maxResults : ""})`,
+            "",
+            ...displayFiles,
+            truncated ? `\n…(${files.length - maxResults} more files)` : "",
+          ].filter(Boolean).join("\n"));
+        });
+        return;
+      }
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+
+      const outText = stdout.toString("utf8").trim();
+      const errText = stderr.toString("utf8").trim();
+
+      if (code !== 0 && errText) {
+        reject(new Error(errText));
+        return;
+      }
+
+      if (!outText) {
+        resolve(`📁 find: "${params.pattern}" - 未找到文件`);
+        return;
+      }
+
+      const files = outText.split("\n").filter(Boolean);
+      const truncated = files.length > maxResults;
+      const displayFiles = files.slice(0, maxResults);
+
+      const result = [
+        `📁 find: "${params.pattern}" (${files.length} files${truncated ? ", showing " + maxResults : ""})`,
+        "",
+        ...displayFiles,
+        truncated ? `\n…(${files.length - maxResults} more files)` : "",
+      ].filter(Boolean).join("\n");
+
+      resolve(result);
+    });
+  });
+}
+
 async function runTool(name: string, payload: string, context: ToolExecutionContext): Promise<string> {
   throwIfAborted(context.signal);
   switch (name) {
@@ -997,6 +1340,10 @@ async function runTool(name: string, payload: string, context: ToolExecutionCont
       return runWriteTool(payload, context);
     case "apply_patch":
       return runApplyPatchTool(payload, context);
+    case "grep":
+      return runGrepTool(payload, context);
+    case "find":
+      return runFindTool(payload, context);
     default:
       throw new Error(`未知工具: ${name}`);
   }

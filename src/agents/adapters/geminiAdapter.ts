@@ -319,6 +319,36 @@ function buildAdsFunctionDeclarations(): FunctionDeclaration[] {
   if (isFileToolsEnabled()) {
     declarations.push(
       {
+        name: "grep",
+        description: "Search for text patterns in files using ripgrep. Use this to find code, functions, variables, or any text in the codebase.",
+        parametersJsonSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            pattern: { type: "string", description: "The regex pattern to search for (e.g. 'password', 'changePassword', 'def.*password')." },
+            path: { type: "string", description: "Directory or file to search in. Defaults to current working directory." },
+            glob: { type: "string", description: "Glob pattern to filter files (e.g. '*.ts', '*.py', '*.{js,jsx}')." },
+            ignoreCase: { type: "boolean", description: "Case insensitive search." },
+            maxResults: { type: "integer", description: "Maximum number of matches to return (default 50)." },
+          },
+          required: ["pattern"],
+        },
+      },
+      {
+        name: "find",
+        description: "Find files by name pattern. Use this to locate files in the codebase.",
+        parametersJsonSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            pattern: { type: "string", description: "Glob pattern to match file names (e.g. '*.ts', '*password*', 'src/**/*.tsx')." },
+            path: { type: "string", description: "Directory to search in. Defaults to current working directory." },
+            maxResults: { type: "integer", description: "Maximum number of files to return (default 50)." },
+          },
+          required: ["pattern"],
+        },
+      },
+      {
         name: "read",
         description: "Read a local text file (restricted to allowed directories).",
         parametersJsonSchema: {
