@@ -3,6 +3,7 @@ import { renderLandingPageScript } from "./landingPage/script.js";
 
 export interface LandingPageOptions {
   idleMinutes: number;
+  tokenRequired: boolean;
 }
 
 export function renderLandingPage(options: LandingPageOptions): string {
@@ -74,10 +75,10 @@ ${LANDING_PAGE_CSS}  </style>
     <div class="card">
       <h2>输入访问口令</h2>
       <p>未提供口令，无法连接</p>
-      <div class="row">
-        <input id="token-input" type="password" placeholder="ADS_WEB_TOKEN" autofocus />
-        <button id="token-submit" type="button">连接</button>
-      </div>
+      <form id="token-form" class="row" autocomplete="off">
+        <input id="token-input" type="password" placeholder="ADS_WEB_TOKEN" autocomplete="off" />
+        <button id="token-submit" type="submit">连接</button>
+      </form>
     </div>
   </div>
   <div id="session-dialog" class="session-dialog hidden">
@@ -103,7 +104,7 @@ ${LANDING_PAGE_CSS}  </style>
     </div>
   </div>
   <script>
-${renderLandingPageScript(options.idleMinutes)}  </script>
+${renderLandingPageScript(options.idleMinutes, options.tokenRequired)}  </script>
 </body>
 </html>`;
 }

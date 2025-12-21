@@ -35,7 +35,6 @@ import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { extractTextFromInput } from "../utils/inputText.js";
-import { ADS_STRUCTURED_OUTPUT_SCHEMA, parseStructuredOutput } from "../utils/structuredOutput.js";
 
 import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
 
@@ -213,9 +212,18 @@ function sendWorkspaceState(ws: WebSocket, workspaceRoot: string): void {
 }
 
 function renderLandingPage(): string {
-  return renderLandingPageTemplate({ idleMinutes: IDLE_MINUTES });
+  return renderLandingPageTemplate({ idleMinutes: IDLE_MINUTES, tokenRequired: Boolean(TOKEN) });
 }
 
+function decodeBase64Url(input: string): string {
+  const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  try {
+    return Buffer.from(padded, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
 
 async function start(): Promise<void> {
   const server = createHttpServer();
@@ -246,12 +254,20 @@ async function start(): Promise<void> {
 
       for (let i = 0; i < protocols.length; i++) {
         const entry = protocols[i];
+        if (entry.startsWith("ads-token.")) {
+          token = decodeBase64Url(entry.slice("ads-token.".length));
+          continue;
+        }
         if (entry.startsWith("ads-token:")) {
           token = entry.split(":").slice(1).join(":");
           continue;
         }
         if (entry === "ads-token" && i + 1 < protocols.length) {
           token = protocols[i + 1];
+          continue;
+        }
+        if (entry.startsWith("ads-session.")) {
+          session = entry.slice("ads-session.".length);
           continue;
         }
         if (entry.startsWith("ads-session:")) {
@@ -367,7 +383,9 @@ async function start(): Promise<void> {
 
         if (parsed.type === "clear_history") {
           historyStore.clear(historyKey);
-          ws.send(JSON.stringify({ type: "result", ok: true, output: "已清空历史缓存" }));
+          // 同时重置 session 和 thread，清除旧的对话上下文
+          sessionManager.reset(userId);
+          ws.send(JSON.stringify({ type: "result", ok: true, output: "已清空历史缓存并重置会话" }));
           return;
         }
 
@@ -480,7 +498,8 @@ async function start(): Promise<void> {
             const result = await runCollaborativeTurn(orchestrator, inputToSend, {
               streaming: true,
               signal: controller.signal,
-              outputSchema: ADS_STRUCTURED_OUTPUT_SCHEMA,
+              // 暂时禁用结构化输出，避免复述问题
+              // outputSchema: ADS_STRUCTURED_OUTPUT_SCHEMA,
               onExploredEntry: handleExploredEntry,
               hooks: {
                 onSupervisorRound: (round, directives) =>
@@ -502,19 +521,8 @@ async function start(): Promise<void> {
 
             const rawResponse =
               typeof result.response === "string" ? result.response : String(result.response ?? "");
-            const cleanedResponse = stripLeadingTranslation(rawResponse);
-            const structured = parseStructuredOutput(cleanedResponse);
-            const finalOutput =
-              structured?.answer?.trim() ? structured.answer.trim() : cleanedResponse;
-            if (structured?.plan) {
-              const signature = buildPlanSignature(structured.plan);
-              if (signature !== lastPlanSignature) {
-                lastPlanSignature = signature;
-                lastPlanItems = structured.plan;
-                ws.send(JSON.stringify({ type: "plan", items: structured.plan }));
-              }
-            } else if (lastPlanItems) {
-              // 确保 result 返回时发送最新的 plan 状态（可能最后一步已完成但签名比较跳过了）
+            const finalOutput = stripLeadingTranslation(rawResponse);
+            if (lastPlanItems) {
               ws.send(JSON.stringify({ type: "plan", items: lastPlanItems }));
             }
             ws.send(JSON.stringify({ type: "result", ok: true, output: finalOutput }));

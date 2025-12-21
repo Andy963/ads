@@ -15,6 +15,10 @@ export const LANDING_PAGE_CSS = `    :root {
     * { box-sizing: border-box; }
     html { height: 100%; width: 100%; overflow: hidden; }
     body { font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; display: flex; flex-direction: column; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
     header { padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: 0 1px 3px rgba(15,23,42,0.06); display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
     .header-row { display: flex; align-items: center; gap: 10px; justify-content: flex-start; width: 100%; }
     .header-left { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -64,7 +68,7 @@ export const LANDING_PAGE_CSS = `    :root {
     .bubble ul { margin: 0 0 8px 18px; padding: 0; }
     .bubble a { color: var(--accent); text-decoration: none; }
     .bubble a:hover { text-decoration: underline; }
-    .bubble-footer { display: flex; justify-content: flex-start; margin-top: 6px; }
+    .bubble-footer { display: flex; justify-content: flex-start; margin-top: 2px; margin-bottom: -10px; }
     .copy-btn { background: transparent; border: none; padding: 4px; color: #9ca3af; cursor: pointer; transition: all 0.15s; line-height: 1; }
     .copy-btn:hover { color: #2563eb; }
     .copy-btn.copied { color: #22c55e; }

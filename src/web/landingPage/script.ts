@@ -1,4 +1,4 @@
-export function renderLandingPageScript(idleMinutes: number): string {
+export function renderLandingPageScript(idleMinutes: number, tokenRequired: boolean): string {
   return `    const sessionViewHost = document.getElementById('session-views');
     const SESSION_PLACEHOLDER = '__initial__';
     const sessionViewTemplate = sessionViewHost?.querySelector('.session-view')?.cloneNode(true);
@@ -10,6 +10,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
     const modifiedFilesEl = document.getElementById('modified-files');
     const planListEl = document.getElementById('plan-list');
     const tokenOverlay = document.getElementById('token-overlay');
+    const tokenForm = document.getElementById('token-form');
     const tokenInput = document.getElementById('token-input');
     const tokenSubmit = document.getElementById('token-submit');
     let attachBtn = document.getElementById('attach-btn');
@@ -39,6 +40,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
     const PLAN_CACHE_PREFIX = 'plan-cache::';
     const WORKSPACE_CACHE_PREFIX = 'ws-cache::';
     const idleMinutes = ${idleMinutes};
+    const tokenRequired = ${tokenRequired};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
     const MAX_LOG_MESSAGES = 300;
     const MAX_SESSION_HISTORY = 15;
@@ -83,6 +85,20 @@ export function renderLandingPageScript(idleMinutes: number): string {
     let sessionAliases = {};
     let sessionWorkspaces = {};
     let sessionWorkspaceInfos = {};
+
+    function encodeBase64Url(text) {
+      try {
+        const bytes = new TextEncoder().encode(String(text ?? ''));
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        return base64.replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      } catch {
+        return '';
+      }
+    }
 
     function ensureConnection(sessionId) {
       if (!connections.has(sessionId)) {
@@ -1461,9 +1477,9 @@ export function renderLandingPageScript(idleMinutes: number): string {
         ensureSessionView(sessionIdToUse);
       }
       const token = sessionStorage.getItem(TOKEN_KEY) || '';
-      if (!token) {
+      if (tokenRequired && !token) {
         tokenOverlay.classList.remove('hidden');
-        tokenInput.focus();
+        setTimeout(() => tokenInput?.focus?.(), 0);
         setLocked(true);
         return null;
       }
@@ -1482,7 +1498,9 @@ export function renderLandingPageScript(idleMinutes: number): string {
         resetCommandView(false);
         setWsState('connecting', sessionIdToUse);
       });
-      conn.ws = new WebSocket(url, ['ads-token', token, 'ads-session', sessionIdToUse]);
+      const tokenProto = token ? 'ads-token.' + encodeBase64Url(token) : '';
+      const protocols = ['ads-v1', tokenProto, 'ads-session.' + sessionIdToUse].filter(Boolean);
+      conn.ws = new WebSocket(url, protocols);
       conn.ws.onopen = () => {
         if (socketId !== conn.generation) return;
         if (conn.reconnectTimer) {
@@ -1849,7 +1867,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
       renderAttachments();
     }
 
-    tokenSubmit.addEventListener('click', () => {
+    function submitToken() {
       const token = tokenInput.value.trim();
       if (!token) return;
       sessionStorage.setItem(TOKEN_KEY, token);
@@ -1861,13 +1879,16 @@ export function renderLandingPageScript(idleMinutes: number): string {
       restoreFromCache();
       restorePlanFromCache();
       connect();
+    }
+
+    tokenForm?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitToken();
     });
 
-    tokenInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        tokenSubmit.click();
-      }
+    tokenSubmit?.addEventListener('click', (e) => {
+      e.preventDefault?.();
+      submitToken();
     });
 
     connect();
