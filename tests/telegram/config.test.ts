@@ -41,6 +41,8 @@ describe('Telegram Config', () => {
   it('should use default values for optional configs', () => {
     process.env.TELEGRAM_BOT_TOKEN = 'test-token';
     process.env.TELEGRAM_ALLOWED_USERS = '123456';
+    delete process.env.TELEGRAM_MAX_RPM;
+    delete process.env.TELEGRAM_SESSION_TIMEOUT;
 
     const config = loadTelegramConfig();
 

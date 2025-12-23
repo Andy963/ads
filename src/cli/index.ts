@@ -49,6 +49,7 @@ import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
 import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
 import { formatExploredEntry, type ExploredEntry } from "../utils/activityTracker.js";
+import { processAdrBlocks } from "../utils/adrRecording.js";
 
 interface CommandResult {
   output: string;
@@ -487,8 +488,17 @@ async function handleAgentInteraction(
       const finalAnswer =
         structured?.answer?.trim() ? structured.answer.trim() : cleanedResponse;
       const planText = structured?.plan?.length ? formatPlanForCli(structured.plan) : null;
-      const finalText = planText ? `${planText}\n\n${finalAnswer}` : finalAnswer;
-      return { output: finalText || "(代理无响应)" };
+      const baseAnswerText = finalAnswer || "(代理无响应)";
+      let finalAnswerText = baseAnswerText;
+      try {
+        const adrProcessed = processAdrBlocks(baseAnswerText, detectWorkspace());
+        finalAnswerText = adrProcessed.finalText || baseAnswerText;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        finalAnswerText = `${baseAnswerText}\n\n---\nADR warning: failed to record ADR (${message})`;
+      }
+      const finalText = planText ? `${planText}\n\n${finalAnswerText}` : finalAnswerText;
+      return { output: finalText };
     } finally {
       unsubscribe();
       renderer.cleanup();

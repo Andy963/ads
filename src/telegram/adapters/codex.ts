@@ -31,6 +31,8 @@ import { createLogger } from '../../utils/logger.js';
 import { stripLeadingTranslation } from '../../utils/assistantText.js';
 import { formatExploredEntry, type ExploredEntry } from '../../utils/activityTracker.js';
 import { ADS_STRUCTURED_OUTPUT_SCHEMA, parseStructuredOutput, type StructuredPlanItem } from '../../utils/structuredOutput.js';
+import { processAdrBlocks } from '../../utils/adrRecording.js';
+import { detectWorkspaceFrom } from '../../workspace/detector.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
@@ -925,6 +927,17 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       await maybeSendStructuredPlan(structured.plan);
     }
 
+    const workspaceRootForAdr = detectWorkspaceFrom(workspaceRoot);
+    let outputToSend = finalOutput;
+    try {
+      const adrProcessed = processAdrBlocks(finalOutput, workspaceRootForAdr);
+      outputToSend = adrProcessed.finalText || finalOutput;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logWarning(`[ADR] Failed to record ADR: ${message}`, error);
+      outputToSend = `${finalOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
+    }
+
     // 确保 logger 存在（如果是新 thread，现在才有 threadId）
     if (!logger) {
       logger = sessionManager.ensureLogger(userId);
@@ -935,20 +948,20 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
 
     // 记录 AI 回复（不含 token 统计，除非开启）
     if (logger) {
-      logger.logOutput(finalOutput);
+      logger.logOutput(outputToSend);
     }
-    historyStore.add(historyKey, { role: "ai", text: finalOutput, ts: Date.now() });
+    historyStore.add(historyKey, { role: "ai", text: outputToSend, ts: Date.now() });
 
     if (markNoteEnabled && userLogEntry) {
       try {
-        appendMarkNoteEntry(workspaceRoot, userLogEntry, finalOutput);
+        appendMarkNoteEntry(workspaceRoot, userLogEntry, outputToSend);
       } catch (error) {
         logWarning('[CodexAdapter] Failed to append mark note', error);
       }
     }
 
     // 发送最终响应
-    const renderText = finalOutput;
+    const renderText = outputToSend;
     let fallbackNotified = false;
     const notifyFallback = async () => {
       if (fallbackNotified) return;

@@ -35,6 +35,7 @@ import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
 import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { extractTextFromInput } from "../utils/inputText.js";
+import { processAdrBlocks } from "../utils/adrRecording.js";
 
 import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
 
@@ -522,17 +523,26 @@ async function start(): Promise<void> {
             const rawResponse =
               typeof result.response === "string" ? result.response : String(result.response ?? "");
             const finalOutput = stripLeadingTranslation(rawResponse);
+            const workspaceRootForAdr = detectWorkspaceFrom(turnCwd);
+            let outputToSend = finalOutput;
+            try {
+              const adrProcessed = processAdrBlocks(finalOutput, workspaceRootForAdr);
+              outputToSend = adrProcessed.finalText || finalOutput;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              outputToSend = `${finalOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
+            }
             if (lastPlanItems) {
               ws.send(JSON.stringify({ type: "plan", items: lastPlanItems }));
             }
-            ws.send(JSON.stringify({ type: "result", ok: true, output: finalOutput }));
+            ws.send(JSON.stringify({ type: "result", ok: true, output: outputToSend }));
             if (sessionLogger) {
               sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
-              sessionLogger.logOutput(finalOutput);
+              sessionLogger.logOutput(outputToSend);
             }
             historyStore.add(historyKey, {
               role: "ai",
-              text: finalOutput,
+              text: outputToSend,
               ts: Date.now(),
             });
             const threadId = orchestrator.getThreadId();
