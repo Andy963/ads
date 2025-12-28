@@ -39,6 +39,9 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 .vscode/
+.gemini
+.claude
+.codex
 .idea/
 *.swp
 ads.db
