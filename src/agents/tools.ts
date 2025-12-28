@@ -6,8 +6,12 @@ import type { AgentRunResult } from "./types.js";
 import { SearchTool } from "../tools/index.js";
 import { ensureApiKeys, resolveSearchConfig } from "../tools/search/config.js";
 import { checkTavilySetup } from "../tools/search/setupCodexMcp.js";
-import type { SearchParams, SearchResponse } from "../tools/search/types.js";
+import type { SearchParams } from "../tools/search/types.js";
+import { formatSearchResults } from "../tools/search/format.js";
 import { createLogger } from "../utils/logger.js";
+import { runVectorSearch } from "../vectorSearch/run.js";
+import { loadVectorSearchConfig } from "../vectorSearch/config.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
 
 interface ToolInvocation {
   name: string;
@@ -48,6 +52,7 @@ const FILE_DEFAULT_MAX_WRITE_BYTES = 1024 * 1024;
 const PATCH_DEFAULT_MAX_BYTES = 512 * 1024;
 
 const logger = createLogger("AgentTools");
+const PARALLEL_TOOL_NAMES = new Set(["read", "grep", "find", "search", "vsearch"]);
 
 function createAbortError(message = "用户中断了请求"): Error {
   const abortError = new Error(message);
@@ -226,29 +231,6 @@ function parseSearchParams(raw: string): SearchParams {
   return params;
 }
 
-function formatSearchResults(query: string, response: SearchResponse): string {
-  const lines: string[] = [];
-  lines.push(`🔎 搜索：${truncate(query, 96)}`);
-
-  if (response.results.length === 0) {
-    lines.push("未找到结果。");
-  } else {
-    response.results.forEach((item, index) => {
-      const title = item.title || "Untitled";
-      const url = item.url ? ` ${item.url}` : "";
-      const snippet = item.snippet || item.content || "";
-      const snippetPart = snippet ? ` - ${truncate(snippet, 140)}` : "";
-      lines.push(`${index + 1}. ${title}${url}${snippetPart}`);
-    });
-  }
-
-  const tookMs = response.meta?.tookMs ?? 0;
-  const total = response.meta?.total ?? response.results.length;
-  lines.push(`(共 ${total} 条，展示 ${response.results.length} 条，用时 ${tookMs}ms)`);
-
-  return lines.join("\n");
-}
-
 async function handleSearchTool(payload: string): Promise<string> {
   const params = parseSearchParams(payload);
   const config = resolveSearchConfig();
@@ -261,10 +243,52 @@ async function handleSearchTool(payload: string): Promise<string> {
   return formatSearchResults(params.query, result);
 }
 
+async function handleVectorSearchTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  const query = payload.trim();
+  if (!query) {
+    throw new Error("vsearch 需要提供查询字符串");
+  }
+  const workspaceRoot = detectWorkspaceFrom(context.cwd || process.cwd());
+  return runVectorSearch({
+    workspaceRoot,
+    query,
+    entryNamespace: "agent",
+  });
+}
+
+async function runAgentTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  if (!context.invokeAgent) {
+    throw new Error("当前上下文不支持调用协作代理");
+  }
+  try {
+    const parsed = JSON.parse(payload);
+    const agentId = parsed.agentId || parsed.agent_id || parsed.agent;
+    const prompt = parsed.prompt || parsed.input || parsed.query;
+    if (!agentId || !prompt) {
+      throw new Error("agent 工具需要 agentId 和 prompt 参数");
+    }
+    return await context.invokeAgent(agentId, prompt);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("agent 工具需要")) {
+      throw error;
+    }
+    // Fallback to raw payload as prompt if not JSON
+    const lines = payload.trim().split("\n");
+    const firstLine = lines[0].trim();
+    const agentId = firstLine;
+    const prompt = lines.slice(1).join("\n").trim();
+    if (!agentId || !prompt) {
+      throw new Error("agent 工具格式错误。请使用 JSON 或首行 agentId 后跟 prompt。");
+    }
+    return await context.invokeAgent(agentId, prompt);
+  }
+}
+
 export interface ToolExecutionContext {
   cwd?: string;
   allowedDirs?: string[];
   signal?: AbortSignal;
+  invokeAgent?: (agentId: string, prompt: string) => Promise<string>;
 }
 
 function resolveBaseDir(context: ToolExecutionContext): string {
@@ -1332,6 +1356,10 @@ async function runTool(name: string, payload: string, context: ToolExecutionCont
   switch (name) {
     case "search":
       return handleSearchTool(payload);
+    case "vsearch":
+      return handleVectorSearchTool(payload, context);
+    case "agent":
+      return runAgentTool(payload, context);
     case "exec":
       return runExecTool(payload, context);
     case "read":
@@ -1397,42 +1425,85 @@ export async function executeToolBlocks(
     return { replacedText: text, strippedText: text, results: [], summaries: [] };
   }
 
-  let replacedText = text;
-  const results: ToolExecutionResult[] = [];
-  const summaries: ToolCallSummary[] = [];
-
-  for (const invocation of invocations) {
+  const executeInvocation = async (
+    invocation: ToolInvocation,
+  ): Promise<{ invocation: ToolInvocation; result: ToolExecutionResult; summary: ToolCallSummary }> => {
     throwIfAborted(context.signal);
-    await hooks?.onInvoke?.(invocation.name, invocation.payload);
     try {
       throwIfAborted(context.signal);
       const output = await runTool(invocation.name, invocation.payload, context);
-      replacedText = replacedText.replace(invocation.raw, output);
-      results.push({ tool: invocation.name, payload: invocation.payload, ok: true, output });
-      const summary: ToolCallSummary = {
-        tool: invocation.name,
-        ok: true,
-        inputPreview: truncate(invocation.payload),
-        outputPreview: truncate(output),
+      return {
+        invocation,
+        result: { tool: invocation.name, payload: invocation.payload, ok: true, output },
+        summary: {
+          tool: invocation.name,
+          ok: true,
+          inputPreview: truncate(invocation.payload),
+          outputPreview: truncate(output),
+        },
       };
-      summaries.push(summary);
-      await hooks?.onResult?.(summary);
     } catch (error) {
       if (context.signal?.aborted || isAbortError(error)) {
         throw error instanceof Error ? error : createAbortError();
       }
       const message = error instanceof Error ? error.message : String(error);
       const fallback = `⚠️ 工具 ${invocation.name} 失败：${message}`;
-      replacedText = replacedText.replace(invocation.raw, fallback);
-      results.push({ tool: invocation.name, payload: invocation.payload, ok: false, output: fallback, error: message });
-      const summary: ToolCallSummary = {
-        tool: invocation.name,
-        ok: false,
-        inputPreview: truncate(invocation.payload),
-        outputPreview: truncate(fallback),
+      return {
+        invocation,
+        result: {
+          tool: invocation.name,
+          payload: invocation.payload,
+          ok: false,
+          output: fallback,
+          error: message,
+        },
+        summary: {
+          tool: invocation.name,
+          ok: false,
+          inputPreview: truncate(invocation.payload),
+          outputPreview: truncate(fallback),
+        },
       };
-      summaries.push(summary);
-      await hooks?.onResult?.(summary);
+    }
+  };
+
+  const results: ToolExecutionResult[] = [];
+  const summaries: ToolCallSummary[] = [];
+  let replacedText = text;
+
+  let idx = 0;
+  while (idx < invocations.length) {
+    const current = invocations[idx]!;
+
+    if (!PARALLEL_TOOL_NAMES.has(current.name)) {
+      throwIfAborted(context.signal);
+      await hooks?.onInvoke?.(current.name, current.payload);
+      const item = await executeInvocation(current);
+      replacedText = replacedText.replace(item.invocation.raw, item.result.output);
+      results.push(item.result);
+      summaries.push(item.summary);
+      await hooks?.onResult?.(item.summary);
+      idx += 1;
+      continue;
+    }
+
+    const batch: ToolInvocation[] = [];
+    while (idx < invocations.length && PARALLEL_TOOL_NAMES.has(invocations[idx]!.name)) {
+      batch.push(invocations[idx]!);
+      idx += 1;
+    }
+
+    for (const invocation of batch) {
+      throwIfAborted(context.signal);
+      await hooks?.onInvoke?.(invocation.name, invocation.payload);
+    }
+
+    const batchResults = await Promise.all(batch.map((invocation) => executeInvocation(invocation)));
+    for (const item of batchResults) {
+      replacedText = replacedText.replace(item.invocation.raw, item.result.output);
+      results.push(item.result);
+      summaries.push(item.summary);
+      await hooks?.onResult?.(item.summary);
     }
   }
 
@@ -1443,6 +1514,7 @@ export function injectToolGuide(
   input: string,
   options?: {
     activeAgentId?: string;
+    invokeAgentEnabled?: boolean;
   },
 ): string {
   const activeAgentId = options?.activeAgentId ?? "codex";
@@ -1459,6 +1531,11 @@ export function injectToolGuide(
     return !mcpStatus.configured;
   };
 
+  const wantsVectorSearchGuide = () => {
+    const { config } = loadVectorSearchConfig();
+    return !!config?.enabled;
+  };
+
   const guideLines: string[] = [];
 
   if (usesToolBlocks && wantsSearchGuide()) {
@@ -1468,6 +1545,29 @@ export function injectToolGuide(
         "search - 调用 Tavily 搜索，格式：",
         "<<<tool.search",
         '{"query":"关键词","maxResults":5,"lang":"en"}',
+        ">>>",
+      ].join("\n"),
+    );
+  }
+
+  if (usesToolBlocks && wantsVectorSearchGuide()) {
+    guideLines.push(
+      [
+        "【可用工具】",
+        "vsearch - 调用本地向量搜索（语义搜索），可检索 Spec 文档、ADR 和历史对话，格式：",
+        "<<<tool.vsearch",
+        "如何实现用户认证？",
+        ">>>",
+      ].join("\n"),
+    );
+  }
+
+  if (usesToolBlocks && options?.invokeAgentEnabled) {
+    guideLines.push(
+      [
+        "agent - 调用协作代理协助处理子任务，格式：",
+        "<<<tool.agent",
+        '{"agentId":"claude","prompt":"请帮我润色这段文档..."}',
         ">>>",
       ].join("\n"),
     );

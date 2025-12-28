@@ -46,10 +46,12 @@ import { ADS_STRUCTURED_OUTPUT_SCHEMA, formatPlanForCli, parseStructuredOutput }
 import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
 import { setStatusLineManager, withStatusLineSuppressed } from "../utils/statusLineManager.js";
 import { stringDisplayWidth, truncateToWidth } from "../utils/terminalText.js";
-import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
-import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
+import { SearchTool } from "../tools/index.js";
+import { ensureApiKeys, resolveSearchConfig } from "../tools/search/config.js";
+import { formatSearchResults } from "../tools/search/format.js";
 import { formatExploredEntry, type ExploredEntry } from "../utils/activityTracker.js";
 import { processAdrBlocks } from "../utils/adrRecording.js";
+import { runVectorSearch, syncVectorSearch } from "../vectorSearch/run.js";
 
 interface CommandResult {
   output: string;
@@ -1126,21 +1128,46 @@ async function handleLine(
     return handleAdsCommand(slash.command, rawArgs, logger);
   }
 
-  if (slash) {
-    switch (slash.command) {
-      case "search": {
-        const query = slash.body.trim();
-        const config = getWorkspaceHistoryConfig();
-        const result = searchWorkspaceHistory({
-          workspaceRoot,
-          query,
-          engine: config.searchEngine,
-          scanLimit: config.searchScanLimit,
-          maxResults: config.searchMaxResults,
-          maxChars: config.maxChars,
-        });
-        return { output: result.output, history: { role: "status", kind: "command" } };
-      }
+      if (slash) {
+        switch (slash.command) {
+          case "vsearch": {
+            const query = slash.body.trim();
+            const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "cli" });
+            return { output, history: { role: "status", kind: "command" } };
+          }
+          case "vsearch.sync": {
+            console.log(pc.cyan("⏳ 正在同步向量索引..."));
+            const result = await syncVectorSearch({ workspaceRoot });
+            if (result.ok) {
+              return { output: pc.green(`✅ ${result.message}`), history: { role: "status", kind: "command" } };
+            } else {
+              return { output: pc.red(`❌ ${result.message}`), history: { role: "status", kind: "command" } };
+            }
+          }
+          case "search": {
+            const query = slash.body.trim();
+            if (!query) {
+              return { output: "用法: /search <query>", history: { role: "status", kind: "command" } };
+            }
+            const config = resolveSearchConfig();
+            const missingKeys = ensureApiKeys(config);
+            if (missingKeys) {
+              return {
+                output: `❌ /search 未启用: ${missingKeys.message}`,
+                history: { role: "status", kind: "command" },
+              };
+            }
+            try {
+              const result = await SearchTool.search({ query }, { config });
+              return {
+                output: formatSearchResults(query, result),
+                history: { role: "status", kind: "command" },
+              };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              return { output: `❌ /search 失败: ${message}`, history: { role: "status", kind: "command" } };
+            }
+          }
       case "reset":
       case "codex.reset":
         orchestrator.reset();

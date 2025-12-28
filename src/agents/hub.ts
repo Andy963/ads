@@ -235,14 +235,19 @@ function resolveAgentName(orchestrator: HybridOrchestrator, agentId: AgentIdenti
   return descriptor?.metadata.name ?? agentId;
 }
 
-function applyGuides(input: Input, orchestrator: HybridOrchestrator, agentId: AgentIdentifier): Input {
+function applyGuides(
+  input: Input,
+  orchestrator: HybridOrchestrator,
+  agentId: AgentIdentifier,
+  invokeAgentEnabled?: boolean,
+): Input {
   if (typeof input === "string") {
-    const withTools = injectToolGuide(input, { activeAgentId: agentId });
+    const withTools = injectToolGuide(input, { activeAgentId: agentId, invokeAgentEnabled });
     return injectDelegationGuide(withTools, orchestrator);
   }
 
   if (Array.isArray(input)) {
-    const toolGuide = injectToolGuide("", { activeAgentId: agentId }).trim();
+    const toolGuide = injectToolGuide("", { activeAgentId: agentId, invokeAgentEnabled }).trim();
     const delegationGuide = injectDelegationGuide("", orchestrator).trim();
     const guide = [toolGuide, delegationGuide].filter(Boolean).join("\n\n").trim();
     if (!guide) {
@@ -432,7 +437,25 @@ export async function runCollaborativeTurn(
   };
   const toolContext: ToolExecutionContext = options.toolContext ?? { cwd: process.cwd() };
 
-  const prompt = applyGuides(input, orchestrator, activeAgentId);
+  // 提供 invokeAgent 能力，允许 Agent 通过工具调用其他 Agent
+  if (!toolContext.invokeAgent) {
+    toolContext.invokeAgent = async (agentId: string, prompt: string) => {
+      const agentResult = await runAgentTurnWithTools(
+        orchestrator,
+        agentId as AgentIdentifier,
+        injectToolGuide(prompt, { activeAgentId: agentId }),
+        { streaming: false, signal: options.signal },
+        {
+          maxToolRounds: maxToolRounds,
+          toolContext,
+          toolHooks,
+        },
+      );
+      return agentResult.response;
+    };
+  }
+
+  const prompt = applyGuides(input, orchestrator, activeAgentId, !!toolContext.invokeAgent);
   try {
     let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
       maxToolRounds,

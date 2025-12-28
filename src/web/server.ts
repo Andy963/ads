@@ -31,11 +31,13 @@ import { runCollaborativeTurn } from "../agents/hub.js";
 import type { ExploredEntry } from "../utils/activityTracker.js";
 import { syncWorkspaceTemplates } from "../workspace/service.js";
 import { HistoryStore } from "../utils/historyStore.js";
-import { getWorkspaceHistoryConfig } from "../utils/workspaceHistoryConfig.js";
-import { searchWorkspaceHistory } from "../utils/workspaceSearch.js";
+import { SearchTool } from "../tools/index.js";
+import { ensureApiKeys, resolveSearchConfig } from "../tools/search/config.js";
+import { formatSearchResults } from "../tools/search/format.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { extractTextFromInput } from "../utils/inputText.js";
 import { processAdrBlocks } from "../utils/adrRecording.js";
+import { runVectorSearch } from "../vectorSearch/run.js";
 
 import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
 
@@ -411,23 +413,41 @@ async function start(): Promise<void> {
             historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
           }
           const promptText = extractTextFromInput(promptInput.input).trim();
-          const historyWorkspaceRoot = detectWorkspaceFrom(currentCwd);
-          const config = getWorkspaceHistoryConfig();
 
           const promptSlash = parseSlashCommand(promptText);
           if (promptSlash?.command === "search") {
             const query = promptSlash.body.trim();
-            const result = searchWorkspaceHistory({
-              workspaceRoot: historyWorkspaceRoot,
-              query,
-              engine: config.searchEngine,
-              scanLimit: config.searchScanLimit,
-              maxResults: config.searchMaxResults,
-              maxChars: config.maxChars,
-            });
-            ws.send(JSON.stringify({ type: "result", ok: true, output: result.output }));
-            sessionLogger?.logOutput(result.output);
-            historyStore.add(historyKey, { role: "status", text: result.output, ts: Date.now(), kind: "command" });
+            if (!query) {
+              const output = "用法: /search <query>";
+              ws.send(JSON.stringify({ type: "result", ok: false, output }));
+              sessionLogger?.logError(output);
+              historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+              cleanupAttachments();
+              return;
+            }
+            const config = resolveSearchConfig();
+            const missingKeys = ensureApiKeys(config);
+            if (missingKeys) {
+              const output = `❌ /search 未启用: ${missingKeys.message}`;
+              ws.send(JSON.stringify({ type: "result", ok: false, output }));
+              sessionLogger?.logError(output);
+              historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+              cleanupAttachments();
+              return;
+            }
+            try {
+              const result = await SearchTool.search({ query }, { config });
+              const output = formatSearchResults(query, result);
+              ws.send(JSON.stringify({ type: "result", ok: true, output }));
+              sessionLogger?.logOutput(output);
+              historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              const output = `❌ /search 失败: ${message}`;
+              ws.send(JSON.stringify({ type: "result", ok: false, output }));
+              sessionLogger?.logError(output);
+              historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+            }
             cleanupAttachments();
             return;
           }
@@ -582,21 +602,46 @@ async function start(): Promise<void> {
       historyStore.add(historyKey, { role: "user", text: command, ts: Date.now(), kind: "command" });
 
       const slash = parseSlashCommand(command);
-      if (slash?.command === "search") {
+      if (slash?.command === "vsearch") {
         const query = slash.body.trim();
         const workspaceRoot = detectWorkspaceFrom(currentCwd);
-        const config = getWorkspaceHistoryConfig();
-        const result = searchWorkspaceHistory({
-          workspaceRoot,
-          query,
-          engine: config.searchEngine,
-          scanLimit: config.searchScanLimit,
-          maxResults: config.searchMaxResults,
-          maxChars: config.maxChars,
-        });
-        ws.send(JSON.stringify({ type: "result", ok: true, output: result.output }));
-        sessionLogger?.logOutput(result.output);
-        historyStore.add(historyKey, { role: "status", text: result.output, ts: Date.now(), kind: "command" });
+        const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "web" });
+        ws.send(JSON.stringify({ type: "result", ok: true, output }));
+        sessionLogger?.logOutput(output);
+        historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
+        return;
+      }
+      if (slash?.command === "search") {
+        const query = slash.body.trim();
+        if (!query) {
+          const output = "用法: /search <query>";
+          ws.send(JSON.stringify({ type: "result", ok: false, output }));
+          sessionLogger?.logError(output);
+          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+          return;
+        }
+        const config = resolveSearchConfig();
+        const missingKeys = ensureApiKeys(config);
+        if (missingKeys) {
+          const output = `❌ /search 未启用: ${missingKeys.message}`;
+          ws.send(JSON.stringify({ type: "result", ok: false, output }));
+          sessionLogger?.logError(output);
+          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+          return;
+        }
+        try {
+          const result = await SearchTool.search({ query }, { config });
+          const output = formatSearchResults(query, result);
+          ws.send(JSON.stringify({ type: "result", ok: true, output }));
+          sessionLogger?.logOutput(output);
+          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const output = `❌ /search 失败: ${message}`;
+          ws.send(JSON.stringify({ type: "result", ok: false, output }));
+          sessionLogger?.logError(output);
+          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+        }
         return;
       }
       if (slash?.command === "pwd") {

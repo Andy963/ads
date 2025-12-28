@@ -24,6 +24,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-templates.js",
+    "postbuild": "node scripts/chmod-bins.js",
     "start": "node dist/src/ads.js",
     "dev": "tsx watch src/ads.ts",
     "test": "tsx --test tests/**/*.test.ts",
