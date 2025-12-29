@@ -1515,10 +1515,11 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
         setWsState('connected', sessionIdToUse);
         resetIdleTimer();
         setLocked(false);
-        // flush pending sends
+        // flush pending sends (skip entries with null/undefined payload to avoid server errors)
         const pending = [...conn.pendingSends];
         conn.pendingSends = [];
         pending.forEach(({ type, payload }) => {
+          if (payload == null) return; // skip invalid payloads from state restoration
           try {
             conn.ws?.send(JSON.stringify({ type, payload }));
           } catch {
