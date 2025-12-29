@@ -606,9 +606,12 @@ async function start(): Promise<void> {
         const query = slash.body.trim();
         const workspaceRoot = detectWorkspaceFrom(currentCwd);
         const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "web" });
-        ws.send(JSON.stringify({ type: "result", ok: true, output }));
-        sessionLogger?.logOutput(output);
-        historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
+        const note =
+          "ℹ️ 提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
+        const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
+        ws.send(JSON.stringify({ type: "result", ok: true, output: decorated }));
+        sessionLogger?.logOutput(decorated);
+        historyStore.add(historyKey, { role: "status", text: decorated, ts: Date.now(), kind: "command" });
         return;
       }
       if (slash?.command === "search") {

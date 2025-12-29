@@ -197,10 +197,10 @@ async function main() {
   // 创建 Bot 实例
   const clientConfig = config.proxyUrl
     ? {
-        baseFetchConfig: {
-          agent: new HttpsProxyAgent(config.proxyUrl),
-        },
-      }
+      baseFetchConfig: {
+        agent: new HttpsProxyAgent(config.proxyUrl),
+      },
+    }
     : undefined;
 
   const bot = new Bot(config.botToken, clientConfig ? { client: clientConfig } : undefined);
@@ -236,26 +236,26 @@ async function main() {
   bot.use(createRateLimitMiddleware(config.maxRequestsPerMinute));
 
   // 注册命令列表（显示在 Telegram 输入框）
-		  try {
-		    await bot.api.setMyCommands([
-		      { command: 'start', description: '欢迎信息' },
-		      { command: 'help', description: '命令帮助' },
-		      { command: 'ads', description: 'ADS 命令' },
-	      { command: 'status', description: '系统状态' },
-	      { command: 'esc', description: '中断当前任务' },
-	      { command: 'reset', description: '开始新对话' },
-	      { command: 'resume', description: '恢复之前的对话' },
-	      { command: 'mark', description: '记录对话到笔记' },
-	      { command: 'model', description: '查看/切换模型' },
-	      { command: 'agent', description: '查看/切换代理' },
-	      { command: 'pwd', description: '当前目录' },
-		      { command: 'cd', description: '切换目录' },
-		      { command: 'search', description: '网络搜索（Tavily）' },
-		      { command: 'vsearch', description: '语义搜索' },
-		      { command: 'vsearch_sync', description: '手动同步向量索引' },
-		    ]);
-		    logger.info('Telegram commands registered');
-		  } catch (error) {
+  try {
+    await bot.api.setMyCommands([
+      { command: 'start', description: '欢迎信息' },
+      { command: 'help', description: '命令帮助' },
+      { command: 'ads', description: 'ADS 命令' },
+      { command: 'status', description: '系统状态' },
+      { command: 'esc', description: '中断当前任务' },
+      { command: 'reset', description: '开始新对话' },
+      { command: 'resume', description: '恢复之前的对话' },
+      { command: 'mark', description: '记录对话到笔记' },
+      { command: 'model', description: '查看/切换模型' },
+      { command: 'agent', description: '查看/切换代理' },
+      { command: 'pwd', description: '当前目录' },
+      { command: 'cd', description: '切换目录' },
+      { command: 'search', description: '网络搜索（Tavily）' },
+      { command: 'vsearch', description: '语义搜索' },
+      { command: 'vsearch_sync', description: '手动同步向量索引' },
+    ]);
+    logger.info('Telegram commands registered');
+  } catch (error) {
     logger.warn(`Failed to register Telegram commands (will continue): ${(error as Error).message}`);
   }
 
@@ -267,13 +267,13 @@ async function main() {
       '/help - 查看所有命令\n' +
       '/status - 查看系统状态\n' +
       '/reset - 重置会话\n' +
-	      '/mark - 切换对话标记，记录到当天 note\n' +
-	      '/search <query> - 网络搜索（Tavily）\n' +
-	      '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
-	      '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
-	      '/pwd - 查看当前目录\n' +
-	      '/cd <path> - 切换目录\n' +
-	      '/agent [name] - 查看或切换可用代理\n' +
+      '/mark - 切换对话标记，记录到当天 note\n' +
+      '/search <query> - 网络搜索（Tavily）\n' +
+      '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
+      '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
+      '/pwd - 查看当前目录\n' +
+      '/cd <path> - 切换目录\n' +
+      '/agent [name] - 查看或切换可用代理\n' +
       '使用 /ads.status、/ads.new、/ads.commit 等命令执行 ADS 操作\n\n' +
       '直接发送文本与 Codex 对话'
     );
@@ -286,15 +286,15 @@ async function main() {
       '/start - 欢迎信息\n' +
       '/help - 显示此帮助\n' +
       '/status - 系统状态\n' +
-	      '/reset - 重置会话（开始新对话）\n' +
-	      '/resume - 恢复之前的对话\n' +
-	      '/mark - 切换对话标记（记录每日 note）\n' +
-	      '/search <query> - 网络搜索（Tavily）\n' +
-	      '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
-	      '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
-	      '/model [name] - 查看/切换模型\n' +
-	      '/agent [name] - 查看/切换代理\n' +
-	      '/esc - 中断当前任务（Agent 保持运行）\n\n' +
+      '/reset - 重置会话（开始新对话）\n' +
+      '/resume - 恢复之前的对话\n' +
+      '/mark - 切换对话标记（记录每日 note）\n' +
+      '/search <query> - 网络搜索（Tavily）\n' +
+      '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
+      '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
+      '/model [name] - 查看/切换模型\n' +
+      '/agent [name] - 查看/切换代理\n' +
+      '/esc - 中断当前任务（Agent 保持运行）\n\n' +
       '📁 目录管理：\n' +
       '/pwd - 当前工作目录\n' +
       '/cd <path> - 切换目录\n\n' +
@@ -326,13 +326,13 @@ async function main() {
         return `${marker} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`;
       })
       .join('\n');
-    
+
     const sandboxEmoji = {
       'read-only': '🔒',
       'workspace-write': '✏️',
       'danger-full-access': '⚠️'
     }[stats.sandboxMode];
-    
+
     await ctx.reply(
       '📊 系统状态\n\n' +
       `💬 会话统计: ${stats.active} 活跃 / ${stats.total} 总数\n` +
@@ -405,12 +405,12 @@ async function main() {
     const userId = await requireUserId(ctx, '/model');
     if (userId === null) return;
     const args = ctx.message?.text.split(' ').slice(1) || [];
-    
+
     if (args.length === 0) {
       // 查看当前模型
       const currentModel = sessionManager.getUserModel(userId);
       const defaultModel = sessionManager.getDefaultModel();
-      
+
       await ctx.reply(
         `🤖 模型设置\n\n` +
         `当前模型: ${currentModel}\n` +
@@ -425,7 +425,7 @@ async function main() {
         await ctx.reply('❌ 请提供模型名称');
         return;
       }
-      
+
       sessionManager.setUserModel(userId, newModel);
       await ctx.reply(`✅ 已切换到模型: ${newModel}\n会话已重置，可以开始新对话`);
     }
@@ -526,7 +526,10 @@ async function main() {
     const cwd = directoryManager.getUserCwd(userId);
     const workspaceRoot = detectWorkspaceFrom(cwd);
     const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: 'telegram' });
-    await ctx.reply(output, { disable_notification: silentNotifications });
+    const note =
+      "ℹ️ 提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
+    const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
+    await ctx.reply(decorated, { disable_notification: silentNotifications });
   });
 
   bot.command('vsearch_sync', async (ctx) => {
@@ -534,10 +537,10 @@ async function main() {
     if (userId === null) return;
     const cwd = directoryManager.getUserCwd(userId);
     const workspaceRoot = detectWorkspaceFrom(cwd);
-    
+
     await ctx.reply('⏳ 正在同步向量索引...');
     const result = await syncVectorSearch({ workspaceRoot });
-    
+
     if (result.ok) {
       await ctx.reply(`✅ ${result.message}`, { disable_notification: silentNotifications });
     } else {
@@ -575,8 +578,7 @@ async function main() {
         const missing = initStatus.missingArtifact ?? "ADS 必需文件";
         replyMessage += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。`;
         logger.warn(
-          `[Telegram][WorkspaceInit] path=${newCwd} missing=${missing}${
-            initStatus.details ? ` details=${initStatus.details}` : ""
+          `[Telegram][WorkspaceInit] path=${newCwd} missing=${missing}${initStatus.details ? ` details=${initStatus.details}` : ""
           }`,
         );
 
@@ -636,10 +638,10 @@ async function main() {
       await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
       return;
     }
-    
+
     // 获取最高分辨率的图片
     const photo = photos[photos.length - 1];
-    
+
     await handleCodexMessage(
       ctx,
       caption,
@@ -667,13 +669,13 @@ async function main() {
       await ctx.reply(buildWorkspaceInitReminder(initStatus, cwd));
       return;
     }
-    
+
     // 检查文件大小
     if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
       await ctx.reply('❌ 文件过大，限制 20MB');
       return;
     }
-    
+
     await handleCodexMessage(
       ctx,
       caption,

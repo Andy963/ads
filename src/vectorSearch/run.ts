@@ -56,116 +56,200 @@ function splitBatches<T>(items: T[], batchSize: number): T[][] {
   return batches;
 }
 
-export async function runVectorSearch(params: {
+export type VectorSearchEntryNamespace = "cli" | "web" | "telegram" | "agent";
+
+export type VectorSearchFailureCode =
+  | "empty_query"
+  | "workspace_not_initialized"
+  | "disabled"
+  | "service_unavailable"
+  | "query_failed";
+
+export interface VectorSearchHitsResult {
+  ok: boolean;
+  code?: VectorSearchFailureCode;
+  message?: string;
+  hits: VectorQueryHit[];
+  warnings: string[];
+  topK: number;
+}
+
+export async function queryVectorSearchHits(params: {
   workspaceRoot: string;
   query: string;
-  entryNamespace: "cli" | "web" | "telegram" | "agent";
-}): Promise<string> {
-  const query = params.query.trim();
+  topK?: number;
+}): Promise<VectorSearchHitsResult> {
+  const query = String(params.query ?? "").trim();
+  const desiredTopK = Math.max(1, Number.isFinite(params.topK) ? Math.floor(params.topK!) : 8);
+  const warnings: string[] = [];
+
   if (!query) {
-    return "用法: /vsearch <query>";
+    return { ok: false, code: "empty_query", message: "empty query", hits: [], warnings, topK: desiredTopK };
   }
 
   const initStatus = checkWorkspaceInit(params.workspaceRoot);
   if (!initStatus.initialized) {
-    return [
-      "❌ 当前工作区尚未初始化，无法使用 /vsearch",
-      "💡 可用 /search 进行关键词检索，或先初始化 ADS 工作区后再试。",
-    ].join("\n");
+    return {
+      ok: false,
+      code: "workspace_not_initialized",
+      message: initStatus.details ?? "workspace not initialized",
+      hits: [],
+      warnings,
+      topK: desiredTopK,
+    };
   }
 
   const { config, error } = loadVectorSearchConfig();
   if (!config) {
-    return [
-      `❌ /vsearch 未启用: ${error ?? "unknown"}`,
-      "💡 你可以先用 /search 进行关键词检索。",
-    ].join("\n");
+    return {
+      ok: false,
+      code: "disabled",
+      message: error ?? "vector search disabled",
+      hits: [],
+      warnings,
+      topK: desiredTopK,
+    };
   }
 
-  const warnings: string[] = [];
+  const topK = Math.max(1, Number.isFinite(params.topK) ? Math.floor(params.topK!) : config.topK);
 
-  const health = await checkVectorServiceHealth({
-    baseUrl: config.baseUrl,
-    token: config.token,
-    timeoutMs: config.timeoutMs,
-  });
-  if (!health.ok) {
-    return [
-      `❌ 向量服务不可用: ${health.message ?? "health check failed"}`,
-      "💡 你可以先用 /search 进行关键词检索。",
-    ].join("\n");
-  }
+  try {
+    const health = await checkVectorServiceHealth({
+      baseUrl: config.baseUrl,
+      token: config.token,
+      timeoutMs: config.timeoutMs,
+    });
+    if (!health.ok) {
+      return {
+        ok: false,
+        code: "service_unavailable",
+        message: health.message ?? "health check failed",
+        hits: [],
+        warnings,
+        topK,
+      };
+    }
 
-  const prepared = prepareVectorUpserts({
-    workspaceRoot: params.workspaceRoot,
-    namespaces: config.namespaces,
-    historyScanLimit: config.historyScanLimit,
-    chunkMaxChars: config.chunkMaxChars,
-    chunkOverlapChars: config.chunkOverlapChars,
-  });
-  warnings.push(...prepared.warnings);
+    const prepared = prepareVectorUpserts({
+      workspaceRoot: params.workspaceRoot,
+      namespaces: config.namespaces,
+      historyScanLimit: config.historyScanLimit,
+      chunkMaxChars: config.chunkMaxChars,
+      chunkOverlapChars: config.chunkOverlapChars,
+    });
+    warnings.push(...prepared.warnings);
 
-  const itemsToUpsert = prepared.items;
-  const stateUpdates = takeLastWins(prepared.stateUpdates);
+    const itemsToUpsert = prepared.items;
+    const stateUpdates = takeLastWins(prepared.stateUpdates);
 
-  let upsertOk = true;
-  if (itemsToUpsert.length > 0) {
-    const batches = splitBatches<VectorUpsertItem>(itemsToUpsert, config.upsertBatchSize);
-    for (const batch of batches) {
-      const result = await upsertVectors({
-        baseUrl: config.baseUrl,
-        token: config.token,
-        timeoutMs: config.timeoutMs,
-        workspaceNamespace: prepared.workspaceNamespace,
-        items: batch,
-      });
-      if (!result.ok) {
-        upsertOk = false;
-        warnings.push(result.message ?? "index update failed");
+    let upsertOk = true;
+    if (itemsToUpsert.length > 0) {
+      const batches = splitBatches<VectorUpsertItem>(itemsToUpsert, config.upsertBatchSize);
+      for (const batch of batches) {
+        const result = await upsertVectors({
+          baseUrl: config.baseUrl,
+          token: config.token,
+          timeoutMs: config.timeoutMs,
+          workspaceNamespace: prepared.workspaceNamespace,
+          items: batch,
+        });
+        if (!result.ok) {
+          upsertOk = false;
+          warnings.push(result.message ?? "index update failed");
+          break;
+        }
+      }
+    }
+
+    if (upsertOk) {
+      for (const update of stateUpdates) {
+        setVectorState(params.workspaceRoot, update.key, update.value);
+      }
+    }
+
+    const queryTopK = Math.min(60, Math.max(topK * 3, topK));
+    const queryResult = await queryVectors({
+      baseUrl: config.baseUrl,
+      token: config.token,
+      timeoutMs: config.timeoutMs,
+      workspaceNamespace: prepared.workspaceNamespace,
+      query,
+      topK: queryTopK,
+    });
+    if (!queryResult.ok || !queryResult.hits) {
+      logger.warn(`[VectorSearch] query failed: ${queryResult.message ?? "unknown"}`);
+      return {
+        ok: false,
+        code: "query_failed",
+        message: queryResult.message ?? "unknown",
+        hits: [],
+        warnings,
+        topK,
+      };
+    }
+
+    const rawHits = queryResult.hits;
+    const hits: VectorQueryHit[] = [];
+    for (const raw of rawHits) {
+      const hit = toHit(raw);
+      if (!hit) continue;
+      if (isStaleFileHit(hit, prepared.fileHashes)) {
+        continue;
+      }
+      hits.push(hit);
+      if (hits.length >= topK) {
+        // We already asked for a larger topK to allow filtering; stop once enough.
         break;
       }
     }
-  }
 
-  if (upsertOk) {
-    for (const update of stateUpdates) {
-      setVectorState(params.workspaceRoot, update.key, update.value);
+    return { ok: true, hits, warnings, topK };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[VectorSearch] Failed to query vectors: ${message}`, error);
+    return { ok: false, code: "query_failed", message, hits: [], warnings, topK };
+  }
+}
+
+export async function runVectorSearch(params: {
+  workspaceRoot: string;
+  query: string;
+  entryNamespace: VectorSearchEntryNamespace;
+}): Promise<string> {
+  void params.entryNamespace;
+
+  const query = String(params.query ?? "").trim();
+  const result = await queryVectorSearchHits({ workspaceRoot: params.workspaceRoot, query });
+
+  if (!result.ok) {
+    if (result.code === "empty_query") {
+      return "用法: /vsearch <query>";
     }
-  }
-
-  const queryTopK = Math.min(60, Math.max(config.topK * 3, config.topK));
-  const queryResult = await queryVectors({
-    baseUrl: config.baseUrl,
-    token: config.token,
-    timeoutMs: config.timeoutMs,
-    workspaceNamespace: prepared.workspaceNamespace,
-    query,
-    topK: queryTopK,
-  });
-  if (!queryResult.ok || !queryResult.hits) {
-    logger.warn(`[VectorSearch] query failed: ${queryResult.message ?? "unknown"}`);
+    if (result.code === "workspace_not_initialized") {
+      return [
+        "❌ 当前工作区尚未初始化，无法使用 /vsearch",
+        "💡 可用 /search 进行关键词检索，或先初始化 ADS 工作区后再试。",
+      ].join("\n");
+    }
+    if (result.code === "disabled") {
+      return [
+        `❌ /vsearch 未启用: ${result.message ?? "unknown"}`,
+        "💡 你可以先用 /search 进行关键词检索。",
+      ].join("\n");
+    }
+    if (result.code === "service_unavailable") {
+      return [
+        `❌ 向量服务不可用: ${result.message ?? "health check failed"}`,
+        "💡 你可以先用 /search 进行关键词检索。",
+      ].join("\n");
+    }
     return [
-      `❌ 向量查询失败: ${queryResult.message ?? "unknown"}`,
+      `❌ 向量查询失败: ${result.message ?? "unknown"}`,
       "💡 你可以先用 /search 进行关键词检索。",
     ].join("\n");
   }
 
-  const rawHits = queryResult.hits;
-  const hits: VectorQueryHit[] = [];
-  for (const raw of rawHits) {
-    const hit = toHit(raw);
-    if (!hit) continue;
-    if (isStaleFileHit(hit, prepared.fileHashes)) {
-      continue;
-    }
-    hits.push(hit);
-    if (hits.length >= config.topK) {
-      // We already asked for a larger topK to allow filtering; stop once enough.
-      break;
-    }
-  }
-
-  return formatVectorSearchOutput({ query, hits, topK: config.topK, warnings });
+  return formatVectorSearchOutput({ query, hits: result.hits, topK: result.topK, warnings: result.warnings });
 }
 
 export async function syncVectorSearch(params: {

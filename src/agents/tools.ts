@@ -763,7 +763,7 @@ async function runReadTool(payload: string, context: ToolExecutionContext): Prom
       const slice = buf.subarray(0, bytesRead);
       if (slice.includes(0)) {
         throw new Error(`疑似二进制文件，拒绝读取: ${relativeHint}`);
-    }
+      }
       let text = slice.toString("utf8");
       if (request.startLine || request.endLine) {
         const start = Math.max(1, request.startLine ?? 1);

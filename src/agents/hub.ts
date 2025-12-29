@@ -14,6 +14,8 @@ import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
 import { ActivityTracker, resolveExploredConfig, type ExploredEntry, type ExploredEntryCallback } from "../utils/activityTracker.js";
+import { maybeBuildVectorAutoContext } from "../vectorSearch/context.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
 
 interface DelegationDirective {
   raw: string;
@@ -148,6 +150,63 @@ function buildToolFeedbackPrompt(toolResults: ToolExecutionResult[], round: numb
   return [header, body].filter(Boolean).join("\n").trim();
 }
 
+function extractVectorQuery(input: Input): string {
+  const text = (() => {
+    if (typeof input === "string") {
+      return input;
+    }
+    if (Array.isArray(input)) {
+      return input
+        .map((part) => (part as { type?: string; text?: string }).type === "text" ? String((part as any).text ?? "") : "")
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    return normalizeInputToText(input);
+  })().trim();
+  if (!text) {
+    return "";
+  }
+  const marker = "用户输入:";
+  const idx = text.lastIndexOf(marker);
+  if (idx >= 0) {
+    return text.slice(idx + marker.length).trim();
+  }
+  return text;
+}
+
+function injectVectorContextIntoText(text: string, context: string): string {
+  const normalizedText = String(text ?? "");
+  const normalizedContext = String(context ?? "").trim();
+  if (!normalizedContext) {
+    return normalizedText;
+  }
+
+  const marker = "用户输入:";
+  const idx = normalizedText.lastIndexOf(marker);
+  if (idx >= 0) {
+    const lineStart = normalizedText.lastIndexOf("\n", idx);
+    const insertPos = lineStart >= 0 ? lineStart + 1 : 0;
+    const before = normalizedText.slice(0, insertPos).trimEnd();
+    const after = normalizedText.slice(insertPos).trimStart();
+    return [before, normalizedContext, after].filter(Boolean).join("\n\n").trim();
+  }
+
+  return [normalizedContext, normalizedText].filter(Boolean).join("\n\n").trim();
+}
+
+function injectVectorContext(input: Input, context: string): Input {
+  if (!context.trim()) {
+    return input;
+  }
+  if (typeof input === "string") {
+    return injectVectorContextIntoText(input, context);
+  }
+  if (Array.isArray(input)) {
+    return [{ type: "text", text: context }, ...input];
+  }
+  return input;
+}
+
 async function runAgentTurnWithTools(
   orchestrator: HybridOrchestrator,
   agentId: AgentIdentifier,
@@ -181,16 +240,16 @@ async function runAgentTurnWithTools(
     const nextInput = stateful
       ? feedback
       : [
-          basePrompt,
-          "",
-          "你上一条回复（已去掉工具块）：",
-          stripToolBlocks(result.response).trim(),
-          "",
-          feedback,
-        ]
-          .filter(Boolean)
-          .join("\n\n")
-          .trim();
+        basePrompt,
+        "",
+        "你上一条回复（已去掉工具块）：",
+        stripToolBlocks(result.response).trim(),
+        "",
+        feedback,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
 
     result = await orchestrator.invokeAgent(agentId, nextInput, agentSendOptions);
   }
@@ -414,12 +473,12 @@ export async function runCollaborativeTurn(
 
   const unsubscribeExplored = exploredTracker
     ? orchestrator.onEvent((event) => {
-        try {
-          exploredTracker.ingestThreadEvent(event.raw);
-        } catch {
-          // ignore
-        }
-      })
+      try {
+        exploredTracker.ingestThreadEvent(event.raw);
+      } catch {
+        // ignore
+      }
+    })
     : () => undefined;
 
   const maxSupervisorRounds = options.maxSupervisorRounds ?? 2;
@@ -455,7 +514,16 @@ export async function runCollaborativeTurn(
     };
   }
 
-  const prompt = applyGuides(input, orchestrator, activeAgentId, !!toolContext.invokeAgent);
+  const workspaceRoot = detectWorkspaceFrom(toolContext.cwd ?? process.cwd());
+  let vectorContext: string | null = null;
+  try {
+    const vectorQuery = extractVectorQuery(input);
+    vectorContext = await maybeBuildVectorAutoContext({ workspaceRoot, query: vectorQuery });
+  } catch (error) {
+    logger.warn("[AgentHub] Failed to build vector auto context", error);
+  }
+
+  const prompt = applyGuides(injectVectorContext(input, vectorContext ?? ""), orchestrator, activeAgentId, !!toolContext.invokeAgent);
   try {
     let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
       maxToolRounds,

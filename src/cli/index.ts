@@ -364,7 +364,7 @@ function buildWorkflowContextPrompt(): string | null {
     if (workflow.review) {
       lines.push(
         `• Review 状态: ${workflow.review.status}` +
-          (workflow.review.updated_at ? ` (${workflow.review.updated_at})` : ""),
+        (workflow.review.updated_at ? ` (${workflow.review.updated_at})` : ""),
       );
     }
     if (steps.length > 0) {
@@ -1076,7 +1076,7 @@ function updateStatusLine(message: string, forceNewLine = false): void {
 
 function enableBracketedPaste(): () => void {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    return () => {};
+    return () => { };
   }
 
   let disabled = false;
@@ -1128,46 +1128,49 @@ async function handleLine(
     return handleAdsCommand(slash.command, rawArgs, logger);
   }
 
-      if (slash) {
-        switch (slash.command) {
-          case "vsearch": {
-            const query = slash.body.trim();
-            const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "cli" });
-            return { output, history: { role: "status", kind: "command" } };
-          }
-          case "vsearch.sync": {
-            console.log(pc.cyan("⏳ 正在同步向量索引..."));
-            const result = await syncVectorSearch({ workspaceRoot });
-            if (result.ok) {
-              return { output: pc.green(`✅ ${result.message}`), history: { role: "status", kind: "command" } };
-            } else {
-              return { output: pc.red(`❌ ${result.message}`), history: { role: "status", kind: "command" } };
-            }
-          }
-          case "search": {
-            const query = slash.body.trim();
-            if (!query) {
-              return { output: "用法: /search <query>", history: { role: "status", kind: "command" } };
-            }
-            const config = resolveSearchConfig();
-            const missingKeys = ensureApiKeys(config);
-            if (missingKeys) {
-              return {
-                output: `❌ /search 未启用: ${missingKeys.message}`,
-                history: { role: "status", kind: "command" },
-              };
-            }
-            try {
-              const result = await SearchTool.search({ query }, { config });
-              return {
-                output: formatSearchResults(query, result),
-                history: { role: "status", kind: "command" },
-              };
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              return { output: `❌ /search 失败: ${message}`, history: { role: "status", kind: "command" } };
-            }
-          }
+  if (slash) {
+    switch (slash.command) {
+      case "vsearch": {
+        const query = slash.body.trim();
+        const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "cli" });
+        const note =
+          "ℹ️ 提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
+        const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
+        return { output: decorated, history: { role: "status", kind: "command" } };
+      }
+      case "vsearch.sync": {
+        console.log(pc.cyan("⏳ 正在同步向量索引..."));
+        const result = await syncVectorSearch({ workspaceRoot });
+        if (result.ok) {
+          return { output: pc.green(`✅ ${result.message}`), history: { role: "status", kind: "command" } };
+        } else {
+          return { output: pc.red(`❌ ${result.message}`), history: { role: "status", kind: "command" } };
+        }
+      }
+      case "search": {
+        const query = slash.body.trim();
+        if (!query) {
+          return { output: "用法: /search <query>", history: { role: "status", kind: "command" } };
+        }
+        const config = resolveSearchConfig();
+        const missingKeys = ensureApiKeys(config);
+        if (missingKeys) {
+          return {
+            output: `❌ /search 未启用: ${missingKeys.message}`,
+            history: { role: "status", kind: "command" },
+          };
+        }
+        try {
+          const result = await SearchTool.search({ query }, { config });
+          return {
+            output: formatSearchResults(query, result),
+            history: { role: "status", kind: "command" },
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return { output: `❌ /search 失败: ${message}`, history: { role: "status", kind: "command" } };
+        }
+      }
       case "reset":
       case "codex.reset":
         orchestrator.reset();
