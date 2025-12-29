@@ -7,6 +7,7 @@ export interface VectorUpsertItem {
 export interface VectorQueryHit {
   id: string;
   score?: number;
+  rerankScore?: number;
   metadata?: Record<string, unknown>;
   snippet?: string;
   text?: string;
@@ -16,4 +17,3 @@ export interface VectorQueryResponse {
   ok: boolean;
   hits: VectorQueryHit[];
 }
-

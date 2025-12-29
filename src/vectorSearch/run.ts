@@ -1,6 +1,6 @@
 import { createLogger } from "../utils/logger.js";
 import { checkWorkspaceInit } from "../telegram/utils/workspaceInitChecker.js";
-import { checkVectorServiceHealth, queryVectors, upsertVectors } from "./client.js";
+import { checkVectorServiceHealth, queryVectors, rerankVectors, upsertVectors } from "./client.js";
 import { loadVectorSearchConfig } from "./config.js";
 import { formatVectorSearchOutput } from "./format.js";
 import { prepareVectorUpserts } from "./indexer.js";
@@ -54,6 +54,34 @@ function splitBatches<T>(items: T[], batchSize: number): T[][] {
     batches.push(items.slice(i, i + size));
   }
   return batches;
+}
+
+function applyRerankOrder(hits: VectorQueryHit[], ranked: Array<{ id: string; score?: number }>): VectorQueryHit[] {
+  const remaining = new Map<string, VectorQueryHit>();
+  hits.forEach((hit) => remaining.set(hit.id, hit));
+
+  const ordered: VectorQueryHit[] = [];
+  for (const entry of ranked) {
+    const hit = remaining.get(entry.id);
+    if (!hit) {
+      continue;
+    }
+    remaining.delete(entry.id);
+    if (entry.score !== undefined) {
+      hit.rerankScore = entry.score;
+    }
+    ordered.push(hit);
+  }
+
+  for (const hit of hits) {
+    if (!remaining.has(hit.id)) {
+      continue;
+    }
+    ordered.push(hit);
+    remaining.delete(hit.id);
+  }
+
+  return ordered;
 }
 
 export type VectorSearchEntryNamespace = "cli" | "web" | "telegram" | "agent";
@@ -197,13 +225,27 @@ export async function queryVectorSearchHits(params: {
         continue;
       }
       hits.push(hit);
-      if (hits.length >= topK) {
-        // We already asked for a larger topK to allow filtering; stop once enough.
-        break;
+    }
+
+    let finalHits = hits;
+    if (hits.length >= 2) {
+      const rerank = await rerankVectors({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs: config.timeoutMs,
+        workspaceNamespace: prepared.workspaceNamespace,
+        query,
+        hits,
+        topK,
+      });
+      if (rerank.ok && rerank.ranked && rerank.ranked.length > 0) {
+        finalHits = applyRerankOrder(hits, rerank.ranked);
+      } else if (rerank.message && rerank.message !== "rerank endpoint not found") {
+        warnings.push(rerank.message);
       }
     }
 
-    return { ok: true, hits, warnings, topK };
+    return { ok: true, hits: finalHits.slice(0, topK), warnings, topK };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`[VectorSearch] Failed to query vectors: ${message}`, error);

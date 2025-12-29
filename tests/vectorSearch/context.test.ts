@@ -118,5 +118,70 @@ describe("vectorSearch/auto-context", () => {
 
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
-});
 
+  it("reranks retrieved hits before formatting context", async () => {
+    const workspaceRoot = makeWorkspace();
+    const calls: string[] = [];
+
+    globalThis.fetch = async (url, options) => {
+      const target = String(url);
+      calls.push(target);
+      const method = String((options as any)?.method ?? "GET").toUpperCase();
+      const pathname = new URL(target).pathname;
+
+      if (pathname === "/health" && method === "GET") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/upsert" && method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/query" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            hits: [
+              {
+                id: "hit-1",
+                score: 0.95,
+                metadata: { source_type: "spec", path: "docs/spec/x/requirements.md" },
+                snippet: "First snippet",
+              },
+              {
+                id: "hit-2",
+                score: 0.9,
+                metadata: { source_type: "spec", path: "docs/spec/y/requirements.md" },
+                snippet: "Second snippet",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (pathname === "/rerank" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            hits: [
+              { id: "hit-2", rerank_score: 0.99 },
+              { id: "hit-1", rerank_score: 0.12 },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+
+      return new Response("not found", { status: 404 });
+    };
+
+    const context = await maybeBuildVectorAutoContext({ workspaceRoot, query: "继续" });
+    assert.ok(context);
+    assert.ok(calls.some((call) => call.endsWith("/rerank")));
+    assert.ok(context.indexOf("Second snippet") < context.indexOf("First snippet"));
+
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+});

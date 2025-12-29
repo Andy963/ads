@@ -72,12 +72,17 @@ export function formatVectorSearchOutput(params: {
   for (let i = 0; i < shown.length; i += 1) {
     const hit = shown[i];
     const score = toNumber(hit.score);
+    const rerankScore = toNumber(hit.rerankScore);
     const scoreText = score === undefined ? "?" : score.toFixed(3);
-    lines.push(`${i + 1}) [${scoreText}] ${refFor(hit)}`);
+    if (rerankScore !== undefined) {
+      const rerankText = rerankScore.toFixed(3);
+      lines.push(`${i + 1}) [r=${rerankText} v=${scoreText}] ${refFor(hit)}`);
+    } else {
+      lines.push(`${i + 1}) [${scoreText}] ${refFor(hit)}`);
+    }
     lines.push(`   ${snippetFor(hit)}`);
     lines.push("");
   }
 
   return lines.join("\n").trimEnd();
 }
-
