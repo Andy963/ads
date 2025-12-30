@@ -61,6 +61,9 @@ const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "0.0.0.0";
 const TOKEN = (process.env.ADS_WEB_TOKEN ?? "").trim();
 const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
+// <= 0 disables WebSocket ping keepalive.
+const pingIntervalMsRaw = Number(process.env.ADS_WEB_WS_PING_INTERVAL_MS ?? 15_000);
+const WS_PING_INTERVAL_MS = Number.isFinite(pingIntervalMsRaw) ? Math.max(0, pingIntervalMsRaw) : 15_000;
 // <= 0 disables web idle auto-lock / websocket close.
 const idleMinutesRaw = Number(process.env.ADS_WEB_IDLE_MINUTES ?? 0);
 const IDLE_MINUTES = Number.isFinite(idleMinutesRaw) ? Math.max(0, idleMinutesRaw) : 0;
@@ -97,6 +100,8 @@ function log(...args: unknown[]): void {
 type TodoListThreadEvent = (ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent) & {
   item: TodoListItem;
 };
+
+type AliveWebSocket = WebSocket & { isAlive?: boolean };
 
 function isTodoListEvent(event: ThreadEvent): event is TodoListThreadEvent {
   if (!event || (event.type !== "item.started" && event.type !== "item.updated" && event.type !== "item.completed")) {
@@ -242,6 +247,35 @@ async function start(): Promise<void> {
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
   const clients: Set<WebSocket> = new Set();
 
+  const pingTimer =
+    WS_PING_INTERVAL_MS > 0
+      ? setInterval(() => {
+          for (const ws of clients) {
+            const candidate = ws as AliveWebSocket;
+            if (candidate.readyState !== 1) {
+              continue;
+            }
+            if (candidate.isAlive === false) {
+              logger.warn("[WebSocket] terminating stale client connection");
+              try {
+                candidate.terminate();
+              } catch {
+                // ignore
+              }
+              continue;
+            }
+            candidate.isAlive = false;
+            try {
+              candidate.ping();
+            } catch {
+              // ignore
+            }
+          }
+        }, WS_PING_INTERVAL_MS)
+      : null;
+
+  pingTimer?.unref?.();
+
   wss.on("connection", (ws: WebSocket, req) => {
     const protocolHeader = req.headers["sec-websocket-protocol"];
     const parsedProtocols =
@@ -296,6 +330,11 @@ async function start(): Promise<void> {
       return;
     }
     clients.add(ws);
+    const aliveWs = ws as AliveWebSocket;
+    aliveWs.isAlive = true;
+    ws.on("pong", () => {
+      aliveWs.isAlive = true;
+    });
 
     const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
     const userId = deriveWebUserId(clientKey, sessionId);
