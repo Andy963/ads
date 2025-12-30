@@ -1,6 +1,8 @@
 import { createLogger } from "../utils/logger.js";
+import { getStateDatabase } from "../state/database.js";
 import type { VectorQueryHit } from "./types.js";
 import { queryVectorSearchHits } from "./run.js";
+import { resolveWorkspaceStateDbPath } from "./state.js";
 
 const logger = createLogger("VectorSearchContext");
 
@@ -86,6 +88,137 @@ export function resolveVectorAutoContextConfig(): VectorAutoContextConfig {
   const extras = parseCsv(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS);
   const triggerKeywords = Array.from(new Set([...DEFAULT_TRIGGER_KEYWORDS, ...extras])).filter(Boolean);
   return { enabled, topK, maxChars, minScore, minIntervalMs, triggerKeywords };
+}
+
+function normalizeForTriggerMatch(text: string): string {
+  return String(text ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function isBareTriggerQuery(query: string, triggers: string[]): boolean {
+  const normalized = normalizeForTriggerMatch(query);
+  if (!normalized) return false;
+  const triggerNorms = triggers.map(normalizeForTriggerMatch).filter(Boolean);
+  if (triggerNorms.includes(normalized)) {
+    return true;
+  }
+  for (const trigger of triggerNorms) {
+    if (!trigger) continue;
+    if (!normalized.includes(trigger)) continue;
+    // Allow small filler characters around the trigger (e.g. "继续一下", "再继续").
+    if (normalized.length <= trigger.length + 4) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function clampQuery(text: string, maxChars = 600): string {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) return "";
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+type HistoryRow = { id: number; role: string; text: string; kind: string | null };
+
+function loadRecentHistoryRows(params: {
+  workspaceRoot: string;
+  historyNamespace?: string;
+  historySessionId?: string;
+  limit: number;
+}): HistoryRow[] {
+  const dbPath = resolveWorkspaceStateDbPath(params.workspaceRoot);
+  if (!dbPath) {
+    return [];
+  }
+
+  const db = getStateDatabase(dbPath);
+  const limit = Math.max(1, Math.floor(params.limit));
+  const ns = typeof params.historyNamespace === "string" ? params.historyNamespace.trim() : "";
+  const sessionId = typeof params.historySessionId === "string" ? params.historySessionId.trim() : "";
+
+  try {
+    if (ns && sessionId) {
+      return db
+        .prepare(
+          `SELECT id, role, text, kind
+           FROM history_entries
+           WHERE namespace = ?
+             AND session_id = ?
+             AND role IN ('user','ai')
+             AND (kind IS NULL OR kind NOT IN ('command','error'))
+           ORDER BY id DESC
+           LIMIT ?`,
+        )
+        .all(ns, sessionId, limit) as HistoryRow[];
+    }
+
+    return db
+      .prepare(
+        `SELECT id, role, text, kind
+         FROM history_entries
+         WHERE role IN ('user','ai')
+           AND (kind IS NULL OR kind NOT IN ('command','error'))
+         ORDER BY id DESC
+         LIMIT ?`,
+      )
+      .all(limit) as HistoryRow[];
+  } catch (error) {
+    logger.warn("[VectorSearchContext] Failed to read recent history rows", error);
+    return [];
+  }
+}
+
+function deriveQueryFromHistory(params: {
+  workspaceRoot: string;
+  historyNamespace?: string;
+  historySessionId?: string;
+  originalQuery: string;
+  triggers: string[];
+}): string {
+  const rows = loadRecentHistoryRows({
+    workspaceRoot: params.workspaceRoot,
+    historyNamespace: params.historyNamespace,
+    historySessionId: params.historySessionId,
+    limit: 40,
+  });
+  if (rows.length === 0) {
+    return params.originalQuery;
+  }
+
+  const originalNorm = normalizeForTriggerMatch(params.originalQuery);
+  const triggers = params.triggers ?? [];
+
+  const isGood = (candidate: string, role: string): boolean => {
+    const trimmed = String(candidate ?? "").trim();
+    if (!trimmed) return false;
+    if (trimmed.startsWith("/")) return false;
+    const norm = normalizeForTriggerMatch(trimmed);
+    if (!norm) return false;
+    if (originalNorm && norm === originalNorm) return false;
+    if (isBareTriggerQuery(trimmed, triggers)) return false;
+    if (role === "ai" && trimmed.length < 16) return false;
+    return true;
+  };
+
+  for (const row of rows) {
+    if (row.role !== "user") continue;
+    if (isGood(row.text, "user")) {
+      return clampQuery(row.text);
+    }
+  }
+
+  for (const row of rows) {
+    if (row.role !== "ai") continue;
+    if (isGood(row.text, "ai")) {
+      return clampQuery(row.text);
+    }
+  }
+
+  return params.originalQuery;
 }
 
 function toNumber(value: unknown): number | undefined {
@@ -209,23 +342,35 @@ export function formatVectorAutoContext(params: {
 export async function maybeBuildVectorAutoContext(params: {
   workspaceRoot: string;
   query: string;
+  historyNamespace?: string;
+  historySessionId?: string;
 }): Promise<string | null> {
   const config = resolveVectorAutoContextConfig();
   if (!config.enabled) {
     return null;
   }
 
-  const query = String(params.query ?? "").trim();
-  if (!query) {
+  const originalQuery = String(params.query ?? "").trim();
+  if (!originalQuery) {
     return null;
   }
-  if (query.startsWith("/")) {
+  if (originalQuery.startsWith("/")) {
     return null;
   }
 
-  if (!shouldTriggerAutoContext(query, config.triggerKeywords)) {
+  if (!shouldTriggerAutoContext(originalQuery, config.triggerKeywords)) {
     return null;
   }
+
+  const query = isBareTriggerQuery(originalQuery, config.triggerKeywords)
+    ? deriveQueryFromHistory({
+        workspaceRoot: params.workspaceRoot,
+        historyNamespace: params.historyNamespace,
+        historySessionId: params.historySessionId,
+        originalQuery,
+        triggers: config.triggerKeywords,
+      })
+    : originalQuery;
 
   const cacheKey = String(params.workspaceRoot ?? "").trim();
   const now = Date.now();

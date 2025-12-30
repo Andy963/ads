@@ -537,7 +537,7 @@ async function start(): Promise<void> {
                     `[Tool] ${summary.tool} ${summary.ok ? "ok" : "fail"}: ${truncateForLog(summary.outputPreview)}`,
                   ),
               },
-              toolContext: { cwd: turnCwd, allowedDirs },
+              toolContext: { cwd: turnCwd, allowedDirs, historyNamespace: "web", historySessionId: historyKey },
             });
 
             const rawResponse =

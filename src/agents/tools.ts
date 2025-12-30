@@ -289,6 +289,8 @@ export interface ToolExecutionContext {
   allowedDirs?: string[];
   signal?: AbortSignal;
   invokeAgent?: (agentId: string, prompt: string) => Promise<string>;
+  historyNamespace?: string;
+  historySessionId?: string;
 }
 
 function resolveBaseDir(context: ToolExecutionContext): string {

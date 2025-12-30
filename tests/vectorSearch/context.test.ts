@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { getStateDatabase } from "../../src/state/database.js";
 import { maybeBuildVectorAutoContext } from "../../src/vectorSearch/context.js";
 
 function makeWorkspace(): string {
@@ -181,6 +182,75 @@ describe("vectorSearch/auto-context", () => {
     assert.ok(context);
     assert.ok(calls.some((call) => call.endsWith("/rerank")));
     assert.ok(context.indexOf("Second snippet") < context.indexOf("First snippet"));
+
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it("derives a better query from recent history when the input is only a trigger word", async () => {
+    const workspaceRoot = makeWorkspace();
+    const db = getStateDatabase(path.join(workspaceRoot, ".ads", "state.db"));
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("cli", "default", "user", "请继续实现 rerank 功能", now - 10_000, null);
+    db.prepare(
+      `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("cli", "default", "ai", "OK, implementing rerank next.", now - 9_000, null);
+    db.prepare(
+      `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("cli", "default", "user", "继续", now - 8_000, null);
+
+    let capturedQuery: string | null = null;
+
+    globalThis.fetch = async (url, options) => {
+      const target = String(url);
+      const method = String((options as any)?.method ?? "GET").toUpperCase();
+      const pathname = new URL(target).pathname;
+
+      if (pathname === "/health" && method === "GET") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/upsert" && method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/query" && method === "POST") {
+        const body = JSON.parse(String((options as any)?.body ?? "{}")) as any;
+        capturedQuery = String(body.query ?? "");
+        return new Response(
+          JSON.stringify({
+            hits: [
+              {
+                id: "hit-1",
+                score: 0.9,
+                metadata: { source_type: "spec", path: "docs/spec/x/requirements.md" },
+                snippet: "Example snippet",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const context = await maybeBuildVectorAutoContext({
+      workspaceRoot,
+      query: "继续",
+      historyNamespace: "cli",
+      historySessionId: "default",
+    });
+
+    assert.ok(context);
+    assert.equal(capturedQuery, "请继续实现 rerank 功能");
 
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });

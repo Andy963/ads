@@ -518,7 +518,12 @@ export async function runCollaborativeTurn(
   let vectorContext: string | null = null;
   try {
     const vectorQuery = extractVectorQuery(input);
-    vectorContext = await maybeBuildVectorAutoContext({ workspaceRoot, query: vectorQuery });
+    vectorContext = await maybeBuildVectorAutoContext({
+      workspaceRoot,
+      query: vectorQuery,
+      historyNamespace: toolContext.historyNamespace,
+      historySessionId: toolContext.historySessionId,
+    });
   } catch (error) {
     logger.warn("[AgentHub] Failed to build vector auto context", error);
   }

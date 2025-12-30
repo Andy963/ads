@@ -471,6 +471,8 @@ async function handleAgentInteraction(
             ? process.env.ALLOWED_DIRS.split(",").map((dir) => dir.trim()).filter(Boolean)
             : [process.cwd()],
           signal: options?.signal,
+          historyNamespace: "cli",
+          historySessionId: "default",
         },
       });
       renderer.finish();

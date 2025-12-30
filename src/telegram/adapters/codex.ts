@@ -903,7 +903,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
             `[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`,
           ),
       },
-      toolContext: { cwd: workspaceRoot, allowedDirs: [workspaceRoot] },
+      toolContext: { cwd: workspaceRoot, allowedDirs: [workspaceRoot], historyNamespace: "telegram", historySessionId: historyKey },
     });
 
     await finalizeStatusUpdates();
