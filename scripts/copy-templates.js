@@ -72,6 +72,7 @@ const entries = fs.readdirSync(SRC_DIR, { withFileTypes: true });
 const requiredFiles = new Set([
   "instructions.md",
   "rules.md",
+  "supervisor.md",
   "requirement.md",
   "design.md",
   "implementation.md",

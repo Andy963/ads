@@ -146,7 +146,7 @@ describe("agents/hub", () => {
     assert.equal(result.delegations[0]?.response, "hello from codex");
   });
 
-  it("skips tool loop for Claude", async () => {
+  it("runs tool loop for Claude", async () => {
     assert.ok(tmpDir);
     const adapter = new QueueAgentAdapter({
       id: "claude",
@@ -158,6 +158,7 @@ describe("agents/hub", () => {
           '{"path":"ignored.txt","content":"nope"}',
           ">>>",
         ].join("\n"),
+        "done",
       ],
     });
     const orchestrator = new HybridOrchestrator({
@@ -172,7 +173,7 @@ describe("agents/hub", () => {
       toolContext: { cwd: tmpDir, allowedDirs: [tmpDir] },
     });
 
-    assert.equal(result.response.includes("<<<tool.write"), true);
-    assert.equal(fs.existsSync(path.join(tmpDir, "ignored.txt")), false);
+    assert.equal(result.response, "done");
+    assert.equal(fs.existsSync(path.join(tmpDir, "ignored.txt")), true);
   });
 });

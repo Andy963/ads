@@ -16,6 +16,8 @@ import { createLogger } from "../utils/logger.js";
 import { ActivityTracker, resolveExploredConfig, type ExploredEntry, type ExploredEntryCallback } from "../utils/activityTracker.js";
 import { maybeBuildVectorAutoContext } from "../vectorSearch/context.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
+import { isCoordinatorEnabled, TaskCoordinator } from "./tasks/taskCoordinator.js";
 
 interface DelegationDirective {
   raw: string;
@@ -53,6 +55,7 @@ export interface CollaborativeTurnResult extends AgentRunResult {
 }
 
 const logger = createLogger("AgentHub");
+const supervisorPromptLoader = new SupervisorPromptLoader({ logger });
 
 const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
 
@@ -73,7 +76,8 @@ function isStatefulAgent(agentId: AgentIdentifier): boolean {
 }
 
 function shouldRunToolLoop(agentId: AgentIdentifier): boolean {
-  return agentId !== "claude";
+  void agentId;
+  return true;
 }
 
 function parseMaxRounds(raw: string | undefined): number | null {
@@ -90,6 +94,17 @@ function parseMaxRounds(raw: string | undefined): number | null {
   const parsed = Number.parseInt(normalized, 10);
   if (!Number.isFinite(parsed)) {
     return null;
+  }
+  return parsed;
+}
+
+function parsePositiveInt(value: string | undefined, defaultValue: number): number {
+  if (!value) {
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultValue;
   }
   return parsed;
 }
@@ -294,6 +309,20 @@ function resolveAgentName(orchestrator: HybridOrchestrator, agentId: AgentIdenti
   return descriptor?.metadata.name ?? agentId;
 }
 
+function injectSupervisorPrompt(input: Input, guide: string): Input {
+  const normalizedGuide = String(guide ?? "").trim();
+  if (!normalizedGuide) {
+    return input;
+  }
+  if (typeof input === "string") {
+    return [input, "", normalizedGuide].join("\n\n").trim();
+  }
+  if (Array.isArray(input)) {
+    return [...input, { type: "text", text: normalizedGuide }];
+  }
+  return [String(input ?? ""), "", normalizedGuide].join("\n\n").trim();
+}
+
 function applyGuides(
   input: Input,
   orchestrator: HybridOrchestrator,
@@ -322,6 +351,7 @@ function buildSupervisorPrompt(
   summaries: DelegationSummary[],
   rounds: number,
   supervisorName: string,
+  supervisorGuide?: string,
 ): string {
   const header = [
     "系统已执行你上一轮输出的协作代理指令块，并拿到了结果。",
@@ -348,7 +378,8 @@ function buildSupervisorPrompt(
     })
     .join("\n\n");
 
-  return [header, body].filter(Boolean).join("\n\n").trim();
+  const guide = String(supervisorGuide ?? "").trim();
+  return [header, guide, body].filter(Boolean).join("\n\n").trim();
 }
 
 async function runDelegationQueue(
@@ -515,6 +546,10 @@ export async function runCollaborativeTurn(
   }
 
   const workspaceRoot = detectWorkspaceFrom(toolContext.cwd ?? process.cwd());
+  const supervisorGuide =
+    activeAgentId === "codex" && orchestrator.listAgents().length > 1
+      ? supervisorPromptLoader.load(workspaceRoot).text
+      : "";
   let vectorContext: string | null = null;
   try {
     const vectorQuery = extractVectorQuery(input);
@@ -528,7 +563,15 @@ export async function runCollaborativeTurn(
     logger.warn("[AgentHub] Failed to build vector auto context", error);
   }
 
-  const prompt = applyGuides(injectVectorContext(input, vectorContext ?? ""), orchestrator, activeAgentId, !!toolContext.invokeAgent);
+  const prompt = applyGuides(
+    injectSupervisorPrompt(
+      injectVectorContext(input, vectorContext ?? ""),
+      supervisorGuide,
+    ),
+    orchestrator,
+    activeAgentId,
+    !!toolContext.invokeAgent,
+  );
   try {
     let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
       maxToolRounds,
@@ -539,36 +582,88 @@ export async function runCollaborativeTurn(
     let rounds = 0;
     const allDelegations: DelegationSummary[] = [];
 
-    while (rounds < maxSupervisorRounds) {
-      throwIfAborted(options.signal);
-      const directives = extractDelegationDirectives(result.response, activeAgentId);
-      if (directives.length === 0) {
-        break;
-      }
+    const coordinatorEnabled =
+      activeAgentId === "codex" &&
+      orchestrator.listAgents().length > 1 &&
+      isCoordinatorEnabled();
 
-      rounds += 1;
-      await options.hooks?.onSupervisorRound?.(rounds, directives.length);
-      const delegations = await runDelegationQueue(orchestrator, result.response, {
-        maxDelegations,
-        hooks: options.hooks,
+    if (coordinatorEnabled) {
+      const maxParallelDelegations = parsePositiveInt(process.env.ADS_TASK_MAX_PARALLEL, 3);
+      const taskTimeoutMs = parsePositiveInt(process.env.ADS_TASK_TIMEOUT_MS, 2 * 60 * 1000);
+      const maxTaskAttempts = parsePositiveInt(process.env.ADS_TASK_MAX_ATTEMPTS, 2);
+      const retryBackoffMs = parsePositiveInt(process.env.ADS_TASK_RETRY_BACKOFF_MS, 1200);
+
+      const coordinator = new TaskCoordinator(orchestrator, {
+        workspaceRoot,
+        namespace: toolContext.historyNamespace ?? "agent",
+        sessionId: toolContext.historySessionId ?? "default",
+        invokeAgent: async (agentId, inputText, invokeOptions) =>
+          await runAgentTurnWithTools(
+            orchestrator,
+            agentId,
+            injectToolGuide(inputText, { activeAgentId: agentId }),
+            { streaming: false, signal: invokeOptions?.signal },
+            { maxToolRounds, toolContext, toolHooks },
+          ),
         supervisorAgentId: activeAgentId,
-        maxToolRounds,
-        toolContext,
-        toolHooks,
+        supervisorName,
+        maxSupervisorRounds,
+        maxDelegations,
+        maxParallelDelegations,
+        taskTimeoutMs,
+        maxTaskAttempts,
+        retryBackoffMs,
+        verificationCwd: toolContext.cwd ?? process.cwd(),
         signal: options.signal,
+        hooks: options.hooks,
+        logger,
       });
-      allDelegations.push(...delegations);
 
-      const supervisorPrompt = buildSupervisorPrompt(delegations, rounds, supervisorName);
-      if (!supervisorPrompt.trim()) {
-        break;
+      const coordination = await coordinator.run({
+        initialSupervisorResult: result,
+        runSupervisor: async (inputText: string) =>
+          await runAgentTurnWithTools(orchestrator, activeAgentId, inputText, sendOptions, {
+            maxToolRounds,
+            toolContext,
+            toolHooks,
+          }),
+      });
+
+      result = coordination.finalResult;
+      rounds = coordination.rounds;
+      allDelegations.push(...coordination.delegations);
+    } else {
+      while (rounds < maxSupervisorRounds) {
+        throwIfAborted(options.signal);
+        const directives = extractDelegationDirectives(result.response, activeAgentId);
+        if (directives.length === 0) {
+          break;
+        }
+
+        rounds += 1;
+        await options.hooks?.onSupervisorRound?.(rounds, directives.length);
+        const delegations = await runDelegationQueue(orchestrator, result.response, {
+          maxDelegations,
+          hooks: options.hooks,
+          supervisorAgentId: activeAgentId,
+          maxToolRounds,
+          toolContext,
+          toolHooks,
+          signal: options.signal,
+        });
+        allDelegations.push(...delegations);
+
+        const supervisorPrompt = buildSupervisorPrompt(delegations, rounds, supervisorName, supervisorGuide);
+        if (!supervisorPrompt.trim()) {
+          break;
+        }
+
+        result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
+          maxToolRounds,
+          toolContext,
+          toolHooks,
+        });
       }
-
-      result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
-        maxToolRounds,
-        toolContext,
-        toolHooks,
-      });
     }
 
     const explored = exploredTracker

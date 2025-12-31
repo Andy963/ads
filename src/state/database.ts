@@ -64,6 +64,41 @@ function initializeStateDatabase(db: DatabaseType): void {
 
     CREATE INDEX IF NOT EXISTS idx_history_entries_session
       ON history_entries(namespace, session_id, id);
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      task_id TEXT NOT NULL PRIMARY KEY,
+      parent_task_id TEXT,
+      namespace TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      spec_json TEXT NOT NULL,
+      result_json TEXT,
+      verification_json TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_active
+      ON tasks(namespace, session_id, status, updated_at);
+
+    CREATE TABLE IF NOT EXISTS task_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      namespace TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      kind TEXT,
+      payload TEXT,
+      ts INTEGER NOT NULL,
+      FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_messages_task
+      ON task_messages(namespace, session_id, task_id, id);
   `);
 }
 
@@ -91,4 +126,3 @@ export function resetStateDatabaseForTests(): void {
   }
   cachedDbs = new Map();
 }
-

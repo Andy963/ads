@@ -12,6 +12,7 @@ import { createLogger } from "../utils/logger.js";
 import { runVectorSearch } from "../vectorSearch/run.js";
 import { loadVectorSearchConfig } from "../vectorSearch/config.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { getExecAllowlistFromEnv, runCommand } from "../utils/commandRunner.js";
 
 interface ToolInvocation {
   name: string;
@@ -86,16 +87,6 @@ function parseBoolean(value: string | undefined, defaultValue = false): boolean 
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function parseCsv(value: string | undefined): string[] {
-  if (!value) {
-    return [];
-  }
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
 function isExecToolEnabled(): boolean {
   return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, true);
 }
@@ -129,23 +120,6 @@ function getWriteMaxBytes(): number {
 
 function getPatchMaxBytes(): number {
   return parsePositiveInt(process.env.AGENT_APPLY_PATCH_MAX_BYTES, PATCH_DEFAULT_MAX_BYTES);
-}
-
-function getExecAllowlist(): string[] | null {
-  const env = process.env.AGENT_EXEC_TOOL_ALLOWLIST;
-  if (env === undefined) {
-    return null;
-  }
-  const parsed = parseCsv(env)
-    .map((entry) => entry.toLowerCase())
-    .filter(Boolean);
-  if (parsed.length === 0) {
-    return null;
-  }
-  if (parsed.includes("*") || parsed.includes("all")) {
-    return null;
-  }
-  return parsed;
 }
 
 function extractToolInvocations(text: string): ToolInvocation[] {
@@ -453,153 +427,47 @@ async function runExecTool(payload: string, context: ToolExecutionContext): Prom
   const { cmd: rawCmd, args, timeoutMs } = parseExecPayload(payload);
   const cwd = resolveBaseDir(context);
   const executable = path.basename(rawCmd).toLowerCase();
-  const allowlist = getExecAllowlist();
+  const allowlist = getExecAllowlistFromEnv();
   if (allowlist && !allowlist.includes(executable)) {
     throw new Error(`不允许执行命令: ${executable}（可用 AGENT_EXEC_TOOL_ALLOWLIST 配置白名单；'*' 表示不限制）`);
   }
 
-  const commandLine = [rawCmd, ...args].join(" ").trim();
-  logger.info(`[tool.exec] cwd=${cwd} cmd=${commandLine}`);
-
-  return await new Promise<string>((resolve, reject) => {
-    const startedAt = Date.now();
-    const signal = context.signal;
-    const child = spawn(rawCmd, args, {
-      cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-
-    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let truncatedStdout = false;
-    let truncatedStderr = false;
-    let timedOut = false;
-    let settled = false;
-    let abortKillTimer: NodeJS.Timeout | null = null;
-
-    const append = (
-      target: Buffer<ArrayBufferLike>,
-      chunk: Buffer<ArrayBufferLike>,
-      kind: "stdout" | "stderr",
-    ): Buffer<ArrayBufferLike> => {
-      if (target.length >= EXEC_MAX_OUTPUT_BYTES) {
-        if (kind === "stdout") truncatedStdout = true;
-        if (kind === "stderr") truncatedStderr = true;
-        return target;
-      }
-      const remaining = EXEC_MAX_OUTPUT_BYTES - target.length;
-      if (chunk.length > remaining) {
-        if (kind === "stdout") truncatedStdout = true;
-        if (kind === "stderr") truncatedStderr = true;
-        return Buffer.concat([target, chunk.subarray(0, remaining)]);
-      }
-      return Buffer.concat([target, chunk]);
-    };
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch (error) {
-        logger.warn("[tool.exec] Failed to kill timed-out process", error);
-      }
-    }, Math.max(1, timeoutMs));
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      if (signal) {
-        signal.removeEventListener("abort", onAbort);
-      }
-    };
-
-    const onAbort = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      timedOut = false;
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
-      abortKillTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-      }, 1200);
-      cleanup();
-      reject(createAbortError());
-    };
-
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    child.stdout?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
-      stdout = append(stdout, chunk, "stdout");
-    });
-    child.stderr?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
-      stderr = append(stderr, chunk, "stderr");
-    });
-    child.on("error", (error) => {
-      if (abortKillTimer) {
-        clearTimeout(abortKillTimer);
-        abortKillTimer = null;
-      }
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      reject(error);
-    });
-    child.on("close", (code, signal) => {
-      if (abortKillTimer) {
-        clearTimeout(abortKillTimer);
-        abortKillTimer = null;
-      }
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      const elapsedMs = Date.now() - startedAt;
-      const lines: string[] = [];
-      lines.push(`$ ${commandLine}`);
-      if (timedOut) {
-        lines.push(`⏱️ timeout after ${timeoutMs}ms`);
-      }
-      lines.push(`exit=${code ?? "null"} signal=${signal ?? "null"} elapsed=${elapsedMs}ms`);
-
-      const outText = stdout.toString("utf8").trimEnd();
-      const errText = stderr.toString("utf8").trimEnd();
-
-      if (outText) {
-        lines.push("");
-        lines.push("stdout:");
-        lines.push("```");
-        lines.push(outText + (truncatedStdout ? "\n…(truncated)" : ""));
-        lines.push("```");
-      }
-      if (errText) {
-        lines.push("");
-        lines.push("stderr:");
-        lines.push("```");
-        lines.push(errText + (truncatedStderr ? "\n…(truncated)" : ""));
-        lines.push("```");
-      }
-      resolve(lines.join("\n").trim());
-    });
+  const command = await runCommand({
+    cmd: rawCmd,
+    args,
+    cwd,
+    timeoutMs,
+    env: process.env,
+    signal: context.signal,
+    maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
+    allowlist,
   });
+
+  logger.info(`[tool.exec] cwd=${cwd} cmd=${command.commandLine}`);
+
+  const lines: string[] = [];
+  lines.push(`$ ${command.commandLine}`);
+  if (command.timedOut) {
+    lines.push(`⏱️ timeout after ${timeoutMs}ms`);
+  }
+  lines.push(`exit=${command.exitCode ?? "null"} signal=${command.signal ?? "null"} elapsed=${command.elapsedMs}ms`);
+
+  if (command.stdout) {
+    lines.push("");
+    lines.push("stdout:");
+    lines.push("```");
+    lines.push(command.stdout + (command.truncatedStdout ? "\n…(truncated)" : ""));
+    lines.push("```");
+  }
+  if (command.stderr) {
+    lines.push("");
+    lines.push("stderr:");
+    lines.push("```");
+    lines.push(command.stderr + (command.truncatedStderr ? "\n…(truncated)" : ""));
+    lines.push("```");
+  }
+
+  return lines.join("\n").trim();
 }
 
 interface ReadToolRequest {

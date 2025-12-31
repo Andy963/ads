@@ -52,6 +52,10 @@ const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
     description: "将节点内容同步写入文件系统",
   },
   {
+    usage: "/ads.tasks [active] [--limit=<n>]",
+    description: "查看协作任务状态（active 仅显示未完成任务）",
+  },
+  {
     usage: "/ads.help",
     description: "显示命令帮助",
   },

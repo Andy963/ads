@@ -13,6 +13,7 @@ const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
 const REQUIRED_TEMPLATE_FILES = [
   "instructions.md",
   "rules.md",
+  "supervisor.md",
   "requirement.md",
   "design.md",
   "implementation.md",

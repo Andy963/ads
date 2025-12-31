@@ -52,6 +52,7 @@ import { formatSearchResults } from "../tools/search/format.js";
 import { formatExploredEntry, type ExploredEntry } from "../utils/activityTracker.js";
 import { processAdrBlocks } from "../utils/adrRecording.js";
 import { runVectorSearch, syncVectorSearch } from "../vectorSearch/run.js";
+import { TaskStore } from "../agents/tasks/taskStore.js";
 
 interface CommandResult {
   output: string;
@@ -696,6 +697,55 @@ async function handleAdsCommand(command: string, rawArgs: string[], _logger: Con
     case "ads.sync": {
       const response = await syncAllNodesToFiles({});
       return { output: formatResponse(response) };
+    }
+
+    case "ads.tasks": {
+      const wantsActive =
+        params.active === "true" ||
+        params["active-only"] === "true" ||
+        params.active_only === "true" ||
+        params.activeOnly === "true" ||
+        positional[0]?.toLowerCase() === "active";
+
+      if (positional[0]?.toLowerCase() === "active") {
+        positional.shift();
+      }
+
+      let limit: number | undefined;
+      if (params.limit) {
+        const parsed = Number(params.limit);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          limit = Math.floor(parsed);
+        }
+      }
+
+      if (!limit && positional.length > 0) {
+        const parsed = Number(positional[0]);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          limit = Math.floor(parsed);
+        }
+      }
+
+      const store = new TaskStore({
+        workspaceRoot: detectWorkspace(),
+        namespace: "cli",
+        sessionId: "default",
+      });
+      const tasks = store.listTasks({ limit, activeOnly: wantsActive });
+      if (tasks.length === 0) {
+        return { output: wantsActive ? "（无进行中的任务）" : "（暂无任务记录）" };
+      }
+
+      const lines: string[] = [];
+      lines.push(`Tasks (${wantsActive ? "active" : "all"}):`);
+      for (const task of tasks) {
+        const when = new Date(task.updatedAt || task.createdAt || Date.now()).toISOString();
+        const err = task.lastError ? ` err=${task.lastError}` : "";
+        lines.push(
+          `- ${task.status} taskId=${task.taskId} agent=${task.agentId} rev=${task.revision} attempts=${task.attempts} updated=${when}${err}`,
+        );
+      }
+      return { output: lines.join("\n") };
     }
 
     case "ads.review": {
