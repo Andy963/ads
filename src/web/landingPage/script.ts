@@ -1076,7 +1076,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
     function maybeRestoreWorkspace(sessionId, serverPath, conn) {
       const cached = getWorkspaceForSession(sessionId);
       if (!cached || cached === serverPath) return;
-      const payload = { type: 'command', payload: '/ads.cd ' + cached };
+      const payload = { type: 'command', payload: '/cd ' + cached };
       const targetConn = conn || ensureConnection(sessionId);
       targetConn.pendingSends = targetConn.pendingSends || [];
       // 如果已连接，立即发送；否则排队

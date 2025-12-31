@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
+import fs from "node:fs";
+import path from "node:path";
 
 import { renderLandingPageScript } from "../../src/web/landingPage/script.js";
 
@@ -24,5 +26,16 @@ describe("web/landingPage/script", () => {
     assert.ok(script.includes("const shouldPersistSession = !activeId || sessionIdToUse === activeId;"));
     assert.ok(script.includes("if (shouldPersistSession) {"));
     assert.ok(script.includes("saveSession(sessionIdToUse);"));
+  });
+
+  it("restores cached workspace using /cd rather than /ads.cd", () => {
+    const script = renderLandingPageScript(15, true);
+    assert.ok(script.includes("payload: '/cd ' + cached"));
+    assert.ok(!script.includes("payload: '/ads.cd "));
+  });
+
+  it("clears stale plan state after /cd workspace switch", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "src", "web", "server.ts"), "utf8");
+    assert.ok(source.includes('ws.send(JSON.stringify({ type: "plan", items: [] }));'));
   });
 });

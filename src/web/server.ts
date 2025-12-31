@@ -709,6 +709,16 @@ async function start(): Promise<void> {
           return;
         }
         currentCwd = directoryManager.getUserCwd(userId);
+        if (prevCwd !== currentCwd) {
+          // Workspace switch should clear any in-flight plan so the UI doesn't show stale tasks.
+          lastPlanSignature = null;
+          lastPlanItems = null;
+          try {
+            ws.send(JSON.stringify({ type: "plan", items: [] }));
+          } catch {
+            // ignore send errors
+          }
+        }
         workspaceCache.set(cacheKey, currentCwd);
         cwdStore.set(String(userId), currentCwd);
         persistCwdStore(cwdStorePath, cwdStore);
