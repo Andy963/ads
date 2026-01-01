@@ -6,7 +6,7 @@ import type { HybridOrchestrator } from "../orchestrator.js";
 import { createLogger, type Logger } from "../../utils/logger.js";
 
 import { TaskSpecSchema, TaskResultSchema, SupervisorVerdictSchema, extractJsonPayload, type TaskResult, type TaskSpec } from "./schemas.js";
-import { TaskStore, type TaskRow, type TaskStatus } from "./taskStore.js";
+import { TaskStore, type TaskStatus } from "./taskStore.js";
 import { runVerification } from "./verificationRunner.js";
 
 const logger = createLogger("TaskCoordinator");

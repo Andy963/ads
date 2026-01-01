@@ -84,8 +84,8 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     });
 
     const signal = request.signal;
-    let stdout = Buffer.alloc(0);
-    let stderr = Buffer.alloc(0);
+    let stdout: Buffer = Buffer.alloc(0);
+    let stderr: Buffer = Buffer.alloc(0);
     let truncatedStdout = false;
     let truncatedStderr = false;
     let timedOut = false;
@@ -200,4 +200,3 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     });
   });
 }
-
