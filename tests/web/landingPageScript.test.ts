@@ -36,6 +36,6 @@ describe("web/landingPage/script", () => {
 
   it("clears stale plan state after /cd workspace switch", () => {
     const source = fs.readFileSync(path.join(process.cwd(), "src", "web", "server.ts"), "utf8");
-    assert.ok(source.includes('ws.send(JSON.stringify({ type: "plan", items: [] }));'));
+    assert.ok(source.includes('safeJsonSend(ws, { type: "plan", items: [] });'));
   });
 });

@@ -68,6 +68,7 @@ const WS_PING_INTERVAL_MS = Number.isFinite(pingIntervalMsRaw) ? Math.max(0, pin
 const idleMinutesRaw = Number(process.env.ADS_WEB_IDLE_MINUTES ?? 0);
 const IDLE_MINUTES = Number.isFinite(idleMinutesRaw) ? Math.max(0, idleMinutesRaw) : 0;
 const logger = createLogger("WebSocket");
+const WS_READY_OPEN = 1;
 
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
 const workspaceCache = new Map<string, string>();
@@ -95,6 +96,49 @@ const wsMessageSchema = z.object({
 
 function log(...args: unknown[]): void {
   logger.info(args.map((a) => String(a)).join(" "));
+}
+
+function safeJsonSend(ws: WebSocket, payload: unknown): void {
+  if (ws.readyState !== WS_READY_OPEN) {
+    return;
+  }
+  try {
+    ws.send(JSON.stringify(payload));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[WebSocket] Failed to send message: ${message}`);
+  }
+}
+
+function formatCloseReason(reason: unknown): string {
+  if (!reason) {
+    return "";
+  }
+  if (typeof reason === "string") {
+    return reason.trim();
+  }
+  if (Buffer.isBuffer(reason)) {
+    return reason.toString("utf8").trim();
+  }
+  if (Array.isArray(reason)) {
+    try {
+      const chunks = reason.filter((entry) => Buffer.isBuffer(entry)) as Buffer[];
+      if (chunks.length === 0) {
+        return "";
+      }
+      return Buffer.concat(chunks).toString("utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+  if (reason instanceof ArrayBuffer) {
+    try {
+      return Buffer.from(reason).toString("utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 type TodoListThreadEvent = (ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent) & {
@@ -213,7 +257,7 @@ function extractCommandPayload(
 function sendWorkspaceState(ws: WebSocket, workspaceRoot: string): void {
   try {
     const state = getWorkspaceState(workspaceRoot);
-    ws.send(JSON.stringify({ type: "workspace", data: state }));
+    safeJsonSend(ws, { type: "workspace", data: state });
   } catch {
     // ignore send errors
   }
@@ -368,14 +412,12 @@ async function start(): Promise<void> {
     let lastPlanItems: TodoListItem["items"] | null = null;
 
     log("client connected");
-    ws.send(
-      JSON.stringify({
-        type: "welcome",
-        message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
-        workspace: getWorkspaceState(currentCwd),
-        sessionId,
-      }),
-    );
+    safeJsonSend(ws, {
+      type: "welcome",
+      message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
+      workspace: getWorkspaceState(currentCwd),
+      sessionId,
+    });
     const cachedHistory = historyStore.get(historyKey);
     if (cachedHistory.length > 0) {
       const sanitizedHistory = cachedHistory.map((entry) => {
@@ -388,7 +430,7 @@ async function start(): Promise<void> {
         }
         return { ...entry, text: cleanedText };
       });
-      ws.send(JSON.stringify({ type: "history", items: sanitizedHistory }));
+      safeJsonSend(ws, { type: "history", items: sanitizedHistory });
     }
 
     ws.on("message", async (data: RawData) => {
@@ -397,12 +439,21 @@ async function start(): Promise<void> {
         const raw = JSON.parse(String(data)) as unknown;
         const result = wsMessageSchema.safeParse(raw);
         if (!result.success) {
-          ws.send(JSON.stringify({ type: "error", message: "Invalid message payload" }));
+          safeJsonSend(ws, { type: "error", message: "Invalid message payload" });
           return;
         }
         parsed = result.data;
       } catch {
-        ws.send(JSON.stringify({ type: "error", message: "Invalid JSON message" }));
+        safeJsonSend(ws, { type: "error", message: "Invalid JSON message" });
+        return;
+      }
+
+      if (parsed.type === "ping") {
+        safeJsonSend(ws, { type: "pong", ts: Date.now() });
+        return;
+      }
+
+      if (parsed.type === "pong") {
         return;
       }
 
@@ -416,9 +467,9 @@ async function start(): Promise<void> {
           if (controller) {
             controller.abort();
             interruptControllers.delete(userId);
-            ws.send(JSON.stringify({ type: "result", ok: false, output: "⛔ 已中断，输出可能不完整" }));
+            safeJsonSend(ws, { type: "result", ok: false, output: "⛔ 已中断，输出可能不完整" });
           } else {
-            ws.send(JSON.stringify({ type: "error", message: "当前没有正在执行的任务" }));
+            safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
           }
           return;
         }
@@ -427,7 +478,7 @@ async function start(): Promise<void> {
           historyStore.clear(historyKey);
           // 同时重置 session 和 thread，清除旧的对话上下文
           sessionManager.reset(userId);
-          ws.send(JSON.stringify({ type: "result", ok: true, output: "已清空历史缓存并重置会话" }));
+          safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话" });
           return;
         }
 
@@ -436,7 +487,7 @@ async function start(): Promise<void> {
           const promptInput = buildPromptInput(parsed.payload, imageDir);
           if (!promptInput.ok) {
             sessionLogger?.logError(promptInput.message);
-            ws.send(JSON.stringify({ type: "error", message: promptInput.message }));
+            safeJsonSend(ws, { type: "error", message: promptInput.message });
             return;
           }
           const tempAttachments = promptInput.attachments || [];
@@ -458,7 +509,7 @@ async function start(): Promise<void> {
             const query = promptSlash.body.trim();
             if (!query) {
               const output = "用法: /search <query>";
-              ws.send(JSON.stringify({ type: "result", ok: false, output }));
+              safeJsonSend(ws, { type: "result", ok: false, output });
               sessionLogger?.logError(output);
               historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
               cleanupAttachments();
@@ -468,7 +519,7 @@ async function start(): Promise<void> {
             const missingKeys = ensureApiKeys(config);
             if (missingKeys) {
               const output = `❌ /search 未启用: ${missingKeys.message}`;
-              ws.send(JSON.stringify({ type: "result", ok: false, output }));
+              safeJsonSend(ws, { type: "result", ok: false, output });
               sessionLogger?.logError(output);
               historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
               cleanupAttachments();
@@ -477,13 +528,13 @@ async function start(): Promise<void> {
             try {
               const result = await SearchTool.search({ query }, { config });
               const output = formatSearchResults(query, result);
-              ws.send(JSON.stringify({ type: "result", ok: true, output }));
+              safeJsonSend(ws, { type: "result", ok: true, output });
               sessionLogger?.logOutput(output);
               historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
               const output = `❌ /search 失败: ${message}`;
-              ws.send(JSON.stringify({ type: "result", ok: false, output }));
+              safeJsonSend(ws, { type: "result", ok: false, output });
               sessionLogger?.logError(output);
               historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
             }
@@ -501,7 +552,7 @@ async function start(): Promise<void> {
           const status = orchestrator.status();
           if (!status.ready) {
             sessionLogger?.logError(status.error ?? "代理未启用");
-            ws.send(JSON.stringify({ type: "error", message: status.error ?? "代理未启用，请配置凭证" }));
+            safeJsonSend(ws, { type: "error", message: status.error ?? "代理未启用，请配置凭证" });
             interruptControllers.delete(userId);
             cleanupAfter();
             return;
@@ -516,7 +567,7 @@ async function start(): Promise<void> {
               lastPlanItems = raw.item.items;
               if (signature !== lastPlanSignature) {
                 lastPlanSignature = signature;
-                ws.send(JSON.stringify({ type: "plan", items: raw.item.items }));
+                safeJsonSend(ws, { type: "plan", items: raw.item.items });
               }
             }
             if (event.delta) {
@@ -526,33 +577,27 @@ async function start(): Promise<void> {
             if (event.phase === "command") {
               const commandPayload = extractCommandPayload(event);
               logger.info(`[Command Event] sending command: ${JSON.stringify({ detail: event.detail ?? event.title, command: commandPayload })}`);
-              ws.send(
-                JSON.stringify({
-                  type: "command",
-                  detail: event.detail ?? event.title,
-                  command: commandPayload ?? undefined,
-                }),
-              );
+              safeJsonSend(ws, {
+                type: "command",
+                detail: event.detail ?? event.title,
+                command: commandPayload ?? undefined,
+              });
               return;
             }
             if (event.phase === "error") {
-              ws.send(JSON.stringify({ type: "error", message: event.detail ?? event.title }));
+              safeJsonSend(ws, { type: "error", message: event.detail ?? event.title });
             }
           });
 
-          let exploredHeaderSent = false;
-          const handleExploredEntry = (entry: ExploredEntry) => {
-            try {
-              ws.send(JSON.stringify({
-                type: "explored",
-                header: !exploredHeaderSent,
-                entry: { category: entry.category, summary: entry.summary },
-              }));
-              exploredHeaderSent = true;
-            } catch {
-              // ignore send errors
-            }
-          };
+	          let exploredHeaderSent = false;
+	          const handleExploredEntry = (entry: ExploredEntry) => {
+	            safeJsonSend(ws, {
+	              type: "explored",
+	              header: !exploredHeaderSent,
+	              entry: { category: entry.category, summary: entry.summary },
+	            });
+	            exploredHeaderSent = true;
+	          };
 
           try {
             const result = await runCollaborativeTurn(orchestrator, inputToSend, {
@@ -587,18 +632,18 @@ async function start(): Promise<void> {
             try {
               const adrProcessed = processAdrBlocks(finalOutput, workspaceRootForAdr);
               outputToSend = adrProcessed.finalText || finalOutput;
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              outputToSend = `${finalOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
-            }
-            if (lastPlanItems) {
-              ws.send(JSON.stringify({ type: "plan", items: lastPlanItems }));
-            }
-            ws.send(JSON.stringify({ type: "result", ok: true, output: outputToSend }));
-            if (sessionLogger) {
-              sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
-              sessionLogger.logOutput(outputToSend);
-            }
+	            } catch (error) {
+	              const message = error instanceof Error ? error.message : String(error);
+	              outputToSend = `${finalOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
+	            }
+	            if (lastPlanItems) {
+	              safeJsonSend(ws, { type: "plan", items: lastPlanItems });
+	            }
+	            safeJsonSend(ws, { type: "result", ok: true, output: outputToSend });
+	            if (sessionLogger) {
+	              sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
+	              sessionLogger.logOutput(outputToSend);
+	            }
             historyStore.add(historyKey, {
               role: "ai",
               text: outputToSend,
@@ -615,110 +660,106 @@ async function start(): Promise<void> {
             if (!aborted) {
               sessionLogger?.logError(message);
             }
-            if (!aborted) {
-              historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
-            }
-            ws.send(JSON.stringify({ type: "error", message: aborted ? "已中断，输出可能不完整" : message }));
-          } finally {
-            unsubscribe();
-            interruptControllers.delete(userId);
-            cleanupAfter();
-          }
+	            if (!aborted) {
+	              historyStore.add(historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
+	            }
+	            safeJsonSend(ws, { type: "error", message: aborted ? "已中断，输出可能不完整" : message });
+	          } finally {
+	            unsubscribe();
+	            interruptControllers.delete(userId);
+	            cleanupAfter();
+	          }
           return;
         }
 
-      if (!isCommand) {
-        ws.send(JSON.stringify({ type: "error", message: "Unsupported message type" }));
-        return;
-      }
+	      if (!isCommand) {
+	        safeJsonSend(ws, { type: "error", message: "Unsupported message type" });
+	        return;
+	      }
 
-      const command = sanitizeInput(parsed.payload);
-      if (!command) {
-        ws.send(JSON.stringify({ type: "error", message: "Payload must be a command string" }));
-        return;
-      }
+	      const command = sanitizeInput(parsed.payload);
+	      if (!command) {
+	        safeJsonSend(ws, { type: "error", message: "Payload must be a command string" });
+	        return;
+	      }
       sessionLogger?.logInput(command);
       historyStore.add(historyKey, { role: "user", text: command, ts: Date.now(), kind: "command" });
 
       const slash = parseSlashCommand(command);
-      if (slash?.command === "vsearch") {
-        const query = slash.body.trim();
-        const workspaceRoot = detectWorkspaceFrom(currentCwd);
-        const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "web" });
-        const note =
-          "ℹ️ 提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
-        const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
-        ws.send(JSON.stringify({ type: "result", ok: true, output: decorated }));
-        sessionLogger?.logOutput(decorated);
-        historyStore.add(historyKey, { role: "status", text: decorated, ts: Date.now(), kind: "command" });
-        return;
-      }
-      if (slash?.command === "search") {
-        const query = slash.body.trim();
-        if (!query) {
-          const output = "用法: /search <query>";
-          ws.send(JSON.stringify({ type: "result", ok: false, output }));
-          sessionLogger?.logError(output);
-          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-          return;
-        }
+	      if (slash?.command === "vsearch") {
+	        const query = slash.body.trim();
+	        const workspaceRoot = detectWorkspaceFrom(currentCwd);
+	        const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "web" });
+	        const note =
+	          "ℹ️ 提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
+	        const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
+	        safeJsonSend(ws, { type: "result", ok: true, output: decorated });
+	        sessionLogger?.logOutput(decorated);
+	        historyStore.add(historyKey, { role: "status", text: decorated, ts: Date.now(), kind: "command" });
+	        return;
+	      }
+	      if (slash?.command === "search") {
+	        const query = slash.body.trim();
+	        if (!query) {
+	          const output = "用法: /search <query>";
+	          safeJsonSend(ws, { type: "result", ok: false, output });
+	          sessionLogger?.logError(output);
+	          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+	          return;
+	        }
         const config = resolveSearchConfig();
-        const missingKeys = ensureApiKeys(config);
-        if (missingKeys) {
-          const output = `❌ /search 未启用: ${missingKeys.message}`;
-          ws.send(JSON.stringify({ type: "result", ok: false, output }));
-          sessionLogger?.logError(output);
-          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-          return;
-        }
-        try {
-          const result = await SearchTool.search({ query }, { config });
-          const output = formatSearchResults(query, result);
-          ws.send(JSON.stringify({ type: "result", ok: true, output }));
-          sessionLogger?.logOutput(output);
+	        const missingKeys = ensureApiKeys(config);
+	        if (missingKeys) {
+	          const output = `❌ /search 未启用: ${missingKeys.message}`;
+	          safeJsonSend(ws, { type: "result", ok: false, output });
+	          sessionLogger?.logError(output);
+	          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+	          return;
+	        }
+	        try {
+	          const result = await SearchTool.search({ query }, { config });
+	          const output = formatSearchResults(query, result);
+	          safeJsonSend(ws, { type: "result", ok: true, output });
+	          sessionLogger?.logOutput(output);
           historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const output = `❌ /search 失败: ${message}`;
-          ws.send(JSON.stringify({ type: "result", ok: false, output }));
-          sessionLogger?.logError(output);
-          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-        }
-        return;
-      }
-      if (slash?.command === "pwd") {
-        const output = `📁 当前工作目录: ${currentCwd}`;
-        ws.send(JSON.stringify({ type: "result", ok: true, output }));
-        sessionLogger?.logOutput(output);
-        historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
-        return;
-      }
+	        } catch (error) {
+	          const message = error instanceof Error ? error.message : String(error);
+	          const output = `❌ /search 失败: ${message}`;
+	          safeJsonSend(ws, { type: "result", ok: false, output });
+	          sessionLogger?.logError(output);
+	          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+	        }
+	        return;
+	      }
+	      if (slash?.command === "pwd") {
+	        const output = `📁 当前工作目录: ${currentCwd}`;
+	        safeJsonSend(ws, { type: "result", ok: true, output });
+	        sessionLogger?.logOutput(output);
+	        historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
+	        return;
+	      }
 
-      if (slash?.command === "cd") {
-        if (!slash.body) {
-          ws.send(JSON.stringify({ type: "result", ok: false, output: "用法: /cd <path>" }));
-          return;
-        }
+	      if (slash?.command === "cd") {
+	        if (!slash.body) {
+	          safeJsonSend(ws, { type: "result", ok: false, output: "用法: /cd <path>" });
+	          return;
+	        }
         const targetPath = slash.body;
         const prevCwd = currentCwd;
-        const result = directoryManager.setUserCwd(userId, targetPath);
-        if (!result.success) {
-          const output = `❌ ${result.error}`;
-          ws.send(JSON.stringify({ type: "result", ok: false, output }));
-          sessionLogger?.logError(output);
-          return;
-        }
+	        const result = directoryManager.setUserCwd(userId, targetPath);
+	        if (!result.success) {
+	          const output = `❌ ${result.error}`;
+	          safeJsonSend(ws, { type: "result", ok: false, output });
+	          sessionLogger?.logError(output);
+	          return;
+	        }
         currentCwd = directoryManager.getUserCwd(userId);
         if (prevCwd !== currentCwd) {
           // Workspace switch should clear any in-flight plan so the UI doesn't show stale tasks.
-          lastPlanSignature = null;
-          lastPlanItems = null;
-          try {
-            ws.send(JSON.stringify({ type: "plan", items: [] }));
-          } catch {
-            // ignore send errors
-          }
-        }
+	          lastPlanSignature = null;
+	          lastPlanItems = null;
+	          safeJsonSend(ws, { type: "plan", items: [] });
+	        }
         workspaceCache.set(cacheKey, currentCwd);
         cwdStore.set(String(userId), currentCwd);
         persistCwdStore(cwdStorePath, cwdStore);
@@ -745,23 +786,23 @@ async function start(): Promise<void> {
             }`,
           );
         }
-        ws.send(JSON.stringify({ type: "result", ok: true, output: message }));
-        sessionLogger?.logOutput(message);
-        sendWorkspaceState(ws, currentCwd);
-        return;
-      }
+	        safeJsonSend(ws, { type: "result", ok: true, output: message });
+	        sessionLogger?.logOutput(message);
+	        sendWorkspaceState(ws, currentCwd);
+	        return;
+	      }
 
       if (slash?.command === "agent") {
         orchestrator = sessionManager.getOrCreate(userId, currentCwd);
         let agentArg = slash.body.trim();
         if (!agentArg) {
           const agents = orchestrator.listAgents();
-          if (agents.length === 0) {
-            const output = "❌ 暂无可用代理";
-            ws.send(JSON.stringify({ type: "result", ok: false, output }));
-            sessionLogger?.logOutput(output);
-            return;
-          }
+	          if (agents.length === 0) {
+	            const output = "❌ 暂无可用代理";
+	            safeJsonSend(ws, { type: "result", ok: false, output });
+	            sessionLogger?.logOutput(output);
+	            return;
+	          }
           const activeId = orchestrator.getActiveAgentId();
           const lines = agents
             .map((entry) => {
@@ -770,23 +811,23 @@ async function start(): Promise<void> {
               return `${marker} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`;
             })
             .join("\n");
-          const message = [
-            "🤖 可用代理：",
-            lines,
+	          const message = [
+	            "🤖 可用代理：",
+	            lines,
             "",
             "使用 /agent <id> 切换代理，如 /agent gemini。",
-            "提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。",
-          ].join("\n");
-          ws.send(JSON.stringify({ type: "result", ok: true, output: message }));
-          sessionLogger?.logOutput(message);
-          return;
-        }
+	            "提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。",
+	          ].join("\n");
+	          safeJsonSend(ws, { type: "result", ok: true, output: message });
+	          sessionLogger?.logOutput(message);
+	          return;
+	        }
         const normalized = agentArg.toLowerCase();
         if (normalized === "auto" || normalized === "manual") {
           agentArg = "codex";
         }
         const switchResult = sessionManager.switchAgent(userId, agentArg);
-        ws.send(JSON.stringify({ type: "result", ok: switchResult.success, output: switchResult.message }));
+        safeJsonSend(ws, { type: "result", ok: switchResult.success, output: switchResult.message });
         sessionLogger?.logOutput(switchResult.message);
         return;
       }
@@ -815,7 +856,7 @@ async function start(): Promise<void> {
           );
         });
         const result = await Promise.race([runPromise, abortPromise]);
-        ws.send(JSON.stringify({ type: "result", ok: result.ok, output: result.output }));
+        safeJsonSend(ws, { type: "result", ok: result.ok, output: result.output });
         sessionLogger?.logOutput(result.output);
         historyStore.add(historyKey, { role: result.ok ? "ai" : "status", text: result.output, ts: Date.now(), kind: result.ok ? undefined : "command" });
         sendWorkspaceState(ws, currentCwd);
@@ -830,15 +871,10 @@ async function start(): Promise<void> {
               logger.debug(`[Web] runAdsCommandLine settled after abort: ${detail}`);
             });
           }
-          ws.send(JSON.stringify({ type: "error", message: "已中断，输出可能不完整" }));
+          safeJsonSend(ws, { type: "error", message: "已中断，输出可能不完整" });
           sessionLogger?.logError("已中断，输出可能不完整");
         } else {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message,
-            }),
-          );
+          safeJsonSend(ws, { type: "error", message });
           sessionLogger?.logError(message);
         }
       } finally {
@@ -851,8 +887,12 @@ async function start(): Promise<void> {
       }
     });
 
-    ws.on("close", () => log("client disconnected"));
-    ws.on("close", () => clients.delete(ws));
+    ws.on("close", (code, reason) => {
+      clients.delete(ws);
+      const reasonText = formatCloseReason(reason);
+      const suffix = reasonText ? ` reason=${reasonText}` : "";
+      log(`client disconnected session=${sessionId} user=${userId} code=${code}${suffix}`);
+    });
   });
 
   server.listen(PORT, HOST, () => {
