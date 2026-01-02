@@ -699,14 +699,14 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 
 	    function scheduleReconnect(sessionId) {
 	      const conn = ensureConnection(sessionId);
-	      if (!conn.allowReconnect) return;
-	      if (!tokenOverlay.classList.contains('hidden')) return;
-	      if (conn.reconnectTimer) return;
-      conn.reconnectTimer = setTimeout(() => {
-        conn.reconnectTimer = null;
-        connect(sessionId);
-      }, 1500);
-    }
+        if (!conn.allowReconnect) return;
+        if (!tokenOverlay.classList.contains('hidden')) return;
+        if (conn.reconnectTimer) return;
+        conn.reconnectTimer = setTimeout(() => {
+          conn.reconnectTimer = null;
+          connect(sessionId);
+        }, 1500);
+      }
 
     logEl.addEventListener('scroll', () => {
       const nearBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80;
@@ -1551,7 +1551,9 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
         ensureSessionView(sessionIdToUse);
       }
       const token = sessionStorage.getItem(TOKEN_KEY) || '';
+      console.debug('[ADS-WS] connect start:', { sessionIdToUse, tokenRequired, hasToken: !!token, tokenLen: token.length });
       if (tokenRequired && !token) {
+        console.warn('[ADS-WS] token required but not found in sessionStorage');
         tokenOverlay.classList.remove('hidden');
         setTimeout(() => tokenInput?.focus?.(), 0);
         setLocked(true);
@@ -1560,6 +1562,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	      tokenOverlay.classList.add('hidden');
 	      setLocked(false);
 	      if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) {
+	        console.debug('[ADS-WS] WS already exists, reusing:', { state: conn.ws.readyState });
 	        if (conn.ws.readyState === WebSocket.OPEN && !conn.heartbeatTimer) {
 	          startHeartbeat(sessionIdToUse, conn, conn.generation);
 	        }
@@ -1578,9 +1581,18 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
       });
       const tokenProto = token ? 'ads-token.' + encodeBase64Url(token) : '';
       const protocols = ['ads-v1', tokenProto, 'ads-session.' + sessionIdToUse].filter(Boolean);
+        console.debug('[ADS-WS] creating WebSocket:', {
+          url,
+          protocolCount: protocols.length,
+          protocols: protocols.map((p) => (p.startsWith('ads-token') ? 'ads-token.*' : p)),
+        });
 	      conn.ws = new WebSocket(url, protocols);
 	      conn.ws.onopen = () => {
-	        if (socketId !== conn.generation) return;
+	        console.debug('[ADS-WS] onopen event fired', { socketId, generation: conn.generation, sessionId: sessionIdToUse });
+	        if (socketId !== conn.generation) {
+	          console.warn('[ADS-WS] onopen: generation mismatch, ignoring', { socketId, generation: conn.generation });
+	          return;
+	        }
 	        if (conn.reconnectTimer) {
 	          clearTimeout(conn.reconnectTimer);
           conn.reconnectTimer = null;
@@ -1594,6 +1606,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	        startHeartbeat(sessionIdToUse, conn, socketId);
 	        resetIdleTimer();
 	        setLocked(false);
+	        console.log('[ADS-WS] connected successfully, flushing pending sends:', { count: conn.pendingSends.length });
 	        // flush pending sends (skip entries with null/undefined payload to avoid server errors)
 	        const pending = [...conn.pendingSends];
         conn.pendingSends = [];
@@ -1610,8 +1623,18 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
         if (socketId !== conn.generation) return;
         handleWsMessageForSession(sessionIdToUse, conn, ev);
       };
-	      conn.ws.onclose = (ev) => {
-	        if (socketId !== conn.generation) return;
+        conn.ws.onclose = (ev) => {
+          console.warn('[ADS-WS] onclose event:', {
+            socketId,
+            generation: conn.generation,
+            code: ev.code,
+            reason: ev.reason,
+            wasClean: ev.wasClean,
+          });
+	        if (socketId !== conn.generation) {
+	          console.warn('[ADS-WS] onclose: generation mismatch, ignoring');
+	          return;
+	        }
 	        stopHeartbeat(conn);
 	        withSessionContext(sessionIdToUse, () => {
 	          const wasBusy = isBusy;
@@ -1633,6 +1656,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
           clearTimeout(idleTimer);
         }
         if (ev.code === 4401) {
+          console.error('[ADS-WS] auth failed (4401), clearing token');
           sessionStorage.removeItem(TOKEN_KEY);
           tokenOverlay.classList.remove('hidden');
           tokenInput.value = '';
@@ -1643,6 +1667,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
           clearSession();
           conn.allowReconnect = false;
         } else if (ev.code === 4409) {
+          console.warn('[ADS-WS] max clients reached (4409)');
           if (!conn.suppressSwitchNotice && !conn.switchNoticeShown) {
             withSessionContext(sessionIdToUse, () => {
               appendMessage('ai', '已有新连接，当前会话被替换或已达上限', { status: true, skipCache: true });
@@ -1660,7 +1685,11 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
         scheduleReconnect(sessionIdToUse);
       };
 	      conn.ws.onerror = (err) => {
-	        if (socketId !== conn.generation) return;
+	        console.error('[ADS-WS] onerror event:', { socketId, generation: conn.generation, err });
+	        if (socketId !== conn.generation) {
+	          console.warn('[ADS-WS] onerror: generation mismatch, ignoring');
+	          return;
+	        }
 	        stopHeartbeat(conn);
 	        withSessionContext(sessionIdToUse, () => {
 	          setWsState('disconnected', sessionIdToUse);
