@@ -756,7 +756,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
       pruneLog();
       autoScrollIfNeeded();
       if (!options.skipCache) {
-        recordCache(role, text, options.status ? 'status' : undefined);
+        recordCache(role, text, options.kind || (options.status ? 'status' : undefined));
       }
       return { wrapper, bubble };
     }
@@ -1320,7 +1320,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	          return;
 	        }
 	        const isStatus = role === 'status' || kind === 'status' || kind === 'error';
-	        appendMessage(role === 'status' ? 'status' : role, text, { markdown: false, status: isStatus });
+	        appendMessage(role === 'status' ? 'status' : role, text, { markdown: false, status: isStatus, kind });
 	        cachedKeys.add(key);
 	      });
 	      autoScrollIfNeeded();
