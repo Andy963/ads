@@ -146,7 +146,7 @@ type TodoListThreadEvent = (ItemStartedEvent | ItemUpdatedEvent | ItemCompletedE
   item: TodoListItem;
 };
 
-type AliveWebSocket = WebSocket & { isAlive?: boolean };
+type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
 function isTodoListEvent(event: ThreadEvent): event is TodoListThreadEvent {
   if (!event || (event.type !== "item.started" && event.type !== "item.updated" && event.type !== "item.completed")) {
@@ -224,7 +224,10 @@ function createHttpServer(): http.Server {
         return;
       }
       // 任何 GET 路径统一返回控制台，便于反代子路径
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
       res.end(renderLandingPage());
       return;
     }
@@ -301,13 +304,18 @@ async function start(): Promise<void> {
               continue;
             }
             if (candidate.isAlive === false) {
-              logger.warn("[WebSocket] terminating stale client connection");
-              try {
-                candidate.terminate();
-              } catch {
-                // ignore
+              candidate.missedPongs = (candidate.missedPongs ?? 0) + 1;
+              if (candidate.missedPongs >= 3) {
+                logger.warn("[WebSocket] terminating stale client connection");
+                try {
+                  candidate.terminate();
+                } catch {
+                  // ignore
+                }
+                continue;
               }
-              continue;
+            } else {
+              candidate.missedPongs = 0;
             }
             candidate.isAlive = false;
             try {
@@ -377,8 +385,10 @@ async function start(): Promise<void> {
     clients.add(ws);
     const aliveWs = ws as AliveWebSocket;
     aliveWs.isAlive = true;
+    aliveWs.missedPongs = 0;
     ws.on("pong", () => {
       aliveWs.isAlive = true;
+      aliveWs.missedPongs = 0;
     });
 
     const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
@@ -431,7 +441,22 @@ async function start(): Promise<void> {
         }
         return { ...entry, text: cleanedText };
       });
-      safeJsonSend(ws, { type: "history", items: sanitizedHistory });
+      // /cd is a workspace state change and can repeat on reconnect; keep only the latest one to avoid UI spam.
+      const cdPattern = /^\/(?:ads\.)?cd\b/i;
+      const isCdCommand = (entry: { role: string; text: string }) =>
+        entry.role === "user" && cdPattern.test(String(entry.text ?? "").trim());
+      let lastCdIndex = -1;
+      for (let i = sanitizedHistory.length - 1; i >= 0; i--) {
+        if (isCdCommand(sanitizedHistory[i])) {
+          lastCdIndex = i;
+          break;
+        }
+      }
+      const filteredHistory =
+        lastCdIndex >= 0
+          ? sanitizedHistory.filter((entry, idx) => !isCdCommand(entry) || idx === lastCdIndex)
+          : sanitizedHistory;
+      safeJsonSend(ws, { type: "history", items: filteredHistory });
     }
 
     ws.on("message", async (data: RawData) => {
@@ -678,42 +703,26 @@ async function start(): Promise<void> {
 	        return;
 	      }
 
-      const command = sanitizeInput(parsed.payload);
-	      if (!command) {
+	      const commandRaw = sanitizeInput(parsed.payload);
+	      if (!commandRaw) {
 	        safeJsonSend(ws, { type: "error", message: "Payload must be a command string" });
 	        return;
 	      }
+	      const command = commandRaw.trim();
       const isSilentCommandPayload =
         parsed.payload !== null &&
         typeof parsed.payload === "object" &&
         !Array.isArray(parsed.payload) &&
         (parsed.payload as Record<string, unknown>).silent === true;
 
-      const shouldSkipCdHistory =
-        !isSilentCommandPayload &&
-        command.trim().startsWith("/cd ") &&
-        (() => {
-          const now = Date.now();
-          const history = historyStore.get(historyKey);
-          for (let i = history.length - 1; i >= 0; i--) {
-            const entry = history[i];
-            if (entry.role !== "user" || entry.kind !== "command") {
-              continue;
-            }
-            if (entry.text.trim() !== command.trim()) {
-              return false;
-            }
-            return now - entry.ts < 30_000;
-          }
-          return false;
-        })();
-
-      if (!isSilentCommandPayload && !shouldSkipCdHistory) {
+	      const slash = parseSlashCommand(command);
+	      const normalizedSlash = slash?.command?.toLowerCase();
+	      const isCdCommand = normalizedSlash === "cd" || normalizedSlash === "ads.cd";
+      if (!isSilentCommandPayload && !isCdCommand) {
         sessionLogger?.logInput(command);
         historyStore.add(historyKey, { role: "user", text: command, ts: Date.now(), kind: "command" });
       }
 
-      const slash = parseSlashCommand(command);
 	      if (slash?.command === "vsearch") {
 	        const query = slash.body.trim();
 	        const workspaceRoot = detectWorkspaceFrom(currentCwd);
