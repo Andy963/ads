@@ -30,7 +30,7 @@ describe("web/landingPage/script", () => {
 
   it("restores cached workspace using /cd rather than /ads.cd", () => {
     const script = renderLandingPageScript(15, true);
-    assert.ok(script.includes("payload: '/cd ' + cached"));
+    assert.ok(script.includes("command: '/cd ' + cached"));
     assert.ok(!script.includes("payload: '/ads.cd "));
   });
 

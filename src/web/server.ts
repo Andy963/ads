@@ -678,13 +678,40 @@ async function start(): Promise<void> {
 	        return;
 	      }
 
-	      const command = sanitizeInput(parsed.payload);
+      const command = sanitizeInput(parsed.payload);
 	      if (!command) {
 	        safeJsonSend(ws, { type: "error", message: "Payload must be a command string" });
 	        return;
 	      }
-      sessionLogger?.logInput(command);
-      historyStore.add(historyKey, { role: "user", text: command, ts: Date.now(), kind: "command" });
+      const isSilentCommandPayload =
+        parsed.payload !== null &&
+        typeof parsed.payload === "object" &&
+        !Array.isArray(parsed.payload) &&
+        (parsed.payload as Record<string, unknown>).silent === true;
+
+      const shouldSkipCdHistory =
+        !isSilentCommandPayload &&
+        command.trim().startsWith("/cd ") &&
+        (() => {
+          const now = Date.now();
+          const history = historyStore.get(historyKey);
+          for (let i = history.length - 1; i >= 0; i--) {
+            const entry = history[i];
+            if (entry.role !== "user" || entry.kind !== "command") {
+              continue;
+            }
+            if (entry.text.trim() !== command.trim()) {
+              return false;
+            }
+            return now - entry.ts < 30_000;
+          }
+          return false;
+        })();
+
+      if (!isSilentCommandPayload && !shouldSkipCdHistory) {
+        sessionLogger?.logInput(command);
+        historyStore.add(historyKey, { role: "user", text: command, ts: Date.now(), kind: "command" });
+      }
 
       const slash = parseSlashCommand(command);
 	      if (slash?.command === "vsearch") {
@@ -789,8 +816,10 @@ async function start(): Promise<void> {
             }`,
           );
         }
-	        safeJsonSend(ws, { type: "result", ok: true, output: message });
-	        sessionLogger?.logOutput(message);
+	        if (!isSilentCommandPayload) {
+	          safeJsonSend(ws, { type: "result", ok: true, output: message });
+	          sessionLogger?.logOutput(message);
+	        }
 	        sendWorkspaceState(ws, currentCwd);
 	        return;
 	      }

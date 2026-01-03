@@ -48,7 +48,6 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	    const COMMAND_OUTPUT_MAX_LINES = 3;
 	    const COMMAND_OUTPUT_MAX_CHARS = 1200;
 	    const HEARTBEAT_INTERVAL_MS = 15000;
-	    const HEARTBEAT_TIMEOUT_MS = 45000;
 	    const viewport = window.visualViewport;
     function getScopedStorage() {
       try {
@@ -676,15 +675,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	      conn.heartbeatTimer = setInterval(() => {
 	        if (socketId !== conn.generation) return;
 	        if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
-	        const now = Date.now();
-	        if (conn.lastPongAt && now - conn.lastPongAt > HEARTBEAT_TIMEOUT_MS) {
-	          try {
-	            conn.ws.close(4410, 'heartbeat timeout');
-	          } catch {
-	            /* ignore */
-	          }
-	          return;
-	        }
+	        if (document.visibilityState === 'hidden') return;
 	        try {
 	          conn.ws.send(JSON.stringify({ type: 'ping' }));
 	        } catch {
@@ -1117,18 +1108,13 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
     function maybeRestoreWorkspace(sessionId, serverPath, conn) {
       const cached = getWorkspaceForSession(sessionId);
       if (!cached || cached === serverPath) return;
-      const payload = { type: 'command', payload: '/cd ' + cached };
+      const payload = { type: 'command', payload: { command: '/cd ' + cached, silent: true } };
       const targetConn = conn || ensureConnection(sessionId);
-      targetConn.pendingSends = targetConn.pendingSends || [];
-      // 如果已连接，立即发送；否则排队
-      if (targetConn.ws && targetConn.ws.readyState === WebSocket.OPEN) {
-        try {
-          targetConn.ws.send(JSON.stringify(payload));
-        } catch {
-          targetConn.pendingSends.push(payload);
-        }
-      } else {
-        targetConn.pendingSends.push(payload);
+      if (!targetConn.ws || targetConn.ws.readyState !== WebSocket.OPEN) return;
+      try {
+        targetConn.ws.send(JSON.stringify(payload));
+      } catch {
+        /* ignore */
       }
     }
 
@@ -1292,9 +1278,25 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	        return;
 	      }
 
+	      const isCdCommand = (role, text, kind) => {
+	        const trimmed = String(text || '').trim();
+	        if (!trimmed) return false;
+	        if (!/^\\/cd\\b/.test(trimmed)) return false;
+	        const normalizedRole = role || 'status';
+	        const normalizedKind =
+	          normalizedRole === 'status'
+	            ? 'status'
+	            : (kind || (trimmed.startsWith('/') ? 'command' : ''));
+	        return normalizedKind === 'command';
+	      };
+
 	      const normalizeKey = (role, text, kind) => {
 	        const normalizedRole = role || 'status';
-	        const normalizedKind = normalizedRole === 'status' ? 'status' : (kind || '');
+	        const trimmedText = String(text || '').trim();
+	        const normalizedKind =
+	          normalizedRole === 'status'
+	            ? 'status'
+	            : (kind || (trimmedText.startsWith('/') ? 'command' : ''));
 	        return normalizedRole + '|' + normalizedKind + '|' + (text || '');
 	      };
 
@@ -1308,14 +1310,27 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	        (cached || []).map((entry) => normalizeKey(entry?.r, entry?.t, entry?.k)),
 	      );
 
+	      let lastCdKey = null;
 	      items.forEach((item) => {
 	        const role = item.role || item.r || 'status';
 	        const text = item.text || item.t || '';
 	        const kind = item.kind || item.k;
+	        if (isCdCommand(role, text, kind)) {
+	          lastCdKey = normalizeKey(role, text, kind);
+	        }
+	      });
+
+	      items.forEach((item) => {
+	        const role = item.role || item.r || 'status';
+	        const text = item.text || item.t || '';
+	        const kind = item.kind || item.k;
+	        const key = normalizeKey(role, text, kind);
+	        if (lastCdKey && isCdCommand(role, text, kind) && key !== lastCdKey) {
+	          return;
+	        }
 	        if (kind === 'plan') {
 	          return;
 	        }
-	        const key = normalizeKey(role, text, kind);
 	        if (cachedKeys.has(key)) {
 	          return;
 	        }
@@ -1326,19 +1341,39 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	      autoScrollIfNeeded();
 	    }
 
-    function restoreFromCache(sessionId) {
-      const cached = loadCache(sessionId);
-      if (!cached || cached.length === 0) return;
-      clearLogMessages();
-      cached.forEach((item) => {
-        const role = item.r || 'status';
-        const text = item.t || '';
-        const kind = item.k;
-        const isStatus = role === 'status' || kind === 'status';
-        appendMessage(role, text, { markdown: false, status: isStatus, skipCache: true });
-      });
-      pruneLog();
-      autoScrollIfNeeded();
+	    function restoreFromCache(sessionId) {
+	      const cached = loadCache(sessionId);
+	      if (!cached || cached.length === 0) return;
+	      clearLogMessages();
+	      const isCd = (role, text, kind) => {
+	        const trimmed = String(text || '').trim();
+	        if (!trimmed) return false;
+	        if (!/^\\/cd\\b/.test(trimmed)) return false;
+	        if (role === 'status') return false;
+	        const normalizedKind = kind || (trimmed.startsWith('/') ? 'command' : '');
+	        return normalizedKind === 'command';
+	      };
+	      let lastCdIndex = -1;
+	      cached.forEach((item, idx) => {
+	        const role = item.r || 'status';
+	        const text = item.t || '';
+	        const kind = item.k;
+	        if (isCd(role, text, kind)) {
+	          lastCdIndex = idx;
+	        }
+	      });
+	      cached.forEach((item, idx) => {
+	        const role = item.r || 'status';
+	        const text = item.t || '';
+	        const kind = item.k;
+	        if (isCd(role, text, kind) && idx !== lastCdIndex) {
+	          return;
+	        }
+	        const isStatus = role === 'status' || kind === 'status';
+	        appendMessage(role, text, { markdown: false, status: isStatus, skipCache: true });
+	      });
+	      pruneLog();
+	      autoScrollIfNeeded();
     }
 
     function resetIdleTimer() {
