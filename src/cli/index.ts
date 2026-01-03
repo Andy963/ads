@@ -50,6 +50,7 @@ import { SearchTool } from "../tools/index.js";
 import { ensureApiKeys, resolveSearchConfig } from "../tools/search/config.js";
 import { formatSearchResults } from "../tools/search/format.js";
 import { formatExploredEntry, type ExploredEntry } from "../utils/activityTracker.js";
+import { formatLocalSearchOutput, searchWorkspaceFiles } from "../utils/localSearch.js";
 import { processAdrBlocks } from "../utils/adrRecording.js";
 import { runVectorSearch, syncVectorSearch } from "../vectorSearch/run.js";
 import { TaskStore } from "../agents/tasks/taskStore.js";
@@ -1207,10 +1208,8 @@ async function handleLine(
         const config = resolveSearchConfig();
         const missingKeys = ensureApiKeys(config);
         if (missingKeys) {
-          return {
-            output: `❌ /search 未启用: ${missingKeys.message}`,
-            history: { role: "status", kind: "command" },
-          };
+          const local = searchWorkspaceFiles({ workspaceRoot, query });
+          return { output: formatLocalSearchOutput({ query, ...local }), history: { role: "status", kind: "command" } };
         }
         try {
           const result = await SearchTool.search({ query }, { config });
@@ -1317,7 +1316,7 @@ async function main(): Promise<void> {
   const initialStatus = agents.status();
   if (initialStatus.ready) {
     cliLogger.info(
-      `[${activeLabel}] 已连接。默认由 Codex 主管按需调度 Claude/Gemini 协作；用 /agent 查看/切换主代理。`,
+      `[${activeLabel}] 已连接。若已配置 Claude/Gemini，Codex 会按需调度协作；用 /agent 查看/切换主代理。`,
     );
   } else {
     cliLogger.warn(

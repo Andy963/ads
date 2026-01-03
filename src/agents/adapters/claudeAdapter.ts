@@ -161,7 +161,7 @@ export class ClaudeAgentAdapter implements AgentAdapter {
       throw new Error("Claude agent is disabled");
     }
     if (!this.config.apiKey) {
-      throw new Error("CLAUDE_API_KEY is required to use Claude agent");
+      throw new Error("Claude credentials are required (CLAUDE_API_KEY/ANTHROPIC_API_KEY env or ~/.claude/* config)");
     }
   }
 
@@ -174,7 +174,7 @@ export class ClaudeAgentAdapter implements AgentAdapter {
       return { ready: false, streaming: this.streamingEnabled, error: "Claude agent disabled" };
     }
     if (!this.config.apiKey) {
-      return { ready: false, streaming: this.streamingEnabled, error: "缺少 CLAUDE_API_KEY" };
+      return { ready: false, streaming: this.streamingEnabled, error: "缺少 Claude 凭证（CLAUDE_API_KEY/ANTHROPIC_API_KEY 或 ~/.claude/*）" };
     }
     return { ready: true, streaming: this.streamingEnabled };
   }

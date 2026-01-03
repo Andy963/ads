@@ -32,24 +32,6 @@ interface ExtractedAdrBlock {
   jsonText: string;
 }
 
-function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (["0", "false", "off", "no"].includes(normalized)) {
-    return false;
-  }
-  if (["1", "true", "on", "yes"].includes(normalized)) {
-    return true;
-  }
-  return undefined;
-}
-
-function isAdrEnabled(): boolean {
-  return parseBoolean(process.env.ADS_ADR_ENABLED) ?? true;
-}
-
 function formatIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -296,10 +278,6 @@ function buildNotice(results: AdrWriteResult[], warnings: string[]): string {
 }
 
 export function processAdrBlocks(text: string, workspaceRoot: string): AdrProcessingResult {
-  if (!isAdrEnabled()) {
-    return { cleanedText: text, results: [], warnings: [], finalText: text };
-  }
-
   const resolvedRoot = path.resolve(workspaceRoot);
   const { blocks, cleanedText } = extractAdrBlocks(text);
   if (blocks.length === 0) {

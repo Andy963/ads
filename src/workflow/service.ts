@@ -9,6 +9,8 @@ import { onNodeFinalized } from "../graph/autoWorkflow.js";
 import { saveNodeToFile, getSpecDir } from "../graph/fileManager.js";
 import type { GraphNode } from "../graph/types.js";
 import { getDatabase } from "../storage/database.js";
+import { loadVectorSearchConfig } from "../vectorSearch/config.js";
+import { syncVectorSearch } from "../vectorSearch/run.js";
 import {
   formatWorkflowStatusSummary,
   formatWorkflowLog,
@@ -653,6 +655,27 @@ export async function commitStep(params: {
     }
     if (nextStepMessage) {
       lines.push(escapeText(nextStepMessage));
+    }
+
+    let vectorSyncLine: string | null = null;
+    try {
+      const { config, error } = loadVectorSearchConfig();
+      if (config) {
+        const syncResult = await syncVectorSearch({ workspaceRoot: workspace });
+        vectorSyncLine = syncResult.ok
+          ? `🔎 向量索引: ${syncResult.message}`
+          : `⚠️ 向量索引同步失败: ${syncResult.message}`;
+      } else if (error && !error.includes("disabled")) {
+        vectorSyncLine = `⚠️ 向量索引未同步: ${error}`;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      vectorSyncLine = `⚠️ 向量索引同步异常: ${message}`;
+    }
+
+    if (vectorSyncLine) {
+      lines.push("");
+      lines.push(escapeText(vectorSyncLine));
     }
 
     const statusSummary = await getWorkflowStatusSummary({

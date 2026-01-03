@@ -34,6 +34,7 @@ import { HistoryStore } from "../utils/historyStore.js";
 import { SearchTool } from "../tools/index.js";
 import { ensureApiKeys, resolveSearchConfig } from "../tools/search/config.js";
 import { formatSearchResults } from "../tools/search/format.js";
+import { formatLocalSearchOutput, searchWorkspaceFiles } from "../utils/localSearch.js";
 import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { extractTextFromInput } from "../utils/inputText.js";
 import { processAdrBlocks } from "../utils/adrRecording.js";
@@ -710,10 +711,12 @@ async function start(): Promise<void> {
         const config = resolveSearchConfig();
 	        const missingKeys = ensureApiKeys(config);
 	        if (missingKeys) {
-	          const output = `❌ /search 未启用: ${missingKeys.message}`;
-	          safeJsonSend(ws, { type: "result", ok: false, output });
-	          sessionLogger?.logError(output);
-	          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
+	          const workspaceRoot = detectWorkspaceFrom(currentCwd);
+	          const local = searchWorkspaceFiles({ workspaceRoot, query });
+	          const output = formatLocalSearchOutput({ query, ...local });
+	          safeJsonSend(ws, { type: "result", ok: true, output });
+	          sessionLogger?.logOutput(output);
+	          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
 	          return;
 	        }
 	        try {

@@ -22,6 +22,7 @@ import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
 import { SearchTool } from '../tools/index.js';
 import { ensureApiKeys, resolveSearchConfig } from '../tools/search/config.js';
 import { formatSearchResults } from '../tools/search/format.js';
+import { formatLocalSearchOutput, searchWorkspaceFiles } from '../utils/localSearch.js';
 import { runVectorSearch, syncVectorSearch } from '../vectorSearch/run.js';
 
 const logger = createLogger('Bot');
@@ -501,7 +502,11 @@ async function main() {
     const config = resolveSearchConfig();
     const missingKeys = ensureApiKeys(config);
     if (missingKeys) {
-      await ctx.reply(`❌ /search 未启用: ${missingKeys.message}`, { disable_notification: silentNotifications });
+      const cwd = directoryManager.getUserCwd(userId);
+      const workspaceRoot = detectWorkspaceFrom(cwd);
+      const local = searchWorkspaceFiles({ workspaceRoot, query });
+      const output = formatLocalSearchOutput({ query, ...local });
+      await ctx.reply(output, { disable_notification: silentNotifications });
       return;
     }
     try {

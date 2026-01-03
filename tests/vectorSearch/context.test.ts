@@ -53,18 +53,49 @@ describe("vectorSearch/auto-context", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("skips retrieval when query does not match trigger keywords", async () => {
+  it("retrieves context even when query is not a trigger keyword", async () => {
     const workspaceRoot = makeWorkspace();
     const calls: string[] = [];
 
-    globalThis.fetch = async (url, _options) => {
-      calls.push(String(url));
-      return new Response("not expected", { status: 500 });
+    globalThis.fetch = async (url, options) => {
+      const target = String(url);
+      calls.push(target);
+      const method = String((options as any)?.method ?? "GET").toUpperCase();
+      const pathname = new URL(target).pathname;
+
+      if (pathname === "/health" && method === "GET") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/upsert" && method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/query" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            hits: [
+              {
+                id: "hit-1",
+                score: 0.9,
+                metadata: { source_type: "spec", path: "docs/spec/x/requirements.md" },
+                snippet: "Auth requirements (example)",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
     };
 
     const context = await maybeBuildVectorAutoContext({ workspaceRoot, query: "how to implement auth?" });
-    assert.equal(context, null);
-    assert.equal(calls.length, 0);
+    assert.ok(context);
+    assert.ok(calls.some((call) => call.endsWith("/query")));
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 

@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,20 +12,6 @@ function makeTempWorkspace(): string {
 }
 
 describe("utils/adrRecording", () => {
-  const originalEnv = process.env.ADS_ADR_ENABLED;
-
-  beforeEach(() => {
-    delete process.env.ADS_ADR_ENABLED;
-  });
-
-  afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.ADS_ADR_ENABLED;
-    } else {
-      process.env.ADS_ADR_ENABLED = originalEnv;
-    }
-  });
-
   it("records multiple ADR blocks and strips control blocks from output", () => {
     const workspaceRoot = makeTempWorkspace();
     const text = [
@@ -71,20 +57,6 @@ describe("utils/adrRecording", () => {
     assert.equal(result.warnings.length, 1);
     assert.ok(!result.finalText.includes("<<<adr"));
     assert.ok(result.finalText.includes("ADR warning:"));
-    assert.ok(!fs.existsSync(path.join(workspaceRoot, "docs", "adr")));
-  });
-
-  it("does nothing when ADS_ADR_ENABLED=0 (no parse, no strip, no write)", () => {
-    process.env.ADS_ADR_ENABLED = "0";
-    const workspaceRoot = makeTempWorkspace();
-    const text = ["Start", "<<<adr", JSON.stringify({ title: "Nope" }), ">>>", "End"].join("\n");
-
-    const result = processAdrBlocks(text, workspaceRoot);
-
-    assert.equal(result.finalText, text);
-    assert.equal(result.cleanedText, text);
-    assert.equal(result.results.length, 0);
-    assert.equal(result.warnings.length, 0);
     assert.ok(!fs.existsSync(path.join(workspaceRoot, "docs", "adr")));
   });
 

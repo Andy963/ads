@@ -1425,6 +1425,7 @@ export function injectToolGuide(
       [
         "【可用工具】",
         "vsearch - 调用本地向量搜索（语义搜索），可检索 Spec 文档、ADR 和历史对话，格式：",
+        "建议：当你需要回忆/引用已有 Spec、ADR 或历史对话里的信息时，先用 vsearch 检索再回答。",
         "<<<tool.vsearch",
         "如何实现用户认证？",
         ">>>",

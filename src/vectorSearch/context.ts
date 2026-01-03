@@ -84,7 +84,7 @@ export function resolveVectorAutoContextConfig(): VectorAutoContextConfig {
   const topK = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TOPK, 6);
   const maxChars = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MAX_CHARS, 6000);
   const minScore = parseFloatNumber(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_SCORE, 0.62);
-  const minIntervalMs = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS, 60_000);
+  const minIntervalMs = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS, 0);
   const extras = parseCsv(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS);
   const triggerKeywords = Array.from(new Set([...DEFAULT_TRIGGER_KEYWORDS, ...extras])).filter(Boolean);
   return { enabled, topK, maxChars, minScore, minIntervalMs, triggerKeywords };
@@ -277,23 +277,6 @@ function isChatUserEcho(hit: VectorQueryHit, normalizedQuery: string): boolean {
   return false;
 }
 
-function shouldTriggerAutoContext(query: string, triggers: string[]): boolean {
-  const trimmed = query.trim();
-  if (!trimmed) return false;
-  const lowered = trimmed.toLowerCase();
-
-  for (const trigger of triggers) {
-    const needle = String(trigger ?? "").trim();
-    if (!needle) continue;
-    const needleLowered = needle.toLowerCase();
-    if (needleLowered && lowered.includes(needleLowered)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 type AutoContextCacheEntry = {
   updatedAtMs: number;
   context: string | null;
@@ -358,10 +341,6 @@ export async function maybeBuildVectorAutoContext(params: {
     return null;
   }
 
-  if (!shouldTriggerAutoContext(originalQuery, config.triggerKeywords)) {
-    return null;
-  }
-
   const query = isBareTriggerQuery(originalQuery, config.triggerKeywords)
     ? deriveQueryFromHistory({
         workspaceRoot: params.workspaceRoot,
@@ -372,7 +351,13 @@ export async function maybeBuildVectorAutoContext(params: {
       })
     : originalQuery;
 
-  const cacheKey = String(params.workspaceRoot ?? "").trim();
+  const cacheKey = [
+    String(params.workspaceRoot ?? "").trim(),
+    safeString(params.historyNamespace),
+    safeString(params.historySessionId),
+  ]
+    .filter(Boolean)
+    .join("::");
   const now = Date.now();
   const cached = cacheKey ? AUTO_CONTEXT_CACHE.get(cacheKey) : undefined;
   if (cached && now - cached.updatedAtMs < config.minIntervalMs) {

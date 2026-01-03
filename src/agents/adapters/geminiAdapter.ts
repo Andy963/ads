@@ -505,7 +505,9 @@ export class GeminiAgentAdapter implements AgentAdapter {
       return;
     }
     if (!this.config.apiKey && !this.config.accessToken && !this.config.googleAuthKeyFile) {
-      throw new Error("GEMINI_API_KEY (or GOOGLE_API_KEY) is required to use Gemini agent");
+      throw new Error(
+        "Gemini credentials are required (GEMINI_API_KEY/GOOGLE_API_KEY env, GEMINI_ACCESS_TOKEN, or ~/.gemini/* config)",
+      );
     }
   }
 
@@ -565,7 +567,11 @@ export class GeminiAgentAdapter implements AgentAdapter {
       return { ready: true, streaming: this.streamingEnabled };
     }
     if (!this.config.apiKey && !this.config.accessToken && !this.config.googleAuthKeyFile) {
-      return { ready: false, streaming: this.streamingEnabled, error: "缺少 GEMINI_API_KEY / GOOGLE_API_KEY" };
+      return {
+        ready: false,
+        streaming: this.streamingEnabled,
+        error: "缺少 Gemini 凭证（GEMINI_API_KEY/GOOGLE_API_KEY 或 ~/.gemini/*）",
+      };
     }
     return { ready: true, streaming: this.streamingEnabled };
   }
