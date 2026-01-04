@@ -12,6 +12,7 @@ export function renderLandingPage(options: LandingPageOptions): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="color-scheme" content="light dark" />
   <title>ADS Web Console</title>
   <style>
 ${LANDING_PAGE_CSS}  </style>
