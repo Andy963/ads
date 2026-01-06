@@ -635,10 +635,24 @@ async function start(): Promise<void> {
               hooks: {
                 onSupervisorRound: (round, directives) =>
                   logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
-                onDelegationStart: ({ agentId, agentName, prompt }) =>
-                  logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`),
-                onDelegationResult: (summary) =>
-                  logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`),
+                onDelegationStart: ({ agentId, agentName, prompt }) => {
+                  logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
+                  handleExploredEntry({
+                    category: "Agent",
+                    summary: `${agentName}（${agentId}）在后台执行：${truncateForLog(prompt, 140)}`,
+                    ts: Date.now(),
+                    source: "tool_hook",
+                  });
+                },
+                onDelegationResult: (summary) => {
+                  logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`);
+                  handleExploredEntry({
+                    category: "Agent",
+                    summary: `✅ ${summary.agentName} 完成：${truncateForLog(summary.prompt, 140)}`,
+                    ts: Date.now(),
+                    source: "tool_hook",
+                  });
+                },
               },
               toolHooks: {
                 onInvoke: (tool, payload) => logger.info(`[Tool] ${tool}: ${truncateForLog(payload)}`),

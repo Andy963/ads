@@ -920,6 +920,133 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
 
 const GREP_DEFAULT_MAX_RESULTS = 50;
 const FIND_DEFAULT_MAX_RESULTS = 50;
+const FALLBACK_GREP_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const FALLBACK_SKIP_DIRS = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".ads",
+  "node_modules",
+  "dist",
+  "build",
+  "coverage",
+  "logs",
+  ".turbo",
+  ".next",
+  ".vite",
+]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizePathForGlob(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function globToRegExp(glob: string): RegExp {
+  const normalized = normalizePathForGlob(glob.trim());
+  let re = "^";
+  for (let i = 0; i < normalized.length; i += 1) {
+    const ch = normalized[i]!;
+    if (ch === "*") {
+      const next = normalized[i + 1];
+      if (next === "*") {
+        re += ".*";
+        i += 1;
+        continue;
+      }
+      re += "[^/]*";
+      continue;
+    }
+    if (ch === "?") {
+      re += "[^/]";
+      continue;
+    }
+    if (ch === "/") {
+      re += "\\/";
+      continue;
+    }
+    if (/[\\^$+?.()|[\]{}]/.test(ch)) {
+      re += `\\${ch}`;
+      continue;
+    }
+    re += ch;
+  }
+  re += "$";
+  return new RegExp(re);
+}
+
+async function walkFiles(
+  startPath: string,
+  options: {
+    signal?: AbortSignal;
+    // Return false to stop traversal early.
+    onFile: (filePath: string) => Promise<boolean> | boolean;
+  },
+): Promise<void> {
+  const signal = options.signal;
+  const throwIfStopped = () => {
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+  };
+
+  const root = path.resolve(startPath);
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(root);
+  } catch {
+    return;
+  }
+
+  if (stats.isFile()) {
+    throwIfStopped();
+    const shouldContinue = await options.onFile(root);
+    if (shouldContinue === false) {
+      return;
+    }
+    return;
+  }
+
+  if (!stats.isDirectory()) {
+    return;
+  }
+
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    throwIfStopped();
+    const currentDir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      throwIfStopped();
+      const name = entry.name;
+      if (!name) {
+        continue;
+      }
+      const fullPath = path.join(currentDir, name);
+      if (entry.isDirectory()) {
+        if (FALLBACK_SKIP_DIRS.has(name)) {
+          continue;
+        }
+        stack.push(fullPath);
+        continue;
+      }
+      if (entry.isFile()) {
+        const shouldContinue = await options.onFile(fullPath);
+        if (shouldContinue === false) {
+          return;
+        }
+      }
+    }
+  }
+}
 
 interface GrepParams {
   pattern: string;
@@ -995,6 +1122,90 @@ async function runGrepTool(payload: string, context: ToolExecutionContext): Prom
 
   logger.info(`[tool.grep] cwd=${cwd} pattern=${params.pattern} path=${searchPath}`);
 
+  const runFallback = async (): Promise<string> => {
+    let matcher: RegExp;
+    const flags = params.ignoreCase ? "i" : "";
+    try {
+      matcher = new RegExp(params.pattern, flags);
+    } catch {
+      matcher = new RegExp(escapeRegExp(params.pattern), flags);
+    }
+
+    const globPattern = params.glob?.trim();
+    const globRe = globPattern ? globToRegExp(globPattern) : null;
+    const matchBasenameOnly = globPattern ? !/[\\/]/.test(globPattern) : false;
+
+    const matches: string[] = [];
+    let truncated = false;
+
+    await walkFiles(searchPath, {
+      signal: context.signal,
+      onFile: async (filePath) => {
+        if (matches.length >= maxResults) {
+          truncated = true;
+          return false;
+        }
+
+        const relative = path.relative(cwd, filePath) || path.basename(filePath);
+        const relNormalized = normalizePathForGlob(relative);
+        if (globRe) {
+          const candidate = matchBasenameOnly ? path.basename(relNormalized) : relNormalized;
+          if (!globRe.test(candidate)) {
+            return true;
+          }
+        }
+
+        let stat: fs.Stats;
+        try {
+          stat = await fs.promises.stat(filePath);
+        } catch {
+          return true;
+        }
+        if (stat.size > FALLBACK_GREP_MAX_FILE_BYTES) {
+          return true;
+        }
+
+        let buffer: Buffer;
+        try {
+          buffer = await fs.promises.readFile(filePath);
+        } catch {
+          return true;
+        }
+        if (buffer.includes(0)) {
+          return true;
+        }
+        const content = buffer.toString("utf8");
+        const lines = content.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i += 1) {
+          if (matches.length >= maxResults) {
+            truncated = true;
+            return false;
+          }
+          const line = lines[i] ?? "";
+          if (!matcher.test(line)) {
+            continue;
+          }
+          matches.push(`${relNormalized}:${i + 1}:${line}`);
+        }
+
+        return true;
+      },
+    });
+
+    if (matches.length === 0) {
+      return `🔍 grep: "${params.pattern}" - 未找到匹配`;
+    }
+
+    return [
+      `🔍 grep: "${params.pattern}" (${matches.length} matches${truncated ? ", showing " + maxResults : ""})`,
+      "",
+      ...matches.slice(0, maxResults),
+      truncated ? `\n…(showing first ${maxResults})` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  };
+
   return await new Promise<string>((resolve, reject) => {
     const signal = context.signal;
     const child = spawn("rg", args, {
@@ -1035,9 +1246,8 @@ async function runGrepTool(payload: string, context: ToolExecutionContext): Prom
       if (settled) return;
       settled = true;
       if (signal) signal.removeEventListener("abort", onAbort);
-      // If ripgrep is not installed, suggest using exec with grep
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        reject(new Error("ripgrep (rg) 未安装。请使用 exec 工具执行 grep 命令。"));
+        void runFallback().then(resolve).catch(reject);
         return;
       }
       reject(error);
@@ -1144,6 +1354,46 @@ async function runFindTool(payload: string, context: ToolExecutionContext): Prom
 
   logger.info(`[tool.find] cwd=${cwd} pattern=${params.pattern} path=${searchPath}`);
 
+  const runFallback = async (): Promise<string> => {
+    const globPattern = params.pattern.trim();
+    const re = globToRegExp(globPattern);
+    const matchBasenameOnly = !/[\\/]/.test(globPattern);
+
+    const files: string[] = [];
+    let truncated = false;
+
+    await walkFiles(searchPath, {
+      signal: context.signal,
+      onFile: async (filePath) => {
+        if (files.length >= maxResults) {
+          truncated = true;
+          return false;
+        }
+        const relative = path.relative(cwd, filePath) || path.basename(filePath);
+        const relNormalized = normalizePathForGlob(relative);
+        const candidate = matchBasenameOnly ? path.basename(relNormalized) : relNormalized;
+        if (!re.test(candidate)) {
+          return true;
+        }
+        files.push(relNormalized);
+        return true;
+      },
+    });
+
+    if (files.length === 0) {
+      return `📁 find: "${params.pattern}" - 未找到文件`;
+    }
+
+    return [
+      `📁 find: "${params.pattern}" (${files.length} files${truncated ? ", showing " + maxResults : ""})`,
+      "",
+      ...files.slice(0, maxResults),
+      truncated ? `\n…(showing first ${maxResults})` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  };
+
   return await new Promise<string>((resolve, reject) => {
     const signal = context.signal;
     const child = spawn(cmd, args, {
@@ -1202,6 +1452,14 @@ async function runFindTool(payload: string, context: ToolExecutionContext): Prom
           }
         });
 
+        findChild.on("error", (findError) => {
+          if ((findError as NodeJS.ErrnoException).code === "ENOENT") {
+            void runFallback().then(resolve).catch(reject);
+            return;
+          }
+          reject(findError);
+        });
+
         findChild.on("close", (code) => {
           if (code !== 0) {
             reject(new Error(`find exited with code ${code}`));
@@ -1224,6 +1482,10 @@ async function runFindTool(payload: string, context: ToolExecutionContext): Prom
         });
         return;
       }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        void runFallback().then(resolve).catch(reject);
+        return;
+      }
       reject(error);
     });
 
@@ -1237,6 +1499,10 @@ async function runFindTool(payload: string, context: ToolExecutionContext): Prom
 
       if (code !== 0 && errText) {
         reject(new Error(errText));
+        return;
+      }
+      if (code !== 0 && !outText) {
+        void runFallback().then(resolve).catch(reject);
         return;
       }
 

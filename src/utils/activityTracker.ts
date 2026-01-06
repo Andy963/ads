@@ -12,6 +12,7 @@ export type ExploredCategory =
   | "Read"
   | "Write"
   | "Execute"
+  | "Agent"
   | "Tool"
   | "WebSearch";
 
@@ -505,6 +506,91 @@ export class ActivityTracker {
     const normalizedTool = String(tool ?? "").trim().toLowerCase();
     const trimmedPayload = String(payload ?? "").trim();
     if (!normalizedTool) {
+      return;
+    }
+
+    if (normalizedTool === "grep") {
+      const parsed = safeJsonParse(trimmedPayload);
+      const record =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null;
+      const pattern =
+        typeof parsed === "string"
+          ? parsed.trim()
+          : typeof record?.pattern === "string"
+            ? record.pattern.trim()
+            : trimmedPayload;
+      const pathValue = typeof record?.path === "string" ? record.path.trim() : "";
+      const globValue = typeof record?.glob === "string" ? record.glob.trim() : "";
+      const scopeParts = [pathValue ? displayPath(pathValue) : "", globValue ? `glob:${globValue}` : ""].filter(Boolean);
+      const scope = scopeParts.length > 0 ? ` in ${scopeParts.join(" ")}` : "";
+      this.add({
+        category: "Search",
+        summary: truncate(`${pattern}${scope}`, 180),
+        source: "tool_hook",
+        meta: { tool: normalizedTool },
+      });
+      return;
+    }
+
+    if (normalizedTool === "find") {
+      const parsed = safeJsonParse(trimmedPayload);
+      const record =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null;
+      const pattern =
+        typeof parsed === "string"
+          ? parsed.trim()
+          : typeof record?.pattern === "string"
+            ? record.pattern.trim()
+            : trimmedPayload;
+      const pathValue = typeof record?.path === "string" ? record.path.trim() : "";
+      const scope = pathValue ? ` in ${displayPath(pathValue)}` : "";
+      this.add({
+        category: "List",
+        summary: truncate(`${pattern}${scope}`, 180),
+        source: "tool_hook",
+        meta: { tool: normalizedTool },
+      });
+      return;
+    }
+
+    if (normalizedTool === "vsearch") {
+      this.add({
+        category: "Search",
+        summary: truncate(trimmedPayload, 180),
+        source: "tool_hook",
+        meta: { tool: normalizedTool },
+      });
+      return;
+    }
+
+    if (normalizedTool === "agent") {
+      const parsed = safeJsonParse(trimmedPayload);
+      const record =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null;
+      let agentId = "";
+      let prompt = "";
+      if (record) {
+        agentId = String(record.agentId ?? record.agent_id ?? record.agent ?? "").trim();
+        prompt = String(record.prompt ?? record.input ?? record.query ?? "").trim();
+      } else {
+        const lines = trimmedPayload.split(/\r?\n/);
+        agentId = String(lines[0] ?? "").trim();
+        prompt = lines.slice(1).join("\n").trim();
+      }
+      const label = agentId ? agentId.toLowerCase() : "agent";
+      const summary = prompt ? `${label}: ${truncate(prompt, 160)}` : label;
+      this.add({
+        category: "Agent",
+        summary,
+        source: "tool_hook",
+        meta: { tool: normalizedTool },
+      });
       return;
     }
 

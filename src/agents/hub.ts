@@ -18,6 +18,7 @@ import { maybeBuildVectorAutoContext } from "../vectorSearch/context.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
 import { isCoordinatorEnabled, TaskCoordinator } from "./tasks/taskCoordinator.js";
+import { SupervisorVerdictSchema, extractJsonPayload } from "./tasks/schemas.js";
 
 interface DelegationDirective {
   raw: string;
@@ -280,6 +281,19 @@ function stripDelegationBlocks(text: string): string {
   const regex = new RegExp(DELEGATION_REGEX.source, DELEGATION_REGEX.flags);
   const stripped = text.replace(regex, "").trim();
   return stripped.replace(/\n{3,}/g, "\n\n");
+}
+
+function looksLikeSupervisorVerdict(text: string): boolean {
+  const payload = extractJsonPayload(text);
+  if (!payload) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(payload);
+    return SupervisorVerdictSchema.safeParse(parsed).success;
+  } catch {
+    return false;
+  }
 }
 
 function extractDelegationDirectives(text: string, excludeAgentId?: AgentIdentifier): DelegationDirective[] {
@@ -654,7 +668,7 @@ export async function runCollaborativeTurn(
       allDelegations.push(...coordination.delegations);
 
       // After coordination completes, ask supervisor for a user-facing final response (not the verdict JSON).
-      if (rounds > 0 || allDelegations.length > 0) {
+      if (rounds > 0 || allDelegations.length > 0 || looksLikeSupervisorVerdict(result.response)) {
         const finalPrompt = buildCoordinatorFinalPrompt({
           supervisorName,
           rounds,
@@ -665,6 +679,19 @@ export async function runCollaborativeTurn(
           toolContext,
           toolHooks,
         });
+
+        if (looksLikeSupervisorVerdict(result.response)) {
+          const retryPrompt = [
+            finalPrompt,
+            "",
+            "⚠️ 注意：不要输出任何 JSON（包括 SupervisorVerdict）。请只用自然语言给用户最终答复。",
+          ].join("\n");
+          result = await runAgentTurnWithTools(orchestrator, activeAgentId, retryPrompt, sendOptions, {
+            maxToolRounds,
+            toolContext,
+            toolHooks,
+          });
+        }
       }
     } else {
       while (rounds < maxSupervisorRounds) {

@@ -301,6 +301,9 @@ export async function handleCodexMessage(
   }
 
   function formatStatusEntry(event: AgentEvent): StatusEntry | null {
+    if (event.phase === 'boot') {
+      return null;
+    }
     if (event.phase === 'completed') {
       return null;
     }
@@ -331,12 +334,8 @@ export async function handleCodexMessage(
     }
 
     if (event.detail && event.phase !== 'command') {
-      if (event.phase === 'boot' && event.detail.startsWith('thread#')) {
-        lines.push(`> ${event.detail}`);
-      } else {
-        const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
-        lines.push(indent(detail));
-      }
+      const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
+      lines.push(indent(detail));
     }
 
     return {
@@ -738,6 +737,23 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       });
   }
 
+  function queueStatusLine(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+    eventQueue = eventQueue
+      .then(() => {
+        if (statusUpdatesClosed || !interruptManager.hasActiveRequest(userId)) {
+          return;
+        }
+        return appendStatusEntry({ text: trimmed, silent: silentNotifications });
+      })
+      .catch((error) => {
+        logWarning('[CodexAdapter] Status line update error', error);
+      });
+  }
+
   async function finalizeStatusUpdates(finalEntry?: string): Promise<void> {
     statusUpdatesClosed = true;
     if (finalEntry) {
@@ -891,10 +907,28 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       hooks: {
         onSupervisorRound: (round, directives) =>
           logger?.logOutput(`[Auto] 协作轮次 ${round}（指令块 ${directives}）`),
-        onDelegationStart: ({ agentId, prompt }) =>
-          logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForLog(prompt)}`),
-        onDelegationResult: (summary) =>
-          logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`),
+        onDelegationStart: ({ agentId, agentName, prompt }) => {
+          logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForLog(prompt)}`);
+          queueStatusLine(`🤝 ${agentName}（${agentId}）在后台执行：${truncateForLog(prompt, 140)}`);
+          handleExploredEntry({
+            category: "Agent",
+            summary: `${agentName}（${agentId}）在后台执行：${truncateForLog(prompt, 140)}`,
+            ts: Date.now(),
+            source: "tool_hook",
+            meta: { tool: `agent:${agentId}` },
+          });
+        },
+        onDelegationResult: (summary) => {
+          logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`);
+          queueStatusLine(`✅ ${summary.agentName} 已完成：${truncateForLog(summary.prompt, 140)}`);
+          handleExploredEntry({
+            category: "Agent",
+            summary: `✅ ${summary.agentName} 完成：${truncateForLog(summary.prompt, 140)}`,
+            ts: Date.now(),
+            source: "tool_hook",
+            meta: { tool: `agent:${summary.agentId}` },
+          });
+        },
       },
       toolHooks: {
         onInvoke: (tool, payload) => logger?.logOutput(`[Tool] ${tool}: ${truncateForLog(payload)}`),
