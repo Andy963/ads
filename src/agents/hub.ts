@@ -57,7 +57,7 @@ export interface CollaborativeTurnResult extends AgentRunResult {
 const logger = createLogger("AgentHub");
 const supervisorPromptLoader = new SupervisorPromptLoader({ logger });
 
-const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
+const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
 
 function createAbortError(message = "用户中断了请求"): Error {
   const abortError = new Error(message);
@@ -382,6 +382,26 @@ function buildSupervisorPrompt(
   return [header, guide, body].filter(Boolean).join("\n\n").trim();
 }
 
+function buildCoordinatorFinalPrompt(options: {
+  supervisorName: string;
+  rounds: number;
+  supervisorGuide?: string;
+}): string {
+  const header = [
+    "协作代理任务已执行并完成验收。",
+    `你仍然是主管（${options.supervisorName}）：请给用户最终答复。`,
+    "要求：",
+    "- 不要输出 SupervisorVerdict JSON。",
+    "- 不要输出任何 <<<agent.*>>> 指令块。",
+    "- 若仍需补充修改，可直接使用工具完成，然后给出如何验证。",
+    "",
+    `（协作轮次：${options.rounds}）`,
+  ].join("\n");
+
+  const guide = String(options.supervisorGuide ?? "").trim();
+  return [header, guide].filter(Boolean).join("\n\n").trim();
+}
+
 async function runDelegationQueue(
   orchestrator: HybridOrchestrator,
   initialText: string,
@@ -621,17 +641,31 @@ export async function runCollaborativeTurn(
 
       const coordination = await coordinator.run({
         initialSupervisorResult: result,
+        // Verdict round should not enforce structured output schema and should not execute tool blocks.
         runSupervisor: async (inputText: string) =>
-          await runAgentTurnWithTools(orchestrator, activeAgentId, inputText, sendOptions, {
-            maxToolRounds,
-            toolContext,
-            toolHooks,
+          await orchestrator.invokeAgent(activeAgentId, inputText, {
+            streaming: false,
+            signal: options.signal,
           }),
       });
 
       result = coordination.finalResult;
       rounds = coordination.rounds;
       allDelegations.push(...coordination.delegations);
+
+      // After coordination completes, ask supervisor for a user-facing final response (not the verdict JSON).
+      if (rounds > 0 || allDelegations.length > 0) {
+        const finalPrompt = buildCoordinatorFinalPrompt({
+          supervisorName,
+          rounds,
+          supervisorGuide,
+        });
+        result = await runAgentTurnWithTools(orchestrator, activeAgentId, finalPrompt, sendOptions, {
+          maxToolRounds,
+          toolContext,
+          toolHooks,
+        });
+      }
     } else {
       while (rounds < maxSupervisorRounds) {
         throwIfAborted(options.signal);

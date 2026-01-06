@@ -49,10 +49,14 @@ export interface TaskCoordinatorOptions {
   logger?: Logger;
 }
 
-const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
+const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
 
 function createTaskId(): string {
   return `t_${crypto.randomBytes(6).toString("hex")}`;
+}
+
+function normalizeAgentKey(agentId: AgentIdentifier): string {
+  return String(agentId ?? "").trim().toLowerCase();
 }
 
 function truncate(text: string, limit = 1400): string {
@@ -94,16 +98,42 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
       reject(abortError);
       return;
     }
-    const timer = setTimeout(resolve, duration);
+
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (signal) {
+        try {
+          signal.removeEventListener("abort", onAbort);
+        } catch {
+          // ignore
+        }
+      }
+    };
+
     const onAbort = () => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      cleanup();
       const abortError = new Error("用户中断了请求");
       abortError.name = "AbortError";
       reject(abortError);
     };
+
     if (signal) {
       signal.addEventListener("abort", onAbort, { once: true });
     }
+
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    }, duration);
   });
 }
 
@@ -354,6 +384,7 @@ export class TaskCoordinator {
   private readonly orchestrator: HybridOrchestrator;
   private readonly options: TaskCoordinatorOptions;
   private readonly logger: Logger;
+  private readonly perAgentQueue = new Map<string, Promise<void>>();
 
   constructor(orchestrator: HybridOrchestrator, options: TaskCoordinatorOptions) {
     this.orchestrator = orchestrator;
@@ -425,82 +456,84 @@ export class TaskCoordinator {
           return { spec, agentName, result: null as TaskResult | null, verificationText: "(skipped)" };
         }
 
-        await this.options.hooks?.onDelegationStart?.({ agentId, agentName, prompt: entry.originalPrompt });
+        return await this.runSerializedForAgent(agentId, async () => {
+          await this.options.hooks?.onDelegationStart?.({ agentId, agentName, prompt: entry.originalPrompt });
 
-        const now = Date.now();
-        this.store.upsertTask(spec, "ASSIGNED", now, { lastError: null });
-        this.store.appendMessage(spec.taskId, { role: "system", kind: "task.created", payload: { agentId, revision: spec.revision } }, now);
+          const now = Date.now();
+          this.store.upsertTask(spec, "ASSIGNED", now, { lastError: null });
+          this.store.appendMessage(spec.taskId, { role: "system", kind: "task.created", payload: { agentId, revision: spec.revision } }, now);
 
-        let lastError: string | null = null;
-        let parsedResult: TaskResult | null = null;
-        let rawResponse = "";
+          let lastError: string | null = null;
+          let parsedResult: TaskResult | null = null;
+          let rawResponse = "";
 
-        for (let attempt = 1; attempt <= Math.max(1, this.options.maxTaskAttempts); attempt += 1) {
-          this.store.incrementAttempts(spec.taskId);
-          this.store.updateStatus(spec.taskId, "IN_PROGRESS", Date.now());
-          const { signal, cleanup } = withTimeout(this.options.signal, this.options.taskTimeoutMs);
-          try {
-            const delegatePrompt = buildDelegatePrompt(spec, entry.note);
-            rawResponse = (await invokeAgent(agentId, delegatePrompt, { signal })).response;
-            const payload = extractJsonPayload(rawResponse);
-            if (!payload) {
-              lastError = "missing TaskResult JSON payload";
-              this.store.appendMessage(spec.taskId, { role: "agent", kind: "raw", payload: truncate(rawResponse, 4000) });
-            } else {
-              const json = JSON.parse(payload);
-              const validated = TaskResultSchema.safeParse(json);
-              if (validated.success) {
-                parsedResult = validated.data;
-                lastError = null;
-                break;
+          for (let attempt = 1; attempt <= Math.max(1, this.options.maxTaskAttempts); attempt += 1) {
+            this.store.incrementAttempts(spec.taskId);
+            this.store.updateStatus(spec.taskId, "IN_PROGRESS", Date.now());
+            const { signal, cleanup } = withTimeout(this.options.signal, this.options.taskTimeoutMs);
+            try {
+              const delegatePrompt = buildDelegatePrompt(spec, entry.note);
+              rawResponse = (await invokeAgent(agentId, delegatePrompt, { signal })).response;
+              const payload = extractJsonPayload(rawResponse);
+              if (!payload) {
+                lastError = "missing TaskResult JSON payload";
+                this.store.appendMessage(spec.taskId, { role: "agent", kind: "raw", payload: truncate(rawResponse, 4000) });
+              } else {
+                const json = JSON.parse(payload);
+                const validated = TaskResultSchema.safeParse(json);
+                if (validated.success) {
+                  parsedResult = validated.data;
+                  lastError = null;
+                  break;
+                }
+                lastError = "invalid TaskResult schema";
+                this.store.appendMessage(spec.taskId, { role: "agent", kind: "raw", payload: truncate(rawResponse, 4000) });
               }
-              lastError = "invalid TaskResult schema";
-              this.store.appendMessage(spec.taskId, { role: "agent", kind: "raw", payload: truncate(rawResponse, 4000) });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              lastError = message;
+              this.store.appendMessage(spec.taskId, { role: "system", kind: "error", payload: message });
+            } finally {
+              cleanup();
             }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            lastError = message;
-            this.store.appendMessage(spec.taskId, { role: "system", kind: "error", payload: message });
-          } finally {
-            cleanup();
+
+            if (lastError && attempt < this.options.maxTaskAttempts) {
+              await delay(this.options.retryBackoffMs * attempt, this.options.signal);
+            }
           }
 
-          if (lastError && attempt < this.options.maxTaskAttempts) {
-            await delay(this.options.retryBackoffMs * attempt, this.options.signal);
+          if (parsedResult) {
+            const status: TaskStatus =
+              parsedResult.status === "needs_clarification"
+                ? "NEEDS_CLARIFICATION"
+                : parsedResult.status === "failed"
+                  ? "FAILED"
+                  : "SUBMITTED";
+            this.store.setResult(spec.taskId, parsedResult, status, Date.now());
+          } else {
+            const status: TaskStatus = "FAILED";
+            this.store.updateStatus(spec.taskId, status, Date.now(), lastError);
           }
-        }
 
-        if (parsedResult) {
-          const status: TaskStatus =
-            parsedResult.status === "needs_clarification"
-              ? "NEEDS_CLARIFICATION"
-              : parsedResult.status === "failed"
-                ? "FAILED"
-                : "SUBMITTED";
-          this.store.setResult(spec.taskId, parsedResult, status, Date.now());
-        } else {
-          const status: TaskStatus = "FAILED";
-          this.store.updateStatus(spec.taskId, status, Date.now(), lastError);
-        }
+          const summary: DelegationSummaryLike = {
+            agentId,
+            agentName,
+            prompt: entry.originalPrompt,
+            response: parsedResult ? JSON.stringify(parsedResult, null, 2) : `⚠️ 协作代理调用失败：${lastError ?? "unknown error"}`,
+          };
+          allDelegations.push(summary);
+          await this.options.hooks?.onDelegationResult?.(summary);
 
-        const summary: DelegationSummaryLike = {
-          agentId,
-          agentName,
-          prompt: entry.originalPrompt,
-          response: parsedResult ? JSON.stringify(parsedResult, null, 2) : `⚠️ 协作代理调用失败：${lastError ?? "unknown error"}`,
-        };
-        allDelegations.push(summary);
-        await this.options.hooks?.onDelegationResult?.(summary);
+          const verificationReport = await runVerification(spec.verification.commands ?? [], {
+            cwd: this.options.verificationCwd,
+            signal: this.options.signal,
+          });
+          this.store.setVerification(spec.taskId, verificationReport, Date.now());
+          this.store.appendMessage(spec.taskId, { role: "system", kind: "verification", payload: verificationReport });
+          const verificationText = formatVerification(verificationReport);
 
-        const verificationReport = await runVerification(spec.verification.commands ?? [], {
-          cwd: this.options.verificationCwd,
-          signal: this.options.signal,
+          return { spec, agentName, result: parsedResult, verificationText };
         });
-        this.store.setVerification(spec.taskId, verificationReport, Date.now());
-        this.store.appendMessage(spec.taskId, { role: "system", kind: "verification", payload: verificationReport });
-        const verificationText = formatVerification(verificationReport);
-
-        return { spec, agentName, result: parsedResult, verificationText };
       });
 
       const verdictPrompt = buildVerdictPrompt({
@@ -593,5 +626,25 @@ export class TaskCoordinator {
     }
 
     return { finalResult: result, delegations: allDelegations, rounds };
+  }
+
+  private async runSerializedForAgent<T>(agentId: AgentIdentifier, fn: () => Promise<T>): Promise<T> {
+    const key = normalizeAgentKey(agentId);
+    const previous = this.perAgentQueue.get(key) ?? Promise.resolve();
+    let resolveCurrent: (() => void) | undefined;
+    const current = new Promise<void>((resolve) => {
+      resolveCurrent = resolve;
+    });
+    this.perAgentQueue.set(key, current);
+
+    await previous.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      resolveCurrent?.();
+      if (this.perAgentQueue.get(key) === current) {
+        this.perAgentQueue.delete(key);
+      }
+    }
   }
 }

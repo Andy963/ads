@@ -3,7 +3,7 @@ import type { AgentIdentifier } from "./types.js";
 import type { AgentRunResult } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 
-const AGENT_DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
+const AGENT_DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
 
 interface DelegationDirective {
   raw: string;

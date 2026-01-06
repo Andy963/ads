@@ -44,7 +44,7 @@ export interface ToolResolutionOutcome extends AgentRunResult {
   toolSummaries: ToolCallSummary[];
 }
 
-const TOOL_BLOCK_REGEX = /<<<tool\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
+const TOOL_BLOCK_REGEX = /<<<tool\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
 const SNIPPET_LIMIT = 180;
 const EXEC_MAX_OUTPUT_BYTES = 48 * 1024;
 const EXEC_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -54,6 +54,33 @@ const PATCH_DEFAULT_MAX_BYTES = 512 * 1024;
 
 const logger = createLogger("AgentTools");
 const PARALLEL_TOOL_NAMES = new Set(["read", "grep", "find", "search", "vsearch"]);
+const PARALLEL_TOOL_CONCURRENCY = 6;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const concurrency = Math.max(1, Math.floor(limit));
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, () =>
+    (async () => {
+      while (true) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        if (currentIndex >= items.length) {
+          break;
+        }
+        results[currentIndex] = await worker(items[currentIndex]!, currentIndex);
+      }
+    })(),
+  );
+
+  await Promise.all(runners);
+  return results;
+}
 
 function createAbortError(message = "用户中断了请求"): Error {
   const abortError = new Error(message);
@@ -235,10 +262,23 @@ async function runAgentTool(payload: string, context: ToolExecutionContext): Pro
     throw new Error("当前上下文不支持调用协作代理");
   }
   try {
-    const parsed = JSON.parse(payload);
-    const agentId = parsed.agentId || parsed.agent_id || parsed.agent;
-    const prompt = parsed.prompt || parsed.input || parsed.query;
-    if (!agentId || !prompt) {
+    const parsed = JSON.parse(payload) as unknown;
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    const agentIdRaw = record?.agentId ?? record?.agent_id ?? record?.agent;
+    const promptRaw = record?.prompt ?? record?.input ?? record?.query;
+
+    const agentId = String(agentIdRaw ?? "").trim().toLowerCase();
+    const prompt =
+      typeof promptRaw === "string"
+        ? promptRaw
+        : promptRaw && typeof promptRaw === "object"
+          ? JSON.stringify(promptRaw)
+          : String(promptRaw ?? "");
+
+    if (!agentId || !prompt.trim()) {
       throw new Error("agent 工具需要 agentId 和 prompt 参数");
     }
     return await context.invokeAgent(agentId, prompt);
@@ -249,7 +289,7 @@ async function runAgentTool(payload: string, context: ToolExecutionContext): Pro
     // Fallback to raw payload as prompt if not JSON
     const lines = payload.trim().split("\n");
     const firstLine = lines[0].trim();
-    const agentId = firstLine;
+    const agentId = firstLine.toLowerCase();
     const prompt = lines.slice(1).join("\n").trim();
     if (!agentId || !prompt) {
       throw new Error("agent 工具格式错误。请使用 JSON 或首行 agentId 后跟 prompt。");
@@ -1368,7 +1408,9 @@ export async function executeToolBlocks(
       await hooks?.onInvoke?.(invocation.name, invocation.payload);
     }
 
-    const batchResults = await Promise.all(batch.map((invocation) => executeInvocation(invocation)));
+    const batchResults = await runWithConcurrency(batch, PARALLEL_TOOL_CONCURRENCY, (invocation) =>
+      executeInvocation(invocation),
+    );
     for (const item of batchResults) {
       replacedText = replacedText.replace(item.invocation.raw, item.result.output);
       results.push(item.result);
