@@ -1446,6 +1446,7 @@ async function runFindTool(payload: string, context: ToolExecutionContext): Prom
         });
 
         let findStdout = Buffer.alloc(0);
+        let findSettled = false;
         findChild.stdout?.on("data", (chunk: Buffer) => {
           if (findStdout.length < EXEC_MAX_OUTPUT_BYTES) {
             findStdout = Buffer.concat([findStdout, chunk]);
@@ -1453,6 +1454,10 @@ async function runFindTool(payload: string, context: ToolExecutionContext): Prom
         });
 
         findChild.on("error", (findError) => {
+          if (findSettled) {
+            return;
+          }
+          findSettled = true;
           if ((findError as NodeJS.ErrnoException).code === "ENOENT") {
             void runFallback().then(resolve).catch(reject);
             return;
@@ -1461,6 +1466,10 @@ async function runFindTool(payload: string, context: ToolExecutionContext): Prom
         });
 
         findChild.on("close", (code) => {
+          if (findSettled) {
+            return;
+          }
+          findSettled = true;
           if (code !== 0) {
             reject(new Error(`find exited with code ${code}`));
             return;
@@ -1696,7 +1705,7 @@ export function injectToolGuide(
   },
 ): string {
   const activeAgentId = options?.activeAgentId ?? "codex";
-  const usesToolBlocks = activeAgentId !== "gemini" && activeAgentId !== "claude";
+  const usesToolBlocks = true;
   const wantsSearchGuide = () => {
     const searchEnabled = !ensureApiKeys(resolveSearchConfig());
     if (!searchEnabled) {

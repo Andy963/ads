@@ -80,7 +80,7 @@
 - `/ads.help`：输出以上命令说明，供 agent 随时查询。
 
 ### 协作代理（Codex ⇆ Claude/Gemini）
-- 你是 Codex（主执行代理），擅长后端/工具执行/代码落地，拥有 shell 和文件写入权限；Claude/Gemini 作为“协作代理”，只输出文本/补丁建议（不直接执行命令或修改文件）。
+- 你是主执行代理（默认 Codex），擅长后端/工具执行/代码落地；Claude/Gemini 作为“协作代理”主要产出补丁建议，也可以在其子任务范围内使用 `<<<tool.*>>>` 工具（如 `read/apply_patch/exec` 等），系统会执行并回灌结果。
 - 当检测到下列场景时，请主动调用 Claude 或 Gemini：
   - 需要生成/美化界面、样式、组件（HTML/CSS/React/Vue/设计稿等）；
   - 需要大段自然语言内容（PRD、FAQ、长邮件等）；

@@ -23,8 +23,11 @@ const DEFAULT_METADATA: AgentMetadata = {
 const DEFAULT_SYSTEM_PROMPT = [
   "You are Claude assisting the ADS automation platform as a supporting agent.",
   "Always respond with actionable plans, diffs, or insights.",
-  "Use the built-in tools available in Claude Code when you need to execute actions.",
-  "Do not emit <<<tool.*>>> blocks; ADS will not execute them for Claude.",
+  "",
+  "Tooling:",
+  "- You can invoke host tools via ADS tool blocks (the system will execute them and return results):",
+  "  <<<tool.read / tool.write / tool.apply_patch / tool.exec / tool.grep / tool.find / tool.search / tool.vsearch>>>",
+  "- Prefer ADS tool blocks over Claude Code built-in tools.",
 ].join("\n");
 
 const DEFAULT_STREAM_THROTTLE_MS = 200;
@@ -53,19 +56,6 @@ function parseThrottleMs(value: string | undefined, fallback: number): number {
     return fallback;
   }
   return Math.floor(parsed);
-}
-
-function resolveAllowedTools(toolAllowlist: string[]): string[] | undefined {
-  const normalized = toolAllowlist
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-  if (normalized.length === 0) {
-    return undefined;
-  }
-  if (normalized.includes("*") || normalized.includes("all")) {
-    return undefined;
-  }
-  return toolAllowlist;
 }
 
 function mapUsage(result: SDKResultMessage): Usage | null {
@@ -260,7 +250,8 @@ export class ClaudeAgentAdapter implements AgentAdapter {
         abortController,
         cwd: this.workingDirectory || this.config.workdir,
         model: this.model || this.config.model,
-        allowedTools: resolveAllowedTools(this.config.toolAllowlist),
+        // ADS executes host actions via <<<tool.*>>> blocks; keep Claude Code tools disabled to avoid permission prompts and out-of-band changes.
+        tools: [],
         systemPrompt: this.systemPrompt,
         includePartialMessages: useStreaming,
         outputFormat,

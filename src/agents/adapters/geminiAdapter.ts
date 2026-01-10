@@ -202,7 +202,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- Prefer apply_patch for code changes; only use write for new files or small edits.",
   "",
   "Output rules:",
-  "- Do NOT output <<<tool.*>>> blocks; use function tools instead.",
+  "- Prefer function tools, but <<<tool.*>>> blocks are also supported when needed (ADS will execute them and return results).",
   "- When finished, respond with a concise summary and next verification steps.",
 ].join("\n");
 
