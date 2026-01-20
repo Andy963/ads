@@ -211,9 +211,9 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
       const wantsShow = params.show === "true" || positional[0]?.toLowerCase() === "show";
       const workflowArg = params.workflow ?? (wantsShow ? positional.slice(1).join(" ") : undefined);
       const agent =
-        (params.agent as "codex" | "claude" | undefined) ??
-        (["codex", "claude"].includes(positional[0]?.toLowerCase() ?? "")
-          ? (positional.shift()!.toLowerCase() as "codex" | "claude")
+        (params.agent as "codex" | undefined) ??
+        (positional[0]?.toLowerCase() === "codex"
+          ? (positional.shift()!.toLowerCase() as "codex")
           : undefined);
       const specOverride = parseBooleanParam(params.spec);
       const noSpecFlag =

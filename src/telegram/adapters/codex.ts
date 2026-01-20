@@ -870,8 +870,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     // 构建输入
     let input: Input;
     let enhancedText = urlData ? urlData.processedText : text;
-    const activeAgentId = session.getActiveAgentId();
-    const attachFiles = activeAgentId === 'gemini';
+    const attachFiles = false;
 
     // 如果有文件，添加文件信息到提示
     if (filePaths.length > 0) {

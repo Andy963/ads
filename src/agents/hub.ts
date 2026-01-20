@@ -552,7 +552,6 @@ export async function runCollaborativeTurn(
   const activeAgentId = orchestrator.getActiveAgentId();
   const supervisorName = resolveAgentName(orchestrator, activeAgentId);
 
-  // outputSchema 只对 codex 有效，gemini/claude 不支持结构化输出
   const supportsStructuredOutput = activeAgentId === "codex";
   const sendOptions: AgentSendOptions = {
     streaming: options.streaming,

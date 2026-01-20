@@ -1,5 +1,5 @@
 export const CODEX_THREAD_RESET_HINT =
-  "Codex 线程上下文损坏。请使用 /reset 重置会话后再试（CLI 中同样输入 /reset 命令）。";
+  "Codex 线程上下文损坏。请使用 /reset 重置会话后再试。";
 
 export class CodexThreadCorruptedError extends Error {
   readonly originalMessage?: string;

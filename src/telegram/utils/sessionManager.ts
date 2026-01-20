@@ -1,13 +1,10 @@
 import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
-import { ClaudeAgentAdapter } from '../../agents/adapters/claudeAdapter.js';
-import { GeminiAgentAdapter } from '../../agents/adapters/geminiAdapter.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import { ThreadStorage } from './threadStorage.js';
 import type { SandboxMode } from '../config.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { createLogger } from '../../utils/logger.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
-import { resolveClaudeAgentConfig, resolveGeminiAgentConfig } from '../../agents/config.js';
 import type { AgentAdapter } from '../../agents/types.js';
 
 interface SessionRecord {
@@ -23,16 +20,13 @@ export class SessionManager {
   private threadStorage: ThreadStorage;
   private sandboxMode: SandboxMode;
   private defaultModel?: string;
-  private userModels = new Map<number, string>(); // 用户自定义模型
+  private userModels = new Map<number, string>();
   private readonly reinjectionConfig = resolveReinjectionConfig("TELEGRAM");
   private readonly logger = createLogger("SessionManager");
-  private readonly claudeConfig = resolveClaudeAgentConfig();
-  private readonly geminiConfig = resolveGeminiAgentConfig();
 
   constructor(
-    // <= 0 表示禁用 session 超时清理（会话将一直保留，直到进程退出或显式 reset/destroy）
-    private readonly sessionTimeoutMs: number = 30 * 60 * 1000, // 30分钟
-    private readonly cleanupIntervalMs: number = 5 * 60 * 1000,  // 5分钟检查一次
+    private readonly sessionTimeoutMs: number = 30 * 60 * 1000,
+    private readonly cleanupIntervalMs: number = 5 * 60 * 1000,
     sandboxMode: SandboxMode = 'workspace-write',
     defaultModel?: string,
     threadStorage?: ThreadStorage
@@ -59,14 +53,11 @@ export class SessionManager {
       return existing.orchestrator;
     }
 
-    // 只有明确要求时才恢复 thread
     const savedThreadId = resumeThread ? this.threadStorage.getThreadId(userId, "codex") : undefined;
-    const savedClaudeSessionId = resumeThread ? this.threadStorage.getThreadId(userId, "claude") : undefined;
     
     const userModel = this.userModels.get(userId) || this.defaultModel;
     const effectiveCwd = cwd || process.cwd();
 
-    // 使用时间戳和随机数生成唯一的会话ID（不暴露用户信息）
     const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     this.logger.info(
@@ -89,17 +80,9 @@ export class SessionManager {
         model: userModel,
         workingDirectory: effectiveCwd,
         systemPromptManager,
-        networkAccessEnabled: true, // 启用网络访问以支持 MCP 工具（如 Tavily 搜索）
+        networkAccessEnabled: true,
       }),
     ];
-
-    if (this.claudeConfig.enabled) {
-      adapters.push(new ClaudeAgentAdapter({ config: this.claudeConfig, resumeSessionId: savedClaudeSessionId }));
-    }
-
-    if (this.geminiConfig.enabled) {
-      adapters.push(new GeminiAgentAdapter({ config: this.geminiConfig }));
-    }
 
     const orchestrator = new HybridOrchestrator({
       adapters,
@@ -113,7 +96,7 @@ export class SessionManager {
       orchestrator,
       lastActivity: Date.now(),
       cwd: effectiveCwd,
-      logger: undefined, // 延迟创建，等到获取 threadId 后
+      logger: undefined,
     });
 
     return orchestrator;
@@ -127,17 +110,12 @@ export class SessionManager {
     return this.sessions.get(userId)?.logger;
   }
 
-  /**
-   * 确保 logger 存在，如果不存在则创建
-   * 如果还没有 threadId，会先创建一个临时日志文件，threadId 获得后会补记
-   */
   ensureLogger(userId: number): ConversationLogger | undefined {
     const record = this.sessions.get(userId);
     if (!record) {
       return undefined;
     }
 
-    // 如果已经有 logger，直接返回
     if (record.logger) {
       const threadId = record.orchestrator.getThreadId();
       if (threadId) {
@@ -146,10 +124,7 @@ export class SessionManager {
       return record.logger;
     }
 
-    // 获取 threadId（可能为空，但也要创建日志以免漏记第一条消息）
     const threadId = record.orchestrator.getThreadId();
-
-    // 创建 logger
     record.logger = new ConversationLogger(record.cwd, userId, threadId ?? undefined);
     return record.logger;
   }
@@ -209,7 +184,6 @@ export class SessionManager {
   reset(userId: number): void {
     const record = this.sessions.get(userId);
     if (record) {
-      // 关闭旧的 logger
       if (record.logger) {
         record.logger.close();
         record.logger = undefined;
@@ -241,7 +215,6 @@ export class SessionManager {
 
     if (record.cwd === cwd) {
       if (threadId) {
-        // 确保最新 cwd 被持久化
         this.saveThreadId(userId, threadId, activeAgentId);
       }
       return;
@@ -359,7 +332,6 @@ export class SessionManager {
       clearInterval(this.cleanupInterval);
     }
 
-    // 保存所有活跃 session 的 thread ID 并关闭 logger
     for (const [userId, record] of this.sessions.entries()) {
       const threadId = record.orchestrator.getThreadId();
       const activeAgentId = record.orchestrator.getActiveAgentId();

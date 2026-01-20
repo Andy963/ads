@@ -1755,7 +1755,7 @@ export function injectToolGuide(
       [
         "agent - 调用协作代理协助处理子任务，格式：",
         "<<<tool.agent",
-        '{"agentId":"claude","prompt":"请帮我润色这段文档..."}',
+        '{"agentId":"codex","prompt":"请帮我处理这个子任务..."}',
         ">>>",
       ].join("\n"),
     );

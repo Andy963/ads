@@ -3,8 +3,6 @@ import { CodexAgentAdapter } from "../agents/adapters/codexAdapter.js";
 import { HybridOrchestrator } from "../agents/orchestrator.js";
 import type { WorkflowInfo } from "../workspace/context.js";
 import type { ReviewReport, ReviewIssue } from "./types.js";
-import { resolveClaudeAgentConfig } from "../agents/config.js";
-import { ClaudeAgentAdapter } from "../agents/adapters/claudeAdapter.js";
 import { z } from "zod";
 
 import { safeParseJsonWithSchema } from "../utils/json.js";
@@ -85,16 +83,14 @@ export async function runReviewerAgent(options: {
   workflow: WorkflowInfo;
   reviewDir: string;
   bundleDir: string;
-  preferredAgent?: "codex" | "claude";
   includeSpecFiles?: boolean;
 }): Promise<ReviewerAgentResult> {
-  const { workspace, workflow, reviewDir, bundleDir, preferredAgent, includeSpecFiles } = options;
+  const { workspace, workflow, reviewDir, bundleDir, includeSpecFiles } = options;
   const systemPromptManager = new SystemPromptManager({
     workspaceRoot: workspace,
     reinjection: resolveReinjectionConfig("REVIEW"),
   });
 
-  const adapters = [];
   const warnings: string[] = [];
 
   const codexAdapter = new CodexAgentAdapter({
@@ -106,23 +102,10 @@ export async function runReviewerAgent(options: {
       vendor: "OpenAI",
     },
   });
-  adapters.push(codexAdapter);
-  let defaultAgentId = codexAdapter.id;
-
-  if (preferredAgent === "claude") {
-    const claudeConfig = resolveClaudeAgentConfig();
-    if (claudeConfig.enabled) {
-      const claudeAdapter = new ClaudeAgentAdapter({ config: claudeConfig });
-      adapters.push(claudeAdapter);
-      defaultAgentId = claudeAdapter.id;
-    } else {
-      warnings.push("未启用 Claude，已回退到 Codex Reviewer。");
-    }
-  }
 
   const orchestrator = new HybridOrchestrator({
-    adapters,
-    defaultAgentId,
+    adapters: [codexAdapter],
+    defaultAgentId: codexAdapter.id,
     initialWorkingDirectory: workspace,
     systemPromptManager,
   });
@@ -154,7 +137,7 @@ export async function runReviewerAgent(options: {
       notes: parsed.notes,
     };
 
-    return { report, agentId: defaultAgentId, warnings };
+    return { report, agentId: codexAdapter.id, warnings };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -164,7 +147,7 @@ export async function runReviewerAgent(options: {
         issues: [],
         notes: "请修复问题后重新运行 /ads.review。",
       },
-      agentId: defaultAgentId,
+      agentId: codexAdapter.id,
       warnings,
     };
   }

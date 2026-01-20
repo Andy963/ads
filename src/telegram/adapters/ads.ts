@@ -150,25 +150,12 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
       }
 
       case 'review': {
-        let agentParam: "codex" | "claude" | undefined;
         let includeSpec = false;
         let specMode: "default" | "forceInclude" | "forceExclude" = "default";
         let commitRef: string | undefined;
         for (let i = 0; i < commandArgs.length; i += 1) {
           const token = commandArgs[i];
           const normalized = token.toLowerCase();
-          if (token.startsWith("agent=")) {
-            agentParam = token.slice("agent=".length).toLowerCase() as "codex" | "claude";
-            commandArgs.splice(i, 1);
-            i -= 1;
-            continue;
-          }
-          if (token === "--agent" && commandArgs[i + 1]) {
-            agentParam = commandArgs[i + 1].toLowerCase() as "codex" | "claude";
-            commandArgs.splice(i, 2);
-            i -= 1;
-            continue;
-          }
           if (isNoSpecToken(normalized)) {
             includeSpec = false;
             specMode = "forceExclude";
@@ -244,7 +231,6 @@ export async function handleAdsCommand(ctx: Context, args: string[], options?: {
           const response = await runReview({
             workspace_path: workspacePath,
             requestedBy: 'telegram',
-            agent: agentParam,
             includeSpec,
             commitRef,
             specMode,

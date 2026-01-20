@@ -30,26 +30,19 @@ describe("agents/toolGuide", () => {
     setEnv("ENABLE_AGENT_EXEC_TOOL", originalEnv.ENABLE_AGENT_EXEC_TOOL);
   });
 
-  it("includes tool block guide for claude/gemini", () => {
-    const base = "please do something";
-
-    const claude = injectToolGuide(base, { activeAgentId: "claude" });
-    assert.match(claude, /<<<tool\.read/);
-    assert.match(claude, /<<<tool\.write/);
-    assert.match(claude, /<<<tool\.apply_patch/);
-    assert.match(claude, /<<<tool\.exec/);
-
-    const gemini = injectToolGuide(base, { activeAgentId: "gemini" });
-    assert.match(gemini, /<<<tool\.read/);
-    assert.match(gemini, /<<<tool\.write/);
-    assert.match(gemini, /<<<tool\.apply_patch/);
-    assert.match(gemini, /<<<tool\.exec/);
-  });
-
-  it("does not add file/exec tool blocks for codex", () => {
+  it("does not add file/exec tool blocks for codex (uses native tools)", () => {
     const base = "please do something";
     const codex = injectToolGuide(base, { activeAgentId: "codex" });
-    assert.equal(codex, base);
+    assert.ok(!codex.includes("<<<tool.read"), "codex should not have tool.read blocks");
+    assert.ok(!codex.includes("<<<tool.write"), "codex should not have tool.write blocks");
+  });
+
+  it("includes tool block guide for non-codex agents", () => {
+    const base = "please do something";
+    const other = injectToolGuide(base, { activeAgentId: "other" });
+    assert.match(other, /<<<tool\.read/);
+    assert.match(other, /<<<tool\.write/);
+    assert.match(other, /<<<tool\.apply_patch/);
+    assert.match(other, /<<<tool\.exec/);
   });
 });
-

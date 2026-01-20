@@ -300,7 +300,7 @@ export async function runReview(
   options: {
     workspace_path?: string;
     requestedBy?: string;
-    agent?: "codex" | "claude";
+    agent?: "codex";
     includeSpec?: boolean;
     commitRef?: string;
     specMode?: SpecMode;
@@ -349,7 +349,6 @@ export async function runReview(
       workflow,
       reviewDir,
       bundleDir,
-      preferredAgent: options.agent,
       includeSpecFiles: includeSpec,
     });
     const report = reviewerResult.report;

@@ -4,7 +4,7 @@ import {
   type CodexSendOptions,
   type CodexSendResult,
   type CodexSessionOptions,
-} from "../../cli/codexChat.js";
+} from "../../codex/codexChat.js";
 import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../types.js";
 
 function mapOptions(options?: AgentSendOptions): CodexSendOptions {

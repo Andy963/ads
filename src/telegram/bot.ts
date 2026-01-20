@@ -356,14 +356,13 @@ async function main() {
     const userId = await requireUserId(ctx, '/resume');
     if (userId === null) return;
 
-    const savedCodexThreadId = sessionManager.getSavedThreadId(userId, "codex");
-    const savedClaudeSessionId = sessionManager.getSavedThreadId(userId, "claude");
-    if (!savedCodexThreadId && !savedClaudeSessionId) {
+    const savedThreadId = sessionManager.getSavedThreadId(userId, "codex");
+    if (!savedThreadId) {
       await ctx.reply('❌ 没有保存的对话可恢复');
       return;
     }
 
-    const threadId = savedCodexThreadId || savedClaudeSessionId;
+    const threadId = savedThreadId;
     sessionManager.getOrCreate(userId, directoryManager.getUserCwd(userId), true);
     await ctx.reply(`✅ 已恢复之前的对话 (Thread ID: ${threadId?.slice(0, 8)}...)`);
   });
@@ -454,8 +453,7 @@ async function main() {
         .join('\n');
       await ctx.reply(
         `🤖 可用代理：\n${lines}\n\n` +
-        `使用 /agent <id> 切换代理，如 /agent gemini。\n` +
-        `提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。`
+        `使用 /agent <id> 切换代理。`
       );
       return;
     }

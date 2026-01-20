@@ -870,8 +870,7 @@ async function start(): Promise<void> {
 	            "🤖 可用代理：",
 	            lines,
             "",
-            "使用 /agent <id> 切换代理，如 /agent gemini。",
-	            "提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。",
+            "使用 /agent <id> 切换代理。",
 	          ].join("\n");
 	          safeJsonSend(ws, { type: "result", ok: true, output: message });
 	          sessionLogger?.logOutput(message);
