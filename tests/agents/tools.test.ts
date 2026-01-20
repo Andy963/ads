@@ -20,6 +20,7 @@ describe("agents/tools", () => {
   beforeEach(() => {
     originalEnv.ENABLE_AGENT_FILE_TOOLS = process.env.ENABLE_AGENT_FILE_TOOLS;
     originalEnv.ENABLE_AGENT_APPLY_PATCH = process.env.ENABLE_AGENT_APPLY_PATCH;
+    originalEnv.PATH = process.env.PATH;
 
     setEnv("ENABLE_AGENT_FILE_TOOLS", "1");
     setEnv("ENABLE_AGENT_APPLY_PATCH", "1");
@@ -32,6 +33,7 @@ describe("agents/tools", () => {
   afterEach(() => {
     setEnv("ENABLE_AGENT_FILE_TOOLS", originalEnv.ENABLE_AGENT_FILE_TOOLS);
     setEnv("ENABLE_AGENT_APPLY_PATCH", originalEnv.ENABLE_AGENT_APPLY_PATCH);
+    setEnv("PATH", originalEnv.PATH);
 
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -86,5 +88,52 @@ describe("agents/tools", () => {
     assert.equal(patchOutcome.results[0]?.tool, "apply_patch");
     assert.equal(patchOutcome.results[0]?.ok, true);
     assert.equal(fs.readFileSync(path.join(tmpDir, "a.txt"), "utf8").trimEnd(), "new");
+  });
+
+  it("falls back to internal grep when rg is missing", async () => {
+    assert.ok(tmpDir);
+    const context = { cwd: tmpDir, allowedDirs: [tmpDir] };
+
+    fs.writeFileSync(path.join(tmpDir, "a.txt"), "hello [world]\n", "utf8");
+    fs.writeFileSync(path.join(tmpDir, "b.md"), "hello [md]\n", "utf8");
+
+    setEnv("PATH", "");
+
+    const grepText = [
+      "<<<tool.grep",
+      JSON.stringify({ pattern: "[", glob: "*.txt" }),
+      ">>>",
+    ].join("\n");
+    const grepOutcome = await executeToolBlocks(grepText, undefined, context);
+
+    assert.equal(grepOutcome.results.length, 1);
+    assert.equal(grepOutcome.results[0]?.tool, "grep");
+    assert.equal(grepOutcome.results[0]?.ok, true);
+    assert.match(grepOutcome.results[0]?.output ?? "", /a\.txt:1:hello \[world\]/);
+    assert.ok(!grepOutcome.results[0]?.output.includes("b.md"));
+  });
+
+  it("falls back to internal find when fd/find are missing", async () => {
+    assert.ok(tmpDir);
+    const context = { cwd: tmpDir, allowedDirs: [tmpDir] };
+
+    fs.mkdirSync(path.join(tmpDir, "dir"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "dir", "x.ts"), "export const x = 1;\n", "utf8");
+    fs.writeFileSync(path.join(tmpDir, "dir", "y.js"), "export const y = 1;\n", "utf8");
+
+    setEnv("PATH", "");
+
+    const findText = [
+      "<<<tool.find",
+      JSON.stringify({ pattern: "*.ts" }),
+      ">>>",
+    ].join("\n");
+    const findOutcome = await executeToolBlocks(findText, undefined, context);
+
+    assert.equal(findOutcome.results.length, 1);
+    assert.equal(findOutcome.results[0]?.tool, "find");
+    assert.equal(findOutcome.results[0]?.ok, true);
+    assert.ok(findOutcome.results[0]?.output.includes("dir/x.ts"));
+    assert.ok(!findOutcome.results[0]?.output.includes("dir/y.js"));
   });
 });

@@ -65,6 +65,26 @@ describe("utils/activityTracker", () => {
     );
   });
 
+  it("summarizes grep/find/vsearch/agent tool invokes", () => {
+    const tracker = new ActivityTracker();
+
+    tracker.ingestToolInvoke("grep", JSON.stringify({ pattern: "foo", path: "src", glob: "*.ts" }));
+    tracker.ingestToolInvoke("find", JSON.stringify({ pattern: "*.test.ts", path: "tests" }));
+    tracker.ingestToolInvoke("vsearch", "how to add tests");
+    tracker.ingestToolInvoke("agent", JSON.stringify({ agentId: "Claude", prompt: "Do something" }));
+
+    const entries = tracker.compact({ maxItems: 20, dedupe: "none" });
+    assert.deepEqual(
+      entries.map((entry) => `${entry.category} ${entry.summary}`),
+      [
+        "Search foo in src glob:*.ts",
+        "List *.test.ts in tests",
+        "Search how to add tests",
+        "Agent claude: Do something",
+      ],
+    );
+  });
+
   it("compacts consecutive duplicates and merges consecutive reads", () => {
     const tracker = new ActivityTracker();
 
