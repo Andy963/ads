@@ -1,5 +1,4 @@
 import { createLogger } from "../utils/logger.js";
-import { checkWorkspaceInit } from "../telegram/utils/workspaceInitChecker.js";
 import { checkVectorServiceHealth, queryVectors, rerankVectors, upsertVectors } from "./client.js";
 import { loadVectorSearchConfig } from "./config.js";
 import { formatVectorSearchOutput } from "./format.js";
@@ -18,29 +17,34 @@ function takeLastWins(entries: Array<{ key: string; value: string }>): Array<{ k
   return Array.from(map.entries()).map(([key, value]) => ({ key, value }));
 }
 
-function toHit(raw: any): VectorQueryHit | null {
+function toHit(raw: unknown): VectorQueryHit | null {
   if (!raw || typeof raw !== "object") return null;
-  const id = typeof raw.id === "string" ? raw.id : "";
+  const record = raw as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id : "";
   if (!id) return null;
   const hit: VectorQueryHit = { id };
-  if (typeof raw.score === "number") hit.score = raw.score;
-  if (typeof raw.score === "string") {
-    const parsed = Number.parseFloat(raw.score);
+  const scoreRaw = record.score;
+  if (typeof scoreRaw === "number") hit.score = scoreRaw;
+  if (typeof scoreRaw === "string") {
+    const parsed = Number.parseFloat(scoreRaw);
     if (Number.isFinite(parsed)) hit.score = parsed;
   }
-  if (raw.metadata && typeof raw.metadata === "object") hit.metadata = raw.metadata as Record<string, unknown>;
-  if (typeof raw.snippet === "string") hit.snippet = raw.snippet;
-  if (typeof raw.text_preview === "string" && !hit.snippet) hit.snippet = raw.text_preview;
-  if (typeof raw.text === "string") hit.text = raw.text;
+  const metadataRaw = record.metadata;
+  if (metadataRaw && typeof metadataRaw === "object" && !Array.isArray(metadataRaw)) {
+    hit.metadata = metadataRaw as Record<string, unknown>;
+  }
+  if (typeof record.snippet === "string") hit.snippet = record.snippet;
+  if (typeof record.text_preview === "string" && !hit.snippet) hit.snippet = record.text_preview;
+  if (typeof record.text === "string") hit.text = record.text;
   return hit;
 }
 
 function isStaleFileHit(hit: VectorQueryHit, fileHashes: Map<string, string>): boolean {
   const md = hit.metadata ?? {};
-  const sourceType = (md as any).source_type;
+  const sourceType = md["source_type"];
   if (sourceType !== "spec" && sourceType !== "adr") return false;
-  const path = typeof (md as any).path === "string" ? (md as any).path : "";
-  const contentHash = typeof (md as any).content_hash === "string" ? (md as any).content_hash : "";
+  const path = typeof md["path"] === "string" ? md["path"] : "";
+  const contentHash = typeof md["content_hash"] === "string" ? md["content_hash"] : "";
   if (!path || !contentHash) return false;
   const current = fileHashes.get(path);
   if (!current) return false;
@@ -88,7 +92,6 @@ export type VectorSearchEntryNamespace = "cli" | "web" | "telegram" | "agent";
 
 export type VectorSearchFailureCode =
   | "empty_query"
-  | "workspace_not_initialized"
   | "disabled"
   | "service_unavailable"
   | "query_failed";
@@ -113,18 +116,6 @@ export async function queryVectorSearchHits(params: {
 
   if (!query) {
     return { ok: false, code: "empty_query", message: "empty query", hits: [], warnings, topK: desiredTopK };
-  }
-
-  const initStatus = checkWorkspaceInit(params.workspaceRoot);
-  if (!initStatus.initialized) {
-    return {
-      ok: false,
-      code: "workspace_not_initialized",
-      message: initStatus.details ?? "workspace not initialized",
-      hits: [],
-      warnings,
-      topK: desiredTopK,
-    };
   }
 
   const { config, error } = loadVectorSearchConfig();
@@ -267,12 +258,6 @@ export async function runVectorSearch(params: {
     if (result.code === "empty_query") {
       return "用法: /vsearch <query>";
     }
-    if (result.code === "workspace_not_initialized") {
-      return [
-        "❌ 当前工作区尚未初始化，无法使用 /vsearch",
-        "💡 可用 /search 进行关键词检索，或先初始化 ADS 工作区后再试。",
-      ].join("\n");
-    }
     if (result.code === "disabled") {
       return [
         `❌ /vsearch 未启用: ${result.message ?? "unknown"}`,
@@ -297,11 +282,6 @@ export async function runVectorSearch(params: {
 export async function syncVectorSearch(params: {
   workspaceRoot: string;
 }): Promise<{ ok: boolean; message: string; count: number }> {
-  const initStatus = checkWorkspaceInit(params.workspaceRoot);
-  if (!initStatus.initialized) {
-    return { ok: false, message: "工作区尚未初始化", count: 0 };
-  }
-
   const { config, error } = loadVectorSearchConfig();
   if (!config) {
     return { ok: false, message: `向量服务未启用: ${error ?? "unknown"}`, count: 0 };

@@ -1297,7 +1297,7 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
 	          normalizedRole === 'status'
 	            ? 'status'
 	            : (kind || (trimmedText.startsWith('/') ? 'command' : ''));
-	        return normalizedRole + '|' + normalizedKind + '|' + (text || '');
+	        return normalizedRole + '|' + normalizedKind + '|' + trimmedText;
 	      };
 
 	      const cached = loadCache();

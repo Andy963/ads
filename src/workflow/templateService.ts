@@ -23,6 +23,7 @@ const TEMPLATE_ROOT = path.join(PROJECT_ROOT, "templates");
 const REQUIREMENT_TEMPLATE = path.join(TEMPLATE_ROOT, "requirement.md");
 const DESIGN_TEMPLATE = path.join(TEMPLATE_ROOT, "design.md");
 const IMPLEMENTATION_TEMPLATE = path.join(TEMPLATE_ROOT, "implementation.md");
+const TASK_TEMPLATE = path.join(TEMPLATE_ROOT, "task.md");
 const logger = createLogger("WorkflowTemplateService");
 
 async function withWorkspaceEnv<T>(workspace: string, fn: () => Promise<T> | T): Promise<T> {
@@ -217,9 +218,13 @@ export async function createWorkflowFromTemplate(params: {
       };
       updateNode(rootNode.id, { metadata: rootMetadata });
 
-      await writeTemplateFile(workflowDir, "requirements.md", REQUIREMENT_TEMPLATE);
-      await writeTemplateFile(workflowDir, "design.md", DESIGN_TEMPLATE);
-      await writeTemplateFile(workflowDir, "implementation.md", IMPLEMENTATION_TEMPLATE);
+      if (normalizedId === "adhoc") {
+        await writeTemplateFile(workflowDir, "task.md", TASK_TEMPLATE);
+      } else {
+        await writeTemplateFile(workflowDir, "requirements.md", REQUIREMENT_TEMPLATE);
+        await writeTemplateFile(workflowDir, "design.md", DESIGN_TEMPLATE);
+        await writeTemplateFile(workflowDir, "implementation.md", IMPLEMENTATION_TEMPLATE);
+      }
 
       for (const node of result.nodes) {
         saveNodeToFile(node, workspace);

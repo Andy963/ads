@@ -173,7 +173,16 @@ function extractVectorQuery(input: Input): string {
     }
     if (Array.isArray(input)) {
       return input
-        .map((part) => (part as { type?: string; text?: string }).type === "text" ? String((part as any).text ?? "") : "")
+        .map((part) => {
+          if (!part || typeof part !== "object") {
+            return "";
+          }
+          const candidate = part as { type?: unknown; text?: unknown };
+          if (candidate.type !== "text") {
+            return "";
+          }
+          return typeof candidate.text === "string" ? candidate.text : String(candidate.text ?? "");
+        })
         .filter(Boolean)
         .join("\n\n");
     }

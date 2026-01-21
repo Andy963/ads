@@ -106,7 +106,7 @@ export function prepareVectorUpserts(params: {
   const specFiles = fs.existsSync(specDir) ? listFilesRecursive(specDir) : [];
   const adrFiles = fs.existsSync(adrDir) ? fs.readdirSync(adrDir).map((f) => path.join(adrDir, f)) : [];
 
-  const includeSpecNames = new Set(["requirements.md", "design.md", "implementation.md"]);
+  const includeSpecNames = new Set(["requirements.md", "design.md", "implementation.md", "task.md"]);
   const filteredSpec = specFiles.filter((file) => includeSpecNames.has(path.basename(file)));
   const filteredAdr = adrFiles.filter((file) => {
     const base = path.basename(file).toLowerCase();

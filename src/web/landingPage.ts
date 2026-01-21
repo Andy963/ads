@@ -61,7 +61,7 @@ ${LANDING_PAGE_CSS}  </style>
           <form id="form">
             <div id="attachments"></div>
             <div id="input-wrapper">
-              <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
+              <textarea id="input" autocomplete="off" placeholder="输入文本，Enter 发送，Shift+Enter 换行（支持 /cd /pwd /search /vsearch）"></textarea>
               <button id="attach-btn" type="button" title="添加图片">+</button>
               <button id="stop-btn" type="button" title="停止当前回复">■</button>
             </div>

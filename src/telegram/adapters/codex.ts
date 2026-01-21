@@ -4,7 +4,6 @@ import path from 'node:path';
 import { GrammyError, type Context } from 'grammy';
 import type {
   Input,
-  CommandExecutionItem,
   TodoListItem,
   ThreadEvent,
   ItemStartedEvent,
@@ -18,32 +17,20 @@ import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../uti
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
-import { runCollaborativeTurn } from '../../agents/hub.js';
 import { appendMarkNoteEntry } from '../utils/noteLogger.js';
+import { stripLeadingTranslation } from '../../utils/assistantText.js';
+import { processAdrBlocks } from '../../utils/adrRecording.js';
+import { detectWorkspaceFrom } from '../../workspace/detector.js';
 import {
   CODEX_THREAD_RESET_HINT,
   CodexThreadCorruptedError,
   shouldResetThread,
 } from '../../codex/errors.js';
-import { HistoryStore } from '../../utils/historyStore.js';
-import { truncateForLog } from '../../utils/text.js';
 import { createLogger } from '../../utils/logger.js';
-import { stripLeadingTranslation } from '../../utils/assistantText.js';
-import { formatExploredEntry, type ExploredEntry } from '../../utils/activityTracker.js';
-import { ADS_STRUCTURED_OUTPUT_SCHEMA, parseStructuredOutput, type StructuredPlanItem } from '../../utils/structuredOutput.js';
-import { processAdrBlocks } from '../../utils/adrRecording.js';
-import { detectWorkspaceFrom } from '../../workspace/detector.js';
 
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 const adapterLogger = createLogger('TelegramCodexAdapter');
-const historyStore = new HistoryStore({
-  storagePath: path.join(process.cwd(), ".ads", "state.db"),
-  namespace: "telegram",
-  migrateFromPaths: [path.join(process.cwd(), ".ads", "telegram-history.json")],
-  maxEntriesPerSession: 300,
-  maxTextLength: 6000,
-});
 
   function chunkMessage(text: string, maxLen = 3900): string[] {
     if (text.length <= maxLen) {
@@ -172,7 +159,7 @@ export async function handleCodexMessage(
   }
 
   const userId = rawUserId;
-  const historyKey = String(userId);
+
   const rawChatId = ctx.chat?.id;
   if (typeof rawChatId !== 'number') {
     logWarning('[Telegram] Missing chat id (ctx.chat.id) in update');
@@ -213,18 +200,11 @@ export async function handleCodexMessage(
   };
 
   const session = sessionManager.getOrCreate(userId, cwd);
-  const activeAgentLabel = sessionManager.getActiveAgentLabel(userId) || 'Codex';
+  const activeAgentLabel = 'Codex';
 
   const saveThreadIdIfNeeded = () => {
-    const threadId = session.getThreadId();
-    if (threadId) {
-      const agentId = session.getActiveAgentId();
-      sessionManager.saveThreadId(userId, threadId, agentId);
-    }
+    // No-op in simplified version
   };
-
-  // 尝试获取或创建 logger（如果 threadId 还没有，也会先写入日志）
-  let logger = sessionManager.ensureLogger(userId);
 
   // 注册请求
   const signal = interruptManager.registerRequest(userId).signal;
@@ -243,9 +223,6 @@ export async function handleCodexMessage(
   let lastPlanContent: string | null = null;
   let lastTodoSignature: string | null = null;
   let lastStatusEntry: string | null = null;
-  let exploredMessageId: number | null = null;
-  let exploredMessageText: string | null = null;
-  const exploredEntries: ExploredEntry[] = [];
 
   const PHASE_ICON: Partial<Record<AgentEvent['phase'], string>> = {
     analysis: '💭',
@@ -286,20 +263,6 @@ export async function handleCodexMessage(
     silent: boolean;
   }
 
-  function getCommandExecutionItem(rawEvent: AgentEvent['raw']): CommandExecutionItem | null {
-    if (
-      rawEvent.type === 'item.started' ||
-      rawEvent.type === 'item.updated' ||
-      rawEvent.type === 'item.completed'
-    ) {
-      const item = rawEvent.item;
-      if (item.type === 'command_execution') {
-        return item;
-      }
-    }
-    return null;
-  }
-
   function formatStatusEntry(event: AgentEvent): StatusEntry | null {
     if (event.phase === 'boot') {
       return null;
@@ -316,11 +279,6 @@ export async function handleCodexMessage(
       return null;
     }
 
-    const commandItem = getCommandExecutionItem(event.raw);
-    if (commandItem) {
-      return null;
-    }
-
     const icon = PHASE_ICON[event.phase] ?? '💬';
     const rawTitle = event.title || PHASE_FALLBACK[event.phase] || '处理中';
     const lines: string[] = [`${icon} ${rawTitle}`];
@@ -333,7 +291,7 @@ export async function handleCodexMessage(
       };
     }
 
-    if (event.detail && event.phase !== 'command') {
+    if (event.detail) {
       const detail = event.detail.length > 500 ? `${event.detail.slice(0, 497)}...` : event.detail;
       lines.push(indent(detail));
     }
@@ -506,48 +464,6 @@ export async function handleCodexMessage(
       .join('\n');
   }
 
-  function formatStructuredPlan(items: StructuredPlanItem[]): string | null {
-    if (items.length === 0) {
-      return null;
-    }
-    const completed = items.filter((entry) => entry.completed).length;
-    const lines = items.slice(0, 8).map((entry, index) => {
-      const marker = entry.completed ? '✅' : '⬜️';
-      const text = entry.text?.trim() || `步骤 ${index + 1}`;
-      return `${marker} ${index + 1}. ${text}`;
-    });
-    const more = items.length > 8 ? `... 还有 ${items.length - 8} 项` : '';
-    return [
-      `📋 任务计划 (${completed}/${items.length})`,
-      ...lines,
-      more,
-    ]
-      .filter(Boolean)
-      .join('\n');
-  }
-
-  function buildStructuredPlanSignature(items: StructuredPlanItem[]): string {
-    return JSON.stringify(
-      items.map((entry) => ({
-        text: entry.text ?? '',
-        completed: !!entry.completed,
-      })),
-    );
-  }
-
-  async function maybeSendStructuredPlan(items: StructuredPlanItem[]): Promise<void> {
-    const signature = buildStructuredPlanSignature(items);
-    if (signature === lastTodoSignature) {
-      return;
-    }
-    const message = formatStructuredPlan(items);
-    if (!message) {
-      return;
-    }
-    lastTodoSignature = signature;
-    await upsertPlanMessage(message);
-  }
-
   async function sendPlanMessage(text: string): Promise<void> {
     const now = Date.now();
     if (now < rateLimitUntil) {
@@ -629,8 +545,6 @@ export async function handleCodexMessage(
     await upsertPlanMessage(message);
   }
 
-  // Command log functions removed - replaced by real-time explored display
-
   function formatAttachmentList(paths: string[]): string {
     if (!paths.length) {
       return '';
@@ -659,63 +573,6 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
   return lines.join('\n');
 }
 
-  async function updateExploredMessage(): Promise<void> {
-    if (exploredEntries.length === 0) return;
-    
-    const lines = ['Explored'];
-    exploredEntries.forEach((entry, idx) => {
-      lines.push(formatExploredEntry(entry, idx === exploredEntries.length - 1));
-    });
-    const text = lines.join('\n');
-    
-    if (text === exploredMessageText) return;
-    
-    try {
-      if (exploredMessageId) {
-        const escaped = escapeTelegramMarkdownV2('```text\n' + text + '\n```');
-        await ctx.api.editMessageText(chatId, exploredMessageId, escaped, { parse_mode: 'MarkdownV2' });
-        exploredMessageText = text;
-      } else {
-        const escaped = escapeTelegramMarkdownV2('```text\n' + text + '\n```');
-        const msg = await ctx.reply(escaped, { parse_mode: 'MarkdownV2', disable_notification: silentNotifications });
-        exploredMessageId = msg.message_id;
-        exploredMessageText = text;
-      }
-    } catch (error) {
-      if (error instanceof GrammyError) {
-        if (error.error_code === 400 && error.description?.includes('message is not modified')) {
-          return;
-        }
-        if (error.error_code === 429) {
-          // Rate limited, skip this update
-          return;
-        }
-      }
-      // Fallback to plain text if markdown fails
-      try {
-        if (exploredMessageId) {
-          await ctx.api.editMessageText(chatId, exploredMessageId, text);
-          exploredMessageText = text;
-        } else {
-          const msg = await ctx.reply(text, { disable_notification: silentNotifications });
-          exploredMessageId = msg.message_id;
-          exploredMessageText = text;
-        }
-      } catch {
-        // ignore fallback errors
-      }
-    }
-  }
-
-  function handleExploredEntry(entry: ExploredEntry): void {
-    exploredEntries.push(entry);
-    eventQueue = eventQueue
-      .then(() => updateExploredMessage())
-      .catch((error) => {
-        logWarning('[CodexAdapter] Explored update error', error);
-      });
-  }
-
   function queueEvent(event: AgentEvent): void {
     eventQueue = eventQueue
       .then(async () => {
@@ -737,22 +594,7 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       });
   }
 
-  function queueStatusLine(text: string): void {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return;
-    }
-    eventQueue = eventQueue
-      .then(() => {
-        if (statusUpdatesClosed || !interruptManager.hasActiveRequest(userId)) {
-          return;
-        }
-        return appendStatusEntry({ text: trimmed, silent: silentNotifications });
-      })
-      .catch((error) => {
-        logWarning('[CodexAdapter] Status line update error', error);
-      });
-  }
+  // queueStatusLine removed in simplified version (no collaborative turns)
 
   async function finalizeStatusUpdates(finalEntry?: string): Promise<void> {
     statusUpdatesClosed = true;
@@ -846,23 +688,13 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       filePaths.push(...urlData.filePaths);
     }
 
-    // 记录用户输入（使用原始文本 + 附件概览，不带系统注入）
+    // 记录用户输入
     userLogEntry = buildUserLogEntry(text, imagePaths, filePaths);
-    if (logger && userLogEntry) {
-      logger.logInput(userLogEntry);
-    }
-    if (userLogEntry) {
-      historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
-    }
 
     // 监听事件
     unsubscribe = session.onEvent((event: AgentEvent) => {
       if (!interruptManager.hasActiveRequest(userId)) {
         return;
-      }
-      // 记录事件
-      if (logger) {
-        logger.logEvent(event);
       }
       queueEvent(event);
     });
@@ -898,45 +730,10 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       input = inputParts as Input;
     }
 
-    const result = await runCollaborativeTurn(session, input, {
+    // Direct session.send() call instead of runCollaborativeTurn
+    const result = await session.send(input, {
       streaming: true,
       signal,
-      outputSchema: ADS_STRUCTURED_OUTPUT_SCHEMA,
-      onExploredEntry: handleExploredEntry,
-      hooks: {
-        onSupervisorRound: (round, directives) =>
-          logger?.logOutput(`[Auto] 协作轮次 ${round}（指令块 ${directives}）`),
-        onDelegationStart: ({ agentId, agentName, prompt }) => {
-          logger?.logOutput(`[Auto] 调用 ${agentId}：${truncateForLog(prompt)}`);
-          queueStatusLine(`🤝 ${agentName}（${agentId}）在后台执行：${truncateForLog(prompt, 140)}`);
-          handleExploredEntry({
-            category: "Agent",
-            summary: `${agentName}（${agentId}）在后台执行：${truncateForLog(prompt, 140)}`,
-            ts: Date.now(),
-            source: "tool_hook",
-            meta: { tool: `agent:${agentId}` },
-          });
-        },
-        onDelegationResult: (summary) => {
-          logger?.logOutput(`[Auto] ${summary.agentName} 完成：${truncateForLog(summary.prompt)}`);
-          queueStatusLine(`✅ ${summary.agentName} 已完成：${truncateForLog(summary.prompt, 140)}`);
-          handleExploredEntry({
-            category: "Agent",
-            summary: `✅ ${summary.agentName} 完成：${truncateForLog(summary.prompt, 140)}`,
-            ts: Date.now(),
-            source: "tool_hook",
-            meta: { tool: `agent:${summary.agentId}` },
-          });
-        },
-      },
-      toolHooks: {
-        onInvoke: (tool, payload) => logger?.logOutput(`[Tool] ${tool}: ${truncateForLog(payload)}`),
-        onResult: (summary) =>
-          logger?.logOutput(
-            `[Tool] ${summary.tool} ${summary.ok ? "完成" : "失败"}: ${truncateForLog(summary.outputPreview)}`,
-          ),
-      },
-      toolContext: { cwd: workspaceRoot, allowedDirs: [workspaceRoot], historyNamespace: "telegram", historySessionId: historyKey },
     });
 
     await finalizeStatusUpdates();
@@ -953,37 +750,16 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         ? result.response
         : String(result.response ?? '');
     const cleanedOutput = stripLeadingTranslation(baseOutput);
-    const structured = parseStructuredOutput(cleanedOutput);
-    const finalOutput =
-      structured?.answer?.trim() ? structured.answer.trim() : cleanedOutput;
-    if (structured?.plan?.length) {
-      await maybeSendStructuredPlan(structured.plan);
-    }
-
     const workspaceRootForAdr = detectWorkspaceFrom(workspaceRoot);
-    let outputToSend = finalOutput;
+    let outputToSend = cleanedOutput;
     try {
-      const adrProcessed = processAdrBlocks(finalOutput, workspaceRootForAdr);
-      outputToSend = adrProcessed.finalText || finalOutput;
+      const adrProcessed = processAdrBlocks(cleanedOutput, workspaceRootForAdr);
+      outputToSend = adrProcessed.finalText || cleanedOutput;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logWarning(`[ADR] Failed to record ADR: ${message}`, error);
-      outputToSend = `${finalOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
+      outputToSend = `${cleanedOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
     }
-
-    // 确保 logger 存在（如果是新 thread，现在才有 threadId）
-    if (!logger) {
-      logger = sessionManager.ensureLogger(userId);
-    }
-    if (logger) {
-      logger.attachThreadId(session.getThreadId());
-    }
-
-    // 记录 AI 回复（不含 token 统计，除非开启）
-    if (logger) {
-      logger.logOutput(outputToSend);
-    }
-    historyStore.add(historyKey, { role: "ai", text: outputToSend, ts: Date.now() });
 
     if (markNoteEnabled && userLogEntry) {
       try {
@@ -1037,7 +813,6 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
       sentChunks.add(chunkText);
     }
 
-    // Explored is now displayed in real-time via handleExploredEntry
     stopTyping();
   } catch (error) {
     stopTyping();
@@ -1046,10 +821,6 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
     }
     cleanupImages(imagePaths);
     cleanupFiles(filePaths);
-
-    if (!userLogEntry && logger) {
-      logger.logInput(buildUserLogEntry(text, imagePaths, filePaths));
-    }
 
     const errorMsg = error instanceof Error ? error.message : String(error);
     const isInterrupt = (error as Error).name === 'AbortError';
@@ -1066,18 +837,9 @@ function buildUserLogEntry(rawText: string | undefined, images: string[], files:
         ? `⚠️ ${CODEX_THREAD_RESET_HINT}\n\n${formatCodeBlock(corruptedDetail)}`
         : `❌ 错误: ${errorMsg}`;
 
-    // 记录错误
-    if (logger && !isInterrupt) {
-      logger.logError(errorMsg);
-    }
-    if (!isInterrupt) {
-      historyStore.add(historyKey, { role: "status", text: errorMsg, ts: Date.now(), kind: "error" });
-    }
-
     if (corruptedThread) {
       logWarning('[CodexAdapter] Detected corrupted Codex thread, resetting session', error);
       sessionManager.reset(userId);
-      logger = undefined;
     }
 
     await finalizeStatusUpdates(replyText);

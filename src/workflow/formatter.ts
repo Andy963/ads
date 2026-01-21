@@ -85,8 +85,8 @@ export function formatWorkflowList(entries: WorkflowListEntry[], options: { form
   const { format } = options;
   if (entries.length === 0) {
     return format === "cli"
-      ? "没有找到任何工作流。使用 /ads.new 创建一个新的工作流。"
-      : "没有找到任何工作流。使用 `/ads.new` 创建一个新的工作流。";
+      ? "没有找到任何工作流。使用 /ads.new 创建一个新的工作流（可选 --template_id=adhoc 直通模式）。"
+      : "没有找到任何工作流。使用 `/ads.new` 创建一个新的工作流（可选 `--template_id=adhoc` 直通模式）。";
   }
 
   if (format === "cli") {
@@ -182,21 +182,7 @@ export function formatWorkflowStatusSummary(
     lines.push(helpers.info("🎉 工作流已完成！"));
   }
 
-  lines.push("");
-  lines.push(helpers.section("代码审查"));
-  if (workflow.review) {
-    const statusLabel = helpers.code(workflow.review.status);
-    const updated = workflow.review.updated_at ? ` · ${helpers.escape(workflow.review.updated_at)}` : "";
-    lines.push(helpers.info(`状态: ${statusLabel}${updated}`));
-    if (workflow.review.summary) {
-      lines.push(helpers.info(`摘要: ${helpers.escape(workflow.review.summary)}`));
-    }
-    if (workflow.review.skip_reason) {
-      lines.push(helpers.info(`跳过原因: ${helpers.escape(workflow.review.skip_reason)}`));
-    }
-  } else {
-    lines.push(helpers.info("尚未执行代码审查。使用 /ads.review 触发检查。"));
-  }
+
 
   if (allWorkflows.length > 0) {
     lines.push("");

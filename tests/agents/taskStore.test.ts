@@ -56,7 +56,8 @@ describe("agents/tasks/taskStore", () => {
     assert.equal(tasks[0]?.status, "SUBMITTED");
     assert.equal(tasks[0]?.spec.goal, "do something");
     assert.equal(tasks[0]?.result?.summary, "done");
-    assert.equal((tasks[0]?.verification as any)?.enabled, false);
+    const verification = tasks[0]?.verification as { enabled?: boolean } | undefined;
+    assert.equal(verification?.enabled, false);
   });
 
   it("clears outputs for new revision", () => {

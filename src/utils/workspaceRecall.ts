@@ -62,7 +62,7 @@ function extractKeywords(input: string): string[] {
   }
 
   const parts = trimmed
-    .split(/[\s,.;:!?()\[\]{}<>"'`，。；：！？（）【】《》]+/)
+    .split(/[\s,.;:!?()[\]{}<>"'`，。；：！？（）【】《》]+/)
     .map((part) => part.trim())
     .filter((part) => part.length >= 2);
   for (const part of parts.slice(0, 12)) {

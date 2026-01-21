@@ -27,9 +27,9 @@ function pickRerankText(hit: VectorQueryHit): string {
   const candidate =
     safeString(hit.text) ||
     safeString(hit.snippet) ||
-    safeString((md as any).text) ||
-    safeString((md as any).snippet) ||
-    safeString((md as any).text_preview);
+    safeString(md["text"]) ||
+    safeString(md["snippet"]) ||
+    safeString(md["text_preview"]);
   return candidate.trim();
 }
 
@@ -129,7 +129,7 @@ export async function queryVectors(params: {
   if (!json || typeof json !== "object") {
     return { ok: false, message: "query response is not json" };
   }
-  const hits = (json as any).hits;
+  const hits = (json as Record<string, unknown>).hits;
   if (!Array.isArray(hits)) {
     return { ok: false, message: "query response missing hits" };
   }

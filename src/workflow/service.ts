@@ -95,7 +95,7 @@ export async function getActiveWorkflowSummary(params: {
       "❌ 没有活动的工作流",
       "",
       "💡 开始使用：",
-      `    - 创建新工作流: ${CMD_NEW} <type> <title>`,
+      `    - 创建新工作流: ${CMD_NEW} <title> [--template_id=<unified|adhoc>]`,
       `    - 查看所有工作流: ${CMD_BRANCH}`,
     ].join("\n");
   }
@@ -147,13 +147,14 @@ export async function getWorkflowStatusSummary(params: {
       "",
       `💡 开始使用：`,
       `    - 查看现有工作流: ${CMD_BRANCH}`,
-      `    - 创建新工作流: ${CMD_NEW} <type> <title>`,
+      `    - 创建新工作流: ${CMD_NEW} <title> [--template_id=<unified|adhoc>]`,
       `    - 切换到工作流: ${CMD_CHECKOUT} <workflow>`,
     ].join("\n");
   }
 
   const workflow = workflowStatus.workflow;
   const steps = workflowStatus.steps ?? [];
+
   const allWorkflows = WorkflowContext.listAllWorkflows(workspace);
   const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
   const stepOrder = Object.keys(stepMapping);
@@ -161,12 +162,6 @@ export async function getWorkflowStatusSummary(params: {
     { label: "完成步骤", command: `${CMD_COMMIT} <step>` },
   ];
 
-  const reviewState = workflow.review;
-  if (!reviewState || reviewState.status === "blocked" || reviewState.status === "failed" || reviewState.status === "skipped") {
-    nextActions.unshift({ label: "执行代码审查", command: "/ads.review" });
-  } else if (reviewState.status === "running" || reviewState.status === "pending") {
-    nextActions.unshift({ label: "查看 review 进度", command: "/ads.review --show" });
-  }
 
   return formatWorkflowStatusSummary(
     {

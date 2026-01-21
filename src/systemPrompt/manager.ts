@@ -286,13 +286,13 @@ export class SystemPromptManager {
     }
     if (!this.workspaceWarningLogged) {
       this.logger.warn(
-        `workspace not initialized at ${this.workspaceRoot}; instructions/rules falling back to built-in templates. Run 'ads init' to set up .ads/`,
+        `workspace not initialized at ${this.workspaceRoot}; instructions/rules falling back to built-in templates.`,
       );
       this.workspaceWarningLogged = true;
     }
     return [
-      "[ADS Notice] 当前工作区尚未初始化 (.ads/workspace.json 缺失)。",
-      "已回退使用内置 templates/ 指令与规则；请尽快运行 'ads init' 生成 .ads/ 配置与模板。",
+      "[Workspace Notice] 当前工作区尚未初始化 (.ads/workspace.json 缺失)。",
+      "将使用内置 templates/ 指令与规则；如需自定义，可创建 .ads/templates/instructions.md 与 .ads/rules.md。",
     ].join("\n");
   }
 

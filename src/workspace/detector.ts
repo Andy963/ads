@@ -17,6 +17,7 @@ const REQUIRED_TEMPLATE_FILES = [
   "requirement.md",
   "design.md",
   "implementation.md",
+  "task.md",
   "workflow.yaml",
 ];
 const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];

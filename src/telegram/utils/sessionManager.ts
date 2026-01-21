@@ -1,27 +1,36 @@
-import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
-import { HybridOrchestrator } from '../../agents/orchestrator.js';
-import { ThreadStorage } from './threadStorage.js';
+import { CodexSession, type CodexSessionOptions, type CodexSendOptions, type CodexSendResult } from '../../codex/codexChat.js';
 import type { SandboxMode } from '../config.js';
-import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { createLogger } from '../../utils/logger.js';
-import { ConversationLogger } from '../../utils/conversationLogger.js';
-import type { AgentAdapter } from '../../agents/types.js';
+import type { AgentEvent } from '../../codex/events.js';
+import type { Input } from '@openai/codex-sdk';
 
 interface SessionRecord {
-  orchestrator: HybridOrchestrator;
+  session: CodexSession;
   lastActivity: number;
   cwd: string;
-  logger?: ConversationLogger;
+}
+
+export interface SessionWrapper {
+  send(prompt: Input, options?: CodexSendOptions): Promise<CodexSendResult>;
+  onEvent(handler: (event: AgentEvent) => void): () => void;
+  getThreadId(): string | null;
+  reset(): void;
+  setModel(model?: string): void;
+  setWorkingDirectory(workingDirectory?: string): void;
+  status(): { ready: boolean; error?: string; streaming: boolean };
+  getActiveAgentId(): string;
+  listAgents(): Array<{
+    metadata: { id: string; name: string };
+    status: { ready: boolean; error?: string };
+  }>;
 }
 
 export class SessionManager {
   private sessions = new Map<number, SessionRecord>();
   private cleanupInterval?: NodeJS.Timeout;
-  private threadStorage: ThreadStorage;
   private sandboxMode: SandboxMode;
   private defaultModel?: string;
   private userModels = new Map<number, string>();
-  private readonly reinjectionConfig = resolveReinjectionConfig("TELEGRAM");
   private readonly logger = createLogger("SessionManager");
 
   constructor(
@@ -29,9 +38,7 @@ export class SessionManager {
     private readonly cleanupIntervalMs: number = 5 * 60 * 1000,
     sandboxMode: SandboxMode = 'workspace-write',
     defaultModel?: string,
-    threadStorage?: ThreadStorage
   ) {
-    this.threadStorage = threadStorage ?? new ThreadStorage();
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
     if (this.sessionTimeoutMs > 0 && this.cleanupIntervalMs > 0) {
@@ -41,134 +48,105 @@ export class SessionManager {
     }
   }
 
-  getOrCreate(userId: number, cwd?: string, resumeThread?: boolean): HybridOrchestrator {
+  getOrCreate(userId: number, cwd?: string): SessionWrapper {
     const existing = this.sessions.get(userId);
     
     if (existing) {
       existing.lastActivity = Date.now();
       if (cwd && cwd !== existing.cwd) {
         existing.cwd = cwd;
-        existing.orchestrator.setWorkingDirectory(cwd);
+        existing.session.setWorkingDirectory(cwd);
       }
-      return existing.orchestrator;
+      return this.wrapSession(existing.session);
     }
 
-    const savedThreadId = resumeThread ? this.threadStorage.getThreadId(userId, "codex") : undefined;
-    
     const userModel = this.userModels.get(userId) || this.defaultModel;
     const effectiveCwd = cwd || process.cwd();
 
-    const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
     this.logger.info(
-      `Creating new session (id: ${sessionId})${
-        savedThreadId ? ` (resuming thread ${savedThreadId})` : ''
-      } with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
+      `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
     );
 
-    const systemPromptManager = new SystemPromptManager({
-      workspaceRoot: effectiveCwd,
-      reinjection: this.reinjectionConfig,
-      logger: this.logger.child(`Session-${sessionId}`),
-    });
-    
-    const adapters: AgentAdapter[] = [
-      new CodexAgentAdapter({
-        streamingEnabled: true,
-        resumeThreadId: savedThreadId,
-        sandboxMode: this.sandboxMode,
-        model: userModel,
-        workingDirectory: effectiveCwd,
-        systemPromptManager,
-        networkAccessEnabled: true,
-      }),
-    ];
+    const options: CodexSessionOptions = {
+      streamingEnabled: true,
+      sandboxMode: this.sandboxMode,
+      model: userModel,
+      workingDirectory: effectiveCwd,
+      networkAccessEnabled: true,
+    };
 
-    const orchestrator = new HybridOrchestrator({
-      adapters,
-      defaultAgentId: "codex",
-      initialWorkingDirectory: effectiveCwd,
-      initialModel: userModel,
-      systemPromptManager,
-    });
+    const session = new CodexSession(options);
 
     this.sessions.set(userId, {
-      orchestrator,
+      session,
       lastActivity: Date.now(),
       cwd: effectiveCwd,
-      logger: undefined,
     });
 
-    return orchestrator;
+    return this.wrapSession(session);
   }
-  
+
+  private wrapSession(session: CodexSession): SessionWrapper {
+    return {
+      send: session.send.bind(session),
+      onEvent: session.onEvent.bind(session),
+      getThreadId: session.getThreadId.bind(session),
+      reset: session.reset.bind(session),
+      setModel: session.setModel.bind(session),
+      setWorkingDirectory: session.setWorkingDirectory.bind(session),
+      status: session.status.bind(session),
+      getActiveAgentId: () => 'codex',
+      listAgents: () => [{
+        metadata: { id: 'codex', name: 'Codex' },
+        status: { ready: true },
+      }],
+    };
+  }
+
   hasSession(userId: number): boolean {
     return this.sessions.has(userId);
   }
 
-  getLogger(userId: number): ConversationLogger | undefined {
-    return this.sessions.get(userId)?.logger;
+  getActiveAgentLabel(userId: number): string {
+    void userId;
+    return 'Codex';
   }
 
-  ensureLogger(userId: number): ConversationLogger | undefined {
-    const record = this.sessions.get(userId);
-    if (!record) {
-      return undefined;
-    }
-
-    if (record.logger) {
-      const threadId = record.orchestrator.getThreadId();
-      if (threadId) {
-        record.logger.attachThreadId(threadId);
-      }
-      return record.logger;
-    }
-
-    const threadId = record.orchestrator.getThreadId();
-    record.logger = new ConversationLogger(record.cwd, userId, threadId ?? undefined);
-    return record.logger;
+  saveThreadId(userId: number, threadId: string, agentId?: string): void {
+    void userId;
+    void threadId;
+    void agentId;
+    // No-op: simplified version doesn't persist threads
   }
 
-  hasSavedThread(userId: number, agentId = "codex"): boolean {
-    return !!this.threadStorage.getThreadId(userId, agentId);
+  getSavedThreadId(userId: number, agentId?: string): string | undefined {
+    void userId;
+    void agentId;
+    return undefined;
   }
-  
-  getSavedThreadId(userId: number, agentId = "codex"): string | undefined {
-    return this.threadStorage.getThreadId(userId, agentId);
-  }
-  
-  saveThreadId(userId: number, threadId: string, agentId = "codex"): void {
-    const record = this.sessions.get(userId);
-    if (record?.cwd) {
-      const existing = this.threadStorage.getRecord(userId);
-      this.threadStorage.setRecord(userId, {
-        threadId: existing?.threadId,
-        cwd: record.cwd,
-        agentThreads: {
-          ...(existing?.agentThreads ?? {}),
-          [agentId]: threadId,
-        },
-      });
-      return;
-    }
-    this.threadStorage.setThreadId(userId, threadId, agentId);
-  }
-  
+
   getSavedState(userId: number): { threadId?: string; cwd?: string } | undefined {
-    const record = this.threadStorage.getRecord(userId);
-    if (!record) return undefined;
-    return { threadId: record.threadId, cwd: record.cwd };
+    void userId;
+    return undefined;
+  }
+
+  ensureLogger(userId: number): undefined {
+    void userId;
+    return undefined;
+  }
+
+  switchAgent(userId: number, agentId: string): { success: boolean; message: string } {
+    void userId;
+    void agentId;
+    return { success: false, message: '❌ 精简版不支持多代理切换' };
   }
 
   setUserModel(userId: number, model: string): void {
     this.userModels.set(userId, model);
     const record = this.sessions.get(userId);
     if (record) {
-      record.orchestrator.setModel(model);
+      record.session.setModel(model);
       record.lastActivity = Date.now();
-    }
-    if (this.threadStorage.getRecord(userId)) {
-      this.threadStorage.removeThread(userId);
     }
     this.logger.info(`Switched to model: ${model}`);
   }
@@ -184,19 +162,11 @@ export class SessionManager {
   reset(userId: number): void {
     const record = this.sessions.get(userId);
     if (record) {
-      if (record.logger) {
-        record.logger.close();
-        record.logger = undefined;
-      }
-      record.orchestrator.reset();
+      record.session.reset();
       record.lastActivity = Date.now();
       this.logger.info('Session reset');
     } else {
       this.logger.debug('Reset requested without active session');
-    }
-
-    if (this.threadStorage.getRecord(userId)) {
-      this.threadStorage.removeThread(userId);
     }
   }
 
@@ -210,66 +180,12 @@ export class SessionManager {
       return;
     }
 
-    const threadId = record.orchestrator.getThreadId();
-    const activeAgentId = record.orchestrator.getActiveAgentId();
-
     if (record.cwd === cwd) {
-      if (threadId) {
-        this.saveThreadId(userId, threadId, activeAgentId);
-      }
       return;
     }
 
     record.cwd = cwd;
-    record.orchestrator.setWorkingDirectory(cwd);
-
-    if (threadId) {
-      this.saveThreadId(userId, threadId, activeAgentId);
-    }
-  }
-
-  listAgents(userId: number) {
-    return this.sessions.get(userId)?.orchestrator.listAgents() ?? [];
-  }
-
-  getActiveAgentLabel(userId: number): string | undefined {
-    const record = this.sessions.get(userId);
-    if (!record) {
-      return undefined;
-    }
-    const activeId = record.orchestrator.getActiveAgentId();
-    const descriptor = record
-      .orchestrator
-      .listAgents()
-      .find((entry) => entry.metadata.id === activeId);
-    return descriptor?.metadata.name ?? activeId;
-  }
-
-  switchAgent(userId: number, agentId: string): { success: boolean; message: string } {
-    const record = this.sessions.get(userId);
-    if (!record) {
-      return { success: false, message: "❌ 当前没有活跃会话" };
-    }
-    const normalized = agentId.toLowerCase();
-    const descriptor = record
-      .orchestrator
-      .listAgents()
-      .find(
-        (entry) =>
-          entry.metadata.id.toLowerCase() === normalized ||
-          entry.metadata.name.toLowerCase() === normalized,
-      );
-    if (!descriptor) {
-      return { success: false, message: `❌ 未知代理: ${agentId}` };
-    }
-    if (!descriptor.status.ready) {
-      return {
-        success: false,
-        message: `❌ ${descriptor.metadata.name} 不可用: ${descriptor.status.error ?? "未配置"}`,
-      };
-    }
-    record.orchestrator.switchAgent(descriptor.metadata.id);
-    return { success: true, message: `🤖 已切换至 ${descriptor.metadata.name}` };
+    record.session.setWorkingDirectory(cwd);
   }
 
   getStats(): { total: number; active: number; idle: number; sandboxMode: SandboxMode; defaultModel: string } {
@@ -318,10 +234,6 @@ export class SessionManager {
     }
 
     for (const userId of expiredUsers) {
-      const record = this.sessions.get(userId);
-      if (record && record.logger) {
-        record.logger.close();
-      }
       this.sessions.delete(userId);
       this.logger.debug('Cleaned up idle session');
     }
@@ -331,28 +243,6 @@ export class SessionManager {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
     }
-
-    for (const [userId, record] of this.sessions.entries()) {
-      const threadId = record.orchestrator.getThreadId();
-      const activeAgentId = record.orchestrator.getActiveAgentId();
-      const existing = this.threadStorage.getRecord(userId);
-      if (threadId) {
-        const agentThreads = { ...(existing?.agentThreads ?? {}) };
-        agentThreads[activeAgentId] = threadId;
-        const codexThreadId = activeAgentId === "codex" ? threadId : existing?.threadId;
-        this.threadStorage.setRecord(userId, {
-          threadId: codexThreadId,
-          cwd: record.cwd,
-          agentThreads,
-        });
-      } else if (existing && record.cwd) {
-        this.threadStorage.setRecord(userId, { ...existing, cwd: record.cwd });
-      }
-      if (record.logger) {
-        record.logger.close();
-      }
-    }
-
     this.sessions.clear();
   }
 }

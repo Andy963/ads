@@ -9,7 +9,6 @@ import {
   getParentNodes,
 } from "../../graph/crud.js";
 import type { GraphNode } from "../../graph/types.js";
-import type { ReviewState as WorkflowReviewState } from "../../review/types.js";
 import { getNodeFilePath } from "../../graph/fileManager.js";
 import { safeParseJson } from "../../utils/json.js";
 
@@ -51,8 +50,6 @@ export interface WorkflowInfo {
   created_at?: string;
   steps: WorkflowSteps;
   current_step?: string | null;
-  review?: WorkflowReviewState;
-  review_lock?: boolean;
 }
 
 interface WorkflowContextState {
@@ -74,6 +71,9 @@ export class WorkflowContext {
       design: "design",
       implementation: "implementation",
     },
+    adhoc: {
+      task: "task",
+    },
   };
 
   static readonly TYPE_KEYWORDS: Record<string, string> = {
@@ -81,6 +81,12 @@ export class WorkflowContext {
     default: "unified",
     "统一": "unified",
     "流程": "unified",
+
+    adhoc: "adhoc",
+    task: "adhoc",
+    "直通": "adhoc",
+    "快捷": "adhoc",
+    "临时": "adhoc",
   };
 
   private static getContextFile(workspace?: string): string {
@@ -110,9 +116,9 @@ export class WorkflowContext {
         ? row.draft_message_id
         : typeof row.draft_message_id === 'string' && row.draft_message_id.trim().length > 0
           ? (() => {
-              const parsed = Number.parseInt(row.draft_message_id as string, 10);
-              return Number.isNaN(parsed) ? null : parsed;
-            })()
+            const parsed = Number.parseInt(row.draft_message_id as string, 10);
+            return Number.isNaN(parsed) ? null : parsed;
+          })()
           : null;
 
     return {
@@ -279,8 +285,6 @@ export class WorkflowContext {
         created_at: activeWorkflow.created_at ?? existing.created_at,
         steps: activeWorkflow.steps ?? existing.steps ?? {},
         current_step: activeWorkflow.current_step ?? existing.current_step ?? null,
-        review: activeWorkflow.review ?? existing.review,
-        review_lock: activeWorkflow.review_lock ?? existing.review_lock ?? false,
       };
       activeWorkflowId = workflowId;
     }
@@ -599,65 +603,7 @@ export class WorkflowContext {
     };
   }
 
-  static setReviewState(params: {
-    workspace?: string;
-    workflowId: string;
-    review: WorkflowReviewState | null;
-  }): WorkflowInfo | null {
-    const root = params.workspace ? path.resolve(params.workspace) : detectWorkspace();
-    const context = WorkflowContext.loadContext(root);
-    const entry = context.workflows[params.workflowId];
-    if (!entry) {
-      return null;
-    }
 
-    entry.review = params.review ?? undefined;
-    if (context.active_workflow_id === params.workflowId && context.active_workflow) {
-      context.active_workflow.review = params.review ?? undefined;
-    }
-    WorkflowContext.saveContext(root, context);
-    return entry;
-  }
-
-  static setReviewLock(params: {
-    workspace?: string;
-    workflowId: string;
-    locked: boolean;
-  }): void {
-    const root = params.workspace ? path.resolve(params.workspace) : detectWorkspace();
-    const context = WorkflowContext.loadContext(root);
-    const entry = context.workflows[params.workflowId];
-    if (!entry) {
-      return;
-    }
-    entry.review_lock = params.locked;
-    if (context.active_workflow_id === params.workflowId && context.active_workflow) {
-      context.active_workflow.review_lock = params.locked;
-    }
-    WorkflowContext.saveContext(root, context);
-  }
-
-  static getReviewState(workspace?: string, workflowId?: string): WorkflowReviewState | null {
-    const root = workspace ? path.resolve(workspace) : detectWorkspace();
-    const context = WorkflowContext.loadContext(root);
-    const targetId = workflowId ?? context.active_workflow_id;
-    if (!targetId) {
-      return null;
-    }
-    const entry = context.workflows[targetId];
-    return entry?.review ?? null;
-  }
-
-  static isReviewLocked(workspace?: string, workflowId?: string): boolean {
-    const root = workspace ? path.resolve(workspace) : detectWorkspace();
-    const context = WorkflowContext.loadContext(root);
-    const targetId = workflowId ?? context.active_workflow_id;
-    if (!targetId) {
-      return false;
-    }
-    const entry = context.workflows[targetId];
-    return Boolean(entry?.review_lock);
-  }
 
   static getNode(workspace: string | undefined, nodeId: string): GraphNode | null {
     return workspace

@@ -32,6 +32,15 @@ node_types:
     icon: "💻"
     description: 代码实现
 
+  task:
+    key: task
+    label: 任务
+    prefix: tsk
+    next_types: []
+    color: "#409eff"
+    icon: "⚡"
+    description: 直通模式下的单步任务（不走 req/design/implementation）
+
 
 # ==================== 前端连接规则 ====================
 # 定义前端UI中允许的节点连接规则
@@ -47,6 +56,9 @@ connection_rules:
 
   implementation:
     - implementation
+
+  task:
+    - task
 
 
 # ==================== 工作流模板配置 ====================
@@ -83,3 +95,18 @@ workflow_templates:
           - node_type: implementation
             label: 实施
             description: 执行实现、测试、上线与验证记录
+
+  adhoc:
+    key: adhoc
+    name: 直通模式
+    description: 直接进入任务执行，不走 req/design/implementation 三步
+    icon: "⚡"
+    steps:
+      - step_number: 1
+        label: 任务
+        required: true
+        default_option: task
+        options:
+          - node_type: task
+            label: 任务
+            description: 直接记录目标/约束/执行清单与产出

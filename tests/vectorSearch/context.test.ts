@@ -60,7 +60,8 @@ describe("vectorSearch/auto-context", () => {
     globalThis.fetch = async (url, options) => {
       const target = String(url);
       calls.push(target);
-      const method = String((options as any)?.method ?? "GET").toUpperCase();
+      const request = (options ?? {}) as RequestInit;
+      const method = String(request.method ?? "GET").toUpperCase();
       const pathname = new URL(target).pathname;
 
       if (pathname === "/health" && method === "GET") {
@@ -106,7 +107,8 @@ describe("vectorSearch/auto-context", () => {
     globalThis.fetch = async (url, options) => {
       const target = String(url);
       calls.push(target);
-      const method = String((options as any)?.method ?? "GET").toUpperCase();
+      const request = (options ?? {}) as RequestInit;
+      const method = String(request.method ?? "GET").toUpperCase();
       const pathname = new URL(target).pathname;
 
       if (pathname === "/health" && method === "GET") {
@@ -158,7 +160,8 @@ describe("vectorSearch/auto-context", () => {
     globalThis.fetch = async (url, options) => {
       const target = String(url);
       calls.push(target);
-      const method = String((options as any)?.method ?? "GET").toUpperCase();
+      const request = (options ?? {}) as RequestInit;
+      const method = String(request.method ?? "GET").toUpperCase();
       const pathname = new URL(target).pathname;
 
       if (pathname === "/health" && method === "GET") {
@@ -238,7 +241,8 @@ describe("vectorSearch/auto-context", () => {
 
     globalThis.fetch = async (url, options) => {
       const target = String(url);
-      const method = String((options as any)?.method ?? "GET").toUpperCase();
+      const request = (options ?? {}) as RequestInit;
+      const method = String(request.method ?? "GET").toUpperCase();
       const pathname = new URL(target).pathname;
 
       if (pathname === "/health" && method === "GET") {
@@ -254,7 +258,8 @@ describe("vectorSearch/auto-context", () => {
         });
       }
       if (pathname === "/query" && method === "POST") {
-        const body = JSON.parse(String((options as any)?.body ?? "{}")) as any;
+        const bodyText = typeof request.body === "string" ? request.body : "";
+        const body = JSON.parse(bodyText || "{}") as Record<string, unknown>;
         capturedQuery = String(body.query ?? "");
         return new Response(
           JSON.stringify({

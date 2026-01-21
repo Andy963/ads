@@ -248,14 +248,14 @@ function pickHitText(hit: VectorQueryHit): string {
 
 function labelForHit(hit: VectorQueryHit): string {
   const md = hit.metadata ?? {};
-  const sourceType = safeString((md as any).source_type) || "unknown";
+  const sourceType = safeString(md["source_type"]) || "unknown";
   if (sourceType === "spec" || sourceType === "adr") {
-    const relPath = safeString((md as any).path);
+    const relPath = safeString(md["path"]);
     return relPath ? `${sourceType}:${relPath}` : sourceType;
   }
   if (sourceType === "chat") {
-    const ns = safeString((md as any).namespace);
-    const role = safeString((md as any).role);
+    const ns = safeString(md["namespace"]);
+    const role = safeString(md["role"]);
     const nsPart = ns ? `chat:${ns}` : "chat";
     const rolePart = role ? `/${role}` : "";
     return `${nsPart}${rolePart}`;
@@ -266,9 +266,9 @@ function labelForHit(hit: VectorQueryHit): string {
 function isChatUserEcho(hit: VectorQueryHit, normalizedQuery: string): boolean {
   if (!normalizedQuery) return false;
   const md = hit.metadata ?? {};
-  const sourceType = safeString((md as any).source_type) || "";
+  const sourceType = safeString(md["source_type"]) || "";
   if (sourceType !== "chat") return false;
-  const role = safeString((md as any).role) || "";
+  const role = safeString(md["role"]) || "";
   if (role !== "user") return false;
   const text = pickHitText(hit).toLowerCase();
   if (!text) return false;

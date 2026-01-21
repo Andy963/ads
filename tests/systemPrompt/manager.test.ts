@@ -111,7 +111,7 @@ describe("SystemPromptManager rule reinjection", () => {
       assert.ok(injection.text.trim().length > 0, "fallback instructions should not be empty");
       assert.match(
         injection.text,
-        /workspace\.json 缺失|ads init/i,
+        /workspace\.json 缺失|workspace notice/i,
         "should surface init warning in prompt",
       );
     } finally {

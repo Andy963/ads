@@ -42,7 +42,9 @@ class QueueAgentAdapter implements AgentAdapter {
     // stateless
   }
 
-  async send(_input: Input, _options?: AgentSendOptions): Promise<AgentRunResult> {
+  async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    void input;
+    void options;
     const response = this.queue.shift() ?? "(no response)";
     return { response, usage: null, agentId: this.id };
   }

@@ -194,8 +194,8 @@ function extractTitleFromFile(filePath: string): string {
 
     const heading = headingLine.slice(2).trim();
     const cleaned = heading
-      .replace(/^ADR-\d{4}\s*[:：.\-]\s*/i, "")
-      .replace(/^\d{4}\s*[:：.\-]\s*/, "")
+      .replace(/^ADR-\d{4}\s*[:：.-]\s*/i, "")
+      .replace(/^\d{4}\s*[:：.-]\s*/, "")
       .replace(/^\d{4}\.\s*/, "")
       .trim();
     return cleaned || heading;
@@ -289,7 +289,7 @@ export function processAdrBlocks(text: string, workspaceRoot: string): AdrProces
   for (const block of blocks) {
     try {
       records.push(parseAdrRecord(block.jsonText));
-    } catch (error) {
+    } catch {
       const preview = takeFirstNonEmptyLine(block.jsonText)?.slice(0, 60) ?? "";
       warnings.push(`invalid JSON in ADR block${preview ? ` (starts with: ${preview})` : ""}`);
     }

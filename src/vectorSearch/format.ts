@@ -22,16 +22,16 @@ function snippetFor(hit: VectorQueryHit): string {
 
 function refFor(hit: VectorQueryHit): string {
   const md = hit.metadata ?? {};
-  const sourceType = safeString((md as any).source_type) || "unknown";
+  const sourceType = safeString(md["source_type"]) || "unknown";
   if (sourceType === "spec" || sourceType === "adr") {
-    const path = safeString((md as any).path);
+    const path = safeString(md["path"]);
     return path ? `${sourceType} ${path}` : sourceType;
   }
   if (sourceType === "chat") {
-    const ns = safeString((md as any).namespace);
-    const session = safeString((md as any).session_id);
-    const role = safeString((md as any).role);
-    const rowId = safeString((md as any).row_id);
+    const ns = safeString(md["namespace"]);
+    const session = safeString(md["session_id"]);
+    const role = safeString(md["role"]);
+    const rowId = safeString(md["row_id"]);
     const parts = [
       ns ? `ns=${ns}` : "",
       session ? `session=${session}` : "",

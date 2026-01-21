@@ -76,6 +76,7 @@ const requiredFiles = new Set([
   "requirement.md",
   "design.md",
   "implementation.md",
+  "task.md",
   "workflow.yaml",
 ]);
 const unexpectedDirs = entries.filter((entry) => entry.isDirectory());
