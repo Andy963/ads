@@ -23,13 +23,19 @@
     "url": "https://github.com/Andy963/ads/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-templates.js",
+    "build": "tsc -p tsconfig.json && node scripts/copy-templates.js && npm run build:web",
+    "build:web": "vite build --config web/vite.config.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "dev:console": "bash scripts/dev-console.sh",
     "postbuild": "node scripts/chmod-bins.js",
     "start": "node dist/src/ads.js",
     "dev": "tsx watch src/ads.ts",
     "test": "tsx --test tests/**/*.test.ts",
     "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
     "web": "node dist/src/web/server.js",
+    "web:bg": "npm run services -- start web",
+    "web:stop": "npm run services -- stop web",
+    "web:status": "npm run services -- status web",
     "services": "bash scripts/services.sh",
     "lint": "eslint . --ext .ts",
     "mcp": "node dist/src/mcp/server.js"
@@ -42,20 +48,27 @@
     "ads-telegram": "./dist/src/telegram/cli.js"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.77",
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@google/genai": "^1.38.0",
+    "@google/generative-ai": "^0.24.1",
     "@grammyjs/types": "^3.22.2",
     "@modelcontextprotocol/sdk": "^1.22.0",
     "@openai/codex-sdk": "^0.87.0",
     "@tavily/core": "^0.5.4",
     "better-sqlite3": "^12.5.0",
+    "google-auth-library": "^10.5.0",
     "grammy": "^1.38.3",
     "picocolors": "^1.0.0",
     "telegramify-markdown": "^1.3.0",
     "toml": "^3.0.0",
+    "vue": "^3.5.13",
     "ws": "^8.18.0",
     "yaml": "^2.6.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.5.0",
     "@types/ws": "^8.5.12",
@@ -67,6 +80,7 @@
     "globals": "^16.5.0",
     "tsx": "^4.16.0",
     "typescript": "^5.5.4",
-    "typescript-eslint": "^8.46.4"
+    "typescript-eslint": "^8.46.4",
+    "vite": "^6.0.11"
   }
 }

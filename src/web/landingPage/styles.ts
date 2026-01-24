@@ -73,7 +73,7 @@ export const LANDING_PAGE_CSS = `    :root {
     @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
     header h1 { margin: 0; font-size: 16px; }
     .tab-bar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
-    .tabs-scroll { display: flex; gap: 6px; overflow-x: auto; padding: 0 2px; background: transparent; border: none; scrollbar-width: thin; flex: 1; min-width: 0; }
+    .tabs-scroll { display: flex; gap: 6px; overflow-x: hidden; padding: 0 2px; background: transparent; border: none; scrollbar-width: thin; flex: 1; min-width: 0; }
     .session-tab { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--panel); font-size: 12px; line-height: 1.2; cursor: pointer; white-space: nowrap; }
     .session-tab.active { border-color: var(--soft-border); background: var(--soft-bg); color: var(--soft-text-strong); box-shadow: 0 1px 2px rgba(31,41,55,0.08); }
     .session-tab .label { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
@@ -94,7 +94,7 @@ export const LANDING_PAGE_CSS = `    :root {
     .workspace-list .path { color: var(--text); word-break: break-all; }
     .files-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); max-height: 260px; overflow-y: auto; }
     #console { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; overflow: hidden; }
-    #log { position: relative; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; scrollbar-gutter: stable; }
+    #log { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; overflow-y: auto; overflow-x: hidden; padding: 14px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 12px; scrollbar-gutter: stable; }
     .msg { display: flex; flex-direction: column; gap: 6px; max-width: 100%; align-items: flex-start; }
     .msg.user { align-items: flex-start; min-width: min(100%, 280px); }
     .msg.ai { align-items: flex-start; min-width: min(100%, 280px); }
@@ -105,7 +105,7 @@ export const LANDING_PAGE_CSS = `    :root {
     .ai .bubble { background: var(--ai); }
     .status .bubble { background: var(--status); color: var(--muted); font-size: 13px; }
     .meta { font-size: 12px; color: var(--muted); display: none; }
-    .code-block { background: var(--code-block-bg); color: var(--text); padding: 12px; border-radius: 10px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; border: 1px solid var(--border-subtle); }
+    .code-block { background: var(--code-block-bg); color: var(--text); padding: 12px; border-radius: 10px; overflow-x: hidden; overflow-wrap: anywhere; word-break: break-word; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; border: 1px solid var(--border-subtle); }
     .code-block code { background: transparent !important; display: block; font: inherit; white-space: pre-wrap; padding: 0 !important; color: inherit; }
     .bubble > code { background: var(--inline-code-bg); padding: 2px 5px; border-radius: 6px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 13px; }
     .bubble h1, .bubble h2, .bubble h3 { margin: 0 0 6px; line-height: 1.3; }
@@ -151,8 +151,8 @@ export const LANDING_PAGE_CSS = `    :root {
     .plan-item.done .plan-marker { background: #22c55e; color: #fff; }
     .plan-text { flex: 1; word-break: break-word; }
     .muted { color: var(--muted); }
-    #session-views { display: flex; flex-direction: column; gap: 12px; width: 100%; }
-    .session-view { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+    #session-views { display: flex; flex-direction: column; gap: 12px; width: 100%; flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; }
+    .session-view { display: flex; flex-direction: column; gap: 12px; width: 100%; flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; }
     .session-panel { display: flex; flex-direction: column; gap: 8px; }
     .session-current { font-size: 13px; color: var(--text); word-break: break-all; }
     .session-actions { display: flex; gap: 8px; }
@@ -185,7 +185,7 @@ export const LANDING_PAGE_CSS = `    :root {
       main { padding: 8px; gap: 8px; flex: 1; min-height: 0; overflow: hidden; }
       #sidebar { display: none; }
       #console { width: 100%; min-width: 0; flex: 1; min-height: 0; }
-      #log { flex: 0 0 auto; min-height: 100px; padding-bottom: calc(14px + var(--composer-h) + env(safe-area-inset-bottom, 0px)); scroll-padding-bottom: calc(14px + var(--composer-h) + env(safe-area-inset-bottom, 0px)); }
+      #log { flex: 1 1 auto; min-height: 0; padding-bottom: calc(14px + var(--composer-h) + env(safe-area-inset-bottom, 0px)); scroll-padding-bottom: calc(14px + var(--composer-h) + env(safe-area-inset-bottom, 0px)); }
       #input { min-height: 40px; font-size: 16px; }
       header { padding: 10px 12px; flex-shrink: 0; }
       header h1 { font-size: 16px; }

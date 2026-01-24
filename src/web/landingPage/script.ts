@@ -484,25 +484,16 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
     window.addEventListener('resize', applyVh);
     if (viewport) {
       viewport.addEventListener('resize', applyVh);
-      viewport.addEventListener('scroll', () => window.scrollTo(0, 0));
+      viewport.addEventListener('scroll', applyVh);
     }
 
     function recalcLogHeight() {
-      if (!logEl) return;
-      const headerEl = document.querySelector('header');
-      const mainEl = document.querySelector('main');
-      const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
       const formH = formEl ? formEl.getBoundingClientRect().height : 0;
-      const mainStyle = mainEl ? window.getComputedStyle(mainEl) : null;
-      const paddingY =
-        (mainStyle ? Number.parseFloat(mainStyle.paddingTop || '0') : 0) +
-        (mainStyle ? Number.parseFloat(mainStyle.paddingBottom || '0') : 0);
-      const vh = viewport ? viewport.height : window.innerHeight;
-      const gap = 12;
-      const available = vh - headerH - formH - gap - paddingY;
-      logEl.style.height = Math.max(100, available) + 'px';
-      logEl.style.maxHeight = Math.max(100, available) + 'px';
-      logEl.scrollTop = logEl.scrollHeight;
+      document.documentElement.style.setProperty('--composer-h', Math.max(0, Math.round(formH)) + 'px');
+      if (logEl) {
+        logEl.style.height = '';
+        logEl.style.maxHeight = '';
+      }
     }
     setTimeout(recalcLogHeight, 100);
 

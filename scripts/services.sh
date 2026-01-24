@@ -8,8 +8,14 @@ mkdir -p "$RUN_DIR" "$LOG_DIR"
 
 declare -A CMDS=(
   [web]="node dist/src/web/server.js"
-  [telegram]="node dist/src/telegram/cli.js start"
+  [telegram]="node dist/src/telegram/bot.js"
   [mcp]="node dist/src/mcp/server.js"
+)
+
+declare -A ARTIFACTS=(
+  [web]="dist/src/web/server.js"
+  [telegram]="dist/src/telegram/bot.js"
+  [mcp]="dist/src/mcp/server.js"
 )
 
 usage() {
@@ -32,8 +38,8 @@ is_running() {
   local pid_file="$RUN_DIR/$svc.pid"
   if [[ -f "$pid_file" ]]; then
     local pid
-    pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    pid="$(cat "$pid_file" 2>/dev/null | tr -d '\n\r\t ' || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       echo "$pid"
       return 0
     fi
@@ -51,7 +57,14 @@ start_service() {
     return 0
   fi
 
-  if [[ ! -d "$ROOT/dist" ]]; then
+  local artifact="${ARTIFACTS[$svc]:-}"
+  if [[ "${ADS_SERVICES_AUTO_BUILD:-1}" != "0" ]]; then
+    if [[ ! -d "$ROOT/dist" || ( -n "$artifact" && ! -f "$ROOT/$artifact" ) ]]; then
+      echo "[$svc] build artifacts missing; building..."
+      (cd "$ROOT" && npm run build)
+    fi
+  fi
+  if [[ ! -d "$ROOT/dist" || ( -n "$artifact" && ! -f "$ROOT/$artifact" ) ]]; then
     echo "Build artifacts not found. Run: npm run build"
     return 1
   fi
@@ -59,15 +72,31 @@ start_service() {
   echo "[$svc] starting..."
   local log="$LOG_DIR/$svc.log"
   local pid_file="$RUN_DIR/$svc.pid"
-  (cd "$ROOT" && nohup bash -c "exec $cmd" >"$log" 2>&1 & echo $! >"$pid_file")
-  sleep 0.5
-  if pid=$(is_running "$svc"); then
-    echo "[$svc] started (pid $pid), log: $log"
-  else
-    rm -f "$pid_file"
-    echo "[$svc] failed to start; see $log"
-    return 1
-  fi
+  (
+    cd "$ROOT"
+    unlink "$pid_file" 2>/dev/null || true
+    if command -v setsid >/dev/null 2>&1; then
+      # Detach from the caller process group so the service survives non-interactive runners.
+      setsid bash -c "exec $cmd" >"$log" 2>&1 < /dev/null &
+    else
+      nohup bash -c "exec $cmd" >"$log" 2>&1 < /dev/null &
+    fi
+    echo "$!" > "$pid_file"
+  )
+
+  local attempts=0
+  while [[ $attempts -lt 30 ]]; do
+    if pid=$(is_running "$svc"); then
+      echo "[$svc] started (pid $pid), log: $log"
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+
+  unlink "$pid_file" 2>/dev/null || true
+  echo "[$svc] failed to start; see $log"
+  return 1
 }
 
 stop_service() {
@@ -75,7 +104,7 @@ stop_service() {
   local pid_file="$RUN_DIR/$svc.pid"
   if ! pid=$(is_running "$svc"); then
     echo "[$svc] not running"
-    rm -f "$pid_file"
+    unlink "$pid_file" 2>/dev/null || true
     return 0
   fi
   echo "[$svc] stopping pid $pid..."
@@ -85,7 +114,7 @@ stop_service() {
     echo "[$svc] did not exit, sending SIGKILL"
     kill -9 "$pid" 2>/dev/null || true
   fi
-  rm -f "$pid_file"
+  unlink "$pid_file" 2>/dev/null || true
   echo "[$svc] stopped"
 }
 

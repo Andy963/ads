@@ -30,7 +30,7 @@ export const ALLOWED_IMAGE_MIME = new Set([
   "image/svg+xml",
 ]);
 
-export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 const logger = createLogger("WebUtils");
 
@@ -274,7 +274,7 @@ export function persistIncomingImage(image: IncomingImage, imageDir: string): Im
     return { ok: false, message: "图片内容为空" };
   }
   if (size > MAX_IMAGE_BYTES) {
-    return { ok: false, message: `图片超过 2MB 限制 (${Math.round(size / 1024)}KB)` };
+    return { ok: false, message: `图片超过 25MB 限制 (${Math.round(size / 1024)}KB)` };
   }
   const ext = resolveImageExt(image.name, mime);
   const filename = `${crypto.randomBytes(8).toString("hex")}${ext}`;
