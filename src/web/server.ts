@@ -47,8 +47,6 @@ import { OrchestratorTaskExecutor } from "../tasks/executor.js";
 import type { TaskStatus as QueueTaskStatus } from "../tasks/types.js";
 import { AsyncLock } from "../utils/asyncLock.js";
 
-import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
-
 import {
   loadCwdStore,
   persistCwdStore,
@@ -72,9 +70,6 @@ const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
 // <= 0 disables WebSocket ping keepalive.
 const pingIntervalMsRaw = Number(process.env.ADS_WEB_WS_PING_INTERVAL_MS ?? 15_000);
 const WS_PING_INTERVAL_MS = Number.isFinite(pingIntervalMsRaw) ? Math.max(0, pingIntervalMsRaw) : 15_000;
-// <= 0 disables web idle auto-lock / websocket close.
-const idleMinutesRaw = Number(process.env.ADS_WEB_IDLE_MINUTES ?? 0);
-const IDLE_MINUTES = Number.isFinite(idleMinutesRaw) ? Math.max(0, idleMinutesRaw) : 0;
 const logger = createLogger("WebSocket");
 const WS_READY_OPEN = 1;
 
@@ -441,15 +436,6 @@ function createHttpServer(options: { handleApiRequest?: (req: http.IncomingMessa
         res.writeHead(200).end("ok");
         return;
       }
-      if (url.startsWith("/console")) {
-        // Explicit legacy console route for setups that want tasks UI on "/".
-        res.writeHead(200, {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
-        });
-        res.end(renderLandingPage());
-        return;
-      }
       serveTasksUi(res, url);
       return;
     }
@@ -487,10 +473,6 @@ function sendWorkspaceState(ws: WebSocket, workspaceRoot: string): void {
   } catch {
     // ignore send errors
   }
-}
-
-function renderLandingPage(): string {
-  return renderLandingPageTemplate({ idleMinutes: IDLE_MINUTES, tokenRequired: Boolean(TOKEN) });
 }
 
 function decodeBase64Url(input: string): string {
@@ -1088,7 +1070,7 @@ async function start(): Promise<void> {
         return { ...entry, text: cleanedText };
       });
       // /cd is a workspace state change and can repeat on reconnect; keep only the latest one to avoid UI spam.
-      const cdPattern = /^\/(?:ads\.)?cd\b/i;
+      const cdPattern = /^\/cd\b/i;
       const isCdCommand = (entry: { role: string; text: string }) =>
         entry.role === "user" && cdPattern.test(String(entry.text ?? "").trim());
       let lastCdIndex = -1;
@@ -1394,7 +1376,7 @@ async function start(): Promise<void> {
 
 	      const slash = parseSlashCommand(command);
 	      const normalizedSlash = slash?.command?.toLowerCase();
-	      const isCdCommand = normalizedSlash === "cd" || normalizedSlash === "ads.cd";
+	      const isCdCommand = normalizedSlash === "cd";
       if (!isSilentCommandPayload && !isCdCommand) {
         sessionLogger?.logInput(command);
         historyStore.add(historyKey, { role: "user", text: command, ts: Date.now() });
