@@ -2,15 +2,25 @@ import { createApp } from "vue";
 
 import App from "./App.vue";
 
-function readViewportHeightPx(): number {
+function readKeyboardTopPx(): number {
   const viewport = window.visualViewport;
-  const raw = viewport?.height ?? window.innerHeight;
-  return Math.max(1, Math.round(raw));
+  if (!viewport) {
+    return Math.max(1, Math.round(window.innerHeight));
+  }
+
+  // visualViewport.height is the visible area; offsetTop shifts when the browser pans the visual viewport
+  // (e.g. mobile keyboard, pinch-zoom). We want the keyboard top in layout viewport coordinates.
+  const keyboardTop = viewport.height + viewport.offsetTop;
+  const max = Math.max(1, Math.round(window.innerHeight));
+  if (!Number.isFinite(keyboardTop)) {
+    return max;
+  }
+  return Math.max(1, Math.min(max, Math.round(keyboardTop)));
 }
 
 let lastHeightPx = 0;
 function applyViewportHeightPx(): void {
-  const heightPx = readViewportHeightPx();
+  const heightPx = readKeyboardTopPx();
   if (heightPx === lastHeightPx) return;
   lastHeightPx = heightPx;
   document.documentElement.style.setProperty("--app-height", `${heightPx}px`);

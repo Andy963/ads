@@ -468,12 +468,14 @@ export function renderLandingPageScript(idleMinutes: number, tokenRequired: bool
         const canUse = isBusy && conn.ws && conn.ws.readyState === WebSocket.OPEN;
         stopBtn.disabled = !canUse;
       }
-    }
-    function applyVh() {
-      const vh = viewport ? viewport.height : window.innerHeight;
-      document.documentElement.style.setProperty('--vh', vh + 'px');
-      recalcLogHeight();
-    }
+	    }
+	    function applyVh() {
+	      const keyboardTop = viewport ? viewport.height + viewport.offsetTop : window.innerHeight;
+	      const max = window.innerHeight;
+	      const vh = Math.max(1, Math.min(max, Math.round(keyboardTop)));
+	      document.documentElement.style.setProperty('--vh', vh + 'px');
+	      recalcLogHeight();
+	    }
     applyVh();
     sessionAliases = loadSessionAliases();
     sessionWorkspaces = loadSessionWorkspaces();
