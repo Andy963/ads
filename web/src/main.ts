@@ -2,36 +2,31 @@ import { createApp } from "vue";
 
 import App from "./App.vue";
 
-function readKeyboardTopPx(): number {
+function readViewportMetrics(): { topPx: number; heightPx: number } {
   const viewport = window.visualViewport;
   if (!viewport) {
-    return Math.max(1, Math.round(window.innerHeight));
+    return { topPx: 0, heightPx: Math.max(1, Math.round(window.innerHeight)) };
   }
-
-  // visualViewport.height is the visible area; offsetTop shifts when the browser pans the visual viewport
-  // (e.g. mobile keyboard, pinch-zoom). We want the keyboard top in layout viewport coordinates.
-  const keyboardTop = viewport.height + viewport.offsetTop;
-  const max = Math.max(1, Math.round(window.innerHeight));
-  if (!Number.isFinite(keyboardTop)) {
-    return max;
-  }
-  return Math.max(1, Math.min(max, Math.round(keyboardTop)));
+  const topPx = Number.isFinite(viewport.offsetTop) ? Math.round(viewport.offsetTop) : 0;
+  const heightPx = Number.isFinite(viewport.height) ? Math.max(1, Math.round(viewport.height)) : Math.max(1, Math.round(window.innerHeight));
+  return { topPx, heightPx };
 }
 
-let lastHeightPx = 0;
-function applyViewportHeightPx(): void {
-  const heightPx = readKeyboardTopPx();
-  if (heightPx === lastHeightPx) return;
-  lastHeightPx = heightPx;
-  document.documentElement.style.setProperty("--app-height", `${heightPx}px`);
+let lastMetrics = { topPx: Number.NaN, heightPx: Number.NaN };
+function applyViewportVars(): void {
+  const next = readViewportMetrics();
+  if (next.topPx === lastMetrics.topPx && next.heightPx === lastMetrics.heightPx) return;
+  lastMetrics = next;
+  document.documentElement.style.setProperty("--app-top", `${next.topPx}px`);
+  document.documentElement.style.setProperty("--app-height", `${next.heightPx}px`);
 }
 
 let heightRaf = 0;
-function scheduleApplyViewportHeight(): void {
+function scheduleApplyViewportVars(): void {
   if (heightRaf) cancelAnimationFrame(heightRaf);
   heightRaf = requestAnimationFrame(() => {
     heightRaf = 0;
-    applyViewportHeightPx();
+    applyViewportVars();
   });
 }
 
@@ -57,13 +52,13 @@ function isTextInput(el: unknown): boolean {
 }
 
 function scheduleBurst(): void {
-  scheduleApplyViewportHeight();
+  scheduleApplyViewportVars();
   for (const delay of [50, 150, 300, 500]) {
-    window.setTimeout(scheduleApplyViewportHeight, delay);
+    window.setTimeout(scheduleApplyViewportVars, delay);
   }
 }
 
-applyViewportHeightPx();
+applyViewportVars();
 window.addEventListener("resize", scheduleBurst, { passive: true });
 window.addEventListener("orientationchange", scheduleBurst, { passive: true });
 window.visualViewport?.addEventListener("resize", scheduleBurst, { passive: true });
@@ -88,7 +83,7 @@ document.addEventListener(
 window.setInterval(() => {
   const active = document.activeElement;
   if (!isTextInput(active)) return;
-  applyViewportHeightPx();
+  applyViewportVars();
 }, 250);
 
 createApp(App).mount("#app");

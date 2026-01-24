@@ -16,11 +16,16 @@
         -webkit-text-size-adjust: 100%;
         text-size-adjust: 100%;
       }
+      html, body {
+        position: fixed;
+        inset: 0;
+      }
       #app {
         position: fixed;
         overflow: hidden;
-        inset: 0;
-        width: 100vw;
+        top: var(--app-top, 0px);
+        left: 0;
+        right: 0;
         height: var(--app-height, 100vh);
       }
       @supports (height: 100dvh) {
