@@ -1,0 +1,793 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  kind: "text" | "command";
+  content: string;
+  streaming?: boolean;
+};
+
+type IncomingImage = { name?: string; mime?: string; data: string };
+type QueuedPrompt = { id: string; text: string; imagesCount: number };
+
+const props = defineProps<{
+  messages: ChatMessage[];
+  queuedPrompts: QueuedPrompt[];
+  pendingImages: IncomingImage[];
+  connected: boolean;
+  busy: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: "send", content: string): void;
+  (e: "interrupt"): void;
+  (e: "clear"): void;
+  (e: "addImages", images: IncomingImage[]): void;
+  (e: "clearImages"): void;
+  (e: "removeQueued", id: string): void;
+}>();
+
+const listRef = ref<HTMLElement | null>(null);
+const autoScroll = ref(true);
+const input = ref("");
+
+const canInterrupt = computed(() => props.busy);
+const expandedOutputs = ref<Set<string>>(new Set());
+
+function handleScroll() {
+  if (!listRef.value) return;
+  const { scrollTop, scrollHeight, clientHeight } = listRef.value;
+  autoScroll.value = scrollHeight - scrollTop - clientHeight < 50;
+}
+
+watch(
+  () => props.messages.length,
+  async () => {
+    if (autoScroll.value && listRef.value) {
+      await nextTick();
+      listRef.value.scrollTop = listRef.value.scrollHeight;
+    }
+  },
+);
+
+function send(): void {
+  const text = input.value.trim();
+  if (!text && props.pendingImages.length === 0) return;
+  emit("send", text);
+  input.value = "";
+}
+
+function onInputKeydown(ev: KeyboardEvent): void {
+  if (ev.key !== "Enter") return;
+  if ((ev as { isComposing?: boolean }).isComposing) return;
+  if (ev.altKey) return; // Alt+Enter: newline
+  if (ev.shiftKey || ev.ctrlKey || ev.metaKey) return;
+  ev.preventDefault();
+  send();
+}
+
+function truncateCmd(text: string, maxLen = 100): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen) + "…";
+}
+
+function getCommands(content: string): string[] {
+  return content
+    .split("\n")
+    .filter((line) => line.match(/^\$\s*/))
+    .map((line) => line.replace(/^\$\s*/, ""));
+}
+
+function toggleOutput(key: string): void {
+  if (expandedOutputs.value.has(key)) {
+    expandedOutputs.value.delete(key);
+  } else {
+    expandedOutputs.value.add(key);
+  }
+}
+
+async function onPaste(ev: ClipboardEvent): Promise<void> {
+  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+  const data = ev.clipboardData;
+  const target = ev.target instanceof HTMLTextAreaElement ? ev.target : null;
+  ev.preventDefault();
+
+  const items = data?.items ? Array.from(data.items) : [];
+  const fromItems = items
+    .filter((i) => i.kind === "file" && ((i.type || "").startsWith("image/") || !i.type))
+    .map((i) => i.getAsFile())
+    .filter(Boolean) as File[];
+  const fromFiles = data?.files
+    ? Array.from(data.files).filter((f) => ((f.type || "").startsWith("image/") || !f.type) && f.size > 0)
+    : [];
+  const files = [...fromItems, ...fromFiles].filter((f) => f.size > 0);
+  const uniqueFiles = (() => {
+    const rank = (mime: string) => {
+      const t = String(mime ?? "").toLowerCase();
+      if (t === "image/png") return 100;
+      if (t === "image/webp") return 90;
+      if (t === "image/jpeg" || t === "image/jpg") return 80;
+      if (t === "image/gif") return 70;
+      if (t === "image/bmp") return 60;
+      if (t === "image/svg+xml") return 50;
+      if (t.startsWith("image/")) return 40;
+      if (!t) return 10;
+      return 0;
+    };
+
+    const byKey = new Map<string, File>();
+    for (const f of files) {
+      const key = `${f.name}|${f.size}`;
+      const existing = byKey.get(key);
+      if (!existing || rank(f.type) > rank(existing.type)) {
+        byKey.set(key, f);
+      }
+    }
+    return Array.from(byKey.values());
+  })();
+
+  const html = (data?.getData("text/html") ?? "").trim();
+  const plain = (data?.getData("text/plain") ?? "").trim();
+  const uriList = (data?.getData("text/uri-list") ?? "").trim();
+
+  const imgSrcFromHtml = html ? /<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] : undefined;
+  const uriFromUriList = uriList
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith("#"));
+  const srcFromText = (() => {
+    if (plain.startsWith("data:image/")) return plain;
+    const maybeUrl = plain.trim();
+    if (!/^https?:\/\//i.test(maybeUrl)) return "";
+    if (!/\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(maybeUrl)) return "";
+    return maybeUrl;
+  })();
+  const directSrc = (imgSrcFromHtml || uriFromUriList || srcFromText || "").trim();
+
+  const images: IncomingImage[] = [];
+  if (directSrc && uniqueFiles.length === 0) {
+    if (directSrc.startsWith("data:image/")) {
+      images.push({ data: directSrc });
+    } else if (/^https?:\/\//i.test(directSrc)) {
+      const fetched = await fetch(directSrc)
+        .then(async (r) => {
+          if (!r.ok) return "";
+          const blob = await r.blob();
+          if (blob.size > MAX_IMAGE_BYTES) return "";
+          return await blobToDataUrl(blob);
+        })
+        .catch(() => "");
+      if (fetched) images.push({ data: fetched });
+    }
+  }
+  for (const file of uniqueFiles) {
+    if (file.size > MAX_IMAGE_BYTES) {
+      continue;
+    }
+    const dataUrl = await fileToDataUrl(file);
+    if (!dataUrl) continue;
+    images.push({ name: file.name, mime: file.type, data: dataUrl });
+  }
+
+  if (images.length === 0) {
+    const fromNavigator = await readImagesFromNavigatorClipboard(MAX_IMAGE_BYTES);
+    images.push(...fromNavigator);
+  }
+
+  if (images.length) {
+    emit("addImages", images);
+    return;
+  }
+
+  const text = data?.getData("text/plain") ?? "";
+  if (!text) return;
+  const start = target?.selectionStart ?? input.value.length;
+  const end = target?.selectionEnd ?? start;
+  input.value = input.value.slice(0, start) + text + input.value.slice(end);
+  await nextTick();
+  try {
+    const pos = start + text.length;
+    target?.setSelectionRange(pos, pos);
+  } catch {
+    // ignore
+  }
+}
+
+async function readImagesFromNavigatorClipboard(maxBytes: number): Promise<IncomingImage[]> {
+  try {
+    const clipboard = navigator.clipboard as undefined | { read?: () => Promise<ClipboardItem[]> };
+    if (!clipboard?.read) return [];
+    const items = await clipboard.read().catch(() => []);
+    const out: IncomingImage[] = [];
+    for (const item of items) {
+      const types = Array.isArray(item.types) ? item.types : [];
+      for (const type of types) {
+        const t = String(type ?? "");
+        if (!t.startsWith("image/")) continue;
+        const blob = await item.getType(t).catch(() => null);
+        if (!blob) continue;
+        if (blob.size <= 0 || blob.size > maxBytes) continue;
+        const data = await blobToDataUrl(blob);
+        if (!data) continue;
+        out.push({ mime: t, data });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.readAsDataURL(blob);
+  }).catch(() => "");
+}
+
+async function fileToDataUrl(file: File): Promise<string> {
+  const viaReader = await blobToDataUrl(file);
+  if (viaReader) return viaReader;
+  try {
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    const base64 = btoa(binary);
+    const mime = (file.type || "image/png").trim();
+    return `data:${mime};base64,${base64}`;
+  } catch {
+    return "";
+  }
+}
+
+onBeforeUnmount(() => {
+  // noop
+});
+</script>
+
+<template>
+  <div class="detail">
+    <div class="header">
+      <div class="header-left">
+        <div class="meta">
+          <span v-if="busy" class="meta-item">busy</span>
+        </div>
+      </div>
+    </div>
+
+    <div ref="listRef" class="chat" @scroll="handleScroll">
+      <div v-if="messages.length === 0" class="chat-empty">
+        <span>直接开始对话…</span>
+      </div>
+      <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
+        <div v-if="m.kind === 'command'" class="command-block">
+          <div class="command-tree-header">
+            <span class="command-tag">EXECUTE</span>
+            <span class="command-count">{{ getCommands(m.content).length }} 条命令</span>
+          </div>
+          <div class="command-tree">
+            <div
+              v-for="(cmd, cIdx) in (expandedOutputs.has(m.id) ? getCommands(m.content) : getCommands(m.content).slice(0, 3))"
+              :key="cIdx"
+              class="command-tree-item"
+            >
+              <span class="command-tree-branch">├─</span>
+              <span class="command-cmd" :title="cmd">{{ truncateCmd(cmd) }}</span>
+            </div>
+            <button
+              v-if="getCommands(m.content).length > 3"
+              class="fold-btn"
+              type="button"
+              @click="toggleOutput(m.id)"
+            >
+              {{ expandedOutputs.has(m.id) ? '收起' : `展开 (${getCommands(m.content).length - 3} 条)` }}
+            </button>
+          </div>
+        </div>
+        <div v-else class="bubble">
+          <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && !m.content.trim()" class="typing" aria-label="AI 正在回复">
+            <span class="dot" />
+            <span class="dot" />
+            <span class="dot" />
+          </div>
+          <pre v-else class="text">{{ m.content }}</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div v-if="queuedPrompts.length" class="queue" aria-label="排队消息">
+        <div v-for="q in queuedPrompts" :key="q.id" class="queue-item">
+          <div class="queue-text">
+            {{ q.text || `[图片 x${q.imagesCount}]` }}
+            <span v-if="q.text && q.imagesCount" class="queue-sub"> · 图片 x{{ q.imagesCount }}</span>
+          </div>
+          <button class="queue-del" type="button" title="移除" @click="emit('removeQueued', q.id)">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="pendingImages.length" class="attachmentsBar" aria-label="已粘贴图片">
+        <div class="attachmentsPill">
+          <span class="attachmentsText">图片 x{{ pendingImages.length }}</span>
+          <button class="attachmentsClear" type="button" title="清空图片" @click="emit('clearImages')">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="inputWrap">
+        <textarea
+          v-model="input"
+          rows="2"
+          class="composer-input"
+          placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）"
+          @keydown="onInputKeydown"
+          @paste="onPaste"
+        />
+        <button
+          v-if="canInterrupt"
+          class="stopIcon"
+          type="button"
+          title="中断"
+          @click="emit('interrupt')"
+        >
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6Zm0 2h8v8H6V6Z" clip-rule="evenodd" />
+          </svg>
+        </button>
+        <button
+          v-else
+          class="sendIcon"
+          :disabled="!input.trim() && pendingImages.length === 0"
+          type="button"
+          title="发送"
+          @click="send"
+        >
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path
+              fill-rule="evenodd"
+              d="M10 3a.75.75 0 0 1 .53.22l4.5 4.5a.75.75 0 1 1-1.06 1.06l-3.22-3.22V16a.75.75 0 0 1-1.5 0V5.56L6.03 8.78A.75.75 0 1 1 4.97 7.72l4.5-4.5A.75.75 0 0 1 10 3Z"
+              clip-rule="evenodd"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.detail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 12px 16px;
+  background: white;
+  border-bottom: 1px solid #e2e8f0;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ef4444;
+}
+.dot.on {
+  background: #22c55e;
+}
+.meta-item {
+  font-size: 12px;
+  color: #64748b;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+}
+.iconBtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  background: #f1f5f9;
+  color: #475569;
+}
+.iconBtn:hover:not(:disabled) {
+  background: #e2e8f0;
+}
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.iconBtn.danger {
+  background: #fee2e2;
+  color: #dc2626;
+}
+.iconBtn.danger:hover:not(:disabled) {
+  background: #fecaca;
+}
+
+.chat {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 10px;
+  background: #f8fafc;
+  min-height: 0;
+}
+.chat-empty {
+  padding: 18px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+}
+.msg {
+  display: flex;
+  margin-bottom: 10px;
+  max-width: 100%;
+  overflow: hidden;
+}
+.msg[data-role="user"] {
+  justify-content: flex-end;
+}
+.msg[data-role="assistant"] {
+  justify-content: flex-start;
+}
+.msg[data-role="system"] {
+  justify-content: center;
+}
+.msg[data-kind="command"] {
+  justify-content: flex-start;
+}
+.command-block {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.command-tree-header {
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.command-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid #f97316;
+  border-radius: 4px;
+  color: #f97316;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-transform: uppercase;
+}
+.command-count {
+  color: #94a3b8;
+  font-size: 12px;
+  margin-left: 8px;
+}
+.command-tree {
+  padding-left: 8px;
+}
+.command-tree-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.command-tree-branch {
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  user-select: none;
+  flex-shrink: 0;
+}
+.command-cmd {
+  color: #64748b;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.fold-btn {
+  padding: 2px 8px;
+  margin-top: 4px;
+  border: none;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+}
+.fold-btn:hover {
+  background: #e2e8f0;
+  color: #475569;
+}
+.bubble {
+  max-width: 100%;
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: white;
+  position: relative;
+  overflow: hidden;
+}
+.msg[data-role="user"] .bubble {
+  background: transparent;
+  border-color: rgba(37, 99, 235, 0.35);
+}
+.msg[data-role="system"] .bubble {
+  background: rgba(15, 23, 42, 0.04);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+.msg[data-kind="command"] .bubble {
+  background: white;
+  border-color: rgba(226, 232, 240, 0.9);
+}
+.msg[data-kind="command"] .mono {
+  color: #0f172a;
+}
+.text {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #0f172a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.mono {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #0f172a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+.cursor {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  opacity: 0.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.typing {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  height: 16px;
+}
+.typing .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #94a3b8;
+  animation: bounce 1.1s infinite;
+}
+.typing .dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing .dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.55; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
+.composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px)) 12px;
+  border-top: 1px solid #e2e8f0;
+  background: white;
+}
+.queue {
+  display: grid;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.queue-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #f8fafc;
+}
+.queue-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #0f172a;
+  font-weight: 700;
+}
+.queue-sub {
+  color: #64748b;
+  font-weight: 600;
+}
+.queue-del {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.queue-del:hover {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.06);
+}
+.cmdText {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+}
+.inputWrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.attachmentsBar {
+  display: flex;
+  justify-content: flex-start;
+}
+.attachmentsPill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.04);
+  color: #0f172a;
+}
+.attachmentsText {
+  font-size: 12px;
+  font-weight: 800;
+  color: #475569;
+}
+.attachmentsClear {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.attachmentsClear:hover {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.06);
+}
+.composer-input {
+  width: 100%;
+  resize: none;
+  max-height: 200px;
+  overflow-y: auto;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  padding: 10px 44px 10px 12px;
+  font-size: 16px;
+  background: transparent;
+  color: #0f172a;
+  box-sizing: border-box;
+}
+.composer-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  background: transparent;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+.sendIcon {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.sendIcon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.sendIcon:hover:not(:disabled) {
+  color: #1d4ed8;
+}
+.stopIcon {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #dc2626;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.stopIcon:hover {
+  color: #b91c1c;
+}
+</style>

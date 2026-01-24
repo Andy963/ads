@@ -120,6 +120,123 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 2,
+    description: "Task queue system - tasks, task_plans, task_messages, task_contexts, model_configs, conversations",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT 'auto',
+          model_params TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          priority INTEGER DEFAULT 0,
+          inherit_context INTEGER DEFAULT 0,
+          parent_task_id TEXT,
+          thread_id TEXT,
+          result TEXT,
+          error TEXT,
+          retry_count INTEGER DEFAULT 0,
+          max_retries INTEGER DEFAULT 3,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          created_by TEXT,
+          FOREIGN KEY(parent_task_id) REFERENCES tasks(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, priority DESC, created_at);
+        CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+
+        CREATE TABLE IF NOT EXISTS task_plans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          step_number INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT DEFAULT 'pending',
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_plans_task ON task_plans(task_id, step_number);
+
+        CREATE TABLE IF NOT EXISTS task_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          plan_step_id INTEGER,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          message_type TEXT,
+          model_used TEXT,
+          token_count INTEGER,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(plan_step_id) REFERENCES task_plans(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_messages_task ON task_messages(task_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS task_contexts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          context_type TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS model_configs (
+          id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          is_enabled INTEGER DEFAULT 1,
+          is_default INTEGER DEFAULT 0,
+          config_json TEXT,
+          updated_at INTEGER
+        );
+
+        INSERT OR IGNORE INTO model_configs (id, display_name, provider, is_default) VALUES
+          ('gpt-5', 'GPT-5 (快速)', 'openai', 0),
+          ('gpt-5.1', 'GPT-5.1 (均衡)', 'openai', 0),
+          ('gpt-5.2', 'GPT-5.2 (推荐)', 'openai', 1);
+
+        CREATE TABLE IF NOT EXISTS conversations (
+          id TEXT PRIMARY KEY,
+          task_id TEXT,
+          title TEXT,
+          total_tokens INTEGER DEFAULT 0,
+          last_model TEXT,
+          model_response_ids TEXT,
+          status TEXT DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_task ON conversations(task_id, updated_at);
+
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id TEXT NOT NULL,
+          task_id TEXT,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          model_id TEXT,
+          token_count INTEGER DEFAULT 0,
+          metadata TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+          FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conv_messages ON conversation_messages(conversation_id, created_at);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 2,
