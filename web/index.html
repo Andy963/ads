@@ -24,15 +24,9 @@
         position: fixed;
         overflow: hidden;
         top: var(--app-top, 0px);
+        bottom: var(--app-bottom, 0px);
         left: 0;
         right: 0;
-        height: var(--app-height, 100vh);
-      }
-      @supports (height: 100dvh) {
-        #app { height: var(--app-height, 100dvh); }
-      }
-      @supports (-webkit-touch-callout: none) {
-        #app { height: var(--app-height, -webkit-fill-available); }
       }
     </style>
   </head>

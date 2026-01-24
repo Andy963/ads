@@ -2,23 +2,39 @@ import { createApp } from "vue";
 
 import App from "./App.vue";
 
-function readViewportMetrics(): { topPx: number; heightPx: number } {
+function readViewportMetrics(): { topPx: number; bottomPx: number } {
+  const layoutHeightPx = Math.max(1, Math.round(window.innerHeight));
   const viewport = window.visualViewport;
   if (!viewport) {
-    return { topPx: 0, heightPx: Math.max(1, Math.round(window.innerHeight)) };
+    return { topPx: 0, bottomPx: 0 };
   }
-  const topPx = Number.isFinite(viewport.offsetTop) ? Math.round(viewport.offsetTop) : 0;
-  const heightPx = Number.isFinite(viewport.height) ? Math.max(1, Math.round(viewport.height)) : Math.max(1, Math.round(window.innerHeight));
-  return { topPx, heightPx };
+  const topPx = Number.isFinite(viewport.offsetTop) ? Math.max(0, Math.round(viewport.offsetTop)) : 0;
+  const heightPx = Number.isFinite(viewport.height) ? Math.max(1, Math.round(viewport.height)) : layoutHeightPx;
+  const bottomPx = Math.max(0, layoutHeightPx - topPx - heightPx);
+  return { topPx, bottomPx };
 }
 
-let lastMetrics = { topPx: Number.NaN, heightPx: Number.NaN };
+let lastMetrics = { topPx: Number.NaN, bottomPx: Number.NaN, keyboardOpen: false };
 function applyViewportVars(): void {
   const next = readViewportMetrics();
-  if (next.topPx === lastMetrics.topPx && next.heightPx === lastMetrics.heightPx) return;
-  lastMetrics = next;
-  document.documentElement.style.setProperty("--app-top", `${next.topPx}px`);
-  document.documentElement.style.setProperty("--app-height", `${next.heightPx}px`);
+  const keyboardOpen = isTextInput(document.activeElement) && next.bottomPx > 0;
+  if (
+    next.topPx === lastMetrics.topPx &&
+    next.bottomPx === lastMetrics.bottomPx &&
+    keyboardOpen === lastMetrics.keyboardOpen
+  ) {
+    return;
+  }
+  if (next.topPx !== lastMetrics.topPx) {
+    document.documentElement.style.setProperty("--app-top", `${next.topPx}px`);
+  }
+  if (next.bottomPx !== lastMetrics.bottomPx) {
+    document.documentElement.style.setProperty("--app-bottom", `${next.bottomPx}px`);
+  }
+  if (keyboardOpen !== lastMetrics.keyboardOpen) {
+    document.documentElement.style.setProperty("--safe-bottom-multiplier", keyboardOpen ? "0" : "1");
+  }
+  lastMetrics = { ...next, keyboardOpen };
 }
 
 let heightRaf = 0;
@@ -51,9 +67,22 @@ function isTextInput(el: unknown): boolean {
   ].includes(type);
 }
 
+function resetWindowScroll(): void {
+  if (window.scrollX !== 0 || window.scrollY !== 0) {
+    window.scrollTo(0, 0);
+  }
+  const docEl = document.documentElement;
+  if (docEl.scrollLeft !== 0) docEl.scrollLeft = 0;
+  if (docEl.scrollTop !== 0) docEl.scrollTop = 0;
+  const body = document.body;
+  if (body.scrollLeft !== 0) body.scrollLeft = 0;
+  if (body.scrollTop !== 0) body.scrollTop = 0;
+}
+
 function scheduleBurst(): void {
+  resetWindowScroll();
   scheduleApplyViewportVars();
-  for (const delay of [50, 150, 300, 500]) {
+  for (const delay of [50, 150, 300, 500, 800, 1200, 1800]) {
     window.setTimeout(scheduleApplyViewportVars, delay);
   }
 }
@@ -61,6 +90,7 @@ function scheduleBurst(): void {
 applyViewportVars();
 window.addEventListener("resize", scheduleBurst, { passive: true });
 window.addEventListener("orientationchange", scheduleBurst, { passive: true });
+window.addEventListener("scroll", scheduleBurst, { passive: true });
 window.visualViewport?.addEventListener("resize", scheduleBurst, { passive: true });
 window.visualViewport?.addEventListener("scroll", scheduleBurst, { passive: true });
 document.addEventListener(

@@ -18,6 +18,7 @@ const props = defineProps<{
   pendingImages: IncomingImage[];
   connected: boolean;
   busy: boolean;
+  apiToken?: string;
 }>();
 
 const emit = defineEmits<{
@@ -32,9 +33,26 @@ const emit = defineEmits<{
 const listRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const input = ref("");
+const inputEl = ref<HTMLTextAreaElement | null>(null);
 
 const canInterrupt = computed(() => props.busy);
 const expandedOutputs = ref<Set<string>>(new Set());
+const micSupported = computed(() => {
+  return typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
+});
+
+const recording = ref(false);
+const transcribing = ref(false);
+const voiceStatusKind = ref<"idle" | "recording" | "transcribing" | "error" | "ok">("idle");
+const voiceStatusMessage = ref("");
+let voiceToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+let recorder: MediaRecorder | null = null;
+let recorderStream: MediaStream | null = null;
+let recorderMime = "";
+let recorderChunks: Blob[] = [];
+
+type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
 
 function handleScroll() {
   if (!listRef.value) return;
@@ -53,10 +71,209 @@ watch(
 );
 
 function send(): void {
+  if (recording.value || transcribing.value) return;
   const text = input.value.trim();
   if (!text && props.pendingImages.length === 0) return;
   emit("send", text);
   input.value = "";
+}
+
+function clearVoiceToast(): void {
+  if (voiceToastTimer) {
+    clearTimeout(voiceToastTimer);
+    voiceToastTimer = null;
+  }
+}
+
+function setVoiceStatus(
+  kind: "idle" | "recording" | "transcribing" | "error" | "ok",
+  message: string,
+  autoClearMs?: number,
+): void {
+  clearVoiceToast();
+  voiceStatusKind.value = kind;
+  voiceStatusMessage.value = message;
+  if (kind === "idle" || !message) {
+    voiceStatusKind.value = "idle";
+    voiceStatusMessage.value = "";
+    return;
+  }
+  if (autoClearMs && autoClearMs > 0) {
+    voiceToastTimer = setTimeout(() => {
+      if (voiceStatusKind.value === kind && voiceStatusMessage.value === message) {
+        voiceStatusKind.value = "idle";
+        voiceStatusMessage.value = "";
+      }
+      voiceToastTimer = null;
+    }, autoClearMs);
+  }
+}
+
+async function insertIntoComposer(text: string): Promise<void> {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) return;
+
+  const el = inputEl.value;
+  if (!el) {
+    const prefix = input.value.trim() ? `${input.value}\n` : input.value;
+    input.value = `${prefix}${normalized}`;
+    return;
+  }
+
+  const current = input.value;
+  const start = typeof el.selectionStart === "number" ? el.selectionStart : current.length;
+  const end = typeof el.selectionEnd === "number" ? el.selectionEnd : start;
+  const before = current.slice(0, start);
+  const after = current.slice(end);
+  const needsSpacer = before && !/[\s\n]$/.test(before);
+  const insert = `${needsSpacer ? "\n" : ""}${normalized}`;
+  input.value = before + insert + after;
+  await nextTick();
+  try {
+    const pos = before.length + insert.length;
+    el.focus();
+    el.setSelectionRange(pos, pos);
+  } catch {
+    // ignore
+  }
+}
+
+function cleanupRecorder(): void {
+  if (recorderStream) {
+    for (const track of recorderStream.getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        // ignore
+      }
+    }
+  }
+  recorderStream = null;
+  recorder = null;
+  recorderChunks = [];
+  recorderMime = "";
+}
+
+function pickRecorderMime(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/ogg",
+    "audio/mp4",
+  ];
+  for (const mime of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(mime)) {
+        return mime;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return "";
+}
+
+async function transcribeAudio(blob: Blob): Promise<void> {
+  transcribing.value = true;
+  setVoiceStatus("transcribing", "识别中…");
+  try {
+    const headers: Record<string, string> = {};
+    const token = String(props.apiToken ?? "").trim();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    headers["Content-Type"] = blob.type || "application/octet-stream";
+
+    const res = await fetch("/api/audio/transcriptions", {
+      method: "POST",
+      headers,
+      body: blob,
+    });
+    const payload = (await res.json().catch(() => null)) as TranscriptionResponse | null;
+    if (!res.ok) {
+      const message = String(payload?.error ?? payload?.message ?? `HTTP ${res.status}`).trim();
+      throw new Error(message || `HTTP ${res.status}`);
+    }
+
+    const text = String(payload?.text ?? "").trim();
+    if (!text) {
+      setVoiceStatus("error", "未识别到文本", 3500);
+      return;
+    }
+    await insertIntoComposer(text);
+    setVoiceStatus("ok", "已追加语音文本", 1200);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setVoiceStatus("error", message || "语音识别失败", 4000);
+  } finally {
+    transcribing.value = false;
+  }
+}
+
+async function startRecording(): Promise<void> {
+  if (!micSupported.value) {
+    setVoiceStatus("error", "当前浏览器不支持录音", 3500);
+    return;
+  }
+  if (props.busy || transcribing.value || recording.value) {
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    cleanupRecorder();
+    recorderStream = stream;
+    recorderChunks = [];
+    recorderMime = pickRecorderMime();
+    recorder = new MediaRecorder(stream, recorderMime ? { mimeType: recorderMime } : undefined);
+
+    recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) {
+        recorderChunks.push(ev.data);
+      }
+    };
+    recorder.onerror = () => {
+      recording.value = false;
+      cleanupRecorder();
+      setVoiceStatus("error", "录音失败", 3500);
+    };
+    recorder.onstop = () => {
+      const type = recorderMime || recorder?.mimeType || recorderChunks[0]?.type || "audio/webm";
+      const blob = new Blob(recorderChunks, { type });
+      cleanupRecorder();
+      void transcribeAudio(blob);
+    };
+
+    recorder.start();
+    recording.value = true;
+    setVoiceStatus("recording", "录音中…再次点击停止");
+  } catch (error) {
+    recording.value = false;
+    cleanupRecorder();
+    const message = error instanceof Error ? error.message : String(error);
+    setVoiceStatus("error", `无法访问麦克风：${message}`, 4500);
+  }
+}
+
+function stopRecording(): void {
+  if (!recording.value) return;
+  recording.value = false;
+  setVoiceStatus("transcribing", "识别中…");
+  try {
+    recorder?.stop();
+  } catch {
+    cleanupRecorder();
+    setVoiceStatus("error", "停止录音失败", 3500);
+  }
+}
+
+async function toggleRecording(): Promise<void> {
+  if (recording.value) {
+    stopRecording();
+    return;
+  }
+  await startRecording();
 }
 
 function onInputKeydown(ev: KeyboardEvent): void {
@@ -249,7 +466,13 @@ async function fileToDataUrl(file: File): Promise<string> {
 }
 
 onBeforeUnmount(() => {
-  // noop
+  clearVoiceToast();
+  try {
+    recorder?.stop();
+  } catch {
+    // ignore
+  }
+  cleanupRecorder();
 });
 </script>
 
@@ -340,39 +563,60 @@ onBeforeUnmount(() => {
       <div class="inputWrap">
         <textarea
           v-model="input"
+          ref="inputEl"
           rows="2"
           class="composer-input"
           placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）"
           @keydown="onInputKeydown"
           @paste="onPaste"
         />
-        <button
-          v-if="canInterrupt"
-          class="stopIcon"
-          type="button"
-          title="中断"
-          @click="emit('interrupt')"
-        >
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path fill-rule="evenodd" d="M6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6Zm0 2h8v8H6V6Z" clip-rule="evenodd" />
-          </svg>
-        </button>
-        <button
-          v-else
-          class="sendIcon"
-          :disabled="!input.trim() && pendingImages.length === 0"
-          type="button"
-          title="发送"
-          @click="send"
-        >
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path
-              fill-rule="evenodd"
-              d="M10 3a.75.75 0 0 1 .53.22l4.5 4.5a.75.75 0 1 1-1.06 1.06l-3.22-3.22V16a.75.75 0 0 1-1.5 0V5.56L6.03 8.78A.75.75 0 1 1 4.97 7.72l4.5-4.5A.75.75 0 0 1 10 3Z"
-              clip-rule="evenodd"
-            />
-          </svg>
-        </button>
+        <div class="inputActions">
+          <button
+            class="micIcon"
+            :class="{ recording, transcribing }"
+            :disabled="canInterrupt || transcribing"
+            type="button"
+            :title="recording ? '停止录音' : '语音输入（追加到输入框）'"
+            @click="toggleRecording"
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M10 13.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v4.5a3 3 0 0 0 3 3Z" />
+              <path
+                d="M5.5 10.5a.75.75 0 0 1 .75.75 3.75 3.75 0 1 0 7.5 0 .75.75 0 0 1 1.5 0 5.25 5.25 0 0 1-4.5 5.19V18a.75.75 0 0 1-1.5 0v-1.56a5.25 5.25 0 0 1-4.5-5.19.75.75 0 0 1 .75-.75Z"
+              />
+            </svg>
+          </button>
+          <button
+            v-if="canInterrupt"
+            class="stopIcon"
+            type="button"
+            title="中断"
+            @click="emit('interrupt')"
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6Zm0 2h8v8H6V6Z" clip-rule="evenodd" />
+            </svg>
+          </button>
+          <button
+            v-else
+            class="sendIcon"
+            :disabled="(!input.trim() && pendingImages.length === 0) || recording || transcribing"
+            type="button"
+            title="发送"
+            @click="send"
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M10 3a.75.75 0 0 1 .53.22l4.5 4.5a.75.75 0 1 1-1.06 1.06l-3.22-3.22V16a.75.75 0 0 1-1.5 0V5.56L6.03 8.78A.75.75 0 1 1 4.97 7.72l4.5-4.5A.75.75 0 0 1 10 3Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div v-if="voiceStatusKind !== 'idle' && voiceStatusMessage" class="voiceStatus" :class="voiceStatusKind">
+        {{ voiceStatusMessage }}
       </div>
     </div>
   </div>
@@ -632,7 +876,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px)) 12px;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1)) 12px;
   border-top: 1px solid #e2e8f0;
   background: white;
 }
@@ -699,6 +943,14 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: stretch;
 }
+.inputActions {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
 .attachmentsBar {
   display: flex;
   justify-content: flex-start;
@@ -740,7 +992,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   border-radius: 10px;
   border: 1px solid #e2e8f0;
-  padding: 10px 44px 10px 12px;
+  padding: 10px 84px 10px 12px;
   font-size: 16px;
   background: transparent;
   color: #0f172a;
@@ -752,10 +1004,38 @@ onBeforeUnmount(() => {
   background: transparent;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
+.micIcon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 0.15s, transform 0.1s;
+}
+.micIcon:hover:not(:disabled) {
+  color: #0f172a;
+}
+.micIcon:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.micIcon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.micIcon.recording {
+  color: #dc2626;
+}
+.micIcon.recording:hover:not(:disabled) {
+  color: #b91c1c;
+}
+.micIcon.transcribing {
+  color: #2563eb;
+}
 .sendIcon {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
   width: 28px;
   height: 28px;
   border-radius: 8px;
@@ -774,9 +1054,6 @@ onBeforeUnmount(() => {
   color: #1d4ed8;
 }
 .stopIcon {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
   width: 28px;
   height: 28px;
   border-radius: 8px;
@@ -789,5 +1066,22 @@ onBeforeUnmount(() => {
 }
 .stopIcon:hover {
   color: #b91c1c;
+}
+.voiceStatus {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+.voiceStatus.ok {
+  color: #059669;
+}
+.voiceStatus.error {
+  color: #dc2626;
+}
+.voiceStatus.recording {
+  color: #dc2626;
+}
+.voiceStatus.transcribing {
+  color: #2563eb;
 }
 </style>

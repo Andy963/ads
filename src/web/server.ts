@@ -319,6 +319,21 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(raw) as unknown;
 }
 
+async function readRawBody(req: http.IncomingMessage, options?: { maxBytes?: number }): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const maxBytes = Math.max(1, options?.maxBytes ?? 25 * 1024 * 1024);
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    if (total > maxBytes) {
+      throw new Error("Request body too large");
+    }
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
+}
+
 function createHttpServer(options: { handleApiRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> }): http.Server {
   const distWebDir = path.join(process.cwd(), "dist", "web");
 
@@ -487,6 +502,7 @@ function decodeBase64Url(input: string): string {
 
 async function start(): Promise<void> {
   const workspaceRoot = detectWorkspace();
+  const allowedDirs = resolveAllowedDirs(workspaceRoot);
 
   const taskStore = new QueueTaskStore({ workspacePath: workspaceRoot });
   const taskQueueStatusUserId = 0;
@@ -551,6 +567,179 @@ async function start(): Promise<void> {
     handleApiRequest: async (req, res) => {
       const url = new URL(req.url ?? "", "http://localhost");
       const pathname = url.pathname;
+
+      if (req.method === "POST" && pathname === "/api/audio/transcriptions") {
+        const togetherKey = String(process.env.TOGETHER_API_KEY ?? "").trim();
+        if (!togetherKey) {
+          sendJson(res, 500, { error: "未配置 TOGETHER_API_KEY" });
+          return true;
+        }
+
+        let contentType = String(req.headers["content-type"] ?? "").trim();
+        if (contentType.includes(";")) {
+          contentType = contentType.split(";")[0]!.trim();
+        }
+        if (!contentType) {
+          contentType = "application/octet-stream";
+        }
+
+        let audio: Buffer;
+        try {
+          audio = await readRawBody(req, { maxBytes: 25 * 1024 * 1024 });
+        } catch (error) {
+          const rawMessage = error instanceof Error ? error.message : String(error);
+          const message = rawMessage === "Request body too large" ? "音频过大（>25MB）" : rawMessage;
+          sendJson(res, 413, { error: message });
+          return true;
+        }
+        if (!audio || audio.length === 0) {
+          sendJson(res, 400, { error: "音频为空" });
+          return true;
+        }
+
+	        const ext = (() => {
+	          const t = contentType.toLowerCase();
+	          if (t.includes("webm")) return "webm";
+	          if (t.includes("ogg")) return "ogg";
+	          if (t.includes("wav")) return "wav";
+	          if (t.includes("mpeg") || t.includes("mp3")) return "mp3";
+	          if (t.includes("mp4") || t.includes("m4a")) return "m4a";
+	          return "bin";
+	        })();
+
+          const audioArrayBuffer = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
+
+	        const form = new FormData();
+	        form.append("model", "openai/whisper-large-v3");
+	        form.append("file", new Blob([audioArrayBuffer], { type: contentType }), `recording.${ext}`);
+
+        const controller = new AbortController();
+        const timeoutMsRaw = Number(process.env.ADS_TOGETHER_AUDIO_TIMEOUT_MS ?? 60_000);
+        const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(1000, timeoutMsRaw) : 60_000;
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          const upstream = await fetch("https://api.together.xyz/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${togetherKey}` },
+            body: form,
+            signal: controller.signal,
+          });
+
+          const raw = await upstream.text().catch(() => "");
+          let parsed: unknown = null;
+          try {
+            parsed = raw ? (JSON.parse(raw) as unknown) : null;
+          } catch {
+            parsed = null;
+          }
+
+          if (!upstream.ok) {
+            const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+            const nestedError = record?.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
+            const message =
+              String(nestedError?.message ?? record?.message ?? record?.error ?? raw ?? "").trim() ||
+              `上游服务错误（${upstream.status}）`;
+            sendJson(res, 502, { error: message });
+            return true;
+          }
+
+          const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+          const text =
+            typeof record?.text === "string"
+              ? record.text
+              : typeof record?.transcript === "string"
+                ? record.transcript
+                : typeof record?.transcription === "string"
+                  ? record.transcription
+                  : "";
+
+          sendJson(res, 200, { ok: true, text });
+          return true;
+        } catch (error) {
+          const aborted = controller.signal.aborted;
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, aborted ? 504 : 502, { error: aborted ? "语音识别超时" : message });
+          return true;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      if (req.method === "GET" && pathname === "/api/paths/validate") {
+        const candidate = url.searchParams.get("path")?.trim() ?? "";
+        const directoryManager = new DirectoryManager(allowedDirs);
+        if (!candidate) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: false,
+            exists: false,
+            isDirectory: false,
+            error: "缺少 path 参数",
+          });
+          return true;
+        }
+
+        const absolutePath = path.resolve(candidate);
+        if (!directoryManager.validatePath(absolutePath)) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: false,
+            exists: false,
+            isDirectory: false,
+            error: "目录不在白名单内",
+            allowedDirs,
+          });
+          return true;
+        }
+
+        if (!fs.existsSync(absolutePath)) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: true,
+            exists: false,
+            isDirectory: false,
+            resolvedPath: absolutePath,
+            error: "目录不存在",
+          });
+          return true;
+        }
+
+        let resolvedPath = absolutePath;
+        try {
+          resolvedPath = fs.realpathSync(absolutePath);
+        } catch {
+          resolvedPath = absolutePath;
+        }
+
+        let isDirectory = false;
+        try {
+          isDirectory = fs.statSync(resolvedPath).isDirectory();
+        } catch {
+          isDirectory = false;
+        }
+
+        if (!isDirectory) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: true,
+            exists: true,
+            isDirectory: false,
+            resolvedPath,
+            error: "路径存在但不是目录",
+          });
+          return true;
+        }
+
+        sendJson(res, 200, {
+          ok: true,
+          allowed: true,
+          exists: true,
+          isDirectory: true,
+          resolvedPath,
+        });
+        return true;
+      }
 
       if (req.method === "GET" && pathname === "/api/models") {
         const allowedModels = ["gpt-5.1", "gpt-5.2"];
@@ -860,7 +1049,6 @@ async function start(): Promise<void> {
     logger.warn(`[Web] Failed to sync templates: ${(error as Error).message}`);
   }
   await ensureWebPidFile(workspaceRoot);
-  const allowedDirs = resolveAllowedDirs(workspaceRoot);
   const clients: Set<WebSocket> = new Set();
 
   broadcast = (payload: unknown) => {

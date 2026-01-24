@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 import { ApiClient } from "./api/client";
 import type { CreateTaskInput, ModelConfig, PlanStep, Task, TaskDetail, TaskEventPayload, TaskQueueStatus } from "./api/types";
@@ -10,12 +10,53 @@ import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
 
 const TOKEN_KEY = "ADS_WEB_TOKEN";
+const PROJECTS_KEY = "ADS_WEB_PROJECTS";
+const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
+const LEGACY_WS_SESSION_KEY = "ADS_WEB_SESSION";
+
+type WorkspaceState = { path?: string; rules?: string; modified?: string[] };
+type ProjectTab = {
+  id: string;
+  name: string;
+  path: string;
+  sessionId: string;
+  initialized: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
 
 const token = ref(localStorage.getItem(TOKEN_KEY) ?? "");
 const connected = ref(false);
 const apiError = ref<string | null>(null);
 const wsError = ref<string | null>(null);
 const queueStatus = ref<TaskQueueStatus | null>(null);
+const workspacePath = ref("");
+
+const projects = ref<ProjectTab[]>([]);
+const activeProjectId = ref("");
+const pendingProjectCd = ref<{ projectId: string; requestedPath: string } | null>(null);
+const projectDialogOpen = ref(false);
+const projectDialogPath = ref("");
+const projectDialogName = ref("");
+const projectDialogError = ref<string | null>(null);
+const switchConfirmOpen = ref(false);
+const pendingSwitchProjectId = ref<string | null>(null);
+const projectPathEl = ref<HTMLInputElement | null>(null);
+const projectNameEl = ref<HTMLInputElement | null>(null);
+const projectDialogPathStatus = ref<"idle" | "checking" | "ok" | "error">("idle");
+const projectDialogPathMessage = ref("");
+const lastValidatedProjectPath = ref("");
+let projectPathValidationSeq = 0;
+
+type PathValidateResponse = {
+  ok: boolean;
+  allowed: boolean;
+  exists: boolean;
+  isDirectory: boolean;
+  resolvedPath?: string;
+  error?: string;
+  allowedDirs?: string[];
+};
 
 const api = new ApiClient({ baseUrl: "", token: token.value });
 
@@ -31,8 +72,6 @@ type ChatItem = {
   streaming?: boolean;
 };
 const busy = ref(false);
-const wsSessionKey = "ADS_WEB_SESSION";
-const wsSessionId = ref(localStorage.getItem(wsSessionKey) ?? "");
 const messages = ref<ChatItem[]>([]);
 const LIVE_STEP_ID = "live-step";
 const recentCommands = ref<string[]>([]);
@@ -47,6 +86,8 @@ const agentBusy = computed(() => busy.value || tasksBusy.value);
 const isMobile = ref(false);
 const mobilePane = ref<"tasks" | "chat">("chat");
 
+const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
+
 function updateIsMobile(): void {
   if (typeof window === "undefined") return;
   isMobile.value = window.matchMedia?.("(max-width: 900px)")?.matches ?? window.innerWidth <= 900;
@@ -54,6 +95,273 @@ function updateIsMobile(): void {
 
 function randomId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function safeJsonParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    return null;
+  }
+}
+
+function deriveProjectName(path: string): string {
+  const normalized = String(path ?? "").trim();
+  if (!normalized) return "Project";
+  const cleaned = normalized.replace(/[\\/]+$/g, "");
+  const parts = cleaned.split(/[\\/]+/g).filter(Boolean);
+  return parts[parts.length - 1] ?? "Project";
+}
+
+function createProjectTab(params: { path: string; name?: string; sessionId?: string; initialized?: boolean }): ProjectTab {
+  const now = Date.now();
+  const sessionId = params.sessionId?.trim() || (crypto.randomUUID?.() ?? randomId("sess"));
+  const id = sessionId;
+  const path = String(params.path ?? "").trim();
+  const name = String(params.name ?? "").trim() || deriveProjectName(path);
+  const initialized = params.initialized ?? !path;
+  return { id, name, path, sessionId, initialized, createdAt: now, updatedAt: now };
+}
+
+function persistProjects(): void {
+  try {
+    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects.value));
+    localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId.value);
+  } catch {
+    // ignore
+  }
+}
+
+function initializeProjects(): void {
+  const stored = safeJsonParse<ProjectTab[]>(localStorage.getItem(PROJECTS_KEY));
+  const normalized: ProjectTab[] = Array.isArray(stored)
+    ? stored
+        .map((p) => {
+          const sessionId = String((p as Partial<ProjectTab>)?.sessionId ?? "").trim();
+          const path = String((p as Partial<ProjectTab>)?.path ?? "").trim();
+          const name = String((p as Partial<ProjectTab>)?.name ?? "").trim() || deriveProjectName(path);
+          if (!sessionId) return null;
+          return createProjectTab({
+            path,
+            name,
+            sessionId,
+            initialized: Boolean((p as Partial<ProjectTab>)?.initialized) || !path,
+          });
+        })
+        .filter((p): p is ProjectTab => Boolean(p))
+    : [];
+
+  if (normalized.length === 0) {
+    const legacySession = String(localStorage.getItem(LEGACY_WS_SESSION_KEY) ?? "").trim();
+    normalized.push(createProjectTab({ path: "", name: "默认", sessionId: legacySession || undefined, initialized: true }));
+  }
+
+  projects.value = normalized;
+
+  const storedActive = String(localStorage.getItem(ACTIVE_PROJECT_KEY) ?? "").trim();
+  const initialActive = normalized.some((p) => p.id === storedActive) ? storedActive : normalized[0]!.id;
+  activeProjectId.value = initialActive;
+  persistProjects();
+}
+
+function updateProject(id: string, updates: Partial<ProjectTab>): void {
+  const targetId = String(id ?? "").trim();
+  if (!targetId) return;
+  const next = projects.value.map((p) => {
+    if (p.id !== targetId) return p;
+    return { ...p, ...updates, updatedAt: Date.now() };
+  });
+  projects.value = next;
+  persistProjects();
+}
+
+function clearChatState(): void {
+  busy.value = false;
+  pendingProjectCd.value = null;
+  queuedPrompts.value = [];
+  pendingImages.value = [];
+  recentCommands.value = [];
+  clearStepLive();
+  finalizeCommandBlock();
+  setMessages([]);
+}
+
+function performProjectSwitch(id: string): void {
+  const nextId = String(id ?? "").trim();
+  if (!nextId) return;
+  if (nextId === activeProjectId.value) return;
+
+  ws?.close();
+  ws = null;
+  connected.value = false;
+  wsError.value = null;
+  clearChatState();
+
+  activeProjectId.value = nextId;
+  persistProjects();
+  connectWs();
+}
+
+function requestProjectSwitch(id: string): void {
+  const nextId = String(id ?? "").trim();
+  if (!nextId) return;
+  if (nextId === activeProjectId.value) return;
+
+  const hasUnsavedDraft = queuedPrompts.value.length > 0 || pendingImages.value.length > 0;
+  if (busy.value || hasUnsavedDraft) {
+    pendingSwitchProjectId.value = nextId;
+    switchConfirmOpen.value = true;
+    return;
+  }
+  performProjectSwitch(nextId);
+}
+
+function cancelProjectSwitch(): void {
+  switchConfirmOpen.value = false;
+  pendingSwitchProjectId.value = null;
+}
+
+function confirmProjectSwitch(): void {
+  const target = pendingSwitchProjectId.value;
+  switchConfirmOpen.value = false;
+  pendingSwitchProjectId.value = null;
+  if (target) performProjectSwitch(target);
+}
+
+function openProjectDialog(): void {
+  projectDialogError.value = null;
+  projectDialogName.value = "";
+  projectDialogPath.value = "";
+  projectDialogPathStatus.value = "idle";
+  projectDialogPathMessage.value = "";
+  lastValidatedProjectPath.value = "";
+  projectDialogOpen.value = true;
+  void nextTick(() => projectPathEl.value?.focus());
+}
+
+function closeProjectDialog(): void {
+  projectDialogOpen.value = false;
+  projectDialogError.value = null;
+  projectDialogPathStatus.value = "idle";
+  projectDialogPathMessage.value = "";
+  lastValidatedProjectPath.value = "";
+}
+
+function useCurrentWorkspacePath(): void {
+  if (!workspacePath.value.trim()) return;
+  projectDialogPath.value = workspacePath.value.trim();
+  if (!projectDialogName.value.trim()) {
+    projectDialogName.value = deriveProjectName(projectDialogPath.value);
+  }
+  void nextTick(() => projectNameEl.value?.focus());
+  void validateProjectDialogPath({ force: true });
+}
+
+function focusProjectName(): void {
+  if (!projectDialogName.value.trim() && projectDialogPath.value.trim()) {
+    projectDialogName.value = deriveProjectName(projectDialogPath.value);
+  }
+  void nextTick(() => projectNameEl.value?.focus());
+}
+
+function onProjectDialogPathInput(): void {
+  if (projectDialogPathStatus.value !== "idle") {
+    projectDialogPathStatus.value = "idle";
+    projectDialogPathMessage.value = "";
+  }
+  lastValidatedProjectPath.value = "";
+}
+
+async function validateProjectDialogPath(options?: { force?: boolean }): Promise<boolean> {
+  const path = projectDialogPath.value.trim();
+  if (!path) {
+    projectDialogPathStatus.value = "idle";
+    projectDialogPathMessage.value = "";
+    lastValidatedProjectPath.value = "";
+    return false;
+  }
+
+  if (!options?.force && lastValidatedProjectPath.value === path && projectDialogPathStatus.value !== "checking") {
+    return projectDialogPathStatus.value === "ok";
+  }
+
+  const seq = (projectPathValidationSeq += 1);
+  projectDialogPathStatus.value = "checking";
+  projectDialogPathMessage.value = "检查中…";
+
+  try {
+    const result = await api.get<PathValidateResponse>(`/api/paths/validate?path=${encodeURIComponent(path)}`);
+    if (seq !== projectPathValidationSeq) {
+      return false;
+    }
+
+    if (result.ok) {
+      const resolved = String(result.resolvedPath ?? "").trim();
+      if (resolved && resolved !== path) {
+        projectDialogPath.value = resolved;
+      }
+      lastValidatedProjectPath.value = projectDialogPath.value.trim();
+      projectDialogPathStatus.value = "ok";
+      projectDialogPathMessage.value = "目录可用";
+      return true;
+    }
+
+    lastValidatedProjectPath.value = path;
+    projectDialogPathStatus.value = "error";
+    projectDialogPathMessage.value = String(result.error ?? "目录不可用");
+    return false;
+  } catch (error) {
+    if (seq !== projectPathValidationSeq) {
+      return false;
+    }
+    lastValidatedProjectPath.value = path;
+    projectDialogPathStatus.value = "error";
+    projectDialogPathMessage.value = error instanceof Error ? error.message : String(error);
+    return false;
+  }
+}
+
+async function submitProjectDialog(): Promise<void> {
+  projectDialogError.value = null;
+  const rawPath = projectDialogPath.value.trim();
+  if (!rawPath) {
+    projectDialogError.value = "请输入项目目录路径";
+    return;
+  }
+
+  const ok = await validateProjectDialogPath({ force: true });
+  if (!ok) {
+    if (projectDialogPathStatus.value !== "error") {
+      projectDialogPathStatus.value = "error";
+      projectDialogPathMessage.value = "目录不可用";
+    }
+    return;
+  }
+
+  const path = projectDialogPath.value.trim();
+  if (!path) {
+    projectDialogError.value = "请输入项目目录路径";
+    return;
+  }
+  const existing = projects.value.find((p) => p.path === path);
+  if (existing) {
+    closeProjectDialog();
+    requestProjectSwitch(existing.id);
+    return;
+  }
+
+  const name = projectDialogName.value.trim() || deriveProjectName(path);
+  const project = createProjectTab({ path, name, initialized: false });
+  projects.value = [...projects.value, project];
+  activeProjectId.value = project.id;
+  persistProjects();
+
+  closeProjectDialog();
+  clearChatState();
+  connectWs();
 }
 
 function setMessages(items: ChatItem[]): void {
@@ -464,12 +772,10 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
 
 function connectWs(): void {
   if (tokenRequired.value && !hasToken.value) return;
+  const project = activeProject.value;
+  if (!project) return;
   ws?.close();
-  if (!wsSessionId.value) {
-    wsSessionId.value = crypto.randomUUID?.() ?? randomId("sess");
-    localStorage.setItem(wsSessionKey, wsSessionId.value);
-  }
-  ws = new AdsWebSocket({ token: token.value, sessionId: wsSessionId.value });
+  ws = new AdsWebSocket({ token: token.value, sessionId: project.sessionId });
   ws.onOpen = () => {
     connected.value = true;
     wsError.value = null;
@@ -487,6 +793,37 @@ function connectWs(): void {
   };
   ws.onTaskEvent = onTaskEvent;
   ws.onMessage = (msg) => {
+    if (msg.type === "welcome") {
+      const maybeWorkspace = (msg as { workspace?: unknown }).workspace;
+      if (maybeWorkspace && typeof maybeWorkspace === "object") {
+        const wsState = maybeWorkspace as WorkspaceState;
+        const nextPath = String(wsState.path ?? "").trim();
+        if (nextPath) workspacePath.value = nextPath;
+      }
+
+      const current = activeProject.value;
+      if (current && !current.initialized && current.path.trim()) {
+        pendingProjectCd.value = { projectId: current.id, requestedPath: current.path.trim() };
+        ws?.send("command", { command: `/cd ${current.path.trim()}`, silent: true });
+      }
+      return;
+    }
+
+    if (msg.type === "workspace") {
+      const data = (msg as { data?: unknown }).data;
+      if (data && typeof data === "object") {
+        const wsState = data as WorkspaceState;
+        const nextPath = String(wsState.path ?? "").trim();
+        if (nextPath) workspacePath.value = nextPath;
+
+        if (pendingProjectCd.value && pendingProjectCd.value.projectId === activeProjectId.value) {
+          updateProject(pendingProjectCd.value.projectId, { path: nextPath || pendingProjectCd.value.requestedPath, initialized: true });
+          pendingProjectCd.value = null;
+        }
+      }
+      return;
+    }
+
     if (msg.type === "history") {
       // 如果正在忙或有排队消息，跳过 history 更新，避免覆盖正在进行的消息
       if (busy.value || queuedPrompts.value.length > 0) return;
@@ -527,6 +864,12 @@ function connectWs(): void {
     }
     if (msg.type === "result") {
       busy.value = false;
+      if (pendingProjectCd.value && msg.ok === false) {
+        const output = String(msg.output ?? "");
+        if (output.includes("/cd") || output.includes("目录")) {
+          pendingProjectCd.value = null;
+        }
+      }
       clearStepLive();
       finalizeCommandBlock();
       finalizeAssistant(String(msg.output ?? ""));
@@ -664,6 +1007,7 @@ async function bootstrap(): Promise<void> {
 }
 
 onMounted(() => {
+  initializeProjects();
   updateIsMobile();
   window.addEventListener("resize", updateIsMobile);
   void bootstrap();
@@ -713,6 +1057,26 @@ function select(id: string): void {
       </div>
     </header>
 
+    <div class="projectBar">
+      <div class="projectTabs" role="tablist" aria-label="项目">
+        <button
+          v-for="p in projects"
+          :key="p.id"
+          type="button"
+          class="projectTab"
+          :class="{ active: p.id === activeProjectId }"
+          role="tab"
+          :aria-selected="p.id === activeProjectId"
+          :title="p.path || p.name"
+          @click="requestProjectSwitch(p.id)"
+        >
+          <span class="projectTabText">{{ p.name }}</span>
+        </button>
+        <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog">＋</button>
+      </div>
+      <div v-if="workspacePath" class="workspacePath" :title="workspacePath">{{ workspacePath }}</div>
+    </div>
+
     <main class="layout" :data-pane="mobilePane">
       <aside class="left">
         <div v-if="queueStatus && (!queueStatus.enabled || !queueStatus.ready)" class="error">
@@ -748,6 +1112,7 @@ function select(id: string): void {
           :pending-images="pendingImages"
           :connected="connected"
           :busy="agentBusy"
+          :api-token="token"
           @send="sendMainPrompt"
           @interrupt="() => ws?.interrupt()"
           @clear="() => { setMessages([]); finalizeCommandBlock(); pendingImages = []; ws?.clearHistory(); }"
@@ -757,6 +1122,72 @@ function select(id: string): void {
         />
       </section>
     </main>
+
+    <div v-if="projectDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeProjectDialog">
+      <div class="modalCard">
+        <div class="modalTitle">添加项目</div>
+        <div class="modalDesc">每个项目会对应一个独立会话（session），对话和工作目录互不串。</div>
+
+        <div class="modalForm">
+          <label class="modalLabel" for="project-path">项目目录路径（PC 上的路径）</label>
+          <input
+            id="project-path"
+            v-model="projectDialogPath"
+            ref="projectPathEl"
+            class="modalInput"
+            placeholder="例如: /home/andy/ads"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            @keydown.enter.prevent="focusProjectName"
+            @blur="validateProjectDialogPath()"
+            @input="onProjectDialogPathInput"
+          />
+          <div class="modalHintRow">
+            <div
+              v-if="projectDialogPathStatus !== 'idle' && projectDialogPathMessage"
+              class="pathStatus"
+              :class="projectDialogPathStatus"
+              :title="projectDialogPathMessage"
+            >
+              {{ projectDialogPathMessage }}
+            </div>
+            <button class="inlineAction" type="button" :disabled="!workspacePath" @click="useCurrentWorkspacePath">使用当前目录</button>
+          </div>
+
+          <label class="modalLabel" for="project-name">项目名称（可选）</label>
+          <input
+            id="project-name"
+            v-model="projectDialogName"
+            ref="projectNameEl"
+            class="modalInput"
+            placeholder="例如: ads"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            @keydown.enter.prevent="submitProjectDialog"
+          />
+
+          <div v-if="projectDialogError" class="modalError">{{ projectDialogError }}</div>
+        </div>
+
+        <div class="modalActions">
+          <button type="button" class="btnSecondary" @click="closeProjectDialog">取消</button>
+          <button type="button" class="btnPrimary" :disabled="!projectDialogPath.trim()" @click="submitProjectDialog">添加</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="switchConfirmOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelProjectSwitch">
+      <div class="modalCard">
+        <div class="modalTitle">切换项目？</div>
+        <div class="modalDesc">当前对话仍在进行或有未发送内容。切换项目会丢失当前页面临时状态（不会删除历史）。</div>
+        <div class="modalActions">
+          <button type="button" class="btnSecondary" @click="cancelProjectSwitch">取消</button>
+          <button type="button" class="btnDanger" @click="confirmProjectSwitch">切换</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -789,6 +1220,229 @@ function select(id: string): void {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   width: 100%;
   gap: 10px;
+}
+.projectBar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  min-width: 0;
+  overflow: hidden;
+}
+.projectTabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.projectTabs::-webkit-scrollbar {
+  display: none;
+}
+.projectTab {
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.04);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+}
+.projectTab.active {
+  background: white;
+  border-color: rgba(37, 99, 235, 0.35);
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.projectTabText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projectAdd {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: white;
+  color: #2563eb;
+  font-weight: 900;
+  cursor: pointer;
+}
+.projectAdd:hover {
+  background: rgba(37, 99, 235, 0.06);
+}
+.workspacePath {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #64748b;
+}
+.modalOverlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(10px);
+  z-index: 50;
+}
+.modalCard {
+  width: min(520px, 100%);
+  border-radius: 16px;
+  background: white;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25);
+  padding: 18px 18px 16px 18px;
+}
+.modalTitle {
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.modalDesc {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+.modalForm {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modalLabel {
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.modalInput {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(248, 250, 252, 0.9);
+  font-size: 14px;
+  color: #0f172a;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+.modalInput::placeholder {
+  color: rgba(100, 116, 139, 0.65);
+}
+.modalInput:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.8);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  background: white;
+}
+.modalHintRow {
+  margin-top: -6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.pathStatus {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+.pathStatus.ok {
+  color: #059669;
+}
+.pathStatus.error {
+  color: #dc2626;
+}
+.pathStatus.checking {
+  color: #64748b;
+}
+.inlineAction {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.inlineAction:disabled {
+  color: rgba(100, 116, 139, 0.5);
+  cursor: not-allowed;
+}
+.modalError {
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #dc2626;
+}
+.modalActions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.btnSecondary,
+.btnPrimary,
+.btnDanger {
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+.btnSecondary {
+  background: white;
+  color: #0f172a;
+}
+.btnSecondary:hover {
+  background: rgba(15, 23, 42, 0.03);
+}
+.btnPrimary {
+  border-color: rgba(37, 99, 235, 0.25);
+  background: #2563eb;
+  color: white;
+}
+.btnPrimary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btnDanger {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: #ef4444;
+  color: white;
+}
+.btnDanger:hover {
+  background: #dc2626;
 }
 .brand {
   font-weight: 800;
@@ -916,6 +1570,10 @@ function select(id: string): void {
     font-size: 16px;
   }
   .topbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .projectBar {
     padding-left: 12px;
     padding-right: 12px;
   }
