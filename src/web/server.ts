@@ -21,7 +21,6 @@ import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
 import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
 import { DirectoryManager } from "../telegram/utils/directoryManager.js";
-import { checkWorkspaceInit } from "../telegram/utils/workspaceInitChecker.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { AgentIdentifier } from "../agents/types.js";
@@ -1488,20 +1487,11 @@ async function start(): Promise<void> {
         }
         orchestrator = sessionManager.getOrCreate(userId, currentCwd);
 
-        const initStatus = checkWorkspaceInit(currentCwd);
         let message = `✅ 已切换到: ${currentCwd}`;
         if (prevCwd !== currentCwd) {
           message += "\n💡 代理上下文已切换到新目录";
         } else {
           message += "\nℹ️ 已在相同目录，无需重置会话";
-        }
-        if (!initStatus.initialized) {
-          const missing = initStatus.missingArtifact ?? "ADS 必需文件";
-          message += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。\n如需初始化请运行 /ads.init`;
-          logger.warn(
-            `[Web][WorkspaceInit] path=${currentCwd} missing=${missing}${initStatus.details ? ` details=${initStatus.details}` : ""
-            }`,
-          );
         }
 	        if (!isSilentCommandPayload) {
 	          safeJsonSend(ws, { type: "result", ok: true, output: message });

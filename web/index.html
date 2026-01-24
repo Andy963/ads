@@ -6,7 +6,7 @@
     <title>ADS Tasks</title>
     <style>
       *, *::before, *::after { box-sizing: border-box; }
-      html, body, #app {
+      html, body {
         margin: 0;
         padding: 0;
         width: 100%;
@@ -16,16 +16,11 @@
         -webkit-text-size-adjust: 100%;
         text-size-adjust: 100%;
       }
-      html, body {
-        position: fixed;
-        inset: 0;
-      }
       #app {
         position: fixed;
         overflow: hidden;
-        top: var(--app-top, 0px);
-        left: var(--app-left, 0px);
-        width: var(--app-width, 100%);
+        inset: 0;
+        width: 100vw;
         height: var(--app-height, 100vh);
       }
       @supports (height: 100dvh) {

@@ -910,6 +910,11 @@ function select(id: string): void {
     gap: 8px;
     max-width: 100%;
   }
+  :deep(input),
+  :deep(textarea),
+  :deep(select) {
+    font-size: 16px;
+  }
   .topbar {
     padding-left: 12px;
     padding-right: 12px;
