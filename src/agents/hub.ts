@@ -5,6 +5,7 @@ import {
   executeToolBlocks,
   injectToolGuide,
   stripToolBlocks,
+  type ToolCallSummary,
   type ToolExecutionContext,
   type ToolExecutionResult,
   type ToolHooks,
@@ -12,6 +13,12 @@ import {
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
+import { ActivityTracker, resolveExploredConfig, type ExploredEntry, type ExploredEntryCallback } from "../utils/activityTracker.js";
+import { maybeBuildVectorAutoContext } from "../vectorSearch/context.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
+import { isCoordinatorEnabled, TaskCoordinator } from "./tasks/taskCoordinator.js";
+import { SupervisorVerdictSchema, extractJsonPayload } from "./tasks/schemas.js";
 
 interface DelegationDirective {
   raw: string;
@@ -39,19 +46,39 @@ export interface CollaborativeTurnOptions extends AgentSendOptions {
   toolContext?: ToolExecutionContext;
   toolHooks?: ToolHooks;
   hooks?: CollaborationHooks;
+  onExploredEntry?: ExploredEntryCallback;
 }
 
 export interface CollaborativeTurnResult extends AgentRunResult {
   delegations: DelegationSummary[];
   supervisorRounds: number;
+  explored?: ExploredEntry[];
 }
 
 const logger = createLogger("AgentHub");
+const supervisorPromptLoader = new SupervisorPromptLoader({ logger });
 
-const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
+const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
+
+function createAbortError(message = "用户中断了请求"): Error {
+  const abortError = new Error(message);
+  abortError.name = "AbortError";
+  return abortError;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
 
 function isStatefulAgent(agentId: AgentIdentifier): boolean {
   return agentId === "codex";
+}
+
+function shouldRunToolLoop(agentId: AgentIdentifier): boolean {
+  void agentId;
+  return true;
 }
 
 function parseMaxRounds(raw: string | undefined): number | null {
@@ -68,6 +95,17 @@ function parseMaxRounds(raw: string | undefined): number | null {
   const parsed = Number.parseInt(normalized, 10);
   if (!Number.isFinite(parsed)) {
     return null;
+  }
+  return parsed;
+}
+
+function parsePositiveInt(value: string | undefined, defaultValue: number): number {
+  if (!value) {
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultValue;
   }
   return parsed;
 }
@@ -128,6 +166,72 @@ function buildToolFeedbackPrompt(toolResults: ToolExecutionResult[], round: numb
   return [header, body].filter(Boolean).join("\n").trim();
 }
 
+function extractVectorQuery(input: Input): string {
+  const text = (() => {
+    if (typeof input === "string") {
+      return input;
+    }
+    if (Array.isArray(input)) {
+      return input
+        .map((part) => {
+          if (!part || typeof part !== "object") {
+            return "";
+          }
+          const candidate = part as { type?: unknown; text?: unknown };
+          if (candidate.type !== "text") {
+            return "";
+          }
+          return typeof candidate.text === "string" ? candidate.text : String(candidate.text ?? "");
+        })
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    return normalizeInputToText(input);
+  })().trim();
+  if (!text) {
+    return "";
+  }
+  const marker = "用户输入:";
+  const idx = text.lastIndexOf(marker);
+  if (idx >= 0) {
+    return text.slice(idx + marker.length).trim();
+  }
+  return text;
+}
+
+function injectVectorContextIntoText(text: string, context: string): string {
+  const normalizedText = String(text ?? "");
+  const normalizedContext = String(context ?? "").trim();
+  if (!normalizedContext) {
+    return normalizedText;
+  }
+
+  const marker = "用户输入:";
+  const idx = normalizedText.lastIndexOf(marker);
+  if (idx >= 0) {
+    const lineStart = normalizedText.lastIndexOf("\n", idx);
+    const insertPos = lineStart >= 0 ? lineStart + 1 : 0;
+    const before = normalizedText.slice(0, insertPos).trimEnd();
+    const after = normalizedText.slice(insertPos).trimStart();
+    return [before, normalizedContext, after].filter(Boolean).join("\n\n").trim();
+  }
+
+  return [normalizedContext, normalizedText].filter(Boolean).join("\n\n").trim();
+}
+
+function injectVectorContext(input: Input, context: string): Input {
+  if (!context.trim()) {
+    return input;
+  }
+  if (typeof input === "string") {
+    return injectVectorContextIntoText(input, context);
+  }
+  if (Array.isArray(input)) {
+    return [{ type: "text", text: context }, ...input];
+  }
+  return input;
+}
+
 async function runAgentTurnWithTools(
   orchestrator: HybridOrchestrator,
   agentId: AgentIdentifier,
@@ -135,6 +239,7 @@ async function runAgentTurnWithTools(
   sendOptions: AgentSendOptions,
   options: { maxToolRounds: number; toolContext: ToolExecutionContext; toolHooks?: ToolHooks },
 ): Promise<AgentRunResult> {
+  throwIfAborted(sendOptions.signal);
   const agentSendOptions: AgentSendOptions = {
     ...sendOptions,
     toolContext: options.toolContext,
@@ -145,8 +250,12 @@ async function runAgentTurnWithTools(
   const stateful = isStatefulAgent(agentId);
   const basePrompt = stateful ? "" : normalizeInputToText(input).trim();
   const unlimited = options.maxToolRounds <= 0;
+  if (!shouldRunToolLoop(agentId)) {
+    return result;
+  }
 
   for (let round = 1; unlimited || round <= options.maxToolRounds; round += 1) {
+    throwIfAborted(sendOptions.signal);
     const executed = await executeToolBlocks(result.response, options.toolHooks, options.toolContext);
     if (executed.results.length === 0) {
       return result;
@@ -156,16 +265,16 @@ async function runAgentTurnWithTools(
     const nextInput = stateful
       ? feedback
       : [
-          basePrompt,
-          "",
-          "你上一条回复（已去掉工具块）：",
-          stripToolBlocks(result.response).trim(),
-          "",
-          feedback,
-        ]
-          .filter(Boolean)
-          .join("\n\n")
-          .trim();
+        basePrompt,
+        "",
+        "你上一条回复（已去掉工具块）：",
+        stripToolBlocks(result.response).trim(),
+        "",
+        feedback,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
 
     result = await orchestrator.invokeAgent(agentId, nextInput, agentSendOptions);
   }
@@ -181,6 +290,19 @@ function stripDelegationBlocks(text: string): string {
   const regex = new RegExp(DELEGATION_REGEX.source, DELEGATION_REGEX.flags);
   const stripped = text.replace(regex, "").trim();
   return stripped.replace(/\n{3,}/g, "\n\n");
+}
+
+function looksLikeSupervisorVerdict(text: string): boolean {
+  const payload = extractJsonPayload(text);
+  if (!payload) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(payload);
+    return SupervisorVerdictSchema.safeParse(parsed).success;
+  } catch {
+    return false;
+  }
 }
 
 function extractDelegationDirectives(text: string, excludeAgentId?: AgentIdentifier): DelegationDirective[] {
@@ -210,14 +332,33 @@ function resolveAgentName(orchestrator: HybridOrchestrator, agentId: AgentIdenti
   return descriptor?.metadata.name ?? agentId;
 }
 
-function applyGuides(input: Input, orchestrator: HybridOrchestrator, agentId: AgentIdentifier): Input {
+function injectSupervisorPrompt(input: Input, guide: string): Input {
+  const normalizedGuide = String(guide ?? "").trim();
+  if (!normalizedGuide) {
+    return input;
+  }
   if (typeof input === "string") {
-    const withTools = injectToolGuide(input, { activeAgentId: agentId });
+    return [input, "", normalizedGuide].join("\n\n").trim();
+  }
+  if (Array.isArray(input)) {
+    return [...input, { type: "text", text: normalizedGuide }];
+  }
+  return [String(input ?? ""), "", normalizedGuide].join("\n\n").trim();
+}
+
+function applyGuides(
+  input: Input,
+  orchestrator: HybridOrchestrator,
+  agentId: AgentIdentifier,
+  invokeAgentEnabled?: boolean,
+): Input {
+  if (typeof input === "string") {
+    const withTools = injectToolGuide(input, { activeAgentId: agentId, invokeAgentEnabled });
     return injectDelegationGuide(withTools, orchestrator);
   }
 
   if (Array.isArray(input)) {
-    const toolGuide = injectToolGuide("", { activeAgentId: agentId }).trim();
+    const toolGuide = injectToolGuide("", { activeAgentId: agentId, invokeAgentEnabled }).trim();
     const delegationGuide = injectDelegationGuide("", orchestrator).trim();
     const guide = [toolGuide, delegationGuide].filter(Boolean).join("\n\n").trim();
     if (!guide) {
@@ -233,6 +374,7 @@ function buildSupervisorPrompt(
   summaries: DelegationSummary[],
   rounds: number,
   supervisorName: string,
+  supervisorGuide?: string,
 ): string {
   const header = [
     "系统已执行你上一轮输出的协作代理指令块，并拿到了结果。",
@@ -259,7 +401,28 @@ function buildSupervisorPrompt(
     })
     .join("\n\n");
 
-  return [header, body].filter(Boolean).join("\n\n").trim();
+  const guide = String(supervisorGuide ?? "").trim();
+  return [header, guide, body].filter(Boolean).join("\n\n").trim();
+}
+
+function buildCoordinatorFinalPrompt(options: {
+  supervisorName: string;
+  rounds: number;
+  supervisorGuide?: string;
+}): string {
+  const header = [
+    "协作代理任务已执行并完成验收。",
+    `你仍然是主管（${options.supervisorName}）：请给用户最终答复。`,
+    "要求：",
+    "- 不要输出 SupervisorVerdict JSON。",
+    "- 不要输出任何 <<<agent.*>>> 指令块。",
+    "- 若仍需补充修改，可直接使用工具完成，然后给出如何验证。",
+    "",
+    `（协作轮次：${options.rounds}）`,
+  ].join("\n");
+
+  const guide = String(options.supervisorGuide ?? "").trim();
+  return [header, guide].filter(Boolean).join("\n\n").trim();
 }
 
 async function runDelegationQueue(
@@ -272,6 +435,7 @@ async function runDelegationQueue(
     maxToolRounds: number;
     toolContext: ToolExecutionContext;
     toolHooks?: ToolHooks;
+    signal?: AbortSignal;
   },
 ): Promise<DelegationSummary[]> {
   const queue: DelegationDirective[] = extractDelegationDirectives(initialText, options.supervisorAgentId);
@@ -283,6 +447,7 @@ async function runDelegationQueue(
   const seen = new Set<string>();
 
   while (queue.length > 0 && results.length < options.maxDelegations) {
+    throwIfAborted(options.signal);
     const next = queue.shift();
     if (!next) {
       break;
@@ -310,11 +475,17 @@ async function runDelegationQueue(
     await options.hooks?.onDelegationStart?.({ agentId: next.agentId, agentName, prompt: next.prompt });
     try {
       const delegateInput = injectToolGuide(next.prompt, { activeAgentId: next.agentId });
-      const agentResult = await runAgentTurnWithTools(orchestrator, next.agentId, delegateInput, { streaming: false }, {
-        maxToolRounds: options.maxToolRounds,
-        toolContext: options.toolContext,
-        toolHooks: options.toolHooks,
-      });
+      const agentResult = await runAgentTurnWithTools(
+        orchestrator,
+        next.agentId,
+        delegateInput,
+        { streaming: false, signal: options.signal },
+        {
+          maxToolRounds: options.maxToolRounds,
+          toolContext: options.toolContext,
+          toolHooks: options.toolHooks,
+        },
+      );
       const summary: DelegationSummary = {
         agentId: next.agentId,
         agentName,
@@ -353,61 +524,225 @@ export async function runCollaborativeTurn(
   input: Input,
   options: CollaborativeTurnOptions = {},
 ): Promise<CollaborativeTurnResult> {
+  const exploredConfig = resolveExploredConfig();
+  const exploredTracker = exploredConfig.enabled ? new ActivityTracker(options.onExploredEntry) : null;
+  const toolHooks = (() => {
+    if (!exploredTracker) {
+      return options.toolHooks;
+    }
+    return {
+      onInvoke: async (tool: string, payload: string) => {
+        try {
+          exploredTracker.ingestToolInvoke(tool, payload);
+        } catch {
+          // ignore
+        }
+        await options.toolHooks?.onInvoke?.(tool, payload);
+      },
+      onResult: async (summary: ToolCallSummary) => {
+        await options.toolHooks?.onResult?.(summary);
+      },
+    };
+  })();
+
+  const unsubscribeExplored = exploredTracker
+    ? orchestrator.onEvent((event) => {
+      try {
+        exploredTracker.ingestThreadEvent(event.raw);
+      } catch {
+        // ignore
+      }
+    })
+    : () => undefined;
+
   const maxSupervisorRounds = options.maxSupervisorRounds ?? 2;
   const maxDelegations = options.maxDelegations ?? 6;
   const maxToolRounds = options.maxToolRounds ?? resolveDefaultMaxToolRounds();
   const activeAgentId = orchestrator.getActiveAgentId();
   const supervisorName = resolveAgentName(orchestrator, activeAgentId);
 
+  const supportsStructuredOutput = activeAgentId === "codex";
   const sendOptions: AgentSendOptions = {
     streaming: options.streaming,
-    outputSchema: options.outputSchema,
+    outputSchema: supportsStructuredOutput ? options.outputSchema : undefined,
     signal: options.signal,
   };
   const toolContext: ToolExecutionContext = options.toolContext ?? { cwd: process.cwd() };
 
-  const prompt = applyGuides(input, orchestrator, activeAgentId);
-  let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
-    maxToolRounds,
-    toolContext,
-    toolHooks: options.toolHooks,
-  });
-
-  let rounds = 0;
-  const allDelegations: DelegationSummary[] = [];
-
-  while (rounds < maxSupervisorRounds) {
-    const directives = extractDelegationDirectives(result.response, activeAgentId);
-    if (directives.length === 0) {
-      break;
-    }
-
-    rounds += 1;
-    await options.hooks?.onSupervisorRound?.(rounds, directives.length);
-    const delegations = await runDelegationQueue(orchestrator, result.response, {
-      maxDelegations,
-      hooks: options.hooks,
-      supervisorAgentId: activeAgentId,
-      maxToolRounds,
-      toolContext,
-      toolHooks: options.toolHooks,
-    });
-    allDelegations.push(...delegations);
-
-    const supervisorPrompt = buildSupervisorPrompt(delegations, rounds, supervisorName);
-    if (!supervisorPrompt.trim()) {
-      break;
-    }
-
-    result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
-      maxToolRounds,
-      toolContext,
-      toolHooks: options.toolHooks,
-    });
+  // 提供 invokeAgent 能力，允许 Agent 通过工具调用其他 Agent
+  if (!toolContext.invokeAgent) {
+    toolContext.invokeAgent = async (agentId: string, prompt: string) => {
+      const agentResult = await runAgentTurnWithTools(
+        orchestrator,
+        agentId as AgentIdentifier,
+        injectToolGuide(prompt, { activeAgentId: agentId }),
+        { streaming: false, signal: options.signal },
+        {
+          maxToolRounds: maxToolRounds,
+          toolContext,
+          toolHooks,
+        },
+      );
+      return agentResult.response;
+    };
   }
 
-  const finalResponse = stripDelegationBlocks(result.response);
-  return { ...result, response: finalResponse, delegations: allDelegations, supervisorRounds: rounds };
+  const workspaceRoot = detectWorkspaceFrom(toolContext.cwd ?? process.cwd());
+  const supervisorGuide =
+    activeAgentId === "codex" && orchestrator.listAgents().length > 1
+      ? supervisorPromptLoader.load(workspaceRoot).text
+      : "";
+  let vectorContext: string | null = null;
+  try {
+    const vectorQuery = extractVectorQuery(input);
+    vectorContext = await maybeBuildVectorAutoContext({
+      workspaceRoot,
+      query: vectorQuery,
+      historyNamespace: toolContext.historyNamespace,
+      historySessionId: toolContext.historySessionId,
+    });
+  } catch (error) {
+    logger.warn("[AgentHub] Failed to build vector auto context", error);
+  }
+
+  const prompt = applyGuides(
+    injectSupervisorPrompt(
+      injectVectorContext(input, vectorContext ?? ""),
+      supervisorGuide,
+    ),
+    orchestrator,
+    activeAgentId,
+    !!toolContext.invokeAgent,
+  );
+  try {
+    let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
+      maxToolRounds,
+      toolContext,
+      toolHooks,
+    });
+
+    let rounds = 0;
+    const allDelegations: DelegationSummary[] = [];
+
+    const coordinatorEnabled =
+      activeAgentId === "codex" &&
+      orchestrator.listAgents().length > 1 &&
+      isCoordinatorEnabled();
+
+    if (coordinatorEnabled) {
+      const maxParallelDelegations = parsePositiveInt(process.env.ADS_TASK_MAX_PARALLEL, 3);
+      const taskTimeoutMs = parsePositiveInt(process.env.ADS_TASK_TIMEOUT_MS, 2 * 60 * 1000);
+      const maxTaskAttempts = parsePositiveInt(process.env.ADS_TASK_MAX_ATTEMPTS, 2);
+      const retryBackoffMs = parsePositiveInt(process.env.ADS_TASK_RETRY_BACKOFF_MS, 1200);
+
+      const coordinator = new TaskCoordinator(orchestrator, {
+        workspaceRoot,
+        namespace: toolContext.historyNamespace ?? "agent",
+        sessionId: toolContext.historySessionId ?? "default",
+        invokeAgent: async (agentId, inputText, invokeOptions) =>
+          await runAgentTurnWithTools(
+            orchestrator,
+            agentId,
+            injectToolGuide(inputText, { activeAgentId: agentId }),
+            { streaming: false, signal: invokeOptions?.signal },
+            { maxToolRounds, toolContext, toolHooks },
+          ),
+        supervisorAgentId: activeAgentId,
+        supervisorName,
+        maxSupervisorRounds,
+        maxDelegations,
+        maxParallelDelegations,
+        taskTimeoutMs,
+        maxTaskAttempts,
+        retryBackoffMs,
+        verificationCwd: toolContext.cwd ?? process.cwd(),
+        signal: options.signal,
+        hooks: options.hooks,
+        logger,
+      });
+
+      const coordination = await coordinator.run({
+        initialSupervisorResult: result,
+        // Verdict round should not enforce structured output schema and should not execute tool blocks.
+        runSupervisor: async (inputText: string) =>
+          await orchestrator.invokeAgent(activeAgentId, inputText, {
+            streaming: false,
+            signal: options.signal,
+          }),
+      });
+
+      result = coordination.finalResult;
+      rounds = coordination.rounds;
+      allDelegations.push(...coordination.delegations);
+
+      // After coordination completes, ask supervisor for a user-facing final response (not the verdict JSON).
+      if (rounds > 0 || allDelegations.length > 0 || looksLikeSupervisorVerdict(result.response)) {
+        const finalPrompt = buildCoordinatorFinalPrompt({
+          supervisorName,
+          rounds,
+          supervisorGuide,
+        });
+        result = await runAgentTurnWithTools(orchestrator, activeAgentId, finalPrompt, sendOptions, {
+          maxToolRounds,
+          toolContext,
+          toolHooks,
+        });
+
+        if (looksLikeSupervisorVerdict(result.response)) {
+          const retryPrompt = [
+            finalPrompt,
+            "",
+            "⚠️ 注意：不要输出任何 JSON（包括 SupervisorVerdict）。请只用自然语言给用户最终答复。",
+          ].join("\n");
+          result = await runAgentTurnWithTools(orchestrator, activeAgentId, retryPrompt, sendOptions, {
+            maxToolRounds,
+            toolContext,
+            toolHooks,
+          });
+        }
+      }
+    } else {
+      while (rounds < maxSupervisorRounds) {
+        throwIfAborted(options.signal);
+        const directives = extractDelegationDirectives(result.response, activeAgentId);
+        if (directives.length === 0) {
+          break;
+        }
+
+        rounds += 1;
+        await options.hooks?.onSupervisorRound?.(rounds, directives.length);
+        const delegations = await runDelegationQueue(orchestrator, result.response, {
+          maxDelegations,
+          hooks: options.hooks,
+          supervisorAgentId: activeAgentId,
+          maxToolRounds,
+          toolContext,
+          toolHooks,
+          signal: options.signal,
+        });
+        allDelegations.push(...delegations);
+
+        const supervisorPrompt = buildSupervisorPrompt(delegations, rounds, supervisorName, supervisorGuide);
+        if (!supervisorPrompt.trim()) {
+          break;
+        }
+
+        result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
+          maxToolRounds,
+          toolContext,
+          toolHooks,
+        });
+      }
+    }
+
+    const explored = exploredTracker
+      ? exploredTracker.compact({ maxItems: exploredConfig.maxItems, dedupe: exploredConfig.dedupe })
+      : undefined;
+    const finalResponse = stripDelegationBlocks(result.response);
+    return { ...result, response: finalResponse, delegations: allDelegations, supervisorRounds: rounds, explored };
+  } finally {
+    unsubscribeExplored();
+  }
 }
 
 export function isExecutorAgent(agentId: AgentIdentifier): boolean {

@@ -3,6 +3,7 @@ import { renderLandingPageScript } from "./landingPage/script.js";
 
 export interface LandingPageOptions {
   idleMinutes: number;
+  tokenRequired: boolean;
 }
 
 export function renderLandingPage(options: LandingPageOptions): string {
@@ -11,6 +12,7 @@ export function renderLandingPage(options: LandingPageOptions): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="color-scheme" content="light dark" />
   <title>ADS Web Console</title>
   <style>
 ${LANDING_PAGE_CSS}  </style>
@@ -59,7 +61,7 @@ ${LANDING_PAGE_CSS}  </style>
           <form id="form">
             <div id="attachments"></div>
             <div id="input-wrapper">
-              <textarea id="input" autocomplete="off" placeholder="输入文本或 /ads 命令，Enter 发送，Shift+Enter 换行"></textarea>
+              <textarea id="input" autocomplete="off" placeholder="输入文本，Enter 发送，Shift+Enter 换行（支持 /cd /pwd /search /vsearch）"></textarea>
               <button id="attach-btn" type="button" title="添加图片">+</button>
               <button id="stop-btn" type="button" title="停止当前回复">■</button>
             </div>
@@ -74,10 +76,10 @@ ${LANDING_PAGE_CSS}  </style>
     <div class="card">
       <h2>输入访问口令</h2>
       <p>未提供口令，无法连接</p>
-      <div class="row">
-        <input id="token-input" type="password" placeholder="ADS_WEB_TOKEN" autofocus />
-        <button id="token-submit" type="button">连接</button>
-      </div>
+      <form id="token-form" class="row" autocomplete="off">
+        <input id="token-input" type="password" placeholder="ADS_WEB_TOKEN" autocomplete="off" />
+        <button id="token-submit" type="submit">连接</button>
+      </form>
     </div>
   </div>
   <div id="session-dialog" class="session-dialog hidden">
@@ -103,7 +105,7 @@ ${LANDING_PAGE_CSS}  </style>
     </div>
   </div>
   <script>
-${renderLandingPageScript(options.idleMinutes)}  </script>
+${renderLandingPageScript(options.idleMinutes, options.tokenRequired)}  </script>
 </body>
 </html>`;
 }

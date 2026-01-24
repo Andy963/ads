@@ -5,7 +5,7 @@ import type { ToolExecutionContext, ToolHooks } from "./tools.js";
 
 export type AgentCapability = "text" | "images" | "files" | "commands";
 
-export type AgentIdentifier = "codex" | "claude" | "gemini" | string;
+export type AgentIdentifier = "codex" | string;
 
 export interface AgentMetadata {
   id: AgentIdentifier;

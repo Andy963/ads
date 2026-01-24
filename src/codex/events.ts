@@ -44,6 +44,20 @@ export interface AgentEvent {
 type ItemEvent = ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent;
 
 const DEFAULT_DETAIL_LIMIT = 160;
+const RECONNECTING_REGEX = /re-?connecting\.\.\.\s*(\d+)\/(\d+)/i;
+
+export function parseReconnectingMessage(message: string): { attempt: number; total: number } | null {
+  const match = message.match(RECONNECTING_REGEX);
+  if (!match) {
+    return null;
+  }
+  const attempt = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isFinite(attempt) || !Number.isFinite(total)) {
+    return null;
+  }
+  return { attempt, total };
+}
 
 export function mapThreadEventToAgentEvent(event: ThreadEvent, timestamp = Date.now()): AgentEvent | null {
   switch (event.type) {
@@ -98,10 +112,9 @@ function mapTurnFailed(event: TurnFailedEvent, timestamp: number): AgentEvent {
 
 function mapThreadError(event: ThreadErrorEvent, timestamp: number): AgentEvent {
   const message = event.message ?? "";
-  const reconnectMatch = message.match(/Re-connecting\.\.\.\s*(\d+)\/(\d+)/i);
-  if (reconnectMatch) {
-    const [, attempt, total] = reconnectMatch;
-    const detail = `${attempt}/${total}`;
+  const reconnect = parseReconnectingMessage(message);
+  if (reconnect) {
+    const detail = `${reconnect.attempt}/${reconnect.total}`;
     return {
       phase: "connection",
       title: "尝试重连",

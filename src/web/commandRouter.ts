@@ -11,11 +11,7 @@ import { buildAdsHelpMessage } from "../workflow/commands.js";
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
-import { runReview, skipReview, showReviewReport } from "../review/service.js";
-import { WorkflowContext } from "../workspace/context.js";
-import { parseBooleanParam, resolveCommitRefParam } from "../utils/commandParams.js";
 import { normalizeOutput } from "../utils/text.js";
-import { REVIEW_LOCK_SAFE_COMMANDS } from "../utils/reviewLock.js";
 
 export interface CommandResult {
   ok: boolean;
@@ -74,10 +70,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
     positional.push(token.replace(/^['"]|['"]$/g, ""));
   }
 
-  const reviewLocked = WorkflowContext.isReviewLocked();
-  if (reviewLocked && !REVIEW_LOCK_SAFE_COMMANDS.has(slash.command)) {
-    return { ok: false, output: "⚠️ 当前工作流正在进行 Review。请等待完成或使用 /ads.review --show 查看报告。" };
-  }
+
 
   switch (slash.command) {
     case "ads.help":
@@ -204,49 +197,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
       return { ok: true, output: formatResponse(response) };
     }
 
-    case "ads.review": {
-      if (!params.skip && positional[0]?.toLowerCase() === "skip") {
-        params.skip = positional.slice(1).join(" ");
-      }
-      const wantsShow = params.show === "true" || positional[0]?.toLowerCase() === "show";
-      const workflowArg = params.workflow ?? (wantsShow ? positional.slice(1).join(" ") : undefined);
-      const agent =
-        (params.agent as "codex" | "claude" | undefined) ??
-        (["codex", "claude"].includes(positional[0]?.toLowerCase() ?? "")
-          ? (positional.shift()!.toLowerCase() as "codex" | "claude")
-          : undefined);
-      const specOverride = parseBooleanParam(params.spec);
-      const noSpecFlag =
-        parseBooleanParam(params["no-spec"]) ??
-        parseBooleanParam(params["no_spec"]) ??
-        parseBooleanParam(params.nospec);
-      let includeSpec = specOverride ?? false;
-      let specMode: "default" | "forceInclude" | "forceExclude" =
-        specOverride !== undefined ? (includeSpec ? "forceInclude" : "forceExclude") : "default";
-      if (noSpecFlag !== undefined) {
-        includeSpec = !noSpecFlag;
-        specMode = includeSpec ? "forceInclude" : "forceExclude";
-      }
-      const commitFlagRef = resolveCommitRefParam(params.commit);
-      let commitRef = commitFlagRef;
-      if (!commitRef && positional[0]?.toLowerCase() === "commit") {
-        commitRef = positional[1] && !positional[1].startsWith("--") ? positional[1] : undefined;
-        commitRef = commitRef?.trim() || "HEAD";
-      }
-      if (commitRef) {
-        commitRef = commitRef.trim() || "HEAD";
-      }
-      if (wantsShow) {
-        const response = await showReviewReport({ workflowId: workflowArg });
-        return { ok: true, output: response };
-      }
-      if (params.skip) {
-        const response = await skipReview({ reason: params.skip, requestedBy: "web" });
-        return { ok: true, output: response };
-      }
-      const response = await runReview({ requestedBy: "web", agent, includeSpec, commitRef, specMode });
-      return { ok: true, output: response };
-    }
+
 
     default:
       return { ok: false, output: `❓ 未知命令: /${slash.command}` };

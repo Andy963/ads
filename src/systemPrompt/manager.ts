@@ -136,7 +136,7 @@ export class SystemPromptManager {
     this.workspaceWarningLogged = false;
     this.rulesWarningLogged = false;
     this.pendingReason = "workspace-changed";
-    this.logger.info(`[SystemPrompt] Workspace switched to ${normalized}`);
+    this.logger.debug(`Workspace switched to ${normalized}`);
   }
 
   maybeInject(): PromptInjection | null {
@@ -179,8 +179,8 @@ export class SystemPromptManager {
       this.lastInstructionsHash = instructions.hash;
     }
     this.lastRulesHash = rules.hash;
-    this.logger.info(
-      `[SystemPrompt] ${reason} instructions=${rulesOnly || !instructions ? "skip" : shortHash(instructions.hash)} rules=${rules.hash}`,
+    this.logger.debug(
+      `Injected (${reason}) instructions=${rulesOnly || !instructions ? "skip" : shortHash(instructions.hash)} rules=${shortHash(rules.hash)}`,
     );
 
     return {
@@ -248,13 +248,13 @@ export class SystemPromptManager {
         cache = fallbackCache;
         if (!this.instructionsWarningLogged) {
           this.logger.warn(
-            `[SystemPrompt] workspace instructions missing at ${instructionsPath}, using built-in templates/instructions.md`,
+            `workspace instructions missing at ${instructionsPath}, using built-in templates/instructions.md`,
           );
           this.instructionsWarningLogged = true;
         }
       } else if (!this.instructionsWarningLogged) {
         this.logger.warn(
-          `[SystemPrompt] instructions missing at ${instructionsPath}, and no default templates/instructions.md found`,
+          `instructions missing at ${instructionsPath}, and no default templates/instructions.md found`,
         );
         this.instructionsWarningLogged = true;
       }
@@ -286,13 +286,13 @@ export class SystemPromptManager {
     }
     if (!this.workspaceWarningLogged) {
       this.logger.warn(
-        `[SystemPrompt] workspace not initialized at ${this.workspaceRoot}; instructions/rules falling back to built-in templates. Run 'ads init' to set up .ads/`,
+        `workspace not initialized at ${this.workspaceRoot}; instructions/rules falling back to built-in templates.`,
       );
       this.workspaceWarningLogged = true;
     }
     return [
-      "[ADS Notice] 当前工作区尚未初始化 (.ads/workspace.json 缺失)。",
-      "已回退使用内置 templates/ 指令与规则；请尽快运行 'ads init' 生成 .ads/ 配置与模板。",
+      "[Workspace Notice] 当前工作区尚未初始化 (.ads/workspace.json 缺失)。",
+      "将使用内置 templates/ 指令与规则；如需自定义，可创建 .ads/templates/instructions.md 与 .ads/rules.md。",
     ].join("\n");
   }
 
@@ -316,7 +316,7 @@ export class SystemPromptManager {
 
     if (cache.hash === "missing" && !this.rulesWarningLogged) {
       this.logger.warn(
-        `[SystemPrompt] workspace rules missing at ${rulesPath}, continuing with instructions only`,
+        `workspace rules missing at ${rulesPath}, continuing with instructions only`,
       );
       this.rulesWarningLogged = true;
     }

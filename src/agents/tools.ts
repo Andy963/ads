@@ -6,8 +6,13 @@ import type { AgentRunResult } from "./types.js";
 import { SearchTool } from "../tools/index.js";
 import { ensureApiKeys, resolveSearchConfig } from "../tools/search/config.js";
 import { checkTavilySetup } from "../tools/search/setupCodexMcp.js";
-import type { SearchParams, SearchResponse } from "../tools/search/types.js";
+import type { SearchParams } from "../tools/search/types.js";
+import { formatSearchResults } from "../tools/search/format.js";
 import { createLogger } from "../utils/logger.js";
+import { runVectorSearch } from "../vectorSearch/run.js";
+import { loadVectorSearchConfig } from "../vectorSearch/config.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { getExecAllowlistFromEnv, runCommand } from "../utils/commandRunner.js";
 
 interface ToolInvocation {
   name: string;
@@ -39,7 +44,7 @@ export interface ToolResolutionOutcome extends AgentRunResult {
   toolSummaries: ToolCallSummary[];
 }
 
-const TOOL_BLOCK_REGEX = /<<<tool\.([a-z0-9_-]+)[\t ]*\n([\s\S]*?)>>>/gi;
+const TOOL_BLOCK_REGEX = /<<<tool\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
 const SNIPPET_LIMIT = 180;
 const EXEC_MAX_OUTPUT_BYTES = 48 * 1024;
 const EXEC_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -48,6 +53,50 @@ const FILE_DEFAULT_MAX_WRITE_BYTES = 1024 * 1024;
 const PATCH_DEFAULT_MAX_BYTES = 512 * 1024;
 
 const logger = createLogger("AgentTools");
+const PARALLEL_TOOL_NAMES = new Set(["read", "grep", "find", "search", "vsearch"]);
+const PARALLEL_TOOL_CONCURRENCY = 6;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const concurrency = Math.max(1, Math.floor(limit));
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, () =>
+    (async () => {
+      while (true) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        if (currentIndex >= items.length) {
+          break;
+        }
+        results[currentIndex] = await worker(items[currentIndex]!, currentIndex);
+      }
+    })(),
+  );
+
+  await Promise.all(runners);
+  return results;
+}
+
+function createAbortError(message = "用户中断了请求"): Error {
+  const abortError = new Error(message);
+  abortError.name = "AbortError";
+  return abortError;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
 
 function truncate(text: string, limit = SNIPPET_LIMIT): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -65,26 +114,16 @@ function parseBoolean(value: string | undefined, defaultValue = false): boolean 
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function parseCsv(value: string | undefined): string[] {
-  if (!value) {
-    return [];
-  }
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
 function isExecToolEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, false);
+  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, true);
 }
 
 function isFileToolsEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_FILE_TOOLS, false);
+  return parseBoolean(process.env.ENABLE_AGENT_FILE_TOOLS, true);
 }
 
 function isApplyPatchEnabled(): boolean {
-  return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, false);
+  return parseBoolean(process.env.ENABLE_AGENT_APPLY_PATCH, true);
 }
 
 function parsePositiveInt(value: string | undefined, defaultValue: number): number {
@@ -108,23 +147,6 @@ function getWriteMaxBytes(): number {
 
 function getPatchMaxBytes(): number {
   return parsePositiveInt(process.env.AGENT_APPLY_PATCH_MAX_BYTES, PATCH_DEFAULT_MAX_BYTES);
-}
-
-function getExecAllowlist(): string[] | null {
-  const env = process.env.AGENT_EXEC_TOOL_ALLOWLIST;
-  if (env === undefined) {
-    return null;
-  }
-  const parsed = parseCsv(env)
-    .map((entry) => entry.toLowerCase())
-    .filter(Boolean);
-  if (parsed.length === 0) {
-    return null;
-  }
-  if (parsed.includes("*") || parsed.includes("all")) {
-    return null;
-  }
-  return parsed;
 }
 
 function extractToolInvocations(text: string): ToolInvocation[] {
@@ -210,29 +232,6 @@ function parseSearchParams(raw: string): SearchParams {
   return params;
 }
 
-function formatSearchResults(query: string, response: SearchResponse): string {
-  const lines: string[] = [];
-  lines.push(`🔎 搜索：${truncate(query, 96)}`);
-
-  if (response.results.length === 0) {
-    lines.push("未找到结果。");
-  } else {
-    response.results.forEach((item, index) => {
-      const title = item.title || "Untitled";
-      const url = item.url ? ` ${item.url}` : "";
-      const snippet = item.snippet || item.content || "";
-      const snippetPart = snippet ? ` - ${truncate(snippet, 140)}` : "";
-      lines.push(`${index + 1}. ${title}${url}${snippetPart}`);
-    });
-  }
-
-  const tookMs = response.meta?.tookMs ?? 0;
-  const total = response.meta?.total ?? response.results.length;
-  lines.push(`(共 ${total} 条，展示 ${response.results.length} 条，用时 ${tookMs}ms)`);
-
-  return lines.join("\n");
-}
-
 async function handleSearchTool(payload: string): Promise<string> {
   const params = parseSearchParams(payload);
   const config = resolveSearchConfig();
@@ -245,9 +244,67 @@ async function handleSearchTool(payload: string): Promise<string> {
   return formatSearchResults(params.query, result);
 }
 
+async function handleVectorSearchTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  const query = payload.trim();
+  if (!query) {
+    throw new Error("vsearch 需要提供查询字符串");
+  }
+  const workspaceRoot = detectWorkspaceFrom(context.cwd || process.cwd());
+  return runVectorSearch({
+    workspaceRoot,
+    query,
+    entryNamespace: "agent",
+  });
+}
+
+async function runAgentTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  if (!context.invokeAgent) {
+    throw new Error("当前上下文不支持调用协作代理");
+  }
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    const agentIdRaw = record?.agentId ?? record?.agent_id ?? record?.agent;
+    const promptRaw = record?.prompt ?? record?.input ?? record?.query;
+
+    const agentId = String(agentIdRaw ?? "").trim().toLowerCase();
+    const prompt =
+      typeof promptRaw === "string"
+        ? promptRaw
+        : promptRaw && typeof promptRaw === "object"
+          ? JSON.stringify(promptRaw)
+          : String(promptRaw ?? "");
+
+    if (!agentId || !prompt.trim()) {
+      throw new Error("agent 工具需要 agentId 和 prompt 参数");
+    }
+    return await context.invokeAgent(agentId, prompt);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("agent 工具需要")) {
+      throw error;
+    }
+    // Fallback to raw payload as prompt if not JSON
+    const lines = payload.trim().split("\n");
+    const firstLine = lines[0].trim();
+    const agentId = firstLine.toLowerCase();
+    const prompt = lines.slice(1).join("\n").trim();
+    if (!agentId || !prompt) {
+      throw new Error("agent 工具格式错误。请使用 JSON 或首行 agentId 后跟 prompt。");
+    }
+    return await context.invokeAgent(agentId, prompt);
+  }
+}
+
 export interface ToolExecutionContext {
   cwd?: string;
   allowedDirs?: string[];
+  signal?: AbortSignal;
+  invokeAgent?: (agentId: string, prompt: string) => Promise<string>;
+  historyNamespace?: string;
+  historySessionId?: string;
 }
 
 function resolveBaseDir(context: ToolExecutionContext): string {
@@ -403,103 +460,54 @@ function parseExecPayload(payload: string): {
 
 async function runExecTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isExecToolEnabled()) {
-    throw new Error("exec 工具未启用（设置 ENABLE_AGENT_EXEC_TOOL=1 打开）");
+    throw new Error("exec 工具已禁用（设置 ENABLE_AGENT_EXEC_TOOL=1 重新启用）");
   }
+  throwIfAborted(context.signal);
 
   const { cmd: rawCmd, args, timeoutMs } = parseExecPayload(payload);
   const cwd = resolveBaseDir(context);
   const executable = path.basename(rawCmd).toLowerCase();
-  const allowlist = getExecAllowlist();
+  const allowlist = getExecAllowlistFromEnv();
   if (allowlist && !allowlist.includes(executable)) {
     throw new Error(`不允许执行命令: ${executable}（可用 AGENT_EXEC_TOOL_ALLOWLIST 配置白名单；'*' 表示不限制）`);
   }
 
-  const commandLine = [rawCmd, ...args].join(" ").trim();
-  logger.info(`[tool.exec] cwd=${cwd} cmd=${commandLine}`);
-
-  return await new Promise<string>((resolve, reject) => {
-    const startedAt = Date.now();
-    const child = spawn(rawCmd, args, {
-      cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-
-    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let truncatedStdout = false;
-    let truncatedStderr = false;
-    let timedOut = false;
-
-    const append = (
-      target: Buffer<ArrayBufferLike>,
-      chunk: Buffer<ArrayBufferLike>,
-      kind: "stdout" | "stderr",
-    ): Buffer<ArrayBufferLike> => {
-      if (target.length >= EXEC_MAX_OUTPUT_BYTES) {
-        if (kind === "stdout") truncatedStdout = true;
-        if (kind === "stderr") truncatedStderr = true;
-        return target;
-      }
-      const remaining = EXEC_MAX_OUTPUT_BYTES - target.length;
-      if (chunk.length > remaining) {
-        if (kind === "stdout") truncatedStdout = true;
-        if (kind === "stderr") truncatedStderr = true;
-        return Buffer.concat([target, chunk.subarray(0, remaining)]);
-      }
-      return Buffer.concat([target, chunk]);
-    };
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch (error) {
-        logger.warn("[tool.exec] Failed to kill timed-out process", error);
-      }
-    }, Math.max(1, timeoutMs));
-
-    child.stdout?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
-      stdout = append(stdout, chunk, "stdout");
-    });
-    child.stderr?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
-      stderr = append(stderr, chunk, "stderr");
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timeout);
-      const elapsedMs = Date.now() - startedAt;
-      const lines: string[] = [];
-      lines.push(`$ ${commandLine}`);
-      if (timedOut) {
-        lines.push(`⏱️ timeout after ${timeoutMs}ms`);
-      }
-      lines.push(`exit=${code ?? "null"} signal=${signal ?? "null"} elapsed=${elapsedMs}ms`);
-
-      const outText = stdout.toString("utf8").trimEnd();
-      const errText = stderr.toString("utf8").trimEnd();
-
-      if (outText) {
-        lines.push("");
-        lines.push("stdout:");
-        lines.push("```");
-        lines.push(outText + (truncatedStdout ? "\n…(truncated)" : ""));
-        lines.push("```");
-      }
-      if (errText) {
-        lines.push("");
-        lines.push("stderr:");
-        lines.push("```");
-        lines.push(errText + (truncatedStderr ? "\n…(truncated)" : ""));
-        lines.push("```");
-      }
-      resolve(lines.join("\n").trim());
-    });
+  const command = await runCommand({
+    cmd: rawCmd,
+    args,
+    cwd,
+    timeoutMs,
+    env: process.env,
+    signal: context.signal,
+    maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
+    allowlist,
   });
+
+  logger.info(`[tool.exec] cwd=${cwd} cmd=${command.commandLine}`);
+
+  const lines: string[] = [];
+  lines.push(`$ ${command.commandLine}`);
+  if (command.timedOut) {
+    lines.push(`⏱️ timeout after ${timeoutMs}ms`);
+  }
+  lines.push(`exit=${command.exitCode ?? "null"} signal=${command.signal ?? "null"} elapsed=${command.elapsedMs}ms`);
+
+  if (command.stdout) {
+    lines.push("");
+    lines.push("stdout:");
+    lines.push("```");
+    lines.push(command.stdout + (command.truncatedStdout ? "\n…(truncated)" : ""));
+    lines.push("```");
+  }
+  if (command.stderr) {
+    lines.push("");
+    lines.push("stderr:");
+    lines.push("```");
+    lines.push(command.stderr + (command.truncatedStderr ? "\n…(truncated)" : ""));
+    lines.push("```");
+  }
+
+  return lines.join("\n").trim();
 }
 
 interface ReadToolRequest {
@@ -631,7 +639,7 @@ function formatReadToolOutput(
 
 async function runReadTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isFileToolsEnabled()) {
-    throw new Error("file 工具未启用（设置 ENABLE_AGENT_FILE_TOOLS=1 打开）");
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
   }
 
   const baseDir = resolveBaseDir(context);
@@ -665,7 +673,7 @@ async function runReadTool(payload: string, context: ToolExecutionContext): Prom
       const slice = buf.subarray(0, bytesRead);
       if (slice.includes(0)) {
         throw new Error(`疑似二进制文件，拒绝读取: ${relativeHint}`);
-    }
+      }
       let text = slice.toString("utf8");
       if (request.startLine || request.endLine) {
         const start = Math.max(1, request.startLine ?? 1);
@@ -716,7 +724,7 @@ function parseWritePayload(payload: string): { path: string; content: string; ap
 
 async function runWriteTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isFileToolsEnabled()) {
-    throw new Error("file 工具未启用（设置 ENABLE_AGENT_FILE_TOOLS=1 打开）");
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
   }
 
   const baseDir = resolveBaseDir(context);
@@ -789,11 +797,12 @@ function validatePatchPaths(paths: string[], context: ToolExecutionContext): voi
 
 async function runApplyPatchTool(payload: string, context: ToolExecutionContext): Promise<string> {
   if (!isFileToolsEnabled()) {
-    throw new Error("file 工具未启用（设置 ENABLE_AGENT_FILE_TOOLS=1 打开）");
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
   }
   if (!isApplyPatchEnabled()) {
-    throw new Error("apply_patch 工具未启用（设置 ENABLE_AGENT_APPLY_PATCH=1 打开）");
+    throw new Error("apply_patch 工具已禁用（设置 ENABLE_AGENT_APPLY_PATCH=1 重新启用）");
   }
+  throwIfAborted(context.signal);
 
   let patchText = payload.replaceAll("\r\n", "\n");
   const lines = patchText.split("\n");
@@ -825,6 +834,7 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
   logger.info(`[tool.apply_patch] cwd=${cwd} bytes=${patchBytes} files=${patchPaths.length}`);
 
   return await new Promise<string>((resolve, reject) => {
+    const signal = context.signal;
     const gitRoot = findGitRoot(cwd);
     const prefixRaw = gitRoot ? path.relative(gitRoot, cwd) : "";
     const prefix = prefixRaw && prefixRaw !== "." ? prefixRaw.split(path.sep).join("/") : "";
@@ -839,6 +849,8 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
       env: process.env,
     });
 
+    let settled = false;
+
     const buffers = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     const append = (key: "stdout" | "stderr", chunk: Buffer<ArrayBufferLike>) => {
       const current = buffers[key];
@@ -846,10 +858,50 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
       buffers[key] = next.length > EXEC_MAX_OUTPUT_BYTES ? next.subarray(0, EXEC_MAX_OUTPUT_BYTES) : next;
     };
 
+    const cleanup = () => {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      cleanup();
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
     child.stdout?.on("data", (chunk: Buffer<ArrayBufferLike>) => append("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer<ArrayBufferLike>) => append("stderr", chunk));
-    child.on("error", (error) => reject(error));
+    child.on("error", (error) => {
+      cleanup();
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
     child.on("close", (code) => {
+      cleanup();
+      if (settled) {
+        return;
+      }
+      settled = true;
       if (code === 0) {
         const filesPart = patchPaths.length > 0 ? ` files=${patchPaths.join(", ")}` : "";
         resolve(`✅ Patch applied.${filesPart}`);
@@ -866,10 +918,633 @@ async function runApplyPatchTool(payload: string, context: ToolExecutionContext)
   });
 }
 
+const GREP_DEFAULT_MAX_RESULTS = 50;
+const FIND_DEFAULT_MAX_RESULTS = 50;
+const FALLBACK_GREP_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const FALLBACK_SKIP_DIRS = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".ads",
+  "node_modules",
+  "dist",
+  "build",
+  "coverage",
+  "logs",
+  ".turbo",
+  ".next",
+  ".vite",
+]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizePathForGlob(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function globToRegExp(glob: string): RegExp {
+  const normalized = normalizePathForGlob(glob.trim());
+  let re = "^";
+  for (let i = 0; i < normalized.length; i += 1) {
+    const ch = normalized[i]!;
+    if (ch === "*") {
+      const next = normalized[i + 1];
+      if (next === "*") {
+        re += ".*";
+        i += 1;
+        continue;
+      }
+      re += "[^/]*";
+      continue;
+    }
+    if (ch === "?") {
+      re += "[^/]";
+      continue;
+    }
+    if (ch === "/") {
+      re += "\\/";
+      continue;
+    }
+    if (/[\\^$+?.()|[\]{}]/.test(ch)) {
+      re += `\\${ch}`;
+      continue;
+    }
+    re += ch;
+  }
+  re += "$";
+  return new RegExp(re);
+}
+
+async function walkFiles(
+  startPath: string,
+  options: {
+    signal?: AbortSignal;
+    // Return false to stop traversal early.
+    onFile: (filePath: string) => Promise<boolean> | boolean;
+  },
+): Promise<void> {
+  const signal = options.signal;
+  const throwIfStopped = () => {
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+  };
+
+  const root = path.resolve(startPath);
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(root);
+  } catch {
+    return;
+  }
+
+  if (stats.isFile()) {
+    throwIfStopped();
+    const shouldContinue = await options.onFile(root);
+    if (shouldContinue === false) {
+      return;
+    }
+    return;
+  }
+
+  if (!stats.isDirectory()) {
+    return;
+  }
+
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    throwIfStopped();
+    const currentDir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      throwIfStopped();
+      const name = entry.name;
+      if (!name) {
+        continue;
+      }
+      const fullPath = path.join(currentDir, name);
+      if (entry.isDirectory()) {
+        if (FALLBACK_SKIP_DIRS.has(name)) {
+          continue;
+        }
+        stack.push(fullPath);
+        continue;
+      }
+      if (entry.isFile()) {
+        const shouldContinue = await options.onFile(fullPath);
+        if (shouldContinue === false) {
+          return;
+        }
+      }
+    }
+  }
+}
+
+interface GrepParams {
+  pattern: string;
+  path?: string;
+  glob?: string;
+  ignoreCase?: boolean;
+  maxResults?: number;
+}
+
+function parseGrepPayload(payload: string): GrepParams {
+  const trimmed = payload.trim();
+  if (!trimmed) {
+    throw new Error("grep payload 为空");
+  }
+
+  let parsed: unknown = trimmed;
+  if (trimmed.startsWith("{")) {
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      // Treat as plain pattern if not valid JSON
+    }
+  }
+
+  if (typeof parsed === "string") {
+    return { pattern: parsed.trim() };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("grep payload 必须是 pattern 字符串或 JSON 对象");
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const pattern = typeof record.pattern === "string" ? record.pattern.trim() : "";
+  if (!pattern) {
+    throw new Error("grep payload 缺少 pattern");
+  }
+
+  return {
+    pattern,
+    path: typeof record.path === "string" ? record.path.trim() : undefined,
+    glob: typeof record.glob === "string" ? record.glob.trim() : undefined,
+    ignoreCase: typeof record.ignoreCase === "boolean" ? record.ignoreCase : undefined,
+    maxResults: typeof record.maxResults === "number" && record.maxResults > 0
+      ? Math.floor(record.maxResults)
+      : undefined,
+  };
+}
+
+async function runGrepTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  if (!isFileToolsEnabled()) {
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
+  }
+  throwIfAborted(context.signal);
+
+  const params = parseGrepPayload(payload);
+  const cwd = resolveBaseDir(context);
+  const searchPath = params.path
+    ? resolvePathForTool(params.path, context)
+    : cwd;
+
+  const maxResults = params.maxResults ?? GREP_DEFAULT_MAX_RESULTS;
+  const args = ["--no-heading", "--line-number", "--color=never"];
+
+  if (params.ignoreCase) {
+    args.push("--ignore-case");
+  }
+  if (params.glob) {
+    args.push("--glob", params.glob);
+  }
+  args.push("--max-count", String(maxResults * 2)); // Get more to account for context
+  args.push("--", params.pattern, searchPath);
+
+  logger.info(`[tool.grep] cwd=${cwd} pattern=${params.pattern} path=${searchPath}`);
+
+  const runFallback = async (): Promise<string> => {
+    let matcher: RegExp;
+    const flags = params.ignoreCase ? "i" : "";
+    try {
+      matcher = new RegExp(params.pattern, flags);
+    } catch {
+      matcher = new RegExp(escapeRegExp(params.pattern), flags);
+    }
+
+    const globPattern = params.glob?.trim();
+    const globRe = globPattern ? globToRegExp(globPattern) : null;
+    const matchBasenameOnly = globPattern ? !/[\\/]/.test(globPattern) : false;
+
+    const matches: string[] = [];
+    let truncated = false;
+
+    await walkFiles(searchPath, {
+      signal: context.signal,
+      onFile: async (filePath) => {
+        if (matches.length >= maxResults) {
+          truncated = true;
+          return false;
+        }
+
+        const relative = path.relative(cwd, filePath) || path.basename(filePath);
+        const relNormalized = normalizePathForGlob(relative);
+        if (globRe) {
+          const candidate = matchBasenameOnly ? path.basename(relNormalized) : relNormalized;
+          if (!globRe.test(candidate)) {
+            return true;
+          }
+        }
+
+        let stat: fs.Stats;
+        try {
+          stat = await fs.promises.stat(filePath);
+        } catch {
+          return true;
+        }
+        if (stat.size > FALLBACK_GREP_MAX_FILE_BYTES) {
+          return true;
+        }
+
+        let buffer: Buffer;
+        try {
+          buffer = await fs.promises.readFile(filePath);
+        } catch {
+          return true;
+        }
+        if (buffer.includes(0)) {
+          return true;
+        }
+        const content = buffer.toString("utf8");
+        const lines = content.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i += 1) {
+          if (matches.length >= maxResults) {
+            truncated = true;
+            return false;
+          }
+          const line = lines[i] ?? "";
+          if (!matcher.test(line)) {
+            continue;
+          }
+          matches.push(`${relNormalized}:${i + 1}:${line}`);
+        }
+
+        return true;
+      },
+    });
+
+    if (matches.length === 0) {
+      return `🔍 grep: "${params.pattern}" - 未找到匹配`;
+    }
+
+    return [
+      `🔍 grep: "${params.pattern}" (${matches.length} matches${truncated ? ", showing " + maxResults : ""})`,
+      "",
+      ...matches.slice(0, maxResults),
+      truncated ? `\n…(showing first ${maxResults})` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  };
+
+  return await new Promise<string>((resolve, reject) => {
+    const signal = context.signal;
+    const child = spawn("rg", args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let settled = false;
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < EXEC_MAX_OUTPUT_BYTES) {
+        stdout = Buffer.concat([stdout, chunk]);
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < EXEC_MAX_OUTPUT_BYTES) {
+        stderr = Buffer.concat([stderr, chunk]);
+      }
+    });
+
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        void runFallback().then(resolve).catch(reject);
+        return;
+      }
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+
+      const outText = stdout.toString("utf8").trim();
+      const errText = stderr.toString("utf8").trim();
+
+      // rg returns 1 when no matches found, 2 on error
+      if (code === 1 && !errText) {
+        resolve(`🔍 grep: "${params.pattern}" - 未找到匹配`);
+        return;
+      }
+      if (code !== 0 && code !== 1) {
+        reject(new Error(errText || `rg exited with code ${code}`));
+        return;
+      }
+
+      const lines = outText.split("\n").filter(Boolean);
+      const truncated = lines.length > maxResults;
+      const displayLines = lines.slice(0, maxResults);
+
+      const result = [
+        `🔍 grep: "${params.pattern}" (${lines.length} matches${truncated ? ", showing " + maxResults : ""})`,
+        "",
+        ...displayLines,
+        truncated ? `\n…(${lines.length - maxResults} more matches)` : "",
+      ].filter(Boolean).join("\n");
+
+      resolve(result);
+    });
+  });
+}
+
+interface FindParams {
+  pattern: string;
+  path?: string;
+  maxResults?: number;
+}
+
+function parseFindPayload(payload: string): FindParams {
+  const trimmed = payload.trim();
+  if (!trimmed) {
+    throw new Error("find payload 为空");
+  }
+
+  let parsed: unknown = trimmed;
+  if (trimmed.startsWith("{")) {
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      // Treat as plain pattern if not valid JSON
+    }
+  }
+
+  if (typeof parsed === "string") {
+    return { pattern: parsed.trim() };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("find payload 必须是 pattern 字符串或 JSON 对象");
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const pattern = typeof record.pattern === "string" ? record.pattern.trim() : "";
+  if (!pattern) {
+    throw new Error("find payload 缺少 pattern");
+  }
+
+  return {
+    pattern,
+    path: typeof record.path === "string" ? record.path.trim() : undefined,
+    maxResults: typeof record.maxResults === "number" && record.maxResults > 0
+      ? Math.floor(record.maxResults)
+      : undefined,
+  };
+}
+
+async function runFindTool(payload: string, context: ToolExecutionContext): Promise<string> {
+  if (!isFileToolsEnabled()) {
+    throw new Error("file 工具已禁用（设置 ENABLE_AGENT_FILE_TOOLS=1 重新启用）");
+  }
+  throwIfAborted(context.signal);
+
+  const params = parseFindPayload(payload);
+  const cwd = resolveBaseDir(context);
+  const searchPath = params.path
+    ? resolvePathForTool(params.path, context)
+    : cwd;
+
+  const maxResults = params.maxResults ?? FIND_DEFAULT_MAX_RESULTS;
+
+  // Use fd if available, fallback to find
+  const useFd = true; // Prefer fd for better glob support
+  const args = useFd
+    ? ["--type", "f", "--glob", params.pattern, searchPath]
+    : [searchPath, "-type", "f", "-name", params.pattern];
+  const cmd = useFd ? "fd" : "find";
+
+  logger.info(`[tool.find] cwd=${cwd} pattern=${params.pattern} path=${searchPath}`);
+
+  const runFallback = async (): Promise<string> => {
+    const globPattern = params.pattern.trim();
+    const re = globToRegExp(globPattern);
+    const matchBasenameOnly = !/[\\/]/.test(globPattern);
+
+    const files: string[] = [];
+    let truncated = false;
+
+    await walkFiles(searchPath, {
+      signal: context.signal,
+      onFile: async (filePath) => {
+        if (files.length >= maxResults) {
+          truncated = true;
+          return false;
+        }
+        const relative = path.relative(cwd, filePath) || path.basename(filePath);
+        const relNormalized = normalizePathForGlob(relative);
+        const candidate = matchBasenameOnly ? path.basename(relNormalized) : relNormalized;
+        if (!re.test(candidate)) {
+          return true;
+        }
+        files.push(relNormalized);
+        return true;
+      },
+    });
+
+    if (files.length === 0) {
+      return `📁 find: "${params.pattern}" - 未找到文件`;
+    }
+
+    return [
+      `📁 find: "${params.pattern}" (${files.length} files${truncated ? ", showing " + maxResults : ""})`,
+      "",
+      ...files.slice(0, maxResults),
+      truncated ? `\n…(showing first ${maxResults})` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  };
+
+  return await new Promise<string>((resolve, reject) => {
+    const signal = context.signal;
+    const child = spawn(cmd, args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let settled = false;
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+      reject(createAbortError());
+    };
+
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < EXEC_MAX_OUTPUT_BYTES) {
+        stdout = Buffer.concat([stdout, chunk]);
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < EXEC_MAX_OUTPUT_BYTES) {
+        stderr = Buffer.concat([stderr, chunk]);
+      }
+    });
+
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+      // If fd is not installed, fall back to find
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && useFd) {
+        // Retry with standard find
+        const findArgs = [searchPath, "-type", "f", "-name", params.pattern];
+        const findChild = spawn("find", findArgs, {
+          cwd,
+          shell: false,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: process.env,
+        });
+
+        let findStdout = Buffer.alloc(0);
+        let findSettled = false;
+        findChild.stdout?.on("data", (chunk: Buffer) => {
+          if (findStdout.length < EXEC_MAX_OUTPUT_BYTES) {
+            findStdout = Buffer.concat([findStdout, chunk]);
+          }
+        });
+
+        findChild.on("error", (findError) => {
+          if (findSettled) {
+            return;
+          }
+          findSettled = true;
+          if ((findError as NodeJS.ErrnoException).code === "ENOENT") {
+            void runFallback().then(resolve).catch(reject);
+            return;
+          }
+          reject(findError);
+        });
+
+        findChild.on("close", (code) => {
+          if (findSettled) {
+            return;
+          }
+          findSettled = true;
+          if (code !== 0) {
+            reject(new Error(`find exited with code ${code}`));
+            return;
+          }
+          const outText = findStdout.toString("utf8").trim();
+          if (!outText) {
+            resolve(`📁 find: "${params.pattern}" - 未找到文件`);
+            return;
+          }
+          const files = outText.split("\n").filter(Boolean);
+          const truncated = files.length > maxResults;
+          const displayFiles = files.slice(0, maxResults);
+          resolve([
+            `📁 find: "${params.pattern}" (${files.length} files${truncated ? ", showing " + maxResults : ""})`,
+            "",
+            ...displayFiles,
+            truncated ? `\n…(${files.length - maxResults} more files)` : "",
+          ].filter(Boolean).join("\n"));
+        });
+        return;
+      }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        void runFallback().then(resolve).catch(reject);
+        return;
+      }
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+
+      const outText = stdout.toString("utf8").trim();
+      const errText = stderr.toString("utf8").trim();
+
+      if (code !== 0 && errText) {
+        reject(new Error(errText));
+        return;
+      }
+      if (code !== 0 && !outText) {
+        void runFallback().then(resolve).catch(reject);
+        return;
+      }
+
+      if (!outText) {
+        resolve(`📁 find: "${params.pattern}" - 未找到文件`);
+        return;
+      }
+
+      const files = outText.split("\n").filter(Boolean);
+      const truncated = files.length > maxResults;
+      const displayFiles = files.slice(0, maxResults);
+
+      const result = [
+        `📁 find: "${params.pattern}" (${files.length} files${truncated ? ", showing " + maxResults : ""})`,
+        "",
+        ...displayFiles,
+        truncated ? `\n…(${files.length - maxResults} more files)` : "",
+      ].filter(Boolean).join("\n");
+
+      resolve(result);
+    });
+  });
+}
+
 async function runTool(name: string, payload: string, context: ToolExecutionContext): Promise<string> {
+  throwIfAborted(context.signal);
   switch (name) {
     case "search":
       return handleSearchTool(payload);
+    case "vsearch":
+      return handleVectorSearchTool(payload, context);
+    case "agent":
+      return runAgentTool(payload, context);
     case "exec":
       return runExecTool(payload, context);
     case "read":
@@ -878,6 +1553,10 @@ async function runTool(name: string, payload: string, context: ToolExecutionCont
       return runWriteTool(payload, context);
     case "apply_patch":
       return runApplyPatchTool(payload, context);
+    case "grep":
+      return runGrepTool(payload, context);
+    case "find":
+      return runFindTool(payload, context);
     default:
       throw new Error(`未知工具: ${name}`);
   }
@@ -889,8 +1568,10 @@ export async function executeToolInvocation(
   context: ToolExecutionContext = {},
   hooks?: ToolHooks,
 ): Promise<ToolExecutionResult> {
+  throwIfAborted(context.signal);
   await hooks?.onInvoke?.(tool, payload);
   try {
+    throwIfAborted(context.signal);
     const output = await runTool(tool, payload, context);
     const result: ToolExecutionResult = { tool, payload, ok: true, output };
     const summary: ToolCallSummary = {
@@ -902,6 +1583,9 @@ export async function executeToolInvocation(
     await hooks?.onResult?.(summary);
     return result;
   } catch (error) {
+    if (context.signal?.aborted || isAbortError(error)) {
+      throw error instanceof Error ? error : createAbortError();
+    }
     const message = error instanceof Error ? error.message : String(error);
     const output = `⚠️ 工具 ${tool} 失败：${message}`;
     const result: ToolExecutionResult = { tool, payload, ok: false, output, error: message };
@@ -926,37 +1610,87 @@ export async function executeToolBlocks(
     return { replacedText: text, strippedText: text, results: [], summaries: [] };
   }
 
-  let replacedText = text;
-  const results: ToolExecutionResult[] = [];
-  const summaries: ToolCallSummary[] = [];
-
-  for (const invocation of invocations) {
-    await hooks?.onInvoke?.(invocation.name, invocation.payload);
+  const executeInvocation = async (
+    invocation: ToolInvocation,
+  ): Promise<{ invocation: ToolInvocation; result: ToolExecutionResult; summary: ToolCallSummary }> => {
+    throwIfAborted(context.signal);
     try {
+      throwIfAborted(context.signal);
       const output = await runTool(invocation.name, invocation.payload, context);
-      replacedText = replacedText.replace(invocation.raw, output);
-      results.push({ tool: invocation.name, payload: invocation.payload, ok: true, output });
-      const summary: ToolCallSummary = {
-        tool: invocation.name,
-        ok: true,
-        inputPreview: truncate(invocation.payload),
-        outputPreview: truncate(output),
+      return {
+        invocation,
+        result: { tool: invocation.name, payload: invocation.payload, ok: true, output },
+        summary: {
+          tool: invocation.name,
+          ok: true,
+          inputPreview: truncate(invocation.payload),
+          outputPreview: truncate(output),
+        },
       };
-      summaries.push(summary);
-      await hooks?.onResult?.(summary);
     } catch (error) {
+      if (context.signal?.aborted || isAbortError(error)) {
+        throw error instanceof Error ? error : createAbortError();
+      }
       const message = error instanceof Error ? error.message : String(error);
       const fallback = `⚠️ 工具 ${invocation.name} 失败：${message}`;
-      replacedText = replacedText.replace(invocation.raw, fallback);
-      results.push({ tool: invocation.name, payload: invocation.payload, ok: false, output: fallback, error: message });
-      const summary: ToolCallSummary = {
-        tool: invocation.name,
-        ok: false,
-        inputPreview: truncate(invocation.payload),
-        outputPreview: truncate(fallback),
+      return {
+        invocation,
+        result: {
+          tool: invocation.name,
+          payload: invocation.payload,
+          ok: false,
+          output: fallback,
+          error: message,
+        },
+        summary: {
+          tool: invocation.name,
+          ok: false,
+          inputPreview: truncate(invocation.payload),
+          outputPreview: truncate(fallback),
+        },
       };
-      summaries.push(summary);
-      await hooks?.onResult?.(summary);
+    }
+  };
+
+  const results: ToolExecutionResult[] = [];
+  const summaries: ToolCallSummary[] = [];
+  let replacedText = text;
+
+  let idx = 0;
+  while (idx < invocations.length) {
+    const current = invocations[idx]!;
+
+    if (!PARALLEL_TOOL_NAMES.has(current.name)) {
+      throwIfAborted(context.signal);
+      await hooks?.onInvoke?.(current.name, current.payload);
+      const item = await executeInvocation(current);
+      replacedText = replacedText.replace(item.invocation.raw, item.result.output);
+      results.push(item.result);
+      summaries.push(item.summary);
+      await hooks?.onResult?.(item.summary);
+      idx += 1;
+      continue;
+    }
+
+    const batch: ToolInvocation[] = [];
+    while (idx < invocations.length && PARALLEL_TOOL_NAMES.has(invocations[idx]!.name)) {
+      batch.push(invocations[idx]!);
+      idx += 1;
+    }
+
+    for (const invocation of batch) {
+      throwIfAborted(context.signal);
+      await hooks?.onInvoke?.(invocation.name, invocation.payload);
+    }
+
+    const batchResults = await runWithConcurrency(batch, PARALLEL_TOOL_CONCURRENCY, (invocation) =>
+      executeInvocation(invocation),
+    );
+    for (const item of batchResults) {
+      replacedText = replacedText.replace(item.invocation.raw, item.result.output);
+      results.push(item.result);
+      summaries.push(item.summary);
+      await hooks?.onResult?.(item.summary);
     }
   }
 
@@ -967,10 +1701,11 @@ export function injectToolGuide(
   input: string,
   options?: {
     activeAgentId?: string;
+    invokeAgentEnabled?: boolean;
   },
 ): string {
   const activeAgentId = options?.activeAgentId ?? "codex";
-  const usesToolBlocks = activeAgentId !== "gemini" && activeAgentId !== "claude";
+  const usesToolBlocks = true;
   const wantsSearchGuide = () => {
     const searchEnabled = !ensureApiKeys(resolveSearchConfig());
     if (!searchEnabled) {
@@ -981,6 +1716,11 @@ export function injectToolGuide(
     }
     const mcpStatus = checkTavilySetup();
     return !mcpStatus.configured;
+  };
+
+  const wantsVectorSearchGuide = () => {
+    const { config } = loadVectorSearchConfig();
+    return !!config?.enabled;
   };
 
   const guideLines: string[] = [];
@@ -997,14 +1737,38 @@ export function injectToolGuide(
     );
   }
 
+  if (usesToolBlocks && wantsVectorSearchGuide()) {
+    guideLines.push(
+      [
+        "【可用工具】",
+        "vsearch - 调用本地向量搜索（语义搜索），可检索 Spec 文档、ADR 和历史对话，格式：",
+        "建议：当你需要回忆/引用已有 Spec、ADR 或历史对话里的信息时，先用 vsearch 检索再回答。",
+        "<<<tool.vsearch",
+        "如何实现用户认证？",
+        ">>>",
+      ].join("\n"),
+    );
+  }
+
+  if (usesToolBlocks && options?.invokeAgentEnabled) {
+    guideLines.push(
+      [
+        "agent - 调用协作代理协助处理子任务，格式：",
+        "<<<tool.agent",
+        '{"agentId":"codex","prompt":"请帮我处理这个子任务..."}',
+        ">>>",
+      ].join("\n"),
+    );
+  }
+
   if (usesToolBlocks && activeAgentId !== "codex" && isFileToolsEnabled()) {
     guideLines.push(
       [
-        "read - 读取本地文件（需要 ENABLE_AGENT_FILE_TOOLS=1，受目录白名单限制），格式：",
+        "read - 读取本地文件（默认启用；可用 ENABLE_AGENT_FILE_TOOLS=0 禁用；受目录白名单限制），格式：",
         "<<<tool.read",
         '{"path":"src/index.ts","startLine":1,"endLine":120}',
         ">>>",
-        "write - 写入本地文件（需要 ENABLE_AGENT_FILE_TOOLS=1，受目录白名单限制），格式：",
+        "write - 写入本地文件（默认启用；可用 ENABLE_AGENT_FILE_TOOLS=0 禁用；受目录白名单限制），格式：",
         "<<<tool.write",
         '{"path":"src/example.txt","content":"hello"}',
         ">>>",
@@ -1013,7 +1777,7 @@ export function injectToolGuide(
     if (isApplyPatchEnabled()) {
       guideLines.push(
         [
-          "apply_patch - 通过 unified diff 应用补丁（需要 ENABLE_AGENT_APPLY_PATCH=1 + git，受目录白名单限制），格式：",
+          "apply_patch - 通过 unified diff 应用补丁（默认启用；可用 ENABLE_AGENT_APPLY_PATCH=0 禁用；需要 git；受目录白名单限制），格式：",
           "<<<tool.apply_patch",
           "diff --git a/src/a.ts b/src/a.ts",
           "index 0000000..1111111 100644",
@@ -1031,7 +1795,7 @@ export function injectToolGuide(
   if (usesToolBlocks && activeAgentId !== "codex" && isExecToolEnabled()) {
     guideLines.push(
       [
-        "exec - 在本机执行命令（需要 ENABLE_AGENT_EXEC_TOOL=1；可选用 AGENT_EXEC_TOOL_ALLOWLIST 限制命令，'*' 表示不限制），格式：",
+        "exec - 在本机执行命令（默认启用；可用 ENABLE_AGENT_EXEC_TOOL=0 禁用；可选用 AGENT_EXEC_TOOL_ALLOWLIST 限制命令，'*' 表示不限制），格式：",
         "<<<tool.exec",
         "npm test",
         ">>>",

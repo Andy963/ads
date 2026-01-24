@@ -118,3 +118,22 @@ export class HttpsProxyAgent extends Agent {
     return `Proxy-Authorization: Basic ${token}`;
   }
 }
+
+export function normalizeProxyUrl(raw?: string): string | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+}
+
+export function resolveTelegramProxyAgent(): Agent | undefined {
+  const proxyUrl = normalizeProxyUrl(process.env.TELEGRAM_PROXY_URL);
+  if (!proxyUrl) {
+    return undefined;
+  }
+  return new HttpsProxyAgent(proxyUrl);
+}

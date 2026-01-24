@@ -1,11 +1,11 @@
 import { createWriteStream, mkdirSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
-import { ReadableStream as NodeReadableStream } from 'node:stream/web';
+import https from 'node:https';
 import { pipeline } from 'node:stream/promises';
 import type { Api } from 'grammy';
 
 import { createLogger } from '../../utils/logger.js';
+import { resolveTelegramProxyAgent } from './proxyAgent.js';
 
 const TEMP_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-images');
 const logger = createLogger('TelegramImageHandler');
@@ -15,6 +15,36 @@ function ensureTempDir() {
   if (!existsSync(TEMP_DIR)) {
     mkdirSync(TEMP_DIR, { recursive: true });
   }
+}
+
+function createTimeoutSignal(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup: () => void; didTimeout: () => boolean } {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  const abortHandler = () => controller.abort();
+  if (parent) {
+    if (parent.aborted) {
+      controller.abort();
+    } else {
+      parent.addEventListener('abort', abortHandler);
+    }
+  }
+
+  const cleanup = () => {
+    clearTimeout(timeout);
+    if (parent) {
+      parent.removeEventListener('abort', abortHandler);
+    }
+  };
+
+  return { signal: controller.signal, cleanup, didTimeout: () => timedOut };
 }
 
 export async function downloadTelegramImage(
@@ -31,34 +61,42 @@ export async function downloadTelegramImage(
     throw new Error('Failed to get file path from Telegram');
   }
 
-  // 构建下载 URL
-  const botToken = process.env.TELEGRAM_BOT_TOKEN!;
-  const fileUrl = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
-
   // 保存到临时文件
   const localPath = join(TEMP_DIR, `${Date.now()}-${fileName}`);
   
-  // 下载文件
-  const response = await fetch(fileUrl, { signal });
-  if (!response.ok) {
-    throw new Error(`Failed to download image: ${response.statusText}`);
-  }
+  // 下载文件（需要时走 TELEGRAM_PROXY_URL）
+  const fileUrl = `https://api.telegram.org/file/bot${api.token}/${file.file_path}`;
+  const agent = resolveTelegramProxyAgent();
+  const { signal: combinedSignal, cleanup, didTimeout } = createTimeoutSignal(signal, 30_000);
 
-  const body = response.body;
-  if (!body) {
-    throw new Error('Failed to read image stream');
-  }
-
-  const fileStream = createWriteStream(localPath);
   try {
-    await pipeline(Readable.fromWeb(body as NodeReadableStream<Uint8Array>), fileStream);
+    await new Promise<void>((resolve, reject) => {
+      const req = https.request(fileUrl, { agent, signal: combinedSignal }, (res) => {
+        const statusCode = res.statusCode ?? 0;
+        if (statusCode < 200 || statusCode >= 300) {
+          const statusText = `${statusCode} ${res.statusMessage ?? ''}`.trim();
+          res.resume();
+          reject(new Error(`Failed to download image: HTTP ${statusText}`));
+          return;
+        }
+
+        const fileStream = createWriteStream(localPath);
+        pipeline(res, fileStream).then(resolve).catch(reject);
+      });
+
+      req.on('error', reject);
+      req.end();
+    });
   } catch (error) {
+    cleanupImage(localPath);
     if ((error as Error).name === 'AbortError') {
-      const abortError = new Error('图片下载被中断');
+      const abortError = new Error(didTimeout() ? '图片下载超时' : '图片下载被中断');
       abortError.name = 'AbortError';
       throw abortError;
     }
     throw error;
+  } finally {
+    cleanup();
   }
 
   logger.info(`Downloaded image to ${localPath}`);

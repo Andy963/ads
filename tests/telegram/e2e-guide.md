@@ -61,28 +61,23 @@ node dist/telegram/bot.js
 - [ ] `/resume` - Continues previous conversation
 - [ ] `/reset` - Starts new conversation
 
-### 8. Model Selection
-- [ ] `/model` - Shows current model
-- [ ] `/model gpt-4` - Switches model
-- [ ] Verify session reset after switch
-
-### 9. Interrupt Mechanism
+### 8. Interrupt Mechanism
 - [ ] Send long-running request
 - [ ] `/stop` during execution
 - [ ] Verify execution stops
 
-### 10. Rate Limiting
+### 9. Rate Limiting
 - [ ] Send 15 requests rapidly
 - [ ] Verify rate limit message after 10th request
 - [ ] Wait 1 minute
 - [ ] Verify requests work again
 
-### 11. Error Handling
+### 10. Error Handling
 - [ ] Send invalid command - Gets helpful error
 - [ ] Trigger Codex error - Shows user-friendly message
 - [ ] Network interruption - Handles gracefully
 
-### 12. Concurrent Users (if possible)
+### 11. Concurrent Users (if possible)
 - [ ] Two users send messages simultaneously
 - [ ] Verify sessions don't interfere
 - [ ] Check both get correct responses

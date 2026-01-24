@@ -132,7 +132,9 @@ describe("createWorkflowFromTemplate", () => {
 
     assert.equal(parsed.success ?? false, false);
     assert.ok(parsed.error && parsed.error.includes("工作流模板不存在"));
-    assert.deepStrictEqual(parsed.available_templates, ["unified"]);
+    assert.ok(Array.isArray(parsed.available_templates), "available_templates should be an array");
+    // New templates may be added over time; ensure unified stays present.
+    assert.ok(parsed.available_templates?.includes("unified"), "available_templates should include unified");
   });
 
   test("writes context and steps to the correct workspace when AD_WORKSPACE is unset", async () => {

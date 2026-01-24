@@ -13,9 +13,11 @@ const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
 const REQUIRED_TEMPLATE_FILES = [
   "instructions.md",
   "rules.md",
+  "supervisor.md",
   "requirement.md",
   "design.md",
   "implementation.md",
+  "task.md",
   "workflow.yaml",
 ];
 const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];
@@ -136,6 +138,20 @@ function findMarker(marker: string, startDir: string, maxDepth = 10): string | n
     current = parent;
   }
   return null;
+}
+
+export function detectWorkspaceFrom(startDir: string): string {
+  const markerDir = findMarker(WORKSPACE_MARKER, startDir);
+  if (markerDir) {
+    return markerDir;
+  }
+
+  const gitDir = findMarker(GIT_MARKER, startDir);
+  if (gitDir) {
+    return gitDir;
+  }
+
+  return resolveAbsolute(startDir);
 }
 
 export function detectWorkspace(): string {

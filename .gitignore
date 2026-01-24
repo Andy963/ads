@@ -26,6 +26,7 @@ temp/
 .env
 .env.*
 !.env.example
+!.env.advanced.example
 *.local.env
 
 # Logs
@@ -39,6 +40,9 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 .vscode/
+.gemini
+.claude
+.codex
 .idea/
 *.swp
 ads.db

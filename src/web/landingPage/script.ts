@@ -1,4 +1,4 @@
-export function renderLandingPageScript(idleMinutes: number): string {
+export function renderLandingPageScript(idleMinutes: number, tokenRequired: boolean): string {
   return `    const sessionViewHost = document.getElementById('session-views');
     const SESSION_PLACEHOLDER = '__initial__';
     const sessionViewTemplate = sessionViewHost?.querySelector('.session-view')?.cloneNode(true);
@@ -10,6 +10,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
     const modifiedFilesEl = document.getElementById('modified-files');
     const planListEl = document.getElementById('plan-list');
     const tokenOverlay = document.getElementById('token-overlay');
+    const tokenForm = document.getElementById('token-form');
     const tokenInput = document.getElementById('token-input');
     const tokenSubmit = document.getElementById('token-submit');
     let attachBtn = document.getElementById('attach-btn');
@@ -39,13 +40,15 @@ export function renderLandingPageScript(idleMinutes: number): string {
     const PLAN_CACHE_PREFIX = 'plan-cache::';
     const WORKSPACE_CACHE_PREFIX = 'ws-cache::';
     const idleMinutes = ${idleMinutes};
+    const tokenRequired = ${tokenRequired};
     const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
-    const MAX_LOG_MESSAGES = 300;
-    const MAX_SESSION_HISTORY = 15;
-    const MAX_OPEN_SESSIONS = 10;
-    const COMMAND_OUTPUT_MAX_LINES = 3;
-    const COMMAND_OUTPUT_MAX_CHARS = 1200;
-    const viewport = window.visualViewport;
+	    const MAX_LOG_MESSAGES = 300;
+	    const MAX_SESSION_HISTORY = 15;
+	    const MAX_OPEN_SESSIONS = 10;
+	    const COMMAND_OUTPUT_MAX_LINES = 3;
+	    const COMMAND_OUTPUT_MAX_CHARS = 1200;
+	    const HEARTBEAT_INTERVAL_MS = 15000;
+	    const viewport = window.visualViewport;
     function getScopedStorage() {
       try {
         return window.sessionStorage;
@@ -84,22 +87,38 @@ export function renderLandingPageScript(idleMinutes: number): string {
     let sessionWorkspaces = {};
     let sessionWorkspaceInfos = {};
 
-    function ensureConnection(sessionId) {
-      if (!connections.has(sessionId)) {
-        connections.set(sessionId, {
-          sessionId,
-          ws: null,
-          generation: 0,
-          reconnectTimer: null,
-          allowReconnect: true,
-          pendingSends: [],
-          wsErrorMessage: null,
-          switchNoticeShown: false,
-          suppressSwitchNotice: false,
-        });
+    function encodeBase64Url(text) {
+      try {
+        const bytes = new TextEncoder().encode(String(text ?? ''));
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        return base64.replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      } catch {
+        return '';
       }
-      return connections.get(sessionId);
     }
+
+	    function ensureConnection(sessionId) {
+	      if (!connections.has(sessionId)) {
+	        connections.set(sessionId, {
+	          sessionId,
+	          ws: null,
+	          generation: 0,
+	          heartbeatTimer: null,
+	          lastPongAt: 0,
+	          reconnectTimer: null,
+	          allowReconnect: true,
+	          pendingSends: [],
+	          wsErrorMessage: null,
+	          switchNoticeShown: false,
+	          suppressSwitchNotice: false,
+	        });
+	      }
+	      return connections.get(sessionId);
+	    }
 
     const initialView = sessionViewHost?.querySelector('.session-view');
     if (initialView) {
@@ -465,25 +484,16 @@ export function renderLandingPageScript(idleMinutes: number): string {
     window.addEventListener('resize', applyVh);
     if (viewport) {
       viewport.addEventListener('resize', applyVh);
-      viewport.addEventListener('scroll', () => window.scrollTo(0, 0));
+      viewport.addEventListener('scroll', applyVh);
     }
 
     function recalcLogHeight() {
-      if (!logEl) return;
-      const headerEl = document.querySelector('header');
-      const mainEl = document.querySelector('main');
-      const headerH = headerEl ? headerEl.getBoundingClientRect().height : 0;
       const formH = formEl ? formEl.getBoundingClientRect().height : 0;
-      const mainStyle = mainEl ? window.getComputedStyle(mainEl) : null;
-      const paddingY =
-        (mainStyle ? Number.parseFloat(mainStyle.paddingTop || '0') : 0) +
-        (mainStyle ? Number.parseFloat(mainStyle.paddingBottom || '0') : 0);
-      const vh = viewport ? viewport.height : window.innerHeight;
-      const gap = 12;
-      const available = vh - headerH - formH - gap - paddingY;
-      logEl.style.height = Math.max(100, available) + 'px';
-      logEl.style.maxHeight = Math.max(100, available) + 'px';
-      logEl.scrollTop = logEl.scrollHeight;
+      document.documentElement.style.setProperty('--composer-h', Math.max(0, Math.round(formH)) + 'px');
+      if (logEl) {
+        logEl.style.height = '';
+        logEl.style.maxHeight = '';
+      }
     }
     setTimeout(recalcLogHeight, 100);
 
@@ -636,20 +646,49 @@ export function renderLandingPageScript(idleMinutes: number): string {
       }
     }
 
-    function setLocked(locked) {
-      document.body.classList.toggle('locked', !!locked);
-    }
+	    function setLocked(locked) {
+	      document.body.classList.toggle('locked', !!locked);
+	    }
 
-    function scheduleReconnect(sessionId) {
-      const conn = ensureConnection(sessionId);
-      if (!conn.allowReconnect) return;
-      if (!tokenOverlay.classList.contains('hidden')) return;
-      if (conn.reconnectTimer) return;
-      conn.reconnectTimer = setTimeout(() => {
-        conn.reconnectTimer = null;
-        connect(sessionId);
-      }, 1500);
-    }
+	    function stopHeartbeat(conn) {
+	      if (!conn?.heartbeatTimer) return;
+	      try {
+	        clearInterval(conn.heartbeatTimer);
+	      } catch {
+	        /* ignore */
+	      }
+	      conn.heartbeatTimer = null;
+	    }
+
+	    function startHeartbeat(sessionId, conn, socketId) {
+	      stopHeartbeat(conn);
+	      conn.lastPongAt = Date.now();
+	      conn.heartbeatTimer = setInterval(() => {
+	        if (socketId !== conn.generation) return;
+	        if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
+	        if (document.visibilityState === 'hidden') return;
+	        try {
+	          conn.ws.send(JSON.stringify({ type: 'ping' }));
+	        } catch {
+	          try {
+	            conn.ws.close(4410, 'heartbeat send failed');
+	          } catch {
+	            /* ignore */
+	          }
+	        }
+	      }, HEARTBEAT_INTERVAL_MS);
+	    }
+
+	    function scheduleReconnect(sessionId) {
+	      const conn = ensureConnection(sessionId);
+        if (!conn.allowReconnect) return;
+        if (!tokenOverlay.classList.contains('hidden')) return;
+        if (conn.reconnectTimer) return;
+        conn.reconnectTimer = setTimeout(() => {
+          conn.reconnectTimer = null;
+          connect(sessionId);
+        }, 1500);
+      }
 
     logEl.addEventListener('scroll', () => {
       const nearBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80;
@@ -661,19 +700,45 @@ export function renderLandingPageScript(idleMinutes: number): string {
       wrapper.className = 'msg ' + role + (options.status ? ' status' : '');
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
+      const showCopy = role === 'user' || role === 'ai';
+      const content = document.createElement('div');
       if (options.markdown) {
-        bubble.innerHTML = renderMarkdown(text);
+        content.innerHTML = renderMarkdown(text);
       } else if (options.html) {
-        bubble.innerHTML = text;
+        content.innerHTML = text;
       } else {
-        bubble.textContent = text;
+        content.textContent = text;
+      }
+      bubble.appendChild(content);
+      if (showCopy) {
+        const footer = document.createElement('div');
+        footer.className = 'bubble-footer';
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'copy-btn';
+        copyBtn.title = '复制';
+        copyBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75" /></svg>';
+        const checkIcon = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>';
+        const copyIcon = copyBtn.innerHTML;
+        copyBtn.addEventListener('click', () => {
+          navigator.clipboard.writeText(text).then(() => {
+            copyBtn.innerHTML = checkIcon;
+            copyBtn.classList.add('copied');
+            setTimeout(() => {
+              copyBtn.innerHTML = copyIcon;
+              copyBtn.classList.remove('copied');
+            }, 1500);
+          }).catch(() => {});
+        });
+        footer.appendChild(copyBtn);
+        bubble.appendChild(footer);
       }
       wrapper.appendChild(bubble);
       logEl.appendChild(wrapper);
       pruneLog();
       autoScrollIfNeeded();
       if (!options.skipCache) {
-        recordCache(role, text, options.status ? 'status' : undefined);
+        recordCache(role, text, options.kind || (options.status ? 'status' : undefined));
       }
       return { wrapper, bubble };
     }
@@ -718,8 +783,8 @@ export function renderLandingPageScript(idleMinutes: number): string {
       lastCommandText = '';
       if (clearPlan) {
         planTouched = false;
-        renderPlanStatus('生成计划中...');
-        savePlanCache([], currentSessionId);
+        // 不清空现有 plan，保留上一轮的计划直到收到新计划
+        // 避免每次发消息都闪烁
       }
     }
 
@@ -1034,18 +1099,13 @@ export function renderLandingPageScript(idleMinutes: number): string {
     function maybeRestoreWorkspace(sessionId, serverPath, conn) {
       const cached = getWorkspaceForSession(sessionId);
       if (!cached || cached === serverPath) return;
-      const payload = { type: 'command', payload: '/ads.cd ' + cached };
+      const payload = { type: 'command', payload: { command: '/cd ' + cached, silent: true } };
       const targetConn = conn || ensureConnection(sessionId);
-      targetConn.pendingSends = targetConn.pendingSends || [];
-      // 如果已连接，立即发送；否则排队
-      if (targetConn.ws && targetConn.ws.readyState === WebSocket.OPEN) {
-        try {
-          targetConn.ws.send(JSON.stringify(payload));
-        } catch {
-          targetConn.pendingSends.push(payload);
-        }
-      } else {
-        targetConn.pendingSends.push(payload);
+      if (!targetConn.ws || targetConn.ws.readyState !== WebSocket.OPEN) return;
+      try {
+        targetConn.ws.send(JSON.stringify(payload));
+      } catch {
+        /* ignore */
       }
     }
 
@@ -1204,37 +1264,117 @@ export function renderLandingPageScript(idleMinutes: number): string {
       });
     }
 
-    function renderHistory(items) {
-      if (!Array.isArray(items) || items.length === 0) {
-        return;
-      }
-      clearLogMessages();
-      items.forEach((item) => {
-        const role = item.role || item.r || 'status';
-        const text = item.text || item.t || '';
-        const kind = item.kind || item.k;
-        const isStatus = role === 'status' || kind === 'status' || kind === 'plan' || kind === 'error';
-        appendMessage(role === 'status' ? 'status' : role, text, { markdown: false, status: isStatus, skipCache: true });
-      });
-      autoScrollIfNeeded();
-    }
+	    function renderHistory(items) {
+	      if (!Array.isArray(items) || items.length === 0) {
+	        return;
+	      }
 
-    function restoreFromCache(sessionId) {
-      const cached = loadCache(sessionId);
-      if (!cached || cached.length === 0) return;
-      clearLogMessages();
-      cached.forEach((item) => {
-        const role = item.r || 'status';
-        const text = item.t || '';
-        const kind = item.k;
-        const isStatus = role === 'status' || kind === 'status';
-        appendMessage(role, text, { markdown: false, status: isStatus, skipCache: true });
-      });
-      pruneLog();
-      autoScrollIfNeeded();
+	      const isCdCommand = (role, text, kind) => {
+	        const trimmed = String(text || '').trim();
+	        if (!trimmed) return false;
+	        if (!/^\\/cd\\b/.test(trimmed)) return false;
+	        const normalizedRole = role || 'status';
+	        const normalizedKind =
+	          normalizedRole === 'status'
+	            ? 'status'
+	            : (kind || (trimmed.startsWith('/') ? 'command' : ''));
+	        return normalizedKind === 'command';
+	      };
+
+	      const normalizeKey = (role, text, kind) => {
+	        const normalizedRole = role || 'status';
+	        const trimmedText = String(text || '').trim();
+	        const normalizedKind =
+	          normalizedRole === 'status'
+	            ? 'status'
+	            : (kind || (trimmedText.startsWith('/') ? 'command' : ''));
+	        return normalizedRole + '|' + normalizedKind + '|' + trimmedText;
+	      };
+
+	      const cached = loadCache();
+	      const hasCache = Array.isArray(cached) && cached.length > 0;
+	      if (!hasCache) {
+	        clearLogMessages();
+	      }
+
+	      const cachedKeys = new Set(
+	        (cached || []).map((entry) => normalizeKey(entry?.r, entry?.t, entry?.k)),
+	      );
+
+	      let lastCdKey = null;
+	      items.forEach((item) => {
+	        const role = item.role || item.r || 'status';
+	        const text = item.text || item.t || '';
+	        const kind = item.kind || item.k;
+	        if (isCdCommand(role, text, kind)) {
+	          lastCdKey = normalizeKey(role, text, kind);
+	        }
+	      });
+
+	      items.forEach((item) => {
+	        const role = item.role || item.r || 'status';
+	        const text = item.text || item.t || '';
+	        const kind = item.kind || item.k;
+	        const key = normalizeKey(role, text, kind);
+	        if (lastCdKey && isCdCommand(role, text, kind) && key !== lastCdKey) {
+	          return;
+	        }
+	        if (kind === 'plan') {
+	          return;
+	        }
+	        if (cachedKeys.has(key)) {
+	          return;
+	        }
+	        const isStatus = role === 'status' || kind === 'status' || kind === 'error';
+	        appendMessage(role === 'status' ? 'status' : role, text, { markdown: false, status: isStatus, kind });
+	        cachedKeys.add(key);
+	      });
+	      autoScrollIfNeeded();
+	    }
+
+	    function restoreFromCache(sessionId) {
+	      const cached = loadCache(sessionId);
+	      if (!cached || cached.length === 0) return;
+	      clearLogMessages();
+	      const isCd = (role, text, kind) => {
+	        const trimmed = String(text || '').trim();
+	        if (!trimmed) return false;
+	        if (!/^\\/cd\\b/.test(trimmed)) return false;
+	        if (role === 'status') return false;
+	        const normalizedKind = kind || (trimmed.startsWith('/') ? 'command' : '');
+	        return normalizedKind === 'command';
+	      };
+	      let lastCdIndex = -1;
+	      cached.forEach((item, idx) => {
+	        const role = item.r || 'status';
+	        const text = item.t || '';
+	        const kind = item.k;
+	        if (isCd(role, text, kind)) {
+	          lastCdIndex = idx;
+	        }
+	      });
+	      cached.forEach((item, idx) => {
+	        const role = item.r || 'status';
+	        const text = item.t || '';
+	        const kind = item.k;
+	        if (isCd(role, text, kind) && idx !== lastCdIndex) {
+	          return;
+	        }
+	        const isStatus = role === 'status' || kind === 'status';
+	        appendMessage(role, text, { markdown: false, status: isStatus, skipCache: true });
+	      });
+	      pruneLog();
+	      autoScrollIfNeeded();
     }
 
     function resetIdleTimer() {
+      if (idleMinutes <= 0) {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+        return;
+      }
       if (idleTimer) {
         clearTimeout(idleTimer);
       }
@@ -1336,31 +1476,37 @@ export function renderLandingPageScript(idleMinutes: number): string {
       const activeSessionId = currentSessionId;
       const isActiveSession = !activeSessionId || sessionId === activeSessionId;
       withSessionContext(sessionId, () => {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === 'result') {
-            handleResult(msg, conn);
-          } else if (msg.type === 'delta') {
-            handleDelta(msg.delta || '');
+	        try {
+	          const msg = JSON.parse(ev.data);
+	          if (msg.type === 'pong') {
+	            conn.lastPongAt = Date.now();
+	            if (isBusy) {
+	              resetIdleTimer();
+	            }
+	            return;
+	          }
+	          if (msg.type === 'result') {
+	            handleResult(msg, conn);
+	          } else if (msg.type === 'delta') {
+	            handleDelta(msg.delta || '');
+	          } else if (msg.type === 'explored') {
+            handleExploredEntry(msg);
+            resetIdleTimer();
           } else if (msg.type === 'command') {
-            const cmd = msg.command || {};
-            renderCommandView({
-              id: cmd.id,
-              commandText: cmd.command || msg.detail || '',
-              detail: msg.detail,
-              status: cmd.status || 'in_progress',
-              output: cmd.aggregated_output || '',
-              exitCode: cmd.exit_code,
-            });
+            // Agent 执行的命令通过 Explored 显示，不再单独渲染 commandView
+            // 避免重复显示和 ANSI 乱码
             return;
           } else if (msg.type === 'history') {
             renderHistory(msg.items || []);
+            resetIdleTimer();
             return;
           } else if (msg.type === 'plan') {
             renderPlan(msg.items || []);
+            resetIdleTimer();
             return;
           } else if (msg.type === 'welcome') {
             setWsState('connected', sessionId);
+            resetIdleTimer();
             if (isActiveSession && msg.sessionId) {
               updateSessionLabel(msg.sessionId);
               saveSession(msg.sessionId);
@@ -1385,6 +1531,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
             if (isActiveSession) {
               renderWorkspaceInfo(msg.data);
             }
+            resetIdleTimer();
           } else if (msg.type === 'error') {
             clearTypingPlaceholder();
             streamState = null;
@@ -1430,46 +1577,67 @@ export function renderLandingPageScript(idleMinutes: number): string {
         ensureSessionView(sessionIdToUse);
       }
       const token = sessionStorage.getItem(TOKEN_KEY) || '';
-      if (!token) {
+      console.debug('[ADS-WS] connect start:', { sessionIdToUse, tokenRequired, hasToken: !!token, tokenLen: token.length });
+      if (tokenRequired && !token) {
+        console.warn('[ADS-WS] token required but not found in sessionStorage');
         tokenOverlay.classList.remove('hidden');
-        tokenInput.focus();
+        setTimeout(() => tokenInput?.focus?.(), 0);
         setLocked(true);
         return null;
       }
-      tokenOverlay.classList.add('hidden');
-      setLocked(false);
-      if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) {
-        return conn.ws;
-      }
-      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
-      conn.generation += 1;
-      const socketId = conn.generation;
-      conn.pendingSends = conn.pendingSends || [];
+	      tokenOverlay.classList.add('hidden');
+	      setLocked(false);
+	      if (conn.ws && (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)) {
+	        console.debug('[ADS-WS] WS already exists, reusing:', { state: conn.ws.readyState });
+	        if (conn.ws.readyState === WebSocket.OPEN && !conn.heartbeatTimer) {
+	          startHeartbeat(sessionIdToUse, conn, conn.generation);
+	        }
+	        return conn.ws;
+	      }
+	      stopHeartbeat(conn);
+	      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname;
+	      conn.generation += 1;
+	      const socketId = conn.generation;
+	      conn.pendingSends = conn.pendingSends || [];
       withSessionContext(sessionIdToUse, () => {
         streamState = null;
         clearTypingPlaceholder();
         resetCommandView(false);
         setWsState('connecting', sessionIdToUse);
       });
-      conn.ws = new WebSocket(url, ['ads-token', token, 'ads-session', sessionIdToUse]);
-      conn.ws.onopen = () => {
-        if (socketId !== conn.generation) return;
-        if (conn.reconnectTimer) {
-          clearTimeout(conn.reconnectTimer);
+      const tokenProto = token ? 'ads-token.' + encodeBase64Url(token) : '';
+      const protocols = ['ads-v1', tokenProto, 'ads-session.' + sessionIdToUse].filter(Boolean);
+        console.debug('[ADS-WS] creating WebSocket:', {
+          url,
+          protocolCount: protocols.length,
+          protocols: protocols.map((p) => (p.startsWith('ads-token') ? 'ads-token.*' : p)),
+        });
+	      conn.ws = new WebSocket(url, protocols);
+	      conn.ws.onopen = () => {
+	        console.debug('[ADS-WS] onopen event fired', { socketId, generation: conn.generation, sessionId: sessionIdToUse });
+	        if (socketId !== conn.generation) {
+	          console.warn('[ADS-WS] onopen: generation mismatch, ignoring', { socketId, generation: conn.generation });
+	          return;
+	        }
+	        if (conn.reconnectTimer) {
+	          clearTimeout(conn.reconnectTimer);
           conn.reconnectTimer = null;
         }
         if (conn.wsErrorMessage?.wrapper?.isConnected) {
           conn.wsErrorMessage.wrapper.remove();
           conn.wsErrorMessage = null;
         }
-        conn.switchNoticeShown = false;
-        setWsState('connected', sessionIdToUse);
-        resetIdleTimer();
-        setLocked(false);
-        // flush pending sends
-        const pending = [...conn.pendingSends];
+	        conn.switchNoticeShown = false;
+	        setWsState('connected', sessionIdToUse);
+	        startHeartbeat(sessionIdToUse, conn, socketId);
+	        resetIdleTimer();
+	        setLocked(false);
+	        console.log('[ADS-WS] connected successfully, flushing pending sends:', { count: conn.pendingSends.length });
+	        // flush pending sends (skip entries with null/undefined payload to avoid server errors)
+	        const pending = [...conn.pendingSends];
         conn.pendingSends = [];
         pending.forEach(({ type, payload }) => {
+          if (payload == null) return; // skip invalid payloads from state restoration
           try {
             conn.ws?.send(JSON.stringify({ type, payload }));
           } catch {
@@ -1481,18 +1649,40 @@ export function renderLandingPageScript(idleMinutes: number): string {
         if (socketId !== conn.generation) return;
         handleWsMessageForSession(sessionIdToUse, conn, ev);
       };
-      conn.ws.onclose = (ev) => {
-        if (socketId !== conn.generation) return;
-        withSessionContext(sessionIdToUse, () => {
-          setWsState('disconnected', sessionIdToUse);
-          setBusy(false);
+        conn.ws.onclose = (ev) => {
+          console.warn('[ADS-WS] onclose event:', {
+            socketId,
+            generation: conn.generation,
+            code: ev.code,
+            reason: ev.reason,
+            wasClean: ev.wasClean,
+          });
+	        if (socketId !== conn.generation) {
+	          console.warn('[ADS-WS] onclose: generation mismatch, ignoring');
+	          return;
+	        }
+	        stopHeartbeat(conn);
+	        withSessionContext(sessionIdToUse, () => {
+	          const wasBusy = isBusy;
+	          setWsState('disconnected', sessionIdToUse);
+	          setBusy(false);
           clearTypingPlaceholder(sessionIdToUse);
           streamState = null;
+          if (ev.code !== 4401 && ev.code !== 4409) {
+            const code = ev.code || 1006;
+            const reason = ev.reason ? ', ' + ev.reason : '';
+            const note = wasBusy ? '（执行中断）' : '';
+            const text = '连接已断开' + note + '（code=' + code + reason + '），正在尝试重连…';
+            if (!conn.wsErrorMessage || !conn.wsErrorMessage.wrapper?.isConnected) {
+              conn.wsErrorMessage = appendMessage('ai', text, { status: true, skipCache: !wasBusy });
+            }
+          }
         });
         if (idleTimer) {
           clearTimeout(idleTimer);
         }
         if (ev.code === 4401) {
+          console.error('[ADS-WS] auth failed (4401), clearing token');
           sessionStorage.removeItem(TOKEN_KEY);
           tokenOverlay.classList.remove('hidden');
           tokenInput.value = '';
@@ -1503,6 +1693,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
           clearSession();
           conn.allowReconnect = false;
         } else if (ev.code === 4409) {
+          console.warn('[ADS-WS] max clients reached (4409)');
           if (!conn.suppressSwitchNotice && !conn.switchNoticeShown) {
             withSessionContext(sessionIdToUse, () => {
               appendMessage('ai', '已有新连接，当前会话被替换或已达上限', { status: true, skipCache: true });
@@ -1519,12 +1710,17 @@ export function renderLandingPageScript(idleMinutes: number): string {
         }
         scheduleReconnect(sessionIdToUse);
       };
-      conn.ws.onerror = (err) => {
-        if (socketId !== conn.generation) return;
-        withSessionContext(sessionIdToUse, () => {
-          setWsState('disconnected', sessionIdToUse);
-          setBusy(false);
-          clearTypingPlaceholder(sessionIdToUse);
+	      conn.ws.onerror = (err) => {
+	        console.error('[ADS-WS] onerror event:', { socketId, generation: conn.generation, err });
+	        if (socketId !== conn.generation) {
+	          console.warn('[ADS-WS] onerror: generation mismatch, ignoring');
+	          return;
+	        }
+	        stopHeartbeat(conn);
+	        withSessionContext(sessionIdToUse, () => {
+	          setWsState('disconnected', sessionIdToUse);
+	          setBusy(false);
+	          clearTypingPlaceholder(sessionIdToUse);
           streamState = null;
           const message =
             err && typeof err === 'object' && 'message' in err && err.message ? String(err.message) : 'WebSocket error';
@@ -1613,6 +1809,66 @@ export function renderLandingPageScript(idleMinutes: number): string {
       appendMessage('ai', output || '(无输出)', { markdown: true });
     }
 
+    let exploredContainer = null;
+    let exploredEntries = [];
+
+    function handleExploredEntry(msg) {
+      const entry = msg.entry;
+      if (!entry || (!entry.category && !entry.summary)) return;
+      
+      exploredEntries.push(entry);
+      
+      if (msg.header || !exploredContainer) {
+        // 有实际活动了，清除 typing placeholder
+        clearTypingPlaceholder();
+        // Create new explored container
+        exploredContainer = document.createElement('div');
+        exploredContainer.className = 'explored-container';
+        const header = document.createElement('div');
+        header.className = 'explored-header';
+        header.textContent = 'Explored';
+        exploredContainer.appendChild(header);
+        logEl.appendChild(exploredContainer);
+      }
+      
+      const line = document.createElement('div');
+      line.className = 'explored-entry';
+      const prefix = document.createElement('span');
+      prefix.className = 'explored-prefix';
+      prefix.textContent = '  ├ ';
+      const category = document.createElement('span');
+      category.className = 'explored-category';
+      category.textContent = entry.category || '';
+      const summary = document.createElement('span');
+      summary.className = 'explored-summary';
+      summary.textContent = ' ' + (entry.summary || '');
+      line.appendChild(prefix);
+      line.appendChild(category);
+      line.appendChild(summary);
+      exploredContainer.appendChild(line);
+      autoScrollIfNeeded();
+    }
+
+    function clearExploredState() {
+      exploredContainer = null;
+      exploredEntries = [];
+    }
+
+    function renderExplored(entries) {
+      if (!Array.isArray(entries) || entries.length === 0) return '';
+      const filtered = entries.filter(entry => entry && (entry.category || entry.summary));
+      if (filtered.length === 0) return '';
+      const lines = ['Explored'];
+      filtered.forEach((entry, idx) => {
+        const category = entry.category || '';
+        const summary = entry.summary || '';
+        const prefix = idx === filtered.length - 1 ? '  └ ' : '  ├ ';
+        lines.push(prefix + category + (summary ? ' ' + summary : ''));
+      });
+      const text = lines.join('\\n');
+      return '<pre class="code-block"><code>' + escapeHtml(text) + '</code></pre>';
+    }
+
     function handleResult(msg, conn) {
       const queued = conn?.pendingSends?.shift() || { type: 'prompt' };
       const kind = queued.type || queued;
@@ -1624,8 +1880,13 @@ export function renderLandingPageScript(idleMinutes: number): string {
         return;
       }
       finalizeStream(msg.output || '');
+      clearExploredState();
+      // 保留现有 plan，只有当没有缓存且本轮没有新 plan 时才显示提示
       if (!planTouched) {
-        renderPlanStatus('本轮未生成计划');
+        const cachedPlan = loadPlanCache(currentSessionId);
+        if (!cachedPlan || cachedPlan.length === 0) {
+          renderPlanStatus('本轮未生成计划');
+        }
       }
       resetIdleTimer();
       setBusy(false);
@@ -1753,7 +2014,7 @@ export function renderLandingPageScript(idleMinutes: number): string {
       renderAttachments();
     }
 
-    tokenSubmit.addEventListener('click', () => {
+    function submitToken() {
       const token = tokenInput.value.trim();
       if (!token) return;
       sessionStorage.setItem(TOKEN_KEY, token);
@@ -1765,13 +2026,16 @@ export function renderLandingPageScript(idleMinutes: number): string {
       restoreFromCache();
       restorePlanFromCache();
       connect();
+    }
+
+    tokenForm?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitToken();
     });
 
-    tokenInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        tokenSubmit.click();
-      }
+    tokenSubmit?.addEventListener('click', (e) => {
+      e.preventDefault?.();
+      submitToken();
     });
 
     connect();

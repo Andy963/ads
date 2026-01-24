@@ -28,8 +28,8 @@ const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
     description: "查看最近的 workflow commit 日志，可指定条数与工作流",
   },
   {
-    usage: "/ads.new <title>",
-    description: "创建新的工作流（使用统一模板），可附加描述",
+    usage: "/ads.new <title> [--template_id=<unified|adhoc>]",
+    description: "创建新的工作流（默认 unified；adhoc=直通模式，仅创建 task 一步），可附加描述",
   },
   {
     usage: "/ads.commit <step>",
@@ -52,6 +52,10 @@ const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
     description: "将节点内容同步写入文件系统",
   },
   {
+    usage: "/ads.tasks [active] [--limit=<n>]",
+    description: "查看协作任务状态（active 仅显示未完成任务）",
+  },
+  {
     usage: "/ads.help",
     description: "显示命令帮助",
   },
@@ -72,10 +76,10 @@ export function buildAdsHelpMessage(format: WorkflowTextFormat): string {
   }
 
   if (format === "cli") {
-    lines.push("  直接输入文字或 /model 等命令发送给 Codex");
+    lines.push("  直接输入文字（非 /ads.* 命令）即可发送给 Codex");
     lines.push("  /exit 退出");
   } else {
-    lines.push("- 直接输入文字或 `/model` 等命令与 Codex 对话");
+    lines.push("- 直接输入文字（非 `/ads.*` 命令）即可与 Codex 对话");
     lines.push("- 在 CLI 中输入 `/exit` 退出");
   }
 

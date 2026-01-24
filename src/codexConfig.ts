@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseToml } from "toml";
+import type { ModelReasoningEffort } from "@openai/codex-sdk";
 import { createLogger } from "./utils/logger.js";
 
 const logger = createLogger("CodexConfig");
@@ -9,6 +10,7 @@ const logger = createLogger("CodexConfig");
 export interface CodexOverrides {
   baseUrl?: string;
   apiKey?: string;
+  modelReasoningEffort?: ModelReasoningEffort;
 }
 
 export type CodexAuthMode = "apiKey" | "deviceAuth";
@@ -17,6 +19,7 @@ export interface CodexResolvedConfig {
   baseUrl?: string;
   apiKey?: string;
   authMode: CodexAuthMode;
+  modelReasoningEffort?: ModelReasoningEffort;
 }
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -33,7 +36,12 @@ export function resolveCodexConfig(
     process.env.OPENAI_API_KEY ||
     process.env.CCHAT_OPENAI_API_KEY;
 
-  const { baseUrl: configBaseUrl, apiKey: configApiKey, hasDeviceAuthTokens } = loadCodexFiles();
+  const {
+    baseUrl: configBaseUrl,
+    apiKey: configApiKey,
+    hasDeviceAuthTokens,
+    modelReasoningEffort: configReasoningEffort,
+  } = loadCodexFiles();
 
   const apiKey = overrides.apiKey || envApiKey || configApiKey;
   const apiKeySource = overrides.apiKey
@@ -66,7 +74,12 @@ export function resolveCodexConfig(
     );
   }
 
-  return { baseUrl, apiKey, authMode };
+  return {
+    baseUrl,
+    apiKey,
+    authMode,
+    modelReasoningEffort: overrides.modelReasoningEffort ?? configReasoningEffort,
+  };
 }
 
 export function maskKey(key?: string): string {
@@ -101,6 +114,17 @@ export function parseSlashCommand(
   };
 }
 
+function parseReasoningEffort(value: unknown): ModelReasoningEffort | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "minimal" || normalized === "low" || normalized === "medium" || normalized === "high" || normalized === "xhigh") {
+    return normalized as ModelReasoningEffort;
+  }
+  return undefined;
+}
+
 function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens: boolean } {
   const home = homedir();
   const codexDir = join(home, ".codex");
@@ -131,7 +155,24 @@ function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens:
           if (typeof apiKey === "string") {
             result.apiKey = apiKey;
           }
+          const reasoningEffort = parseReasoningEffort(
+            section["model_reasoning_effort"] ??
+            section["reasoning_effort"] ??
+            section["modelReasoningEffort"],
+          );
+          if (reasoningEffort) {
+            result.modelReasoningEffort = reasoningEffort;
+          }
         }
+      }
+
+      const topReasoning = parseReasoningEffort(
+        parsed["model_reasoning_effort"] ??
+        parsed["reasoning_effort"] ??
+        parsed["modelReasoningEffort"],
+      );
+      if (topReasoning && !result.modelReasoningEffort) {
+        result.modelReasoningEffort = topReasoning;
       }
 
       if (!result.baseUrl && providers) {
@@ -142,6 +183,23 @@ function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens:
               result.baseUrl = baseUrl;
               break;
             }
+          }
+        }
+      }
+
+      if (!result.modelReasoningEffort && providers) {
+        for (const value of Object.values(providers)) {
+          if (!value || typeof value !== "object") {
+            continue;
+          }
+          const reasoningEffort = parseReasoningEffort(
+            (value as Record<string, unknown>)["model_reasoning_effort"] ??
+            (value as Record<string, unknown>)["reasoning_effort"] ??
+            (value as Record<string, unknown>)["modelReasoningEffort"],
+          );
+          if (reasoningEffort) {
+            result.modelReasoningEffort = reasoningEffort;
+            break;
           }
         }
       }

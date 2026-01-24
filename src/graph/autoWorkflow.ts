@@ -37,6 +37,9 @@ const FLOW_RULES: Record<string, FlowRule> = {
   implementation: {
     next_type: null,
   },
+  task: {
+    next_type: null,
+  },
 };
 
 export function createWorkflowFromConfig(params: {

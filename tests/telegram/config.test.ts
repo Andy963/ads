@@ -41,10 +41,13 @@ describe('Telegram Config', () => {
   it('should use default values for optional configs', () => {
     process.env.TELEGRAM_BOT_TOKEN = 'test-token';
     process.env.TELEGRAM_ALLOWED_USERS = '123456';
+    delete process.env.TELEGRAM_MAX_RPM;
+    delete process.env.TELEGRAM_SESSION_TIMEOUT;
 
     const config = loadTelegramConfig();
 
     assert.strictEqual(config.maxRequestsPerMinute, 10);
-    assert.ok(config.sessionTimeoutMs > 0);
+    // Default disables session timeout cleanup.
+    assert.strictEqual(config.sessionTimeoutMs, 0);
   });
 });

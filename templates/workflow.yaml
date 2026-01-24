@@ -29,3 +29,19 @@ steps:
       - node_type: implementation
         label: 实施
         description: 执行实现、测试、上线与验证记录
+
+---
+
+key: adhoc
+name: 直通模式
+description: 直接进入任务执行，不走 req/design/implementation 三步
+icon: "⚡"
+steps:
+  - step_number: 1
+    label: 任务
+    required: true
+    default_option: task
+    options:
+      - node_type: task
+        label: 任务
+        description: 直接记录目标/约束/执行清单与产出

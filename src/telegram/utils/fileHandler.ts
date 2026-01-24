@@ -1,10 +1,12 @@
 import { Api } from 'grammy';
 import { createWriteStream, createReadStream, existsSync, mkdirSync, statSync, unlinkSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import https from 'node:https';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 
 import { createLogger } from '../../utils/logger.js';
+import { resolveTelegramProxyAgent } from './proxyAgent.js';
 
 const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-files');
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB Telegram 限制
@@ -25,6 +27,36 @@ function ensureDownloadDir(): void {
   if (!existsSync(DOWNLOAD_DIR)) {
     mkdirSync(DOWNLOAD_DIR, { recursive: true });
   }
+}
+
+function createTimeoutSignal(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup: () => void; didTimeout: () => boolean } {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  const abortHandler = () => controller.abort();
+  if (parent) {
+    if (parent.aborted) {
+      controller.abort();
+    } else {
+      parent.addEventListener('abort', abortHandler);
+    }
+  }
+
+  const cleanup = () => {
+    clearTimeout(timeout);
+    if (parent) {
+      parent.removeEventListener('abort', abortHandler);
+    }
+  };
+
+  return { signal: controller.signal, cleanup, didTimeout: () => timedOut };
 }
 
 /**
@@ -58,24 +90,45 @@ export async function downloadTelegramFile(
     
     // 下载文件
     const fileUrl = `https://api.telegram.org/file/bot${api.token}/${file.file_path}`;
-    const response = await fetch(fileUrl, { signal });
-    
-    if (!response.ok) {
-      throw new Error(`下载失败: ${response.statusText}`);
+    const agent = resolveTelegramProxyAgent();
+    const { signal: combinedSignal, cleanup, didTimeout } = createTimeoutSignal(signal, 30_000);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const req = https.request(fileUrl, { agent, signal: combinedSignal }, (res) => {
+          const statusCode = res.statusCode ?? 0;
+          if (statusCode < 200 || statusCode >= 300) {
+            const statusText = `${statusCode} ${res.statusMessage ?? ''}`.trim();
+            res.resume();
+            reject(new Error(`下载失败: HTTP ${statusText}`));
+            return;
+          }
+
+          const fileStream = createWriteStream(localPath);
+          pipeline(res, fileStream).then(resolve).catch(reject);
+        });
+
+        req.on('error', reject);
+        req.end();
+      });
+    } catch (error) {
+      cleanupFile(localPath);
+      if ((error as Error).name === 'AbortError') {
+        const abortError = new Error(didTimeout() ? '文件下载超时' : '文件下载被中断');
+        abortError.name = 'AbortError';
+        throw abortError;
+      }
+      throw error;
+    } finally {
+      cleanup();
     }
-    
-    // 保存到本地
-    const buffer = await response.arrayBuffer();
-    const fs = await import('node:fs/promises');
-    await fs.writeFile(localPath, Buffer.from(buffer));
-    
-    logger.info(`Downloaded file: ${localPath} (${formatFileSize(buffer.byteLength)})`);
+
+    const stats = statSync(localPath);
+    logger.info(`Downloaded file: ${localPath} (${formatFileSize(stats.size)})`);
     return localPath;
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
-      const abortError = new Error('文件下载被中断');
-      abortError.name = 'AbortError';
-      throw abortError;
+      throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`文件下载失败: ${redactTelegramToken(message, api.token)}`);

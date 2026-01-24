@@ -51,6 +51,20 @@ describe("state/database", () => {
     assert.ok(columnNames.includes("updated_at"));
   });
 
+  it("should create tasks tables", () => {
+    const db = getStateDatabase();
+    const taskInfo = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+    const taskColumns = taskInfo.map((col) => col.name);
+    assert.ok(taskColumns.includes("task_id"));
+    assert.ok(taskColumns.includes("status"));
+    assert.ok(taskColumns.includes("spec_json"));
+
+    const msgInfo = db.prepare("PRAGMA table_info(task_messages)").all() as Array<{ name: string }>;
+    const msgColumns = msgInfo.map((col) => col.name);
+    assert.ok(msgColumns.includes("task_id"));
+    assert.ok(msgColumns.includes("payload"));
+  });
+
   it("should enable WAL mode", () => {
     const db = getStateDatabase();
     const result = db.pragma("journal_mode") as Array<{ journal_mode: string }>;
@@ -63,4 +77,3 @@ describe("state/database", () => {
     assert.strictEqual(result[0].foreign_keys, 1, "Foreign keys should be enabled");
   });
 });
-
