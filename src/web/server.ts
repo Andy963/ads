@@ -21,7 +21,6 @@ import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
 import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
 import { DirectoryManager } from "../telegram/utils/directoryManager.js";
-import { checkWorkspaceInit } from "../telegram/utils/workspaceInitChecker.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { AgentIdentifier } from "../agents/types.js";
@@ -48,8 +47,6 @@ import { OrchestratorTaskExecutor } from "../tasks/executor.js";
 import type { TaskStatus as QueueTaskStatus } from "../tasks/types.js";
 import { AsyncLock } from "../utils/asyncLock.js";
 
-import { renderLandingPage as renderLandingPageTemplate } from "./landingPage.js";
-
 import {
   loadCwdStore,
   persistCwdStore,
@@ -73,9 +70,6 @@ const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
 // <= 0 disables WebSocket ping keepalive.
 const pingIntervalMsRaw = Number(process.env.ADS_WEB_WS_PING_INTERVAL_MS ?? 15_000);
 const WS_PING_INTERVAL_MS = Number.isFinite(pingIntervalMsRaw) ? Math.max(0, pingIntervalMsRaw) : 15_000;
-// <= 0 disables web idle auto-lock / websocket close.
-const idleMinutesRaw = Number(process.env.ADS_WEB_IDLE_MINUTES ?? 0);
-const IDLE_MINUTES = Number.isFinite(idleMinutesRaw) ? Math.max(0, idleMinutesRaw) : 0;
 const logger = createLogger("WebSocket");
 const WS_READY_OPEN = 1;
 
@@ -325,6 +319,21 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(raw) as unknown;
 }
 
+async function readRawBody(req: http.IncomingMessage, options?: { maxBytes?: number }): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const maxBytes = Math.max(1, options?.maxBytes ?? 25 * 1024 * 1024);
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    if (total > maxBytes) {
+      throw new Error("Request body too large");
+    }
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
+}
+
 function createHttpServer(options: { handleApiRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> }): http.Server {
   const distWebDir = path.join(process.cwd(), "dist", "web");
 
@@ -442,15 +451,6 @@ function createHttpServer(options: { handleApiRequest?: (req: http.IncomingMessa
         res.writeHead(200).end("ok");
         return;
       }
-      if (url.startsWith("/console")) {
-        // Explicit legacy console route for setups that want tasks UI on "/".
-        res.writeHead(200, {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
-        });
-        res.end(renderLandingPage());
-        return;
-      }
       serveTasksUi(res, url);
       return;
     }
@@ -490,10 +490,6 @@ function sendWorkspaceState(ws: WebSocket, workspaceRoot: string): void {
   }
 }
 
-function renderLandingPage(): string {
-  return renderLandingPageTemplate({ idleMinutes: IDLE_MINUTES, tokenRequired: Boolean(TOKEN) });
-}
-
 function decodeBase64Url(input: string): string {
   const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
@@ -506,6 +502,7 @@ function decodeBase64Url(input: string): string {
 
 async function start(): Promise<void> {
   const workspaceRoot = detectWorkspace();
+  const allowedDirs = resolveAllowedDirs(workspaceRoot);
 
   const taskStore = new QueueTaskStore({ workspacePath: workspaceRoot });
   const taskQueueStatusUserId = 0;
@@ -570,6 +567,179 @@ async function start(): Promise<void> {
     handleApiRequest: async (req, res) => {
       const url = new URL(req.url ?? "", "http://localhost");
       const pathname = url.pathname;
+
+      if (req.method === "POST" && pathname === "/api/audio/transcriptions") {
+        const togetherKey = String(process.env.TOGETHER_API_KEY ?? "").trim();
+        if (!togetherKey) {
+          sendJson(res, 500, { error: "未配置 TOGETHER_API_KEY" });
+          return true;
+        }
+
+        let contentType = String(req.headers["content-type"] ?? "").trim();
+        if (contentType.includes(";")) {
+          contentType = contentType.split(";")[0]!.trim();
+        }
+        if (!contentType) {
+          contentType = "application/octet-stream";
+        }
+
+        let audio: Buffer;
+        try {
+          audio = await readRawBody(req, { maxBytes: 25 * 1024 * 1024 });
+        } catch (error) {
+          const rawMessage = error instanceof Error ? error.message : String(error);
+          const message = rawMessage === "Request body too large" ? "音频过大（>25MB）" : rawMessage;
+          sendJson(res, 413, { error: message });
+          return true;
+        }
+        if (!audio || audio.length === 0) {
+          sendJson(res, 400, { error: "音频为空" });
+          return true;
+        }
+
+	        const ext = (() => {
+	          const t = contentType.toLowerCase();
+	          if (t.includes("webm")) return "webm";
+	          if (t.includes("ogg")) return "ogg";
+	          if (t.includes("wav")) return "wav";
+	          if (t.includes("mpeg") || t.includes("mp3")) return "mp3";
+	          if (t.includes("mp4") || t.includes("m4a")) return "m4a";
+	          return "bin";
+	        })();
+
+          const audioArrayBuffer = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
+
+	        const form = new FormData();
+	        form.append("model", "openai/whisper-large-v3");
+	        form.append("file", new Blob([audioArrayBuffer], { type: contentType }), `recording.${ext}`);
+
+        const controller = new AbortController();
+        const timeoutMsRaw = Number(process.env.ADS_TOGETHER_AUDIO_TIMEOUT_MS ?? 60_000);
+        const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(1000, timeoutMsRaw) : 60_000;
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          const upstream = await fetch("https://api.together.xyz/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${togetherKey}` },
+            body: form,
+            signal: controller.signal,
+          });
+
+          const raw = await upstream.text().catch(() => "");
+          let parsed: unknown = null;
+          try {
+            parsed = raw ? (JSON.parse(raw) as unknown) : null;
+          } catch {
+            parsed = null;
+          }
+
+          if (!upstream.ok) {
+            const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+            const nestedError = record?.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
+            const message =
+              String(nestedError?.message ?? record?.message ?? record?.error ?? raw ?? "").trim() ||
+              `上游服务错误（${upstream.status}）`;
+            sendJson(res, 502, { error: message });
+            return true;
+          }
+
+          const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+          const text =
+            typeof record?.text === "string"
+              ? record.text
+              : typeof record?.transcript === "string"
+                ? record.transcript
+                : typeof record?.transcription === "string"
+                  ? record.transcription
+                  : "";
+
+          sendJson(res, 200, { ok: true, text });
+          return true;
+        } catch (error) {
+          const aborted = controller.signal.aborted;
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, aborted ? 504 : 502, { error: aborted ? "语音识别超时" : message });
+          return true;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      if (req.method === "GET" && pathname === "/api/paths/validate") {
+        const candidate = url.searchParams.get("path")?.trim() ?? "";
+        const directoryManager = new DirectoryManager(allowedDirs);
+        if (!candidate) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: false,
+            exists: false,
+            isDirectory: false,
+            error: "缺少 path 参数",
+          });
+          return true;
+        }
+
+        const absolutePath = path.resolve(candidate);
+        if (!directoryManager.validatePath(absolutePath)) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: false,
+            exists: false,
+            isDirectory: false,
+            error: "目录不在白名单内",
+            allowedDirs,
+          });
+          return true;
+        }
+
+        if (!fs.existsSync(absolutePath)) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: true,
+            exists: false,
+            isDirectory: false,
+            resolvedPath: absolutePath,
+            error: "目录不存在",
+          });
+          return true;
+        }
+
+        let resolvedPath = absolutePath;
+        try {
+          resolvedPath = fs.realpathSync(absolutePath);
+        } catch {
+          resolvedPath = absolutePath;
+        }
+
+        let isDirectory = false;
+        try {
+          isDirectory = fs.statSync(resolvedPath).isDirectory();
+        } catch {
+          isDirectory = false;
+        }
+
+        if (!isDirectory) {
+          sendJson(res, 200, {
+            ok: false,
+            allowed: true,
+            exists: true,
+            isDirectory: false,
+            resolvedPath,
+            error: "路径存在但不是目录",
+          });
+          return true;
+        }
+
+        sendJson(res, 200, {
+          ok: true,
+          allowed: true,
+          exists: true,
+          isDirectory: true,
+          resolvedPath,
+        });
+        return true;
+      }
 
       if (req.method === "GET" && pathname === "/api/models") {
         const allowedModels = ["gpt-5.1", "gpt-5.2"];
@@ -879,7 +1049,6 @@ async function start(): Promise<void> {
     logger.warn(`[Web] Failed to sync templates: ${(error as Error).message}`);
   }
   await ensureWebPidFile(workspaceRoot);
-  const allowedDirs = resolveAllowedDirs(workspaceRoot);
   const clients: Set<WebSocket> = new Set();
 
   broadcast = (payload: unknown) => {
@@ -1089,7 +1258,7 @@ async function start(): Promise<void> {
         return { ...entry, text: cleanedText };
       });
       // /cd is a workspace state change and can repeat on reconnect; keep only the latest one to avoid UI spam.
-      const cdPattern = /^\/(?:ads\.)?cd\b/i;
+      const cdPattern = /^\/cd\b/i;
       const isCdCommand = (entry: { role: string; text: string }) =>
         entry.role === "user" && cdPattern.test(String(entry.text ?? "").trim());
       let lastCdIndex = -1;
@@ -1395,7 +1564,7 @@ async function start(): Promise<void> {
 
 	      const slash = parseSlashCommand(command);
 	      const normalizedSlash = slash?.command?.toLowerCase();
-	      const isCdCommand = normalizedSlash === "cd" || normalizedSlash === "ads.cd";
+	      const isCdCommand = normalizedSlash === "cd";
       if (!isSilentCommandPayload && !isCdCommand) {
         sessionLogger?.logInput(command);
         historyStore.add(historyKey, { role: "user", text: command, ts: Date.now() });
@@ -1488,20 +1657,11 @@ async function start(): Promise<void> {
         }
         orchestrator = sessionManager.getOrCreate(userId, currentCwd);
 
-        const initStatus = checkWorkspaceInit(currentCwd);
         let message = `✅ 已切换到: ${currentCwd}`;
         if (prevCwd !== currentCwd) {
           message += "\n💡 代理上下文已切换到新目录";
         } else {
           message += "\nℹ️ 已在相同目录，无需重置会话";
-        }
-        if (!initStatus.initialized) {
-          const missing = initStatus.missingArtifact ?? "ADS 必需文件";
-          message += `\n⚠️ 检测到该目录尚未初始化 ADS（缺少 ${missing}）。\n如需初始化请运行 /ads.init`;
-          logger.warn(
-            `[Web][WorkspaceInit] path=${currentCwd} missing=${missing}${initStatus.details ? ` details=${initStatus.details}` : ""
-            }`,
-          );
         }
 	        if (!isSilentCommandPayload) {
 	          safeJsonSend(ws, { type: "result", ok: true, output: message });

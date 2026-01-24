@@ -1,17 +1,21 @@
-import { CodexSession, type CodexSessionOptions, type CodexSendOptions, type CodexSendResult } from '../../codex/codexChat.js';
 import type { SandboxMode } from '../config.js';
 import { createLogger } from '../../utils/logger.js';
 import type { AgentEvent } from '../../codex/events.js';
 import type { Input } from '@openai/codex-sdk';
+import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
+import { HybridOrchestrator } from '../../agents/orchestrator.js';
+import type { AgentRunResult, AgentSendOptions } from '../../agents/types.js';
+import { ConversationLogger } from '../../utils/conversationLogger.js';
 
 interface SessionRecord {
-  session: CodexSession;
+  session: HybridOrchestrator;
   lastActivity: number;
   cwd: string;
+  logger?: ConversationLogger;
 }
 
 export interface SessionWrapper {
-  send(prompt: Input, options?: CodexSendOptions): Promise<CodexSendResult>;
+  send(prompt: Input, options?: AgentSendOptions): Promise<AgentRunResult>;
   onEvent(handler: (event: AgentEvent) => void): () => void;
   getThreadId(): string | null;
   reset(): void;
@@ -38,6 +42,7 @@ export class SessionManager {
     private readonly cleanupIntervalMs: number = 5 * 60 * 1000,
     sandboxMode: SandboxMode = 'workspace-write',
     defaultModel?: string,
+    _threadStorage?: unknown,
   ) {
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
@@ -48,7 +53,7 @@ export class SessionManager {
     }
   }
 
-  getOrCreate(userId: number, cwd?: string): SessionWrapper {
+  getOrCreate(userId: number, cwd?: string, _resumeThread?: boolean): HybridOrchestrator {
     const existing = this.sessions.get(userId);
     
     if (existing) {
@@ -56,8 +61,10 @@ export class SessionManager {
       if (cwd && cwd !== existing.cwd) {
         existing.cwd = cwd;
         existing.session.setWorkingDirectory(cwd);
+        existing.logger?.close();
+        existing.logger = undefined;
       }
-      return this.wrapSession(existing.session);
+      return existing.session;
     }
 
     const userModel = this.userModels.get(userId) || this.defaultModel;
@@ -67,15 +74,20 @@ export class SessionManager {
       `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
     );
 
-    const options: CodexSessionOptions = {
+    const adapter = new CodexAgentAdapter({
       streamingEnabled: true,
       sandboxMode: this.sandboxMode,
       model: userModel,
       workingDirectory: effectiveCwd,
       networkAccessEnabled: true,
-    };
+    });
 
-    const session = new CodexSession(options);
+    const session = new HybridOrchestrator({
+      adapters: [adapter],
+      defaultAgentId: "codex",
+      initialWorkingDirectory: effectiveCwd,
+      initialModel: userModel,
+    });
 
     this.sessions.set(userId, {
       session,
@@ -83,24 +95,7 @@ export class SessionManager {
       cwd: effectiveCwd,
     });
 
-    return this.wrapSession(session);
-  }
-
-  private wrapSession(session: CodexSession): SessionWrapper {
-    return {
-      send: session.send.bind(session),
-      onEvent: session.onEvent.bind(session),
-      getThreadId: session.getThreadId.bind(session),
-      reset: session.reset.bind(session),
-      setModel: session.setModel.bind(session),
-      setWorkingDirectory: session.setWorkingDirectory.bind(session),
-      status: session.status.bind(session),
-      getActiveAgentId: () => 'codex',
-      listAgents: () => [{
-        metadata: { id: 'codex', name: 'Codex' },
-        status: { ready: true },
-      }],
-    };
+    return session;
   }
 
   hasSession(userId: number): boolean {
@@ -108,8 +103,13 @@ export class SessionManager {
   }
 
   getActiveAgentLabel(userId: number): string {
-    void userId;
-    return 'Codex';
+    const session = this.sessions.get(userId)?.session;
+    if (!session) {
+      return "Codex";
+    }
+    const activeId = session.getActiveAgentId();
+    const descriptor = session.listAgents().find((entry) => entry.metadata.id === activeId);
+    return descriptor?.metadata.name ?? String(activeId);
   }
 
   saveThreadId(userId: number, threadId: string, agentId?: string): void {
@@ -130,15 +130,35 @@ export class SessionManager {
     return undefined;
   }
 
-  ensureLogger(userId: number): undefined {
-    void userId;
-    return undefined;
+  ensureLogger(userId: number): ConversationLogger | undefined {
+    const record = this.sessions.get(userId);
+    if (!record) {
+      return undefined;
+    }
+
+    if (record.logger && !record.logger.isClosed) {
+      record.logger.attachThreadId(record.session.getThreadId());
+      return record.logger;
+    }
+
+    const threadId = record.session.getThreadId() ?? undefined;
+    record.logger = new ConversationLogger(record.cwd, userId, threadId);
+    return record.logger;
   }
 
   switchAgent(userId: number, agentId: string): { success: boolean; message: string } {
-    void userId;
-    void agentId;
-    return { success: false, message: '❌ 精简版不支持多代理切换' };
+    const record = this.sessions.get(userId);
+    if (!record) {
+      return { success: false, message: "❌ 没有找到活跃会话" };
+    }
+    try {
+      record.session.switchAgent(agentId);
+      record.lastActivity = Date.now();
+      return { success: true, message: `✅ 已切换到代理: ${agentId}` };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, message: `❌ ${msg}` };
+    }
   }
 
   setUserModel(userId: number, model: string): void {
@@ -164,6 +184,8 @@ export class SessionManager {
     if (record) {
       record.session.reset();
       record.lastActivity = Date.now();
+      record.logger?.close();
+      record.logger = undefined;
       this.logger.info('Session reset');
     } else {
       this.logger.debug('Reset requested without active session');
@@ -186,6 +208,8 @@ export class SessionManager {
 
     record.cwd = cwd;
     record.session.setWorkingDirectory(cwd);
+    record.logger?.close();
+    record.logger = undefined;
   }
 
   getStats(): { total: number; active: number; idle: number; sandboxMode: SandboxMode; defaultModel: string } {
@@ -234,6 +258,8 @@ export class SessionManager {
     }
 
     for (const userId of expiredUsers) {
+      const record = this.sessions.get(userId);
+      record?.logger?.close();
       this.sessions.delete(userId);
       this.logger.debug('Cleaned up idle session');
     }
@@ -242,6 +268,9 @@ export class SessionManager {
   destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
+    }
+    for (const record of this.sessions.values()) {
+      record.logger?.close();
     }
     this.sessions.clear();
   }
