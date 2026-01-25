@@ -3,6 +3,7 @@ import path from "node:path";
 import util from "node:util";
 
 import { withStatusLineSuppressed } from "./statusLineManager.js";
+import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 
 type ConsoleMethod = (...args: unknown[]) => void;
 
@@ -13,21 +14,6 @@ interface GlobalConsoleLoggerOptions {
   mirrorToStdout?: boolean;
 }
 
-function findWorkspaceRoot(): string | null {
-  let current = process.cwd();
-  while (true) {
-    const candidate = path.join(current, ".ads");
-    if (fs.existsSync(candidate)) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      return null;
-    }
-    current = parent;
-  }
-}
-
 function resolveLogFilePath(fileName?: string): string {
   const explicitFile = process.env.ADS_LOG_FILE;
   if (explicitFile) {
@@ -35,12 +21,9 @@ function resolveLogFilePath(fileName?: string): string {
   }
 
   const logDirEnv = process.env.ADS_LOG_DIR;
-  const workspaceRoot = findWorkspaceRoot();
   const baseDir = logDirEnv
     ? path.resolve(logDirEnv)
-    : workspaceRoot
-      ? path.join(workspaceRoot, ".ads", "logs")
-      : path.join(process.cwd(), ".ads", "logs");
+    : path.join(resolveAdsStateDir(), "logs");
   const file = fileName ?? "ads.log";
   return path.join(baseDir, file);
 }

@@ -8,6 +8,7 @@ import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } fr
 import { HybridOrchestrator } from "../../src/agents/orchestrator.js";
 import { runCollaborativeTurn } from "../../src/agents/hub.js";
 import { resetStateDatabaseForTests } from "../../src/state/database.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 class QueueAgentAdapter implements AgentAdapter {
   readonly id: string;
@@ -53,6 +54,7 @@ class QueueAgentAdapter implements AgentAdapter {
 describe("agents/hub", () => {
   const originalEnv: Record<string, string | undefined> = {};
   let tmpDir: string | null = null;
+  let adsState: TempAdsStateDir | null = null;
 
   const setEnv = (key: string, value: string | undefined) => {
     if (value === undefined) {
@@ -70,6 +72,7 @@ describe("agents/hub", () => {
     setEnv("ENABLE_AGENT_FILE_TOOLS", "1");
     setEnv("ADS_STATE_DB_PATH", ":memory:");
     setEnv("ADS_COORDINATOR_ENABLED", "1");
+    adsState = installTempAdsStateDir("ads-state-hub-");
 
     const scratchRoot = path.join(process.cwd(), ".ads-test-tmp");
     fs.mkdirSync(scratchRoot, { recursive: true });
@@ -80,6 +83,8 @@ describe("agents/hub", () => {
     setEnv("ENABLE_AGENT_FILE_TOOLS", originalEnv.ENABLE_AGENT_FILE_TOOLS);
     setEnv("ADS_STATE_DB_PATH", originalEnv.ADS_STATE_DB_PATH);
     setEnv("ADS_COORDINATOR_ENABLED", originalEnv.ADS_COORDINATOR_ENABLED);
+    adsState?.restore();
+    adsState = null;
     resetStateDatabaseForTests();
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true });

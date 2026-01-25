@@ -6,16 +6,20 @@ import os from "node:os";
 
 import { initializeWorkspace } from "../../src/workspace/detector.js";
 import { readRules, listRules, checkRuleViolation } from "../../src/workspace/rulesService.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("workspace/rulesService", () => {
   let workspace: string;
   let originalEnv: Record<string, string | undefined>;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-rules-"));
     originalEnv = {
       AD_WORKSPACE: process.env.AD_WORKSPACE,
     };
+    adsState = installTempAdsStateDir("ads-state-rules-");
     process.env.AD_WORKSPACE = workspace;
     initializeWorkspace(workspace, "Rules Test");
     const rulesContent = [
@@ -27,11 +31,13 @@ describe("workspace/rulesService", () => {
       "### 2. 代码规范",
       "**规则**: 遵守 ESLint",
     ].join("\n");
-    fs.writeFileSync(path.join(workspace, ".ads", "rules.md"), rulesContent, "utf-8");
+    fs.writeFileSync(resolveWorkspaceStatePath(workspace, "rules.md"), rulesContent, "utf-8");
   });
 
   afterEach(() => {
     process.env.AD_WORKSPACE = originalEnv.AD_WORKSPACE;
+    adsState?.restore();
+    adsState = null;
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 

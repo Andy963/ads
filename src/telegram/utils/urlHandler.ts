@@ -2,8 +2,9 @@ import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 
 import { createLogger } from '../../utils/logger.js';
+import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 
-const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'url-downloads');
+const DOWNLOAD_DIR = join(resolveAdsStateDir(), 'temp', 'url-downloads');
 let dnsResolveOverride: ((hostname: string) => Promise<string[]>) | null = null;
 const logger = createLogger('TelegramUrlHandler');
 

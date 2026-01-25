@@ -21,6 +21,7 @@ import { appendMarkNoteEntry } from '../utils/noteLogger.js';
 import { stripLeadingTranslation } from '../../utils/assistantText.js';
 import { processAdrBlocks } from '../../utils/adrRecording.js';
 import { detectWorkspaceFrom } from '../../workspace/detector.js';
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from '../../workspace/adsPaths.js';
 import {
   CODEX_THREAD_RESET_HINT,
   CodexThreadCorruptedError,
@@ -98,7 +99,8 @@ export async function handleCodexMessage(
   options?: { markNoteEnabled?: boolean; silentNotifications?: boolean }
 ) {
   const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
-  const adapterLogDir = path.join(workspaceRoot, '.ads', 'logs');
+  migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
+  const adapterLogDir = resolveWorkspaceStatePath(workspaceRoot, 'logs');
   const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
   const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
   const markNoteEnabled = options?.markNoteEnabled ?? false;

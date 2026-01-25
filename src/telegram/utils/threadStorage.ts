@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import type { Database as DatabaseType, Statement as StatementType } from 'better-sqlite3';
 
 import { getStateDatabase } from '../../state/database.js';
+import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 import { createLogger } from '../../utils/logger.js';
 
 interface ThreadStorageOptions {
@@ -55,7 +56,7 @@ export class ThreadStorage {
 
   constructor(options: ThreadStorageOptions = {}) {
     this.namespace = options.namespace?.trim() || 'tg';
-    const adsDir = path.join(process.cwd(), '.ads');
+    const adsDir = resolveAdsStateDir();
     this.legacyStoragePath =
       options.storagePath ??
       path.join(adsDir, this.namespace === 'tg' ? 'telegram-threads.json' : `${this.namespace}-threads.json`);

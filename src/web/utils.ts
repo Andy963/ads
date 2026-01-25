@@ -18,6 +18,7 @@ import type {
 
 import { createLogger } from "../utils/logger.js";
 import { getStateDatabase } from "../state/database.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
 export { truncateForLog } from "../utils/text.js";
 
@@ -222,7 +223,8 @@ export function sanitizeInput(input: unknown): string | null {
 }
 
 export function getWorkspaceState(workspaceRoot: string): WorkspaceState {
-  const rulesPath = path.join(workspaceRoot, ".ads", "rules.md");
+  migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
+  const rulesPath = resolveWorkspaceStatePath(workspaceRoot, "rules.md");
   let modified: string[] = [];
   try {
     const gitStatus = childProcess.execSync("git status --porcelain", {

@@ -3,9 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createLogger } from "../utils/logger.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveLegacyWorkspaceAdsPath, resolveWorkspaceStatePath } from "./adsPaths.js";
 
-const WORKSPACE_MARKER = ".ads/workspace.json";
 const GIT_MARKER = ".git";
+const WORKSPACE_CONFIG_FILE = "workspace.json";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
@@ -89,7 +90,7 @@ function copyDefaultTemplates(workspaceRoot: string): void {
     return;
   }
 
-  const templatesRoot = path.join(workspaceRoot, ".ads", "templates");
+  const templatesRoot = resolveWorkspaceStatePath(workspaceRoot, "templates");
   if (hasLegacyStructure(templatesRoot)) {
     backupLegacyTemplates(templatesRoot);
   }
@@ -117,7 +118,7 @@ function copyDefaultTemplates(workspaceRoot: string): void {
     fs.copyFileSync(srcPath, destPath);
   }
 
-  const workspaceRulesPath = path.join(workspaceRoot, ".ads", "rules.md");
+  const workspaceRulesPath = resolveWorkspaceStatePath(workspaceRoot, "rules.md");
   const defaultRulesPath = path.join(templatesRoot, "rules.md");
   if (!existsSync(workspaceRulesPath) && existsSync(defaultRulesPath)) {
     fs.copyFileSync(defaultRulesPath, workspaceRulesPath);
@@ -141,11 +142,6 @@ function findMarker(marker: string, startDir: string, maxDepth = 10): string | n
 }
 
 export function detectWorkspaceFrom(startDir: string): string {
-  const markerDir = findMarker(WORKSPACE_MARKER, startDir);
-  if (markerDir) {
-    return markerDir;
-  }
-
   const gitDir = findMarker(GIT_MARKER, startDir);
   if (gitDir) {
     return gitDir;
@@ -158,11 +154,6 @@ export function detectWorkspace(): string {
   const envWorkspace = process.env.AD_WORKSPACE;
   if (envWorkspace && existsSync(envWorkspace)) {
     return resolveAbsolute(envWorkspace);
-  }
-
-  const markerDir = findMarker(WORKSPACE_MARKER, process.cwd());
-  if (markerDir) {
-    return markerDir;
   }
 
   const gitDir = findMarker(GIT_MARKER, process.cwd());
@@ -186,6 +177,7 @@ function ensureInitialized<T>(provider: () => T, message: () => string): T {
 
 export function getWorkspaceDbPath(workspace?: string): string {
   const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  migrateLegacyWorkspaceAdsIfNeeded(root);
 
   // 始终尊重环境变量覆盖（测试场景依赖 ADS_DATABASE_PATH）
   const envDb = process.env.ADS_DATABASE_PATH || process.env.DATABASE_URL;
@@ -200,10 +192,12 @@ export function getWorkspaceDbPath(workspace?: string): string {
     return resolved;
   }
 
-  const dbPath = path.join(root, ".ads", "ads.db");
-  if (!existsSync(path.dirname(dbPath))) {
+  const dbPath = resolveWorkspaceStatePath(root, "ads.db");
+  const configPath = resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE);
+  if (!existsSync(configPath) && !existsSync(resolveLegacyWorkspaceAdsPath(root, WORKSPACE_CONFIG_FILE))) {
     throw new Error(`工作空间未初始化: ${root}`);
   }
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   if (!existsSync(dbPath)) {
     fs.writeFileSync(dbPath, "");
   }
@@ -213,7 +207,7 @@ export function getWorkspaceDbPath(workspace?: string): string {
 export function getWorkspaceRulesDir(workspace?: string): string {
   return ensureInitialized(() => {
     const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
-    const rulesDir = path.join(root, ".ads", "rules");
+    const rulesDir = resolveWorkspaceStatePath(root, "rules");
     if (!existsSync(rulesDir)) {
       throw new Error(`规则目录不存在: ${rulesDir}`);
     }
@@ -248,15 +242,19 @@ export function getWorkspaceSpecsDir(workspace?: string): string {
 
 export function isWorkspaceInitialized(workspace?: string): boolean {
   const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
-  return existsSync(path.join(root, WORKSPACE_MARKER));
+  migrateLegacyWorkspaceAdsIfNeeded(root);
+  return (
+    existsSync(resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE)) ||
+    existsSync(resolveLegacyWorkspaceAdsPath(root, WORKSPACE_CONFIG_FILE))
+  );
 }
 
 export function initializeWorkspace(workspace?: string, name?: string): string {
   const root = workspace ? resolveAbsolute(workspace) : resolveAbsolute(process.cwd());
   const workspaceName = name ?? path.basename(root);
 
-  const adsDir = path.join(root, ".ads");
-  fs.mkdirSync(adsDir, { recursive: true });
+  const stateConfigPath = resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE);
+  fs.mkdirSync(path.dirname(stateConfigPath), { recursive: true });
 
   const specsDir = path.join(root, "docs", "spec");
   fs.mkdirSync(specsDir, { recursive: true });
@@ -268,7 +266,7 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
   };
 
   fs.writeFileSync(
-    path.join(adsDir, "workspace.json"),
+    stateConfigPath,
     JSON.stringify(config, null, 2),
     "utf-8"
   );
@@ -283,16 +281,20 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
 
 export function ensureDefaultTemplates(workspace?: string): void {
   const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  migrateLegacyWorkspaceAdsIfNeeded(root);
   copyDefaultTemplates(root);
 }
 
 export function getWorkspaceInfo(workspace?: string): Record<string, unknown> {
   const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
-  const configFile = path.join(root, WORKSPACE_MARKER);
+  migrateLegacyWorkspaceAdsIfNeeded(root);
+  const configFile = resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE);
+  const legacyConfigFile = resolveLegacyWorkspaceAdsPath(root, WORKSPACE_CONFIG_FILE);
+  const resolvedConfigFile = existsSync(configFile) ? configFile : legacyConfigFile;
 
   const info: Record<string, unknown> = {
     path: root,
-    is_initialized: existsSync(configFile),
+    is_initialized: existsSync(configFile) || existsSync(legacyConfigFile),
     db_path: getWorkspaceDbPath(root),
   };
 
@@ -308,9 +310,9 @@ export function getWorkspaceInfo(workspace?: string): Record<string, unknown> {
     info.specs_dir = null;
   }
 
-  if (existsSync(configFile)) {
+  if (existsSync(resolvedConfigFile)) {
     try {
-      const configContent = fs.readFileSync(configFile, "utf-8");
+      const configContent = fs.readFileSync(resolvedConfigFile, "utf-8");
       const parsed = JSON.parse(configContent);
       Object.assign(info, parsed);
     } catch {

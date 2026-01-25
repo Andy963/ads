@@ -115,7 +115,7 @@ export function prepareVectorUpserts(params: {
 
   const dbPath = resolveWorkspaceStateDbPath(workspaceRoot);
   if (!dbPath) {
-    warnings.push("workspace is not initialized (missing .ads/workspace.json); skipping history incremental state");
+    warnings.push("workspace is not initialized (missing workspace.json); skipping history incremental state");
   }
 
   const canUseState = Boolean(dbPath);

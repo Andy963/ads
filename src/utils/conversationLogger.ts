@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { detectWorkspace } from "../workspace/detector.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import type { AgentEvent } from "../codex/events.js";
 import { createLogger } from "./logger.js";
 
@@ -20,7 +21,8 @@ export class ConversationLogger {
 
   constructor(workspacePath?: string, _userId?: number, threadId?: string) {
     this.workspace = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
-    const logDir = path.join(this.workspace, ".ads", "logs");
+    migrateLegacyWorkspaceAdsIfNeeded(this.workspace);
+    const logDir = resolveWorkspaceStatePath(this.workspace, "logs");
     fs.mkdirSync(logDir, { recursive: true });
 
     // 使用 threadId 或时间戳作为日志文件名，不包含用户ID

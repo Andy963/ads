@@ -8,17 +8,23 @@ import { resetStateDatabaseForTests } from "../../src/state/database.js";
 import { initializeWorkspace } from "../../src/workspace/detector.js";
 import { HistoryStore } from "../../src/utils/historyStore.js";
 import { loadWorkspaceHistoryEntries } from "../../src/utils/workspaceHistory.js";
+import { resolveWorkspaceStateDir, resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("utils/workspaceHistory", () => {
   let tmpDir: string;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     resetStateDatabaseForTests();
+    adsState = installTempAdsStateDir("ads-state-workspace-history-");
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-workspace-history-"));
   });
 
   afterEach(() => {
     resetStateDatabaseForTests();
+    adsState?.restore();
+    adsState = null;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -30,12 +36,12 @@ describe("utils/workspaceHistory", () => {
       limit: 50,
     });
     assert.deepEqual(result, []);
-    assert.equal(fs.existsSync(path.join(tmpDir, ".ads")), false);
+    assert.equal(fs.existsSync(resolveWorkspaceStateDir(tmpDir)), false);
   });
 
   it("merges namespaces and respects per-namespace session filters", () => {
     initializeWorkspace(tmpDir, "WorkspaceHistory Test");
-    const dbPath = path.join(tmpDir, ".ads", "state.db");
+    const dbPath = resolveWorkspaceStatePath(tmpDir, "state.db");
 
     const cliStore = new HistoryStore({ storagePath: dbPath, namespace: "cli" });
     const tgStore = new HistoryStore({ storagePath: dbPath, namespace: "telegram" });
@@ -59,4 +65,3 @@ describe("utils/workspaceHistory", () => {
     );
   });
 });
-

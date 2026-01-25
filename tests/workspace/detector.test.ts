@@ -13,24 +13,36 @@ import {
   isWorkspaceInitialized,
   ensureDefaultTemplates,
 } from "../../src/workspace/detector.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("workspace/detector", () => {
   let workspace: string;
   let originalEnv: Record<string, string | undefined>;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-workspace-detector-"));
     originalEnv = {
       AD_WORKSPACE: process.env.AD_WORKSPACE,
       ADS_DATABASE_PATH: process.env.ADS_DATABASE_PATH,
+      ADS_STATE_DIR: process.env.ADS_STATE_DIR,
     };
     process.env.AD_WORKSPACE = workspace;
     process.env.ADS_DATABASE_PATH = path.join(workspace, "ads-test.db");
+    adsState = installTempAdsStateDir("ads-state-detector-");
   });
 
   afterEach(() => {
     process.env.AD_WORKSPACE = originalEnv.AD_WORKSPACE;
     process.env.ADS_DATABASE_PATH = originalEnv.ADS_DATABASE_PATH;
+    if (originalEnv.ADS_STATE_DIR === undefined) {
+      delete process.env.ADS_STATE_DIR;
+    } else {
+      process.env.ADS_STATE_DIR = originalEnv.ADS_STATE_DIR;
+    }
+    adsState?.restore();
+    adsState = null;
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
@@ -51,7 +63,7 @@ describe("workspace/detector", () => {
   it("ensures default templates are copied", () => {
     initializeWorkspace(workspace, "Template Copy Test");
     ensureDefaultTemplates(workspace);
-    const templatesDir = path.join(workspace, ".ads", "templates");
+    const templatesDir = resolveWorkspaceStatePath(workspace, "templates");
     const files = fs.readdirSync(templatesDir);
     assert.ok(files.includes("instructions.md"), "instructions template should exist");
     assert.ok(files.includes("rules.md"), "rules template should exist");
@@ -59,6 +71,7 @@ describe("workspace/detector", () => {
 
   it("detects workspace root from a nested directory", () => {
     initializeWorkspace(workspace, "Nested Detector Test");
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
     const nested = path.join(workspace, "nested", "dir");
     fs.mkdirSync(nested, { recursive: true });
 

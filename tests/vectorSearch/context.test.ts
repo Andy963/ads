@@ -6,18 +6,22 @@ import path from "node:path";
 
 import { getStateDatabase } from "../../src/state/database.js";
 import { maybeBuildVectorAutoContext } from "../../src/vectorSearch/context.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 function makeWorkspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-vsearch-context-"));
-  fs.mkdirSync(path.join(root, ".ads", "templates"), { recursive: true });
-  fs.writeFileSync(path.join(root, ".ads", "workspace.json"), JSON.stringify({ name: "test" }), "utf8");
-  fs.writeFileSync(path.join(root, ".ads", "templates", "instructions.md"), "test", "utf8");
+  const templatesDir = resolveWorkspaceStatePath(root, "templates");
+  fs.mkdirSync(templatesDir, { recursive: true });
+  fs.writeFileSync(resolveWorkspaceStatePath(root, "workspace.json"), JSON.stringify({ name: "test" }), "utf8");
+  fs.writeFileSync(resolveWorkspaceStatePath(root, "templates", "instructions.md"), "test", "utf8");
   return root;
 }
 
 describe("vectorSearch/auto-context", () => {
   const originalEnv: Record<string, string | undefined> = {};
   const originalFetch = globalThis.fetch;
+  let adsState: TempAdsStateDir | null = null;
 
   const setEnv = (key: string, value: string | undefined) => {
     if (value === undefined) {
@@ -34,6 +38,7 @@ describe("vectorSearch/auto-context", () => {
     originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED = process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED;
     originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS = process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS;
     originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS = process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS;
+    adsState = installTempAdsStateDir("ads-state-vsearch-context-");
 
     setEnv("ADS_VECTOR_SEARCH_ENABLED", "1");
     setEnv("ADS_VECTOR_SEARCH_URL", "http://vector.local");
@@ -51,6 +56,8 @@ describe("vectorSearch/auto-context", () => {
     setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS", originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS);
     setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS", originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS);
     globalThis.fetch = originalFetch;
+    adsState?.restore();
+    adsState = null;
   });
 
   it("retrieves context even when query is not a trigger keyword", async () => {
@@ -222,7 +229,7 @@ describe("vectorSearch/auto-context", () => {
 
   it("derives a better query from recent history when the input is only a trigger word", async () => {
     const workspaceRoot = makeWorkspace();
-    const db = getStateDatabase(path.join(workspaceRoot, ".ads", "state.db"));
+    const db = getStateDatabase(resolveWorkspaceStatePath(workspaceRoot, "state.db"));
     const now = Date.now();
     db.prepare(
       `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)

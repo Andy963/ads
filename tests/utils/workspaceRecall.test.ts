@@ -7,6 +7,8 @@ import path from "node:path";
 import { resetStateDatabaseForTests } from "../../src/state/database.js";
 import { initializeWorkspace } from "../../src/workspace/detector.js";
 import { HistoryStore } from "../../src/utils/historyStore.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 import {
   buildCandidateMemory,
   parseRecallDecision,
@@ -15,20 +17,24 @@ import {
 
 describe("utils/workspaceRecall", () => {
   let tmpDir: string;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     resetStateDatabaseForTests();
+    adsState = installTempAdsStateDir("ads-state-workspace-recall-");
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-workspace-recall-"));
   });
 
   afterEach(() => {
     resetStateDatabaseForTests();
+    adsState?.restore();
+    adsState = null;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("builds candidate memory from recent turns", () => {
     initializeWorkspace(tmpDir, "WorkspaceRecall Test");
-    const dbPath = path.join(tmpDir, ".ads", "state.db");
+    const dbPath = resolveWorkspaceStatePath(tmpDir, "state.db");
     const store = new HistoryStore({ storagePath: dbPath, namespace: "cli" });
     store.add("default", { role: "user", text: "please implement caching", ts: 1 });
     store.add("default", { role: "ai", text: "we will use an LRU cache", ts: 2 });
@@ -68,4 +74,3 @@ describe("utils/workspaceRecall", () => {
     );
   });
 });
-

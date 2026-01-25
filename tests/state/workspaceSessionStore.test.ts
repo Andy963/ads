@@ -11,17 +11,23 @@ import {
   setActiveThreadId,
 } from "../../src/state/workspaceSessionStore.js";
 import { initializeWorkspace } from "../../src/workspace/detector.js";
+import { resolveWorkspaceStateDir } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("state/workspaceSessionStore", () => {
   let tmpWorkspace: string;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     resetStateDatabaseForTests();
+    adsState = installTempAdsStateDir("ads-state-session-store-");
     tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-workspace-session-store-"));
   });
 
   afterEach(() => {
     resetStateDatabaseForTests();
+    adsState?.restore();
+    adsState = null;
     fs.rmSync(tmpWorkspace, { recursive: true, force: true });
   });
 
@@ -44,8 +50,7 @@ describe("state/workspaceSessionStore", () => {
   });
 
   it("is a no-op when workspace is not initialized", () => {
-    const adsDir = path.join(tmpWorkspace, ".ads");
-    assert.equal(fs.existsSync(adsDir), false);
+    assert.equal(fs.existsSync(resolveWorkspaceStateDir(tmpWorkspace)), false);
 
     setActiveThreadId(tmpWorkspace, "thread_ignored");
     assert.equal(getActiveThreadId(tmpWorkspace), undefined);
@@ -53,10 +58,9 @@ describe("state/workspaceSessionStore", () => {
     assert.equal(getActiveThreadId(tmpWorkspace), undefined);
 
     assert.equal(
-      fs.existsSync(adsDir),
+      fs.existsSync(resolveWorkspaceStateDir(tmpWorkspace)),
       false,
-      "workspaceSessionStore should not create .ads for uninitialized workspaces",
+      "workspaceSessionStore should not create state for uninitialized workspaces",
     );
   });
 });
-

@@ -3,6 +3,7 @@ import path from "node:path";
 import Database from 'better-sqlite3';
 
 import { detectWorkspace, getWorkspaceDbPath } from "../detector.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../adsPaths.js";
 import {
   getAllNodes,
   getNodeById,
@@ -63,7 +64,7 @@ function clone<T>(value: T): T {
 }
 
 export class WorkflowContext {
-  static readonly CONTEXT_FILE = ".ads/context.json";
+  static readonly CONTEXT_FILE = "context.json";
 
   static readonly STEP_MAPPINGS: Record<string, WorkflowSteps> = {
     unified: {
@@ -91,7 +92,8 @@ export class WorkflowContext {
 
   private static getContextFile(workspace?: string): string {
     const root = workspace ? path.resolve(workspace) : detectWorkspace();
-    return path.join(root, WorkflowContext.CONTEXT_FILE);
+    migrateLegacyWorkspaceAdsIfNeeded(root);
+    return resolveWorkspaceStatePath(root, WorkflowContext.CONTEXT_FILE);
   }
 
   /**

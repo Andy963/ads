@@ -1,8 +1,7 @@
-import path from "node:path";
-
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase, resolveStateDbPath } from "../../state/database.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../workspace/adsPaths.js";
 
 import type { TaskResult, TaskSpec } from "./schemas.js";
 
@@ -91,8 +90,9 @@ export class TaskStore {
     this.namespace = String(options.namespace ?? "").trim() || "default";
     this.sessionId = String(options.sessionId ?? "").trim() || "default";
 
+    migrateLegacyWorkspaceAdsIfNeeded(options.workspaceRoot);
     const resolvedDbPath = resolveStateDbPath(
-      options.dbPath ?? path.join(path.resolve(options.workspaceRoot), ".ads", "state.db"),
+      options.dbPath ?? resolveWorkspaceStatePath(options.workspaceRoot, "state.db"),
     );
     this.db = getStateDatabase(resolvedDbPath);
 

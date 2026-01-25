@@ -5,18 +5,24 @@ import path from "node:path";
 import os from "node:os";
 
 import { CommandLoader } from "../../src/commands/loader.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("commands/loader", () => {
   let tmpDir: string;
   let commandsDir: string;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-cmd-test-"));
-    commandsDir = path.join(tmpDir, ".ads", "commands");
+    adsState = installTempAdsStateDir("ads-state-cmd-");
+    commandsDir = resolveWorkspaceStatePath(tmpDir, "commands");
     fs.mkdirSync(commandsDir, { recursive: true });
   });
 
   afterEach(() => {
+    adsState?.restore();
+    adsState = null;
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {

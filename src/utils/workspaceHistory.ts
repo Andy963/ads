@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase } from "../state/database.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { createLogger } from "./logger.js";
 import type { HistoryEntry } from "./historyStore.js";
 
@@ -40,15 +41,11 @@ function resolveWorkspaceStateDbPath(workspaceRoot: string): string | null {
   if (!resolvedRoot) {
     return null;
   }
-  const marker = path.join(resolvedRoot, ".ads", "workspace.json");
-  if (!fs.existsSync(marker)) {
+  migrateLegacyWorkspaceAdsIfNeeded(resolvedRoot);
+  if (!fs.existsSync(resolveWorkspaceStatePath(resolvedRoot, "workspace.json"))) {
     return null;
   }
-  const adsDir = path.join(resolvedRoot, ".ads");
-  if (!fs.existsSync(adsDir)) {
-    return null;
-  }
-  return path.join(adsDir, "state.db");
+  return resolveWorkspaceStatePath(resolvedRoot, "state.db");
 }
 
 function normalizeStrings(values: string[] | undefined): string[] {

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../utils/logger.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
@@ -224,7 +225,8 @@ export class SystemPromptManager {
   }
 
   private readInstructions(): FileCache {
-    const instructionsPath = path.join(this.workspaceRoot, ".ads", "templates", "instructions.md");
+    migrateLegacyWorkspaceAdsIfNeeded(this.workspaceRoot);
+    const instructionsPath = resolveWorkspaceStatePath(this.workspaceRoot, "templates", "instructions.md");
 
     // Always check workspace instructions first to allow hot-loading after fallback
     const workspaceCache = this.readFileWithCache(
@@ -270,7 +272,8 @@ export class SystemPromptManager {
   }
 
   private checkWorkspaceInitialized(workspaceRoot: string): boolean {
-    return fs.existsSync(path.join(workspaceRoot, ".ads", "workspace.json"));
+    migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
+    return fs.existsSync(resolveWorkspaceStatePath(workspaceRoot, "workspace.json"));
   }
 
   private buildWorkspaceNotice(): string | null {
@@ -291,14 +294,15 @@ export class SystemPromptManager {
       this.workspaceWarningLogged = true;
     }
     return [
-      "[Workspace Notice] 当前工作区尚未初始化 (.ads/workspace.json 缺失)。",
-      "将使用内置 templates/ 指令与规则；如需自定义，可创建 .ads/templates/instructions.md 与 .ads/rules.md。",
+      "[Workspace Notice] 当前工作区尚未初始化（workspace.json 缺失）。",
+      "将使用内置 templates/ 指令与规则；如需自定义，请运行 `ads init` 初始化工作区。",
     ].join("\n");
   }
 
   private readRules(): FileCache {
-    const rulesPath = path.join(this.workspaceRoot, ".ads", "rules.md");
-    const templateRules = path.join(this.workspaceRoot, ".ads", "templates", "rules.md");
+    migrateLegacyWorkspaceAdsIfNeeded(this.workspaceRoot);
+    const rulesPath = resolveWorkspaceStatePath(this.workspaceRoot, "rules.md");
+    const templateRules = resolveWorkspaceStatePath(this.workspaceRoot, "templates", "rules.md");
     let cache: FileCache | null = null;
 
     if (fs.existsSync(rulesPath)) {

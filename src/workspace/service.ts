@@ -6,6 +6,7 @@ import {
   getWorkspaceInfo,
   ensureDefaultTemplates,
 } from "./detector.js";
+import { resolveWorkspaceStatePath } from "./adsPaths.js";
 import { safeStringify } from "../utils/json.js";
 import { getErrorMessage } from "../utils/error.js";
 
@@ -19,10 +20,10 @@ export async function initWorkspace(params: { name?: string; workspace_path?: st
         name: params.name ?? path.basename(workspace),
       },
       created: {
-        config: path.join(workspace, ".ads", "workspace.json"),
-        rules_dir: path.join(workspace, ".ads", "rules"),
+        config: resolveWorkspaceStatePath(workspace, "workspace.json"),
+        rules_dir: resolveWorkspaceStatePath(workspace, "rules"),
         specs_dir: path.join(workspace, "docs", "spec"),
-        db: path.join(workspace, ".ads", "ads.db"),
+        db: resolveWorkspaceStatePath(workspace, "ads.db"),
       },
       message: `工作空间已初始化: ${workspace}`,
     };

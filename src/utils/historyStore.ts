@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase } from "../state/database.js";
+import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { createLogger } from "./logger.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
@@ -50,7 +51,7 @@ export class HistoryStore {
   constructor(options: HistoryStoreOptions = {}) {
     this.storagePath =
       options.storagePath ??
-      path.join(process.cwd(), ".ads", "state.db");
+      path.join(resolveAdsStateDir(), "state.db");
     this.namespace = options.namespace?.trim() || "default";
     this.maxEntriesPerSession = Math.max(1, options.maxEntriesPerSession ?? 200);
     this.maxTextLength = options.maxTextLength ?? 4000;

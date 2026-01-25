@@ -8,6 +8,8 @@ import { createWorkflowFromTemplate } from "../../src/workflow/templateService.j
 import { getAllNodes, getNodeById } from "../../src/graph/crud.js";
 import { resetDatabaseForTests, getDatabase } from "../../src/storage/database.js";
 import { initializeWorkspace } from "../../src/workspace/detector.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 interface WorkflowCreationResponse {
   success?: boolean;
@@ -30,8 +32,10 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 describe("createWorkflowFromTemplate", () => {
   let workspaceDir: string;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(async () => {
+    adsState = installTempAdsStateDir("ads-state-workflow-template-");
     workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "ads-workspace-"));
     initializeWorkspace(workspaceDir, "Test Workspace");
     resetDatabaseForTests();
@@ -44,6 +48,8 @@ describe("createWorkflowFromTemplate", () => {
   afterEach(async () => {
     resetDatabaseForTests();
     delete process.env.AD_WORKSPACE;
+    adsState?.restore();
+    adsState = null;
     if (workspaceDir) {
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }
@@ -147,7 +153,7 @@ describe("createWorkflowFromTemplate", () => {
     assert.equal(parsed.success, true);
     assert.ok(parsed.workflow?.root_node_id);
 
-    const contextPath = path.join(workspaceDir, ".ads", "context.json");
+    const contextPath = resolveWorkspaceStatePath(workspaceDir, "context.json");
     const contextRaw = await fs.readFile(contextPath, "utf-8");
     const context = JSON.parse(contextRaw) as {
       active_workflow?: { template?: string; steps?: Record<string, string> };

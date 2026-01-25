@@ -38,7 +38,7 @@ npm link
    /ads.init
    ```
    - 可选 `--name=<workspace>` 指定工作区名称（默认取当前目录名）。
-   - 会创建 `.ads/workspace.json`、`.ads/ads.db` 占位符、`.ads/templates/*`、`.ads/rules.md`，并确保 `docs/spec/` 目录存在。重复执行是幂等的。
+   - 工作区状态文件会写入 ADS 项目根目录的集中式存储（默认 `./.ads/workspaces/<workspaceId>/`，可用 `ADS_STATE_DIR` 覆盖），并确保 `docs/spec/` 目录存在。重复执行是幂等的。
 
 2. **Create a new workflow**:
    ```bash
@@ -67,7 +67,7 @@ npm link
 Comprehensive documentation is being migrated into this repository. Until those guides land, use the following sources:
 
 - `docs/spec/**` — canonical specifications describing features (requirements, design, implementation).
-- `templates/` — the workspace templates synced into `.ads/templates/`, useful for understanding prompts and workflows.
+- `templates/` — the workspace templates synced into centralized `.ads/workspaces/<workspaceId>/templates/`, useful for understanding prompts and workflows.
 - Inline comments in `src/telegram/**` for Telegram bot behavior, including workspace initialization prompts.
 
 Missing guides referenced elsewhere will be restored once the documentation migration completes.
@@ -101,7 +101,7 @@ Missing guides referenced elsewhere will be restored once the documentation migr
 ### Runtime requirements
 
 - Node.js 18 or newer (ESM + top-level await support).
-- A writable ADS workspace (the server reads `.ads/ads.db`, `.ads/rules.md`, etc.).
+- A writable ADS state directory (default `./.ads/`; workspace state lives under `.ads/workspaces/<workspaceId>/`).
 - SQLite build headers for `better-sqlite3` (handled via `npm install`).
 
 ### Template Layout
@@ -115,11 +115,11 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
 - `implementation.md` – 实施/验证模板
 - `workflow.yaml` – 工作流步骤定义
 
-每次运行 CLI 时，`templates/` 的内容都会同步到 `.ads/templates/`，如需自定义模板只需编辑这些文件。
+每次运行 CLI 时，`templates/` 的内容都会同步到 `.ads/workspaces/<workspaceId>/templates/`，如需自定义模板只需编辑这些文件。
 
 ### System Prompt Reinjection
 
-- 所有会话会自动注入 `templates/instructions.md` 与工作区 `.ads/rules.md`。
+- 所有会话会自动注入 `templates/instructions.md` 与工作区规则（集中式存储于 `.ads/workspaces/<workspaceId>/rules.md`）。
 - 通过以下环境变量调节再注入：
   - `ADS_REINJECTION_ENABLED`（默认 `true`，设置为 `0`/`false` 禁用）
   - `ADS_REINJECTION_TURNS`（默认 `10`）

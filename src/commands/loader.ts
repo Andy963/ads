@@ -3,6 +3,7 @@ import path from "node:path";
 
 import yaml from "yaml";
 import { createLogger } from "../utils/logger.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
 const logger = createLogger("CommandLoader");
 
@@ -116,8 +117,9 @@ export class CommandLoader {
 
   loadFromWorkspace(): Record<string, CommandDefinition> {
     const commands: Record<string, CommandDefinition> = {};
+    migrateLegacyWorkspaceAdsIfNeeded(this.workspace);
     const candidateDirs = [
-      path.join(this.workspace, ".ads", "commands"),
+      resolveWorkspaceStatePath(this.workspace, "commands"),
       this.workspace,
     ];
 

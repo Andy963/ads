@@ -4,6 +4,7 @@ import path from "node:path";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
 import { createLogger } from "../utils/logger.js";
+import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 
 const logger = createLogger("StateDatabase");
 
@@ -18,7 +19,7 @@ export function resolveStateDbPath(explicitPath?: string): string {
     }
     return path.resolve(candidate);
   }
-  return path.join(process.cwd(), ".ads", "state.db");
+  return path.join(resolveAdsStateDir(), "state.db");
 }
 
 function ensureParentDir(dbPath: string): void {

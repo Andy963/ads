@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase } from "./database.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
 
@@ -15,15 +16,12 @@ function resolveWorkspaceStateDbPath(workspaceRoot: string): string | null {
   if (!resolvedRoot) {
     return null;
   }
-  const marker = path.join(resolvedRoot, ".ads", "workspace.json");
-  if (!fs.existsSync(marker)) {
+  migrateLegacyWorkspaceAdsIfNeeded(resolvedRoot);
+  const configPath = resolveWorkspaceStatePath(resolvedRoot, "workspace.json");
+  if (!fs.existsSync(configPath)) {
     return null;
   }
-  const adsDir = path.join(resolvedRoot, ".ads");
-  if (!fs.existsSync(adsDir)) {
-    return null;
-  }
-  return path.join(adsDir, "state.db");
+  return resolveWorkspaceStatePath(resolvedRoot, "state.db");
 }
 
 function withWorkspaceDb<T>(workspaceRoot: string, fn: (db: DatabaseType) => T): T | undefined {
@@ -70,4 +68,3 @@ export function clearActiveThreadId(workspaceRoot: string): void {
     stmt.run(NAMESPACE, ACTIVE_THREAD_KEY);
   });
 }
-

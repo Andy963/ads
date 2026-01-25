@@ -5,14 +5,18 @@ import os from "node:os";
 import path from "node:path";
 
 import { SystemPromptManager } from "../../src/systemPrompt/manager.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("SystemPromptManager rule reinjection", () => {
   let workspace: string;
+  let adsState: TempAdsStateDir | null = null;
 
   before(() => {
+    adsState = installTempAdsStateDir("ads-state-systemprompt-");
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-"));
-    const adsDir = path.join(workspace, ".ads");
-    const templatesDir = path.join(adsDir, "templates");
+    const adsDir = resolveWorkspaceStatePath(workspace);
+    const templatesDir = resolveWorkspaceStatePath(workspace, "templates");
     fs.mkdirSync(templatesDir, { recursive: true });
     fs.writeFileSync(path.join(templatesDir, "instructions.md"), "System instructions");
     fs.writeFileSync(path.join(templatesDir, "rules.md"), "Template rules");
@@ -20,6 +24,8 @@ describe("SystemPromptManager rule reinjection", () => {
   });
 
   after(() => {
+    adsState?.restore();
+    adsState = null;
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
@@ -78,7 +84,7 @@ describe("SystemPromptManager rule reinjection", () => {
     assert.equal(initial.reason, "initial");
 
     // Modify instructions to trigger pending reason
-    const instructionsPath = path.join(workspace, ".ads", "templates", "instructions.md");
+    const instructionsPath = resolveWorkspaceStatePath(workspace, "templates", "instructions.md");
     fs.writeFileSync(instructionsPath, "Updated instructions");
     manager.completeTurn();
     const updated = manager.maybeInject();
@@ -87,7 +93,7 @@ describe("SystemPromptManager rule reinjection", () => {
 
     // Switch workspace and ensure reset
     const nextWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-next-"));
-    const nextAds = path.join(nextWorkspace, ".ads", "templates");
+    const nextAds = resolveWorkspaceStatePath(nextWorkspace, "templates");
     fs.mkdirSync(nextAds, { recursive: true });
     fs.writeFileSync(path.join(nextAds, "instructions.md"), "Next instructions");
     fs.writeFileSync(path.join(nextAds, "rules.md"), "Next rules");

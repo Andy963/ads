@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase } from "../state/database.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
 
@@ -12,11 +13,9 @@ const KV_NAMESPACE = "vector_search";
 export function resolveWorkspaceStateDbPath(workspaceRoot: string): string | null {
   const resolvedRoot = path.resolve(String(workspaceRoot ?? "").trim());
   if (!resolvedRoot) return null;
-  const marker = path.join(resolvedRoot, ".ads", "workspace.json");
-  if (!fs.existsSync(marker)) return null;
-  const adsDir = path.join(resolvedRoot, ".ads");
-  if (!fs.existsSync(adsDir)) return null;
-  return path.join(adsDir, "state.db");
+  migrateLegacyWorkspaceAdsIfNeeded(resolvedRoot);
+  if (!fs.existsSync(resolveWorkspaceStatePath(resolvedRoot, "workspace.json"))) return null;
+  return resolveWorkspaceStatePath(resolvedRoot, "state.db");
 }
 
 function withWorkspaceDb<T>(workspaceRoot: string, fn: (db: DatabaseType) => T): T | undefined {
@@ -51,4 +50,3 @@ export function setVectorState(workspaceRoot: string, key: string, value: string
     stmt.run(KV_NAMESPACE, normalizedKey, normalizedValue, Date.now());
   });
 }
-

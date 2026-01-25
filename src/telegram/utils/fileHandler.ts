@@ -6,9 +6,10 @@ import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 
 import { createLogger } from '../../utils/logger.js';
+import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 import { resolveTelegramProxyAgent } from './proxyAgent.js';
 
-const DOWNLOAD_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-files');
+const DOWNLOAD_DIR = join(resolveAdsStateDir(), 'temp', 'telegram-files');
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB Telegram 限制
 const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20MB Bot API 限制
 const logger = createLogger('TelegramFileHandler');

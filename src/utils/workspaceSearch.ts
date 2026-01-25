@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase } from "../state/database.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { createLogger } from "./logger.js";
 import { stripLeadingTranslation } from "./assistantText.js";
 import { loadWorkspaceHistoryRows, type WorkspaceHistoryRow } from "./workspaceHistory.js";
@@ -86,15 +87,11 @@ function resolveInitializedWorkspaceDbPath(workspaceRoot: string): string | null
   if (!resolvedRoot) {
     return null;
   }
-  const marker = path.join(resolvedRoot, ".ads", "workspace.json");
-  if (!fs.existsSync(marker)) {
+  migrateLegacyWorkspaceAdsIfNeeded(resolvedRoot);
+  if (!fs.existsSync(resolveWorkspaceStatePath(resolvedRoot, "workspace.json"))) {
     return null;
   }
-  const adsDir = path.join(resolvedRoot, ".ads");
-  if (!fs.existsSync(adsDir)) {
-    return null;
-  }
-  return path.join(adsDir, "state.db");
+  return resolveWorkspaceStatePath(resolvedRoot, "state.db");
 }
 
 function ensureFtsSchema(db: DatabaseType): void {

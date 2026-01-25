@@ -6,18 +6,24 @@ import os from "node:os";
 
 import { loadIntakeState, saveIntakeState, clearIntakeState } from "../../src/intake/storage.js";
 import type { IntakeState } from "../../src/intake/types.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("intake/storage", () => {
   let tmpDir: string;
   let adsDir: string;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-intake-test-"));
-    adsDir = path.join(tmpDir, ".ads");
+    adsState = installTempAdsStateDir("ads-state-intake-");
+    adsDir = resolveWorkspaceStatePath(tmpDir);
     fs.mkdirSync(adsDir, { recursive: true });
   });
 
   afterEach(() => {
+    adsState?.restore();
+    adsState = null;
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -50,7 +56,7 @@ describe("intake/storage", () => {
       assert.strictEqual(content.fields.goal, "Test goal");
     });
 
-    it("should create .ads directory if not exists", async () => {
+    it("should create state directory if not exists", async () => {
       const newTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-intake-new-"));
       try {
         const state: IntakeState = {
@@ -66,7 +72,7 @@ describe("intake/storage", () => {
 
         await saveIntakeState(state, newTmpDir);
 
-        const filePath = path.join(newTmpDir, ".ads", "intake-state.json");
+        const filePath = resolveWorkspaceStatePath(newTmpDir, "intake-state.json");
         assert.ok(fs.existsSync(filePath));
       } finally {
         fs.rmSync(newTmpDir, { recursive: true, force: true });

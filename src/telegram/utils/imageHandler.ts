@@ -5,9 +5,10 @@ import { pipeline } from 'node:stream/promises';
 import type { Api } from 'grammy';
 
 import { createLogger } from '../../utils/logger.js';
+import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 import { resolveTelegramProxyAgent } from './proxyAgent.js';
 
-const TEMP_DIR = join(process.cwd(), '.ads', 'temp', 'telegram-images');
+const TEMP_DIR = join(resolveAdsStateDir(), 'temp', 'telegram-images');
 const logger = createLogger('TelegramImageHandler');
 
 // 确保临时目录存在

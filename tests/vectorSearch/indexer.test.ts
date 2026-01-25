@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,15 +7,29 @@ import path from "node:path";
 import { getStateDatabase } from "../../src/state/database.js";
 import { prepareVectorUpserts } from "../../src/vectorSearch/indexer.js";
 import { setVectorState } from "../../src/vectorSearch/state.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 function makeWorkspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-vsearch-"));
-  fs.mkdirSync(path.join(root, ".ads"), { recursive: true });
-  fs.writeFileSync(path.join(root, ".ads", "workspace.json"), JSON.stringify({ name: "test" }), "utf8");
+  const configPath = resolveWorkspaceStatePath(root, "workspace.json");
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({ name: "test" }), "utf8");
   return root;
 }
 
 describe("vectorSearch/indexer", () => {
+  let adsState: TempAdsStateDir | null = null;
+
+  beforeEach(() => {
+    adsState = installTempAdsStateDir("ads-state-vsearch-indexer-");
+  });
+
+  afterEach(() => {
+    adsState?.restore();
+    adsState = null;
+  });
+
   it("prepares upserts and then becomes incremental after state updates", () => {
     const workspaceRoot = makeWorkspace();
 
@@ -28,7 +42,7 @@ describe("vectorSearch/indexer", () => {
     fs.writeFileSync(path.join(adrDir, "0001-test.md"), "# ADR-0001: Test\n\nDecision\n", "utf8");
 
     // history entry
-    const db = getStateDatabase(path.join(workspaceRoot, ".ads", "state.db"));
+    const db = getStateDatabase(resolveWorkspaceStatePath(workspaceRoot, "state.db"));
     db.prepare(
       `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -59,4 +73,3 @@ describe("vectorSearch/indexer", () => {
     assert.equal(second.items.length, 0);
   });
 });
-

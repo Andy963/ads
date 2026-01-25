@@ -4,19 +4,25 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { SupervisorPromptLoader } from "../../src/agents/tasks/supervisorPrompt.js";
+import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("agents/tasks/supervisorPrompt", () => {
   const originalEnv = { ...process.env };
   let tmpDir: string | null = null;
+  let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
     const scratchRoot = path.join(process.cwd(), ".ads-test-tmp");
     fs.mkdirSync(scratchRoot, { recursive: true });
     tmpDir = fs.mkdtempSync(path.join(scratchRoot, "supervisor-prompt-"));
     process.env = { ...originalEnv };
+    adsState = installTempAdsStateDir("ads-state-supervisor-");
   });
 
   afterEach(() => {
+    adsState?.restore();
+    adsState = null;
     process.env = { ...originalEnv };
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -26,7 +32,7 @@ describe("agents/tasks/supervisorPrompt", () => {
 
   it("loads workspace override when present", () => {
     assert.ok(tmpDir);
-    const workspacePromptPath = path.join(tmpDir, ".ads", "templates", "supervisor.md");
+    const workspacePromptPath = resolveWorkspaceStatePath(tmpDir, "templates", "supervisor.md");
     fs.mkdirSync(path.dirname(workspacePromptPath), { recursive: true });
     fs.writeFileSync(workspacePromptPath, "workspace prompt", "utf8");
 
@@ -60,4 +66,3 @@ describe("agents/tasks/supervisorPrompt", () => {
     assert.equal(path.resolve(result.path), path.resolve(customPath));
   });
 });
-

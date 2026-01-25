@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { detectWorkspace } from "./detector.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "./adsPaths.js";
 import { safeStringify } from "../utils/json.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,8 @@ function readFileIfExists(filePath: string): string | null {
 
 export async function readRules(workspacePath?: string): Promise<string> {
   const workspace = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
-  const workspaceRules = path.join(workspace, ".ads", "rules.md");
+  migrateLegacyWorkspaceAdsIfNeeded(workspace);
+  const workspaceRules = resolveWorkspaceStatePath(workspace, "rules.md");
   const templateRules = TEMPLATE_RULES_PATH;
 
   let source = "template";
@@ -38,7 +40,7 @@ export async function readRules(workspacePath?: string): Promise<string> {
     "",
     `**来源**: ${source}`,
     `**路径**: ${targetPath}`,
-    `**说明**: ${source === "workspace" ? "工作空间自定义规则（可编辑 .ads/rules.md）" : "默认模板规则（运行 'ads init' 来创建可编辑的工作空间规则）"}`,
+    `**说明**: ${source === "workspace" ? "工作空间自定义规则（可编辑上面的路径）" : "默认模板规则（运行 'ads init' 来创建可编辑的工作空间规则）"}`,
     "",
     "---",
     "",

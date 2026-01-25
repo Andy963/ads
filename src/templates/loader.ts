@@ -3,6 +3,7 @@ import path from "node:path";
 
 import yaml from "yaml";
 import { createLogger } from "../utils/logger.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
 const logger = createLogger("TemplateLoader");
 
@@ -118,8 +119,9 @@ export class TemplateLoader {
 
   private candidateDirectories(): string[] {
     const base = this.root;
+    migrateLegacyWorkspaceAdsIfNeeded(base);
     return [
-      path.join(base, ".ads", "templates"),
+      resolveWorkspaceStatePath(base, "templates"),
       path.join(base, "templates"),
       base,
     ];
@@ -188,7 +190,8 @@ export class TemplateLoader {
   }
 
   loadNodeTemplates(): NodeTemplate[] {
-    const templatesDir = path.join(this.root, ".ads", "templates");
+    migrateLegacyWorkspaceAdsIfNeeded(this.root);
+    const templatesDir = resolveWorkspaceStatePath(this.root, "templates");
     if (!exists(templatesDir)) {
       return [];
     }
@@ -212,7 +215,8 @@ export class TemplateLoader {
   }
 
   loadWorkflowTemplates(): WorkflowTemplate[] {
-    const templatesDir = path.join(this.root, ".ads", "templates");
+    migrateLegacyWorkspaceAdsIfNeeded(this.root);
+    const templatesDir = resolveWorkspaceStatePath(this.root, "templates");
     if (!exists(templatesDir)) {
       return [];
     }

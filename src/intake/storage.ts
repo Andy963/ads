@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { detectWorkspace } from "../workspace/detector.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import type { IntakeState } from "./types.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -11,7 +12,8 @@ const STATE_FILENAME = "intake-state.json";
 
 function getStateFilePath(workspacePath?: string): string {
   const workspace = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
-  return path.join(workspace, ".ads", STATE_FILENAME);
+  migrateLegacyWorkspaceAdsIfNeeded(workspace);
+  return resolveWorkspaceStatePath(workspace, STATE_FILENAME);
 }
 
 export async function loadIntakeState(workspacePath?: string): Promise<IntakeState | null> {
