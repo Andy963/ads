@@ -123,7 +123,7 @@ If you accidentally commit a secret:
 
 1. **Telegram Bot Access**: The bot has extensive access to configured directories. Ensure proper configuration of `ALLOWED_DIRS` and `TELEGRAM_SANDBOX_MODE`.
 
-2. **SQLite Database**: The `.ads/ads.db` file may contain sensitive information. Ensure it's not committed to version control (covered by `.gitignore`).
+2. **SQLite Database**: Workspace databases live under the centralized ADS state dir (default `.ads/workspaces/<workspaceId>/ads.db`, plus `.ads/state.db` for shared state) and may contain sensitive information. Ensure they are not committed to version control (covered by `.gitignore`).
 
 3. **Environment Files**: `.env` and any overrides contain secrets. Ensure all `.env*` files stay out of Git.
    - `.env` is shared by web and Telegram; keep any overrides (e.g., `.env.local`) out of version control.

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../../utils/logger.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../workspace/adsPaths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -38,7 +39,8 @@ function parseBoolean(value: string | undefined): boolean | undefined {
 }
 
 function resolveWorkspacePromptPath(workspaceRoot: string): string {
-  return path.join(path.resolve(workspaceRoot), ".ads", "templates", "supervisor.md");
+  migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
+  return resolveWorkspaceStatePath(workspaceRoot, "templates", "supervisor.md");
 }
 
 function resolveCustomPromptPath(workspaceRoot: string): string | null {
@@ -159,4 +161,3 @@ export class SupervisorPromptLoader {
     }
   }
 }
-

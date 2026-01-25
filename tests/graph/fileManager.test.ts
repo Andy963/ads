@@ -14,7 +14,6 @@ describe("graph/fileManager", () => {
 
   beforeEach(() => {
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-filemanager-"));
-    fs.mkdirSync(path.join(workspace, ".ads"), { recursive: true });
     originalEnv.AD_WORKSPACE = process.env.AD_WORKSPACE;
     originalEnv.ADS_DATABASE_PATH = process.env.ADS_DATABASE_PATH;
     process.env.AD_WORKSPACE = workspace;

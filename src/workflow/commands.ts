@@ -9,7 +9,7 @@ interface AdsCommandHelpItem {
 const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
   {
     usage: "/ads.init [--name=<workspace>]",
-    description: "初始化工作空间（创建 .ads 配置、规则与模板）",
+    description: "初始化工作空间（创建配置、规则与模板）",
   },
   {
     usage: "/ads.branch [-d|--delete-context <workflow>] [--delete <workflow>]",
