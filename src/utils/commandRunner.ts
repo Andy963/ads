@@ -36,6 +36,10 @@ function parseCsv(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function hasPathSeparator(value: string): boolean {
+  return value.includes("/") || value.includes("\\");
+}
+
 export function getExecAllowlistFromEnv(env: NodeJS.ProcessEnv = process.env): string[] | null {
   const raw = env.AGENT_EXEC_TOOL_ALLOWLIST;
   if (raw === undefined) {
@@ -66,8 +70,12 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     ? Math.floor(request.maxOutputBytes)
     : DEFAULT_MAX_OUTPUT_BYTES;
 
-  const executable = path.basename(cmd).toLowerCase();
   const allowlist = request.allowlist;
+  if (allowlist && hasPathSeparator(cmd)) {
+    throw new Error(`command path is not allowed when allowlist is enabled: ${cmd}`);
+  }
+
+  const executable = path.basename(cmd).toLowerCase();
   if (allowlist && !allowlist.includes(executable)) {
     throw new Error(`command not allowed: ${executable}`);
   }
