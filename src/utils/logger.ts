@@ -25,7 +25,7 @@ export class Logger {
   constructor(options: LoggerOptions = {}) {
     this.level = options.level ?? (process.env.ADS_DEBUG === '1' ? LogLevel.DEBUG : LogLevel.INFO);
     this.prefix = options.prefix ?? '';
-    this.showTimestamp = options.timestamp ?? false;
+    this.showTimestamp = options.timestamp ?? true;
   }
 
   private formatMessage(_level: string, message: string): string {
