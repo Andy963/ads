@@ -28,11 +28,15 @@ export class Logger {
     this.showTimestamp = options.timestamp ?? true;
   }
 
-  private formatMessage(_level: string, message: string): string {
+  private formatMessage(level: string, message: string): string {
     const parts: string[] = [];
     
     if (this.showTimestamp) {
       parts.push(`[${new Date().toISOString()}]`);
+    }
+
+    if (level) {
+      parts.push(`[${level}]`);
     }
     
     if (this.prefix) {
@@ -45,13 +49,13 @@ export class Logger {
 
   debug(message: string, ...args: unknown[]): void {
     if (this.level <= LogLevel.DEBUG) {
-      console.log(this.formatMessage('DEBUG', message), ...args);
+      console.debug(this.formatMessage('DEBUG', message), ...args);
     }
   }
 
   info(message: string, ...args: unknown[]): void {
     if (this.level <= LogLevel.INFO) {
-      console.log(this.formatMessage('INFO', message), ...args);
+      console.info(this.formatMessage('INFO', message), ...args);
     }
   }
 
