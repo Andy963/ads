@@ -180,11 +180,16 @@ export class HybridOrchestrator {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
-    const prompt = this.applySystemPrompt(this.activeAgentId, input);
+    const agentId = this.activeAgentId;
+    const entry = this.adapters.get(agentId);
+    if (!entry) {
+      throw new Error(`Active agent "${agentId}" not found`);
+    }
+    const prompt = this.applySystemPrompt(agentId, input);
     try {
-      return await this.activeEntry.adapter.send(prompt, options);
+      return await entry.adapter.send(prompt, options);
     } finally {
-      this.completeTurn(this.activeAgentId);
+      this.completeTurn(agentId);
     }
   }
 
