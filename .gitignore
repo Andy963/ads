@@ -43,6 +43,7 @@ Thumbs.db
 .gemini
 .claude
 .codex
+AGENTS.md
 .idea/
 *.swp
 ads.db
