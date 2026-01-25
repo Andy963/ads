@@ -1597,6 +1597,10 @@ async function start(): Promise<void> {
 	          };
 
           try {
+            const expectedThreadId = sessionManager.getSavedThreadId(
+              userId,
+              orchestrator.getActiveAgentId(),
+            );
             const result = await runCollaborativeTurn(orchestrator, inputToSend, {
               streaming: true,
               signal: controller.signal,
@@ -1650,9 +1654,19 @@ async function start(): Promise<void> {
 	            if (lastPlanItems) {
 	              safeJsonSend(ws, { type: "plan", items: lastPlanItems });
 	            }
-	            safeJsonSend(ws, { type: "result", ok: true, output: outputToSend });
+            const threadId = orchestrator.getThreadId();
+            const threadReset =
+              Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
+	            safeJsonSend(ws, {
+                type: "result",
+                ok: true,
+                output: outputToSend,
+                threadId,
+                expectedThreadId,
+                threadReset,
+              });
 	            if (sessionLogger) {
-	              sessionLogger.attachThreadId(orchestrator.getThreadId() ?? undefined);
+	              sessionLogger.attachThreadId(threadId ?? undefined);
 	              sessionLogger.logOutput(outputToSend);
 	            }
             historyStore.add(historyKey, {
@@ -1660,7 +1674,6 @@ async function start(): Promise<void> {
               text: outputToSend,
               ts: Date.now(),
             });
-            const threadId = orchestrator.getThreadId();
             if (threadId) {
               sessionManager.saveThreadId(userId, threadId, orchestrator.getActiveAgentId());
             }

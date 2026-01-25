@@ -29,6 +29,8 @@ const token = ref(localStorage.getItem(TOKEN_KEY) ?? "");
 const connected = ref(false);
 const apiError = ref<string | null>(null);
 const wsError = ref<string | null>(null);
+const threadWarning = ref<string | null>(null);
+const activeThreadId = ref<string | null>(null);
 const queueStatus = ref<TaskQueueStatus | null>(null);
 const workspacePath = ref("");
 
@@ -191,6 +193,8 @@ function clearChatState(): void {
   queuedPrompts.value = [];
   pendingImages.value = [];
   recentCommands.value = [];
+  threadWarning.value = null;
+  activeThreadId.value = null;
   clearStepLive();
   finalizeCommandBlock();
   setMessages([]);
@@ -905,6 +909,9 @@ async function connectWs(): Promise<void> {
     project = nextProject;
   }
 
+  threadWarning.value = null;
+  activeThreadId.value = null;
+
   ws?.close();
   ws = new AdsWebSocket({ token: token.value, sessionId: project.sessionId });
   ws.onOpen = () => {
@@ -1026,6 +1033,18 @@ async function connectWs(): Promise<void> {
     }
     if (msg.type === "result") {
       busy.value = false;
+      const threadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
+      if (threadId) {
+        activeThreadId.value = threadId;
+      }
+      const expectedThreadId = String((msg as { expectedThreadId?: unknown }).expectedThreadId ?? "").trim();
+      const threadReset = Boolean((msg as { threadReset?: unknown }).threadReset);
+      if (threadReset) {
+        const detail = expectedThreadId && threadId ? ` (expected=${expectedThreadId}, actual=${threadId})` : "";
+        threadWarning.value =
+          `Context thread was reset${detail}. Chat history may not match model context. ` +
+          `Clear chat to start a new conversation.`;
+      }
       if (pendingProjectCd.value && msg.ok === false) {
         const output = String(msg.output ?? "");
         if (output.includes("/cd") || output.includes("目录")) {
@@ -1236,6 +1255,7 @@ function select(id: string): void {
         </div>
         <div v-if="apiError" class="error">API: {{ apiError }}</div>
         <div v-if="wsError" class="error">WS: {{ wsError }}</div>
+        <div v-if="threadWarning" class="warning">{{ threadWarning }}</div>
 
         <TaskBoard
           class="taskBoard"
@@ -1266,7 +1286,7 @@ function select(id: string): void {
           :api-token="token"
           @send="sendMainPrompt"
           @interrupt="() => ws?.interrupt()"
-          @clear="() => { setMessages([]); finalizeCommandBlock(); pendingImages = []; ws?.clearHistory(); }"
+          @clear="() => { setMessages([]); finalizeCommandBlock(); pendingImages = []; threadWarning = null; activeThreadId = null; ws?.clearHistory(); }"
           @addImages="(imgs) => { pendingImages = [...pendingImages, ...imgs]; }"
           @clearImages="() => { pendingImages = []; }"
           @removeQueued="removeQueuedPrompt"
@@ -1736,6 +1756,14 @@ function select(id: string): void {
   border-radius: 8px;
   font-size: 13px;
   color: #dc2626;
+}
+.warning {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #b45309;
 }
 @media (max-width: 900px) {
   .layout {

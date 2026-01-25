@@ -6,6 +6,7 @@ import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import type { AgentRunResult, AgentSendOptions } from '../../agents/types.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
+import { ThreadStorage } from './threadStorage.js';
 
 interface SessionRecord {
   session: HybridOrchestrator;
@@ -35,6 +36,7 @@ export class SessionManager {
   private sandboxMode: SandboxMode;
   private defaultModel?: string;
   private userModels = new Map<number, string>();
+  private threadStorage?: ThreadStorage;
   private readonly logger = createLogger("SessionManager");
 
   constructor(
@@ -42,11 +44,11 @@ export class SessionManager {
     private readonly cleanupIntervalMs: number = 5 * 60 * 1000,
     sandboxMode: SandboxMode = 'workspace-write',
     defaultModel?: string,
-    _threadStorage?: unknown,
+    threadStorage?: ThreadStorage,
   ) {
-    void _threadStorage;
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
+    this.threadStorage = threadStorage;
     if (this.sessionTimeoutMs > 0 && this.cleanupIntervalMs > 0) {
       this.cleanupInterval = setInterval(() => {
         this.cleanup();
@@ -54,8 +56,7 @@ export class SessionManager {
     }
   }
 
-  getOrCreate(userId: number, cwd?: string, _resumeThread?: boolean): HybridOrchestrator {
-    void _resumeThread;
+  getOrCreate(userId: number, cwd?: string, resumeThread?: boolean): HybridOrchestrator {
     const existing = this.sessions.get(userId);
     
     if (existing) {
@@ -70,7 +71,9 @@ export class SessionManager {
     }
 
     const userModel = this.userModels.get(userId) || this.defaultModel;
-    const effectiveCwd = cwd || process.cwd();
+    const savedState = resumeThread ? this.getSavedState(userId) : undefined;
+    const effectiveCwd = cwd || savedState?.cwd || process.cwd();
+    const resumeThreadId = resumeThread ? this.getSavedThreadId(userId) : undefined;
 
     this.logger.info(
       `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
@@ -82,6 +85,7 @@ export class SessionManager {
       model: userModel,
       workingDirectory: effectiveCwd,
       networkAccessEnabled: true,
+      resumeThreadId,
     });
 
     const session = new HybridOrchestrator({
@@ -115,21 +119,33 @@ export class SessionManager {
   }
 
   saveThreadId(userId: number, threadId: string, agentId?: string): void {
-    void userId;
-    void threadId;
-    void agentId;
-    // No-op: simplified version doesn't persist threads
+    const storage = this.threadStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setThreadId(userId, threadId, agentId ?? "codex");
+
+    const cwd = this.getUserCwd(userId);
+    if (!cwd) {
+      return;
+    }
+    const record = storage.getRecord(userId);
+    if (!record) {
+      return;
+    }
+    storage.setRecord(userId, { ...record, cwd });
   }
 
   getSavedThreadId(userId: number, agentId?: string): string | undefined {
-    void userId;
-    void agentId;
-    return undefined;
+    return this.threadStorage?.getThreadId(userId, agentId ?? "codex");
   }
 
   getSavedState(userId: number): { threadId?: string; cwd?: string } | undefined {
-    void userId;
-    return undefined;
+    const record = this.threadStorage?.getRecord(userId);
+    if (!record) {
+      return undefined;
+    }
+    return { threadId: record.threadId, cwd: record.cwd };
   }
 
   ensureLogger(userId: number): ConversationLogger | undefined {
@@ -183,6 +199,7 @@ export class SessionManager {
 
   reset(userId: number): void {
     const record = this.sessions.get(userId);
+    this.threadStorage?.removeThread(userId);
     if (record) {
       record.session.reset();
       record.lastActivity = Date.now();
