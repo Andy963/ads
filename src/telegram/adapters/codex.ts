@@ -92,7 +92,7 @@ export async function handleCodexMessage(
   ctx: Context,
   text: string,
   sessionManager: SessionManager,
-  _streamUpdateIntervalMs: number,
+  streamUpdateIntervalMs: number,
   imageFileIds?: string[],
   documentFileId?: string,
   cwd?: string,
@@ -220,6 +220,17 @@ export async function handleCodexMessage(
   let statusMessageUseMarkdown = true;
   let statusUpdatesClosed = false;
   let rateLimitUntil = 0;
+  const effectiveStreamUpdateIntervalMs =
+    Number.isFinite(streamUpdateIntervalMs) && streamUpdateIntervalMs > 0
+      ? Math.floor(streamUpdateIntervalMs)
+      : 0;
+  const applyStreamUpdateCooldown = (): void => {
+    if (effectiveStreamUpdateIntervalMs <= 0) {
+      rateLimitUntil = 0;
+      return;
+    }
+    rateLimitUntil = Math.max(rateLimitUntil, Date.now() + effectiveStreamUpdateIntervalMs);
+  };
   let eventQueue: Promise<void> = Promise.resolve();
   let planMessageId: number | null = null;
   let lastPlanContent: string | null = null;
@@ -324,7 +335,7 @@ export async function handleCodexMessage(
         ? { parse_mode: 'MarkdownV2' as const }
         : { link_preview_options: { is_disabled: true as const } };
       await ctx.api.editMessageText(chatId, statusMessageId, content, options);
-      rateLimitUntil = 0;
+      applyStreamUpdateCooldown();
     } catch (error) {
       if (isParseEntityError(error)) {
         logWarning('[Telegram] Status markdown parse failed, falling back to plain text', error);
@@ -333,6 +344,7 @@ export async function handleCodexMessage(
           link_preview_options: { is_disabled: true as const },
         });
         statusMessageText = text;
+        applyStreamUpdateCooldown();
         return;
       }
       if (error instanceof GrammyError && error.error_code === 400 && error.description?.includes('message is not modified')) {
@@ -366,7 +378,7 @@ export async function handleCodexMessage(
       const newMsg = await ctx.reply(content, options);
       statusMessageId = newMsg.message_id;
       statusMessageText = initialText;
-      rateLimitUntil = 0;
+      applyStreamUpdateCooldown();
     } catch (error) {
       if (isParseEntityError(error)) {
         logWarning('[Telegram] Status markdown parse failed, sending plain text', error);
@@ -377,7 +389,7 @@ export async function handleCodexMessage(
         });
         statusMessageId = newMsg.message_id;
         statusMessageText = initialText;
-        rateLimitUntil = 0;
+        applyStreamUpdateCooldown();
         return;
       }
       if (error instanceof GrammyError && error.error_code === 429) {
@@ -475,7 +487,7 @@ export async function handleCodexMessage(
       const msg = await ctx.reply(text, { disable_notification: silentNotifications });
       planMessageId = msg.message_id;
       lastPlanContent = text;
-      rateLimitUntil = 0;
+      applyStreamUpdateCooldown();
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 429) {
         const retryAfter = error.parameters?.retry_after ?? 1;
@@ -495,8 +507,13 @@ export async function handleCodexMessage(
       await sendPlanMessage(text);
       return;
     }
+    const now = Date.now();
+    if (now < rateLimitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, rateLimitUntil - now));
+    }
     try {
       await ctx.api.editMessageText(chatId, planMessageId, text);
+      applyStreamUpdateCooldown();
     } catch (error) {
       if (error instanceof GrammyError && error.error_code === 400) {
         planMessageId = null;
