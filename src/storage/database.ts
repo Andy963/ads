@@ -11,9 +11,21 @@ let cachedDbs: Map<string, DatabaseType> = new Map();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000;
 
 /** 当前 schema 版本（等于 migrations 数组长度） */
 export const SCHEMA_VERSION = migrations.length;
+
+function parseNonNegativeInt(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
 
 function readPackageName(): string | null {
   const pkgPath = path.join(PROJECT_ROOT, "package.json");
@@ -146,6 +158,11 @@ export function getDatabase(workspacePath?: string): DatabaseType {
   const db = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  const busyTimeoutMs = parseNonNegativeInt(
+    process.env.ADS_SQLITE_BUSY_TIMEOUT_MS,
+    DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+  );
+  db.pragma(`busy_timeout = ${busyTimeoutMs}`);
 
   initializeDatabase(db);
   cachedDbs.set(dbPath, db);

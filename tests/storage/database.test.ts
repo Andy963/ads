@@ -18,6 +18,7 @@ describe("storage/database", () => {
     
     // 设置环境变量指向测试数据库
     process.env.ADS_DATABASE_PATH = dbPath;
+    process.env.ADS_SQLITE_BUSY_TIMEOUT_MS = "1234";
     
     // 重置数据库缓存
     resetDatabaseForTests();
@@ -106,6 +107,12 @@ describe("storage/database", () => {
     const db = getDatabase();
     const result = db.pragma("foreign_keys") as Array<{ foreign_keys: number }>;
     assert.strictEqual(result[0].foreign_keys, 1, "Foreign keys should be enabled");
+  });
+
+  it("should set busy timeout", () => {
+    const db = getDatabase();
+    const timeoutMs = db.pragma("busy_timeout", { simple: true }) as number;
+    assert.strictEqual(timeoutMs, 1234, "Busy timeout should match configuration");
   });
 
   it("should allow inserting and querying nodes", () => {
