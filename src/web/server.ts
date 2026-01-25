@@ -65,7 +65,9 @@ import {
 } from "./utils.js";
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
-const HOST = process.env.ADS_WEB_HOST || "0.0.0.0";
+// SECURITY: Do NOT change this default. Keep the Web server loopback-only by default.
+// If you need remote access, use a reverse proxy and/or set ADS_WEB_HOST explicitly.
+const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
 const TOKEN = (process.env.ADS_WEB_TOKEN ?? process.env.WEB_AUTH_TOKEN ?? "").trim();
 const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
 // <= 0 disables WebSocket ping keepalive.

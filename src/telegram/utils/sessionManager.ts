@@ -44,6 +44,7 @@ export class SessionManager {
     defaultModel?: string,
     _threadStorage?: unknown,
   ) {
+    void _threadStorage;
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
     if (this.sessionTimeoutMs > 0 && this.cleanupIntervalMs > 0) {
@@ -54,6 +55,7 @@ export class SessionManager {
   }
 
   getOrCreate(userId: number, cwd?: string, _resumeThread?: boolean): HybridOrchestrator {
+    void _resumeThread;
     const existing = this.sessions.get(userId);
     
     if (existing) {

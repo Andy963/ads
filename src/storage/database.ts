@@ -114,12 +114,16 @@ function runMigrations(db: DatabaseType): void {
   // 按顺序执行未运行的迁移
   for (let i = currentVersion; i < targetVersion; i++) {
     const migration = migrations[i];
-    try {
+    const tx = db.transaction(() => {
       migration.up(db);
       setSchemaVersion(db, migration.version);
+    });
+    try {
+      tx();
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `Migration ${migration.version} (${migration.description}) failed: ${(error as Error).message}`,
+        `Migration ${migration.version} (${migration.description}) failed: ${message}`,
       );
     }
   }

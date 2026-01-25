@@ -305,6 +305,8 @@ export class TaskStore {
       return `${base.slice(0, maxLen)}…`;
     })();
 
+    const inheritContext = Boolean(input.inheritContext);
+
     const task: Task = {
       id,
       title,
@@ -313,14 +315,14 @@ export class TaskStore {
       modelParams: input.modelParams ?? null,
       status: "pending",
       priority: typeof input.priority === "number" ? input.priority : 0,
-      inheritContext: Boolean(input.inheritContext),
+      inheritContext,
       parentTaskId: input.parentTaskId ?? null,
       threadId: (() => {
         const provided = input.threadId == null ? "" : String(input.threadId).trim();
         if (provided) {
           return provided;
         }
-        if (Boolean(input.inheritContext)) {
+        if (inheritContext) {
           const row = this.selectMostRecentThreadIdStmt.get() as { thread_id?: string } | undefined;
           const inherited = row?.thread_id == null ? "" : String(row.thread_id).trim();
           if (inherited) {
