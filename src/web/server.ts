@@ -302,9 +302,23 @@ function extractQueryToken(req: http.IncomingMessage): string | null {
   }
 }
 
+function isLoopbackAddress(address: string | undefined): boolean {
+  const raw = String(address ?? "").trim().toLowerCase();
+  if (!raw) {
+    return false;
+  }
+  if (raw === "127.0.0.1" || raw === "::1") {
+    return true;
+  }
+  if (raw.startsWith("::ffff:")) {
+    return raw.slice("::ffff:".length) === "127.0.0.1";
+  }
+  return false;
+}
+
 function isRequestAuthorized(req: http.IncomingMessage): boolean {
   if (!TOKEN) {
-    return true;
+    return isLoopbackAddress(req.socket.remoteAddress);
   }
   const token = extractBearerToken(req) ?? extractQueryToken(req);
   return token === TOKEN;
@@ -439,6 +453,10 @@ function createHttpServer(options: { handleApiRequest?: (req: http.IncomingMessa
 
   const server = http.createServer((req, res) => {
     const url = req.url ?? "";
+    if (!TOKEN && !isLoopbackAddress(req.socket.remoteAddress) && !url.startsWith("/healthz")) {
+      res.writeHead(401).end("Unauthorized");
+      return;
+    }
     if (url.startsWith("/api/")) {
       if (!isRequestAuthorized(req)) {
         sendJson(res, 401, { error: "Unauthorized" });
@@ -1283,7 +1301,12 @@ async function start(): Promise<void> {
 
     const { token: wsToken, session: wsSession } = parseProtocols(parsedProtocols);
     const sessionId = wsSession && wsSession.trim() ? wsSession.trim() : crypto.randomBytes(4).toString("hex");
-    if (TOKEN && wsToken !== TOKEN) {
+    if (TOKEN) {
+      if (wsToken !== TOKEN) {
+        ws.close(4401, "unauthorized");
+        return;
+      }
+    } else if (!isLoopbackAddress(req.socket.remoteAddress)) {
       ws.close(4401, "unauthorized");
       return;
     }
