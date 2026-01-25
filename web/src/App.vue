@@ -49,6 +49,7 @@ const projectNameEl = ref<HTMLInputElement | null>(null);
 const projectDialogPathStatus = ref<"idle" | "checking" | "ok" | "error">("idle");
 const projectDialogPathMessage = ref("");
 const lastValidatedProjectPath = ref("");
+let lastValidatedProjectSessionId = "";
 let projectPathValidationSeq = 0;
 
 type PathValidateResponse = {
@@ -57,6 +58,8 @@ type PathValidateResponse = {
   exists: boolean;
   isDirectory: boolean;
   resolvedPath?: string;
+  workspaceRoot?: string;
+  projectSessionId?: string;
   error?: string;
   allowedDirs?: string[];
 };
@@ -206,7 +209,7 @@ function performProjectSwitch(id: string): void {
 
   activeProjectId.value = nextId;
   persistProjects();
-  connectWs();
+  void connectWs();
 }
 
 function requestProjectSwitch(id: string): void {
@@ -305,6 +308,7 @@ function onProjectDialogPathInput(): void {
     projectDialogPathMessage.value = "";
   }
   lastValidatedProjectPath.value = "";
+  lastValidatedProjectSessionId = "";
 }
 
 async function validateProjectDialogPath(options?: { force?: boolean }): Promise<boolean> {
@@ -313,6 +317,7 @@ async function validateProjectDialogPath(options?: { force?: boolean }): Promise
     projectDialogPathStatus.value = "idle";
     projectDialogPathMessage.value = "";
     lastValidatedProjectPath.value = "";
+    lastValidatedProjectSessionId = "";
     return false;
   }
 
@@ -331,10 +336,13 @@ async function validateProjectDialogPath(options?: { force?: boolean }): Promise
     }
 
     if (result.ok) {
+      const workspaceRoot = String(result.workspaceRoot ?? "").trim();
       const resolved = String(result.resolvedPath ?? "").trim();
-      if (resolved && resolved !== path) {
-        projectDialogPath.value = resolved;
+      const nextPath = workspaceRoot || resolved;
+      if (nextPath && nextPath !== path) {
+        projectDialogPath.value = nextPath;
       }
+      lastValidatedProjectSessionId = String(result.projectSessionId ?? "").trim();
       lastValidatedProjectPath.value = projectDialogPath.value.trim();
       projectDialogPathStatus.value = "ok";
       projectDialogPathMessage.value = "目录可用";
@@ -386,14 +394,19 @@ async function submitProjectDialog(): Promise<void> {
   }
 
   const name = projectDialogName.value.trim() || deriveProjectName(path);
-  const project = createProjectTab({ path, name, initialized: false });
+  const project = createProjectTab({
+    path,
+    name,
+    initialized: false,
+    sessionId: lastValidatedProjectSessionId || undefined,
+  });
   projects.value = [...projects.value, project];
   activeProjectId.value = project.id;
   persistProjects();
 
   closeProjectDialog();
   clearChatState();
-  connectWs();
+  await connectWs();
 }
 
 function setMessages(items: ChatItem[]): void {
@@ -814,10 +827,84 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
   }
 }
 
-function connectWs(): void {
+function mergeProjectsInto(target: ProjectTab, candidate: ProjectTab): ProjectTab {
+  const name = target.name || candidate.name;
+  const initialized = target.initialized || candidate.initialized;
+  const createdAt = Math.min(target.createdAt, candidate.createdAt);
+  const updatedAt = Date.now();
+  return { ...target, ...candidate, name, initialized, createdAt, updatedAt };
+}
+
+function replaceProjectId(oldId: string, next: ProjectTab): void {
+  const current = projects.value.slice();
+  const existingIdx = current.findIndex((p) => p.id === next.id);
+  const oldIdx = current.findIndex((p) => p.id === oldId);
+  if (oldIdx < 0) {
+    return;
+  }
+
+  if (existingIdx >= 0 && existingIdx !== oldIdx) {
+    const merged = mergeProjectsInto(current[existingIdx]!, next);
+    current[existingIdx] = merged;
+    current.splice(oldIdx, 1);
+  } else {
+    current[oldIdx] = next;
+  }
+
+  projects.value = current;
+  if (activeProjectId.value === oldId) {
+    activeProjectId.value = next.id;
+  }
+  if (pendingProjectCd.value?.projectId === oldId) {
+    pendingProjectCd.value = { ...pendingProjectCd.value, projectId: next.id };
+  }
+  if (pendingSwitchProjectId.value === oldId) {
+    pendingSwitchProjectId.value = next.id;
+  }
+  persistProjects();
+}
+
+async function resolveProjectIdentity(project: ProjectTab): Promise<{ sessionId: string; path: string } | null> {
+  const rawPath = String(project.path ?? "").trim();
+  if (!rawPath) {
+    return null;
+  }
+  try {
+    const result = await api.get<PathValidateResponse>(`/api/paths/validate?path=${encodeURIComponent(rawPath)}`);
+    if (!result.ok) {
+      return null;
+    }
+    const sessionId = String(result.projectSessionId ?? "").trim();
+    if (!sessionId) {
+      return null;
+    }
+    const workspaceRoot = String(result.workspaceRoot ?? "").trim();
+    const resolvedPath = String(result.resolvedPath ?? "").trim();
+    const normalizedPath = workspaceRoot || resolvedPath || rawPath;
+    return { sessionId, path: normalizedPath };
+  } catch {
+    return null;
+  }
+}
+
+async function connectWs(): Promise<void> {
   if (tokenRequired.value && !hasToken.value) return;
-  const project = activeProject.value;
+  let project = activeProject.value;
   if (!project) return;
+
+  const identity = await resolveProjectIdentity(project);
+  if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
+    const nextProject: ProjectTab = {
+      ...project,
+      id: identity.sessionId,
+      sessionId: identity.sessionId,
+      path: identity.path,
+      updatedAt: Date.now(),
+    };
+    replaceProjectId(project.id, nextProject);
+    project = nextProject;
+  }
+
   ws?.close();
   ws = new AdsWebSocket({ token: token.value, sessionId: project.sessionId });
   ws.onOpen = () => {
@@ -1064,7 +1151,7 @@ async function bootstrap(): Promise<void> {
     await loadModels();
     await loadQueueStatus();
     await loadTasks();
-    connectWs();
+    await connectWs();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     apiError.value = msg;

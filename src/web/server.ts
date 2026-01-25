@@ -131,6 +131,19 @@ function parseTaskStatus(value: string | undefined | null): QueueTaskStatus | un
   }
 }
 
+function toBase64Url(value: Buffer): string {
+  return value
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function deriveProjectSessionId(projectRoot: string): string {
+  const digest = crypto.createHash("sha256").update(projectRoot).digest();
+  return toBase64Url(digest);
+}
+
 function selectAgentForModel(model: string): AgentIdentifier {
   const normalized = String(model ?? "").trim().toLowerCase();
   if (normalized.startsWith("gemini")) {
@@ -800,12 +813,25 @@ async function start(): Promise<void> {
           return true;
         }
 
+        const workspaceRootCandidate = detectWorkspaceFrom(resolvedPath);
+        let workspaceRoot = workspaceRootCandidate;
+        try {
+          workspaceRoot = fs.realpathSync(workspaceRootCandidate);
+        } catch {
+          workspaceRoot = workspaceRootCandidate;
+        }
+        if (!directoryManager.validatePath(workspaceRoot)) {
+          workspaceRoot = resolvedPath;
+        }
+
         sendJson(res, 200, {
           ok: true,
           allowed: true,
           exists: true,
           isDirectory: true,
           resolvedPath,
+          workspaceRoot,
+          projectSessionId: deriveProjectSessionId(workspaceRoot),
         });
         return true;
       }
