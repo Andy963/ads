@@ -177,7 +177,7 @@ function pickRecorderMime(): string {
 
 async function transcribeAudio(blob: Blob): Promise<void> {
   transcribing.value = true;
-  setVoiceStatus("transcribing", "识别中…");
+  setVoiceStatus("idle", "");
   try {
     const headers: Record<string, string> = {};
     const token = String(props.apiToken ?? "").trim();
@@ -205,7 +205,12 @@ async function transcribeAudio(blob: Blob): Promise<void> {
     await insertIntoComposer(text);
     setVoiceStatus("ok", "已追加语音文本", 1200);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    const lowered = raw.trim().toLowerCase();
+    const message =
+      lowered.includes("fetch failed") || lowered.includes("failed to fetch")
+        ? "语音识别上游连接失败（检查网络/KEY）"
+        : raw;
     setVoiceStatus("error", message || "语音识别失败", 4000);
   } finally {
     transcribing.value = false;
@@ -247,7 +252,7 @@ async function startRecording(): Promise<void> {
 
     recorder.start();
     recording.value = true;
-    setVoiceStatus("recording", "录音中…再次点击停止");
+    setVoiceStatus("idle", "");
   } catch (error) {
     recording.value = false;
     cleanupRecorder();
@@ -259,11 +264,13 @@ async function startRecording(): Promise<void> {
 function stopRecording(): void {
   if (!recording.value) return;
   recording.value = false;
-  setVoiceStatus("transcribing", "识别中…");
+  transcribing.value = true;
+  setVoiceStatus("idle", "");
   try {
     recorder?.stop();
   } catch {
     cleanupRecorder();
+    transcribing.value = false;
     setVoiceStatus("error", "停止录音失败", 3500);
   }
 }
@@ -309,7 +316,6 @@ async function onPaste(ev: ClipboardEvent): Promise<void> {
   const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
   const data = ev.clipboardData;
   const target = ev.target instanceof HTMLTextAreaElement ? ev.target : null;
-  ev.preventDefault();
 
   const items = data?.items ? Array.from(data.items) : [];
   const fromItems = items
@@ -346,14 +352,23 @@ async function onPaste(ev: ClipboardEvent): Promise<void> {
   })();
 
   const html = (data?.getData("text/html") ?? "").trim();
-  const plain = (data?.getData("text/plain") ?? "").trim();
+  const plainRaw = data?.getData("text/plain") ?? "";
+  const plain = plainRaw.trim();
   const uriList = (data?.getData("text/uri-list") ?? "").trim();
 
   const imgSrcFromHtml = html ? /<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] : undefined;
+  const directSrcFromHtml = String(imgSrcFromHtml ?? "").trim();
   const uriFromUriList = uriList
     .split(/\r?\n/)
     .map((l) => l.trim())
     .find((l) => l && !l.startsWith("#"));
+  const isImageUrl = (value: string): boolean => {
+    const v = String(value ?? "").trim();
+    if (!v) return false;
+    if (v.startsWith("data:image/")) return true;
+    if (!/^https?:\/\//i.test(v)) return false;
+    return /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(v);
+  };
   const srcFromText = (() => {
     if (plain.startsWith("data:image/")) return plain;
     const maybeUrl = plain.trim();
@@ -361,54 +376,104 @@ async function onPaste(ev: ClipboardEvent): Promise<void> {
     if (!/\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(maybeUrl)) return "";
     return maybeUrl;
   })();
-  const directSrc = (imgSrcFromHtml || uriFromUriList || srcFromText || "").trim();
+  const srcFromUriList = uriFromUriList && isImageUrl(uriFromUriList) ? uriFromUriList : "";
+  const directSrc = (directSrcFromHtml || srcFromUriList || srcFromText || "").trim();
+
+  const clipboardTypes = data?.types ? Array.from(data.types).map((t) => String(t ?? "")) : [];
+  const hasExplicitImageType = clipboardTypes.some((t) => t === "Files" || t.startsWith("image/"));
+  const hasFileLikeItem = items.some((i) => i.kind === "file");
+  const shouldHandleImages = uniqueFiles.length > 0 || Boolean(directSrc) || hasExplicitImageType || hasFileLikeItem;
 
   const images: IncomingImage[] = [];
-  if (directSrc && uniqueFiles.length === 0) {
-    if (directSrc.startsWith("data:image/")) {
-      images.push({ data: directSrc });
-    } else if (/^https?:\/\//i.test(directSrc)) {
-      const fetched = await fetch(directSrc)
-        .then(async (r) => {
-          if (!r.ok) return "";
-          const blob = await r.blob();
-          if (blob.size > MAX_IMAGE_BYTES) return "";
-          return await blobToDataUrl(blob);
-        })
-        .catch(() => "");
-      if (fetched) images.push({ data: fetched });
-    }
-  }
-  for (const file of uniqueFiles) {
-    if (file.size > MAX_IMAGE_BYTES) {
-      continue;
-    }
-    const dataUrl = await fileToDataUrl(file);
-    if (!dataUrl) continue;
-    images.push({ name: file.name, mime: file.type, data: dataUrl });
-  }
+  if (shouldHandleImages) {
+    // Vue paste handlers are not awaited by the browser; preventDefault must happen
+    // before the first await to reliably stop the native paste.
+    ev.preventDefault();
 
-  if (images.length === 0) {
-    const fromNavigator = await readImagesFromNavigatorClipboard(MAX_IMAGE_BYTES);
-    images.push(...fromNavigator);
-  }
+    if (directSrc && uniqueFiles.length === 0) {
+      const isFromHtml = directSrcFromHtml.length > 0 && directSrc === directSrcFromHtml;
+      if (directSrc.startsWith("data:image/")) {
+        images.push({ data: directSrc });
+      } else if (/^https?:\/\//i.test(directSrc) && (isFromHtml || isImageUrl(directSrc))) {
+        const fetched = await fetch(directSrc)
+          .then(async (r) => {
+            if (!r.ok) return "";
+            const blob = await r.blob();
+            const mime = String(blob.type ?? "");
+            if (!mime.startsWith("image/")) return "";
+            if (blob.size > MAX_IMAGE_BYTES) return "";
+            return await blobToDataUrl(blob);
+          })
+          .catch(() => "");
+        if (fetched) images.push({ data: fetched });
+      }
+    }
 
-  if (images.length) {
-    emit("addImages", images);
+    for (const file of uniqueFiles) {
+      if (file.size > MAX_IMAGE_BYTES) {
+        continue;
+      }
+      const dataUrl = await fileToDataUrl(file);
+      if (!dataUrl) continue;
+      images.push({ name: file.name, mime: file.type, data: dataUrl });
+    }
+
+    if (images.length === 0) {
+      const fromNavigator = await readImagesFromNavigatorClipboard(MAX_IMAGE_BYTES);
+      images.push(...fromNavigator);
+    }
+
+    if (images.length) {
+      emit("addImages", images);
+      return;
+    }
+
+    // We took over the paste event but failed to extract images. Fall back to text paste.
+    const fallbackText = plainRaw || uriFromUriList || "";
+    const finalText = fallbackText
+      ? fallbackText
+      : await (async () => {
+          try {
+            const clipboard = navigator.clipboard as undefined | { readText?: () => Promise<string> };
+            return (await clipboard?.readText?.()) ?? "";
+          } catch {
+            return "";
+          }
+        })();
+
+    if (!finalText) return;
+    const start = target?.selectionStart ?? input.value.length;
+    const end = target?.selectionEnd ?? start;
+    input.value = input.value.slice(0, start) + finalText + input.value.slice(end);
+    await nextTick();
+    try {
+      const pos = start + finalText.length;
+      target?.setSelectionRange(pos, pos);
+    } catch {
+      // ignore
+    }
     return;
   }
 
-  const text = data?.getData("text/plain") ?? "";
-  if (!text) return;
-  const start = target?.selectionStart ?? input.value.length;
-  const end = target?.selectionEnd ?? start;
-  input.value = input.value.slice(0, start) + text + input.value.slice(end);
-  await nextTick();
-  try {
-    const pos = start + text.length;
-    target?.setSelectionRange(pos, pos);
-  } catch {
-    // ignore
+  // No images detected: let the browser handle text paste by default.
+  // If clipboardData has no text types at all, try navigator.clipboard.readText() as a last resort.
+  const hasTextType = clipboardTypes.some((t) => t.startsWith("text/"));
+  if (target && !plainRaw && !html && !uriList && !hasTextType) {
+    const clipboard = navigator.clipboard as undefined | { readText?: () => Promise<string> };
+    if (!clipboard?.readText) return;
+    ev.preventDefault();
+    const navText = await clipboard.readText().catch(() => "");
+    if (!navText) return;
+    const start = target.selectionStart ?? input.value.length;
+    const end = target.selectionEnd ?? start;
+    input.value = input.value.slice(0, start) + navText + input.value.slice(end);
+    await nextTick();
+    try {
+      const pos = start + navText.length;
+      target.setSelectionRange(pos, pos);
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -516,7 +581,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-else class="bubble">
-          <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && !m.content.trim()" class="typing" aria-label="AI 正在回复">
+          <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0" class="typing" aria-label="AI 正在回复">
             <span class="dot" />
             <span class="dot" />
             <span class="dot" />
@@ -571,6 +636,16 @@ onBeforeUnmount(() => {
           @paste="onPaste"
         />
         <div class="inputActions">
+          <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
+            <div class="voiceBars">
+              <span class="bar" />
+              <span class="bar" />
+              <span class="bar" />
+            </div>
+          </div>
+          <div v-else-if="transcribing" class="voiceIndicator transcribing" aria-hidden="true">
+            <span class="voiceSpinner" />
+          </div>
           <button
             class="micIcon"
             :class="{ recording, transcribing }"
@@ -614,9 +689,29 @@ onBeforeUnmount(() => {
             </svg>
           </button>
         </div>
-      </div>
-      <div v-if="voiceStatusKind !== 'idle' && voiceStatusMessage" class="voiceStatus" :class="voiceStatusKind">
-        {{ voiceStatusMessage }}
+        <div
+          v-if="(voiceStatusKind === 'ok' || voiceStatusKind === 'error') && voiceStatusMessage"
+          class="voiceToast"
+          :class="voiceStatusKind"
+          role="status"
+          aria-live="polite"
+        >
+          <svg v-if="voiceStatusKind === 'ok'" class="voiceToastIcon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path
+              fill-rule="evenodd"
+              d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm3.53-9.47a.75.75 0 0 1 0 1.06l-3.75 3.75a.75.75 0 0 1-1.06 0L6.47 11.1a.75.75 0 1 1 1.06-1.06l1.72 1.72 3.22-3.22a.75.75 0 0 1 1.06 0Z"
+              clip-rule="evenodd"
+            />
+          </svg>
+          <svg v-else class="voiceToastIcon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path
+              fill-rule="evenodd"
+              d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm.75-11.25a.75.75 0 0 0-1.5 0v4.5a.75.75 0 0 0 1.5 0v-4.5Zm-1.5 7.5a.75.75 0 0 1 .75-.75h.01a.75.75 0 0 1 0 1.5H10a.75.75 0 0 1-.75-.75Z"
+              clip-rule="evenodd"
+            />
+          </svg>
+          <span class="voiceToastText">{{ voiceStatusMessage }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -628,9 +723,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
 }
 .header {
@@ -638,8 +733,8 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: flex-start;
   padding: 12px 16px;
-  background: white;
-  border-bottom: 1px solid #e2e8f0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
   gap: 10px;
 }
@@ -659,7 +754,7 @@ onBeforeUnmount(() => {
 }
 .meta-item {
   font-size: 12px;
-  color: #64748b;
+  color: var(--muted);
 }
 .actions {
   display: flex;
@@ -697,7 +792,7 @@ onBeforeUnmount(() => {
   overflow-x: hidden;
   overscroll-behavior: contain;
   padding: 10px;
-  background: #f8fafc;
+  background: var(--surface-2);
   min-height: 0;
 }
 .chat-empty {
@@ -711,17 +806,6 @@ onBeforeUnmount(() => {
   margin-bottom: 10px;
   max-width: 100%;
   overflow: hidden;
-}
-.msg[data-role="user"] {
-  justify-content: flex-end;
-}
-.msg[data-role="assistant"] {
-  justify-content: flex-start;
-}
-.msg[data-role="system"] {
-  justify-content: center;
-}
-.msg[data-kind="command"] {
   justify-content: flex-start;
 }
 .command-block {
@@ -738,10 +822,10 @@ onBeforeUnmount(() => {
 .command-tag {
   display: inline-block;
   padding: 2px 8px;
-  background: transparent;
-  border: 1px solid #f97316;
-  border-radius: 4px;
-  color: #f97316;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  border-radius: 999px;
+  color: var(--accent);
   font-size: 11px;
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -784,7 +868,7 @@ onBeforeUnmount(() => {
   padding: 2px 8px;
   margin-top: 4px;
   border: none;
-  border-radius: 4px;
+  border-radius: 999px;
   background: #f1f5f9;
   color: #64748b;
   font-size: 11px;
@@ -798,14 +882,14 @@ onBeforeUnmount(() => {
   max-width: 100%;
   border-radius: 12px;
   padding: 10px 12px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: white;
+  border: 1px solid var(--border);
+  background: var(--surface);
   position: relative;
   overflow: hidden;
 }
 .msg[data-role="user"] .bubble {
-  background: transparent;
-  border-color: rgba(37, 99, 235, 0.35);
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.25);
 }
 .msg[data-role="system"] .bubble {
   background: rgba(15, 23, 42, 0.04);
@@ -820,10 +904,10 @@ onBeforeUnmount(() => {
 }
 .text {
   margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
-  color: #0f172a;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -831,10 +915,10 @@ onBeforeUnmount(() => {
 }
 .mono {
   margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
-  color: #0f172a;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -857,18 +941,18 @@ onBeforeUnmount(() => {
   width: 6px;
   height: 6px;
   border-radius: 999px;
-  background: #94a3b8;
-  animation: bounce 1.1s infinite;
+  background: var(--muted-2);
+  animation: bounce 0.6s ease-in-out infinite;
 }
 .typing .dot:nth-child(2) {
-  animation-delay: 0.15s;
+  animation-delay: 0.12s;
 }
 .typing .dot:nth-child(3) {
-  animation-delay: 0.3s;
+  animation-delay: 0.24s;
 }
 @keyframes bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.55; }
-  40% { transform: translateY(-4px); opacity: 1; }
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40% { transform: translateY(-2px); opacity: 1; }
 }
 
 .composer {
@@ -950,6 +1034,83 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+.voiceIndicator {
+  width: 22px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+}
+.voiceIndicator.recording {
+  color: #dc2626;
+}
+.voiceIndicator.transcribing {
+  color: #2563eb;
+}
+.voiceBars {
+  display: flex;
+  gap: 2px;
+  align-items: flex-end;
+  height: 14px;
+}
+.voiceBars .bar {
+  width: 3px;
+  border-radius: 3px;
+  background: currentColor;
+  animation: voiceBars 0.45s ease-in-out infinite;
+}
+.voiceBars .bar:nth-child(2) {
+  animation-delay: 0.08s;
+}
+.voiceBars .bar:nth-child(3) {
+  animation-delay: 0.16s;
+}
+.voiceSpinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(37, 99, 235, 0.22);
+  border-top-color: currentColor;
+  animation: voiceSpin 0.75s linear infinite;
+}
+.voiceToast {
+  position: absolute;
+  right: 8px;
+  bottom: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  color: var(--muted);
+  max-width: min(72vw, 380px);
+  pointer-events: none;
+  animation: voiceToastIn 0.14s ease-out;
+}
+.voiceToast.ok {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+  color: #059669;
+}
+.voiceToast.error {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.06);
+  color: #dc2626;
+}
+.voiceToastIcon {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex-shrink: 0;
+}
+.voiceToastText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .attachmentsBar {
   display: flex;
@@ -1067,21 +1228,15 @@ onBeforeUnmount(() => {
 .stopIcon:hover {
   color: #b91c1c;
 }
-.voiceStatus {
-  font-size: 12px;
-  font-weight: 700;
-  color: #64748b;
+@keyframes voiceBars {
+  0%, 100% { height: 4px; opacity: 0.55; }
+  50% { height: 14px; opacity: 1; }
 }
-.voiceStatus.ok {
-  color: #059669;
+@keyframes voiceSpin {
+  to { transform: rotate(360deg); }
 }
-.voiceStatus.error {
-  color: #dc2626;
-}
-.voiceStatus.recording {
-  color: #dc2626;
-}
-.voiceStatus.transcribing {
-  color: #2563eb;
+@keyframes voiceToastIn {
+  from { transform: translateY(4px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
 }
 </style>

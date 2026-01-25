@@ -1,13 +1,21 @@
 import { encodeBase64Url } from "../lib/base64url";
 import type { TaskEventPayload } from "./types";
 
+type WsCommandPayload = {
+  id?: string;
+  command?: string;
+  status?: string;
+  exit_code?: number;
+  outputDelta?: string;
+};
+
 type WsMessage =
   | { type: "welcome"; sessionId?: string; workspace?: unknown }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
   | { type: "delta"; delta?: string }
   | { type: "result"; ok: boolean; output: string }
   | { type: "error"; message?: string }
-  | { type: "command"; detail?: string; command?: { command?: string } | null }
+  | { type: "command"; detail?: string; command?: WsCommandPayload | null }
   | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number }
   | { type: string; [k: string]: unknown };
 

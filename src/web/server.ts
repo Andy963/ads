@@ -20,6 +20,7 @@ import "../utils/logSink.js";
 import "../utils/env.js";
 import { runAdsCommandLine } from "./commandRouter.js";
 import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
+import { resolveAdsStateDir, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { DirectoryManager } from "../telegram/utils/directoryManager.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentEvent } from "../codex/events.js";
@@ -76,20 +77,21 @@ const WS_READY_OPEN = 1;
 // Cache last workspace per client token to persist cwd across reconnects (process memory only)
 const workspaceCache = new Map<string, string>();
 const interruptControllers = new Map<number, AbortController>();
+const adsStateDir = resolveAdsStateDir();
 const webThreadStorage = new ThreadStorage({
   namespace: "web",
-  storagePath: path.join(process.cwd(), ".ads", "web-threads.json"),
+  storagePath: path.join(adsStateDir, "web-threads.json"),
 });
 // Disable in-memory session timeout cleanup for Web (keep sessions until process exit / explicit reset).
 const sessionManager = new SessionManager(0, 0, "workspace-write", undefined, webThreadStorage);
 const historyStore = new HistoryStore({
-  storagePath: path.join(process.cwd(), ".ads", "state.db"),
+  storagePath: path.join(adsStateDir, "state.db"),
   namespace: "web",
-  migrateFromPaths: [path.join(process.cwd(), ".ads", "web-history.json")],
+  migrateFromPaths: [path.join(adsStateDir, "web-history.json")],
   maxEntriesPerSession: 200,
   maxTextLength: 4000,
 });
-const cwdStorePath = path.join(process.cwd(), ".ads", "state.db");
+const cwdStorePath = path.join(adsStateDir, "state.db");
 const cwdStore = loadCwdStore(cwdStorePath);
 
 const wsMessageSchema = z.object({
@@ -200,7 +202,8 @@ function buildPlanSignature(items: TodoListItem["items"]): string {
 }
 
 async function ensureWebPidFile(workspaceRoot: string): Promise<string> {
-  const runDir = path.join(workspaceRoot, ".ads", "run");
+  void workspaceRoot;
+  const runDir = path.join(adsStateDir, "run");
   fs.mkdirSync(runDir, { recursive: true });
   const pidFile = path.join(runDir, "web.pid");
 
@@ -508,7 +511,7 @@ async function start(): Promise<void> {
   const taskQueueStatusUserId = 0;
   const taskQueueThreadStorage = new ThreadStorage({
     namespace: "task-queue",
-    storagePath: path.join(process.cwd(), ".ads", "task-queue-threads.json"),
+    storagePath: path.join(adsStateDir, "task-queue-threads.json"),
   });
   const taskQueueSessionManager = new SessionManager(0, 0, "workspace-write", process.env.TASK_QUEUE_DEFAULT_MODEL, taskQueueThreadStorage);
   const getStatusOrchestrator = () => taskQueueSessionManager.getOrCreate(taskQueueStatusUserId, workspaceRoot, true);
@@ -569,11 +572,17 @@ async function start(): Promise<void> {
       const pathname = url.pathname;
 
       if (req.method === "POST" && pathname === "/api/audio/transcriptions") {
+        const preferProviderRaw = String(process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER ?? "together")
+          .trim()
+          .toLowerCase();
+        const preferProvider = preferProviderRaw === "openai" ? "openai" : "together";
         const togetherKey = String(process.env.TOGETHER_API_KEY ?? "").trim();
-        if (!togetherKey) {
-          sendJson(res, 500, { error: "未配置 TOGETHER_API_KEY" });
-          return true;
-        }
+        const openaiKey = String(
+          process.env.OPENAI_API_KEY ?? process.env.CODEX_API_KEY ?? process.env.CCHAT_OPENAI_API_KEY ?? "",
+        ).trim();
+        const openaiBaseUrl = String(
+          process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE ?? process.env.CODEX_BASE_URL ?? "https://api.openai.com/v1",
+        ).trim();
 
         let contentType = String(req.headers["content-type"] ?? "").trim();
         if (contentType.includes(";")) {
@@ -607,11 +616,40 @@ async function start(): Promise<void> {
 	          return "bin";
 	        })();
 
-          const audioArrayBuffer = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
+        const audioArrayBuffer = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
 
-	        const form = new FormData();
-	        form.append("model", "openai/whisper-large-v3");
-	        form.append("file", new Blob([audioArrayBuffer], { type: contentType }), `recording.${ext}`);
+        const createForm = (model: string): FormData => {
+          const form = new FormData();
+          form.append("model", model);
+          form.append("file", new Blob([audioArrayBuffer], { type: contentType }), `recording.${ext}`);
+          return form;
+        };
+
+        const parseJsonText = (raw: string): unknown => {
+          try {
+            return raw ? (JSON.parse(raw) as unknown) : null;
+          } catch {
+            return null;
+          }
+        };
+
+        const extractErrorMessage = (parsed: unknown, raw: string, status: number): string => {
+          const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+          const nestedError = record?.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
+          return (
+            String(nestedError?.message ?? record?.message ?? record?.error ?? raw ?? "").trim() ||
+            `上游服务错误（${status}）`
+          );
+        };
+
+        const extractText = (parsed: unknown): string => {
+          const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+          return (
+            (typeof record?.text === "string" ? record.text : "") ||
+            (typeof record?.transcript === "string" ? record.transcript : "") ||
+            (typeof record?.transcription === "string" ? record.transcription : "")
+          );
+        };
 
         const controller = new AbortController();
         const timeoutMsRaw = Number(process.env.ADS_TOGETHER_AUDIO_TIMEOUT_MS ?? 60_000);
@@ -619,42 +657,71 @@ async function start(): Promise<void> {
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
-          const upstream = await fetch("https://api.together.xyz/v1/audio/transcriptions", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${togetherKey}` },
-            body: form,
-            signal: controller.signal,
-          });
+          const callTogether = async (): Promise<string> => {
+            if (!togetherKey) {
+              throw new Error("未配置 TOGETHER_API_KEY");
+            }
+            const upstream = await fetch("https://api.together.xyz/v1/audio/transcriptions", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${togetherKey}` },
+              body: createForm("openai/whisper-large-v3"),
+              signal: controller.signal,
+            });
+            const raw = await upstream.text().catch(() => "");
+            const parsed = parseJsonText(raw);
+            if (!upstream.ok) {
+              throw new Error(extractErrorMessage(parsed, raw, upstream.status));
+            }
+            return extractText(parsed);
+          };
 
-          const raw = await upstream.text().catch(() => "");
-          let parsed: unknown = null;
-          try {
-            parsed = raw ? (JSON.parse(raw) as unknown) : null;
-          } catch {
-            parsed = null;
+          const callOpenAI = async (): Promise<string> => {
+            if (!openaiKey) {
+              throw new Error("未配置 OPENAI_API_KEY");
+            }
+            const base = (openaiBaseUrl ? openaiBaseUrl : "https://api.openai.com/v1").replace(/\/+$/g, "");
+            const upstream = await fetch(`${base}/audio/transcriptions`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${openaiKey}` },
+              body: createForm("whisper-1"),
+              signal: controller.signal,
+            });
+            const raw = await upstream.text().catch(() => "");
+            const parsed = parseJsonText(raw);
+            if (!upstream.ok) {
+              throw new Error(extractErrorMessage(parsed, raw, upstream.status));
+            }
+            return extractText(parsed);
+          };
+
+          const attempts =
+            preferProvider === "openai"
+              ? [
+                  { name: "openai", fn: callOpenAI },
+                  { name: "together", fn: callTogether },
+                ]
+              : [
+                  { name: "together", fn: callTogether },
+                  { name: "openai", fn: callOpenAI },
+                ];
+
+          const errors: string[] = [];
+          for (const attempt of attempts) {
+            try {
+              const text = (await attempt.fn()).trim();
+              if (!text) {
+                throw new Error("未识别到文本");
+              }
+              sendJson(res, 200, { ok: true, text });
+              return true;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              errors.push(`${attempt.name}: ${message || "unknown error"}`);
+              logger.warn(`[Audio] transcription via ${attempt.name} failed: ${message}`);
+            }
           }
 
-          if (!upstream.ok) {
-            const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-            const nestedError = record?.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
-            const message =
-              String(nestedError?.message ?? record?.message ?? record?.error ?? raw ?? "").trim() ||
-              `上游服务错误（${upstream.status}）`;
-            sendJson(res, 502, { error: message });
-            return true;
-          }
-
-          const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-          const text =
-            typeof record?.text === "string"
-              ? record.text
-              : typeof record?.transcript === "string"
-                ? record.transcript
-                : typeof record?.transcription === "string"
-                  ? record.transcription
-                  : "";
-
-          sendJson(res, 200, { ok: true, text });
+          sendJson(res, 502, { error: errors[0] ?? "语音识别失败" });
           return true;
         } catch (error) {
           const aborted = controller.signal.aborted;
@@ -1324,12 +1391,12 @@ async function start(): Promise<void> {
         return;
       }
 
-        if (isPrompt) {
-          await taskQueueLock.runExclusive(async () => {
-          const imageDir = path.join(currentCwd, ".ads", "temp", "web-images");
-          const promptInput = buildPromptInput(parsed.payload, imageDir);
-          if (!promptInput.ok) {
-            sessionLogger?.logError(promptInput.message);
+	        if (isPrompt) {
+	          await taskQueueLock.runExclusive(async () => {
+	          const imageDir = resolveWorkspaceStatePath(detectWorkspaceFrom(currentCwd), "temp", "web-images");
+	          const promptInput = buildPromptInput(parsed.payload, imageDir);
+	          if (!promptInput.ok) {
+	            sessionLogger?.logError(promptInput.message);
             safeJsonSend(ws, { type: "error", message: promptInput.message });
             return;
           }
@@ -1361,7 +1428,7 @@ async function start(): Promise<void> {
             const config = resolveSearchConfig();
             const missingKeys = ensureApiKeys(config);
             if (missingKeys) {
-              const output = `❌ /search 未启用: ${missingKeys.message}`;
+              const output = `/search 未启用: ${missingKeys.message}`;
               safeJsonSend(ws, { type: "result", ok: false, output });
               sessionLogger?.logError(output);
               historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
@@ -1376,7 +1443,7 @@ async function start(): Promise<void> {
               historyStore.add(historyKey, { role: "ai", text: output, ts: Date.now() });
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
-              const output = `❌ /search 失败: ${message}`;
+              const output = `/search 失败: ${message}`;
               safeJsonSend(ws, { type: "result", ok: false, output });
               sessionLogger?.logError(output);
               historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
@@ -1400,12 +1467,15 @@ async function start(): Promise<void> {
             cleanupAfter();
             return;
           }
-          orchestrator.setWorkingDirectory(turnCwd);
-          let lastRespondingText = "";
-          const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-            sessionLogger?.logEvent(event);
-            logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
-            const raw = event.raw as ThreadEvent;
+	          orchestrator.setWorkingDirectory(turnCwd);
+	          let lastRespondingText = "";
+	          const lastCommandOutputs = new Map<string, string>();
+	          const announcedCommandIds = new Set<string>();
+	          let hasCommandOutput = false;
+	          const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+	            sessionLogger?.logEvent(event);
+	            logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
+	            const raw = event.raw as ThreadEvent;
             if (isTodoListEvent(raw)) {
               const signature = buildPlanSignature(raw.item.items);
               lastPlanItems = raw.item.items;
@@ -1427,19 +1497,61 @@ async function start(): Promise<void> {
                 safeJsonSend(ws, { type: "delta", delta });
               }
               return;
-            }
-            if (event.phase === "command") {
-              const commandPayload = extractCommandPayload(event);
-              logger.info(`[Command Event] sending command: ${JSON.stringify({ detail: event.detail ?? event.title, command: commandPayload })}`);
-              safeJsonSend(ws, {
-                type: "command",
-                detail: event.detail ?? event.title,
-                command: commandPayload ?? undefined,
-              });
-              if (commandPayload?.command) {
-                historyStore.add(historyKey, { role: "status", text: `$ ${commandPayload.command}`, ts: Date.now(), kind: "command" });
-              }
-              return;
+	            }
+	            if (event.phase === "command") {
+	              const commandPayload = extractCommandPayload(event);
+	              logger.info(
+	                `[Command Event] ${JSON.stringify({
+	                  detail: event.detail ?? event.title,
+	                  command: commandPayload
+	                    ? {
+	                        id: commandPayload.id,
+	                        command: commandPayload.command,
+	                        status: commandPayload.status,
+	                        exit_code: commandPayload.exit_code,
+	                      }
+	                    : null,
+	                })}`,
+	              );
+	              let outputDelta: string | undefined;
+	              if (commandPayload?.id && commandPayload.command) {
+	                const nextOutput = String(commandPayload.aggregated_output ?? "");
+	                const prevOutput = lastCommandOutputs.get(commandPayload.id) ?? "";
+	                if (nextOutput !== prevOutput) {
+	                  if (prevOutput && nextOutput.startsWith(prevOutput)) {
+	                    outputDelta = nextOutput.slice(prevOutput.length);
+	                  } else {
+	                    outputDelta = nextOutput;
+	                  }
+	                  lastCommandOutputs.set(commandPayload.id, nextOutput);
+	                }
+	
+	                if (!announcedCommandIds.has(commandPayload.id)) {
+	                  announcedCommandIds.add(commandPayload.id);
+	                  const header = `${hasCommandOutput ? "\n" : ""}$ ${commandPayload.command}\n`;
+	                  outputDelta = header + (outputDelta ?? "");
+	                  hasCommandOutput = true;
+	                } else if (outputDelta) {
+	                  hasCommandOutput = true;
+	                }
+	              }
+	              safeJsonSend(ws, {
+	                type: "command",
+	                detail: event.detail ?? event.title,
+	                command: commandPayload
+	                  ? {
+	                      id: commandPayload.id,
+	                      command: commandPayload.command,
+	                      status: commandPayload.status,
+	                      exit_code: commandPayload.exit_code,
+	                      outputDelta,
+	                    }
+	                  : undefined,
+	              });
+	              if (commandPayload?.command) {
+	                historyStore.add(historyKey, { role: "status", text: `$ ${commandPayload.command}`, ts: Date.now(), kind: "command" });
+	              }
+	              return;
             }
             if (event.phase === "error") {
               safeJsonSend(ws, { type: "error", message: event.detail ?? event.title });
@@ -1479,7 +1591,7 @@ async function start(): Promise<void> {
                   logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`);
                   handleExploredEntry({
                     category: "Agent",
-                    summary: `✅ ${summary.agentName} 完成：${truncateForLog(summary.prompt, 140)}`,
+                    summary: `✓ ${summary.agentName} 完成：${truncateForLog(summary.prompt, 140)}`,
                     ts: Date.now(),
                     source: "tool_hook",
                   });
@@ -1575,7 +1687,7 @@ async function start(): Promise<void> {
 	        const workspaceRoot = detectWorkspaceFrom(currentCwd);
 	        const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "web" });
 	        const note =
-	          "ℹ️ 提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
+	          "提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
 	        const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
 	        safeJsonSend(ws, { type: "result", ok: true, output: decorated });
 	        sessionLogger?.logOutput(decorated);
@@ -1610,7 +1722,7 @@ async function start(): Promise<void> {
           historyStore.add(historyKey, { role: "ai", text: output, ts: Date.now() });
 	        } catch (error) {
 	          const message = error instanceof Error ? error.message : String(error);
-	          const output = `❌ /search 失败: ${message}`;
+	          const output = `/search 失败: ${message}`;
 	          safeJsonSend(ws, { type: "result", ok: false, output });
 	          sessionLogger?.logError(output);
 	          historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
@@ -1618,7 +1730,7 @@ async function start(): Promise<void> {
 	        return;
 	      }
 	      if (slash?.command === "pwd") {
-	        const output = `📁 当前工作目录: ${currentCwd}`;
+	        const output = `当前工作目录: ${currentCwd}`;
 	        safeJsonSend(ws, { type: "result", ok: true, output });
 	        sessionLogger?.logOutput(output);
 	        historyStore.add(historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
@@ -1631,10 +1743,10 @@ async function start(): Promise<void> {
 	          return;
 	        }
         const targetPath = slash.body;
-        const prevCwd = currentCwd;
+	        const prevCwd = currentCwd;
 	        const result = directoryManager.setUserCwd(userId, targetPath);
 	        if (!result.success) {
-	          const output = `❌ ${result.error}`;
+	          const output = `错误: ${result.error}`;
 	          safeJsonSend(ws, { type: "result", ok: false, output });
 	          sessionLogger?.logError(output);
 	          return;
@@ -1657,11 +1769,11 @@ async function start(): Promise<void> {
         }
         orchestrator = sessionManager.getOrCreate(userId, currentCwd);
 
-        let message = `✅ 已切换到: ${currentCwd}`;
+        let message = `已切换到: ${currentCwd}`;
         if (prevCwd !== currentCwd) {
-          message += "\n💡 代理上下文已切换到新目录";
+          message += "\n提示: 代理上下文已切换到新目录";
         } else {
-          message += "\nℹ️ 已在相同目录，无需重置会话";
+          message += "\n提示: 已在相同目录，无需重置会话";
         }
 	        if (!isSilentCommandPayload) {
 	          safeJsonSend(ws, { type: "result", ok: true, output: message });
@@ -1675,9 +1787,9 @@ async function start(): Promise<void> {
         orchestrator = sessionManager.getOrCreate(userId, currentCwd);
         let agentArg = slash.body.trim();
         if (!agentArg) {
-          const agents = orchestrator.listAgents();
+	          const agents = orchestrator.listAgents();
 	          if (agents.length === 0) {
-	            const output = "❌ 暂无可用代理";
+	            const output = "暂无可用代理";
 	            safeJsonSend(ws, { type: "result", ok: false, output });
 	            sessionLogger?.logOutput(output);
 	            return;

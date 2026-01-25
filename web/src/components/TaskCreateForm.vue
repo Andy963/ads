@@ -83,25 +83,30 @@ const modelOptions = computed(() => {
         />
       </label>
     </div>
+
+    <div class="actions">
+      <div class="hint">Enter 创建 · Alt+Enter 换行</div>
+      <button class="btnPrimary" type="button" :disabled="!canSubmit" @click="submit">创建任务</button>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .card {
   border: none;
-  border-radius: 12px;
-  padding: 20px;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+  border-radius: 14px;
+  padding: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 .form-title {
   margin: 0 0 16px 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
-  color: #1e293b;
+  color: var(--text);
 }
 .form-row {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .form-row-3 {
   display: grid;
@@ -114,8 +119,8 @@ const modelOptions = computed(() => {
 .label-text {
   display: block;
   font-size: 13px;
-  font-weight: 500;
-  color: #475569;
+  font-weight: 600;
+  color: #334155;
   margin-bottom: 6px;
 }
 input,
@@ -124,10 +129,10 @@ textarea {
   display: block;
   width: 100%;
   padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  border: 1px solid var(--border);
   font-size: 14px;
-  background: #f8fafc;
+  background: rgba(248, 250, 252, 0.9);
   color: #1e293b;
   box-sizing: border-box;
   transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
@@ -135,16 +140,16 @@ textarea {
 input:hover,
 select:hover,
 textarea:hover {
-  border-color: #cbd5e1;
-  background: white;
+  border-color: rgba(148, 163, 184, 0.8);
+  background: rgba(255, 255, 255, 0.95);
 }
 input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: #2563eb;
+  border-color: rgba(37, 99, 235, 0.8);
   background: white;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 input::placeholder,
 textarea::placeholder {
@@ -155,6 +160,36 @@ textarea {
   min-height: 80px;
   max-height: 200px;
   overflow-y: auto;
+}
+.actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.hint {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(100, 116, 139, 0.95);
+}
+.btnPrimary {
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  background: var(--accent);
+  color: white;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+.btnPrimary:hover:not(:disabled) {
+  background: var(--accent-2);
+}
+.btnPrimary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 @media (max-width: 600px) {
   .form-row-3 {

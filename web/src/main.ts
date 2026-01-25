@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 
 import App from "./App.vue";
+import "./global.css";
 
 function readViewportMetrics(): { topPx: number; bottomPx: number } {
   const layoutHeightPx = Math.max(1, Math.round(window.innerHeight));

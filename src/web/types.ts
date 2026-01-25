@@ -30,7 +30,7 @@ export interface CommandPayload {
   command?: string;
   status?: string;
   exit_code?: number;
-  aggregated_output?: string;
+  outputDelta?: string;
 }
 
 export interface ImagePersistResult {

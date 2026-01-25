@@ -41,6 +41,9 @@ const projectDialogName = ref("");
 const projectDialogError = ref<string | null>(null);
 const switchConfirmOpen = ref(false);
 const pendingSwitchProjectId = ref<string | null>(null);
+const deleteConfirmOpen = ref(false);
+const pendingDeleteTaskId = ref<string | null>(null);
+const deleteConfirmButtonEl = ref<HTMLButtonElement | null>(null);
 const projectPathEl = ref<HTMLInputElement | null>(null);
 const projectNameEl = ref<HTMLInputElement | null>(null);
 const projectDialogPathStatus = ref<"idle" | "checking" | "ok" | "error">("idle");
@@ -87,6 +90,7 @@ const isMobile = ref(false);
 const mobilePane = ref<"tasks" | "chat">("chat");
 
 const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
+const pendingDeleteTask = computed(() => tasks.value.find((t) => t.id === pendingDeleteTaskId.value) ?? null);
 
 function updateIsMobile(): void {
   if (typeof window === "undefined") return;
@@ -229,6 +233,34 @@ function confirmProjectSwitch(): void {
   switchConfirmOpen.value = false;
   pendingSwitchProjectId.value = null;
   if (target) performProjectSwitch(target);
+}
+
+function cancelDeleteTask(): void {
+  deleteConfirmOpen.value = false;
+  pendingDeleteTaskId.value = null;
+}
+
+async function confirmDeleteTask(): Promise<void> {
+  const taskId = pendingDeleteTaskId.value;
+  deleteConfirmOpen.value = false;
+  pendingDeleteTaskId.value = null;
+  if (!taskId) return;
+
+  apiError.value = null;
+  try {
+    await api.delete<{ success: boolean }>(`/api/tasks/${taskId}`);
+    tasks.value = tasks.value.filter((x) => x.id !== taskId);
+    expanded.value = new Set([...expanded.value].filter((x) => x !== taskId));
+    plansByTaskId.value.delete(taskId);
+    plansByTaskId.value = new Map(plansByTaskId.value);
+
+    if (selectedId.value === taskId) {
+      selectedId.value = tasks.value[0]?.id ?? null;
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    apiError.value = msg;
+  }
 }
 
 function openProjectDialog(): void {
@@ -479,14 +511,15 @@ function flushQueuedPrompts(): void {
           ? next.text
           : `[图片 x${next.images.length}]`;
 
-    pushMessageBeforeLive({ role: "user", kind: "text", content: display });
-    pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true });
-    busy.value = true;
-    finalizeCommandBlock();
-    ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text);
-  } catch {
-    queuedPrompts.value = [next, ...queuedPrompts.value];
-  }
+	    pushMessageBeforeLive({ role: "user", kind: "text", content: display });
+	    pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true });
+	    busy.value = true;
+	    clearStepLive();
+	    finalizeCommandBlock();
+	    ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text);
+	  } catch {
+	    queuedPrompts.value = [next, ...queuedPrompts.value];
+	  }
 }
 
 function upsertStreamingDelta(delta: string): void {
@@ -528,7 +561,18 @@ function trimToLastLines(text: string, maxLines: number, maxChars = 2500): strin
 function upsertStepLiveDelta(delta: string): void {
   const chunk = String(delta ?? "");
   if (!chunk) return;
-  const existing = messages.value.slice();
+  const existing = messages.value
+    .filter(
+      (m) =>
+        !(
+          m.id !== LIVE_STEP_ID &&
+          m.role === "assistant" &&
+          m.streaming &&
+          m.kind === "text" &&
+          String(m.content ?? "").length === 0
+        ),
+    )
+    .slice();
   const idx = existing.findIndex((m) => m.id === LIVE_STEP_ID);
   const current = idx >= 0 ? existing[idx]!.content : "";
   const nextText = trimToLastLines(current + chunk, 14);
@@ -794,10 +838,11 @@ function connectWs(): void {
   ws.onTaskEvent = onTaskEvent;
   ws.onMessage = (msg) => {
     if (msg.type === "welcome") {
+      let nextPath = "";
       const maybeWorkspace = (msg as { workspace?: unknown }).workspace;
       if (maybeWorkspace && typeof maybeWorkspace === "object") {
         const wsState = maybeWorkspace as WorkspaceState;
-        const nextPath = String(wsState.path ?? "").trim();
+        nextPath = String(wsState.path ?? "").trim();
         if (nextPath) workspacePath.value = nextPath;
       }
 
@@ -805,7 +850,9 @@ function connectWs(): void {
       if (current && !current.initialized && current.path.trim()) {
         pendingProjectCd.value = { projectId: current.id, requestedPath: current.path.trim() };
         ws?.send("command", { command: `/cd ${current.path.trim()}`, silent: true });
+        return;
       }
+      if (current && nextPath) updateProject(current.id, { path: nextPath, initialized: true });
       return;
     }
 
@@ -819,7 +866,10 @@ function connectWs(): void {
         if (pendingProjectCd.value && pendingProjectCd.value.projectId === activeProjectId.value) {
           updateProject(pendingProjectCd.value.projectId, { path: nextPath || pendingProjectCd.value.requestedPath, initialized: true });
           pendingProjectCd.value = null;
+          return;
         }
+        const current = activeProject.value;
+        if (current && nextPath) updateProject(current.id, { path: nextPath, initialized: true });
       }
       return;
     }
@@ -862,6 +912,31 @@ function connectWs(): void {
       upsertStreamingDelta(String(msg.delta ?? ""));
       return;
     }
+    if (msg.type === "explored") {
+      busy.value = true;
+      const entry = (msg as { entry?: unknown }).entry;
+      if (entry && typeof entry === "object") {
+        const typed = entry as { category?: unknown; summary?: unknown };
+        const category = String(typed.category ?? "").trim();
+        const summary = String(typed.summary ?? "").trim();
+        if (summary) {
+          const categoryLabels: Record<string, string> = {
+            List: "列出",
+            Search: "搜索",
+            Read: "读取",
+            Write: "写入",
+            Execute: "执行",
+            Agent: "代理",
+            Tool: "工具",
+            WebSearch: "网页搜索",
+          };
+          const label = categoryLabels[category] ?? category;
+          const prefix = label ? `· ${label}: ` : "· ";
+          upsertStepLiveDelta(`${prefix}${summary}\n`);
+        }
+      }
+      return;
+    }
     if (msg.type === "result") {
       busy.value = false;
       if (pendingProjectCd.value && msg.ok === false) {
@@ -884,17 +959,21 @@ function connectWs(): void {
       flushQueuedPrompts();
       return;
     }
-    if (msg.type === "command") {
-      const cmd = String(msg.command?.command ?? "").trim();
-      if (cmd) {
-        pushRecentCommand(`$ ${cmd}`);
-        upsertCommandBlock();
-      }
-      return;
-    }
-  };
-  ws.connect();
-}
+	    if (msg.type === "command") {
+	      const cmd = String(msg.command?.command ?? "").trim();
+	      if (cmd) {
+	        pushRecentCommand(`$ ${cmd}`);
+	        upsertCommandBlock();
+	      }
+	      const outputDelta = String(msg.command?.outputDelta ?? "");
+	      if (outputDelta) {
+	        upsertStepLiveDelta(outputDelta);
+	      }
+	      return;
+	    }
+	  };
+	  ws.connect();
+	}
 
 async function createTask(input: CreateTaskInput): Promise<void> {
   apiError.value = null;
@@ -948,23 +1027,9 @@ async function deleteTask(id: string): Promise<void> {
     apiError.value = "任务执行中，无法删除（请先终止）";
     return;
   }
-  if (!confirm("确定删除这个任务吗？")) {
-    return;
-  }
-  try {
-    await api.delete<{ success: boolean }>(`/api/tasks/${taskId}`);
-    tasks.value = tasks.value.filter((x) => x.id !== taskId);
-    expanded.value = new Set([...expanded.value].filter((x) => x !== taskId));
-    plansByTaskId.value.delete(taskId);
-    plansByTaskId.value = new Map(plansByTaskId.value);
-
-    if (selectedId.value === taskId) {
-      selectedId.value = tasks.value[0]?.id ?? null;
-    }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    apiError.value = msg;
-  }
+  pendingDeleteTaskId.value = taskId;
+  deleteConfirmOpen.value = true;
+  void nextTick(() => deleteConfirmButtonEl.value?.focus());
 }
 
 async function updateQueuedTask(id: string, updates: Record<string, unknown>): Promise<void> {
@@ -1030,52 +1095,51 @@ function select(id: string): void {
   <div v-else class="app">
     <header class="topbar">
       <div class="brand">ADS</div>
-      <div v-if="isMobile" class="paneTabs" role="tablist" aria-label="切换面板">
-        <button
-          type="button"
-          class="paneTab"
-          :class="{ active: mobilePane === 'chat' }"
-          role="tab"
-          :aria-selected="mobilePane === 'chat'"
-          @click="mobilePane = 'chat'"
-        >
-          对话
-        </button>
-        <button
-          type="button"
-          class="paneTab"
-          :class="{ active: mobilePane === 'tasks' }"
-          role="tab"
-          :aria-selected="mobilePane === 'tasks'"
-          @click="mobilePane = 'tasks'"
-        >
-          任务
-        </button>
+      <div class="topbarMain">
+        <div class="projectTabs" role="tablist" aria-label="项目">
+          <button
+            v-for="p in projects"
+            :key="p.id"
+            type="button"
+            class="projectTab"
+            :class="{ active: p.id === activeProjectId }"
+            role="tab"
+            :aria-selected="p.id === activeProjectId"
+            :title="p.path || p.name"
+            @click="requestProjectSwitch(p.id)"
+          >
+            <span class="projectTabText">{{ p.path || p.name }}</span>
+          </button>
+          <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog">＋</button>
+        </div>
+
+        <div v-if="isMobile" class="paneTabs" role="tablist" aria-label="切换面板">
+          <button
+            type="button"
+            class="paneTab"
+            :class="{ active: mobilePane === 'chat' }"
+            role="tab"
+            :aria-selected="mobilePane === 'chat'"
+            @click="mobilePane = 'chat'"
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            class="paneTab"
+            :class="{ active: mobilePane === 'tasks' }"
+            role="tab"
+            :aria-selected="mobilePane === 'tasks'"
+            @click="mobilePane = 'tasks'"
+          >
+            任务
+          </button>
+        </div>
       </div>
       <div class="right">
         <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
       </div>
     </header>
-
-    <div class="projectBar">
-      <div class="projectTabs" role="tablist" aria-label="项目">
-        <button
-          v-for="p in projects"
-          :key="p.id"
-          type="button"
-          class="projectTab"
-          :class="{ active: p.id === activeProjectId }"
-          role="tab"
-          :aria-selected="p.id === activeProjectId"
-          :title="p.path || p.name"
-          @click="requestProjectSwitch(p.id)"
-        >
-          <span class="projectTabText">{{ p.name }}</span>
-        </button>
-        <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog">＋</button>
-      </div>
-      <div v-if="workspacePath" class="workspacePath" :title="workspacePath">{{ workspacePath }}</div>
-    </div>
 
     <main class="layout" :data-pane="mobilePane">
       <aside class="left">
@@ -1178,18 +1242,35 @@ function select(id: string): void {
       </div>
     </div>
 
-    <div v-if="switchConfirmOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelProjectSwitch">
-      <div class="modalCard">
-        <div class="modalTitle">切换项目？</div>
-        <div class="modalDesc">当前对话仍在进行或有未发送内容。切换项目会丢失当前页面临时状态（不会删除历史）。</div>
-        <div class="modalActions">
-          <button type="button" class="btnSecondary" @click="cancelProjectSwitch">取消</button>
-          <button type="button" class="btnDanger" @click="confirmProjectSwitch">切换</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
+	    <div v-if="switchConfirmOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelProjectSwitch">
+	      <div class="modalCard">
+	        <div class="modalTitle">切换项目？</div>
+	        <div class="modalDesc">当前对话仍在进行或有未发送内容。切换项目会丢失当前页面临时状态（不会删除历史）。</div>
+	        <div class="modalActions">
+	          <button type="button" class="btnSecondary" @click="cancelProjectSwitch">取消</button>
+	          <button type="button" class="btnDanger" @click="confirmProjectSwitch">切换</button>
+	        </div>
+	      </div>
+	    </div>
+
+	    <div v-if="deleteConfirmOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelDeleteTask">
+	      <div class="modalCard">
+	        <div class="modalTitle">删除任务？</div>
+	        <div class="modalDesc">确定删除该任务吗？删除后无法恢复。</div>
+	        <div v-if="pendingDeleteTask" class="modalPreview">
+	          <div class="modalPreviewTitle">{{ pendingDeleteTask.title || pendingDeleteTask.id }}</div>
+	          <div v-if="pendingDeleteTask.prompt && pendingDeleteTask.prompt.trim()" class="modalPreviewPrompt">
+	            {{ pendingDeleteTask.prompt.length > 240 ? `${pendingDeleteTask.prompt.slice(0, 240)}…` : pendingDeleteTask.prompt }}
+	          </div>
+	        </div>
+	        <div class="modalActions">
+	          <button type="button" class="btnSecondary" @click="cancelDeleteTask">取消</button>
+	          <button ref="deleteConfirmButtonEl" type="button" class="btnDanger" @click="confirmDeleteTask">删除</button>
+	        </div>
+	      </div>
+	    </div>
+	  </div>
+	</template>
 
 <style scoped>
 .boot {
@@ -1205,31 +1286,27 @@ function select(id: string): void {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f1f5f9;
-  color: #0f172a;
+  background: var(--app-bg);
+  color: var(--text);
 }
 .topbar {
   flex-shrink: 0;
   height: calc(48px + env(safe-area-inset-top, 0px));
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: env(safe-area-inset-top, 0px) 12px 0 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   width: 100%;
   gap: 10px;
 }
-.projectBar {
-  flex-shrink: 0;
+.topbarMain {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(10px);
+  flex: 1;
   min-width: 0;
   overflow: hidden;
 }
@@ -1247,11 +1324,11 @@ function select(id: string): void {
   display: none;
 }
 .projectTab {
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid var(--border);
   background: rgba(15, 23, 42, 0.04);
   color: #334155;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   padding: 6px 10px;
   border-radius: 999px;
   cursor: pointer;
@@ -1260,10 +1337,10 @@ function select(id: string): void {
   overflow: hidden;
 }
 .projectTab.active {
-  background: white;
+  background: var(--surface);
   border-color: rgba(37, 99, 235, 0.35);
-  color: #0f172a;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
 }
 .projectTabText {
   display: block;
@@ -1276,23 +1353,14 @@ function select(id: string): void {
   width: 28px;
   height: 28px;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: white;
-  color: #2563eb;
-  font-weight: 900;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 800;
   cursor: pointer;
 }
 .projectAdd:hover {
   background: rgba(37, 99, 235, 0.06);
-}
-.workspacePath {
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: #64748b;
 }
 .modalOverlay {
   position: absolute;
@@ -1307,9 +1375,9 @@ function select(id: string): void {
 .modalCard {
   width: min(520px, 100%);
   border-radius: 16px;
-  background: white;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
   padding: 18px 18px 16px 18px;
 }
 .modalTitle {
@@ -1322,6 +1390,30 @@ function select(id: string): void {
   font-size: 13px;
   color: #64748b;
   line-height: 1.5;
+}
+.modalPreview {
+  margin-top: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.modalPreviewTitle {
+  font-size: 13px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.modalPreviewPrompt {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
 }
 .modalForm {
   margin-top: 14px;
@@ -1418,19 +1510,19 @@ function select(id: string): void {
   border: 1px solid rgba(226, 232, 240, 0.9);
 }
 .btnSecondary {
-  background: white;
-  color: #0f172a;
+  background: var(--surface);
+  color: var(--text);
 }
 .btnSecondary:hover {
   background: rgba(15, 23, 42, 0.03);
 }
 .btnPrimary {
   border-color: rgba(37, 99, 235, 0.25);
-  background: #2563eb;
+  background: var(--accent);
   color: white;
 }
 .btnPrimary:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: var(--accent-2);
 }
 .btnPrimary:disabled {
   opacity: 0.5;
@@ -1438,16 +1530,16 @@ function select(id: string): void {
 }
 .btnDanger {
   border-color: rgba(239, 68, 68, 0.25);
-  background: #ef4444;
+  background: var(--danger);
   color: white;
 }
 .btnDanger:hover {
-  background: #dc2626;
+  background: var(--danger-2);
 }
 .brand {
-  font-weight: 800;
+  font-weight: 700;
   font-size: 14px;
-  color: #2563eb;
+  color: var(--accent);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -1458,7 +1550,8 @@ function select(id: string): void {
   border-radius: 999px;
   padding: 2px;
   gap: 2px;
-  flex: 1;
+  flex: 0 0 auto;
+  width: min(180px, 42vw);
   justify-content: center;
   min-width: 0;
 }
@@ -1570,10 +1663,6 @@ function select(id: string): void {
     font-size: 16px;
   }
   .topbar {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-  .projectBar {
     padding-left: 12px;
     padding-right: 12px;
   }

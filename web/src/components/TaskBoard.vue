@@ -27,6 +27,42 @@ const modelOptions = computed(() => {
   return [{ id: "auto", displayName: "Auto", provider: "" }, ...enabled];
 });
 
+const modelLabelById = computed(() => new Map(modelOptions.value.map((m) => [m.id, m.displayName])));
+
+function formatModel(id: string | null | undefined): string {
+  const raw = String(id ?? "").trim();
+  if (!raw) return "Auto";
+  return modelLabelById.value.get(raw) ?? raw;
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "pending":
+      return "待启动";
+    case "planning":
+      return "规划中";
+    case "running":
+      return "执行中";
+    case "completed":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "cancelled":
+      return "已取消";
+    default:
+      return status;
+  }
+}
+
+function formatPromptPreview(prompt: string, maxChars = 90): string {
+  const normalized = String(prompt ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!normalized) return "";
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
 const sorted = computed(() => {
   const weight = (s: string) => (s === "running" ? 0 : s === "planning" ? 1 : s === "pending" ? 2 : 3);
   return props.tasks
@@ -103,25 +139,6 @@ function togglePlan(task: Task): void {
     emit("ensurePlan", task.id);
   }
 }
-
-function statusBadge(status: string): string {
-  switch (status) {
-    case "pending":
-      return "pending";
-    case "planning":
-      return "planning";
-    case "running":
-      return "running";
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    default:
-      return status;
-  }
-}
 </script>
 
 <template>
@@ -137,39 +154,29 @@ function statusBadge(status: string): string {
     </div>
 
     <div v-else class="list">
-        <div v-for="t in sorted" :key="t.id" class="item" :class="{ active: t.id === selectedId }">
+        <div
+          v-for="t in sorted"
+          :key="t.id"
+          class="item"
+          :data-status="t.status"
+          :class="{ active: t.id === selectedId }"
+        >
         <div class="row">
           <button class="row-main" type="button" @click="emit('select', t.id)">
             <div class="row-top">
               <div class="row-head">
-                <span class="row-title">{{ t.title }}</span>
-                <span class="status" :data-status="t.status" :title="statusBadge(t.status)">
-                <svg v-if="t.status === 'pending'" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm0-1.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13Z" clip-rule="evenodd" />
-                </svg>
-                <svg v-else-if="t.status === 'planning'" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path d="M4 10a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm8 0a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm8 0a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z" />
-                </svg>
-                <svg v-else-if="t.status === 'running'" class="spin" width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <path d="M10 3a7 7 0 1 0 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
-                </svg>
-                <svg v-else-if="t.status === 'completed'" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.1 3.1 6.8-6.8a1 1 0 0 1 1.4 0Z" clip-rule="evenodd" />
-                </svg>
-                <svg v-else-if="t.status === 'failed'" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd" d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 4.5a1 1 0 0 1 1 1v3.75a1 1 0 1 1-2 0V7.5a1 1 0 0 1 1-1Zm0 8.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z" clip-rule="evenodd" />
-                </svg>
-                <svg v-else-if="t.status === 'cancelled'" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm-2.75-10a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-.75.75h-4a.75.75 0 0 1-.75-.75v-4Z" clip-rule="evenodd" />
-                </svg>
-                <span class="srOnly">{{ statusBadge(t.status) }}</span>
-              </span>
+                <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
               </div>
             </div>
             <div class="row-sub">
-              <span class="meta">#{{ t.id.slice(0, 8) }}</span>
-              <span class="meta">{{ t.model }}</span>
-              <span class="meta">p={{ t.priority }}</span>
+              <div class="tags">
+                <span class="tag mono">#{{ t.id.slice(0, 8) }}</span>
+                <span class="tag">{{ formatModel(t.model) }}</span>
+                <span v-if="t.priority > 0" class="tag">P{{ t.priority }}</span>
+              </div>
+              <span v-if="t.prompt && t.prompt.trim()" class="preview" :title="t.prompt">
+                {{ formatPromptPreview(t.prompt) }}
+              </span>
             </div>
           </button>
           <div class="row-actions">
@@ -295,10 +302,10 @@ function statusBadge(status: string): string {
 <style scoped>
 .card {
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius);
   padding: 16px;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
   height: 100%;
   min-height: 0;
   display: flex;
@@ -314,7 +321,7 @@ function statusBadge(status: string): string {
   margin: 0;
   font-size: 16px;
   font-weight: 700;
-  color: #1e293b;
+  color: var(--text);
 }
 .count {
   background: #e2e8f0;
@@ -339,8 +346,13 @@ function statusBadge(status: string): string {
   font-size: 12px;
 }
 .list {
-  display: grid;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(248, 250, 252, 0.65);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -348,30 +360,48 @@ function statusBadge(status: string): string {
   flex: 1 1 auto;
 }
 .item {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  position: relative;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   overflow: hidden;
+  background: rgba(255, 255, 255, 0.92);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.item:hover {
+  background: rgba(15, 23, 42, 0.02);
+}
+.item:last-child {
+  border-bottom: none;
 }
 .item.active {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+  background: rgba(37, 99, 235, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.20);
+}
+.item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: #2563eb;
 }
 .row {
   display: flex;
   gap: 10px;
   align-items: stretch;
-  background: white;
+  background: transparent;
 }
 .row-main {
   flex: 1;
   border: none;
   background: transparent;
-  padding: 12px;
+  padding: 8px 12px;
   cursor: pointer;
   text-align: left;
-}
-.row-main:hover {
-  background: #f8fafc;
+  min-width: 0;
 }
 .row-top {
   display: flex;
@@ -388,70 +418,59 @@ function statusBadge(status: string): string {
 .row-title {
   flex: 1;
   min-width: 0;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 14px;
   color: #1e293b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.status {
-  width: 26px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
+.item[data-status="running"] .row-title {
+  color: var(--accent);
 }
-.status[data-status="pending"] {
-  background: #f1f5f9;
-  color: #64748b;
+.item[data-status="completed"] .row-title {
+  color: #16a34a;
 }
-.status[data-status="planning"] {
-  background: #fef3c7;
-  color: #d97706;
+.item[data-status="failed"] .row-title {
+  color: var(--danger);
 }
-.status[data-status="running"] {
-  background: #d1fae5;
-  color: #059669;
-}
-.status[data-status="completed"] {
-  background: #dbeafe;
-  color: #2563eb;
-}
-.status[data-status="failed"] {
-  background: #fee2e2;
-  color: #dc2626;
-}
-.status[data-status="cancelled"] {
-  background: #f1f5f9;
-  color: #64748b;
-}
-.spin {
-  animation: spin 0.9s linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  border: 0;
+.item[data-status="cancelled"] .row-title {
+  color: var(--muted);
 }
 .row-sub {
   display: flex;
-  gap: 12px;
-  margin-top: 8px;
+  gap: 10px;
+  margin-top: 4px;
+  align-items: center;
+  min-width: 0;
 }
-.meta {
-  color: #64748b;
+.tags {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(241, 245, 249, 0.85);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+.tag.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.preview {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
+  color: rgba(100, 116, 139, 0.95);
 }
 .row-actions {
   display: flex;
@@ -460,7 +479,13 @@ function statusBadge(status: string): string {
   align-items: center;
   flex-wrap: nowrap;
   gap: 6px;
-  padding: 12px 12px 12px 0;
+  padding: 8px 8px 8px 0;
+  opacity: 0.65;
+  transition: opacity 0.15s ease;
+}
+.item:hover .row-actions,
+.item.active .row-actions {
+  opacity: 1;
 }
 .btn {
   padding: 8px 10px;
@@ -476,36 +501,35 @@ function statusBadge(status: string): string {
   background: #e2e8f0;
 }
 .iconBtn {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   border-radius: 8px;
   border: none;
   display: grid;
   place-items: center;
   cursor: pointer;
-  background: #f1f5f9;
-  color: #475569;
+  background: transparent;
+  color: var(--muted);
+  transition: color 0.15s ease, opacity 0.15s ease;
 }
 .iconBtn:hover:not(:disabled) {
-  background: #e2e8f0;
+  color: var(--text);
 }
 .iconBtn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .iconBtn.danger {
-  background: rgba(239, 68, 68, 0.10);
-  color: #dc2626;
+  color: var(--danger);
 }
 .iconBtn.danger:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.16);
+  color: var(--danger-2);
 }
 .iconBtn.primary {
-  background: #2563eb;
-  color: white;
+  color: var(--accent);
 }
 .iconBtn.primary:hover:not(:disabled) {
-  background: #1d4ed8;
+  color: var(--accent-2);
 }
 .editor {
   border-top: 1px solid #e2e8f0;
@@ -598,7 +622,7 @@ textarea {
 .plan-step {
   font-variant-numeric: tabular-nums;
   color: #64748b;
-  font-weight: 800;
+  font-weight: 700;
   font-size: 11px;
 }
 .plan-title {
