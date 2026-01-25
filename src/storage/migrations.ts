@@ -237,6 +237,16 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    description: "Add gpt-5.1-codex-max model config",
+    up: (db) => {
+      db.exec(`
+        INSERT OR IGNORE INTO model_configs (id, display_name, provider, is_default) VALUES
+          ('gpt-5.1-codex-max', 'GPT-5.1 Codex Max (Code)', 'openai', 0);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 2,

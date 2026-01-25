@@ -148,6 +148,16 @@ describe("storage/database", () => {
     assert.strictEqual(edge.target, "node-b");
   });
 
+  it("should seed model configs", () => {
+    const db = getDatabase();
+    const ids = (db.prepare("SELECT id FROM model_configs ORDER BY id ASC").all() as Array<{ id: string }>).map((row) => row.id);
+
+    assert.ok(ids.includes("gpt-5"), "Should include gpt-5");
+    assert.ok(ids.includes("gpt-5.1"), "Should include gpt-5.1");
+    assert.ok(ids.includes("gpt-5.2"), "Should include gpt-5.2");
+    assert.ok(ids.includes("gpt-5.1-codex-max"), "Should include gpt-5.1-codex-max");
+  });
+
   it("should reset database cache correctly", () => {
     const db1 = getDatabase();
     assert.ok(db1, "First database should be created");
