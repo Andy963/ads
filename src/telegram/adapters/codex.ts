@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { GrammyError, type Context } from 'grammy';
 import type {
@@ -115,6 +116,40 @@ export async function handleCodexMessage(
     }
   };
 
+  const fallbackLogFullEnabled = (() => {
+    const raw = process.env.ADS_TELEGRAM_FALLBACK_LOG_FULL;
+    if (!raw) {
+      return false;
+    }
+    const normalized = raw.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+  })();
+  const FALLBACK_PREVIEW_CHARS = 200;
+
+  const ensurePrivateFile = (filePath: string): void => {
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch {
+      // ignore
+    }
+  };
+
+  const appendPrivateLog = (filePath: string, content: string): void => {
+    fs.appendFileSync(filePath, content, { mode: 0o600 });
+    ensurePrivateFile(filePath);
+  };
+
+  const sha256Hex = (value: string): string =>
+    createHash('sha256').update(value, 'utf8').digest('hex');
+
+  const truncateSingleLine = (value: string, maxChars: number): string => {
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= maxChars) {
+      return normalized;
+    }
+    return `${normalized.slice(0, Math.max(0, maxChars - 3))}...`;
+  };
+
   const logWarning = (message: string, error?: unknown) => {
     const timestamp = new Date().toISOString();
     const detail = error
@@ -124,10 +159,7 @@ export async function handleCodexMessage(
       : '';
     try {
       ensureLogDir();
-      fs.appendFileSync(
-        adapterLogFile,
-        `${timestamp} WARN ${message}${detail ? ` | ${detail}` : ''}\n`,
-      );
+      appendPrivateLog(adapterLogFile, `${timestamp} WARN ${message}${detail ? ` | ${detail}` : ''}\n`);
     } catch (fileError) {
       adapterLogger.warn('Failed to write adapter log', fileError);
     }
@@ -138,8 +170,10 @@ export async function handleCodexMessage(
     try {
       ensureLogDir();
       const timestamp = new Date().toISOString();
-      const entry = `${timestamp} ${stage}\nORIGINAL:\n${original}\n---\nMARKDOWN_V2:\n${escapedV2}\n\n`;
-      fs.appendFileSync(fallbackLogFile, entry);
+      const entry = fallbackLogFullEnabled
+        ? `${timestamp} ${stage}\nORIGINAL:\n${original}\n---\nMARKDOWN_V2:\n${escapedV2}\n\n`
+        : `${timestamp} ${stage} original_len=${original.length} original_sha256=${sha256Hex(original)} markdown_len=${escapedV2.length} markdown_sha256=${sha256Hex(escapedV2)} original_preview=${JSON.stringify(truncateSingleLine(original, FALLBACK_PREVIEW_CHARS))}\n`;
+      appendPrivateLog(fallbackLogFile, entry);
     } catch (fileError) {
       adapterLogger.warn('Failed to record fallback', fileError);
     }

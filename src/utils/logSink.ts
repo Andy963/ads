@@ -68,7 +68,12 @@ export function initGlobalConsoleLogger(options?: GlobalConsoleLoggerOptions): v
   try {
     const logFilePath = resolveLogFilePath(options?.logFileName);
     fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
-    stream = fs.createWriteStream(logFilePath, { flags: "a" });
+    try {
+      fs.chmodSync(logFilePath, 0o600);
+    } catch {
+      // ignore
+    }
+    stream = fs.createWriteStream(logFilePath, { flags: "a", mode: 0o600 });
   } catch (error) {
     original.error("[LogSink] Failed to initialize file logger:", error);
     return;

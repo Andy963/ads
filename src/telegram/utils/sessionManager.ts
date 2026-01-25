@@ -8,6 +8,21 @@ import type { AgentRunResult, AgentSendOptions } from '../../agents/types.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
 import { ThreadStorage } from './threadStorage.js';
 
+function isConversationLoggingEnabled(): boolean {
+  const raw = process.env.ADS_CONVERSATION_LOG;
+  if (!raw) {
+    return false;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return false;
+}
+
 interface SessionRecord {
   session: HybridOrchestrator;
   lastActivity: number;
@@ -149,6 +164,10 @@ export class SessionManager {
   }
 
   ensureLogger(userId: number): ConversationLogger | undefined {
+    if (!isConversationLoggingEnabled()) {
+      return undefined;
+    }
+
     const record = this.sessions.get(userId);
     if (!record) {
       return undefined;

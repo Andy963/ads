@@ -38,7 +38,12 @@ export class ConversationLogger {
     const fileExists = fs.existsSync(this.filePath);
     this.recordedThreadId = threadId ?? null;
 
-    this.stream = fs.createWriteStream(this.filePath, { flags: "a" });
+    this.stream = fs.createWriteStream(this.filePath, { flags: "a", mode: 0o600 });
+    try {
+      fs.chmodSync(this.filePath, 0o600);
+    } catch {
+      // ignore
+    }
 
     // 处理流错误，防止未捕获异常
     this.stream.on("error", (err) => {
