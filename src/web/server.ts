@@ -40,6 +40,8 @@ import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { extractTextFromInput } from "../utils/inputText.js";
 import { processAdrBlocks } from "../utils/adrRecording.js";
 import { runVectorSearch } from "../vectorSearch/run.js";
+import { closeAllStateDatabases } from "../state/database.js";
+import { closeAllWorkspaceDatabases } from "../storage/database.js";
 
 import { TaskQueue } from "../tasks/queue.js";
 import { TaskStore as QueueTaskStore } from "../tasks/store.js";
@@ -261,13 +263,31 @@ async function ensureWebPidFile(workspaceRoot: string): Promise<string> {
       /* noop */
     }
   };
-  process.once("exit", cleanup);
-  process.once("SIGINT", () => {
+  let shutdownHandled = false;
+  const shutdown = (): void => {
+    if (shutdownHandled) {
+      return;
+    }
+    shutdownHandled = true;
+    try {
+      closeAllWorkspaceDatabases();
+    } catch {
+      // ignore
+    }
+    try {
+      closeAllStateDatabases();
+    } catch {
+      // ignore
+    }
     cleanup();
+  };
+  process.once("exit", shutdown);
+  process.once("SIGINT", () => {
+    shutdown();
     process.exit(0);
   });
   process.once("SIGTERM", () => {
-    cleanup();
+    shutdown();
     process.exit(0);
   });
 
@@ -1961,5 +1981,15 @@ async function start(): Promise<void> {
 
 start().catch((error) => {
   logger.error("[web] fatal error", error);
+  try {
+    closeAllWorkspaceDatabases();
+  } catch {
+    // ignore
+  }
+  try {
+    closeAllStateDatabases();
+  } catch {
+    // ignore
+  }
   process.exit(1);
 });

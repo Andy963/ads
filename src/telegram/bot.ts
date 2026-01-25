@@ -19,6 +19,8 @@ import { ensureApiKeys, resolveSearchConfig } from '../tools/search/config.js';
 import { formatSearchResults } from '../tools/search/format.js';
 import { formatLocalSearchOutput, searchWorkspaceFiles } from '../utils/localSearch.js';
 import { runVectorSearch, syncVectorSearch } from '../vectorSearch/run.js';
+import { closeAllStateDatabases } from '../state/database.js';
+import { closeAllWorkspaceDatabases } from '../storage/database.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
@@ -480,6 +482,16 @@ async function main() {
     logger.info('Shutting down...');
     sessionManager.destroy();
     bot.stop();
+    try {
+      closeAllWorkspaceDatabases();
+    } catch {
+      // ignore
+    }
+    try {
+      closeAllStateDatabases();
+    } catch {
+      // ignore
+    }
     process.exit(0);
   });
 
@@ -487,11 +499,31 @@ async function main() {
     logger.info('Shutting down...');
     sessionManager.destroy();
     bot.stop();
+    try {
+      closeAllWorkspaceDatabases();
+    } catch {
+      // ignore
+    }
+    try {
+      closeAllStateDatabases();
+    } catch {
+      // ignore
+    }
     process.exit(0);
   });
 }
 
 main().catch((error) => {
   logger.error('Fatal error', error);
+  try {
+    closeAllWorkspaceDatabases();
+  } catch {
+    // ignore
+  }
+  try {
+    closeAllStateDatabases();
+  } catch {
+    // ignore
+  }
   process.exit(1);
 });

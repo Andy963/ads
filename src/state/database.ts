@@ -117,13 +117,17 @@ export function getStateDatabase(explicitPath?: string): DatabaseType {
   return db;
 }
 
-export function resetStateDatabaseForTests(): void {
+export function closeAllStateDatabases(): void {
   for (const db of cachedDbs.values()) {
     try {
       db.close();
     } catch (error) {
-      logger.warn("[StateDatabase] Failed to close db during reset", error);
+      logger.warn("[StateDatabase] Failed to close db", error);
     }
   }
   cachedDbs = new Map();
+}
+
+export function resetStateDatabaseForTests(): void {
+  closeAllStateDatabases();
 }

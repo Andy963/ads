@@ -10,6 +10,7 @@ import { z } from "zod";
 import { createLogger } from "../utils/logger.js";
 import { search } from "../tools/search/index.js";
 import { searchHistoryForAgent, formatConflictWarning } from "../utils/historySearchTool.js";
+import { closeAllStateDatabases } from "../state/database.js";
 
 const require = createRequire(import.meta.url);
 const { version: packageVersion } = require("../../package.json") as { version: string };
@@ -178,6 +179,11 @@ async function shutdown(code = 0): Promise<void> {
     await transport.close();
   } catch (error) {
     logger.error("Error closing transport", error);
+  }
+  try {
+    closeAllStateDatabases();
+  } catch {
+    // ignore
   }
   process.exit(code);
 }

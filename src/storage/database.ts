@@ -169,7 +169,7 @@ export function getDatabase(workspacePath?: string): DatabaseType {
   return db;
 }
 
-export function resetDatabaseForTests(): void {
+export function closeAllWorkspaceDatabases(): void {
   for (const db of cachedDbs.values()) {
     try {
       db.close();
@@ -178,6 +178,10 @@ export function resetDatabaseForTests(): void {
     }
   }
   cachedDbs = new Map();
+}
+
+export function resetDatabaseForTests(): void {
+  closeAllWorkspaceDatabases();
 }
 
 /**
