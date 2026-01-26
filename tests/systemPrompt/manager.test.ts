@@ -106,7 +106,7 @@ describe("SystemPromptManager rule reinjection", () => {
     fs.rmSync(nextWorkspace, { recursive: true, force: true });
   });
 
-  it("falls back to default templates when workspace is not initialized", () => {
+  it("does not require explicit init for initial injection", () => {
     const tempWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-uninit-"));
     try {
       const manager = new SystemPromptManager({ workspaceRoot: tempWorkspace });
@@ -115,11 +115,7 @@ describe("SystemPromptManager rule reinjection", () => {
       assert.equal(injection.reason, "initial");
       assert.notEqual(injection.instructionsHash, "missing");
       assert.ok(injection.text.trim().length > 0, "fallback instructions should not be empty");
-      assert.match(
-        injection.text,
-        /workspace\.json 缺失|workspace notice/i,
-        "should surface init warning in prompt",
-      );
+      assert.doesNotMatch(injection.text, /workspace\.json 缺失|workspace notice/i);
     } finally {
       fs.rmSync(tempWorkspace, { recursive: true, force: true });
     }

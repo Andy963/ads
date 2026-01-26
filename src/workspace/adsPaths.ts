@@ -76,6 +76,24 @@ function copyDirIfMissing(srcDir: string, destDir: string): void {
   fs.cpSync(srcDir, destDir, { recursive: true, errorOnExist: false, force: false });
 }
 
+function ensureWorkspaceConfig(stateDir: string, workspaceRoot: string): void {
+  const configPath = path.join(stateDir, "workspace.json");
+  if (fs.existsSync(configPath)) {
+    return;
+  }
+  const config = {
+    name: path.basename(workspaceRoot) || "workspace",
+    created_at: new Date().toISOString(),
+    version: "1.0",
+  };
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
+  } catch {
+    // ignore bootstrap errors
+  }
+}
+
 export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolean {
   const resolvedWorkspace = resolveWorkspacePath(workspaceRoot);
   const legacyDir = resolveLegacyWorkspaceAdsDir(resolvedWorkspace);
@@ -83,26 +101,27 @@ export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolea
 
   const stateDir = resolveWorkspaceStateDir(resolvedWorkspace);
   const stateConfig = path.join(stateDir, "workspace.json");
-  if (fs.existsSync(stateConfig)) {
-    return false;
+
+  let migrated = false;
+  if (!fs.existsSync(stateConfig) && fs.existsSync(legacyConfig)) {
+    // Migrate key workspace state files into the centralized store.
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    copyIfMissing(legacyConfig, stateConfig);
+    copyIfMissing(path.join(legacyDir, "ads.db"), path.join(stateDir, "ads.db"));
+    copyIfMissing(path.join(legacyDir, "state.db"), path.join(stateDir, "state.db"));
+    copyIfMissing(path.join(legacyDir, "rules.md"), path.join(stateDir, "rules.md"));
+    copyIfMissing(path.join(legacyDir, "intake-state.json"), path.join(stateDir, "intake-state.json"));
+    copyIfMissing(path.join(legacyDir, "context.json"), path.join(stateDir, "context.json"));
+
+    copyDirIfMissing(path.join(legacyDir, "templates"), path.join(stateDir, "templates"));
+    copyDirIfMissing(path.join(legacyDir, "rules"), path.join(stateDir, "rules"));
+    copyDirIfMissing(path.join(legacyDir, "commands"), path.join(stateDir, "commands"));
+
+    migrated = true;
   }
-  if (!fs.existsSync(legacyConfig)) {
-    return false;
-  }
 
-  // Migrate key workspace state files into the centralized store.
-  fs.mkdirSync(stateDir, { recursive: true });
-
-  copyIfMissing(legacyConfig, stateConfig);
-  copyIfMissing(path.join(legacyDir, "ads.db"), path.join(stateDir, "ads.db"));
-  copyIfMissing(path.join(legacyDir, "state.db"), path.join(stateDir, "state.db"));
-  copyIfMissing(path.join(legacyDir, "rules.md"), path.join(stateDir, "rules.md"));
-  copyIfMissing(path.join(legacyDir, "intake-state.json"), path.join(stateDir, "intake-state.json"));
-  copyIfMissing(path.join(legacyDir, "context.json"), path.join(stateDir, "context.json"));
-
-  copyDirIfMissing(path.join(legacyDir, "templates"), path.join(stateDir, "templates"));
-  copyDirIfMissing(path.join(legacyDir, "rules"), path.join(stateDir, "rules"));
-  copyDirIfMissing(path.join(legacyDir, "commands"), path.join(stateDir, "commands"));
-
-  return true;
+  // Always ensure per-workspace state exists under ADS_STATE_DIR, even without explicit `ads init`.
+  ensureWorkspaceConfig(stateDir, resolvedWorkspace);
+  return migrated;
 }

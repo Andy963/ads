@@ -164,17 +164,6 @@ export function detectWorkspace(): string {
   return resolveAbsolute(process.cwd());
 }
 
-function ensureInitialized<T>(provider: () => T, message: () => string): T {
-  try {
-    return provider();
-  } catch (error) {
-    throw new Error(
-      `${message()}\n请先运行 'ads init' 初始化工作空间`,
-      { cause: error instanceof Error ? error : undefined }
-    );
-  }
-}
-
 export function getWorkspaceDbPath(workspace?: string): string {
   const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
   migrateLegacyWorkspaceAdsIfNeeded(root);
@@ -193,10 +182,6 @@ export function getWorkspaceDbPath(workspace?: string): string {
   }
 
   const dbPath = resolveWorkspaceStatePath(root, "ads.db");
-  const configPath = resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE);
-  if (!existsSync(configPath) && !existsSync(resolveLegacyWorkspaceAdsPath(root, WORKSPACE_CONFIG_FILE))) {
-    throw new Error(`工作空间未初始化: ${root}`);
-  }
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   if (!existsSync(dbPath)) {
     fs.writeFileSync(dbPath, "");
@@ -205,14 +190,11 @@ export function getWorkspaceDbPath(workspace?: string): string {
 }
 
 export function getWorkspaceRulesDir(workspace?: string): string {
-  return ensureInitialized(() => {
-    const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
-    const rulesDir = resolveWorkspaceStatePath(root, "rules");
-    if (!existsSync(rulesDir)) {
-      throw new Error(`规则目录不存在: ${rulesDir}`);
-    }
-    return rulesDir;
-  }, () => `工作空间未初始化: ${workspace ?? detectWorkspace()}`);
+  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  migrateLegacyWorkspaceAdsIfNeeded(root);
+  const rulesDir = resolveWorkspaceStatePath(root, "rules");
+  fs.mkdirSync(rulesDir, { recursive: true });
+  return rulesDir;
 }
 
 export function getWorkspaceSpecsDir(workspace?: string): string {

@@ -28,7 +28,7 @@ describe("utils/workspaceHistory", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns empty and does not create .ads for uninitialized workspace", () => {
+  it("returns empty for empty workspace state", () => {
     const result = loadWorkspaceHistoryEntries({
       workspaceRoot: tmpDir,
       includeNamespaces: ["cli", "telegram", "web"],
@@ -36,7 +36,7 @@ describe("utils/workspaceHistory", () => {
       limit: 50,
     });
     assert.deepEqual(result, []);
-    assert.equal(fs.existsSync(resolveWorkspaceStateDir(tmpDir)), false);
+    assert.equal(fs.existsSync(resolveWorkspaceStateDir(tmpDir)), true);
   });
 
   it("merges namespaces and respects per-namespace session filters", () => {

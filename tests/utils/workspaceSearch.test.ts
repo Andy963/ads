@@ -28,7 +28,7 @@ describe("utils/workspaceSearch", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("does not create .ads for uninitialized workspace", () => {
+  it("returns empty result for fresh workspace state", () => {
     const outcome = searchWorkspaceHistory({
       workspaceRoot: tmpDir,
       query: "hello",
@@ -37,8 +37,9 @@ describe("utils/workspaceSearch", () => {
       maxResults: 5,
       maxChars: 2000,
     });
-    assert.match(outcome.output, /工作空间未初始化/);
-    assert.equal(fs.existsSync(resolveWorkspaceStateDir(tmpDir)), false);
+    assert.doesNotMatch(outcome.output, /工作空间未初始化/);
+    assert.match(outcome.output, /\(0 results\)/);
+    assert.equal(fs.existsSync(resolveWorkspaceStateDir(tmpDir)), true);
   });
 
   it("returns results via window-scan", () => {
