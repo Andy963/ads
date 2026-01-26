@@ -653,6 +653,34 @@ function togglePlan(taskId: string): void {
 }
 
 let ws: AdsWebSocket | null = null;
+let reconnectTimer: number | null = null;
+let reconnectAttempts = 0;
+
+function clearReconnectTimer(): void {
+  if (reconnectTimer === null) return;
+  try {
+    clearTimeout(reconnectTimer);
+  } catch {
+    // ignore
+  }
+  reconnectTimer = null;
+}
+
+function scheduleReconnect(reason: string): void {
+  void reason;
+  if (tokenRequired.value && !hasToken.value) return;
+  if (reconnectTimer !== null) return;
+
+  const attempt = Math.min(6, reconnectAttempts);
+  const delayMs = Math.min(15_000, 800 * Math.pow(2, attempt));
+  reconnectAttempts += 1;
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    void connectWs().catch(() => {
+      scheduleReconnect("connect failed");
+    });
+  }, delayMs);
+}
 
 const hasToken = computed(() => Boolean(token.value.trim()));
 const tokenRequired = ref<boolean | null>(null);
@@ -912,25 +940,66 @@ async function connectWs(): Promise<void> {
   threadWarning.value = null;
   activeThreadId.value = null;
 
+  clearReconnectTimer();
+
   ws?.close();
   ws = new AdsWebSocket({ token: token.value, sessionId: project.sessionId });
-  ws.onOpen = () => {
+  const wsInstance = ws;
+  wsInstance.onOpen = () => {
+    if (ws !== wsInstance) return;
     connected.value = true;
     wsError.value = null;
+    reconnectAttempts = 0;
+    clearReconnectTimer();
     flushQueuedPrompts();
   };
-  ws.onClose = (ev) => {
+  wsInstance.onClose = (ev) => {
+    if (ws !== wsInstance) return;
     connected.value = false;
+    const wasBusy = busy.value;
+    busy.value = false;
+    clearStepLive();
+    finalizeCommandBlock();
+
     if (ev.code === 4401) {
       wsError.value = "Unauthorized (token invalid)";
+      return;
     }
+
+    const reason = String((ev as CloseEvent).reason ?? "").trim();
+    wsError.value = `WebSocket closed (${ev.code || "unknown"})${reason ? `: ${reason}` : ""}`;
+    if (wasBusy) {
+      pushMessageBeforeLive({
+        role: "system",
+        kind: "text",
+        content: "Connection lost while a request was running. Reconnecting and syncing history…",
+      });
+    }
+    scheduleReconnect("close");
   };
-  ws.onError = () => {
+  wsInstance.onError = () => {
+    if (ws !== wsInstance) return;
     connected.value = false;
+    const wasBusy = busy.value;
+    busy.value = false;
+    clearStepLive();
+    finalizeCommandBlock();
     wsError.value = "WebSocket error";
+    if (wasBusy) {
+      pushMessageBeforeLive({
+        role: "system",
+        kind: "text",
+        content: "WebSocket error while a request was running. Reconnecting and syncing history…",
+      });
+    }
+    scheduleReconnect("error");
   };
-  ws.onTaskEvent = onTaskEvent;
-  ws.onMessage = (msg) => {
+  wsInstance.onTaskEvent = (payload) => {
+    if (ws !== wsInstance) return;
+    onTaskEvent(payload);
+  };
+  wsInstance.onMessage = (msg) => {
+    if (ws !== wsInstance) return;
     if (msg.type === "welcome") {
       let nextPath = "";
       const maybeWorkspace = (msg as { workspace?: unknown }).workspace;
@@ -1078,13 +1147,13 @@ async function connectWs(): Promise<void> {
 	      return;
 	    }
 	  };
-	  ws.connect();
+	  wsInstance.connect();
 	}
 
 async function createTask(input: CreateTaskInput): Promise<void> {
   apiError.value = null;
   try {
-    const created = await api.post<Task>("/api/tasks", input);
+    const created = await api.post<Task>(withWorkspaceQuery("/api/tasks"), input);
     upsertTask(created);
     selectedId.value = created.id;
     if (created.prompt && created.prompt.trim()) {
@@ -1186,6 +1255,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", updateIsMobile);
+  clearReconnectTimer();
   ws?.close();
   ws = null;
 });
