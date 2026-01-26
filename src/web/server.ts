@@ -1476,13 +1476,9 @@ async function start(): Promise<void> {
           // 清空本轮的计划签名，等待新的 todo_list
           lastPlanSignature = null;
           // 不重置 lastPlanItems，保留上一轮的 plan 状态以便续传
-          const userLogEntry = sessionLogger ? buildUserLogEntry(promptInput.input, currentCwd) : null;
-          if (sessionLogger && userLogEntry) {
-            sessionLogger.logInput(userLogEntry);
-          }
-          if (userLogEntry) {
-            historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
-          }
+	          const userLogEntry = buildUserLogEntry(promptInput.input, currentCwd);
+	          sessionLogger?.logInput(userLogEntry);
+	          historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
           const promptText = extractTextFromInput(promptInput.input).trim();
 
           const promptSlash = parseSlashCommand(promptText);
