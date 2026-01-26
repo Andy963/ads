@@ -560,15 +560,36 @@ async function start(): Promise<void> {
   const workspaceRoot = detectWorkspace();
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
 
-  const taskStore = new QueueTaskStore({ workspacePath: workspaceRoot });
-  const taskQueueStatusUserId = 0;
-  const taskQueueThreadStorage = new ThreadStorage({
-    namespace: "task-queue",
-    storagePath: path.join(adsStateDir, "task-queue-threads.json"),
-  });
-  const taskQueueSessionManager = new SessionManager(0, 0, "workspace-write", process.env.TASK_QUEUE_DEFAULT_MODEL, taskQueueThreadStorage);
-  const getStatusOrchestrator = () => taskQueueSessionManager.getOrCreate(taskQueueStatusUserId, workspaceRoot, true);
   const taskQueueLock = new AsyncLock();
+  const shouldRunTaskQueue = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
+
+  const clients: Set<WebSocket> = new Set();
+  const clientMetaByWs = new Map<WebSocket, { historyKey: string; sessionId: string }>();
+
+  const broadcastToSession = (sessionId: string, payload: unknown): void => {
+    for (const [ws, meta] of clientMetaByWs.entries()) {
+      if (meta.sessionId !== sessionId) {
+        continue;
+      }
+      safeJsonSend(ws, payload);
+    }
+  };
+
+  const recordToSessionHistories = (
+    sessionId: string,
+    entry: { role: string; text: string; ts: number; kind?: string },
+  ): void => {
+    for (const meta of clientMetaByWs.values()) {
+      if (meta.sessionId !== sessionId) {
+        continue;
+      }
+      try {
+        historyStore.add(meta.historyKey, entry);
+      } catch {
+        // ignore
+      }
+    }
+  };
 
   const hashTaskId = (taskId: string): number => {
     const normalized = String(taskId ?? "").trim();
@@ -588,35 +609,179 @@ async function start(): Promise<void> {
     return hash >>> 0;
   };
 
-  const getTaskQueueOrchestrator = (task: { id: string }) => {
-    const userId = hashTaskId(task.id);
-    return taskQueueSessionManager.getOrCreate(userId, workspaceRoot, true);
+  type TaskQueueContext = {
+    workspaceRoot: string;
+    sessionId: string;
+    taskStore: QueueTaskStore;
+    taskQueue: TaskQueue;
+    getStatusOrchestrator: () => ReturnType<SessionManager["getOrCreate"]>;
+    getTaskQueueOrchestrator: (task: { id: string }) => ReturnType<SessionManager["getOrCreate"]>;
   };
 
-  const planner = new OrchestratorTaskPlanner({
-    getOrchestrator: getTaskQueueOrchestrator,
-    planModel: process.env.TASK_QUEUE_PLAN_MODEL ?? "gpt-5",
-    lock: taskQueueLock,
-  });
-  const executor = new OrchestratorTaskExecutor({
-    getOrchestrator: getTaskQueueOrchestrator,
-    store: taskStore,
-    defaultModel: process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2",
-    lock: taskQueueLock,
-  });
-  const taskQueue = new TaskQueue({ store: taskStore, planner, executor });
-  const shouldRunTaskQueue = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
+  const taskContexts = new Map<string, TaskQueueContext>();
+  const ensureTaskContext = (workspaceRootForContext: string): TaskQueueContext => {
+    const key = String(workspaceRootForContext ?? "").trim() || workspaceRoot;
+    const existing = taskContexts.get(key);
+    if (existing) {
+      return existing;
+    }
 
-  let broadcast: (payload: unknown) => void = () => {};
-  const clientHistoryKeyByWs = new Map<WebSocket, string>();
-  const recordToAllClientHistories = (entry: { role: string; text: string; ts: number; kind?: string }): void => {
-    for (const historyKey of clientHistoryKeyByWs.values()) {
-      try {
-        historyStore.add(historyKey, entry);
-      } catch {
-        // ignore
+    const sessionId = deriveProjectSessionId(key);
+    const taskStore = new QueueTaskStore({ workspacePath: key });
+    const taskQueueStatusUserId = 0;
+    const taskQueueThreadStorage = new ThreadStorage({
+      namespace: `task-queue:${sessionId}`,
+      storagePath: path.join(adsStateDir, `task-queue-threads-${sessionId}.json`),
+    });
+    const taskQueueSessionManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      process.env.TASK_QUEUE_DEFAULT_MODEL,
+      taskQueueThreadStorage,
+    );
+    const getStatusOrchestrator = () =>
+      taskQueueSessionManager.getOrCreate(taskQueueStatusUserId, key, true);
+
+    const getTaskQueueOrchestrator = (task: { id: string }) => {
+      const userId = hashTaskId(task.id);
+      return taskQueueSessionManager.getOrCreate(userId, key, true);
+    };
+
+    const planner = new OrchestratorTaskPlanner({
+      getOrchestrator: getTaskQueueOrchestrator,
+      planModel: process.env.TASK_QUEUE_PLAN_MODEL ?? "gpt-5",
+      lock: taskQueueLock,
+    });
+    const executor = new OrchestratorTaskExecutor({
+      getOrchestrator: getTaskQueueOrchestrator,
+      store: taskStore,
+      defaultModel: process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2",
+      lock: taskQueueLock,
+    });
+    const taskQueue = new TaskQueue({ store: taskStore, planner, executor });
+
+    const ctx: TaskQueueContext = {
+      workspaceRoot: key,
+      sessionId,
+      taskStore,
+      taskQueue,
+      getStatusOrchestrator,
+      getTaskQueueOrchestrator,
+    };
+    taskContexts.set(key, ctx);
+
+    taskQueue.on("task:started", ({ task }) =>
+      broadcastToSession(sessionId, { type: "task:event", event: "task:started", data: task, ts: Date.now() }),
+    );
+    taskQueue.on("task:planned", ({ task, plan }) =>
+      broadcastToSession(sessionId, { type: "task:event", event: "task:planned", data: { task, plan }, ts: Date.now() }),
+    );
+    taskQueue.on("task:running", ({ task }) =>
+      broadcastToSession(sessionId, { type: "task:event", event: "task:running", data: task, ts: Date.now() }),
+    );
+    taskQueue.on("step:started", ({ task, step }) =>
+      broadcastToSession(sessionId, { type: "task:event", event: "step:started", data: { taskId: task.id, step }, ts: Date.now() }),
+    );
+    taskQueue.on("step:completed", ({ task, step }) =>
+      broadcastToSession(sessionId, { type: "task:event", event: "step:completed", data: { taskId: task.id, step }, ts: Date.now() }),
+    );
+    taskQueue.on("message", ({ task, role, content }) =>
+      broadcastToSession(sessionId, { type: "task:event", event: "message", data: { taskId: task.id, role, content }, ts: Date.now() }),
+    );
+    taskQueue.on("message:delta", ({ task, role, delta, modelUsed, source }) =>
+      broadcastToSession(sessionId, { type: "task:event", event: "message:delta", data: { taskId: task.id, role, delta, modelUsed, source }, ts: Date.now() }),
+    );
+    taskQueue.on("command", ({ task, command }) => {
+      broadcastToSession(sessionId, { type: "task:event", event: "command", data: { taskId: task.id, command }, ts: Date.now() });
+      recordToSessionHistories(sessionId, { role: "status", text: `$ ${command}`, ts: Date.now(), kind: "command" });
+    });
+    taskQueue.on("task:completed", ({ task }) => {
+      broadcastToSession(sessionId, { type: "task:event", event: "task:completed", data: task, ts: Date.now() });
+      if (task.result && task.result.trim()) {
+        recordToSessionHistories(sessionId, { role: "ai", text: task.result.trim(), ts: Date.now() });
+      }
+    });
+    taskQueue.on("task:failed", ({ task, error }) => {
+      broadcastToSession(sessionId, { type: "task:event", event: "task:failed", data: { task, error }, ts: Date.now() });
+      recordToSessionHistories(sessionId, { role: "status", text: `[Task failed] ${error}`, ts: Date.now(), kind: "error" });
+    });
+    taskQueue.on("task:cancelled", ({ task }) => {
+      broadcastToSession(sessionId, { type: "task:event", event: "task:cancelled", data: task, ts: Date.now() });
+      recordToSessionHistories(sessionId, { role: "status", text: "[Cancelled]", ts: Date.now(), kind: "status" });
+    });
+
+    if (shouldRunTaskQueue) {
+      const status = getStatusOrchestrator().status();
+      void taskQueue.start();
+      logger.info(`[Web] TaskQueue started workspace=${key}`);
+      if (!status.ready) {
+        logger.warn(`[Web] Agent not ready yet; tasks may fail: ${status.error ?? "unknown"}`);
       }
     }
+
+    return ctx;
+  };
+
+  const defaultTaskContext = ensureTaskContext(workspaceRoot);
+  const allowedDirValidator = new DirectoryManager(allowedDirs);
+
+  const resolveTaskWorkspaceRoot = (url: URL): string => {
+    const rawWorkspace = String(url.searchParams.get("workspace") ?? "").trim();
+    if (!rawWorkspace) {
+      return workspaceRoot;
+    }
+
+    const absolute = path.resolve(rawWorkspace);
+    let resolved = absolute;
+    try {
+      resolved = fs.realpathSync(absolute);
+    } catch {
+      resolved = absolute;
+    }
+
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`Workspace does not exist: ${resolved}`);
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
+      throw new Error(`Workspace not accessible: ${resolved}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`Workspace is not a directory: ${resolved}`);
+    }
+
+    const workspaceRootCandidate = detectWorkspaceFrom(resolved);
+    let normalizedWorkspaceRoot = workspaceRootCandidate;
+    try {
+      normalizedWorkspaceRoot = fs.realpathSync(workspaceRootCandidate);
+    } catch {
+      normalizedWorkspaceRoot = workspaceRootCandidate;
+    }
+
+    if (!fs.existsSync(normalizedWorkspaceRoot)) {
+      throw new Error(`Workspace root does not exist: ${normalizedWorkspaceRoot}`);
+    }
+    try {
+      if (!fs.statSync(normalizedWorkspaceRoot).isDirectory()) {
+        throw new Error(`Workspace root is not a directory: ${normalizedWorkspaceRoot}`);
+      }
+    } catch {
+      throw new Error(`Workspace root not accessible: ${normalizedWorkspaceRoot}`);
+    }
+
+    if (!allowedDirValidator.validatePath(normalizedWorkspaceRoot)) {
+      throw new Error("Workspace is not allowed");
+    }
+
+    return normalizedWorkspaceRoot;
+  };
+
+  const resolveTaskContext = (url: URL): TaskQueueContext => {
+    const targetWorkspaceRoot = resolveTaskWorkspaceRoot(url);
+    return ensureTaskContext(targetWorkspaceRoot);
   };
 
   const server = createHttpServer({
@@ -876,26 +1041,42 @@ async function start(): Promise<void> {
 
       if (req.method === "GET" && pathname === "/api/models") {
         const allowedModels = ["gpt-5.1", "gpt-5.2"];
-        const models = taskStore.listModelConfigs().filter((m) => allowedModels.includes(m.id));
+        const models = defaultTaskContext.taskStore.listModelConfigs().filter((m) => allowedModels.includes(m.id));
         sendJson(res, 200, models);
         return true;
       }
 
       if (req.method === "GET" && pathname === "/api/task-queue/status") {
-        const status = getStatusOrchestrator().status();
+        const status = defaultTaskContext.getStatusOrchestrator().status();
         sendJson(res, 200, { enabled: shouldRunTaskQueue, ...status });
         return true;
       }
 
       if (req.method === "GET" && pathname === "/api/tasks") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
         const status = parseTaskStatus(url.searchParams.get("status"));
         const limitRaw = url.searchParams.get("limit")?.trim();
         const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
-        sendJson(res, 200, taskStore.listTasks({ status, limit }));
+        sendJson(res, 200, ctx.taskStore.listTasks({ status, limit }));
         return true;
       }
 
       if (req.method === "POST" && pathname === "/api/tasks") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
         const body = await readJsonBody(req);
         const schema = z
           .object({
@@ -908,7 +1089,7 @@ async function start(): Promise<void> {
           })
           .passthrough();
         const parsed = schema.parse(body ?? {});
-        const task = taskStore.createTask({
+        const task = ctx.taskStore.createTask({
           title: parsed.title,
           prompt: parsed.prompt,
           model: parsed.model,
@@ -917,26 +1098,30 @@ async function start(): Promise<void> {
           maxRetries: parsed.maxRetries,
           createdBy: "web",
         });
-        taskQueue.notifyNewTask();
-        try {
-          if (task.prompt && task.prompt.trim()) {
-            recordToAllClientHistories({ role: "user", text: task.prompt.trim(), ts: Date.now() });
-          }
-        } catch {
-          // ignore
+        ctx.taskQueue.notifyNewTask();
+        if (task.prompt && task.prompt.trim()) {
+          recordToSessionHistories(ctx.sessionId, { role: "user", text: task.prompt.trim(), ts: Date.now() });
         }
-        broadcast({ type: "task:event", event: "task:updated", data: task, ts: Date.now() });
+        broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: Date.now() });
         sendJson(res, 200, task);
         return true;
       }
 
       const retryMatch = /^\/api\/tasks\/([^/]+)\/retry$/.exec(pathname);
       if (retryMatch && req.method === "POST") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
         const taskId = retryMatch[1] ?? "";
-        taskQueue.retry(taskId);
-        const task = taskStore.getTask(taskId);
+        ctx.taskQueue.retry(taskId);
+        const task = ctx.taskStore.getTask(taskId);
         if (task) {
-          broadcast({ type: "task:event", event: "task:updated", data: task, ts: Date.now() });
+          broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: Date.now() });
         }
         sendJson(res, 200, { success: true, task });
         return true;
@@ -948,8 +1133,16 @@ async function start(): Promise<void> {
           sendJson(res, 409, { error: "Task queue disabled" });
           return true;
         }
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
         const taskId = chatMatch[1] ?? "";
-        const task = taskStore.getTask(taskId);
+        const task = ctx.taskStore.getTask(taskId);
         if (!task) {
           sendJson(res, 404, { error: "Not Found" });
           return true;
@@ -969,7 +1162,7 @@ async function start(): Promise<void> {
         }
 
         try {
-          taskStore.addMessage({
+          ctx.taskStore.addMessage({
             taskId: task.id,
             planStepId: null,
             role: "user",
@@ -982,16 +1175,16 @@ async function start(): Promise<void> {
         } catch {
           // ignore
         }
-        broadcast({ type: "task:event", event: "message", data: { taskId: task.id, role: "user", content }, ts: Date.now() });
+        broadcastToSession(ctx.sessionId, { type: "task:event", event: "message", data: { taskId: task.id, role: "user", content }, ts: Date.now() });
 
         void taskQueueLock.runExclusive(async () => {
-          const latest = taskStore.getTask(taskId);
+          const latest = ctx.taskStore.getTask(taskId);
           if (!latest || latest.status === "cancelled") {
             return;
           }
           const desiredModel = String(latest.model ?? "").trim() || "auto";
           const modelToUse = desiredModel === "auto" ? (process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2") : desiredModel;
-          const orchestrator = getTaskQueueOrchestrator(latest);
+          const orchestrator = ctx.getTaskQueueOrchestrator(latest);
           orchestrator.setModel(modelToUse);
           const agentId = selectAgentForModel(modelToUse);
 
@@ -1008,7 +1201,7 @@ async function start(): Promise<void> {
                   lastRespondingText = next;
                 }
                 if (delta) {
-                  broadcast({
+                  broadcastToSession(ctx.sessionId, {
                     type: "task:event",
                     event: "message:delta",
                     data: { taskId: latest.id, role: "assistant", delta, modelUsed: modelToUse, source: "chat" },
@@ -1021,7 +1214,7 @@ async function start(): Promise<void> {
                 const command = String(event.detail).split(" | ")[0]?.trim();
                 if (command) {
                   try {
-                    taskStore.addMessage({
+                    ctx.taskStore.addMessage({
                       taskId: latest.id,
                       planStepId: null,
                       role: "system",
@@ -1034,7 +1227,7 @@ async function start(): Promise<void> {
                   } catch {
                     // ignore
                   }
-                  broadcast({ type: "task:event", event: "command", data: { taskId: latest.id, command }, ts: Date.now() });
+                  broadcastToSession(ctx.sessionId, { type: "task:event", event: "command", data: { taskId: latest.id, command }, ts: Date.now() });
                 }
               }
             } catch {
@@ -1055,7 +1248,7 @@ async function start(): Promise<void> {
             const result = await orchestrator.invokeAgent(agentId, prompt, { streaming: true });
             const text = typeof result.response === "string" ? result.response : String(result.response ?? "");
             try {
-              taskStore.addMessage({
+              ctx.taskStore.addMessage({
                 taskId: latest.id,
                 planStepId: null,
                 role: "assistant",
@@ -1068,10 +1261,10 @@ async function start(): Promise<void> {
             } catch {
               // ignore
             }
-            broadcast({ type: "task:event", event: "message", data: { taskId: latest.id, role: "assistant", content: text }, ts: Date.now() });
+            broadcastToSession(ctx.sessionId, { type: "task:event", event: "message", data: { taskId: latest.id, role: "assistant", content: text }, ts: Date.now() });
           } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
-            broadcast({ type: "task:event", event: "message", data: { taskId: taskId, role: "system", content: `[交互失败] ${msg}` }, ts: Date.now() });
+            broadcastToSession(ctx.sessionId, { type: "task:event", event: "message", data: { taskId: taskId, role: "system", content: `[Chat failed] ${msg}` }, ts: Date.now() });
           } finally {
             try {
               unsubscribe();
@@ -1087,20 +1280,28 @@ async function start(): Promise<void> {
 
       const taskMatch = /^\/api\/tasks\/([^/]+)$/.exec(pathname);
       if (taskMatch) {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
         const taskId = taskMatch[1] ?? "";
 
         if (req.method === "GET") {
-          const task = taskStore.getTask(taskId);
+          const task = ctx.taskStore.getTask(taskId);
           if (!task) {
             sendJson(res, 404, { error: "Not Found" });
             return true;
           }
-          sendJson(res, 200, { ...task, plan: taskStore.getPlan(taskId), messages: taskStore.getMessages(taskId) });
+          sendJson(res, 200, { ...task, plan: ctx.taskStore.getPlan(taskId), messages: ctx.taskStore.getMessages(taskId) });
           return true;
         }
 
         if (req.method === "DELETE") {
-          taskStore.deleteTask(taskId);
+          ctx.taskStore.deleteTask(taskId);
           sendJson(res, 200, { success: true });
           return true;
         }
@@ -1112,14 +1313,14 @@ async function start(): Promise<void> {
             const schema = z.object({ action: z.enum(["pause", "resume", "cancel"]) }).passthrough();
             const parsed = schema.parse(body ?? {});
             if (parsed.action === "pause") {
-              taskQueue.pause("api");
+              ctx.taskQueue.pause("api");
             } else if (parsed.action === "resume") {
-              taskQueue.resume();
+              ctx.taskQueue.resume();
             } else if (parsed.action === "cancel") {
-              taskQueue.cancel(taskId);
-              const task = taskStore.getTask(taskId);
+              ctx.taskQueue.cancel(taskId);
+              const task = ctx.taskStore.getTask(taskId);
               if (task) {
-                broadcast({ type: "task:event", event: "task:cancelled", data: task, ts: Date.now() });
+                broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:cancelled", data: task, ts: Date.now() });
               }
               sendJson(res, 200, { success: true, task });
               return true;
@@ -1145,7 +1346,7 @@ async function start(): Promise<void> {
             return true;
           }
 
-          const existing = taskStore.getTask(taskId);
+          const existing = ctx.taskStore.getTask(taskId);
           if (!existing) {
             sendJson(res, 404, { error: "Not Found" });
             return true;
@@ -1163,9 +1364,9 @@ async function start(): Promise<void> {
           if (parsed.inheritContext !== undefined) updates.inheritContext = parsed.inheritContext;
           if (parsed.maxRetries !== undefined) updates.maxRetries = parsed.maxRetries;
 
-          const updated = taskStore.updateTask(taskId, updates, Date.now());
-          taskQueue.notifyNewTask();
-          broadcast({ type: "task:event", event: "task:updated", data: updated, ts: Date.now() });
+          const updated = ctx.taskStore.updateTask(taskId, updates, Date.now());
+          ctx.taskQueue.notifyNewTask();
+          broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: updated, ts: Date.now() });
           sendJson(res, 200, { success: true, task: updated });
           return true;
         }
@@ -1182,66 +1383,6 @@ async function start(): Promise<void> {
     logger.warn(`[Web] Failed to sync templates: ${(error as Error).message}`);
   }
   await ensureWebPidFile(workspaceRoot);
-  const clients: Set<WebSocket> = new Set();
-
-  broadcast = (payload: unknown) => {
-    for (const ws of clients) {
-      safeJsonSend(ws, payload);
-    }
-  };
-
-  taskQueue.on("task:started", ({ task }) => broadcast({ type: "task:event", event: "task:started", data: task, ts: Date.now() }));
-  taskQueue.on("task:planned", ({ task, plan }) => broadcast({ type: "task:event", event: "task:planned", data: { task, plan }, ts: Date.now() }));
-  taskQueue.on("task:running", ({ task }) => broadcast({ type: "task:event", event: "task:running", data: task, ts: Date.now() }));
-  taskQueue.on("step:started", ({ task, step }) => broadcast({ type: "task:event", event: "step:started", data: { taskId: task.id, step }, ts: Date.now() }));
-  taskQueue.on("step:completed", ({ task, step }) => broadcast({ type: "task:event", event: "step:completed", data: { taskId: task.id, step }, ts: Date.now() }));
-  taskQueue.on("message", ({ task, role, content }) => broadcast({ type: "task:event", event: "message", data: { taskId: task.id, role, content }, ts: Date.now() }));
-  taskQueue.on("message:delta", ({ task, role, delta, modelUsed, source }) =>
-    broadcast({ type: "task:event", event: "message:delta", data: { taskId: task.id, role, delta, modelUsed, source }, ts: Date.now() }),
-  );
-  taskQueue.on("command", ({ task, command }) => {
-    broadcast({ type: "task:event", event: "command", data: { taskId: task.id, command }, ts: Date.now() });
-    try {
-      recordToAllClientHistories({ role: "status", text: `$ ${command}`, ts: Date.now(), kind: "command" });
-    } catch {
-      // ignore
-    }
-  });
-  taskQueue.on("task:completed", ({ task }) => {
-    broadcast({ type: "task:event", event: "task:completed", data: task, ts: Date.now() });
-    try {
-      if (task.result && task.result.trim()) {
-        recordToAllClientHistories({ role: "ai", text: task.result.trim(), ts: Date.now() });
-      }
-    } catch {
-      // ignore
-    }
-  });
-  taskQueue.on("task:failed", ({ task, error }) => {
-    broadcast({ type: "task:event", event: "task:failed", data: { task, error }, ts: Date.now() });
-    try {
-      recordToAllClientHistories({ role: "status", text: `[任务失败] ${error}`, ts: Date.now(), kind: "error" });
-    } catch {
-      // ignore
-    }
-  });
-  taskQueue.on("task:cancelled", ({ task }) => {
-    broadcast({ type: "task:event", event: "task:cancelled", data: task, ts: Date.now() });
-    try {
-      recordToAllClientHistories({ role: "status", text: "[已终止]", ts: Date.now(), kind: "status" });
-    } catch {
-      // ignore
-    }
-  });
-
-  if (shouldRunTaskQueue) {
-    const status = getStatusOrchestrator().status();
-    void taskQueue.start();
-    logger.info("[Web] TaskQueue started");
-    if (!status.ready) {
-      logger.warn(`[Web] Agent not ready yet; tasks may fail: ${status.error ?? "unknown"}`);
-    }
-  }
 
   const pingTimer =
     WS_PING_INTERVAL_MS > 0
@@ -1344,11 +1485,11 @@ async function start(): Promise<void> {
       aliveWs.missedPongs = 0;
     });
 
-    const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
-    const userId = deriveWebUserId(clientKey, sessionId);
-    const historyKey = `${clientKey}::${sessionId}`;
-    clientHistoryKeyByWs.set(ws, historyKey);
-    const directoryManager = new DirectoryManager(allowedDirs);
+	    const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
+	    const userId = deriveWebUserId(clientKey, sessionId);
+	    const historyKey = `${clientKey}::${sessionId}`;
+	    clientMetaByWs.set(ws, { historyKey, sessionId });
+	    const directoryManager = new DirectoryManager(allowedDirs);
 
     const cacheKey = `${clientKey}::${sessionId}`;
     const cachedWorkspace = workspaceCache.get(cacheKey);
@@ -1960,14 +2101,14 @@ async function start(): Promise<void> {
         return;
 	    });
 
-    ws.on("close", (code, reason) => {
-      clients.delete(ws);
-      clientHistoryKeyByWs.delete(ws);
-      const reasonText = formatCloseReason(reason);
-      const suffix = reasonText ? ` reason=${reasonText}` : "";
-      log(`client disconnected session=${sessionId} user=${userId} code=${code}${suffix}`);
-    });
-  });
+	    ws.on("close", (code, reason) => {
+	      clients.delete(ws);
+	      clientMetaByWs.delete(ws);
+	      const reasonText = formatCloseReason(reason);
+	      const suffix = reasonText ? ` reason=${reasonText}` : "";
+	      log(`client disconnected session=${sessionId} user=${userId} code=${code}${suffix}`);
+	    });
+	  });
 
   server.listen(PORT, HOST, () => {
     log(`WebSocket server listening on ws://${HOST}:${PORT}`);

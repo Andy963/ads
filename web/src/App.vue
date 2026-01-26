@@ -205,15 +205,21 @@ function performProjectSwitch(id: string): void {
   if (!nextId) return;
   if (nextId === activeProjectId.value) return;
 
+  clearReconnectTimer();
   ws?.close();
   ws = null;
   connected.value = false;
   wsError.value = null;
   clearChatState();
+  resetTaskState();
 
   activeProjectId.value = nextId;
   persistProjects();
   void connectWs();
+  void loadTasks().catch((error) => {
+    const msg = error instanceof Error ? error.message : String(error);
+    apiError.value = msg;
+  });
 }
 
 function requestProjectSwitch(id: string): void {
@@ -255,7 +261,7 @@ async function confirmDeleteTask(): Promise<void> {
 
   apiError.value = null;
   try {
-    await api.delete<{ success: boolean }>(`/api/tasks/${taskId}`);
+    await api.delete<{ success: boolean }>(withWorkspaceQuery(`/api/tasks/${taskId}`));
     tasks.value = tasks.value.filter((x) => x.id !== taskId);
     expanded.value = new Set([...expanded.value].filter((x) => x !== taskId));
     plansByTaskId.value.delete(taskId);
@@ -410,7 +416,14 @@ async function submitProjectDialog(): Promise<void> {
 
   closeProjectDialog();
   clearChatState();
+  resetTaskState();
   await connectWs();
+  try {
+    await loadTasks();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    apiError.value = msg;
+  }
 }
 
 function setMessages(items: ChatItem[]): void {
@@ -630,12 +643,34 @@ function finalizeAssistant(content: string): void {
 const expanded = ref<Set<string>>(new Set());
 const plansByTaskId = ref<Map<string, PlanStep[]>>(new Map());
 
+function resolveActiveWorkspaceRoot(): string | null {
+  const project = activeProject.value;
+  const projectPath = String(project?.path ?? "").trim();
+  if (projectPath) return projectPath;
+  const fallback = String(workspacePath.value ?? "").trim();
+  return fallback || null;
+}
+
+function withWorkspaceQuery(apiPath: string): string {
+  const root = resolveActiveWorkspaceRoot();
+  if (!root) return apiPath;
+  const joiner = apiPath.includes("?") ? "&" : "?";
+  return `${apiPath}${joiner}workspace=${encodeURIComponent(root)}`;
+}
+
+function resetTaskState(): void {
+  tasks.value = [];
+  selectedId.value = null;
+  expanded.value = new Set();
+  plansByTaskId.value = new Map();
+}
+
 async function ensurePlan(taskId: string): Promise<void> {
   const id = String(taskId ?? "").trim();
   if (!id) return;
   if ((plansByTaskId.value.get(id)?.length ?? 0) > 0) return;
   try {
-    const detail = await api.get<TaskDetail>(`/api/tasks/${id}`);
+    const detail = await api.get<TaskDetail>(withWorkspaceQuery(`/api/tasks/${id}`));
     plansByTaskId.value.set(id, detail.plan);
     plansByTaskId.value = new Map(plansByTaskId.value);
   } catch {
@@ -708,11 +743,11 @@ async function loadModels(): Promise<void> {
 }
 
 async function loadQueueStatus(): Promise<void> {
-  queueStatus.value = await api.get<TaskQueueStatus>("/api/task-queue/status");
+  queueStatus.value = await api.get<TaskQueueStatus>(withWorkspaceQuery("/api/task-queue/status"));
 }
 
 async function loadTasks(): Promise<void> {
-  tasks.value = await api.get<Task[]>("/api/tasks?limit=100");
+  tasks.value = await api.get<Task[]>(withWorkspaceQuery("/api/tasks?limit=100"));
   if (!selectedId.value && tasks.value.length > 0) {
     const nextPending = tasks.value
       .filter((t) => t.status === "pending")
@@ -1168,7 +1203,7 @@ async function createTask(input: CreateTaskInput): Promise<void> {
 async function cancelTask(id: string): Promise<void> {
   apiError.value = null;
   try {
-    const res = await api.patch<{ success: boolean; task?: Task | null }>(`/api/tasks/${id}`, { action: "cancel" });
+    const res = await api.patch<{ success: boolean; task?: Task | null }>(withWorkspaceQuery(`/api/tasks/${id}`), { action: "cancel" });
     if (res?.task) {
       upsertTask(res.task);
     }
@@ -1182,7 +1217,7 @@ async function cancelTask(id: string): Promise<void> {
 async function retryTask(id: string): Promise<void> {
   apiError.value = null;
   try {
-    const res = await api.post<{ success: boolean; task?: Task | null }>(`/api/tasks/${id}/retry`, {});
+    const res = await api.post<{ success: boolean; task?: Task | null }>(withWorkspaceQuery(`/api/tasks/${id}/retry`), {});
     if (res?.task) {
       upsertTask(res.task);
     }
@@ -1210,7 +1245,7 @@ async function deleteTask(id: string): Promise<void> {
 async function updateQueuedTask(id: string, updates: Record<string, unknown>): Promise<void> {
   apiError.value = null;
   try {
-    const res = await api.patch<{ success: boolean; task?: Task }>(`/api/tasks/${id}`, updates);
+    const res = await api.patch<{ success: boolean; task?: Task }>(withWorkspaceQuery(`/api/tasks/${id}`), updates);
     if (res?.task) {
       upsertTask(res.task);
     } else {
@@ -1238,8 +1273,8 @@ async function bootstrap(): Promise<void> {
   try {
     await loadModels();
     await loadQueueStatus();
-    await loadTasks();
     await connectWs();
+    await loadTasks();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     apiError.value = msg;
