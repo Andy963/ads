@@ -1514,9 +1514,9 @@ function select(id: string): void {
   overflow: hidden;
 }
 .projectTab.active {
-  background: var(--surface);
-  border-color: rgba(37, 99, 235, 0.35);
-  color: var(--text);
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.45);
+  color: #1d4ed8;
   box-shadow: var(--shadow-sm);
 }
 .projectTabText {
