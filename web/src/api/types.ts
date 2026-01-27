@@ -25,6 +25,7 @@ export interface Task {
   startedAt?: number | null;
   completedAt?: number | null;
   createdBy?: string | null;
+  attachments?: Attachment[];
 }
 
 export interface PlanStep {
@@ -55,6 +56,16 @@ export interface TaskDetail extends Task {
   messages: TaskMessage[];
 }
 
+export interface Attachment {
+  id: string;
+  url: string;
+  sha256: string;
+  width: number;
+  height: number;
+  contentType: string;
+  sizeBytes: number;
+}
+
 export interface CreateTaskInput {
   title?: string;
   prompt: string;
@@ -62,6 +73,7 @@ export interface CreateTaskInput {
   priority?: number;
   inheritContext?: boolean;
   maxRetries?: number;
+  attachments?: string[];
 }
 
 export interface ModelConfig {
