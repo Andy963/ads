@@ -45,43 +45,45 @@ const modelOptions = computed(() => {
 <template>
   <div class="card">
     <h3 class="form-title">新建任务</h3>
-    
-    <div class="form-row">
-      <label class="form-field">
-        <span class="label-text">标题（可选）</span>
-        <input v-model="title" placeholder="不填会自动生成" />
-      </label>
-    </div>
-    
-    <div class="form-row form-row-3">
-      <label class="form-field">
-        <span class="label-text">模型</span>
-        <select v-model="model">
-          <option v-for="m in modelOptions" :key="m.id" :value="m.id">
-            {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
-          </option>
-        </select>
-      </label>
-      <label class="form-field">
-        <span class="label-text">优先级</span>
-        <input v-model.number="priority" type="number" />
-      </label>
-      <label class="form-field">
-        <span class="label-text">最大重试</span>
-        <input v-model.number="maxRetries" type="number" min="0" />
-      </label>
-    </div>
-    
-    <div class="form-row">
-      <label class="form-field">
-        <span class="label-text">Prompt</span>
-        <textarea
-          v-model="prompt"
-          rows="4"
-          placeholder="描述要做什么…（Enter 提交，Alt+Enter 换行）"
-          @keydown="onPromptKeydown"
-        />
-      </label>
+
+    <div class="fields">
+      <div class="form-row">
+        <label class="form-field">
+          <span class="label-text">标题（可选）</span>
+          <input v-model="title" placeholder="不填会自动生成" />
+        </label>
+      </div>
+
+      <div class="form-row form-row-3">
+        <label class="form-field">
+          <span class="label-text">模型</span>
+          <select v-model="model">
+            <option v-for="m in modelOptions" :key="m.id" :value="m.id">
+              {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
+            </option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span class="label-text">优先级</span>
+          <input v-model.number="priority" type="number" />
+        </label>
+        <label class="form-field">
+          <span class="label-text">最大重试</span>
+          <input v-model.number="maxRetries" type="number" min="0" />
+        </label>
+      </div>
+
+      <div class="form-row prompt-row">
+        <label class="form-field">
+          <span class="label-text">Prompt</span>
+          <textarea
+            v-model="prompt"
+            rows="6"
+            placeholder="描述要做什么…（Enter 提交，Alt+Enter 换行）"
+            @keydown="onPromptKeydown"
+          />
+        </label>
+      </div>
     </div>
 
     <div class="actions">
@@ -98,6 +100,9 @@ const modelOptions = computed(() => {
   padding: 16px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .form-title {
   margin: 0 0 16px 0;
@@ -107,6 +112,21 @@ const modelOptions = computed(() => {
 }
 .form-row {
   margin-bottom: 12px;
+}
+.fields {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.prompt-row {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.prompt-row .form-field {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .form-row-3 {
   display: grid;
@@ -157,8 +177,9 @@ textarea::placeholder {
 }
 textarea {
   resize: none;
-  min-height: 80px;
-  max-height: 200px;
+  flex: 1 1 auto;
+  min-height: 140px;
+  max-height: none;
   overflow-y: auto;
 }
 .actions {
