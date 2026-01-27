@@ -551,8 +551,8 @@ textarea {
 }
 .thumbGrid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
 }
 .thumbCard {
   display: block;
@@ -714,7 +714,7 @@ textarea {
     gap: 16px;
   }
   .thumbGrid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
   .actions {
     flex-direction: column;
