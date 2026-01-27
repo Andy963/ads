@@ -1523,6 +1523,7 @@ async function start(): Promise<void> {
       message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
       workspace: getWorkspaceState(currentCwd),
       sessionId,
+      threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
     });
     const cachedHistory = historyStore.get(historyKey);
     if (cachedHistory.length > 0) {
@@ -1555,6 +1556,8 @@ async function start(): Promise<void> {
     }
 
     ws.on("message", async (data: RawData) => {
+      aliveWs.isAlive = true;
+      aliveWs.missedPongs = 0;
       let parsed: z.infer<typeof wsMessageSchema>;
       try {
         const raw = JSON.parse(String(data)) as unknown;
@@ -1677,8 +1680,8 @@ async function start(): Promise<void> {
           }
 	          orchestrator.setWorkingDirectory(turnCwd);
 	          let lastRespondingText = "";
-	          const lastCommandOutputs = new Map<string, string>();
-	          const announcedCommandIds = new Set<string>();
+	          const lastCommandOutputsByKey = new Map<string, string>();
+	          const announcedCommandKeys = new Set<string>();
 	          let hasCommandOutput = false;
 	          const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
 	            sessionLogger?.logEvent(event);
@@ -1706,60 +1709,81 @@ async function start(): Promise<void> {
               }
               return;
 	            }
-	            if (event.phase === "command") {
-	              const commandPayload = extractCommandPayload(event);
-	              logger.info(
-	                `[Command Event] ${JSON.stringify({
-	                  detail: event.detail ?? event.title,
-	                  command: commandPayload
-	                    ? {
-	                        id: commandPayload.id,
-	                        command: commandPayload.command,
-	                        status: commandPayload.status,
-	                        exit_code: commandPayload.exit_code,
-	                      }
-	                    : null,
-	                })}`,
-	              );
-	              let outputDelta: string | undefined;
-	              if (commandPayload?.id && commandPayload.command) {
-	                const nextOutput = String(commandPayload.aggregated_output ?? "");
-	                const prevOutput = lastCommandOutputs.get(commandPayload.id) ?? "";
-	                if (nextOutput !== prevOutput) {
-	                  if (prevOutput && nextOutput.startsWith(prevOutput)) {
-	                    outputDelta = nextOutput.slice(prevOutput.length);
-	                  } else {
-	                    outputDelta = nextOutput;
-	                  }
-	                  lastCommandOutputs.set(commandPayload.id, nextOutput);
-	                }
-	
-	                if (!announcedCommandIds.has(commandPayload.id)) {
-	                  announcedCommandIds.add(commandPayload.id);
-	                  const header = `${hasCommandOutput ? "\n" : ""}$ ${commandPayload.command}\n`;
-	                  outputDelta = header + (outputDelta ?? "");
-	                  hasCommandOutput = true;
-	                } else if (outputDelta) {
-	                  hasCommandOutput = true;
-	                }
-	              }
-	              safeJsonSend(ws, {
-	                type: "command",
-	                detail: event.detail ?? event.title,
-	                command: commandPayload
-	                  ? {
-	                      id: commandPayload.id,
-	                      command: commandPayload.command,
-	                      status: commandPayload.status,
-	                      exit_code: commandPayload.exit_code,
-	                      outputDelta,
-	                    }
-	                  : undefined,
-	              });
-	              if (commandPayload?.command) {
-	                historyStore.add(historyKey, { role: "status", text: `$ ${commandPayload.command}`, ts: Date.now(), kind: "command" });
-	              }
-	              return;
+		            if (event.phase === "command") {
+		              const commandPayload = extractCommandPayload(event);
+		              logger.info(
+		                `[Command Event] ${JSON.stringify({
+		                  detail: event.detail ?? event.title,
+		                  command: commandPayload
+		                    ? {
+		                        id: commandPayload.id,
+		                        command: commandPayload.command,
+		                        status: commandPayload.status,
+		                        exit_code: commandPayload.exit_code,
+		                      }
+		                    : null,
+		                })}`,
+		              );
+
+		              const commandLine = commandPayload?.command ? String(commandPayload.command) : "";
+		              const commandKey = commandLine
+		                ? commandPayload?.id
+		                  ? `id:${commandPayload.id}`
+		                  : `cmd:${commandLine}`
+		                : "";
+
+		              if (!commandPayload || !commandLine || !commandKey) {
+		                return;
+		              }
+
+		              let outputDelta: string | undefined;
+		              const nextOutput = String(commandPayload.aggregated_output ?? "");
+		              const prevOutput = lastCommandOutputsByKey.get(commandKey) ?? "";
+		              if (nextOutput !== prevOutput) {
+		                if (prevOutput && nextOutput.startsWith(prevOutput)) {
+		                  outputDelta = nextOutput.slice(prevOutput.length);
+		                } else {
+		                  outputDelta = nextOutput;
+		                }
+		                lastCommandOutputsByKey.set(commandKey, nextOutput);
+		              }
+
+		              const isNewCommand = !announcedCommandKeys.has(commandKey);
+		              if (isNewCommand) {
+		                announcedCommandKeys.add(commandKey);
+		                const header = `${hasCommandOutput ? "\n" : ""}$ ${commandLine}\n`;
+		                outputDelta = header + (outputDelta ?? "");
+		                hasCommandOutput = true;
+		              } else if (outputDelta) {
+		                hasCommandOutput = true;
+		              }
+
+		              // Avoid spamming the UI with multiple events for the same command unless there's new output to stream.
+		              if (!isNewCommand && !outputDelta) {
+		                return;
+		              }
+
+		              safeJsonSend(ws, {
+		                type: "command",
+		                detail: event.detail ?? event.title,
+		                command: {
+		                  id: commandPayload.id,
+		                  command: commandLine,
+		                  status: commandPayload.status,
+		                  exit_code: commandPayload.exit_code,
+		                  outputDelta,
+		                },
+		              });
+
+		              if (isNewCommand) {
+		                historyStore.add(historyKey, {
+		                  role: "status",
+		                  text: `$ ${commandLine}`,
+		                  ts: Date.now(),
+		                  kind: "command",
+		                });
+		              }
+		              return;
             }
             if (event.phase === "error") {
               safeJsonSend(ws, { type: "error", message: event.detail ?? event.title });

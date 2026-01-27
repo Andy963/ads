@@ -10,7 +10,7 @@ type WsCommandPayload = {
 };
 
 type WsMessage =
-  | { type: "welcome"; sessionId?: string; workspace?: unknown }
+  | { type: "welcome"; sessionId?: string; workspace?: unknown; threadId?: string }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
   | { type: "delta"; delta?: string }
   | { type: "result"; ok: boolean; output: string }
@@ -23,6 +23,7 @@ export class AdsWebSocket {
   private ws: WebSocket | null = null;
   private readonly token: string;
   private readonly sessionId: string;
+  private pingTimer: number | null = null;
 
   onOpen?: () => void;
   onClose?: (ev: CloseEvent) => void;
@@ -62,9 +63,18 @@ export class AdsWebSocket {
     const protocols = ["ads-v1", tokenProto, `ads-session.${this.sessionId}`].filter(Boolean);
 
     this.ws = new WebSocket(url, protocols);
-    this.ws.onopen = () => this.onOpen?.();
-    this.ws.onerror = () => this.onError?.();
-    this.ws.onclose = (ev) => this.onClose?.(ev);
+    this.ws.onopen = () => {
+      this.startPing();
+      this.onOpen?.();
+    };
+    this.ws.onerror = () => {
+      this.stopPing();
+      this.onError?.();
+    };
+    this.ws.onclose = (ev) => {
+      this.stopPing();
+      this.onClose?.(ev);
+    };
     this.ws.onmessage = (ev) => {
       const raw = String(ev.data ?? "");
       let msg: WsMessage;
@@ -87,8 +97,31 @@ export class AdsWebSocket {
     } catch {
       // ignore
     } finally {
+      this.stopPing();
       this.ws = null;
     }
+  }
+
+  private startPing(): void {
+    if (this.pingTimer !== null) return;
+    // Keep the backend connection alive through intermediaries (dev proxies, NAT, etc).
+    this.pingTimer = window.setInterval(() => {
+      try {
+        this.send("ping", { ts: Date.now() });
+      } catch {
+        // ignore
+      }
+    }, 10_000);
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer === null) return;
+    try {
+      clearInterval(this.pingTimer);
+    } catch {
+      // ignore
+    }
+    this.pingTimer = null;
   }
 }
 

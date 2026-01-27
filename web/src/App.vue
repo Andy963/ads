@@ -26,17 +26,9 @@ type ProjectTab = {
 };
 
 const token = ref(localStorage.getItem(TOKEN_KEY) ?? "");
-const connected = ref(false);
-const apiError = ref<string | null>(null);
-const wsError = ref<string | null>(null);
-const threadWarning = ref<string | null>(null);
-const activeThreadId = ref<string | null>(null);
-const queueStatus = ref<TaskQueueStatus | null>(null);
-const workspacePath = ref("");
 
 const projects = ref<ProjectTab[]>([]);
 const activeProjectId = ref("");
-const pendingProjectCd = ref<{ projectId: string; requestedPath: string } | null>(null);
 const projectDialogOpen = ref(false);
 const projectDialogPath = ref("");
 const projectDialogName = ref("");
@@ -68,9 +60,12 @@ type PathValidateResponse = {
 
 const api = new ApiClient({ baseUrl: "", token: token.value });
 
-const tasks = ref<Task[]>([]);
 const models = ref<ModelConfig[]>([]);
-const selectedId = ref<string | null>(null);
+
+// Keep the command panel focused: show only the most recent few commands.
+const MAX_RECENT_COMMANDS = 5;
+// Avoid unbounded in-memory growth during long-running sessions.
+const MAX_CHAT_MESSAGES = 200;
 
 type ChatItem = {
   id: string;
@@ -79,22 +74,185 @@ type ChatItem = {
   content: string;
   streaming?: boolean;
 };
-const busy = ref(false);
-const messages = ref<ChatItem[]>([]);
 const LIVE_STEP_ID = "live-step";
-const recentCommands = ref<string[]>([]);
 type IncomingImage = { name?: string; mime?: string; data: string };
-const pendingImages = ref<IncomingImage[]>([]);
 type QueuedPrompt = { id: string; text: string; images: IncomingImage[]; createdAt: number };
-const queuedPrompts = ref<QueuedPrompt[]>([]);
-
-const tasksBusy = computed(() => tasks.value.some((t) => t.status === "planning" || t.status === "running"));
-const agentBusy = computed(() => busy.value || tasksBusy.value);
 
 const isMobile = ref(false);
 const mobilePane = ref<"tasks" | "chat">("chat");
 
 const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
+
+type ProjectRuntime = {
+  connected: ReturnType<typeof ref<boolean>>;
+  apiError: ReturnType<typeof ref<string | null>>;
+  wsError: ReturnType<typeof ref<string | null>>;
+  threadWarning: ReturnType<typeof ref<string | null>>;
+  activeThreadId: ReturnType<typeof ref<string | null>>;
+  queueStatus: ReturnType<typeof ref<TaskQueueStatus | null>>;
+  workspacePath: ReturnType<typeof ref<string>>;
+  tasks: ReturnType<typeof ref<Task[]>>;
+  selectedId: ReturnType<typeof ref<string | null>>;
+  expanded: ReturnType<typeof ref<Set<string>>>;
+  plansByTaskId: ReturnType<typeof ref<Map<string, PlanStep[]>>>;
+  busy: ReturnType<typeof ref<boolean>>;
+  messages: ReturnType<typeof ref<ChatItem[]>>;
+  recentCommands: ReturnType<typeof ref<string[]>>;
+  seenCommandIds: Set<string>;
+  pendingImages: ReturnType<typeof ref<IncomingImage[]>>;
+  queuedPrompts: ReturnType<typeof ref<QueuedPrompt[]>>;
+  ignoreNextHistory: boolean;
+  ws: AdsWebSocket | null;
+  reconnectTimer: number | null;
+  reconnectAttempts: number;
+  pendingCdRequestedPath: string | null;
+};
+
+function createProjectRuntime(): ProjectRuntime {
+  return {
+    connected: ref(false),
+    apiError: ref<string | null>(null),
+    wsError: ref<string | null>(null),
+    threadWarning: ref<string | null>(null),
+    activeThreadId: ref<string | null>(null),
+    queueStatus: ref<TaskQueueStatus | null>(null),
+    workspacePath: ref(""),
+    tasks: ref<Task[]>([]),
+    selectedId: ref<string | null>(null),
+    expanded: ref<Set<string>>(new Set()),
+    plansByTaskId: ref<Map<string, PlanStep[]>>(new Map()),
+    busy: ref(false),
+    messages: ref<ChatItem[]>([]),
+    recentCommands: ref<string[]>([]),
+    seenCommandIds: new Set<string>(),
+    pendingImages: ref<IncomingImage[]>([]),
+    queuedPrompts: ref<QueuedPrompt[]>([]),
+    ignoreNextHistory: false,
+    ws: null,
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+    pendingCdRequestedPath: null,
+  };
+}
+
+const runtimeByProjectId = new Map<string, ProjectRuntime>();
+
+function normalizeProjectId(id: string | null | undefined): string {
+  const trimmed = String(id ?? "").trim();
+  return trimmed || "default";
+}
+
+function getRuntime(projectId: string | null | undefined): ProjectRuntime {
+  const id = normalizeProjectId(projectId);
+  const existing = runtimeByProjectId.get(id);
+  if (existing) return existing;
+  const created = createProjectRuntime();
+  runtimeByProjectId.set(id, created);
+  return created;
+}
+
+const activeRuntime = computed(() => getRuntime(activeProjectId.value));
+
+const connected = computed({
+  get: () => activeRuntime.value.connected.value,
+  set: (v: boolean) => {
+    activeRuntime.value.connected.value = v;
+  },
+});
+const apiError = computed({
+  get: () => activeRuntime.value.apiError.value,
+  set: (v: string | null) => {
+    activeRuntime.value.apiError.value = v;
+  },
+});
+const wsError = computed({
+  get: () => activeRuntime.value.wsError.value,
+  set: (v: string | null) => {
+    activeRuntime.value.wsError.value = v;
+  },
+});
+const threadWarning = computed({
+  get: () => activeRuntime.value.threadWarning.value,
+  set: (v: string | null) => {
+    activeRuntime.value.threadWarning.value = v;
+  },
+});
+const activeThreadId = computed({
+  get: () => activeRuntime.value.activeThreadId.value,
+  set: (v: string | null) => {
+    activeRuntime.value.activeThreadId.value = v;
+  },
+});
+const queueStatus = computed({
+  get: () => activeRuntime.value.queueStatus.value,
+  set: (v: TaskQueueStatus | null) => {
+    activeRuntime.value.queueStatus.value = v;
+  },
+});
+const workspacePath = computed({
+  get: () => activeRuntime.value.workspacePath.value,
+  set: (v: string) => {
+    activeRuntime.value.workspacePath.value = v;
+  },
+});
+const tasks = computed({
+  get: () => activeRuntime.value.tasks.value,
+  set: (v: Task[]) => {
+    activeRuntime.value.tasks.value = v;
+  },
+});
+const selectedId = computed({
+  get: () => activeRuntime.value.selectedId.value,
+  set: (v: string | null) => {
+    activeRuntime.value.selectedId.value = v;
+  },
+});
+const expanded = computed({
+  get: () => activeRuntime.value.expanded.value,
+  set: (v: Set<string>) => {
+    activeRuntime.value.expanded.value = v;
+  },
+});
+const plansByTaskId = computed({
+  get: () => activeRuntime.value.plansByTaskId.value,
+  set: (v: Map<string, PlanStep[]>) => {
+    activeRuntime.value.plansByTaskId.value = v;
+  },
+});
+const busy = computed({
+  get: () => activeRuntime.value.busy.value,
+  set: (v: boolean) => {
+    activeRuntime.value.busy.value = v;
+  },
+});
+const messages = computed({
+  get: () => activeRuntime.value.messages.value,
+  set: (v: ChatItem[]) => {
+    activeRuntime.value.messages.value = v;
+  },
+});
+const recentCommands = computed({
+  get: () => activeRuntime.value.recentCommands.value,
+  set: (v: string[]) => {
+    activeRuntime.value.recentCommands.value = v;
+  },
+});
+const pendingImages = computed({
+  get: () => activeRuntime.value.pendingImages.value,
+  set: (v: IncomingImage[]) => {
+    activeRuntime.value.pendingImages.value = v;
+  },
+});
+const queuedPrompts = computed({
+  get: () => activeRuntime.value.queuedPrompts.value,
+  set: (v: QueuedPrompt[]) => {
+    activeRuntime.value.queuedPrompts.value = v;
+  },
+});
+
+const tasksBusy = computed(() => tasks.value.some((t) => t.status === "planning" || t.status === "running"));
+const agentBusy = computed(() => busy.value || tasksBusy.value);
+
 const pendingDeleteTask = computed(() => tasks.value.find((t) => t.id === pendingDeleteTaskId.value) ?? null);
 
 function updateIsMobile(): void {
@@ -189,7 +347,7 @@ function updateProject(id: string, updates: Partial<ProjectTab>): void {
 
 function clearChatState(): void {
   busy.value = false;
-  pendingProjectCd.value = null;
+  activeRuntime.value.pendingCdRequestedPath = null;
   queuedPrompts.value = [];
   pendingImages.value = [];
   recentCommands.value = [];
@@ -205,34 +363,15 @@ function performProjectSwitch(id: string): void {
   if (!nextId) return;
   if (nextId === activeProjectId.value) return;
 
-  clearReconnectTimer();
-  ws?.close();
-  ws = null;
-  connected.value = false;
-  wsError.value = null;
-  clearChatState();
-  resetTaskState();
-
   activeProjectId.value = nextId;
   persistProjects();
-  void connectWs();
-  void loadTasks().catch((error) => {
-    const msg = error instanceof Error ? error.message : String(error);
-    apiError.value = msg;
-  });
+  void activateProject(nextId);
 }
 
 function requestProjectSwitch(id: string): void {
   const nextId = String(id ?? "").trim();
   if (!nextId) return;
   if (nextId === activeProjectId.value) return;
-
-  const hasUnsavedDraft = queuedPrompts.value.length > 0 || pendingImages.value.length > 0;
-  if (busy.value || hasUnsavedDraft) {
-    pendingSwitchProjectId.value = nextId;
-    switchConfirmOpen.value = true;
-    return;
-  }
   performProjectSwitch(nextId);
 }
 
@@ -415,43 +554,101 @@ async function submitProjectDialog(): Promise<void> {
   persistProjects();
 
   closeProjectDialog();
-  clearChatState();
-  resetTaskState();
-  await connectWs();
-  try {
-    await loadTasks();
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    apiError.value = msg;
+  void activateProject(project.id);
+}
+
+function runtimeOrActive(rt?: ProjectRuntime): ProjectRuntime {
+  return rt ?? activeRuntime.value;
+}
+
+function runtimeTasksBusy(rt: ProjectRuntime): boolean {
+  return rt.tasks.value.some((t) => t.status === "planning" || t.status === "running");
+}
+
+function runtimeAgentBusy(rt: ProjectRuntime): boolean {
+  return rt.busy.value || runtimeTasksBusy(rt);
+}
+
+function trimChatItems(items: ChatItem[]): ChatItem[] {
+  const existing = Array.isArray(items) ? items : [];
+  const live = existing.find((m) => m.id === LIVE_STEP_ID) ?? null;
+  const nonLive = existing.filter((m) => m.id !== LIVE_STEP_ID);
+  if (nonLive.length <= MAX_CHAT_MESSAGES) {
+    return live ? [...nonLive, live] : nonLive;
   }
+  const trimmed = nonLive.slice(nonLive.length - MAX_CHAT_MESSAGES);
+  return live ? [...trimmed, live] : trimmed;
 }
 
-function setMessages(items: ChatItem[]): void {
-  messages.value = items;
+function setMessages(items: ChatItem[], rt?: ProjectRuntime): void {
+  runtimeOrActive(rt).messages.value = trimChatItems(items);
 }
 
-function pushMessageBeforeLive(item: Omit<ChatItem, "id">): void {
-  const existing = messages.value.slice();
+function pushMessageBeforeLive(item: Omit<ChatItem, "id">, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  const existing = state.messages.value.slice();
   const liveIndex = existing.findIndex((m) => m.id === LIVE_STEP_ID);
   const next = { ...item, id: randomId("msg") };
   if (liveIndex < 0) {
-    setMessages([...existing, next]);
+    setMessages([...existing, next], state);
     return;
   }
-  setMessages([...existing.slice(0, liveIndex), next, ...existing.slice(liveIndex)]);
+  setMessages([...existing.slice(0, liveIndex), next, ...existing.slice(liveIndex)], state);
 }
 
-function pushRecentCommand(command: string): void {
+function pushRecentCommand(command: string, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
   const trimmed = String(command ?? "").trim();
   if (!trimmed) return;
-  const next = [...recentCommands.value, trimmed];
-  recentCommands.value = next.slice(Math.max(0, next.length - 5));
+  const next = [...state.recentCommands.value, trimmed];
+  state.recentCommands.value = next.slice(Math.max(0, next.length - MAX_RECENT_COMMANDS));
 }
 
-function upsertCommandBlock(): void {
-  const lines = recentCommands.value.slice();
+function resetConversation(rt: ProjectRuntime, notice: string, keepLatestTurn = true): void {
+  const existing = rt.messages.value.slice();
+  const withoutLive = existing.filter((m) => m.id !== LIVE_STEP_ID);
+  const tail = (() => {
+    if (!keepLatestTurn) return [];
+    for (let i = withoutLive.length - 1; i >= 0; i--) {
+      if (withoutLive[i]!.role === "user") return withoutLive.slice(i);
+    }
+    return [];
+  })();
+
+  rt.recentCommands.value = [];
+  rt.seenCommandIds.clear();
+  rt.pendingImages.value = [];
+  clearStepLive(rt);
+
+  const next: ChatItem[] = notice.trim()
+    ? [{ id: randomId("sys"), role: "system", kind: "text", content: notice.trim() }, ...tail]
+    : [...tail];
+  setMessages(next, rt);
+}
+
+function ingestCommand(rawCmd: string, rt?: ProjectRuntime, id?: string | null): void {
+  const state = runtimeOrActive(rt);
+  const cmd = String(rawCmd ?? "").trim();
+  if (!cmd) return;
+
+  const normalized = `$ ${cmd}`;
+  if (id) {
+    if (state.seenCommandIds.has(id)) return;
+    state.seenCommandIds.add(id);
+  } else {
+    const prev = state.recentCommands.value[state.recentCommands.value.length - 1] ?? "";
+    if (prev === normalized) return;
+  }
+
+  pushRecentCommand(normalized, state);
+  upsertCommandBlock(state);
+}
+
+function upsertCommandBlock(rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  const lines = state.recentCommands.value.slice();
   const content = lines.join("\n").trim();
-  const existing = messages.value.slice();
+  const existing = state.messages.value.slice();
   let idx = -1;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
@@ -463,14 +660,14 @@ function upsertCommandBlock(): void {
   }
   if (!content) {
     if (idx >= 0) {
-      setMessages([...existing.slice(0, idx), ...existing.slice(idx + 1)]);
+      setMessages([...existing.slice(0, idx), ...existing.slice(idx + 1)], state);
     }
     return;
   }
 
   if (idx >= 0) {
     existing[idx]!.content = content;
-    setMessages(existing.slice());
+    setMessages(existing.slice(), state);
     return;
   }
 
@@ -487,12 +684,14 @@ function upsertCommandBlock(): void {
     }
   }
   const item: ChatItem = { id: randomId("cmd"), role: "system", kind: "command", content, streaming: true };
-  setMessages([...existing.slice(0, insertAt), item, ...existing.slice(insertAt)]);
+  setMessages([...existing.slice(0, insertAt), item, ...existing.slice(insertAt)], state);
 }
 
-function finalizeCommandBlock(): void {
-  recentCommands.value = [];
-  const existing = messages.value.slice();
+function finalizeCommandBlock(rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  state.recentCommands.value = [];
+  state.seenCommandIds.clear();
+  const existing = state.messages.value.slice();
   let idx = -1;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
@@ -504,7 +703,7 @@ function finalizeCommandBlock(): void {
   }
   if (idx < 0) return;
   existing[idx]!.streaming = false;
-  setMessages(existing.slice());
+  setMessages(existing.slice(), state);
 }
 
 function removeQueuedPrompt(id: string): void {
@@ -524,14 +723,15 @@ function enqueueMainPrompt(text: string, images: IncomingImage[]): void {
   flushQueuedPrompts();
 }
 
-function flushQueuedPrompts(): void {
-  if (agentBusy.value) return;
-  if (!connected.value) return;
-  if (!ws) return;
-  if (queuedPrompts.value.length === 0) return;
+function flushQueuedPrompts(rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  if (runtimeAgentBusy(state)) return;
+  if (!state.connected.value) return;
+  if (!state.ws) return;
+  if (state.queuedPrompts.value.length === 0) return;
 
-  const next = queuedPrompts.value[0]!;
-  queuedPrompts.value = queuedPrompts.value.slice(1);
+  const next = state.queuedPrompts.value[0]!;
+  state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
 
   try {
     const display =
@@ -541,21 +741,22 @@ function flushQueuedPrompts(): void {
           ? next.text
           : `[图片 x${next.images.length}]`;
 
-	    pushMessageBeforeLive({ role: "user", kind: "text", content: display });
-	    pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true });
-	    busy.value = true;
-	    clearStepLive();
-	    finalizeCommandBlock();
-	    ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text);
+    pushMessageBeforeLive({ role: "user", kind: "text", content: display }, state);
+    pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
+    state.busy.value = true;
+    clearStepLive(state);
+    finalizeCommandBlock(state);
+    state.ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text);
 	  } catch {
-	    queuedPrompts.value = [next, ...queuedPrompts.value];
+    state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
 	  }
 }
 
-function upsertStreamingDelta(delta: string): void {
+function upsertStreamingDelta(delta: string, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
   const chunk = String(delta ?? "");
   if (!chunk) return;
-  const existing = messages.value.slice();
+  const existing = state.messages.value.slice();
   let streamIndex = -1;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
@@ -567,17 +768,17 @@ function upsertStreamingDelta(delta: string): void {
   }
   if (streamIndex >= 0) {
     existing[streamIndex]!.content += chunk;
-    setMessages(existing.slice());
+    setMessages(existing.slice(), state);
     return;
   }
 
   const nextItem: ChatItem = { id: randomId("stream"), role: "assistant", kind: "text", content: chunk, streaming: true };
   const liveIndex = existing.findIndex((m) => m.id === LIVE_STEP_ID);
   if (liveIndex < 0) {
-    setMessages([...existing, nextItem]);
+    setMessages([...existing, nextItem], state);
     return;
   }
-  setMessages([...existing.slice(0, liveIndex), nextItem, ...existing.slice(liveIndex)]);
+  setMessages([...existing.slice(0, liveIndex), nextItem, ...existing.slice(liveIndex)], state);
 }
 
 function trimToLastLines(text: string, maxLines: number, maxChars = 2500): string {
@@ -588,10 +789,11 @@ function trimToLastLines(text: string, maxLines: number, maxChars = 2500): strin
   return lines.slice(lines.length - maxLines).join("\n");
 }
 
-function upsertStepLiveDelta(delta: string): void {
+function upsertStepLiveDelta(delta: string, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
   const chunk = String(delta ?? "");
   if (!chunk) return;
-  const existing = messages.value
+  const existing = state.messages.value
     .filter(
       (m) =>
         !(
@@ -608,20 +810,22 @@ function upsertStepLiveDelta(delta: string): void {
   const nextText = trimToLastLines(current + chunk, 14);
   const nextItem: ChatItem = { id: LIVE_STEP_ID, role: "assistant", kind: "text", content: nextText, streaming: true };
   const next = idx >= 0 ? [...existing.slice(0, idx), nextItem, ...existing.slice(idx + 1)] : [...existing, nextItem];
-  setMessages(next);
+  setMessages(next, state);
 }
 
-function clearStepLive(): void {
-  const existing = messages.value.slice();
+function clearStepLive(rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  const existing = state.messages.value.slice();
   const next = existing.filter((m) => m.id !== LIVE_STEP_ID);
   if (next.length === existing.length) return;
-  setMessages(next);
+  setMessages(next, state);
 }
 
-function finalizeAssistant(content: string): void {
+function finalizeAssistant(content: string, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
   const text = String(content ?? "");
   if (!text) return;
-  const existing = messages.value.slice();
+  const existing = state.messages.value.slice();
   let streamIndex = -1;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
@@ -634,28 +838,35 @@ function finalizeAssistant(content: string): void {
   if (streamIndex >= 0) {
     existing[streamIndex]!.content = text;
     existing[streamIndex]!.streaming = false;
-    setMessages(existing.slice());
+    setMessages(existing.slice(), state);
     return;
   }
-  pushMessageBeforeLive({ role: "assistant", kind: "text", content: text });
+  pushMessageBeforeLive({ role: "assistant", kind: "text", content: text }, state);
 }
 
-const expanded = ref<Set<string>>(new Set());
-const plansByTaskId = ref<Map<string, PlanStep[]>>(new Map());
-
-function resolveActiveWorkspaceRoot(): string | null {
-  const project = activeProject.value;
+function resolveWorkspaceRoot(project: ProjectTab | null, rt: ProjectRuntime): string | null {
   const projectPath = String(project?.path ?? "").trim();
   if (projectPath) return projectPath;
-  const fallback = String(workspacePath.value ?? "").trim();
+  const fallback = String(rt.workspacePath.value ?? "").trim();
   return fallback || null;
 }
 
-function withWorkspaceQuery(apiPath: string): string {
-  const root = resolveActiveWorkspaceRoot();
+function resolveActiveWorkspaceRoot(): string | null {
+  return resolveWorkspaceRoot(activeProject.value, activeRuntime.value);
+}
+
+function withWorkspaceQueryFor(projectId: string, apiPath: string): string {
+  const pid = normalizeProjectId(projectId);
+  const project = projects.value.find((p) => p.id === pid) ?? null;
+  const rt = getRuntime(pid);
+  const root = resolveWorkspaceRoot(project, rt);
   if (!root) return apiPath;
   const joiner = apiPath.includes("?") ? "&" : "?";
   return `${apiPath}${joiner}workspace=${encodeURIComponent(root)}`;
+}
+
+function withWorkspaceQuery(apiPath: string): string {
+  return withWorkspaceQueryFor(activeProjectId.value, apiPath);
 }
 
 function resetTaskState(): void {
@@ -687,34 +898,48 @@ function togglePlan(taskId: string): void {
   expanded.value = next;
 }
 
-let ws: AdsWebSocket | null = null;
-let reconnectTimer: number | null = null;
-let reconnectAttempts = 0;
-
-function clearReconnectTimer(): void {
-  if (reconnectTimer === null) return;
+function clearReconnectTimer(rt: ProjectRuntime): void {
+  if (rt.reconnectTimer === null) return;
   try {
-    clearTimeout(reconnectTimer);
+    clearTimeout(rt.reconnectTimer);
   } catch {
     // ignore
   }
-  reconnectTimer = null;
+  rt.reconnectTimer = null;
 }
 
-function scheduleReconnect(reason: string): void {
+function scheduleReconnect(projectId: string, rt: ProjectRuntime, reason: string): void {
   void reason;
   if (tokenRequired.value && !hasToken.value) return;
-  if (reconnectTimer !== null) return;
+  if (rt.reconnectTimer !== null) return;
 
-  const attempt = Math.min(6, reconnectAttempts);
+  const attempt = Math.min(6, rt.reconnectAttempts);
   const delayMs = Math.min(15_000, 800 * Math.pow(2, attempt));
-  reconnectAttempts += 1;
-  reconnectTimer = window.setTimeout(() => {
-    reconnectTimer = null;
-    void connectWs().catch(() => {
-      scheduleReconnect("connect failed");
+  rt.reconnectAttempts += 1;
+  rt.reconnectTimer = window.setTimeout(() => {
+    rt.reconnectTimer = null;
+    void connectWs(projectId).catch(() => {
+      scheduleReconnect(projectId, rt, "connect failed");
     });
   }, delayMs);
+}
+
+function closeRuntimeConnection(rt: ProjectRuntime): void {
+  clearReconnectTimer(rt);
+  const prev = rt.ws;
+  rt.ws = null;
+  try {
+    prev?.close();
+  } catch {
+    // ignore
+  }
+  rt.connected.value = false;
+}
+
+function closeAllConnections(): void {
+  for (const rt of runtimeByProjectId.values()) {
+    closeRuntimeConnection(rt);
+  }
 }
 
 const hasToken = computed(() => Boolean(token.value.trim()));
@@ -724,6 +949,7 @@ function setToken(next: string): void {
   token.value = next;
   localStorage.setItem(TOKEN_KEY, next);
   api.setToken(next);
+  closeAllConnections();
   void bootstrap();
 }
 
@@ -742,66 +968,71 @@ async function loadModels(): Promise<void> {
   models.value = await api.get<ModelConfig[]>("/api/models");
 }
 
-async function loadQueueStatus(): Promise<void> {
-  queueStatus.value = await api.get<TaskQueueStatus>(withWorkspaceQuery("/api/task-queue/status"));
+async function loadQueueStatus(projectId: string = activeProjectId.value): Promise<void> {
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  rt.queueStatus.value = await api.get<TaskQueueStatus>(withWorkspaceQueryFor(pid, "/api/task-queue/status"));
 }
 
-async function loadTasks(): Promise<void> {
-  tasks.value = await api.get<Task[]>(withWorkspaceQuery("/api/tasks?limit=100"));
-  if (!selectedId.value && tasks.value.length > 0) {
-    const nextPending = tasks.value
+async function loadTasks(projectId: string = activeProjectId.value): Promise<void> {
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  rt.tasks.value = await api.get<Task[]>(withWorkspaceQueryFor(pid, "/api/tasks?limit=100"));
+  if (!rt.selectedId.value && rt.tasks.value.length > 0) {
+    const nextPending = rt.tasks.value
       .filter((t) => t.status === "pending")
       .slice()
       .sort((a, b) => {
         if (a.priority !== b.priority) return b.priority - a.priority;
         return a.createdAt - b.createdAt;
       })[0];
-    selectedId.value = (nextPending ?? tasks.value[0])!.id;
+    rt.selectedId.value = (nextPending ?? rt.tasks.value[0])!.id;
   }
 }
 
-function upsertTask(t: Task): void {
-  const idx = tasks.value.findIndex((x) => x.id === t.id);
+function upsertTask(t: Task, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  const idx = state.tasks.value.findIndex((x) => x.id === t.id);
   if (idx >= 0) {
-    tasks.value[idx] = t;
+    state.tasks.value[idx] = t;
   } else {
-    tasks.value.unshift(t);
+    state.tasks.value.unshift(t);
   }
 }
 
-function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown }): void {
+function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown }, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
   if (payload.event === "task:updated") {
     const t = payload.data as Task;
-    upsertTask(t);
+    upsertTask(t, state);
     return;
   }
   if (payload.event === "command") {
     const data = payload.data as { taskId: string; command: string };
     void data.taskId;
-    pushRecentCommand(`$ ${data.command}`);
-    upsertCommandBlock();
+    ingestCommand(data.command, state, null);
     return;
   }
   if (payload.event === "message:delta") {
     const data = payload.data as { taskId: string; role: string; delta: string; modelUsed?: string | null; source?: "chat" | "step" };
     if (data.role === "assistant") {
       if (data.source === "step") {
-        upsertStepLiveDelta(data.delta);
+        upsertStepLiveDelta(data.delta, state);
       } else {
-        upsertStreamingDelta(data.delta);
+        upsertStreamingDelta(data.delta, state);
       }
     }
     return;
   }
   if (payload.event === "task:started") {
     const t = payload.data as Task;
-    upsertTask(t);
-    finalizeCommandBlock();
+    upsertTask(t, state);
+    finalizeCommandBlock(state);
     return;
   }
   if (payload.event === "task:planned") {
     const data = payload.data as { task: Task; plan?: Array<{ stepNumber: number; title: string; description?: string | null }> };
-    upsertTask(data.task);
+    upsertTask(data.task, state);
     if (Array.isArray(data.plan) && data.plan.length > 0) {
       const steps: PlanStep[] = data.plan.map((step) => ({
         id: step.stepNumber,
@@ -813,83 +1044,83 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
         startedAt: null,
         completedAt: null,
       }));
-      plansByTaskId.value.set(data.task.id, steps);
-      plansByTaskId.value = new Map(plansByTaskId.value);
+      state.plansByTaskId.value.set(data.task.id, steps);
+      state.plansByTaskId.value = new Map(state.plansByTaskId.value);
     }
     return;
   }
   if (payload.event === "task:running") {
     const t = payload.data as Task;
-    upsertTask(t);
+    upsertTask(t, state);
     return;
   }
   if (payload.event === "step:started") {
     const data = payload.data as { taskId: string; step: { title: string; stepNumber: number } };
-    const plan = plansByTaskId.value.get(data.taskId);
+    const plan = state.plansByTaskId.value.get(data.taskId);
     if (plan) {
       for (const s of plan) {
         if (s.stepNumber === data.step.stepNumber) s.status = "running";
       }
-      plansByTaskId.value = new Map(plansByTaskId.value);
+      state.plansByTaskId.value = new Map(state.plansByTaskId.value);
     }
-    clearStepLive();
+    clearStepLive(state);
     return;
   }
   if (payload.event === "step:completed") {
     const data = payload.data as { taskId: string; step: { title: string; stepNumber: number } };
-    const plan = plansByTaskId.value.get(data.taskId);
+    const plan = state.plansByTaskId.value.get(data.taskId);
     if (plan) {
       for (const s of plan) {
         if (s.stepNumber === data.step.stepNumber) s.status = "completed";
       }
-      plansByTaskId.value = new Map(plansByTaskId.value);
+      state.plansByTaskId.value = new Map(state.plansByTaskId.value);
     }
-    clearStepLive();
+    clearStepLive(state);
     return;
   }
   if (payload.event === "message") {
     const data = payload.data as { taskId: string; role: string; content: string };
     if (data.role === "assistant") {
-      finalizeAssistant(data.content);
+      finalizeAssistant(data.content, state);
       return;
     }
     if (data.role === "user") {
-      pushMessageBeforeLive({ role: "user", kind: "text", content: data.content });
+      pushMessageBeforeLive({ role: "user", kind: "text", content: data.content }, state);
       return;
     }
     if (data.role === "system") {
-      pushMessageBeforeLive({ role: "system", kind: "text", content: data.content });
+      pushMessageBeforeLive({ role: "system", kind: "text", content: data.content }, state);
       return;
     }
     return;
   }
   if (payload.event === "task:completed") {
     const t = payload.data as Task;
-    upsertTask(t);
-    clearStepLive();
-    finalizeCommandBlock();
+    upsertTask(t, state);
+    clearStepLive(state);
+    finalizeCommandBlock(state);
     if (t.result && t.result.trim()) {
-      pushMessageBeforeLive({ role: "assistant", kind: "text", content: t.result });
+      pushMessageBeforeLive({ role: "assistant", kind: "text", content: t.result }, state);
     }
-    flushQueuedPrompts();
+    flushQueuedPrompts(state);
     return;
   }
   if (payload.event === "task:failed") {
     const data = payload.data as { task: Task; error: string };
-    upsertTask(data.task);
-    clearStepLive();
-    finalizeCommandBlock();
-    pushMessageBeforeLive({ role: "system", kind: "text", content: `[任务失败] ${data.error}` });
-    flushQueuedPrompts();
+    upsertTask(data.task, state);
+    clearStepLive(state);
+    finalizeCommandBlock(state);
+    pushMessageBeforeLive({ role: "system", kind: "text", content: `[任务失败] ${data.error}` }, state);
+    flushQueuedPrompts(state);
     return;
   }
   if (payload.event === "task:cancelled") {
     const t = payload.data as Task;
-    upsertTask(t);
-    clearStepLive();
-    finalizeCommandBlock();
-    pushMessageBeforeLive({ role: "system", kind: "text", content: "[已终止]" });
-    flushQueuedPrompts();
+    upsertTask(t, state);
+    clearStepLive(state);
+    finalizeCommandBlock(state);
+    pushMessageBeforeLive({ role: "system", kind: "text", content: "[已终止]" }, state);
+    flushQueuedPrompts(state);
     return;
   }
 }
@@ -922,11 +1153,19 @@ function replaceProjectId(oldId: string, next: ProjectTab): void {
   if (activeProjectId.value === oldId) {
     activeProjectId.value = next.id;
   }
-  if (pendingProjectCd.value?.projectId === oldId) {
-    pendingProjectCd.value = { ...pendingProjectCd.value, projectId: next.id };
-  }
   if (pendingSwitchProjectId.value === oldId) {
     pendingSwitchProjectId.value = next.id;
+  }
+  const oldKey = normalizeProjectId(oldId);
+  const nextKey = normalizeProjectId(next.id);
+  if (oldKey !== nextKey) {
+    const rt = runtimeByProjectId.get(oldKey);
+    if (rt) {
+      if (!runtimeByProjectId.has(nextKey)) {
+        runtimeByProjectId.set(nextKey, rt);
+      }
+      runtimeByProjectId.delete(oldKey);
+    }
   }
   persistProjects();
 }
@@ -954,10 +1193,13 @@ async function resolveProjectIdentity(project: ProjectTab): Promise<{ sessionId:
   }
 }
 
-async function connectWs(): Promise<void> {
+async function connectWs(projectId: string = activeProjectId.value): Promise<void> {
   if (tokenRequired.value && !hasToken.value) return;
-  let project = activeProject.value;
+  let pid = normalizeProjectId(projectId);
+  let project = projects.value.find((p) => p.id === pid) ?? null;
   if (!project) return;
+
+  let rt = getRuntime(pid);
 
   const identity = await resolveProjectIdentity(project);
   if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
@@ -969,85 +1211,143 @@ async function connectWs(): Promise<void> {
       updatedAt: Date.now(),
     };
     replaceProjectId(project.id, nextProject);
+    pid = nextProject.id;
     project = nextProject;
+    rt = getRuntime(pid);
   }
 
-  threadWarning.value = null;
-  activeThreadId.value = null;
+  clearReconnectTimer(rt);
 
-  clearReconnectTimer();
+  const prev = rt.ws;
+  rt.ws = null;
+  try {
+    prev?.close();
+  } catch {
+    // ignore
+  }
 
-  ws?.close();
-  ws = new AdsWebSocket({ token: token.value, sessionId: project.sessionId });
-  const wsInstance = ws;
+  const wsInstance = new AdsWebSocket({ token: token.value, sessionId: project.sessionId });
+  rt.ws = wsInstance;
+
   wsInstance.onOpen = () => {
-    if (ws !== wsInstance) return;
-    connected.value = true;
-    wsError.value = null;
-    reconnectAttempts = 0;
-    clearReconnectTimer();
-    flushQueuedPrompts();
+    if (rt.ws !== wsInstance) return;
+    rt.connected.value = true;
+    rt.wsError.value = null;
+    rt.reconnectAttempts = 0;
+    clearReconnectTimer(rt);
+    flushQueuedPrompts(rt);
   };
+
   wsInstance.onClose = (ev) => {
-    if (ws !== wsInstance) return;
-    connected.value = false;
-    const wasBusy = busy.value;
-    busy.value = false;
-    clearStepLive();
-    finalizeCommandBlock();
+    if (rt.ws !== wsInstance) return;
+    rt.connected.value = false;
+    const wasBusy = rt.busy.value;
+    rt.busy.value = false;
+    clearStepLive(rt);
+    finalizeCommandBlock(rt);
 
     if (ev.code === 4401) {
-      wsError.value = "Unauthorized (token invalid)";
+      rt.wsError.value = "Unauthorized (token invalid)";
+      return;
+    }
+    if (ev.code === 4409) {
+      rt.wsError.value = "Max clients reached (increase ADS_WEB_MAX_CLIENTS)";
       return;
     }
 
     const reason = String((ev as CloseEvent).reason ?? "").trim();
-    wsError.value = `WebSocket closed (${ev.code || "unknown"})${reason ? `: ${reason}` : ""}`;
+    rt.wsError.value = `WebSocket closed (${ev.code || "unknown"})${reason ? `: ${reason}` : ""}`;
     if (wasBusy) {
-      pushMessageBeforeLive({
-        role: "system",
-        kind: "text",
-        content: "Connection lost while a request was running. Reconnecting and syncing history…",
-      });
+      pushMessageBeforeLive(
+        {
+          role: "system",
+          kind: "text",
+          content: "Connection lost while a request was running. Reconnecting and syncing history…",
+        },
+        rt,
+      );
     }
-    scheduleReconnect("close");
+    scheduleReconnect(pid, rt, "close");
   };
+
   wsInstance.onError = () => {
-    if (ws !== wsInstance) return;
-    connected.value = false;
-    const wasBusy = busy.value;
-    busy.value = false;
-    clearStepLive();
-    finalizeCommandBlock();
-    wsError.value = "WebSocket error";
+    if (rt.ws !== wsInstance) return;
+    rt.connected.value = false;
+    const wasBusy = rt.busy.value;
+    rt.busy.value = false;
+    clearStepLive(rt);
+    finalizeCommandBlock(rt);
+    rt.wsError.value = "WebSocket error";
     if (wasBusy) {
-      pushMessageBeforeLive({
-        role: "system",
-        kind: "text",
-        content: "WebSocket error while a request was running. Reconnecting and syncing history…",
-      });
+      pushMessageBeforeLive(
+        {
+          role: "system",
+          kind: "text",
+          content: "WebSocket error while a request was running. Reconnecting and syncing history…",
+        },
+        rt,
+      );
     }
-    scheduleReconnect("error");
+    scheduleReconnect(pid, rt, "error");
   };
+
   wsInstance.onTaskEvent = (payload) => {
-    if (ws !== wsInstance) return;
-    onTaskEvent(payload);
+    if (rt.ws !== wsInstance) return;
+    onTaskEvent(payload, rt);
   };
+
   wsInstance.onMessage = (msg) => {
-    if (ws !== wsInstance) return;
+    if (rt.ws !== wsInstance) return;
+
     if (msg.type === "welcome") {
       let nextPath = "";
       const maybeWorkspace = (msg as { workspace?: unknown }).workspace;
       if (maybeWorkspace && typeof maybeWorkspace === "object") {
         const wsState = maybeWorkspace as WorkspaceState;
         nextPath = String(wsState.path ?? "").trim();
-        if (nextPath) workspacePath.value = nextPath;
+        if (nextPath) rt.workspacePath.value = nextPath;
       }
 
-      const current = activeProject.value;
+      const serverThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
+      const hasLocalHistory = rt.messages.value.length > 0;
+      const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
+      const shouldReset =
+        hasLocalHistory &&
+        ((prevThreadId && serverThreadId && prevThreadId !== serverThreadId) ||
+          (prevThreadId && !serverThreadId) ||
+          (!prevThreadId && !serverThreadId));
+      if (hasLocalHistory) {
+        if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
+          rt.threadWarning.value =
+            `Backend session restarted and thread changed (prev=${prevThreadId}, now=${serverThreadId}). ` +
+            `Chat history may not match model context. History was cleared automatically.`;
+        } else if (prevThreadId && !serverThreadId) {
+          rt.threadWarning.value =
+            `Backend session restarted and did not report an active thread (prev=${prevThreadId}). ` +
+            `Chat history may not match model context. History was cleared automatically.`;
+        } else if (!prevThreadId && !serverThreadId) {
+          rt.threadWarning.value =
+            "Backend session restarted and active thread is unknown. Chat history may not match model context. " +
+            "History was cleared automatically.";
+        }
+      }
+      if (shouldReset) {
+        rt.ignoreNextHistory = true;
+        resetConversation(
+          rt,
+          "Context thread was reset. Chat history was cleared to avoid misleading context.",
+          false,
+        );
+        rt.ws?.clearHistory();
+      }
+      if (serverThreadId) {
+        rt.activeThreadId.value = serverThreadId;
+      }
+
+      const current = projects.value.find((p) => p.id === pid) ?? null;
       if (current && !current.initialized && current.path.trim()) {
-        pendingProjectCd.value = { projectId: current.id, requestedPath: current.path.trim() };
-        ws?.send("command", { command: `/cd ${current.path.trim()}`, silent: true });
+        rt.pendingCdRequestedPath = current.path.trim();
+        wsInstance.send("command", { command: `/cd ${current.path.trim()}`, silent: true });
         return;
       }
       if (current && nextPath) updateProject(current.id, { path: nextPath, initialized: true });
@@ -1059,24 +1359,31 @@ async function connectWs(): Promise<void> {
       if (data && typeof data === "object") {
         const wsState = data as WorkspaceState;
         const nextPath = String(wsState.path ?? "").trim();
-        if (nextPath) workspacePath.value = nextPath;
+        if (nextPath) rt.workspacePath.value = nextPath;
 
-        if (pendingProjectCd.value && pendingProjectCd.value.projectId === activeProjectId.value) {
-          updateProject(pendingProjectCd.value.projectId, { path: nextPath || pendingProjectCd.value.requestedPath, initialized: true });
-          pendingProjectCd.value = null;
+        if (rt.pendingCdRequestedPath) {
+          const current = projects.value.find((p) => p.id === pid) ?? null;
+          if (current) {
+            updateProject(current.id, { path: nextPath || rt.pendingCdRequestedPath, initialized: true });
+          }
+          rt.pendingCdRequestedPath = null;
           return;
         }
-        const current = activeProject.value;
+        const current = projects.value.find((p) => p.id === pid) ?? null;
         if (current && nextPath) updateProject(current.id, { path: nextPath, initialized: true });
       }
       return;
     }
 
     if (msg.type === "history") {
-      // 如果正在忙或有排队消息，跳过 history 更新，避免覆盖正在进行的消息
-      if (busy.value || queuedPrompts.value.length > 0) return;
+      if (rt.busy.value || rt.queuedPrompts.value.length > 0) return;
+      if (rt.ignoreNextHistory) {
+        rt.ignoreNextHistory = false;
+        return;
+      }
       const items = Array.isArray(msg.items) ? msg.items : [];
-      recentCommands.value = [];
+      rt.recentCommands.value = [];
+      rt.seenCommandIds.clear();
       const next: ChatItem[] = [];
       let cmdGroup: string[] = [];
       const flushCommands = () => {
@@ -1093,7 +1400,7 @@ async function connectWs(): Promise<void> {
         if (!trimmed) continue;
         const isCommand = kind === "command" || (role === "status" && trimmed.startsWith("$ "));
         if (isCommand) {
-          cmdGroup = [...cmdGroup, trimmed].slice(-5);
+          cmdGroup = [...cmdGroup, trimmed].slice(-MAX_RECENT_COMMANDS);
           continue;
         }
         flushCommands();
@@ -1102,22 +1409,25 @@ async function connectWs(): Promise<void> {
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed });
       }
       flushCommands();
-      setMessages(next);
+      setMessages(next, rt);
       return;
     }
     if (msg.type === "delta") {
-      busy.value = true;
-      upsertStreamingDelta(String(msg.delta ?? ""));
+      rt.busy.value = true;
+      upsertStreamingDelta(String(msg.delta ?? ""), rt);
       return;
     }
     if (msg.type === "explored") {
-      busy.value = true;
+      rt.busy.value = true;
       const entry = (msg as { entry?: unknown }).entry;
       if (entry && typeof entry === "object") {
         const typed = entry as { category?: unknown; summary?: unknown };
         const category = String(typed.category ?? "").trim();
         const summary = String(typed.summary ?? "").trim();
         if (summary) {
+          // "Execute" is already rendered in the dedicated EXECUTE panel (command block).
+          // Showing it again here causes duplicate command UI.
+          if (category === "Execute") return;
           const categoryLabels: Record<string, string> = {
             List: "列出",
             Search: "搜索",
@@ -1130,60 +1440,58 @@ async function connectWs(): Promise<void> {
           };
           const label = categoryLabels[category] ?? category;
           const prefix = label ? `· ${label}: ` : "· ";
-          upsertStepLiveDelta(`${prefix}${summary}\n`);
+          upsertStepLiveDelta(`${prefix}${summary}\n`, rt);
         }
       }
       return;
     }
     if (msg.type === "result") {
-      busy.value = false;
+      rt.busy.value = false;
       const threadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
       if (threadId) {
-        activeThreadId.value = threadId;
+        rt.activeThreadId.value = threadId;
       }
       const expectedThreadId = String((msg as { expectedThreadId?: unknown }).expectedThreadId ?? "").trim();
       const threadReset = Boolean((msg as { threadReset?: unknown }).threadReset);
       if (threadReset) {
         const detail = expectedThreadId && threadId ? ` (expected=${expectedThreadId}, actual=${threadId})` : "";
-        threadWarning.value =
+        rt.threadWarning.value =
           `Context thread was reset${detail}. Chat history may not match model context. ` +
-          `Clear chat to start a new conversation.`;
+          `History was cleared automatically.`;
+        rt.ignoreNextHistory = true;
+        resetConversation(rt, "Context thread was reset. Chat history was cleared to start a new conversation.", true);
+        rt.ws?.clearHistory();
       }
-      if (pendingProjectCd.value && msg.ok === false) {
+      if (rt.pendingCdRequestedPath && msg.ok === false) {
         const output = String(msg.output ?? "");
         if (output.includes("/cd") || output.includes("目录")) {
-          pendingProjectCd.value = null;
+          rt.pendingCdRequestedPath = null;
         }
       }
-      clearStepLive();
-      finalizeCommandBlock();
-      finalizeAssistant(String(msg.output ?? ""));
-      flushQueuedPrompts();
+      clearStepLive(rt);
+      finalizeCommandBlock(rt);
+      finalizeAssistant(String(msg.output ?? ""), rt);
+      flushQueuedPrompts(rt);
       return;
     }
     if (msg.type === "error") {
-      busy.value = false;
-      clearStepLive();
-      finalizeCommandBlock();
-      pushMessageBeforeLive({ role: "system", kind: "text", content: String(msg.message ?? "error") });
-      flushQueuedPrompts();
+      rt.busy.value = false;
+      clearStepLive(rt);
+      finalizeCommandBlock(rt);
+      pushMessageBeforeLive({ role: "system", kind: "text", content: String(msg.message ?? "error") }, rt);
+      flushQueuedPrompts(rt);
       return;
     }
-	    if (msg.type === "command") {
-	      const cmd = String(msg.command?.command ?? "").trim();
-	      if (cmd) {
-	        pushRecentCommand(`$ ${cmd}`);
-	        upsertCommandBlock();
-	      }
-	      const outputDelta = String(msg.command?.outputDelta ?? "");
-	      if (outputDelta) {
-	        upsertStepLiveDelta(outputDelta);
-	      }
-	      return;
-	    }
-	  };
-	  wsInstance.connect();
-	}
+    if (msg.type === "command") {
+      const cmd = String(msg.command?.command ?? "").trim();
+      const id = String(msg.command?.id ?? "").trim();
+      ingestCommand(cmd, rt, id || null);
+      return;
+    }
+  };
+
+  wsInstance.connect();
+}
 
 async function createTask(input: CreateTaskInput): Promise<void> {
   apiError.value = null;
@@ -1265,16 +1573,53 @@ function sendMainPrompt(content: string): void {
   enqueueMainPrompt(text, images);
 }
 
+function interruptActive(): void {
+  activeRuntime.value.ws?.interrupt();
+}
+
+function clearActiveChat(): void {
+  const rt = activeRuntime.value;
+  setMessages([], rt);
+  finalizeCommandBlock(rt);
+  rt.pendingImages.value = [];
+  rt.threadWarning.value = null;
+  rt.activeThreadId.value = null;
+  rt.ws?.clearHistory();
+}
+
+function addPendingImages(imgs: IncomingImage[]): void {
+  const rt = activeRuntime.value;
+  rt.pendingImages.value = [...rt.pendingImages.value, ...(Array.isArray(imgs) ? imgs : [])];
+}
+
+function clearPendingImages(): void {
+  activeRuntime.value.pendingImages.value = [];
+}
+
+async function activateProject(projectId: string): Promise<void> {
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  if (tokenRequired.value && !hasToken.value) return;
+  rt.apiError.value = null;
+  rt.wsError.value = null;
+  try {
+    await loadQueueStatus(pid);
+    if (!rt.ws || !rt.connected.value) {
+      await connectWs(pid);
+    }
+    await loadTasks(pid);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    rt.apiError.value = msg;
+  }
+}
+
 async function bootstrap(): Promise<void> {
   await detectTokenRequirement();
   if (tokenRequired.value && !hasToken.value) return;
-  apiError.value = null;
-  wsError.value = null;
   try {
     await loadModels();
-    await loadQueueStatus();
-    await connectWs();
-    await loadTasks();
+    await activateProject(activeProjectId.value);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     apiError.value = msg;
@@ -1290,9 +1635,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", updateIsMobile);
-  clearReconnectTimer();
-  ws?.close();
-  ws = null;
+  closeAllConnections();
 });
 
 function select(id: string): void {
@@ -1377,7 +1720,7 @@ function select(id: string): void {
           @retry="retryTask"
           @delete="deleteTask"
         />
-        <TaskCreateForm :models="models" @submit="createTask" />
+        <TaskCreateForm class="taskCreate" :models="models" @submit="createTask" />
       </aside>
 
       <section class="rightPane">
@@ -1390,10 +1733,10 @@ function select(id: string): void {
           :busy="agentBusy"
           :api-token="token"
           @send="sendMainPrompt"
-          @interrupt="() => ws?.interrupt()"
-          @clear="() => { setMessages([]); finalizeCommandBlock(); pendingImages = []; threadWarning = null; activeThreadId = null; ws?.clearHistory(); }"
-          @addImages="(imgs) => { pendingImages = [...pendingImages, ...imgs]; }"
-          @clearImages="() => { pendingImages = []; }"
+          @interrupt="interruptActive"
+          @clear="clearActiveChat"
+          @addImages="addPendingImages"
+          @clearImages="clearPendingImages"
           @removeQueued="removeQueuedPrompt"
         />
       </section>
@@ -1834,6 +2177,12 @@ function select(id: string): void {
 .taskBoard {
   flex: 1 1 auto;
   min-height: 0;
+}
+.taskCreate {
+  /* Give the create form a stable vertical footprint; keep the task list scrollable. */
+  flex: 0 1 clamp(260px, 38vh, 520px);
+  min-height: 220px;
+  min-width: 0;
 }
 .rightPane {
   min-width: 0;
