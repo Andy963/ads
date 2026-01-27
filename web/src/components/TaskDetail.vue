@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { TaskDetail } from "../api/types";
+import MarkdownContent from "./MarkdownContent.vue";
 
 type ChatMessage = {
   id: string;
@@ -22,6 +23,9 @@ const emit = defineEmits<{
 const listRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const input = ref("");
+
+const copiedMessageId = ref<string | null>(null);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 const canCancel = computed(() => {
   const t = props.task;
@@ -64,6 +68,52 @@ function send(): void {
   input.value = "";
 }
 
+function clearCopiedToast(): void {
+  if (copiedTimer) {
+    clearTimeout(copiedTimer);
+    copiedTimer = null;
+  }
+  copiedMessageId.value = null;
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  const normalized = String(text ?? "");
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(normalized);
+      return true;
+    } catch {
+      // fallback below
+    }
+  }
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = normalized;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-1000px";
+    textarea.style.left = "-1000px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+async function onCopyMessage(message: ChatMessage): Promise<void> {
+  const ok = await copyToClipboard(message.content);
+  if (!ok) return;
+  clearCopiedToast();
+  copiedMessageId.value = message.id;
+  copiedTimer = setTimeout(() => {
+    copiedMessageId.value = null;
+    copiedTimer = null;
+  }, 1400);
+}
+
 function onInputKeydown(ev: KeyboardEvent): void {
   if (ev.key !== "Enter") return;
   if ((ev as { isComposing?: boolean }).isComposing) return;
@@ -75,6 +125,7 @@ function onInputKeydown(ev: KeyboardEvent): void {
 
 onBeforeUnmount(() => {
   // noop; keep hook for symmetry (some browsers keep composition state)
+  clearCopiedToast();
 });
 </script>
 
@@ -143,9 +194,20 @@ onBeforeUnmount(() => {
         <span v-else>暂无消息</span>
       </div>
       <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
-        <div class="bubble">
+        <div class="bubble" :class="{ hasActions: m.kind !== 'command' }">
           <pre v-if="m.kind === 'command'" class="mono">{{ m.content }}</pre>
-          <pre v-else class="text">{{ m.content }}</pre>
+          <MarkdownContent v-else :content="m.content" :tone="m.role === 'user' ? 'inverted' : 'default'" />
+          <div v-if="m.kind !== 'command'" class="msgActions">
+            <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="onCopyMessage(m)">
+              <svg v-if="copiedMessageId === m.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+          </div>
           <span v-if="m.streaming" class="cursor">▍</span>
         </div>
       </div>
@@ -287,27 +349,59 @@ onBeforeUnmount(() => {
   background: white;
   position: relative;
 }
+.bubble.hasActions {
+  padding-bottom: 32px;
+}
+.msgActions {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+.msg:hover .msgActions {
+  opacity: 1;
+}
+.msgCopyBtn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.92);
+  color: #64748b;
+  border-radius: 999px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.msgCopyBtn:hover {
+  color: #0f172a;
+  background: #ffffff;
+}
 .msg[data-role="user"] .bubble {
   background: #2563eb;
   border-color: rgba(37, 99, 235, 0.35);
 }
 .msg[data-role="user"] .text,
 .msg[data-role="user"] .mono { color: white; }
+.msg[data-role="user"] .msgCopyBtn {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.95);
+}
+.msg[data-role="user"] .msgCopyBtn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.98);
+}
 .msg[data-role="assistant"] .bubble {
   background: white;
 }
 .msg[data-role="system"] .bubble {
   background: rgba(15, 23, 42, 0.04);
   border-color: rgba(148, 163, 184, 0.35);
-}
-.text {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  color: #0f172a;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 .mono {
   margin: 0;

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import MarkdownContent from "./MarkdownContent.vue";
 
 type ChatMessage = {
   id: string;
@@ -36,10 +37,12 @@ const input = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 
 const canInterrupt = computed(() => props.busy);
-const expandedOutputs = ref<Set<string>>(new Set());
 const micSupported = computed(() => {
   return typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
 });
+
+const copiedMessageId = ref<string | null>(null);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 const recording = ref(false);
 const transcribing = ref(false);
@@ -83,6 +86,52 @@ function clearVoiceToast(): void {
     clearTimeout(voiceToastTimer);
     voiceToastTimer = null;
   }
+}
+
+function clearCopiedToast(): void {
+  if (copiedTimer) {
+    clearTimeout(copiedTimer);
+    copiedTimer = null;
+  }
+  copiedMessageId.value = null;
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  const normalized = String(text ?? "");
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(normalized);
+      return true;
+    } catch {
+      // fallback below
+    }
+  }
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = normalized;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-1000px";
+    textarea.style.left = "-1000px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+async function onCopyMessage(message: ChatMessage): Promise<void> {
+  const ok = await copyToClipboard(message.content);
+  if (!ok) return;
+  clearCopiedToast();
+  copiedMessageId.value = message.id;
+  copiedTimer = setTimeout(() => {
+    copiedMessageId.value = null;
+    copiedTimer = null;
+  }, 1400);
 }
 
 function setVoiceStatus(
@@ -302,14 +351,6 @@ function getCommands(content: string): string[] {
     .split("\n")
     .filter((line) => line.match(/^\$\s*/))
     .map((line) => line.replace(/^\$\s*/, ""));
-}
-
-function toggleOutput(key: string): void {
-  if (expandedOutputs.value.has(key)) {
-    expandedOutputs.value.delete(key);
-  } else {
-    expandedOutputs.value.add(key);
-  }
 }
 
 async function onPaste(ev: ClipboardEvent): Promise<void> {
@@ -532,6 +573,7 @@ async function fileToDataUrl(file: File): Promise<string> {
 
 onBeforeUnmount(() => {
   clearVoiceToast();
+  clearCopiedToast();
   try {
     recorder?.stop();
   } catch {
@@ -563,21 +605,13 @@ onBeforeUnmount(() => {
           </div>
           <div class="command-tree">
             <div
-              v-for="(cmd, cIdx) in (expandedOutputs.has(m.id) ? getCommands(m.content) : getCommands(m.content).slice(0, 3))"
+              v-for="(cmd, cIdx) in getCommands(m.content)"
               :key="cIdx"
               class="command-tree-item"
             >
               <span class="command-tree-branch">├─</span>
               <span class="command-cmd" :title="cmd">{{ truncateCmd(cmd) }}</span>
             </div>
-            <button
-              v-if="getCommands(m.content).length > 3"
-              class="fold-btn"
-              type="button"
-              @click="toggleOutput(m.id)"
-            >
-              {{ expandedOutputs.has(m.id) ? '收起' : `展开 (${getCommands(m.content).length - 3} 条)` }}
-            </button>
           </div>
         </div>
         <div v-else class="bubble">
@@ -586,7 +620,18 @@ onBeforeUnmount(() => {
             <span class="dot" />
             <span class="dot" />
           </div>
-          <pre v-else class="text">{{ m.content }}</pre>
+          <MarkdownContent v-else :content="m.content" />
+          <div v-if="!(m.streaming && m.content.length === 0)" class="msgActions">
+            <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="onCopyMessage(m)">
+              <svg v-if="copiedMessageId === m.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -818,6 +863,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  gap: 10px;
 }
 .command-tag {
   display: inline-block;
@@ -834,7 +880,7 @@ onBeforeUnmount(() => {
 .command-count {
   color: #94a3b8;
   font-size: 12px;
-  margin-left: 8px;
+  margin-left: auto;
 }
 .command-tree {
   padding-left: 8px;
@@ -863,29 +909,77 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   min-width: 0;
 }
-
-.fold-btn {
-  padding: 2px 8px;
-  margin-top: 4px;
-  border: none;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #64748b;
-  font-size: 11px;
-  cursor: pointer;
-}
-.fold-btn:hover {
-  background: #e2e8f0;
-  color: #475569;
-}
 .bubble {
   max-width: 100%;
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 10px 12px 32px 12px;
   border: 1px solid var(--border);
   background: var(--surface);
   position: relative;
   overflow: hidden;
+}
+.copyBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.85);
+  color: #475569;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.msg:hover .copyBtn {
+  opacity: 1;
+}
+.copyBtn:hover {
+  background: #ffffff;
+  color: #0f172a;
+}
+.copyBtn:active {
+  transform: translateY(0.5px);
+}
+.command-block .copyBtn {
+  position: static;
+  opacity: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  margin-left: 0;
+}
+.msgActions {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+.msg:hover .msgActions {
+  opacity: 1;
+}
+.msgCopyBtn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.92);
+  color: #64748b;
+  border-radius: 999px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.msgCopyBtn:hover {
+  color: #0f172a;
+  background: #ffffff;
 }
 .msg[data-role="user"] .bubble {
   background: rgba(37, 99, 235, 0.08);
@@ -902,16 +996,35 @@ onBeforeUnmount(() => {
 .msg[data-kind="command"] .mono {
   color: #0f172a;
 }
-.text {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.55;
+.formatted {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.textBlock {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  max-width: 100%;
+}
+.codeBlock {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.03);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: #0f172a;
+  white-space: pre;
+  overflow-x: auto;
+}
+.codeBlock code {
+  font-family: inherit;
 }
 .mono {
   margin: 0;
