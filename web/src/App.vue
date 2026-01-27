@@ -1499,9 +1499,6 @@ async function createTask(input: CreateTaskInput): Promise<void> {
     const created = await api.post<Task>(withWorkspaceQuery("/api/tasks"), input);
     upsertTask(created);
     selectedId.value = created.id;
-    if (created.prompt && created.prompt.trim()) {
-      pushMessageBeforeLive({ role: "user", kind: "text", content: created.prompt });
-    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     apiError.value = msg;
