@@ -88,7 +88,7 @@ export class OrchestratorTaskPlanner implements TaskPlanner {
 
   constructor(options: { getOrchestrator: (task: Task) => HybridOrchestrator; planModel: string; lock?: AsyncLock }) {
     this.getOrchestrator = options.getOrchestrator;
-    this.planModel = String(options.planModel ?? "").trim() || "gpt-5";
+    this.planModel = String(options.planModel ?? "").trim() || "gpt-5.2";
     this.lock = options.lock;
   }
 
