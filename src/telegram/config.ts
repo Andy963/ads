@@ -65,7 +65,7 @@ export function loadTelegramConfig(): TelegramConfig {
     throw new Error(`Invalid SANDBOX_MODE: ${sandboxMode}. Must be one of: ${validModes.join(', ')}`);
   }
 
-  const defaultModel = process.env.TELEGRAM_MODEL; // 可选，不设置则使用 SDK 默认
+  const defaultModel = process.env.TELEGRAM_MODEL || "gpt-5.2"; // Optional; defaults to gpt-5.2.
   const proxyUrl = normalizeProxyUrl(process.env.TELEGRAM_PROXY_URL);
   return {
     botToken,
