@@ -54,7 +54,7 @@
     "@google/generative-ai": "^0.24.1",
     "@grammyjs/types": "^3.22.2",
     "@modelcontextprotocol/sdk": "^1.22.0",
-    "@openai/codex-sdk": "^0.87.0",
+    "@openai/codex-sdk": "^0.92.0",
     "@tavily/core": "^0.5.4",
     "better-sqlite3": "^12.5.0",
     "google-auth-library": "^10.5.0",
