@@ -382,7 +382,17 @@ onBeforeUnmount(() => {
         <div class="thumbGrid">
           <div v-for="a in attachments" :key="a.localId" class="thumbCard" :data-status="a.status">
             <div class="thumbWrap">
-              <img class="thumbImg" :src="a.previewUrl" alt="" />
+              <a
+                v-if="a.uploaded?.url"
+                class="thumbLink"
+                :href="withTokenQuery(a.uploaded.url)"
+                target="_blank"
+                rel="noreferrer"
+                @click.stop
+              >
+                <img class="thumbImg" :src="a.previewUrl" alt="" />
+              </a>
+              <img v-else class="thumbImg" :src="a.previewUrl" alt="" />
 
               <div v-if="a.status === 'uploading'" class="overlay">
                 <div class="progressRow">
@@ -396,18 +406,6 @@ onBeforeUnmount(() => {
               <div v-else-if="a.status === 'error'" class="overlay error">
                 <div class="errorText">{{ a.error || "Upload failed" }}</div>
                 <button class="retryBtn" type="button" @click="retryUpload(a.localId)">Retry</button>
-              </div>
-
-              <div v-else class="overlay ready">
-                <a
-                  v-if="a.uploaded?.url"
-                  class="openRaw"
-                  :href="withTokenQuery(a.uploaded.url)"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open
-                </a>
               </div>
 
               <button class="removeBtn" type="button" title="Remove" @click="removeAttachment(a.localId)">×</button>
@@ -578,6 +576,11 @@ textarea {
   object-fit: cover;
   display: block;
 }
+.thumbLink {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 .overlay {
   position: absolute;
   inset: 0;
@@ -591,21 +594,6 @@ textarea {
   background: linear-gradient(180deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.45));
   align-items: end;
   justify-items: end;
-}
-.openRaw {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  padding: 2px 6px;
-  font-size: 9px;
-  font-weight: 800;
-  text-decoration: none;
-  background: rgba(255, 255, 255, 0.95);
-  color: #0f172a;
-}
-.openRaw:hover {
-  background: white;
 }
 .overlay.error {
   background: rgba(127, 29, 29, 0.75);
