@@ -118,11 +118,12 @@ function parseReasoningEffort(value: unknown): ModelReasoningEffort | undefined 
   if (typeof value !== "string") {
     return undefined;
   }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "minimal" || normalized === "low" || normalized === "medium" || normalized === "high" || normalized === "xhigh") {
-    return normalized as ModelReasoningEffort;
+  const raw = value.trim();
+  if (!raw) {
+    return undefined;
   }
-  return undefined;
+  // Pass through config as-is; let the provider validate supported values.
+  return raw as ModelReasoningEffort;
 }
 
 function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens: boolean } {
