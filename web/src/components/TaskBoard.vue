@@ -441,28 +441,28 @@ watch(
           </label>
 
           <div class="configRow">
-            <div class="grid">
-              <label class="field">
-                <span class="label">模型</span>
-                <select v-model="editModel">
-                  <option v-for="m in modelOptions" :key="m.id" :value="m.id">
-                    {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
-                  </option>
-                </select>
-              </label>
-              <label class="field">
-                <span class="label">优先级</span>
-                <input v-model.number="editPriority" type="number" />
-              </label>
-              <label class="field">
-                <span class="label">最大重试</span>
-                <input v-model.number="editMaxRetries" type="number" min="0" />
-              </label>
-            </div>
-
-            <label class="check">
-              <input v-model="editInheritContext" type="checkbox" />
-              <span>继承上下文</span>
+            <label class="field">
+              <span class="label">模型</span>
+              <select v-model="editModel">
+                <option v-for="m in modelOptions" :key="m.id" :value="m.id">
+                  {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
+                </option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">优先级</span>
+              <input v-model.number="editPriority" type="number" />
+            </label>
+            <label class="field">
+              <span class="label">最大重试</span>
+              <input v-model.number="editMaxRetries" type="number" min="0" />
+            </label>
+            <label class="field">
+              <span class="label">继承上下文</span>
+              <select v-model="editInheritContext">
+                <option :value="true">True</option>
+                <option :value="false">False</option>
+              </select>
             </label>
           </div>
 
@@ -798,20 +798,15 @@ watch(
   color: #dc2626;
 }
 .configRow {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.grid {
   display: grid;
-  grid-template-columns: minmax(160px, 260px) 96px 120px;
-  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
   align-items: end;
-  min-width: 0;
+  flex-wrap: nowrap;
 }
 .field {
   display: block;
+  min-width: 0;
 }
 .label {
   display: block;
@@ -1022,7 +1017,7 @@ textarea {
   50% { transform: scale(1.35); opacity: 0.6; }
 }
 @media (max-width: 600px) {
-  .grid {
+  .configRow {
     grid-template-columns: 1fr;
   }
   .row {
