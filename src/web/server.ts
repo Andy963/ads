@@ -87,7 +87,7 @@ const webThreadStorage = new ThreadStorage({
   storagePath: path.join(adsStateDir, "web-threads.json"),
 });
 // Disable in-memory session timeout cleanup for Web (keep sessions until process exit / explicit reset).
-const sessionManager = new SessionManager(0, 0, "workspace-write", undefined, webThreadStorage);
+const sessionManager = new SessionManager(0, 0, "workspace-write", "gpt-5.2", webThreadStorage);
 const historyStore = new HistoryStore({
   storagePath: path.join(adsStateDir, "state.db"),
   namespace: "web",
@@ -650,7 +650,7 @@ async function start(): Promise<void> {
 
     const planner = new OrchestratorTaskPlanner({
       getOrchestrator: getTaskQueueOrchestrator,
-      planModel: process.env.TASK_QUEUE_PLAN_MODEL ?? "gpt-5",
+      planModel: process.env.TASK_QUEUE_PLAN_MODEL ?? "gpt-5.2",
       lock: taskQueueLock,
     });
     const executor = new OrchestratorTaskExecutor({
@@ -1040,7 +1040,7 @@ async function start(): Promise<void> {
       }
 
       if (req.method === "GET" && pathname === "/api/models") {
-        const allowedModels = ["gpt-5.1", "gpt-5.2"];
+        const allowedModels = ["gpt-5.2"];
         const models = defaultTaskContext.taskStore.listModelConfigs().filter((m) => allowedModels.includes(m.id));
         sendJson(res, 200, models);
         return true;
