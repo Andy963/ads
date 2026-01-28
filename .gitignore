@@ -8,7 +8,9 @@ coverage/
 # Build artifacts
 /dist
 *.js.map
-docs/
+docs/*
+!docs/adr/
+!docs/adr/**
 # Runtime/state
 .ads/
 .cache/

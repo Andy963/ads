@@ -26,6 +26,16 @@ type ProjectTab = {
   updatedAt: number;
 };
 
+type BufferedTaskChatEvent =
+  | { kind: "message"; role: "user" | "assistant" | "system"; content: string }
+  | { kind: "delta"; role: "assistant"; delta: string; source?: "chat" | "step"; modelUsed?: string | null }
+  | { kind: "command"; command: string };
+
+type TaskChatBuffer = { firstTs: number; events: BufferedTaskChatEvent[] };
+
+const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
+const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
+
 const loggedIn = ref(false);
 const currentUser = ref<AuthMe | null>(null);
 
@@ -40,6 +50,7 @@ const pendingSwitchProjectId = ref<string | null>(null);
 const deleteConfirmOpen = ref(false);
 const pendingDeleteTaskId = ref<string | null>(null);
 const deleteConfirmButtonEl = ref<HTMLButtonElement | null>(null);
+const taskCreateDialogOpen = ref(false);
 const projectPathEl = ref<HTMLInputElement | null>(null);
 const projectNameEl = ref<HTMLInputElement | null>(null);
 const projectDialogPathStatus = ref<"idle" | "checking" | "ok" | "error">("idle");
@@ -112,6 +123,8 @@ type ProjectRuntime = {
   pendingCdRequestedPath: string | null;
   suppressNextClearHistoryResult: boolean;
   noticeTimer: number | null;
+  startedTaskIds: Set<string>;
+  taskChatBufferByTaskId: Map<string, TaskChatBuffer>;
 };
 
 function createProjectRuntime(): ProjectRuntime {
@@ -142,6 +155,8 @@ function createProjectRuntime(): ProjectRuntime {
     pendingCdRequestedPath: null,
     suppressNextClearHistoryResult: false,
     noticeTimer: null,
+    startedTaskIds: new Set<string>(),
+    taskChatBufferByTaskId: new Map<string, TaskChatBuffer>(),
   };
 }
 
@@ -929,6 +944,66 @@ function finalizeAssistant(content: string, rt?: ProjectRuntime): void {
   pushMessageBeforeLive({ role: "assistant", kind: "text", content: text }, state);
 }
 
+function pruneTaskChatBuffer(rt: ProjectRuntime): void {
+  const now = Date.now();
+  for (const [taskId, entry] of rt.taskChatBufferByTaskId.entries()) {
+    if (!taskId) {
+      rt.taskChatBufferByTaskId.delete(taskId);
+      continue;
+    }
+    if (entry.events.length === 0 || now - entry.firstTs > TASK_CHAT_BUFFER_TTL_MS) {
+      rt.taskChatBufferByTaskId.delete(taskId);
+    }
+  }
+}
+
+function bufferTaskChatEvent(taskId: string, event: BufferedTaskChatEvent, rt: ProjectRuntime): void {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  pruneTaskChatBuffer(rt);
+  const existing = rt.taskChatBufferByTaskId.get(id);
+  if (!existing) {
+    rt.taskChatBufferByTaskId.set(id, { firstTs: Date.now(), events: [event] });
+    return;
+  }
+  const nextEvents = [...existing.events, event].slice(-TASK_CHAT_BUFFER_MAX_EVENTS);
+  rt.taskChatBufferByTaskId.set(id, { firstTs: existing.firstTs, events: nextEvents });
+}
+
+function markTaskChatStarted(taskId: string, rt: ProjectRuntime): void {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  if (!rt.startedTaskIds.has(id)) {
+    rt.startedTaskIds.add(id);
+  }
+  const buffered = rt.taskChatBufferByTaskId.get(id);
+  if (!buffered || buffered.events.length === 0) return;
+  rt.taskChatBufferByTaskId.delete(id);
+
+  for (const ev of buffered.events) {
+    if (ev.kind === "message") {
+      if (ev.role === "assistant") {
+        finalizeAssistant(ev.content, rt);
+      } else {
+        pushMessageBeforeLive({ role: ev.role, kind: "text", content: ev.content }, rt);
+      }
+      continue;
+    }
+    if (ev.kind === "delta") {
+      if (ev.source === "step") {
+        upsertStepLiveDelta(ev.delta, rt);
+      } else {
+        upsertStreamingDelta(ev.delta, rt);
+      }
+      continue;
+    }
+    if (ev.kind === "command") {
+      ingestCommand(ev.command, rt, null);
+      continue;
+    }
+  }
+}
+
 function resolveWorkspaceRoot(project: ProjectTab | null, rt: ProjectRuntime): string | null {
   const projectPath = String(project?.path ?? "").trim();
   if (projectPath) return projectPath;
@@ -1201,6 +1276,7 @@ function upsertTask(t: Task, rt?: ProjectRuntime): void {
 
 function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown }, rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
+  pruneTaskChatBuffer(state);
   if (payload.event === "task:updated") {
     const t = payload.data as Task;
     upsertTask(t, state);
@@ -1208,13 +1284,14 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
   }
   if (payload.event === "command") {
     const data = payload.data as { taskId: string; command: string };
-    void data.taskId;
+    markTaskChatStarted(data.taskId, state);
     ingestCommand(data.command, state, null);
     return;
   }
   if (payload.event === "message:delta") {
     const data = payload.data as { taskId: string; role: string; delta: string; modelUsed?: string | null; source?: "chat" | "step" };
     if (data.role === "assistant") {
+      markTaskChatStarted(data.taskId, state);
       if (data.source === "step") {
         upsertStepLiveDelta(data.delta, state);
       } else {
@@ -1227,11 +1304,13 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
     const t = payload.data as Task;
     upsertTask(t, state);
     finalizeCommandBlock(state);
+    markTaskChatStarted(t.id, state);
     return;
   }
   if (payload.event === "task:planned") {
     const data = payload.data as { task: Task; plan?: Array<{ stepNumber: number; title: string; description?: string | null }> };
     upsertTask(data.task, state);
+    markTaskChatStarted(data.task.id, state);
     if (Array.isArray(data.plan) && data.plan.length > 0) {
       const steps: PlanStep[] = data.plan.map((step) => ({
         id: step.stepNumber,
@@ -1251,10 +1330,12 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
   if (payload.event === "task:running") {
     const t = payload.data as Task;
     upsertTask(t, state);
+    markTaskChatStarted(t.id, state);
     return;
   }
   if (payload.event === "step:started") {
     const data = payload.data as { taskId: string; step: { title: string; stepNumber: number } };
+    markTaskChatStarted(data.taskId, state);
     const plan = state.plansByTaskId.value.get(data.taskId);
     if (plan) {
       for (const s of plan) {
@@ -1267,6 +1348,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
   }
   if (payload.event === "step:completed") {
     const data = payload.data as { taskId: string; step: { title: string; stepNumber: number } };
+    markTaskChatStarted(data.taskId, state);
     const plan = state.plansByTaskId.value.get(data.taskId);
     if (plan) {
       for (const s of plan) {
@@ -1279,22 +1361,34 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
   }
   if (payload.event === "message") {
     const data = payload.data as { taskId: string; role: string; content: string };
-    if (data.role === "assistant") {
-      finalizeAssistant(data.content, state);
+    const taskId = String(data.taskId ?? "").trim();
+    const role = String(data.role ?? "").trim();
+    const content = String(data.content ?? "");
+
+    if (role === "user" && !state.startedTaskIds.has(taskId)) {
+      bufferTaskChatEvent(taskId, { kind: "message", role: "user", content }, state);
       return;
     }
-    if (data.role === "user") {
-      pushMessageBeforeLive({ role: "user", kind: "text", content: data.content }, state);
+    if (role !== "user") {
+      markTaskChatStarted(taskId, state);
+    }
+    if (role === "assistant") {
+      finalizeAssistant(content, state);
       return;
     }
-    if (data.role === "system") {
-      pushMessageBeforeLive({ role: "system", kind: "text", content: data.content }, state);
+    if (role === "user") {
+      pushMessageBeforeLive({ role: "user", kind: "text", content }, state);
+      return;
+    }
+    if (role === "system") {
+      pushMessageBeforeLive({ role: "system", kind: "text", content }, state);
       return;
     }
     return;
   }
   if (payload.event === "task:completed") {
     const t = payload.data as Task;
+    markTaskChatStarted(t.id, state);
     upsertTask(t, state);
     clearStepLive(state);
     finalizeCommandBlock(state);
@@ -1306,6 +1400,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
   }
   if (payload.event === "task:failed") {
     const data = payload.data as { task: Task; error: string };
+    markTaskChatStarted(data.task.id, state);
     upsertTask(data.task, state);
     clearStepLive(state);
     finalizeCommandBlock(state);
@@ -1315,6 +1410,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
   }
   if (payload.event === "task:cancelled") {
     const t = payload.data as Task;
+    markTaskChatStarted(t.id, state);
     upsertTask(t, state);
     clearStepLive(state);
     finalizeCommandBlock(state);
@@ -1698,17 +1794,24 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
   wsInstance.connect();
 }
 
-async function createTask(input: CreateTaskInput): Promise<void> {
+async function createTask(input: CreateTaskInput): Promise<Task | null> {
   apiError.value = null;
   clearNotice();
   try {
     const created = await api.post<Task>(withWorkspaceQuery("/api/tasks"), input);
     upsertTask(created);
     selectedId.value = created.id;
+    return created;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     apiError.value = msg;
   }
+  return null;
+}
+
+async function submitTaskCreate(input: CreateTaskInput): Promise<void> {
+  const created = await createTask(input);
+  if (created) taskCreateDialogOpen.value = false;
 }
 
 async function refreshTaskRow(id: string, projectId: string = activeProjectId.value): Promise<void> {
@@ -1937,6 +2040,15 @@ onBeforeUnmount(() => {
 function select(id: string): void {
   selectedId.value = id;
 }
+
+function openTaskCreateDialog(): void {
+  apiError.value = null;
+  taskCreateDialogOpen.value = true;
+}
+
+function closeTaskCreateDialog(): void {
+  taskCreateDialogOpen.value = false;
+}
 </script>
 
 <template>
@@ -2021,13 +2133,7 @@ function select(id: string): void {
           @cancel="cancelTask"
           @retry="retryTask"
           @delete="deleteTask"
-        />
-        <TaskCreateForm
-          class="taskCreate"
-          :models="models"
-          :workspace-root="resolveActiveWorkspaceRoot() || ''"
-          @submit="createTask"
-          @reset-thread="clearActiveChat"
+          @create="openTaskCreateDialog"
         />
       </aside>
 
@@ -2051,6 +2157,18 @@ function select(id: string): void {
 
     <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
       <span class="noticeToastText">{{ apiNotice }}</span>
+    </div>
+
+    <div v-if="taskCreateDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeTaskCreateDialog">
+      <div class="modalCard modalCardWide">
+        <TaskCreateForm
+          class="taskCreateModal"
+          :models="models"
+          :workspace-root="resolveActiveWorkspaceRoot() || ''"
+          @submit="submitTaskCreate"
+          @reset-thread="clearActiveChat"
+        />
+      </div>
     </div>
 
     <div v-if="projectDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeProjectDialog">
@@ -2488,15 +2606,21 @@ function select(id: string): void {
 }
 .taskBoard {
   /* Keep the list compact; it should scroll internally when there are many tasks. */
-  flex: 0 1 clamp(180px, 34vh, 420px);
-  min-height: 160px;
+  flex: 1 1 auto;
+  min-height: 0;
   min-width: 0;
 }
-.taskCreate {
-  /* The prompt composer is the primary interaction surface. */
+.modalCardWide {
+  width: min(760px, 100%);
+  max-height: 85vh;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.taskCreateModal {
   flex: 1 1 auto;
-  min-height: 280px;
-  min-width: 0;
+  min-height: 0;
 }
 .rightPane {
   min-width: 0;

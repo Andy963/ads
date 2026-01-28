@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import type { ModelConfig, PlanStep, Task, TaskQueueStatus } from "../api/types";
 
 type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "model" | "priority" | "inheritContext" | "maxRetries">>;
@@ -17,6 +17,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "select", id: string): void;
+  (e: "create"): void;
   (e: "togglePlan", id: string): void;
   (e: "ensurePlan", id: string): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
@@ -183,6 +184,51 @@ function toggleQueue(): void {
   if (!queueCanRunAll.value) return;
   emit(queueIsRunning.value ? "queuePause" : "queueRun");
 }
+
+const listEl = ref<HTMLElement | null>(null);
+
+function escapeCssValue(v: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(v);
+  return v.replace(/["\\\\]/g, "\\\\$&");
+}
+
+function scrollPlanIntoView(taskId: string): void {
+  const list = listEl.value;
+  if (!list) return;
+
+  const selector = `[data-task-id="${escapeCssValue(taskId)}"] .plan`;
+  const plan = list.querySelector(selector) as HTMLElement | null;
+  if (!plan) return;
+
+  const listRect = list.getBoundingClientRect();
+  const planRect = plan.getBoundingClientRect();
+
+  if (planRect.bottom > listRect.bottom) {
+    const delta = planRect.bottom - listRect.bottom;
+    list.scrollTo?.({ top: list.scrollTop + delta });
+    if (!("scrollTo" in list)) {
+      list.scrollTop += delta;
+    }
+  } else if (planRect.top < listRect.top) {
+    const delta = planRect.top - listRect.top;
+    list.scrollTo?.({ top: list.scrollTop + delta });
+    if (!("scrollTo" in list)) {
+      list.scrollTop += delta;
+    }
+  }
+}
+
+watch(
+  () => props.expanded,
+  async (next, prev) => {
+    const prevSet = prev ?? new Set<string>();
+    const added = Array.from(next).filter((id) => !prevSet.has(id));
+    if (!added.length) return;
+    await nextTick();
+    scrollPlanIntoView(added[0]);
+  },
+  { flush: "post" },
+);
 </script>
 
 <template>
@@ -212,21 +258,28 @@ function toggleQueue(): void {
             </svg>
           </button>
         </div>
+        <button class="iconBtn primary" type="button" title="Create task" aria-label="Create task" @click.stop="emit('create')">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M10 4v12" />
+            <path d="M4 10h12" />
+          </svg>
+        </button>
       </div>
     </div>
 
     <div v-if="tasks.length === 0" class="empty">
       <span>暂无任务</span>
-      <span class="hint">下面输入 Prompt 回车创建任务</span>
+      <span class="hint">Click + to create a task</span>
     </div>
 
-    <div v-else class="list">
+    <div v-else ref="listEl" class="list">
         <div
           v-for="t in sorted"
           :key="t.id"
           class="item"
           :data-status="t.status"
-          :class="{ active: t.id === selectedId }"
+          :data-task-id="t.id"
+          :class="{ active: t.id === selectedId, expanded: expanded.has(t.id) && canShowPlan(t) }"
         >
         <div class="row">
           <button class="row-main" type="button" @click="emit('select', t.id)">
@@ -244,6 +297,21 @@ function toggleQueue(): void {
               <span v-if="t.prompt && t.prompt.trim()" class="preview" :title="t.prompt">
                 {{ formatPromptPreview(t.prompt) }}
               </span>
+            </div>
+            <div v-if="t.attachments?.length" class="attachmentsRow">
+              <a
+                v-for="a in t.attachments.slice(0, 4)"
+                :key="a.id"
+                class="attachmentLink"
+                :href="a.url"
+                target="_blank"
+                rel="noreferrer"
+                :title="a.filename || a.id"
+                @click.stop
+              >
+                {{ a.filename || a.id }}
+              </a>
+              <span v-if="t.attachments.length > 4" class="attachmentsMore">+{{ t.attachments.length - 4 }}</span>
             </div>
           </button>
           <div class="row-actions">
@@ -266,6 +334,7 @@ function toggleQueue(): void {
               type="button"
               title="编辑"
               :disabled="Boolean(editingId)"
+              data-testid="task-edit"
               @click.stop="startEdit(t)"
             >
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -326,7 +395,7 @@ function toggleQueue(): void {
           <div v-else class="plan-rows">
             <div v-for="s in plans.get(t.id)" :key="s.id" class="plan-row" :data-status="s.status">
               <span class="plan-step">{{ s.stepNumber }}.</span>
-              <span class="plan-title">{{ s.title }}</span>
+              <span class="plan-title" :title="s.title">{{ s.title }}</span>
               <span class="plan-status" :data-status="s.status">
                 <span v-if="s.status === 'completed'" class="ok">✓</span>
                 <span v-else-if="s.status === 'running'" class="run"></span>
@@ -337,14 +406,12 @@ function toggleQueue(): void {
         </div>
       </div>
     </div>
-  </div>
 
-  <teleport to="body">
-    <div v-if="editingTask" class="modalOverlay" role="dialog" aria-modal="true" @click.self="stopEdit">
+    <div v-if="editingTask" class="modalOverlay" role="dialog" aria-modal="true" data-testid="task-edit-modal" @click.self="stopEdit">
       <div class="modalCard">
         <div class="modalHeader">
           <div class="modalTitle">Edit task</div>
-          <button class="iconBtn" type="button" aria-label="Close" title="Close" @click="stopEdit">
+          <button class="iconBtn" type="button" aria-label="Close" title="Close" data-testid="task-edit-modal-cancel" @click="stopEdit">
             <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path
                 fill-rule="evenodd"
@@ -389,11 +456,11 @@ function toggleQueue(): void {
 
           <label class="field">
             <span class="label">Prompt</span>
-            <textarea v-model="editPrompt" rows="6" />
+            <textarea v-model="editPrompt" rows="6" data-testid="task-edit-prompt" />
           </label>
 
           <div class="actions">
-            <button class="iconBtn primary" type="button" aria-label="Save" title="Save" @click="saveEdit(editingTask)">
+            <button class="iconBtn primary" type="button" aria-label="Save" title="Save" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.1 3.1 6.8-6.8a1 1 0 0 1 1.4 0Z" clip-rule="evenodd" />
               </svg>
@@ -402,7 +469,7 @@ function toggleQueue(): void {
         </div>
       </div>
     </div>
-  </teleport>
+  </div>
 </template>
 
 <style scoped>
@@ -761,6 +828,9 @@ textarea {
   border-top: 1px solid #e2e8f0;
   background: #fbfdff;
   padding: 10px 12px;
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .plan-empty {
   color: #94a3b8;
@@ -810,6 +880,44 @@ textarea {
   color: #16a34a;
   font-weight: 900;
   font-size: 14px;
+}
+.attachmentsRow {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+.attachmentLink {
+  display: inline-block;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+  text-decoration: none;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(248, 250, 252, 0.9);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.attachmentLink:hover {
+  background: rgba(226, 232, 240, 0.9);
+}
+.attachmentsMore {
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #475569;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(241, 245, 249, 0.9);
+  flex: 0 0 auto;
 }
 .run {
   width: 8px;

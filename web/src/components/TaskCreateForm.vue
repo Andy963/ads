@@ -559,7 +559,7 @@ textarea {
 .thumbCard {
   display: block;
   flex: 0 0 auto;
-  width: 72px;
+  width: 160px;
 }
 .thumbWrap {
   position: relative;
@@ -568,7 +568,7 @@ textarea {
   border: 1px solid rgba(148, 163, 184, 0.55);
   background: white;
   width: 100%;
-  height: 22px;
+  height: 56px;
 }
 .thumbImg {
   width: 100%;
