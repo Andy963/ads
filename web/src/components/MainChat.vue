@@ -965,9 +965,10 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 .bubble {
+  width: 100%;
   max-width: 100%;
   border-radius: 12px;
-  padding: 10px 12px 32px 12px;
+  padding: 10px 12px 14px 12px;
   border: 1px solid var(--border);
   background: var(--surface);
   position: relative;
@@ -979,13 +980,14 @@ onBeforeUnmount(() => {
 }
 .copyBtn {
   position: absolute;
-  top: 8px;
+  top: auto;
   right: 8px;
+  bottom: 8px;
   width: 30px;
   height: 30px;
-  border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(255, 255, 255, 0.85);
+  border-radius: 0;
+  border: none;
+  background: transparent;
   color: #475569;
   display: grid;
   place-items: center;
@@ -997,7 +999,6 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 .copyBtn:hover {
-  background: #ffffff;
   color: #0f172a;
 }
 .copyBtn:active {
@@ -1008,13 +1009,12 @@ onBeforeUnmount(() => {
   opacity: 1;
   width: 28px;
   height: 28px;
-  border-radius: 9px;
   margin-left: 0;
 }
 .msgActions {
   position: absolute;
   left: 10px;
-  bottom: 8px;
+  bottom: -6px;
   display: inline-flex;
   gap: 8px;
   align-items: center;
@@ -1028,17 +1028,16 @@ onBeforeUnmount(() => {
   width: 28px;
   height: 28px;
   padding: 0;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  background: rgba(255, 255, 255, 0.92);
+  border: none;
+  background: transparent;
   color: #64748b;
-  border-radius: 999px;
+  border-radius: 0;
   cursor: pointer;
   display: grid;
   place-items: center;
 }
 .msgCopyBtn:hover {
   color: #0f172a;
-  background: #ffffff;
 }
 .msg[data-role="user"] .bubble {
   background: rgba(37, 99, 235, 0.08);
