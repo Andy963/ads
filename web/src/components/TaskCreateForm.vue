@@ -550,20 +550,27 @@ textarea {
   font-weight: 600;
 }
 .thumbGrid {
-  display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  gap: 6px;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0;
+  scrollbar-gutter: stable;
+  overscroll-behavior-inline: contain;
 }
 .thumbCard {
   display: block;
+  flex: 0 0 auto;
+  width: 72px;
 }
 .thumbWrap {
   position: relative;
-  border-radius: 12px;
+  border-radius: 6px;
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.55);
   background: white;
-  aspect-ratio: 1 / 1;
+  width: 100%;
+  height: 22px;
 }
 .thumbImg {
   width: 100%;
@@ -576,7 +583,7 @@ textarea {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 10px;
+  padding: 4px;
   background: rgba(15, 23, 42, 0.35);
   color: white;
 }
@@ -590,8 +597,8 @@ textarea {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  padding: 6px 10px;
-  font-size: 12px;
+  padding: 2px 6px;
+  font-size: 9px;
   font-weight: 800;
   text-decoration: none;
   background: rgba(255, 255, 255, 0.95);
@@ -606,7 +613,7 @@ textarea {
   gap: 8px;
 }
 .errorText {
-  font-size: 12px;
+  font-size: 9px;
   font-weight: 700;
   text-align: center;
   line-height: 1.2;
@@ -615,8 +622,8 @@ textarea {
 }
 .retryBtn {
   border-radius: 999px;
-  padding: 6px 10px;
-  font-size: 12px;
+  padding: 2px 6px;
+  font-size: 9px;
   font-weight: 800;
   cursor: pointer;
   border: 1px solid rgba(255, 255, 255, 0.35);
@@ -629,10 +636,10 @@ textarea {
 .progressRow {
   width: 100%;
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 .progressBar {
-  height: 8px;
+  height: 4px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.35);
   overflow: hidden;
@@ -642,23 +649,23 @@ textarea {
   background: rgba(255, 255, 255, 0.95);
 }
 .progressText {
-  font-size: 12px;
+  font-size: 9px;
   font-weight: 800;
   text-align: center;
 }
 .removeBtn {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 22px;
-  height: 22px;
+  top: 3px;
+  right: 3px;
+  width: 14px;
+  height: 14px;
   border-radius: 999px;
   border: 1px solid rgba(15, 23, 42, 0.2);
   background: rgba(255, 255, 255, 0.92);
   color: #0f172a;
   font-weight: 900;
   cursor: pointer;
-  line-height: 18px;
+  line-height: 12px;
 }
 .removeBtn:hover {
   background: white;
@@ -714,7 +721,13 @@ textarea {
     gap: 16px;
   }
   .thumbGrid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .thumbCard {
+    width: 140px;
+  }
+  .thumbWrap {
+    height: 52px;
   }
   .actions {
     flex-direction: column;
