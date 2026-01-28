@@ -131,8 +131,9 @@ ACTION="${1:-}"
 TARGET="${2:-all}"
 
 if [[ -z "$ACTION" ]]; then
-  usage
-  exit 1
+  (cd "$ROOT" && npm run build)
+  ACTION="restart"
+  TARGET="all"
 fi
 
 SERVICES=()
