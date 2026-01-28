@@ -162,6 +162,7 @@ describe("storage/database", () => {
     assert.ok(ids.includes("gpt-5"), "Should include gpt-5");
     assert.ok(ids.includes("gpt-5.1"), "Should include gpt-5.1");
     assert.ok(ids.includes("gpt-5.2"), "Should include gpt-5.2");
+    assert.ok(ids.includes("gpt-5.2-codex"), "Should include gpt-5.2-codex");
     assert.ok(ids.includes("gpt-5.1-codex-max"), "Should include gpt-5.1-codex-max");
   });
 

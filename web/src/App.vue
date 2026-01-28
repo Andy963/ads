@@ -2,14 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 import { ApiClient } from "./api/client";
-import type { CreateTaskInput, ModelConfig, PlanStep, Task, TaskDetail, TaskEventPayload, TaskQueueStatus } from "./api/types";
+import type { AuthMe, CreateTaskInput, ModelConfig, PlanStep, Task, TaskDetail, TaskEventPayload, TaskQueueStatus } from "./api/types";
 import { AdsWebSocket } from "./api/ws";
-import TokenGate from "./components/TokenGate.vue";
+import LoginGate from "./components/LoginGate.vue";
 import TaskCreateForm from "./components/TaskCreateForm.vue";
 import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
+import { finalizeStreamingOnDisconnect, mergeHistoryFromServer } from "./lib/chat_sync";
+import { formatApiError, looksLikeNotFound } from "./lib/api_error";
 
-const TOKEN_KEY = "ADS_WEB_TOKEN";
 const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
 const LEGACY_WS_SESSION_KEY = "ADS_WEB_SESSION";
@@ -25,7 +26,8 @@ type ProjectTab = {
   updatedAt: number;
 };
 
-const token = ref(localStorage.getItem(TOKEN_KEY) ?? "");
+const loggedIn = ref(false);
+const currentUser = ref<AuthMe | null>(null);
 
 const projects = ref<ProjectTab[]>([]);
 const activeProjectId = ref("");
@@ -58,7 +60,7 @@ type PathValidateResponse = {
   allowedDirs?: string[];
 };
 
-const api = new ApiClient({ baseUrl: "", token: token.value });
+const api = new ApiClient({ baseUrl: "" });
 
 const models = ref<ModelConfig[]>([]);
 
@@ -86,6 +88,7 @@ const activeProject = computed(() => projects.value.find((p) => p.id === activeP
 type ProjectRuntime = {
   connected: ReturnType<typeof ref<boolean>>;
   apiError: ReturnType<typeof ref<string | null>>;
+  apiNotice: ReturnType<typeof ref<string | null>>;
   wsError: ReturnType<typeof ref<string | null>>;
   threadWarning: ReturnType<typeof ref<string | null>>;
   activeThreadId: ReturnType<typeof ref<string | null>>;
@@ -95,6 +98,7 @@ type ProjectRuntime = {
   selectedId: ReturnType<typeof ref<string | null>>;
   expanded: ReturnType<typeof ref<Set<string>>>;
   plansByTaskId: ReturnType<typeof ref<Map<string, PlanStep[]>>>;
+  runBusyIds: ReturnType<typeof ref<Set<string>>>;
   busy: ReturnType<typeof ref<boolean>>;
   messages: ReturnType<typeof ref<ChatItem[]>>;
   recentCommands: ReturnType<typeof ref<string[]>>;
@@ -106,12 +110,15 @@ type ProjectRuntime = {
   reconnectTimer: number | null;
   reconnectAttempts: number;
   pendingCdRequestedPath: string | null;
+  suppressNextClearHistoryResult: boolean;
+  noticeTimer: number | null;
 };
 
 function createProjectRuntime(): ProjectRuntime {
   return {
     connected: ref(false),
     apiError: ref<string | null>(null),
+    apiNotice: ref<string | null>(null),
     wsError: ref<string | null>(null),
     threadWarning: ref<string | null>(null),
     activeThreadId: ref<string | null>(null),
@@ -121,6 +128,7 @@ function createProjectRuntime(): ProjectRuntime {
     selectedId: ref<string | null>(null),
     expanded: ref<Set<string>>(new Set()),
     plansByTaskId: ref<Map<string, PlanStep[]>>(new Map()),
+    runBusyIds: ref<Set<string>>(new Set()),
     busy: ref(false),
     messages: ref<ChatItem[]>([]),
     recentCommands: ref<string[]>([]),
@@ -132,6 +140,8 @@ function createProjectRuntime(): ProjectRuntime {
     reconnectTimer: null,
     reconnectAttempts: 0,
     pendingCdRequestedPath: null,
+    suppressNextClearHistoryResult: false,
+    noticeTimer: null,
   };
 }
 
@@ -163,6 +173,12 @@ const apiError = computed({
   get: () => activeRuntime.value.apiError.value,
   set: (v: string | null) => {
     activeRuntime.value.apiError.value = v;
+  },
+});
+const apiNotice = computed({
+  get: () => activeRuntime.value.apiNotice.value,
+  set: (v: string | null) => {
+    activeRuntime.value.apiNotice.value = v;
   },
 });
 const wsError = computed({
@@ -217,6 +233,12 @@ const plansByTaskId = computed({
   get: () => activeRuntime.value.plansByTaskId.value,
   set: (v: Map<string, PlanStep[]>) => {
     activeRuntime.value.plansByTaskId.value = v;
+  },
+});
+const runBusyIds = computed({
+  get: () => activeRuntime.value.runBusyIds.value,
+  set: (v: Set<string>) => {
+    activeRuntime.value.runBusyIds.value = v;
   },
 });
 const busy = computed({
@@ -626,6 +648,51 @@ function resetConversation(rt: ProjectRuntime, notice: string, keepLatestTurn = 
   setMessages(next, rt);
 }
 
+function threadReset(
+  rt: ProjectRuntime,
+  params: {
+    notice: string;
+    warning?: string | null;
+    keepLatestTurn?: boolean;
+    clearBackendHistory?: boolean;
+    resetThreadId?: boolean;
+    source?: string;
+  },
+): void {
+  rt.threadWarning.value = params.warning ?? null;
+  rt.ignoreNextHistory = true;
+  resetConversation(rt, params.notice, params.keepLatestTurn ?? false);
+  if (params.resetThreadId) {
+    rt.activeThreadId.value = null;
+  }
+  if (params.clearBackendHistory) {
+    rt.suppressNextClearHistoryResult = true;
+    rt.ws?.clearHistory();
+  }
+  recordChatClear("thread_reset", params.source ?? "unknown");
+}
+
+function applyStreamingDisconnectCleanup(rt: ProjectRuntime): void {
+  const existing = rt.messages.value.slice();
+  const next = finalizeStreamingOnDisconnect(existing, LIVE_STEP_ID);
+  if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;
+  setMessages(next, rt);
+}
+
+function applyMergedHistory(serverHistory: ChatItem[], rt: ProjectRuntime): void {
+  const next = mergeHistoryFromServer(rt.messages.value, serverHistory, LIVE_STEP_ID);
+  setMessages(next, rt);
+}
+
+function recordChatClear(reason: "thread_reset", source: string): void {
+  // Lightweight observability: ensure clears are always attributable to "thread_reset".
+  try {
+    console.info("[ads][chat_clear]", { reason, source, ts: Date.now() });
+  } catch {
+    // ignore
+  }
+}
+
 function ingestCommand(rawCmd: string, rt?: ProjectRuntime, id?: string | null): void {
   const state = runtimeOrActive(rt);
   const cmd = String(rawCmd ?? "").trim();
@@ -841,6 +908,24 @@ function finalizeAssistant(content: string, rt?: ProjectRuntime): void {
     setMessages(existing.slice(), state);
     return;
   }
+
+  const normalizedText = text.replace(/\r\n/g, "\n").trim();
+  if (!normalizedText) return;
+  const lastNonLive = (() => {
+    for (let i = existing.length - 1; i >= 0; i--) {
+      const m = existing[i]!;
+      if (m.id === LIVE_STEP_ID) continue;
+      return m;
+    }
+    return null;
+  })();
+  if (lastNonLive?.role === "assistant" && lastNonLive.kind === "text") {
+    const prev = String(lastNonLive.content ?? "").replace(/\r\n/g, "\n").trim();
+    if (prev === normalizedText) {
+      return;
+    }
+  }
+
   pushMessageBeforeLive({ role: "assistant", kind: "text", content: text }, state);
 }
 
@@ -910,7 +995,7 @@ function clearReconnectTimer(rt: ProjectRuntime): void {
 
 function scheduleReconnect(projectId: string, rt: ProjectRuntime, reason: string): void {
   void reason;
-  if (tokenRequired.value && !hasToken.value) return;
+  if (!loggedIn.value) return;
   if (rt.reconnectTimer !== null) return;
 
   const attempt = Math.min(6, rt.reconnectAttempts);
@@ -942,25 +1027,48 @@ function closeAllConnections(): void {
   }
 }
 
-const hasToken = computed(() => Boolean(token.value.trim()));
-const tokenRequired = ref<boolean | null>(null);
+const apiAuthorized = computed(() => loggedIn.value);
 
-function setToken(next: string): void {
-  token.value = next;
-  localStorage.setItem(TOKEN_KEY, next);
-  api.setToken(next);
+let appMounted = false;
+
+function handleLoggedIn(me: AuthMe): void {
+  loggedIn.value = true;
+  currentUser.value = me;
   closeAllConnections();
-  void bootstrap();
+  if (appMounted) {
+    void bootstrap();
+  }
 }
 
-async function detectTokenRequirement(): Promise<void> {
-  if (tokenRequired.value !== null) return;
-  try {
-    const probe = new ApiClient({ baseUrl: "", token: "" });
-    await probe.get<ModelConfig[]>("/api/models");
-    tokenRequired.value = false;
-  } catch {
-    tokenRequired.value = true;
+function setNotice(message: string, projectId: string = activeProjectId.value): void {
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  rt.apiNotice.value = message;
+  if (rt.noticeTimer !== null) {
+    try {
+      clearTimeout(rt.noticeTimer);
+    } catch {
+      // ignore
+    }
+    rt.noticeTimer = null;
+  }
+  rt.noticeTimer = window.setTimeout(() => {
+    rt.noticeTimer = null;
+    rt.apiNotice.value = null;
+  }, 3000);
+}
+
+function clearNotice(projectId: string = activeProjectId.value): void {
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  rt.apiNotice.value = null;
+  if (rt.noticeTimer !== null) {
+    try {
+      clearTimeout(rt.noticeTimer);
+    } catch {
+      // ignore
+    }
+    rt.noticeTimer = null;
   }
 }
 
@@ -974,6 +1082,88 @@ async function loadQueueStatus(projectId: string = activeProjectId.value): Promi
   rt.queueStatus.value = await api.get<TaskQueueStatus>(withWorkspaceQueryFor(pid, "/api/task-queue/status"));
 }
 
+async function runTaskQueue(projectId: string = activeProjectId.value): Promise<void> {
+  apiError.value = null;
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  try {
+    rt.queueStatus.value = await api.post<TaskQueueStatus>(withWorkspaceQueryFor(pid, "/api/task-queue/run"), {});
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    apiError.value = msg;
+  }
+}
+
+async function pauseTaskQueue(projectId: string = activeProjectId.value): Promise<void> {
+  apiError.value = null;
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  try {
+    rt.queueStatus.value = await api.post<TaskQueueStatus>(withWorkspaceQueryFor(pid, "/api/task-queue/pause"), {});
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    apiError.value = msg;
+  }
+}
+
+async function reorderPendingTasks(ids: string[], projectId: string = activeProjectId.value): Promise<void> {
+  apiError.value = null;
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  const normalized = (ids ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
+  if (normalized.length === 0) {
+    return;
+  }
+
+  // Optimistic UI reorder: update queueOrder locally so the list reflects the new order immediately.
+  // Roll back on API failure.
+  const pending = rt.tasks.value.filter((t) => t.status === "pending");
+  const priorQueueOrderById = new Map<string, number>();
+  for (const t of pending) {
+    priorQueueOrderById.set(t.id, (t as unknown as { queueOrder?: number }).queueOrder ?? 0);
+  }
+  const orderIndex = new Map<string, number>();
+  for (let i = 0; i < normalized.length; i++) {
+    orderIndex.set(normalized[i]!, i);
+  }
+  const base = (() => {
+    let min = Number.POSITIVE_INFINITY;
+    for (const t of pending) {
+      const q = (t as unknown as { queueOrder?: number }).queueOrder;
+      if (typeof q === "number" && Number.isFinite(q)) min = Math.min(min, q);
+    }
+    return Number.isFinite(min) ? Math.floor(min) : Date.now();
+  })();
+
+  rt.tasks.value = rt.tasks.value.map((t) => {
+    if (t.status !== "pending") return t;
+    const idx = orderIndex.get(t.id);
+    if (idx == null) return t;
+    return { ...(t as object), queueOrder: base + idx } as Task;
+  });
+
+  try {
+    const res = await api.post<{ success: boolean; tasks: Task[] }>(
+      withWorkspaceQueryFor(pid, "/api/tasks/reorder"),
+      { ids: normalized },
+    );
+    for (const task of res?.tasks ?? []) {
+      upsertTask(task, rt);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    apiError.value = msg;
+
+    // Best-effort rollback to the previous order.
+    rt.tasks.value = rt.tasks.value.map((t) => {
+      if (t.status !== "pending") return t;
+      const prior = priorQueueOrderById.get(t.id);
+      if (prior == null) return t;
+      return { ...(t as object), queueOrder: prior } as Task;
+    });
+  }
+}
+
 async function loadTasks(projectId: string = activeProjectId.value): Promise<void> {
   const pid = normalizeProjectId(projectId);
   const rt = getRuntime(pid);
@@ -984,6 +1174,7 @@ async function loadTasks(projectId: string = activeProjectId.value): Promise<voi
       .slice()
       .sort((a, b) => {
         if (a.priority !== b.priority) return b.priority - a.priority;
+        if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
         return a.createdAt - b.createdAt;
       })[0];
     rt.selectedId.value = (nextPending ?? rt.tasks.value[0])!.id;
@@ -993,8 +1184,16 @@ async function loadTasks(projectId: string = activeProjectId.value): Promise<voi
 function upsertTask(t: Task, rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
   const idx = state.tasks.value.findIndex((x) => x.id === t.id);
+  const normalizedAttachments = Array.isArray((t as { attachments?: unknown }).attachments)
+    ? ((t as { attachments?: Task["attachments"] }).attachments ?? undefined)
+    : undefined;
   if (idx >= 0) {
-    state.tasks.value[idx] = t;
+    const existing = state.tasks.value[idx]!;
+    state.tasks.value[idx] = {
+      ...existing,
+      ...t,
+      attachments: normalizedAttachments ?? existing.attachments,
+    };
   } else {
     state.tasks.value.unshift(t);
   }
@@ -1100,7 +1299,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
     clearStepLive(state);
     finalizeCommandBlock(state);
     if (t.result && t.result.trim()) {
-      pushMessageBeforeLive({ role: "assistant", kind: "text", content: t.result }, state);
+      finalizeAssistant(t.result, state);
     }
     flushQueuedPrompts(state);
     return;
@@ -1194,7 +1393,7 @@ async function resolveProjectIdentity(project: ProjectTab): Promise<{ sessionId:
 }
 
 async function connectWs(projectId: string = activeProjectId.value): Promise<void> {
-  if (tokenRequired.value && !hasToken.value) return;
+  if (!loggedIn.value) return;
   let pid = normalizeProjectId(projectId);
   let project = projects.value.find((p) => p.id === pid) ?? null;
   if (!project) return;
@@ -1226,8 +1425,31 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     // ignore
   }
 
-  const wsInstance = new AdsWebSocket({ token: token.value, sessionId: project.sessionId });
+  const wsInstance = new AdsWebSocket({ sessionId: project.sessionId });
   rt.ws = wsInstance;
+  let disconnectCleanupDone = false;
+  let disconnectWasBusy = false;
+
+  const cleanupDisconnectState = () => {
+    if (disconnectCleanupDone) return;
+    disconnectCleanupDone = true;
+    disconnectWasBusy = rt.busy.value;
+    rt.connected.value = false;
+    rt.busy.value = false;
+    clearStepLive(rt);
+    finalizeCommandBlock(rt);
+    applyStreamingDisconnectCleanup(rt);
+    if (disconnectWasBusy) {
+      pushMessageBeforeLive(
+        {
+          role: "system",
+          kind: "text",
+          content: "Connection lost while a request was running. Reconnecting and syncing history…",
+        },
+        rt,
+      );
+    }
+  };
 
   wsInstance.onOpen = () => {
     if (rt.ws !== wsInstance) return;
@@ -1240,54 +1462,28 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
 
   wsInstance.onClose = (ev) => {
     if (rt.ws !== wsInstance) return;
-    rt.connected.value = false;
-    const wasBusy = rt.busy.value;
-    rt.busy.value = false;
-    clearStepLive(rt);
-    finalizeCommandBlock(rt);
+    cleanupDisconnectState();
 
     if (ev.code === 4401) {
-      rt.wsError.value = "Unauthorized (token invalid)";
+      rt.wsError.value = "Unauthorized";
+      clearReconnectTimer(rt);
       return;
     }
     if (ev.code === 4409) {
       rt.wsError.value = "Max clients reached (increase ADS_WEB_MAX_CLIENTS)";
+      clearReconnectTimer(rt);
       return;
     }
 
     const reason = String((ev as CloseEvent).reason ?? "").trim();
     rt.wsError.value = `WebSocket closed (${ev.code || "unknown"})${reason ? `: ${reason}` : ""}`;
-    if (wasBusy) {
-      pushMessageBeforeLive(
-        {
-          role: "system",
-          kind: "text",
-          content: "Connection lost while a request was running. Reconnecting and syncing history…",
-        },
-        rt,
-      );
-    }
     scheduleReconnect(pid, rt, "close");
   };
 
   wsInstance.onError = () => {
     if (rt.ws !== wsInstance) return;
-    rt.connected.value = false;
-    const wasBusy = rt.busy.value;
-    rt.busy.value = false;
-    clearStepLive(rt);
-    finalizeCommandBlock(rt);
+    cleanupDisconnectState();
     rt.wsError.value = "WebSocket error";
-    if (wasBusy) {
-      pushMessageBeforeLive(
-        {
-          role: "system",
-          kind: "text",
-          content: "WebSocket error while a request was running. Reconnecting and syncing history…",
-        },
-        rt,
-      );
-    }
     scheduleReconnect(pid, rt, "error");
   };
 
@@ -1309,40 +1505,23 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
       }
 
       const serverThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
-      const hasLocalHistory = rt.messages.value.length > 0;
+      const handshakeReset = Boolean((msg as { reset?: unknown }).reset);
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
-      const shouldReset =
-        hasLocalHistory &&
-        ((prevThreadId && serverThreadId && prevThreadId !== serverThreadId) ||
-          (prevThreadId && !serverThreadId) ||
-          (!prevThreadId && !serverThreadId));
-      if (hasLocalHistory) {
-        if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
-          rt.threadWarning.value =
-            `Backend session restarted and thread changed (prev=${prevThreadId}, now=${serverThreadId}). ` +
-            `Chat history may not match model context. History was cleared automatically.`;
-        } else if (prevThreadId && !serverThreadId) {
-          rt.threadWarning.value =
-            `Backend session restarted and did not report an active thread (prev=${prevThreadId}). ` +
-            `Chat history may not match model context. History was cleared automatically.`;
-        } else if (!prevThreadId && !serverThreadId) {
-          rt.threadWarning.value =
-            "Backend session restarted and active thread is unknown. Chat history may not match model context. " +
-            "History was cleared automatically.";
-        }
+      if (handshakeReset) {
+        threadReset(rt, {
+          notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
+          warning: "Context thread was reset by backend handshake. Chat history was cleared automatically.",
+          keepLatestTurn: false,
+          clearBackendHistory: false,
+          resetThreadId: true,
+          source: "welcome_reset",
+        });
+      } else if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
+        rt.threadWarning.value =
+          `Backend thread changed without an explicit reset marker (prev=${prevThreadId}, now=${serverThreadId}). ` +
+          "UI was preserved, but model context may not match chat history.";
       }
-      if (shouldReset) {
-        rt.ignoreNextHistory = true;
-        resetConversation(
-          rt,
-          "Context thread was reset. Chat history was cleared to avoid misleading context.",
-          false,
-        );
-        rt.ws?.clearHistory();
-      }
-      if (serverThreadId) {
-        rt.activeThreadId.value = serverThreadId;
-      }
+      if (serverThreadId) rt.activeThreadId.value = serverThreadId;
 
       const current = projects.value.find((p) => p.id === pid) ?? null;
       if (current && !current.initialized && current.path.trim()) {
@@ -1372,6 +1551,18 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
         const current = projects.value.find((p) => p.id === pid) ?? null;
         if (current && nextPath) updateProject(current.id, { path: nextPath, initialized: true });
       }
+      return;
+    }
+
+    if (msg.type === "thread_reset") {
+      threadReset(rt, {
+        notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
+        warning: "Context thread was reset by backend signal. Chat history was cleared automatically.",
+        keepLatestTurn: false,
+        clearBackendHistory: false,
+        resetThreadId: true,
+        source: "thread_reset_signal",
+      });
       return;
     }
 
@@ -1409,7 +1600,7 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed });
       }
       flushCommands();
-      setMessages(next, rt);
+      applyMergedHistory(next, rt);
       return;
     }
     if (msg.type === "delta") {
@@ -1447,30 +1638,44 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     }
     if (msg.type === "result") {
       rt.busy.value = false;
+      const output = String(msg.output ?? "");
+      if (rt.suppressNextClearHistoryResult) {
+        rt.suppressNextClearHistoryResult = false;
+        const kind = String((msg as { kind?: unknown }).kind ?? "").trim();
+        if (msg.ok === true && kind === "clear_history") {
+          clearStepLive(rt);
+          finalizeCommandBlock(rt);
+          flushQueuedPrompts(rt);
+          return;
+        }
+      }
       const threadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
       if (threadId) {
         rt.activeThreadId.value = threadId;
       }
       const expectedThreadId = String((msg as { expectedThreadId?: unknown }).expectedThreadId ?? "").trim();
-      const threadReset = Boolean((msg as { threadReset?: unknown }).threadReset);
-      if (threadReset) {
+      const didThreadReset = Boolean((msg as { threadReset?: unknown }).threadReset);
+      if (didThreadReset) {
         const detail = expectedThreadId && threadId ? ` (expected=${expectedThreadId}, actual=${threadId})` : "";
-        rt.threadWarning.value =
-          `Context thread was reset${detail}. Chat history may not match model context. ` +
-          `History was cleared automatically.`;
-        rt.ignoreNextHistory = true;
-        resetConversation(rt, "Context thread was reset. Chat history was cleared to start a new conversation.", true);
-        rt.ws?.clearHistory();
+        threadReset(rt, {
+          notice: "Context thread was reset. Chat history was cleared to start a new conversation.",
+          warning:
+            `Context thread was reset${detail}. Chat history may not match model context. ` +
+            "History was cleared automatically.",
+          keepLatestTurn: true,
+          clearBackendHistory: true,
+          resetThreadId: true,
+          source: "result_thread_reset",
+        });
       }
       if (rt.pendingCdRequestedPath && msg.ok === false) {
-        const output = String(msg.output ?? "");
         if (output.includes("/cd") || output.includes("目录")) {
           rt.pendingCdRequestedPath = null;
         }
       }
       clearStepLive(rt);
       finalizeCommandBlock(rt);
-      finalizeAssistant(String(msg.output ?? ""), rt);
+      finalizeAssistant(output, rt);
       flushQueuedPrompts(rt);
       return;
     }
@@ -1495,6 +1700,7 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
 
 async function createTask(input: CreateTaskInput): Promise<void> {
   apiError.value = null;
+  clearNotice();
   try {
     const created = await api.post<Task>(withWorkspaceQuery("/api/tasks"), input);
     upsertTask(created);
@@ -1505,8 +1711,94 @@ async function createTask(input: CreateTaskInput): Promise<void> {
   }
 }
 
+async function refreshTaskRow(id: string, projectId: string = activeProjectId.value): Promise<void> {
+  const taskId = String(id ?? "").trim();
+  if (!taskId) return;
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  try {
+    const detail = await api.get<TaskDetail>(withWorkspaceQueryFor(pid, `/api/tasks/${taskId}`));
+    upsertTask(detail, rt);
+    if (Array.isArray(detail.plan)) {
+      rt.plansByTaskId.value.set(taskId, detail.plan);
+      rt.plansByTaskId.value = new Map(rt.plansByTaskId.value);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function setTaskRunBusy(id: string, busy: boolean, projectId: string = activeProjectId.value): void {
+  const taskId = String(id ?? "").trim();
+  if (!taskId) return;
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  const next = new Set(rt.runBusyIds.value);
+  if (busy) next.add(taskId);
+  else next.delete(taskId);
+  rt.runBusyIds.value = next;
+}
+
+function mockSingleTaskRun(taskId: string, projectId: string = activeProjectId.value): void {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  const now = Date.now();
+
+  const existing = rt.tasks.value.find((t) => t.id === id);
+  if (!existing) return;
+
+  upsertTask({ ...existing, status: "running", startedAt: now, completedAt: null, error: null, result: null }, rt);
+  window.setTimeout(() => {
+    const t = rt.tasks.value.find((x) => x.id === id);
+    if (!t) return;
+    upsertTask({ ...t, status: "completed", completedAt: Date.now(), result: "mock: completed", error: null }, rt);
+  }, 900);
+}
+
+async function runSingleTask(id: string, projectId: string = activeProjectId.value): Promise<void> {
+  const taskId = String(id ?? "").trim();
+  if (!taskId) return;
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+
+  rt.apiError.value = null;
+  clearNotice(pid);
+  if (!apiAuthorized.value) {
+    rt.apiError.value = "Unauthorized";
+    return;
+  }
+  if (rt.runBusyIds.value.has(taskId)) {
+    return;
+  }
+
+  setTaskRunBusy(taskId, true, pid);
+  try {
+    const res = await api.post<{ success: boolean; taskId?: string; state?: string; mode?: string }>(
+      withWorkspaceQueryFor(pid, `/api/tasks/${taskId}/run`),
+      {},
+    );
+    void res;
+    setNotice(`Task ${taskId.slice(0, 8)} scheduled`, pid);
+    await refreshTaskRow(taskId, pid);
+    await loadQueueStatus(pid);
+  } catch (error) {
+    const msg = formatApiError(error);
+    if (import.meta.env.DEV && looksLikeNotFound(msg)) {
+      setNotice(`Task ${taskId.slice(0, 8)} scheduled (mock)`, pid);
+      mockSingleTaskRun(taskId, pid);
+      return;
+    }
+    rt.apiError.value = msg;
+  } finally {
+    setTaskRunBusy(taskId, false, pid);
+  }
+}
+
 async function cancelTask(id: string): Promise<void> {
   apiError.value = null;
+  clearNotice();
   try {
     const res = await api.patch<{ success: boolean; task?: Task | null }>(withWorkspaceQuery(`/api/tasks/${id}`), { action: "cancel" });
     if (res?.task) {
@@ -1521,6 +1813,7 @@ async function cancelTask(id: string): Promise<void> {
 
 async function retryTask(id: string): Promise<void> {
   apiError.value = null;
+  clearNotice();
   try {
     const res = await api.post<{ success: boolean; task?: Task | null }>(withWorkspaceQuery(`/api/tasks/${id}/retry`), {});
     if (res?.task) {
@@ -1535,6 +1828,7 @@ async function retryTask(id: string): Promise<void> {
 
 async function deleteTask(id: string): Promise<void> {
   apiError.value = null;
+  clearNotice();
   const taskId = String(id ?? "").trim();
   if (!taskId) return;
   const t = tasks.value.find((x) => x.id === taskId);
@@ -1549,6 +1843,7 @@ async function deleteTask(id: string): Promise<void> {
 
 async function updateQueuedTask(id: string, updates: Record<string, unknown>): Promise<void> {
   apiError.value = null;
+  clearNotice();
   try {
     const res = await api.patch<{ success: boolean; task?: Task }>(withWorkspaceQuery(`/api/tasks/${id}`), updates);
     if (res?.task) {
@@ -1576,12 +1871,14 @@ function interruptActive(): void {
 
 function clearActiveChat(): void {
   const rt = activeRuntime.value;
-  setMessages([], rt);
-  finalizeCommandBlock(rt);
-  rt.pendingImages.value = [];
-  rt.threadWarning.value = null;
-  rt.activeThreadId.value = null;
-  rt.ws?.clearHistory();
+  threadReset(rt, {
+    notice: "",
+    warning: null,
+    keepLatestTurn: false,
+    clearBackendHistory: true,
+    resetThreadId: true,
+    source: "user_reset_thread",
+  });
 }
 
 function addPendingImages(imgs: IncomingImage[]): void {
@@ -1596,7 +1893,7 @@ function clearPendingImages(): void {
 async function activateProject(projectId: string): Promise<void> {
   const pid = normalizeProjectId(projectId);
   const rt = getRuntime(pid);
-  if (tokenRequired.value && !hasToken.value) return;
+  if (!loggedIn.value) return;
   rt.apiError.value = null;
   rt.wsError.value = null;
   try {
@@ -1612,8 +1909,7 @@ async function activateProject(projectId: string): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  await detectTokenRequirement();
-  if (tokenRequired.value && !hasToken.value) return;
+  if (!loggedIn.value) return;
   try {
     await loadModels();
     await activateProject(activeProjectId.value);
@@ -1624,10 +1920,13 @@ async function bootstrap(): Promise<void> {
 }
 
 onMounted(() => {
+  appMounted = true;
   initializeProjects();
   updateIsMobile();
   window.addEventListener("resize", updateIsMobile);
-  void bootstrap();
+  if (loggedIn.value) {
+    void bootstrap();
+  }
 });
 
 onBeforeUnmount(() => {
@@ -1641,8 +1940,7 @@ function select(id: string): void {
 </script>
 
 <template>
-  <div v-if="tokenRequired === null" class="boot">Loading…</div>
-  <TokenGate v-else-if="tokenRequired && !hasToken" v-model="token" @update:modelValue="setToken" />
+  <LoginGate v-if="!loggedIn" @logged-in="handleLoggedIn" />
   <div v-else class="app">
     <header class="topbar">
       <div class="brand">ADS</div>
@@ -1709,15 +2007,28 @@ function select(id: string): void {
           :selected-id="selectedId"
           :plans="plansByTaskId"
           :expanded="expanded"
+          :queue-status="queueStatus"
+          :can-run-single="apiAuthorized"
+          :run-busy-ids="runBusyIds"
           @select="select"
           @togglePlan="togglePlan"
           @ensurePlan="ensurePlan"
           @update="({ id, updates }) => updateQueuedTask(id, updates)"
+          @reorder="(ids) => reorderPendingTasks(ids)"
+          @queueRun="runTaskQueue"
+          @queuePause="pauseTaskQueue"
+          @runSingle="(id) => runSingleTask(id)"
           @cancel="cancelTask"
           @retry="retryTask"
           @delete="deleteTask"
         />
-        <TaskCreateForm class="taskCreate" :models="models" @submit="createTask" />
+        <TaskCreateForm
+          class="taskCreate"
+          :models="models"
+          :workspace-root="resolveActiveWorkspaceRoot() || ''"
+          @submit="createTask"
+          @reset-thread="clearActiveChat"
+        />
       </aside>
 
       <section class="rightPane">
@@ -1728,7 +2039,6 @@ function select(id: string): void {
           :pending-images="pendingImages"
           :connected="connected"
           :busy="agentBusy"
-          :api-token="token"
           @send="sendMainPrompt"
           @interrupt="interruptActive"
           @clear="clearActiveChat"
@@ -1738,6 +2048,10 @@ function select(id: string): void {
         />
       </section>
     </main>
+
+    <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
+      <span class="noticeToastText">{{ apiNotice }}</span>
+    </div>
 
     <div v-if="projectDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeProjectDialog">
       <div class="modalCard">
@@ -1826,7 +2140,7 @@ function select(id: string): void {
 
 <style scoped>
 .boot {
-  min-height: 100%;
+  min-height: 100vh;
   display: grid;
   place-items: center;
   background: linear-gradient(135deg, #0b1020 0%, #1e293b 100%);
@@ -1837,6 +2151,8 @@ function select(id: string): void {
   inset: 0;
   display: flex;
   flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
   background: var(--app-bg);
   color: var(--text);
@@ -2151,7 +2467,7 @@ function select(id: string): void {
   display: grid;
   grid-template-columns: 380px 1fr;
   gap: 12px;
-  padding: 12px;
+  padding: 12px 12px 8px 12px;
   max-width: 1600px;
   width: 100%;
   margin: 0 auto;
@@ -2159,7 +2475,7 @@ function select(id: string): void {
   overflow: hidden;
 }
 .chatHost {
-  height: 100%;
+  flex: 1;
   min-height: 0;
 }
 .left {
@@ -2168,24 +2484,25 @@ function select(id: string): void {
   gap: 10px;
   min-width: 0;
   min-height: 0;
-  height: 100%;
   overflow: hidden;
 }
 .taskBoard {
-  flex: 1 1 auto;
-  min-height: 0;
+  /* Keep the list compact; it should scroll internally when there are many tasks. */
+  flex: 0 1 clamp(180px, 34vh, 420px);
+  min-height: 160px;
+  min-width: 0;
 }
 .taskCreate {
-  /* Give the create form a stable vertical footprint; keep the task list scrollable. */
-  flex: 0 1 clamp(260px, 38vh, 520px);
-  min-height: 220px;
+  /* The prompt composer is the primary interaction surface. */
+  flex: 1 1 auto;
+  min-height: 280px;
   min-width: 0;
 }
 .rightPane {
   min-width: 0;
   min-height: 0;
-  height: 100%;
   overflow: hidden;
+  display: flex;
 }
 .link {
   background: transparent;
@@ -2216,6 +2533,40 @@ function select(id: string): void {
   font-size: 13px;
   color: #b45309;
 }
+.noticeToast {
+  position: fixed;
+  left: 50%;
+  top: calc(48px + env(safe-area-inset-top, 0px) + 12px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  background: rgba(34, 197, 94, 0.1);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  color: #15803d;
+  max-width: min(92vw, 620px);
+  pointer-events: none;
+  z-index: 40;
+  animation: noticeToastIn 0.14s ease-out;
+}
+.noticeToastText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes noticeToastIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
@@ -2240,7 +2591,7 @@ function select(id: string): void {
     display: flex;
   }
   .layout[data-pane="chat"] .rightPane {
-    display: block;
+    display: flex;
   }
 }
 </style>

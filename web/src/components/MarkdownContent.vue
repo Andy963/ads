@@ -143,6 +143,59 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   margin: 8px 0;
 }
 
+.md :deep(details.md-codeblock) {
+  border: none;
+  padding: 0;
+}
+
+.md :deep(details.md-codeblock > summary) {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.03);
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(15, 23, 42, 0.85);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.md :deep(details.md-codeblock > summary::-webkit-details-marker) {
+  display: none;
+}
+
+.md :deep(details.md-codeblock > summary .md-collapsible-title) {
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.92);
+  flex: 0 0 auto;
+}
+
+.md :deep(details.md-codeblock > summary .md-collapsible-files) {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+.md :deep(details.md-codeblock > summary .md-collapsible-hint) {
+  flex: 0 0 auto;
+  opacity: 0.7;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.md :deep(details.md-codeblock[open] > summary) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .md :deep(.md-codeblock pre) {
   margin: 0;
   padding: 10px 12px;
@@ -150,6 +203,15 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: rgba(15, 23, 42, 0.03);
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: min(40vh, 360px);
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.md :deep(details.md-codeblock[open] .md-codeblock-body pre) {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .md.inverted :deep(.md-codeblock pre) {
@@ -230,5 +292,19 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.hljs-number) {
   color: #b45309;
+}
+
+.md :deep(img) {
+  display: block;
+  max-width: 25%;
+  height: auto;
+  max-height: 20vh;
+  object-fit: contain;
+}
+
+@media (max-width: 480px) {
+  .md :deep(img) {
+    max-width: 50%;
+  }
 }
 </style>

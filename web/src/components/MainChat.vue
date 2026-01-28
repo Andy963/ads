@@ -341,11 +341,6 @@ function onInputKeydown(ev: KeyboardEvent): void {
   send();
 }
 
-function truncateCmd(text: string, maxLen = 100): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen) + "…";
-}
-
 function getCommands(content: string): string[] {
   return content
     .split("\n")
@@ -610,7 +605,7 @@ onBeforeUnmount(() => {
               class="command-tree-item"
             >
               <span class="command-tree-branch">├─</span>
-              <span class="command-cmd" :title="cmd">{{ truncateCmd(cmd) }}</span>
+              <span class="command-cmd">{{ cmd }}</span>
             </div>
           </div>
         </div>
@@ -904,9 +899,9 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  word-break: break-all;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   min-width: 0;
 }
 .bubble {
@@ -1073,7 +1068,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1)) 12px;
+  padding: 12px 12px calc(8px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1)) 12px;
   border-top: 1px solid #e2e8f0;
   background: white;
 }
@@ -1228,25 +1223,29 @@ onBeforeUnmount(() => {
 .attachmentsBar {
   display: flex;
   justify-content: flex-start;
+  height: 10px;
 }
 .attachmentsPill {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
+  box-sizing: border-box;
+  height: 10px;
+  padding: 0 6px;
   border-radius: 999px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: rgba(15, 23, 42, 0.04);
   color: #0f172a;
 }
 .attachmentsText {
-  font-size: 12px;
+  font-size: 8px;
   font-weight: 800;
   color: #475569;
+  line-height: 10px;
 }
 .attachmentsClear {
-  width: 20px;
-  height: 20px;
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
   border: none;
   background: transparent;
@@ -1254,6 +1253,11 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   cursor: pointer;
+}
+.attachmentsClear svg {
+  width: 10px;
+  height: 10px;
+  display: block;
 }
 .attachmentsClear:hover {
   color: #0f172a;

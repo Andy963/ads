@@ -38,7 +38,7 @@ describe("tasks/taskStore", () => {
     assert.equal(fetched.status, "pending");
   });
 
-  it("should claim next pending task and mark planning", () => {
+  it("should claim next pending task and mark running", () => {
     const store = new TaskStore();
     const t1 = store.createTask({ title: "A", prompt: "P1", priority: 1 });
     store.createTask({ title: "B", prompt: "P2", priority: 0 });
@@ -46,11 +46,77 @@ describe("tasks/taskStore", () => {
     const claimed = store.claimNextPendingTask(Date.now());
     assert.ok(claimed);
     assert.equal(claimed.id, t1.id);
-    assert.equal(claimed.status, "planning");
+    assert.equal(claimed.status, "running");
 
     const none = store.claimNextPendingTask(Date.now());
     // second claim should not return the already-claimed task
     assert.ok(!none || none.id !== t1.id);
+  });
+
+  it("should allow reordering pending tasks via queueOrder", () => {
+    const store = new TaskStore();
+    const t1 = store.createTask({ title: "A", prompt: "P1", priority: 0 });
+    const t2 = store.createTask({ title: "B", prompt: "P2", priority: 0 });
+    const t3 = store.createTask({ title: "C", prompt: "P3", priority: 0 });
+
+    const moved = store.movePendingTask(t3.id, "up");
+    assert.ok(moved);
+
+    const first = store.claimNextPendingTask(Date.now());
+    assert.ok(first);
+    assert.equal(first.id, t1.id);
+
+    const second = store.claimNextPendingTask(Date.now());
+    assert.ok(second);
+    assert.equal(second.id, t3.id);
+
+    // Remaining pending task should be the one that wasn't moved ahead.
+    const remaining = store.claimNextPendingTask(Date.now());
+    assert.ok(remaining);
+    assert.equal(remaining.id, t2.id);
+  });
+
+  it("should reorder pending tasks via reorderPendingTasks", () => {
+    const store = new TaskStore();
+    const t1 = store.createTask({ title: "A", prompt: "P1", priority: 0 });
+    const t2 = store.createTask({ title: "B", prompt: "P2", priority: 0 });
+    const t3 = store.createTask({ title: "C", prompt: "P3", priority: 0 });
+
+    store.reorderPendingTasks([t3.id, t1.id, t2.id]);
+
+    const first = store.claimNextPendingTask(Date.now());
+    assert.ok(first);
+    assert.equal(first.id, t3.id);
+
+    const second = store.claimNextPendingTask(Date.now());
+    assert.ok(second);
+    assert.equal(second.id, t1.id);
+
+    const third = store.claimNextPendingTask(Date.now());
+    assert.ok(third);
+    assert.equal(third.id, t2.id);
+  });
+
+  it("should support partial reorderPendingTasks without requiring all pending ids", () => {
+    const store = new TaskStore();
+    const t1 = store.createTask({ title: "A", prompt: "P1", priority: 0 });
+    const t2 = store.createTask({ title: "B", prompt: "P2", priority: 0 });
+    const t3 = store.createTask({ title: "C", prompt: "P3", priority: 0 });
+
+    // Only reorder a subset; other pending tasks should keep their relative position.
+    store.reorderPendingTasks([t3.id, t2.id]);
+
+    const first = store.claimNextPendingTask(Date.now());
+    assert.ok(first);
+    assert.equal(first.id, t1.id);
+
+    const second = store.claimNextPendingTask(Date.now());
+    assert.ok(second);
+    assert.equal(second.id, t3.id);
+
+    const third = store.claimNextPendingTask(Date.now());
+    assert.ok(third);
+    assert.equal(third.id, t2.id);
   });
 
   it("should set plan steps and update step status", () => {
@@ -93,6 +159,19 @@ describe("tasks/taskStore", () => {
     assert.equal(messages.length, 2);
     assert.equal(messages[0]?.role, "user");
     assert.equal(messages[1]?.role, "assistant");
+  });
+
+  it("should mark prompt injected once", () => {
+    const store = new TaskStore();
+    const task = store.createTask({ title: "T", prompt: "P" });
+    const now = Date.now();
+
+    assert.equal(store.markPromptInjected(task.id, now), true);
+    assert.equal(store.markPromptInjected(task.id, now + 1), false);
+
+    const updated = store.getTask(task.id);
+    assert.ok(updated);
+    assert.equal(updated.promptInjectedAt, now);
   });
 
   it("should save and load task contexts", () => {
@@ -138,5 +217,28 @@ describe("tasks/taskStore", () => {
     const t2 = store.createTask({ title: "B", prompt: "P2", inheritContext: true });
     assert.ok(t1.threadId);
     assert.equal(t2.threadId, t1.threadId);
+  });
+
+  it("should dequeue queued tasks in FIFO order and skip cancelled", () => {
+    const store = new TaskStore();
+    const now = Date.now();
+    const t1 = store.createTask({ title: "Q1", prompt: "P1" }, now, { status: "queued", queuedAt: now + 10 });
+    const t2 = store.createTask({ title: "Q2", prompt: "P2" }, now, { status: "queued", queuedAt: now + 20 });
+    const t3 = store.createTask({ title: "Q3", prompt: "P3" }, now, { status: "queued", queuedAt: now + 30 });
+
+    store.updateTask(t2.id, { status: "cancelled" }, now);
+
+    const d1 = store.dequeueNextQueuedTask(now);
+    assert.ok(d1);
+    assert.equal(d1.id, t1.id);
+    assert.equal(d1.status, "pending");
+
+    const d2 = store.dequeueNextQueuedTask(now);
+    assert.ok(d2);
+    assert.equal(d2.id, t3.id);
+    assert.equal(d2.status, "pending");
+
+    const d3 = store.dequeueNextQueuedTask(now);
+    assert.equal(d3, null);
   });
 });

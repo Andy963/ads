@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { TaskDetail } from "../api/types";
 import MarkdownContent from "./MarkdownContent.vue";
+import AttachmentThumb from "./AttachmentThumb.vue";
 
 type ChatMessage = {
   id: string;
@@ -11,7 +12,7 @@ type ChatMessage = {
   streaming?: boolean;
 };
 
-const props = defineProps<{ task: TaskDetail | null; messages: ChatMessage[] }>();
+const props = defineProps<{ task: TaskDetail | null; messages: ChatMessage[]; apiToken?: string }>();
 const emit = defineEmits<{
   (e: "cancel", id: string): void;
   (e: "retry", id: string): void;
@@ -44,6 +45,13 @@ const isRunning = computed(() => {
   if (!t) return false;
   return t.status === "pending" || t.status === "planning" || t.status === "running";
 });
+
+function withTokenQuery(url: string): string {
+  const token = String(props.apiToken ?? "").trim();
+  if (!token) return url;
+  const joiner = url.includes("?") ? "&" : "?";
+  return `${url}${joiner}token=${encodeURIComponent(token)}`;
+}
 
 function handleScroll() {
   if (!listRef.value) return;
@@ -186,6 +194,18 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div v-if="task.attachments && task.attachments.length" class="attachmentsStrip" aria-label="Task attachments">
+      <AttachmentThumb
+        v-for="a in task.attachments"
+        :key="a.id"
+        :src="withTokenQuery(a.url)"
+        :href="withTokenQuery(a.url)"
+        :width="10"
+        :height="10"
+        :title="`${a.contentType} ${a.width}x${a.height}`"
+      />
+    </div>
+
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
         <span v-if="task.status === 'pending'">等待执行…</span>
@@ -260,6 +280,21 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #e2e8f0;
   flex-wrap: wrap;
   gap: 10px;
+}
+.attachmentsStrip {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 10px;
+  gap: 6px;
+  padding: 0 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: rgba(248, 250, 252, 0.9);
+  background-image: linear-gradient(#e2e8f0, #e2e8f0);
+  background-size: 100% 1px;
+  background-position: 0 100%;
+  background-repeat: no-repeat;
 }
 .header-left {
   flex: 1;

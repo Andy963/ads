@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import type { ModelConfig, PlanStep, Task } from "../api/types";
+import { computed, nextTick, ref } from "vue";
+import type { ModelConfig, PlanStep, Task, TaskQueueStatus } from "../api/types";
 
 type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "model" | "priority" | "inheritContext" | "maxRetries">>;
 
@@ -10,6 +10,9 @@ const props = defineProps<{
   selectedId?: string | null;
   plans: Map<string, PlanStep[]>;
   expanded: Set<string>;
+  queueStatus?: TaskQueueStatus | null;
+  canRunSingle?: boolean;
+  runBusyIds?: Set<string>;
 }>();
 
 const emit = defineEmits<{
@@ -17,6 +20,9 @@ const emit = defineEmits<{
   (e: "togglePlan", id: string): void;
   (e: "ensurePlan", id: string): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
+  (e: "queueRun"): void;
+  (e: "queuePause"): void;
+  (e: "runSingle", id: string): void;
   (e: "cancel", id: string): void;
   (e: "retry", id: string): void;
   (e: "delete", id: string): void;
@@ -85,8 +91,16 @@ const editPriority = ref(0);
 const editMaxRetries = ref(3);
 const editInheritContext = ref(false);
 const error = ref<string | null>(null);
+const editTitleEl = ref<HTMLInputElement | null>(null);
+
+const editingTask = computed(() => {
+  const id = String(editingId.value ?? "").trim();
+  if (!id) return null;
+  return props.tasks.find((t) => t.id === id) ?? null;
+});
 
 function startEdit(task: Task): void {
+  if (editingId.value) return;
   editingId.value = task.id;
   editTitle.value = task.title ?? "";
   editPrompt.value = task.prompt ?? "";
@@ -95,6 +109,9 @@ function startEdit(task: Task): void {
   editMaxRetries.value = task.maxRetries ?? 3;
   editInheritContext.value = Boolean(task.inheritContext);
   error.value = null;
+  void nextTick(() => {
+    editTitleEl.value?.focus();
+  });
 }
 
 function stopEdit(): void {
@@ -139,13 +156,63 @@ function togglePlan(task: Task): void {
     emit("ensurePlan", task.id);
   }
 }
+
+const queueStatus = computed(() => props.queueStatus ?? null);
+const queueCanRunAll = computed(() => Boolean(queueStatus.value?.enabled) && Boolean(queueStatus.value?.ready));
+const queueIsRunning = computed(() => Boolean(queueStatus.value?.running));
+const canRunSingleNow = computed(() => {
+  if (!props.canRunSingle) return false;
+  if (!queueStatus.value) return true;
+  if (!queueStatus.value.enabled || !queueStatus.value.ready) return false;
+  return !queueStatus.value.running;
+});
+
+function isRunBusy(taskId: string): boolean {
+  const id = String(taskId ?? "").trim();
+  if (!id) return false;
+  return props.runBusyIds?.has(id) ?? false;
+}
+
+function canRunSingleTask(task: Task): boolean {
+  const status = task.status;
+  return status === "pending" || status === "queued" || status === "paused";
+}
+
+function toggleQueue(): void {
+  if (!queueStatus.value) return;
+  if (!queueCanRunAll.value) return;
+  emit(queueIsRunning.value ? "queuePause" : "queueRun");
+}
 </script>
 
 <template>
   <div class="card">
     <div class="header">
-      <h3 class="title">任务列表</h3>
-      <span class="count">{{ tasks.length }}</span>
+      <div class="headerLeft">
+        <h3 class="title">任务列表</h3>
+        <span class="count">{{ tasks.length }}</span>
+      </div>
+      <div class="headerRight">
+        <div v-if="queueStatus" class="queueControls">
+          <span class="queueDot" :class="{ on: queueIsRunning }" :title="queueIsRunning ? 'Queue running' : 'Queue paused'" />
+          <button
+            class="iconBtn"
+            :class="queueIsRunning ? 'danger' : 'primary'"
+            type="button"
+            :disabled="!queueCanRunAll"
+            :title="queueIsRunning ? 'Pause queue' : 'Run queue'"
+            aria-label="Toggle task queue"
+            @click.stop="toggleQueue"
+          >
+            <svg v-if="queueIsRunning" width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M6 4h2v12H6V4Zm6 0h2v12h-2V4Z" />
+            </svg>
+            <svg v-else width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M7 4.5v11l9-5.5-9-5.5Z" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
 
     <div v-if="tasks.length === 0" class="empty">
@@ -180,7 +247,27 @@ function togglePlan(task: Task): void {
             </div>
           </button>
           <div class="row-actions">
-            <button v-if="t.status === 'pending' && editingId !== t.id" class="iconBtn" type="button" title="编辑" @click.stop="startEdit(t)">
+            <button
+              v-if="canRunSingleTask(t)"
+              class="iconBtn primary"
+              type="button"
+              :disabled="!canRunSingleNow || isRunBusy(t.id)"
+              :title="queueIsRunning ? 'Pause queue to run a single task' : 'Run this task'"
+              aria-label="Run single task"
+              @click.stop="emit('runSingle', t.id)"
+            >
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M7 4.5v11l9-5.5-9-5.5Z" />
+              </svg>
+            </button>
+            <button
+              v-if="t.status === 'pending' && editingId !== t.id"
+              class="iconBtn"
+              type="button"
+              title="编辑"
+              :disabled="Boolean(editingId)"
+              @click.stop="startEdit(t)"
+            >
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path
                   fill-rule="evenodd"
@@ -234,12 +321,46 @@ function togglePlan(task: Task): void {
           </div>
         </div>
 
-        <div v-if="t.status === 'pending' && editingId === t.id" class="editor">
+        <div v-if="expanded.has(t.id) && canShowPlan(t)" class="plan">
+          <div v-if="!(plans.get(t.id)?.length)" class="plan-empty">计划生成中…</div>
+          <div v-else class="plan-rows">
+            <div v-for="s in plans.get(t.id)" :key="s.id" class="plan-row" :data-status="s.status">
+              <span class="plan-step">{{ s.stepNumber }}.</span>
+              <span class="plan-title">{{ s.title }}</span>
+              <span class="plan-status" :data-status="s.status">
+                <span v-if="s.status === 'completed'" class="ok">✓</span>
+                <span v-else-if="s.status === 'running'" class="run"></span>
+                <span v-else class="wait"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <teleport to="body">
+    <div v-if="editingTask" class="modalOverlay" role="dialog" aria-modal="true" @click.self="stopEdit">
+      <div class="modalCard">
+        <div class="modalHeader">
+          <div class="modalTitle">Edit task</div>
+          <button class="iconBtn" type="button" aria-label="Close" title="Close" @click="stopEdit">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
+        </div>
+
+        <div class="modalBody">
           <div v-if="error" class="err">{{ error }}</div>
 
           <label class="field">
             <span class="label">标题</span>
-            <input v-model="editTitle" />
+            <input ref="editTitleEl" v-model="editTitle" />
           </label>
 
           <div class="grid">
@@ -268,35 +389,20 @@ function togglePlan(task: Task): void {
 
           <label class="field">
             <span class="label">Prompt</span>
-            <textarea v-model="editPrompt" rows="4" />
+            <textarea v-model="editPrompt" rows="6" />
           </label>
 
           <div class="actions">
-            <button class="iconBtn primary" type="button" title="保存" @click="saveEdit(t)">
+            <button class="iconBtn primary" type="button" aria-label="Save" title="Save" @click="saveEdit(editingTask)">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.1 3.1 6.8-6.8a1 1 0 0 1 1.4 0Z" clip-rule="evenodd" />
               </svg>
             </button>
           </div>
         </div>
-
-        <div v-if="expanded.has(t.id) && canShowPlan(t)" class="plan">
-          <div v-if="!(plans.get(t.id)?.length)" class="plan-empty">计划生成中…</div>
-          <div v-else class="plan-rows">
-            <div v-for="s in plans.get(t.id)" :key="s.id" class="plan-row" :data-status="s.status">
-              <span class="plan-step">{{ s.stepNumber }}.</span>
-              <span class="plan-title">{{ s.title }}</span>
-              <span class="plan-status" :data-status="s.status">
-                <span v-if="s.status === 'completed'" class="ok">✓</span>
-                <span v-else-if="s.status === 'running'" class="run"></span>
-                <span v-else class="wait"></span>
-              </span>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
-  </div>
+  </teleport>
 </template>
 
 <style scoped>
@@ -316,6 +422,34 @@ function togglePlan(task: Task): void {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+}
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.queueControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.queueDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.9);
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18);
+}
+.queueDot.on {
+  background: rgba(16, 185, 129, 1);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.22);
 }
 .title {
   margin: 0;
@@ -531,12 +665,46 @@ function togglePlan(task: Task): void {
 .iconBtn.primary:hover:not(:disabled) {
   color: var(--accent-2);
 }
-.editor {
-  border-top: 1px solid #e2e8f0;
-  background: #f8fafc;
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.42);
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  z-index: 9999;
+}
+.modalCard {
+  width: min(760px, 100%);
+  max-height: 85vh;
+  overflow: auto;
+  border-radius: 14px;
+  background: white;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.35);
+}
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(248, 250, 252, 0.95);
+}
+.modalTitle {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modalBody {
   padding: 12px;
   display: grid;
   gap: 10px;
+  background: #f8fafc;
 }
 .err {
   border: 1px solid rgba(239, 68, 68, 0.3);

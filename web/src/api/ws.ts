@@ -1,4 +1,3 @@
-import { encodeBase64Url } from "../lib/base64url";
 import type { TaskEventPayload } from "./types";
 
 type WsCommandPayload = {
@@ -10,18 +9,18 @@ type WsCommandPayload = {
 };
 
 type WsMessage =
-  | { type: "welcome"; sessionId?: string; workspace?: unknown; threadId?: string }
+  | { type: "welcome"; sessionId?: string; workspace?: unknown; threadId?: string; reset?: boolean }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
   | { type: "delta"; delta?: string }
-  | { type: "result"; ok: boolean; output: string }
+  | { type: "result"; ok: boolean; output: string; kind?: string }
   | { type: "error"; message?: string }
+  | { type: "thread_reset" }
   | { type: "command"; detail?: string; command?: WsCommandPayload | null }
   | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number }
   | { type: string; [k: string]: unknown };
 
 export class AdsWebSocket {
   private ws: WebSocket | null = null;
-  private readonly token: string;
   private readonly sessionId: string;
   private pingTimer: number | null = null;
 
@@ -31,8 +30,7 @@ export class AdsWebSocket {
   onTaskEvent?: (payload: { event: TaskEventPayload["event"]; data: unknown }) => void;
   onMessage?: (msg: WsMessage) => void;
 
-  constructor(options: { token: string; sessionId?: string }) {
-    this.token = options.token;
+  constructor(options: { sessionId?: string }) {
     this.sessionId = options.sessionId ?? cryptoRandomId();
   }
 
@@ -59,8 +57,7 @@ export class AdsWebSocket {
   connect(): void {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const url = proto + location.host + "/ws";
-    const tokenProto = this.token ? `ads-token.${encodeBase64Url(this.token)}` : "";
-    const protocols = ["ads-v1", tokenProto, `ads-session.${this.sessionId}`].filter(Boolean);
+    const protocols = ["ads-v1", `ads-session.${this.sessionId}`].filter(Boolean);
 
     this.ws = new WebSocket(url, protocols);
     this.ws.onopen = () => {

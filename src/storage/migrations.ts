@@ -247,6 +247,111 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    description: "Task ordering - add queue_order to tasks",
+    up: (db) => {
+      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
+      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      if (!names.has("queue_order")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN queue_order INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET queue_order = created_at
+        WHERE queue_order IS NULL
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_queue_order
+          ON tasks(status, priority DESC, queue_order ASC, created_at ASC)
+      `);
+    },
+  },
+  {
+    version: 5,
+    description: "Task queue - add queued_at to tasks for delayed enqueue UX",
+    up: (db) => {
+      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
+      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      if (!names.has("queued_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN queued_at INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET queued_at = COALESCE(queued_at, created_at)
+        WHERE status = 'queued' AND queued_at IS NULL
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_queued_at
+          ON tasks(status, priority DESC, queue_order ASC, queued_at ASC, created_at ASC)
+      `);
+    },
+  },
+  {
+    version: 6,
+    description: "Attachments - add attachments table for image uploads",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS attachments (
+          id TEXT PRIMARY KEY,
+          task_id TEXT,
+          kind TEXT NOT NULL,
+          content_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          width INTEGER NOT NULL,
+          height INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          storage_key TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_sha256 ON attachments(sha256);
+        CREATE INDEX IF NOT EXISTS idx_attachments_task_id ON attachments(task_id, created_at DESC);
+      `);
+    },
+  },
+  {
+    version: 7,
+    description: "Task queue - add prompt_injected_at for delayed prompt injection idempotency",
+    up: (db) => {
+      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
+      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      if (!names.has("prompt_injected_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN prompt_injected_at INTEGER`);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_prompt_injected_at
+          ON tasks(prompt_injected_at, created_at DESC)
+      `);
+    },
+  },
+  {
+    version: 8,
+    description: "Attachments - store original filename",
+    up: (db) => {
+      const columns = db.prepare(`PRAGMA table_info(attachments)`).all() as Array<{ name?: string }>;
+      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      if (!names.has("filename")) {
+        db.exec(`ALTER TABLE attachments ADD COLUMN filename TEXT`);
+      }
+    },
+  },
+  {
+    version: 9,
+    description: "Models - add gpt-5.2-codex model config",
+    up: (db) => {
+      db.exec(`
+        INSERT OR IGNORE INTO model_configs (id, display_name, provider, is_default) VALUES
+          ('gpt-5.2-codex', 'GPT-5.2 Codex', 'openai', 0);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 2,

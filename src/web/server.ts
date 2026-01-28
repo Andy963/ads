@@ -40,7 +40,7 @@ import { stripLeadingTranslation } from "../utils/assistantText.js";
 import { extractTextFromInput } from "../utils/inputText.js";
 import { processAdrBlocks } from "../utils/adrRecording.js";
 import { runVectorSearch } from "../vectorSearch/run.js";
-import { closeAllStateDatabases } from "../state/database.js";
+import { closeAllStateDatabases, getStateDatabase, resolveStateDbPath } from "../state/database.js";
 import { closeAllWorkspaceDatabases } from "../storage/database.js";
 
 import { TaskQueue } from "../tasks/queue.js";
@@ -49,6 +49,29 @@ import { OrchestratorTaskPlanner } from "../tasks/planner.js";
 import { OrchestratorTaskExecutor } from "../tasks/executor.js";
 import type { TaskStatus as QueueTaskStatus } from "../tasks/types.js";
 import { AsyncLock } from "../utils/asyncLock.js";
+
+import { AttachmentStore } from "../attachments/store.js";
+import { detectImageInfo } from "../attachments/images.js";
+import type { ImageAttachmentResponse } from "../attachments/types.js";
+import { extractMultipartFile } from "./multipart.js";
+import { TaskRunController } from "./taskRunController.js";
+import { broadcastTaskStart } from "./taskStartBroadcast.js";
+import { handleSingleTaskRun, matchSingleTaskRunPath } from "./api/taskRun.js";
+import { parseCookies, serializeCookie } from "./auth/cookies.js";
+import { isOriginAllowed, parseAllowedOrigins } from "./auth/origin.js";
+import {
+  ADS_SESSION_COOKIE_NAME,
+  countUsers,
+  createWebSession,
+  findUserCredentialByUsername,
+  lookupSessionByToken,
+  refreshSessionIfNeeded,
+  revokeSessionByTokenHash,
+  resolveSessionPepper,
+  resolveSessionTtlSeconds,
+} from "./auth/sessions.js";
+import { verifyPasswordScrypt } from "./auth/password.js";
+import { ensureWebAuthTables } from "./auth/schema.js";
 
 import {
   loadCwdStore,
@@ -70,7 +93,6 @@ const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 // SECURITY: Do NOT change this default. Keep the Web server loopback-only by default.
 // If you need remote access, use a reverse proxy and/or set ADS_WEB_HOST explicitly.
 const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
-const TOKEN = (process.env.ADS_WEB_TOKEN ?? process.env.WEB_AUTH_TOKEN ?? "").trim();
 const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 1));
 // <= 0 disables WebSocket ping keepalive.
 const pingIntervalMsRaw = Number(process.env.ADS_WEB_WS_PING_INTERVAL_MS ?? 15_000);
@@ -82,6 +104,7 @@ const WS_READY_OPEN = 1;
 const workspaceCache = new Map<string, string>();
 const interruptControllers = new Map<number, AbortController>();
 const adsStateDir = resolveAdsStateDir();
+const stateDbPath = resolveStateDbPath();
 const webThreadStorage = new ThreadStorage({
   namespace: "web",
   storagePath: path.join(adsStateDir, "web-threads.json"),
@@ -89,13 +112,13 @@ const webThreadStorage = new ThreadStorage({
 // Disable in-memory session timeout cleanup for Web (keep sessions until process exit / explicit reset).
 const sessionManager = new SessionManager(0, 0, "workspace-write", "gpt-5.2", webThreadStorage);
 const historyStore = new HistoryStore({
-  storagePath: path.join(adsStateDir, "state.db"),
+  storagePath: stateDbPath,
   namespace: "web",
   migrateFromPaths: [path.join(adsStateDir, "web-history.json")],
   maxEntriesPerSession: 200,
   maxTextLength: 4000,
 });
-const cwdStorePath = path.join(adsStateDir, "state.db");
+const cwdStorePath = stateDbPath;
 const cwdStore = loadCwdStore(cwdStorePath);
 
 const wsMessageSchema = z.object({
@@ -120,6 +143,7 @@ function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boo
 function parseTaskStatus(value: string | undefined | null): QueueTaskStatus | undefined {
   const raw = String(value ?? "").trim().toLowerCase();
   switch (raw) {
+    case "queued":
     case "pending":
     case "planning":
     case "running":
@@ -294,54 +318,119 @@ async function ensureWebPidFile(workspaceRoot: string): Promise<string> {
   return pidFile;
 }
 
-function extractBearerToken(req: http.IncomingMessage): string | null {
-  const auth = req.headers["authorization"];
-  const value = Array.isArray(auth) ? auth[0] : auth;
-  if (!value) {
-    return null;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const match = /^Bearer\s+(.+)$/i.exec(trimmed);
-  return match?.[1]?.trim() ?? null;
-}
+const allowedOrigins = parseAllowedOrigins(process.env.ADS_WEB_ALLOWED_ORIGINS);
+const sessionTtlSeconds = resolveSessionTtlSeconds();
+const sessionPepper = resolveSessionPepper();
 
-function extractQueryToken(req: http.IncomingMessage): string | null {
-  const url = req.url;
-  if (!url) {
-    return null;
-  }
-  try {
-    const parsed = new URL(url, "http://localhost");
-    const token = parsed.searchParams.get("token");
-    return token ? token.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-function isLoopbackAddress(address: string | undefined): boolean {
-  const raw = String(address ?? "").trim().toLowerCase();
-  if (!raw) {
-    return false;
-  }
-  if (raw === "127.0.0.1" || raw === "::1") {
+function isRequestSecure(req: http.IncomingMessage): boolean {
+  const xfProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim().toLowerCase() ?? "";
+  if (xfProto === "https") {
     return true;
   }
-  if (raw.startsWith("::ffff:")) {
-    return raw.slice("::ffff:".length) === "127.0.0.1";
+  const forwarded = String(req.headers["forwarded"] ?? "").trim().toLowerCase();
+  if (forwarded) {
+    // Example: Forwarded: for=...;proto=https;host=...
+    const match = /(?:^|;)\s*proto=([^;,\s]+)/.exec(forwarded);
+    if (match && match[1] === "https") {
+      return true;
+    }
   }
   return false;
 }
 
-function isRequestAuthorized(req: http.IncomingMessage): boolean {
-  if (!TOKEN) {
-    return isLoopbackAddress(req.socket.remoteAddress);
+function resolveCookieSecure(req: http.IncomingMessage): boolean {
+  const raw = String(process.env.ADS_WEB_COOKIE_SECURE ?? "").trim().toLowerCase();
+  if (!raw || raw === "auto") {
+    return isRequestSecure(req);
   }
-  const token = extractBearerToken(req) ?? extractQueryToken(req);
-  return token === TOKEN;
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+  return isRequestSecure(req);
+}
+
+function isStateChangingMethod(method: string | undefined): boolean {
+  const m = String(method ?? "").toUpperCase();
+  return m === "POST" || m === "PATCH" || m === "DELETE";
+}
+
+function resolveClientIp(req: http.IncomingMessage): string | null {
+  const raw = req.headers["x-forwarded-for"];
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  const candidate = String(first ?? "").split(",")[0]?.trim();
+  return candidate || (req.socket.remoteAddress ? String(req.socket.remoteAddress) : null);
+}
+
+function getUserAgent(req: http.IncomingMessage): string | null {
+  const raw = req.headers["user-agent"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const trimmed = String(value ?? "").trim();
+  return trimmed || null;
+}
+
+function readSessionCookie(req: http.IncomingMessage): string | null {
+  const cookies = parseCookies(req.headers["cookie"]);
+  const token = cookies[ADS_SESSION_COOKIE_NAME];
+  const trimmed = String(token ?? "").trim();
+  return trimmed || null;
+}
+
+type RequestAuthContext =
+  | { ok: true; userId: string; username: string; tokenHash: string; setCookie?: string }
+  | { ok: false };
+
+function buildSessionCookie(req: http.IncomingMessage, token: string, ttlSeconds: number): string {
+  // Default to "auto": Secure only when the outer request is HTTPS.
+  // This avoids browsers dropping Secure cookies on plain HTTP (common on localhost).
+  // Override via ADS_WEB_COOKIE_SECURE=true/false.
+  return serializeCookie(ADS_SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: resolveCookieSecure(req),
+    sameSite: "Lax",
+    path: "/",
+    maxAgeSeconds: ttlSeconds,
+  });
+}
+
+function buildClearSessionCookie(req: http.IncomingMessage): string {
+  return serializeCookie(ADS_SESSION_COOKIE_NAME, "", {
+    httpOnly: true,
+    secure: resolveCookieSecure(req),
+    sameSite: "Lax",
+    path: "/",
+    maxAgeSeconds: 0,
+  });
+}
+
+function authenticateRequest(req: http.IncomingMessage): RequestAuthContext {
+  const token = readSessionCookie(req);
+  if (!token) {
+    return { ok: false };
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const lookup = lookupSessionByToken({ token, nowSeconds, ttlSeconds: sessionTtlSeconds, pepper: sessionPepper });
+  if (!lookup.ok) {
+    return { ok: false };
+  }
+
+  const ip = resolveClientIp(req);
+  const agent = getUserAgent(req);
+  const refreshed = refreshSessionIfNeeded({
+    tokenHash: lookup.session.token_hash,
+    nowSeconds,
+    ttlSeconds: sessionTtlSeconds,
+    lastSeenIp: ip,
+    userAgent: agent,
+    refresh: lookup.shouldRefresh,
+  });
+
+  const setCookie = lookup.shouldRefresh ? buildSessionCookie(req, token, sessionTtlSeconds) : undefined;
+  void refreshed;
+  return { ok: true, userId: lookup.user.id, username: lookup.user.username, tokenHash: lookup.session.token_hash, setCookie };
 }
 
 function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown): void {
@@ -473,15 +562,7 @@ function createHttpServer(options: { handleApiRequest?: (req: http.IncomingMessa
 
   const server = http.createServer((req, res) => {
     const url = req.url ?? "";
-    if (!TOKEN && !isLoopbackAddress(req.socket.remoteAddress) && !url.startsWith("/healthz")) {
-      res.writeHead(401).end("Unauthorized");
-      return;
-    }
     if (url.startsWith("/api/")) {
-      if (!isRequestAuthorized(req)) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
       const handler = options.handleApiRequest;
       if (!handler) {
         sendJson(res, 404, { error: "Not Found" });
@@ -546,22 +627,13 @@ function sendWorkspaceState(ws: WebSocket, workspaceRoot: string): void {
   }
 }
 
-function decodeBase64Url(input: string): string {
-  const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-  try {
-    return Buffer.from(padded, "base64").toString("utf8");
-  } catch {
-    return "";
-  }
-}
-
 async function start(): Promise<void> {
   const workspaceRoot = detectWorkspace();
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
 
   const taskQueueLock = new AsyncLock();
-  const shouldRunTaskQueue = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
+  const taskQueueAvailable = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
+  const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
 
   const clients: Set<WebSocket> = new Set();
   const clientMetaByWs = new Map<WebSocket, { historyKey: string; sessionId: string }>();
@@ -591,6 +663,51 @@ async function start(): Promise<void> {
     }
   };
 
+  const TASK_QUEUE_METRIC_NAMES = [
+    "TASK_ADDED",
+    "TASK_STARTED",
+    "PROMPT_INJECTED",
+    "TASK_COMPLETED",
+    "INJECTION_SKIPPED",
+  ] as const;
+
+  type TaskQueueMetricName = (typeof TASK_QUEUE_METRIC_NAMES)[number];
+
+  type TaskQueueMetricEvent = {
+    name: TaskQueueMetricName;
+    ts: number;
+    taskId?: string;
+    reason?: string;
+  };
+
+  type TaskQueueMetrics = {
+    counts: Record<TaskQueueMetricName, number>;
+    events: TaskQueueMetricEvent[];
+  };
+
+  const createTaskQueueMetrics = (): TaskQueueMetrics => ({
+    counts: Object.fromEntries(TASK_QUEUE_METRIC_NAMES.map((name) => [name, 0])) as Record<TaskQueueMetricName, number>,
+    events: [],
+  });
+
+  const recordTaskQueueMetric = (
+    metrics: TaskQueueMetrics,
+    name: TaskQueueMetricName,
+    event?: { ts?: number; taskId?: string; reason?: string },
+  ): void => {
+    metrics.counts[name] = (metrics.counts[name] ?? 0) + 1;
+    metrics.events.push({
+      name,
+      ts: typeof event?.ts === "number" ? event.ts : Date.now(),
+      taskId: event?.taskId,
+      reason: event?.reason,
+    });
+    const maxEvents = 200;
+    if (metrics.events.length > maxEvents) {
+      metrics.events.splice(0, metrics.events.length - maxEvents);
+    }
+  };
+
   const hashTaskId = (taskId: string): number => {
     const normalized = String(taskId ?? "").trim();
     if (!normalized) return 0;
@@ -613,12 +730,53 @@ async function start(): Promise<void> {
     workspaceRoot: string;
     sessionId: string;
     taskStore: QueueTaskStore;
+    attachmentStore: AttachmentStore;
     taskQueue: TaskQueue;
+    queueRunning: boolean;
+    dequeueInProgress: boolean;
+    metrics: TaskQueueMetrics;
+    runController: TaskRunController;
     getStatusOrchestrator: () => ReturnType<SessionManager["getOrCreate"]>;
     getTaskQueueOrchestrator: (task: { id: string }) => ReturnType<SessionManager["getOrCreate"]>;
   };
 
   const taskContexts = new Map<string, TaskQueueContext>();
+
+  const promoteQueuedTasksToPending = (ctx: TaskQueueContext): void => {
+    if (!ctx.queueRunning) {
+      return;
+    }
+    if (ctx.dequeueInProgress) {
+      return;
+    }
+    ctx.dequeueInProgress = true;
+    try {
+      if (!ctx.queueRunning) {
+        return;
+      }
+      // If something is still planning/running, do not dequeue to avoid double-starts.
+      if (ctx.taskStore.getActiveTaskId()) {
+        return;
+      }
+
+      const now = Date.now();
+      let promoted = 0;
+      while (true) {
+        const dequeued = ctx.taskStore.dequeueNextQueuedTask(now);
+        if (!dequeued) {
+          break;
+        }
+        promoted += 1;
+        broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: dequeued, ts: now });
+      }
+      if (promoted > 0) {
+        ctx.taskQueue.notifyNewTask();
+      }
+    } finally {
+      ctx.dequeueInProgress = false;
+    }
+  };
+
   const ensureTaskContext = (workspaceRootForContext: string): TaskQueueContext => {
     const key = String(workspaceRootForContext ?? "").trim() || workspaceRoot;
     const existing = taskContexts.get(key);
@@ -628,6 +786,7 @@ async function start(): Promise<void> {
 
     const sessionId = deriveProjectSessionId(key);
     const taskStore = new QueueTaskStore({ workspacePath: key });
+    const attachmentStore = new AttachmentStore({ workspacePath: key });
     const taskQueueStatusUserId = 0;
     const taskQueueThreadStorage = new ThreadStorage({
       namespace: `task-queue:${sessionId}`,
@@ -665,15 +824,41 @@ async function start(): Promise<void> {
       workspaceRoot: key,
       sessionId,
       taskStore,
+      attachmentStore,
       taskQueue,
+      queueRunning: false,
+      dequeueInProgress: false,
+      metrics: createTaskQueueMetrics(),
+      runController: new TaskRunController(),
       getStatusOrchestrator,
       getTaskQueueOrchestrator,
     };
     taskContexts.set(key, ctx);
 
-    taskQueue.on("task:started", ({ task }) =>
-      broadcastToSession(sessionId, { type: "task:event", event: "task:started", data: task, ts: Date.now() }),
-    );
+    taskQueue.on("task:started", ({ task }) => {
+      const ts = Date.now();
+      recordTaskQueueMetric(ctx.metrics, "TASK_STARTED", { ts, taskId: task.id });
+      const prompt = String((task as { prompt?: unknown } | null)?.prompt ?? "").trim();
+      if (!prompt) {
+        logger.warn(`[Web] task prompt is empty; broadcasting placeholder taskId=${task.id}`);
+      }
+      broadcastTaskStart({
+        task,
+        ts,
+        markPromptInjected: (taskId: string, now: number) => {
+          try {
+            return ctx.taskStore.markPromptInjected(taskId, now);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`[Web] markPromptInjected failed taskId=${taskId} err=${message}`);
+            throw error;
+          }
+        },
+        recordHistory: (entry) => recordToSessionHistories(ctx.sessionId, entry),
+        recordMetric: (name, event) => recordTaskQueueMetric(ctx.metrics, name as TaskQueueMetricName, event),
+        broadcast: (payload) => broadcastToSession(sessionId, payload),
+      });
+    });
     taskQueue.on("task:planned", ({ task, plan }) =>
       broadcastToSession(sessionId, { type: "task:event", event: "task:planned", data: { task, plan }, ts: Date.now() }),
     );
@@ -697,24 +882,50 @@ async function start(): Promise<void> {
       recordToSessionHistories(sessionId, { role: "status", text: `$ ${command}`, ts: Date.now(), kind: "command" });
     });
     taskQueue.on("task:completed", ({ task }) => {
+      recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
       broadcastToSession(sessionId, { type: "task:event", event: "task:completed", data: task, ts: Date.now() });
       if (task.result && task.result.trim()) {
         recordToSessionHistories(sessionId, { role: "ai", text: task.result.trim(), ts: Date.now() });
       }
+      if (ctx.runController.onTaskTerminal(ctx, task.id)) {
+        return;
+      }
+      promoteQueuedTasksToPending(ctx);
     });
     taskQueue.on("task:failed", ({ task, error }) => {
       broadcastToSession(sessionId, { type: "task:event", event: "task:failed", data: { task, error }, ts: Date.now() });
       recordToSessionHistories(sessionId, { role: "status", text: `[Task failed] ${error}`, ts: Date.now(), kind: "error" });
+      if (task.status === "failed") {
+        recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
+        if (ctx.runController.onTaskTerminal(ctx, task.id)) {
+          return;
+        }
+        promoteQueuedTasksToPending(ctx);
+      }
     });
     taskQueue.on("task:cancelled", ({ task }) => {
       broadcastToSession(sessionId, { type: "task:event", event: "task:cancelled", data: task, ts: Date.now() });
       recordToSessionHistories(sessionId, { role: "status", text: "[Cancelled]", ts: Date.now(), kind: "status" });
+      recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
+      if (ctx.runController.onTaskTerminal(ctx, task.id)) {
+        return;
+      }
+      promoteQueuedTasksToPending(ctx);
     });
 
-    if (shouldRunTaskQueue) {
+    if (taskQueueAvailable) {
       const status = getStatusOrchestrator().status();
-      void taskQueue.start();
-      logger.info(`[Web] TaskQueue started workspace=${key}`);
+      if (taskQueueAutoStart) {
+        void taskQueue.start();
+        ctx.queueRunning = true;
+        logger.info(`[Web] TaskQueue started workspace=${key}`);
+        promoteQueuedTasksToPending(ctx);
+      } else {
+        taskQueue.pause("manual");
+        void taskQueue.start();
+        ctx.queueRunning = false;
+        logger.info(`[Web] TaskQueue paused workspace=${key}`);
+      }
       if (!status.ready) {
         logger.warn(`[Web] Agent not ready yet; tasks may fail: ${status.error ?? "unknown"}`);
       }
@@ -723,7 +934,6 @@ async function start(): Promise<void> {
     return ctx;
   };
 
-  const defaultTaskContext = ensureTaskContext(workspaceRoot);
   const allowedDirValidator = new DirectoryManager(allowedDirs);
 
   const resolveTaskWorkspaceRoot = (url: URL): string => {
@@ -788,6 +998,105 @@ async function start(): Promise<void> {
     handleApiRequest: async (req, res) => {
       const url = new URL(req.url ?? "", "http://localhost");
       const pathname = url.pathname;
+
+      if (isStateChangingMethod(req.method) && !isOriginAllowed(req.headers["origin"], allowedOrigins)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return true;
+      }
+
+      if (req.method === "GET" && pathname === "/api/auth/status") {
+        sendJson(res, 200, { initialized: countUsers() > 0 });
+        return true;
+      }
+
+      if (req.method === "POST" && pathname === "/api/auth/login") {
+        const body = await readJsonBody(req);
+        const schema = z.object({ username: z.string().min(1), password: z.string().min(1) }).passthrough();
+        const parsed = schema.safeParse(body ?? {});
+        if (!parsed.success) {
+          sendJson(res, 400, { error: "Invalid payload" });
+          return true;
+        }
+        const username = parsed.data.username.trim();
+        const password = parsed.data.password;
+
+        const db = getStateDatabase();
+        ensureWebAuthTables(db);
+        const cred = findUserCredentialByUsername(db, username);
+        if (!cred || cred.disabled_at) {
+          sendJson(res, 401, { error: "Unauthorized" });
+          return true;
+        }
+        if (!verifyPasswordScrypt(password, cred.password_hash)) {
+          sendJson(res, 401, { error: "Unauthorized" });
+          return true;
+        }
+
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const ip = resolveClientIp(req);
+        const agent = getUserAgent(req);
+        const created = createWebSession({
+          userId: cred.id,
+          nowSeconds,
+          ttlSeconds: sessionTtlSeconds,
+          pepper: sessionPepper,
+          lastSeenIp: ip,
+          userAgent: agent,
+        });
+
+        db.prepare("UPDATE web_users SET last_login_at = ?, updated_at = ? WHERE id = ?").run(
+          nowSeconds,
+          nowSeconds,
+          cred.id,
+        );
+
+        res.setHeader("Set-Cookie", buildSessionCookie(req, created.token, sessionTtlSeconds));
+        sendJson(res, 200, { success: true });
+        return true;
+      }
+
+      if (pathname === "/api/auth/logout" && req.method === "POST") {
+        const auth = authenticateRequest(req);
+        res.setHeader("Set-Cookie", buildClearSessionCookie(req));
+        if (!auth.ok) {
+          sendJson(res, 200, { success: true });
+          return true;
+        }
+        revokeSessionByTokenHash({ tokenHash: auth.tokenHash });
+        sendJson(res, 200, { success: true });
+        return true;
+      }
+
+      if (pathname === "/api/auth/me" && req.method === "GET") {
+        const auth = authenticateRequest(req);
+        if (!auth.ok) {
+          sendJson(res, 401, { error: "Unauthorized" });
+          return true;
+        }
+        if (auth.setCookie) {
+          res.setHeader("Set-Cookie", auth.setCookie);
+        }
+        sendJson(res, 200, { id: auth.userId, username: auth.username });
+        return true;
+      }
+
+      const auth = authenticateRequest(req);
+      if (!auth.ok) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return true;
+      }
+      if (auth.setCookie) {
+        res.setHeader("Set-Cookie", auth.setCookie);
+      }
+
+      const buildAttachmentRawUrl = (attachmentId: string): string => {
+        const workspaceParam = url.searchParams.get("workspace");
+        if (!workspaceParam) {
+          return `/api/attachments/${encodeURIComponent(attachmentId)}/raw`;
+        }
+        const qp = `workspace=${encodeURIComponent(workspaceParam)}`;
+        return `/api/attachments/${encodeURIComponent(attachmentId)}/raw?${qp}`;
+      };
 
       if (req.method === "POST" && pathname === "/api/audio/transcriptions") {
         const preferProviderRaw = String(process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER ?? "together")
@@ -1040,15 +1349,336 @@ async function start(): Promise<void> {
       }
 
       if (req.method === "GET" && pathname === "/api/models") {
-        const allowedModels = ["gpt-5.2"];
-        const models = defaultTaskContext.taskStore.listModelConfigs().filter((m) => allowedModels.includes(m.id));
+        const ctx = resolveTaskContext(url);
+        const models = ctx.taskStore.listModelConfigs().filter((m) => m.isEnabled);
         sendJson(res, 200, models);
         return true;
       }
 
+      if (pathname === "/api/model-configs") {
+        const ctx = resolveTaskContext(url);
+        if (req.method === "GET") {
+          sendJson(res, 200, ctx.taskStore.listModelConfigs());
+          return true;
+        }
+        if (req.method === "POST") {
+          const body = await readJsonBody(req);
+          const schema = z
+            .object({
+              id: z.string().min(1),
+              displayName: z.string().min(1),
+              provider: z.string().min(1),
+              isEnabled: z.boolean().optional(),
+              isDefault: z.boolean().optional(),
+              configJson: z.record(z.unknown()).nullable().optional(),
+            })
+            .passthrough();
+          const parsed = schema.safeParse(body ?? {});
+          if (!parsed.success) {
+            sendJson(res, 400, { error: "Invalid payload" });
+            return true;
+          }
+          const modelId = parsed.data.id.trim();
+          if (!modelId || modelId.toLowerCase() === "auto") {
+            sendJson(res, 400, { error: "Invalid model id" });
+            return true;
+          }
+          const saved = ctx.taskStore.upsertModelConfig({
+            id: modelId,
+            displayName: parsed.data.displayName.trim(),
+            provider: parsed.data.provider.trim(),
+            isEnabled: parsed.data.isEnabled ?? true,
+            isDefault: parsed.data.isDefault ?? false,
+            configJson: parsed.data.configJson ?? null,
+          });
+          sendJson(res, 200, saved);
+          return true;
+        }
+      }
+
+      const modelConfigMatch = /^\/api\/model-configs\/([^/]+)$/.exec(pathname);
+      if (modelConfigMatch?.[1]) {
+        const modelId = String(modelConfigMatch[1]).trim();
+        const ctx = resolveTaskContext(url);
+
+        if (req.method === "PATCH") {
+          const body = await readJsonBody(req);
+          const schema = z
+            .object({
+              displayName: z.string().min(1).optional(),
+              provider: z.string().min(1).optional(),
+              isEnabled: z.boolean().optional(),
+              isDefault: z.boolean().optional(),
+              configJson: z.record(z.unknown()).nullable().optional(),
+            })
+            .passthrough();
+          const parsed = schema.safeParse(body ?? {});
+          if (!parsed.success) {
+            sendJson(res, 400, { error: "Invalid payload" });
+            return true;
+          }
+
+          const existing = ctx.taskStore.getModelConfig(modelId);
+          if (!existing) {
+            sendJson(res, 404, { error: "Not found" });
+            return true;
+          }
+
+          const saved = ctx.taskStore.upsertModelConfig({
+            ...existing,
+            displayName: parsed.data.displayName === undefined ? existing.displayName : parsed.data.displayName.trim(),
+            provider: parsed.data.provider === undefined ? existing.provider : parsed.data.provider.trim(),
+            isEnabled: parsed.data.isEnabled === undefined ? existing.isEnabled : parsed.data.isEnabled,
+            isDefault: parsed.data.isDefault === undefined ? existing.isDefault : parsed.data.isDefault,
+            configJson: parsed.data.configJson === undefined ? (existing.configJson ?? null) : parsed.data.configJson,
+          });
+          sendJson(res, 200, saved);
+          return true;
+        }
+
+        if (req.method === "DELETE") {
+          const existing = ctx.taskStore.getModelConfig(modelId);
+          if (!existing) {
+            sendJson(res, 404, { error: "Not found" });
+            return true;
+          }
+          if (existing.isDefault) {
+            sendJson(res, 400, { error: "Cannot delete default model" });
+            return true;
+          }
+          const deleted = ctx.taskStore.deleteModelConfig(modelId);
+          sendJson(res, 200, { success: deleted });
+          return true;
+        }
+      }
+
       if (req.method === "GET" && pathname === "/api/task-queue/status") {
-        const status = defaultTaskContext.getStatusOrchestrator().status();
-        sendJson(res, 200, { enabled: shouldRunTaskQueue, ...status });
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        const status = ctx.getStatusOrchestrator().status();
+        sendJson(res, 200, { enabled: taskQueueAvailable, running: ctx.queueRunning, ...status });
+        return true;
+      }
+
+      if (req.method === "GET" && pathname === "/api/task-queue/metrics") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        sendJson(res, 200, { workspaceRoot: ctx.workspaceRoot, running: ctx.queueRunning, ...ctx.metrics });
+        return true;
+      }
+
+      if (req.method === "POST" && pathname === "/api/task-queue/run") {
+        if (!taskQueueAvailable) {
+          sendJson(res, 409, { error: "Task queue disabled" });
+          return true;
+        }
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        ctx.runController.setModeAll();
+        ctx.taskQueue.resume();
+        ctx.queueRunning = true;
+        promoteQueuedTasksToPending(ctx);
+        const status = ctx.getStatusOrchestrator().status();
+        sendJson(res, 200, { success: true, enabled: taskQueueAvailable, running: ctx.queueRunning, ...status });
+        return true;
+      }
+
+      if (req.method === "POST" && pathname === "/api/task-queue/pause") {
+        if (!taskQueueAvailable) {
+          sendJson(res, 409, { error: "Task queue disabled" });
+          return true;
+        }
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        ctx.runController.setModeManual();
+        ctx.taskQueue.pause("manual");
+        ctx.queueRunning = false;
+        const status = ctx.getStatusOrchestrator().status();
+        sendJson(res, 200, { success: true, enabled: taskQueueAvailable, running: ctx.queueRunning, ...status });
+        return true;
+      }
+
+      if (req.method === "POST" && pathname === "/api/attachments/images") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+
+        const contentTypeHeader = String(req.headers["content-type"] ?? "").trim();
+        let raw: Buffer;
+        try {
+          raw = await readRawBody(req, { maxBytes: 6 * 1024 * 1024 });
+        } catch (error) {
+          const rawMessage = error instanceof Error ? error.message : String(error);
+          const message = rawMessage === "Request body too large" ? "Image too large" : rawMessage;
+          sendJson(res, 413, { error: message });
+          return true;
+        }
+
+        let filePart;
+        try {
+          filePart = extractMultipartFile(raw, contentTypeHeader, "file");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        if (!filePart) {
+          sendJson(res, 400, { error: "Missing multipart field: file" });
+          return true;
+        }
+        const bytes = filePart.data;
+        if (!bytes || bytes.length === 0) {
+          sendJson(res, 400, { error: "Empty file" });
+          return true;
+        }
+        if (bytes.length > 5 * 1024 * 1024) {
+          sendJson(res, 413, { error: "Image too large (>5MB)" });
+          return true;
+        }
+
+        const info = detectImageInfo(bytes);
+        if (!info) {
+          sendJson(res, 415, { error: "Unsupported image type" });
+          return true;
+        }
+        if (!["image/png", "image/jpeg", "image/webp"].includes(info.contentType)) {
+          sendJson(res, 415, { error: "Unsupported image content-type" });
+          return true;
+        }
+
+        const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+        const storageKey = `attachments/${sha256.slice(0, 2)}/${sha256}.${info.ext}`;
+        const absPath = resolveWorkspaceStatePath(ctx.workspaceRoot, storageKey);
+
+        // Ensure bytes are persisted under content-addressed key.
+        try {
+          fs.mkdirSync(path.dirname(absPath), { recursive: true });
+          if (!fs.existsSync(absPath)) {
+            fs.writeFileSync(absPath, bytes);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 500, { error: `Failed to store image: ${message}` });
+          return true;
+        }
+
+        let attachment;
+        try {
+          attachment = ctx.attachmentStore.createOrGetImageAttachment({
+            filename: filePart.filename,
+            contentType: info.contentType,
+            sizeBytes: bytes.length,
+            width: info.width,
+            height: info.height,
+            sha256,
+            storageKey,
+            now: Date.now(),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 500, { error: message });
+          return true;
+        }
+
+        const payload: ImageAttachmentResponse = {
+          id: attachment.id,
+          url: buildAttachmentRawUrl(attachment.id),
+          sha256: attachment.sha256,
+          width: attachment.width,
+          height: attachment.height,
+          contentType: attachment.contentType,
+          sizeBytes: attachment.sizeBytes,
+        };
+        sendJson(res, 201, payload);
+        return true;
+      }
+
+      const attachmentRawMatch = /^\/api\/attachments\/([^/]+)\/raw$/.exec(pathname);
+      if (attachmentRawMatch && req.method === "GET") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        let id = "";
+        try {
+          id = decodeURIComponent(attachmentRawMatch[1] ?? "").trim();
+        } catch {
+          sendJson(res, 400, { error: "Invalid attachment id" });
+          return true;
+        }
+        const attachment = ctx.attachmentStore.getAttachment(id);
+        if (!attachment) {
+          sendJson(res, 404, { error: "Attachment not found" });
+          return true;
+        }
+        if (attachment.kind !== "image") {
+          sendJson(res, 415, { error: "Unsupported attachment kind" });
+          return true;
+        }
+        const absPath = resolveWorkspaceStatePath(ctx.workspaceRoot, attachment.storageKey);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(absPath);
+          if (!stat.isFile()) {
+            sendJson(res, 404, { error: "Attachment not found" });
+            return true;
+          }
+        } catch {
+          sendJson(res, 404, { error: "Attachment not found" });
+          return true;
+        }
+
+        const etag = `"sha256-${attachment.sha256}"`;
+        const ifNoneMatch = String(req.headers["if-none-match"] ?? "").trim();
+        if (ifNoneMatch && ifNoneMatch === etag) {
+          res.writeHead(304, {
+            ETag: etag,
+            "Cache-Control": "private, max-age=31536000, immutable",
+          });
+          res.end();
+          return true;
+        }
+
+        res.writeHead(200, {
+          "Content-Type": attachment.contentType,
+          "Content-Length": String(stat.size),
+          "Cache-Control": "private, max-age=31536000, immutable",
+          ETag: etag,
+        });
+        fs.createReadStream(absPath).pipe(res);
         return true;
       }
 
@@ -1064,7 +1694,21 @@ async function start(): Promise<void> {
         const status = parseTaskStatus(url.searchParams.get("status"));
         const limitRaw = url.searchParams.get("limit")?.trim();
         const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
-        sendJson(res, 200, ctx.taskStore.listTasks({ status, limit }));
+        const tasks = ctx.taskStore.listTasks({ status, limit });
+        const enriched = tasks.map((task) => {
+          const attachments = ctx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
+            id: a.id,
+            url: buildAttachmentRawUrl(a.id),
+            sha256: a.sha256,
+            width: a.width,
+            height: a.height,
+            contentType: a.contentType,
+            sizeBytes: a.sizeBytes,
+            filename: a.filename,
+          }));
+          return { ...task, attachments };
+        });
+        sendJson(res, 200, enriched);
         return true;
       }
 
@@ -1086,24 +1730,72 @@ async function start(): Promise<void> {
             priority: z.number().optional(),
             inheritContext: z.boolean().optional(),
             maxRetries: z.number().optional(),
+            attachments: z.array(z.string().min(1)).optional(),
           })
           .passthrough();
         const parsed = schema.parse(body ?? {});
-        const task = ctx.taskStore.createTask({
-          title: parsed.title,
-          prompt: parsed.prompt,
-          model: parsed.model,
-          priority: parsed.priority,
-          inheritContext: parsed.inheritContext,
-          maxRetries: parsed.maxRetries,
-          createdBy: "web",
-        });
-        ctx.taskQueue.notifyNewTask();
-        if (task.prompt && task.prompt.trim()) {
-          recordToSessionHistories(ctx.sessionId, { role: "user", text: task.prompt.trim(), ts: Date.now() });
+        const now = Date.now();
+        const attachmentIds = (parsed.attachments ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
+        const taskId = crypto.randomUUID();
+        let task: ReturnType<QueueTaskStore["createTask"]>;
+        try {
+          task = ctx.taskStore.createTask(
+            {
+              id: taskId,
+              title: parsed.title,
+              prompt: parsed.prompt,
+              model: parsed.model,
+              priority: parsed.priority,
+              inheritContext: parsed.inheritContext,
+              maxRetries: parsed.maxRetries,
+              createdBy: "web",
+            },
+            now,
+            undefined,
+          );
+
+          if (attachmentIds.length > 0) {
+            ctx.attachmentStore.assignAttachmentsToTask(task.id, attachmentIds);
+          }
+        } catch (error) {
+          // Best-effort rollback: keep task+attachment association consistent.
+          try {
+            ctx.taskStore.deleteTask(taskId);
+          } catch {
+            // ignore rollback errors
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          const lower = message.toLowerCase();
+          const status =
+            lower.includes("already assigned") || lower.includes("conflict") ? 409
+              : lower.includes("not found") ? 400
+                : 400;
+          sendJson(res, status, { error: message });
+          return true;
         }
-        broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: Date.now() });
-        sendJson(res, 200, task);
+
+        const attachments = ctx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
+          id: a.id,
+          url: buildAttachmentRawUrl(a.id),
+          sha256: a.sha256,
+          width: a.width,
+          height: a.height,
+          contentType: a.contentType,
+          sizeBytes: a.sizeBytes,
+          filename: a.filename,
+        }));
+
+        recordTaskQueueMetric(ctx.metrics, "TASK_ADDED", { ts: now, taskId: task.id });
+        if (ctx.queueRunning) {
+          ctx.taskQueue.notifyNewTask();
+        }
+        broadcastToSession(ctx.sessionId, {
+          type: "task:event",
+          event: "task:updated",
+          data: { ...task, attachments },
+          ts: now,
+        });
+        sendJson(res, 201, { ...task, attachments });
         return true;
       }
 
@@ -1127,9 +1819,107 @@ async function start(): Promise<void> {
         return true;
       }
 
+      const runSingleTaskId = matchSingleTaskRunPath(pathname);
+      if (runSingleTaskId && req.method === "POST") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        const now = Date.now();
+        const result = handleSingleTaskRun({
+          taskQueueAvailable,
+          controller: ctx.runController,
+          ctx,
+          taskId: runSingleTaskId,
+          now,
+        });
+
+        if ("task" in result && result.task) {
+          broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: result.task, ts: now });
+        }
+        sendJson(res, result.status, result.body);
+        return true;
+      }
+
+      if (req.method === "POST" && pathname === "/api/tasks/reorder") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        const body = await readJsonBody(req);
+        const schema = z.object({ ids: z.array(z.string().min(1)).min(1) }).passthrough();
+        const parsed = schema.parse(body ?? {});
+        const ids = parsed.ids.map((id) => String(id ?? "").trim()).filter(Boolean);
+        let updated: ReturnType<QueueTaskStore["reorderPendingTasks"]>;
+        try {
+          updated = ctx.taskStore.reorderPendingTasks(ids);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        const enriched = updated.map((task) => {
+          const attachments = ctx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
+            id: a.id,
+            url: buildAttachmentRawUrl(a.id),
+            sha256: a.sha256,
+            width: a.width,
+            height: a.height,
+            contentType: a.contentType,
+            sizeBytes: a.sizeBytes,
+            filename: a.filename,
+          }));
+          return { ...task, attachments };
+        });
+
+        for (const task of enriched) {
+          broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: Date.now() });
+        }
+        sendJson(res, 200, { success: true, tasks: enriched });
+        return true;
+      }
+
+      const moveMatch = /^\/api\/tasks\/([^/]+)\/move$/.exec(pathname);
+      if (moveMatch && req.method === "POST") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        if (ctx.queueRunning) {
+          sendJson(res, 409, { error: "Task queue is running" });
+          return true;
+        }
+        const taskId = moveMatch[1] ?? "";
+        const body = await readJsonBody(req);
+        const schema = z.object({ direction: z.enum(["up", "down"]) }).passthrough();
+        const parsed = schema.parse(body ?? {});
+        const updated = ctx.taskStore.movePendingTask(taskId, parsed.direction);
+        if (!updated) {
+          sendJson(res, 200, { success: true, tasks: [] });
+          return true;
+        }
+        for (const task of updated) {
+          broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: Date.now() });
+        }
+        sendJson(res, 200, { success: true, tasks: updated });
+        return true;
+      }
+
       const chatMatch = /^\/api\/tasks\/([^/]+)\/chat$/.exec(pathname);
       if (chatMatch && req.method === "POST") {
-        if (!shouldRunTaskQueue) {
+        if (!taskQueueAvailable) {
           sendJson(res, 409, { error: "Task queue disabled" });
           return true;
         }
@@ -1296,7 +2086,22 @@ async function start(): Promise<void> {
             sendJson(res, 404, { error: "Not Found" });
             return true;
           }
-          sendJson(res, 200, { ...task, plan: ctx.taskStore.getPlan(taskId), messages: ctx.taskStore.getMessages(taskId) });
+          const attachments = ctx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
+            id: a.id,
+            url: buildAttachmentRawUrl(a.id),
+            sha256: a.sha256,
+            width: a.width,
+            height: a.height,
+            contentType: a.contentType,
+            sizeBytes: a.sizeBytes,
+            filename: a.filename,
+          }));
+          sendJson(res, 200, {
+            ...task,
+            attachments,
+            plan: ctx.taskStore.getPlan(taskId),
+            messages: ctx.taskStore.getMessages(taskId),
+          });
           return true;
         }
 
@@ -1314,8 +2119,12 @@ async function start(): Promise<void> {
             const parsed = schema.parse(body ?? {});
             if (parsed.action === "pause") {
               ctx.taskQueue.pause("api");
+              ctx.queueRunning = false;
+              ctx.runController.setModeManual();
             } else if (parsed.action === "resume") {
               ctx.taskQueue.resume();
+              ctx.queueRunning = true;
+              ctx.runController.setModeAll();
             } else if (parsed.action === "cancel") {
               ctx.taskQueue.cancel(taskId);
               const task = ctx.taskStore.getTask(taskId);
@@ -1365,7 +2174,9 @@ async function start(): Promise<void> {
           if (parsed.maxRetries !== undefined) updates.maxRetries = parsed.maxRetries;
 
           const updated = ctx.taskStore.updateTask(taskId, updates, Date.now());
-          ctx.taskQueue.notifyNewTask();
+          if (ctx.queueRunning) {
+            ctx.taskQueue.notifyNewTask();
+          }
           broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: updated, ts: Date.now() });
           sendJson(res, 200, { success: true, task: updated });
           return true;
@@ -1427,24 +2238,11 @@ async function start(): Promise<void> {
           ? protocolHeader.split(",").map((p) => p.trim())
           : [];
 
-    const parseProtocols = (protocols: string[]): { token?: string; session?: string } => {
-      let token: string | undefined;
+    const parseProtocols = (protocols: string[]): { session?: string } => {
       let session: string | undefined;
 
       for (let i = 0; i < protocols.length; i++) {
         const entry = protocols[i];
-        if (entry.startsWith("ads-token.")) {
-          token = decodeBase64Url(entry.slice("ads-token.".length));
-          continue;
-        }
-        if (entry.startsWith("ads-token:")) {
-          token = entry.split(":").slice(1).join(":");
-          continue;
-        }
-        if (entry === "ads-token" && i + 1 < protocols.length) {
-          token = protocols[i + 1];
-          continue;
-        }
         if (entry.startsWith("ads-session.")) {
           session = entry.slice("ads-session.".length);
           continue;
@@ -1457,20 +2255,22 @@ async function start(): Promise<void> {
           session = protocols[i + 1];
         }
       }
-      return { token, session };
+      return { session };
     };
 
-    const { token: wsToken, session: wsSession } = parseProtocols(parsedProtocols);
-    const sessionId = wsSession && wsSession.trim() ? wsSession.trim() : crypto.randomBytes(4).toString("hex");
-    if (TOKEN) {
-      if (wsToken !== TOKEN) {
-        ws.close(4401, "unauthorized");
-        return;
-      }
-    } else if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!isOriginAllowed(req.headers["origin"], allowedOrigins)) {
+      ws.close(4403, "forbidden");
+      return;
+    }
+
+    const auth = authenticateRequest(req);
+    if (!auth.ok) {
       ws.close(4401, "unauthorized");
       return;
     }
+
+    const { session: wsSession } = parseProtocols(parsedProtocols);
+    const sessionId = wsSession && wsSession.trim() ? wsSession.trim() : crypto.randomBytes(4).toString("hex");
 
     if (clients.size >= MAX_CLIENTS) {
       ws.close(4409, `max clients reached (${MAX_CLIENTS})`);
@@ -1485,11 +2285,11 @@ async function start(): Promise<void> {
       aliveWs.missedPongs = 0;
     });
 
-	    const clientKey = wsToken && wsToken.length > 0 ? wsToken : "default";
-	    const userId = deriveWebUserId(clientKey, sessionId);
-	    const historyKey = `${clientKey}::${sessionId}`;
-	    clientMetaByWs.set(ws, { historyKey, sessionId });
-	    const directoryManager = new DirectoryManager(allowedDirs);
+    const clientKey = auth.userId;
+    const userId = deriveWebUserId(clientKey, sessionId);
+    const historyKey = `${clientKey}::${sessionId}`;
+    clientMetaByWs.set(ws, { historyKey, sessionId });
+    const directoryManager = new DirectoryManager(allowedDirs);
 
     const cacheKey = `${clientKey}::${sessionId}`;
     const cachedWorkspace = workspaceCache.get(cacheKey);
@@ -1602,7 +2402,7 @@ async function start(): Promise<void> {
         historyStore.clear(historyKey);
         // 同时重置 session 和 thread，清除旧的对话上下文
         sessionManager.reset(userId);
-        safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话" });
+        safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
         return;
       }
 

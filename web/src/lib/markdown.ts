@@ -24,6 +24,86 @@ function escapeAttr(text: string): string {
   return escapeHtml(text).replace(/`/g, "&#96;");
 }
 
+function basenameLike(path: string): string {
+  const raw = String(path ?? "").trim();
+  if (!raw) return "";
+  const parts = raw.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1]! : raw;
+}
+
+function extractPatchFilePaths(text: string): string[] {
+  const raw = String(text ?? "");
+  if (!raw) return [];
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const lines = raw.split("\n");
+
+  for (const lineRaw of lines) {
+    const line = lineRaw.trim();
+    if (!line) continue;
+
+    let path: string | null = null;
+
+    // Unified diff headers: prefer the b/ path.
+    const diffGit = /^diff --git a\/(.+?) b\/(.+?)$/.exec(line);
+    if (diffGit) {
+      path = diffGit[2] ?? diffGit[1] ?? null;
+    }
+
+    // Unified diff file markers.
+    if (!path) {
+      const plus = /^\+\+\+\s+(?:b\/)?(.+)$/.exec(line);
+      if (plus) {
+        const candidate = String(plus[1] ?? "").trim();
+        if (candidate && candidate !== "/dev/null") path = candidate;
+      }
+    }
+    if (!path) {
+      const minus = /^---\s+(?:a\/)?(.+)$/.exec(line);
+      if (minus) {
+        const candidate = String(minus[1] ?? "").trim();
+        if (candidate && candidate !== "/dev/null") path = candidate;
+      }
+    }
+
+    // Codex apply_patch style.
+    if (!path) {
+      const m =
+        /^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s+(.+)$/.exec(line) ??
+        /^\*\*\*\s+Move to:\s+(.+)$/.exec(line);
+      if (m) path = m[1] ?? null;
+    }
+
+    if (!path) continue;
+
+    const normalized = String(path).trim().replace(/^["']/, "").replace(/["']$/, "");
+    if (!normalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+
+  return out;
+}
+
+function isPatchLike(text: string): boolean {
+  const raw = String(text ?? "");
+  if (!raw) return false;
+  if (raw.includes("*** Begin Patch")) return true;
+  if (/^diff --git /m.test(raw)) return true;
+  if (/^\+\+\+ /m.test(raw) && /^--- /m.test(raw)) return true;
+  return false;
+}
+
+function formatCollapsedFileList(paths: string[], maxItems: number): { summary: string; hiddenCount: number } {
+  const basenames = paths.map((p) => basenameLike(p)).filter(Boolean);
+  const shown = basenames.slice(0, Math.max(0, maxItems));
+  const hiddenCount = Math.max(0, basenames.length - shown.length);
+  const summary = shown.join(", ");
+  return { summary, hiddenCount };
+}
+
 function isSafeUrl(url: string): boolean {
   const trimmed = url.trim().toLowerCase();
   if (!trimmed) return false;
@@ -92,8 +172,12 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const langClass = normalizedLang ? ` language-${escapeAttr(normalizedLang)}` : "";
   const langAttr = normalizedLang ? ` data-lang="${escapeAttr(normalizedLang)}"` : "";
 
-  return [
-    `<div class="md-codeblock"${langAttr}>`,
+  const isDiffLang = normalizedLang === "diff";
+  const patchPaths = isPatchLike(token.content) ? extractPatchFilePaths(token.content) : [];
+  const canCollapse = (isDiffLang || patchPaths.length > 0) && patchPaths.length > 0;
+
+  const bodyHtml = [
+    `<div class="md-codeblock-body">`,
     `<button class="md-codecopy" type="button" aria-label="Copy code" data-state="idle">` +
       `<svg class="md-icon copy" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">` +
         `<path fill-rule="evenodd" d="M6 2a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6.5a.75.75 0 0 0-.22-.53l-3.75-3.75A.75.75 0 0 0 11.5 2H6Zm6.5 1.56 2.94 2.94H13a.5.5 0 0 1-.5-.5V3.56Z" clip-rule="evenodd" />` +
@@ -106,6 +190,24 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     `<pre><code class="hljs${langClass}">${highlighted}</code></pre>`,
     `</div>`,
   ].join("");
+
+  if (canCollapse) {
+    const { summary, hiddenCount } = formatCollapsedFileList(patchPaths, 6);
+    const label = isDiffLang ? "Diff" : "Patch";
+    const filesText = summary ? summary + (hiddenCount ? ` (+${hiddenCount} more)` : "") : `${patchPaths.length} files`;
+    return [
+      `<details class="md-codeblock md-collapsible"${langAttr} data-kind="patch">`,
+      `<summary class="md-collapsible-summary">` +
+        `<span class="md-collapsible-title">${escapeHtml(label)}</span>` +
+        `<span class="md-collapsible-files">${escapeHtml(filesText)}</span>` +
+        `<span class="md-collapsible-hint">Expand</span>` +
+      `</summary>`,
+      bodyHtml,
+      `</details>`,
+    ].join("");
+  }
+
+  return [`<div class="md-codeblock"${langAttr}>`, bodyHtml, `</div>`].join("");
 };
 
 export function renderMarkdownToHtml(markdown: string): string {

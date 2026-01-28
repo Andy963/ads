@@ -19,6 +19,8 @@ const sorted = computed(() => {
 
 function badge(status: string): string {
   switch (status) {
+    case "queued":
+      return "QUEUED";
     case "pending":
       return "PENDING";
     case "planning":
@@ -165,6 +167,10 @@ function badge(status: string): string {
 .status[data-status="pending"] {
   background: #f1f5f9;
   color: #64748b;
+}
+.status[data-status="queued"] {
+  background: #fef3c7;
+  color: #d97706;
 }
 .status[data-status="planning"] {
   background: #fef3c7;

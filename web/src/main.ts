@@ -19,23 +19,28 @@ let lastMetrics = { topPx: Number.NaN, bottomPx: Number.NaN, keyboardOpen: false
 function applyViewportVars(): void {
   const next = readViewportMetrics();
   const keyboardOpen = isTextInput(document.activeElement) && next.bottomPx > 0;
+  // Only shrink the fixed app container when the on-screen keyboard is open.
+  // Some browsers report a non-zero visualViewport bottom inset even when the keyboard is closed,
+  // which created a persistent blank area under the composer.
+  const appTopPx = keyboardOpen ? next.topPx : 0;
+  const appBottomPx = keyboardOpen ? next.bottomPx : 0;
   if (
-    next.topPx === lastMetrics.topPx &&
-    next.bottomPx === lastMetrics.bottomPx &&
+    appTopPx === lastMetrics.topPx &&
+    appBottomPx === lastMetrics.bottomPx &&
     keyboardOpen === lastMetrics.keyboardOpen
   ) {
     return;
   }
-  if (next.topPx !== lastMetrics.topPx) {
-    document.documentElement.style.setProperty("--app-top", `${next.topPx}px`);
+  if (appTopPx !== lastMetrics.topPx) {
+    document.documentElement.style.setProperty("--app-top", `${appTopPx}px`);
   }
-  if (next.bottomPx !== lastMetrics.bottomPx) {
-    document.documentElement.style.setProperty("--app-bottom", `${next.bottomPx}px`);
+  if (appBottomPx !== lastMetrics.bottomPx) {
+    document.documentElement.style.setProperty("--app-bottom", `${appBottomPx}px`);
   }
   if (keyboardOpen !== lastMetrics.keyboardOpen) {
     document.documentElement.style.setProperty("--safe-bottom-multiplier", keyboardOpen ? "0" : "1");
   }
-  lastMetrics = { ...next, keyboardOpen };
+  lastMetrics = { topPx: appTopPx, bottomPx: appBottomPx, keyboardOpen };
 }
 
 let heightRaf = 0;

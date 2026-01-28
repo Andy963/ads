@@ -41,6 +41,7 @@ function parseJson<T>(raw: unknown): T | null {
 function normalizeTaskStatus(value: unknown): TaskStatus {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   switch (raw) {
+    case "queued":
     case "pending":
     case "planning":
     case "running":
@@ -102,8 +103,19 @@ export class TaskStore {
   private readonly updateTaskStmt: SqliteStatement;
   private readonly deleteTaskStmt: SqliteStatement;
 
+  private readonly markPromptInjectedStmt: SqliteStatement;
+
+  private readonly selectNextQueueOrderStmt: SqliteStatement;
+  private readonly selectActiveTaskIdStmt: SqliteStatement;
+
+  private readonly selectNextQueuedStmt: SqliteStatement;
+  private readonly promoteQueuedToPendingStmt: SqliteStatement;
+
   private readonly selectNextPendingStmt: SqliteStatement;
   private readonly claimTaskStmt: SqliteStatement;
+
+  private readonly listPendingForReorderStmt: SqliteStatement;
+  private readonly updateQueueOrderStmt: SqliteStatement;
 
   private readonly deletePlanStmt: SqliteStatement;
   private readonly insertPlanStepStmt: SqliteStatement;
@@ -119,6 +131,10 @@ export class TaskStore {
   private readonly getContextsStmt: SqliteStatement;
 
   private readonly listModelConfigsStmt: SqliteStatement;
+  private readonly getModelConfigStmt: SqliteStatement;
+  private readonly clearDefaultModelConfigsStmt: SqliteStatement;
+  private readonly upsertModelConfigStmt: SqliteStatement;
+  private readonly deleteModelConfigStmt: SqliteStatement;
 
   private readonly upsertConversationStmt: SqliteStatement;
   private readonly getConversationStmt: SqliteStatement;
@@ -131,36 +147,64 @@ export class TaskStore {
   constructor(options?: { workspacePath?: string }) {
     this.db = getDatabase(options?.workspacePath);
 
-    this.insertTaskStmt = this.db.prepare(`
-      INSERT INTO tasks (
-        id,
-        title,
-        prompt,
-        model,
-        model_params,
-        status,
-        priority,
-        inherit_context,
-        parent_task_id,
-        thread_id,
-        result,
-        error,
-        retry_count,
-        max_retries,
-        created_at,
-        started_at,
-        completed_at,
-        created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+	    this.insertTaskStmt = this.db.prepare(`
+	      INSERT INTO tasks (
+	        id,
+	        title,
+	        prompt,
+	        model,
+	        model_params,
+	        status,
+	        priority,
+	        queue_order,
+	        queued_at,
+	        inherit_context,
+	        parent_task_id,
+	        thread_id,
+	        result,
+	        error,
+	        retry_count,
+	        max_retries,
+	        created_at,
+	        started_at,
+	        completed_at,
+	        created_by
+	      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	    `);
 
     this.getTaskStmt = this.db.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`);
 
+	    this.selectNextQueueOrderStmt = this.db.prepare(
+	      `SELECT COALESCE(MAX(queue_order), 0) + 1 AS next FROM tasks`,
+	    );
+
+    this.selectActiveTaskIdStmt = this.db.prepare(
+      `SELECT id
+       FROM tasks
+       WHERE status IN ('planning', 'running')
+       ORDER BY COALESCE(started_at, created_at) DESC, created_at DESC
+       LIMIT 1`,
+    );
+
+    this.selectNextQueuedStmt = this.db.prepare(
+      `SELECT id
+       FROM tasks
+       WHERE status = 'queued'
+       ORDER BY queued_at ASC, queue_order ASC, created_at ASC, id ASC
+       LIMIT 1`,
+    );
+
+    this.promoteQueuedToPendingStmt = this.db.prepare(
+      `UPDATE tasks
+       SET status = 'pending'
+       WHERE id = ? AND status = 'queued'`,
+    );
+
     this.listTasksStmt = this.db.prepare(
-      `SELECT * FROM tasks ORDER BY priority DESC, created_at DESC LIMIT ?`,
+      `SELECT * FROM tasks ORDER BY priority DESC, queue_order ASC, created_at DESC LIMIT ?`,
     );
     this.listTasksByStatusStmt = this.db.prepare(
-      `SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, created_at DESC LIMIT ?`,
+      `SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, queue_order ASC, created_at DESC LIMIT ?`,
     );
 
     this.updateTaskStmt = this.db.prepare(`
@@ -170,11 +214,13 @@ export class TaskStore {
         prompt = ?,
         model = ?,
         model_params = ?,
-        status = ?,
-        priority = ?,
-        inherit_context = ?,
-        parent_task_id = ?,
-        thread_id = ?,
+	        status = ?,
+	        priority = ?,
+	        queue_order = ?,
+	        queued_at = ?,
+	        inherit_context = ?,
+	        parent_task_id = ?,
+	        thread_id = ?,
         result = ?,
         error = ?,
         retry_count = ?,
@@ -188,12 +234,28 @@ export class TaskStore {
 
     this.deleteTaskStmt = this.db.prepare(`DELETE FROM tasks WHERE id = ?`);
 
+    this.markPromptInjectedStmt = this.db.prepare(
+      `UPDATE tasks
+       SET prompt_injected_at = ?
+       WHERE id = ? AND prompt_injected_at IS NULL`,
+    );
+
     this.selectNextPendingStmt = this.db.prepare(
-      `SELECT id FROM tasks WHERE status = 'pending' ORDER BY priority DESC, created_at ASC LIMIT 1`,
+      `SELECT id FROM tasks WHERE status = 'pending' ORDER BY queue_order ASC, created_at ASC LIMIT 1`,
     );
     this.claimTaskStmt = this.db.prepare(
-      `UPDATE tasks SET status = 'planning', started_at = COALESCE(started_at, ?)
+      `UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?)
        WHERE id = ? AND status = 'pending'`,
+    );
+
+    this.listPendingForReorderStmt = this.db.prepare(
+      `SELECT id, priority, queue_order, created_at
+       FROM tasks
+       WHERE status = 'pending'
+       ORDER BY queue_order ASC, created_at ASC, id ASC`,
+    );
+    this.updateQueueOrderStmt = this.db.prepare(
+      `UPDATE tasks SET queue_order = ? WHERE id = ? AND status = 'pending'`,
     );
 
     this.deletePlanStmt = this.db.prepare(`DELETE FROM task_plans WHERE task_id = ?`);
@@ -237,6 +299,31 @@ export class TaskStore {
     this.listModelConfigsStmt = this.db.prepare(
       `SELECT * FROM model_configs ORDER BY is_default DESC, display_name ASC`,
     );
+    this.getModelConfigStmt = this.db.prepare(
+      `SELECT * FROM model_configs WHERE id = ? LIMIT 1`,
+    );
+    this.clearDefaultModelConfigsStmt = this.db.prepare(
+      `UPDATE model_configs SET is_default = 0 WHERE is_default <> 0`,
+    );
+    this.upsertModelConfigStmt = this.db.prepare(`
+      INSERT INTO model_configs (
+        id,
+        display_name,
+        provider,
+        is_enabled,
+        is_default,
+        config_json,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        display_name = excluded.display_name,
+        provider = excluded.provider,
+        is_enabled = excluded.is_enabled,
+        is_default = excluded.is_default,
+        config_json = excluded.config_json,
+        updated_at = excluded.updated_at
+    `);
+    this.deleteModelConfigStmt = this.db.prepare(`DELETE FROM model_configs WHERE id = ?`);
 
     this.upsertConversationStmt = this.db.prepare(`
       INSERT INTO conversations (
@@ -287,7 +374,11 @@ export class TaskStore {
     );
   }
 
-  createTask(input: CreateTaskInput, now = Date.now()): Task {
+  createTask(
+    input: CreateTaskInput,
+    now = Date.now(),
+    options?: { status?: TaskStatus; queuedAt?: number | null },
+  ): Task {
     const id = (input.id ?? crypto.randomUUID()).trim();
     const rawTitle = String(input.title ?? "").trim();
     const prompt = String(input.prompt ?? "");
@@ -307,14 +398,29 @@ export class TaskStore {
 
     const inheritContext = Boolean(input.inheritContext);
 
+    const queueOrderRow = this.selectNextQueueOrderStmt.get() as { next?: number } | undefined;
+    const nextQueueOrder =
+      typeof queueOrderRow?.next === "number" && Number.isFinite(queueOrderRow.next) ? queueOrderRow.next : now;
+
+    const status = normalizeTaskStatus(options?.status ?? "pending");
+    const queuedAt =
+      options?.queuedAt != null && Number.isFinite(options.queuedAt)
+        ? options.queuedAt
+        : status === "queued"
+          ? now
+          : null;
+
     const task: Task = {
       id,
       title,
       prompt,
       model: (input.model ?? "auto").trim() || "auto",
       modelParams: input.modelParams ?? null,
-      status: "pending",
+      status,
       priority: typeof input.priority === "number" ? input.priority : 0,
+      queueOrder: nextQueueOrder,
+      queuedAt,
+      promptInjectedAt: null,
       inheritContext,
       parentTaskId: input.parentTaskId ?? null,
       threadId: (() => {
@@ -349,6 +455,8 @@ export class TaskStore {
       task.modelParams ? JSON.stringify(task.modelParams) : null,
       task.status,
       task.priority,
+      task.queueOrder,
+      task.queuedAt ?? null,
       task.inheritContext ? 1 : 0,
       task.parentTaskId ?? null,
       task.threadId ?? null,
@@ -362,7 +470,31 @@ export class TaskStore {
       task.createdBy ?? null,
     );
 
-    return task;
+	    return task;
+	  }
+
+  getActiveTaskId(): string | null {
+    const row = this.selectActiveTaskIdStmt.get() as { id?: string } | undefined;
+    const id = String(row?.id ?? "").trim();
+    return id || null;
+  }
+
+  dequeueNextQueuedTask(now = Date.now()): Task | null {
+    void now;
+    const tx = this.db.transaction((): Task | null => {
+      const next = this.selectNextQueuedStmt.get() as { id?: string } | undefined;
+      const id = String(next?.id ?? "").trim();
+      if (!id) {
+        return null;
+      }
+      const updated = this.promoteQueuedToPendingStmt.run(id) as { changes?: number };
+      if (!updated || updated.changes !== 1) {
+        return null;
+      }
+      return this.getTask(id);
+    });
+
+    return tx();
   }
 
   getTask(id: string): Task | null {
@@ -400,16 +532,26 @@ export class TaskStore {
     };
 
     // Normalize booleans & status
-    merged.status = normalizeTaskStatus(merged.status);
-    merged.inheritContext = Boolean(merged.inheritContext);
-    merged.priority = Number.isFinite(merged.priority) ? merged.priority : existing.priority;
-    merged.retryCount = Number.isFinite(merged.retryCount) ? merged.retryCount : existing.retryCount;
-    merged.maxRetries = Number.isFinite(merged.maxRetries) ? merged.maxRetries : existing.maxRetries;
+	    merged.status = normalizeTaskStatus(merged.status);
+	    merged.inheritContext = Boolean(merged.inheritContext);
+      // promptInjectedAt is a write-once field controlled by markPromptInjected().
+      merged.promptInjectedAt = existing.promptInjectedAt ?? null;
+	    merged.priority = Number.isFinite(merged.priority) ? merged.priority : existing.priority;
+	    merged.queueOrder = Number.isFinite(merged.queueOrder) ? merged.queueOrder : existing.queueOrder;
+	    merged.queuedAt =
+	      merged.queuedAt != null && Number.isFinite(merged.queuedAt)
+	        ? merged.queuedAt
+	        : (existing.queuedAt ?? null);
+	    merged.retryCount = Number.isFinite(merged.retryCount) ? merged.retryCount : existing.retryCount;
+	    merged.maxRetries = Number.isFinite(merged.maxRetries) ? merged.maxRetries : existing.maxRetries;
 
-    // Auto timestamps
-    if (merged.status === "running" && !merged.startedAt) {
-      merged.startedAt = existing.startedAt ?? now;
-    }
+	    // Auto timestamps
+	    if (merged.status === "queued" && !merged.queuedAt) {
+	      merged.queuedAt = now;
+	    }
+	    if (merged.status === "running" && !merged.startedAt) {
+	      merged.startedAt = existing.startedAt ?? now;
+	    }
     if (["completed", "failed", "cancelled"].includes(merged.status) && !merged.completedAt) {
       merged.completedAt = now;
     }
@@ -419,11 +561,13 @@ export class TaskStore {
       merged.prompt,
       merged.model,
       merged.modelParams ? JSON.stringify(merged.modelParams) : null,
-      merged.status,
-      merged.priority,
-      merged.inheritContext ? 1 : 0,
-      merged.parentTaskId ?? null,
-      merged.threadId ?? null,
+	      merged.status,
+	      merged.priority,
+	      merged.queueOrder,
+	      merged.queuedAt ?? null,
+	      merged.inheritContext ? 1 : 0,
+	      merged.parentTaskId ?? null,
+	      merged.threadId ?? null,
       merged.result ?? null,
       merged.error ?? null,
       merged.retryCount,
@@ -438,6 +582,15 @@ export class TaskStore {
     return merged;
   }
 
+  markPromptInjected(taskId: string, now = Date.now()): boolean {
+    const id = String(taskId ?? "").trim();
+    if (!id) {
+      return false;
+    }
+    const updated = this.markPromptInjectedStmt.run(now, id) as { changes?: number };
+    return Boolean(updated && updated.changes === 1);
+  }
+
   deleteTask(id: string): void {
     const normalized = String(id ?? "").trim();
     if (!normalized) {
@@ -447,7 +600,7 @@ export class TaskStore {
   }
 
   /**
-   * Atomically claims the next pending task by setting it to planning.
+   * Atomically claims the next pending task by setting it to running.
    * Returns the claimed task, or null if none available.
    */
   claimNextPendingTask(now = Date.now()): Task | null {
@@ -466,6 +619,138 @@ export class TaskStore {
     });
 
     return tx();
+  }
+
+  movePendingTask(taskId: string, direction: "up" | "down"): Task[] | null {
+    const id = String(taskId ?? "").trim();
+    if (!id) {
+      return null;
+    }
+
+    const rows = this.listPendingForReorderStmt.all() as Array<{
+      id?: string;
+      queue_order?: number;
+    }>;
+    const ids = rows.map((r) => String(r.id ?? "").trim()).filter(Boolean);
+    const idx = ids.indexOf(id);
+    if (idx < 0) {
+      return null;
+    }
+
+    const neighborIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (neighborIdx < 0 || neighborIdx >= ids.length) {
+      return null;
+    }
+
+    const aId = id;
+    const bId = ids[neighborIdx]!;
+
+    const aRow = rows[idx] ?? {};
+    const bRow = rows[neighborIdx] ?? {};
+    const aOrder = typeof aRow.queue_order === "number" && Number.isFinite(aRow.queue_order) ? aRow.queue_order : idx;
+    const bOrder = typeof bRow.queue_order === "number" && Number.isFinite(bRow.queue_order) ? bRow.queue_order : neighborIdx;
+
+    const tx = this.db.transaction(() => {
+      if (aOrder === bOrder) {
+        const nextA = direction === "up" ? bOrder - 1 : bOrder + 1;
+        this.updateQueueOrderStmt.run(nextA, aId);
+        this.updateQueueOrderStmt.run(bOrder, bId);
+      } else {
+        this.updateQueueOrderStmt.run(bOrder, aId);
+        this.updateQueueOrderStmt.run(aOrder, bId);
+      }
+    });
+    tx();
+
+    const a = this.getTask(aId);
+    const b = this.getTask(bId);
+    if (!a || !b) {
+      return null;
+    }
+    return [a, b];
+  }
+
+  reorderPendingTasks(taskIds: string[]): Task[] {
+    const normalized = (taskIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
+    if (normalized.length === 0) {
+      throw new Error("taskIds is required");
+    }
+    const unique = new Set(normalized);
+    if (unique.size !== normalized.length) {
+      throw new Error("taskIds must be unique");
+    }
+
+    const rows = this.listPendingForReorderStmt.all() as Array<{ id?: string; queue_order?: number; created_at?: number }>;
+    const current = rows.map((r) => String(r.id ?? "").trim()).filter(Boolean);
+    const currentSet = new Set(current);
+    const pendingIds = normalized.filter((id) => currentSet.has(id));
+    if (pendingIds.length === 0) {
+      // Nothing to reorder (all ids already left pending state).
+      return current.map((id) => this.getTask(id)).filter((t): t is Task => Boolean(t));
+    }
+    for (const id of pendingIds) {
+      if (!currentSet.has(id)) {
+        throw new Error(`task is not pending: ${id}`);
+      }
+    }
+
+    const nextIds = (() => {
+      // Fast-path: client provided the full pending order.
+      if (pendingIds.length === current.length) {
+        return pendingIds;
+      }
+
+      // Partial reorder: only permute the provided ids within the current pending sequence.
+      // This keeps all other pending tasks in place and avoids requiring the client to know
+      // about all pending tasks (e.g., when the UI only loads a subset).
+      const selected = new Set(pendingIds);
+      const merged: string[] = new Array(current.length);
+      let cursor = 0;
+      for (let i = 0; i < current.length; i++) {
+        const id = current[i]!;
+        if (!selected.has(id)) {
+          merged[i] = id;
+          continue;
+        }
+        merged[i] = pendingIds[cursor]!;
+        cursor += 1;
+      }
+      if (cursor !== pendingIds.length) {
+        throw new Error("taskIds mismatch");
+      }
+      return merged;
+    })();
+
+    const base = (() => {
+      // Keep queue_order in a compact monotonic range so the ordering is stable and predictable.
+      // For older databases where queue_order can be NULL, fall back to 0.
+      let min = Number.POSITIVE_INFINITY;
+      for (const row of rows) {
+        if (typeof row.queue_order === "number" && Number.isFinite(row.queue_order)) {
+          min = Math.min(min, row.queue_order);
+        }
+      }
+      return Number.isFinite(min) ? Math.floor(min) : 0;
+    })();
+
+    const tx = this.db.transaction(() => {
+      for (let i = 0; i < nextIds.length; i++) {
+        this.updateQueueOrderStmt.run(base + i, nextIds[i]);
+      }
+    });
+    tx();
+
+    // Return the full pending order after update so clients can refresh their local state even
+    // when they only provided a partial id list.
+    const afterRows = this.listPendingForReorderStmt.all() as Array<{ id?: string }>;
+    const updated: Task[] = [];
+    for (const row of afterRows) {
+      const id = String(row.id ?? "").trim();
+      if (!id) continue;
+      const task = this.getTask(id);
+      if (task) updated.push(task);
+    }
+    return updated;
   }
 
   getPlan(taskId: string): PlanStep[] {
@@ -639,6 +924,77 @@ export class TaskStore {
     }));
   }
 
+  getModelConfig(modelId: string): ModelConfig | null {
+    const id = String(modelId ?? "").trim();
+    if (!id) {
+      return null;
+    }
+    const row = this.getModelConfigStmt.get(id) as Record<string, unknown> | undefined;
+    if (!row) {
+      return null;
+    }
+    return {
+      id: String(row.id ?? ""),
+      displayName: String(row.display_name ?? ""),
+      provider: String(row.provider ?? ""),
+      isEnabled: Boolean(row.is_enabled),
+      isDefault: Boolean(row.is_default),
+      configJson: parseJson<Record<string, unknown>>(row.config_json) ?? null,
+      updatedAt: typeof row.updated_at === "number" ? row.updated_at : row.updated_at == null ? null : Number(row.updated_at),
+    };
+  }
+
+  upsertModelConfig(config: ModelConfig, now = Date.now()): ModelConfig {
+    const id = String(config.id ?? "").trim();
+    if (!id) {
+      throw new Error("model config id is required");
+    }
+    const displayName = String(config.displayName ?? "").trim();
+    if (!displayName) {
+      throw new Error("model config displayName is required");
+    }
+    const provider = String(config.provider ?? "").trim();
+    if (!provider) {
+      throw new Error("model config provider is required");
+    }
+
+    const isEnabled = Boolean(config.isEnabled);
+    const isDefault = Boolean(config.isDefault);
+    const configJson = config.configJson ?? null;
+    const configJsonText = configJson ? JSON.stringify(configJson) : null;
+
+    const tx = this.db.transaction(() => {
+      if (isDefault) {
+        this.clearDefaultModelConfigsStmt.run();
+      }
+      this.upsertModelConfigStmt.run(
+        id,
+        displayName,
+        provider,
+        isEnabled ? 1 : 0,
+        isDefault ? 1 : 0,
+        configJsonText,
+        now,
+      );
+    });
+    tx();
+
+    const saved = this.getModelConfig(id);
+    if (!saved) {
+      throw new Error("failed to load saved model config");
+    }
+    return saved;
+  }
+
+  deleteModelConfig(modelId: string): boolean {
+    const id = String(modelId ?? "").trim();
+    if (!id) {
+      return false;
+    }
+    const res = this.deleteModelConfigStmt.run(id) as { changes?: number };
+    return Number(res.changes ?? 0) > 0;
+  }
+
   upsertConversation(
     conversation: Partial<Omit<Conversation, "id">> & Pick<Conversation, "id">,
     now = Date.now(),
@@ -762,6 +1118,7 @@ export class TaskStore {
   }
 
   private toTask(row: Record<string, unknown>): Task {
+    const createdAt = typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0);
     return {
       id: String(row.id ?? ""),
       title: String(row.title ?? ""),
@@ -770,14 +1127,25 @@ export class TaskStore {
       modelParams: parseJson<Record<string, unknown>>(row.model_params),
       status: normalizeTaskStatus(row.status),
       priority: typeof row.priority === "number" ? row.priority : Number(row.priority ?? 0),
-      inheritContext: Boolean(row.inherit_context),
-      parentTaskId: row.parent_task_id == null ? null : String(row.parent_task_id),
-      threadId: row.thread_id == null ? null : String(row.thread_id),
+	      queueOrder:
+	        typeof row.queue_order === "number"
+	          ? row.queue_order
+	          : row.queue_order == null
+	            ? createdAt
+	            : Number(row.queue_order),
+	      queuedAt: row.queued_at == null ? null : (typeof row.queued_at === "number" ? row.queued_at : Number(row.queued_at)),
+        promptInjectedAt:
+          row.prompt_injected_at == null
+            ? null
+            : (typeof row.prompt_injected_at === "number" ? row.prompt_injected_at : Number(row.prompt_injected_at)),
+	      inheritContext: Boolean(row.inherit_context),
+	      parentTaskId: row.parent_task_id == null ? null : String(row.parent_task_id),
+	      threadId: row.thread_id == null ? null : String(row.thread_id),
       result: row.result == null ? null : String(row.result),
       error: row.error == null ? null : String(row.error),
       retryCount: typeof row.retry_count === "number" ? row.retry_count : Number(row.retry_count ?? 0),
       maxRetries: typeof row.max_retries === "number" ? row.max_retries : Number(row.max_retries ?? 3),
-      createdAt: typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0),
+      createdAt,
       startedAt: row.started_at == null ? null : (typeof row.started_at === "number" ? row.started_at : Number(row.started_at)),
       completedAt: row.completed_at == null ? null : (typeof row.completed_at === "number" ? row.completed_at : Number(row.completed_at)),
       createdBy: row.created_by == null ? null : String(row.created_by),

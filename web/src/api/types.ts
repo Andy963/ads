@@ -1,4 +1,5 @@
 export type TaskStatus =
+  | "queued"
   | "pending"
   | "planning"
   | "running"
@@ -16,6 +17,9 @@ export interface Task {
   model: string;
   status: TaskStatus;
   priority: number;
+  queueOrder: number;
+  queuedAt?: number | null;
+  promptInjectedAt?: number | null;
   inheritContext: boolean;
   result?: string | null;
   error?: string | null;
@@ -64,6 +68,7 @@ export interface Attachment {
   height: number;
   contentType: string;
   sizeBytes: number;
+  filename?: string | null;
 }
 
 export interface CreateTaskInput {
@@ -86,6 +91,7 @@ export interface ModelConfig {
 
 export interface TaskQueueStatus {
   enabled: boolean;
+  running: boolean;
   ready: boolean;
   streaming: boolean;
   error?: string;

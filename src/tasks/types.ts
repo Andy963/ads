@@ -1,4 +1,5 @@
 export type TaskStatus =
+  | "queued"
   | "pending"
   | "planning"
   | "running"
@@ -53,6 +54,9 @@ export interface Task {
   modelParams?: Record<string, unknown> | null;
   status: TaskStatus;
   priority: number;
+  queueOrder: number;
+  queuedAt?: number | null;
+  promptInjectedAt?: number | null;
   inheritContext: boolean;
   parentTaskId?: string | null;
   threadId?: string | null;

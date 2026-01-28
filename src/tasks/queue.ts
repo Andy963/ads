@@ -170,7 +170,7 @@ export class TaskQueue extends EventEmitter {
         this.emit("task:planned", { task, plan });
 
         // Run
-        const runningTask = this.store.updateTask(task.id, { status: "running" }, Date.now());
+        const runningTask = this.store.getTask(task.id) ?? task;
         this.emit("task:running", { task: runningTask });
 
         const hooks = {
