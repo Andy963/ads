@@ -90,7 +90,7 @@ const editPrompt = ref("");
 const editModel = ref("auto");
 const editPriority = ref(0);
 const editMaxRetries = ref(3);
-const editInheritContext = ref(false);
+const editInheritContext = ref(true);
 const error = ref<string | null>(null);
 const editTitleEl = ref<HTMLInputElement | null>(null);
 
@@ -108,7 +108,7 @@ function startEdit(task: Task): void {
   editModel.value = task.model ?? "auto";
   editPriority.value = task.priority ?? 0;
   editMaxRetries.value = task.maxRetries ?? 3;
-  editInheritContext.value = Boolean(task.inheritContext);
+  editInheritContext.value = task.inheritContext ?? true;
   error.value = null;
   void nextTick(() => {
     editTitleEl.value?.focus();
@@ -128,7 +128,7 @@ function saveEdit(task: Task): void {
     return;
   }
   if (!prompt) {
-    error.value = "Prompt 不能为空";
+    error.value = "Task description cannot be empty.";
     return;
   }
 
@@ -430,32 +430,34 @@ watch(
             <input ref="editTitleEl" v-model="editTitle" />
           </label>
 
-          <div class="grid">
-            <label class="field">
-              <span class="label">模型</span>
-              <select v-model="editModel">
-                <option v-for="m in modelOptions" :key="m.id" :value="m.id">
-                  {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
-                </option>
-              </select>
-            </label>
-            <label class="field">
-              <span class="label">优先级</span>
-              <input v-model.number="editPriority" type="number" />
-            </label>
-            <label class="field">
-              <span class="label">最大重试</span>
-              <input v-model.number="editMaxRetries" type="number" min="0" />
+          <div class="configRow">
+            <div class="grid">
+              <label class="field">
+                <span class="label">模型</span>
+                <select v-model="editModel">
+                  <option v-for="m in modelOptions" :key="m.id" :value="m.id">
+                    {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
+                  </option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="label">优先级</span>
+                <input v-model.number="editPriority" type="number" />
+              </label>
+              <label class="field">
+                <span class="label">最大重试</span>
+                <input v-model.number="editMaxRetries" type="number" min="0" />
+              </label>
+            </div>
+
+            <label class="check">
+              <input v-model="editInheritContext" type="checkbox" />
+              <span>继承上下文</span>
             </label>
           </div>
 
-          <label class="check">
-            <input v-model="editInheritContext" type="checkbox" />
-            <span>继承上下文</span>
-          </label>
-
           <label class="field">
-            <span class="label">Prompt</span>
+            <span class="label">Task description</span>
             <textarea v-model="editPrompt" rows="6" data-testid="task-edit-prompt" />
           </label>
 
@@ -781,10 +783,18 @@ watch(
   font-size: 13px;
   color: #dc2626;
 }
+.configRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: minmax(160px, 260px) 96px 120px;
   gap: 10px;
+  align-items: end;
+  min-width: 0;
 }
 .field {
   display: block;
@@ -819,6 +829,9 @@ textarea {
   gap: 8px;
   font-size: 13px;
   color: #475569;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  margin-bottom: 2px;
 }
 .actions {
   display: flex;
