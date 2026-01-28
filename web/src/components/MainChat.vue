@@ -5,8 +5,10 @@ import MarkdownContent from "./MarkdownContent.vue";
 type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command";
+  kind: "text" | "command" | "execute";
   content: string;
+  command?: string;
+  hiddenLineCount?: number;
   streaming?: boolean;
 };
 
@@ -609,11 +611,29 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div v-else class="bubble">
-          <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0" class="typing" aria-label="AI 正在回复">
-            <span class="dot" />
-            <span class="dot" />
-            <span class="dot" />
+        <div v-else-if="m.kind === 'execute'" class="execute-block">
+          <div class="execute-header">
+            <span class="command-tag">EXECUTE</span>
+            <span class="execute-cmd">{{ m.command || "" }}</span>
+          </div>
+          <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
+          <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
+        </div>
+        <div
+          v-else
+          :class="[
+            'bubble',
+            {
+              'bubble--compact':
+                m.role === 'assistant' &&
+                m.kind === 'text' &&
+                m.streaming &&
+                m.content.length === 0,
+            },
+          ]"
+        >
+          <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0" class="typing" aria-label="AI is thinking">
+            <span class="thinkingText">thinking</span>
           </div>
           <MarkdownContent v-else :content="m.content" />
           <div v-if="!(m.streaming && m.content.length === 0)" class="msgActions">
@@ -853,6 +873,46 @@ onBeforeUnmount(() => {
   max-width: 100%;
   overflow: hidden;
 }
+.execute-block {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.04);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.execute-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 2px 0;
+}
+.execute-cmd {
+  color: #0f172a;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.execute-output {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #0f172a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.execute-more {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #94a3b8;
+}
 .command-tree-header {
   padding: 4px 0;
   display: flex;
@@ -912,6 +972,10 @@ onBeforeUnmount(() => {
   background: var(--surface);
   position: relative;
   overflow: hidden;
+}
+.bubble--compact {
+  /* When there is no content and actions are hidden, avoid the extra bottom padding. */
+  padding: 10px 12px;
 }
 .copyBtn {
   position: absolute;
@@ -1040,27 +1104,23 @@ onBeforeUnmount(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .typing {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  height: 16px;
+  display: inline-flex;
+  align-items: baseline;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1;
+  color: #94a3b8;
 }
-.typing .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--muted-2);
-  animation: bounce 0.6s ease-in-out infinite;
+.thinkingText::after {
+  content: "...";
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  width: 0;
+  animation: thinkingDots 1.2s steps(4, end) infinite;
 }
-.typing .dot:nth-child(2) {
-  animation-delay: 0.12s;
-}
-.typing .dot:nth-child(3) {
-  animation-delay: 0.24s;
-}
-@keyframes bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
-  40% { transform: translateY(-2px); opacity: 1; }
+@keyframes thinkingDots {
+  to { width: 1.35em; }
 }
 
 .composer {

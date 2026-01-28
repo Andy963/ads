@@ -177,15 +177,37 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
           }
         : null;
     case "reasoning":
-      return event.type === "item.started"
-        ? {
-            phase: "analysis",
-            title: "分析上下文",
-            detail: truncate(item.text),
-            timestamp,
-            raw: event,
-          }
-        : null;
+      if (event.type === "item.started") {
+        return {
+          phase: "analysis",
+          title: "Reasoning",
+          detail: undefined,
+          delta: String(item.text ?? ""),
+          timestamp,
+          raw: event,
+        };
+      }
+      if (event.type === "item.updated") {
+        return {
+          phase: "analysis",
+          title: "Reasoning",
+          detail: undefined,
+          delta: String(item.text ?? ""),
+          timestamp,
+          raw: event,
+        };
+      }
+      if (event.type === "item.completed") {
+        return {
+          phase: "analysis",
+          title: "Reasoning",
+          detail: undefined,
+          delta: String(item.text ?? ""),
+          timestamp,
+          raw: event,
+        };
+      }
+      return null;
     case "web_search":
       return mapWebSearch(event, item, timestamp);
     case "todo_list": {

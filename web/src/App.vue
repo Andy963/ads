@@ -10,6 +10,7 @@ import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
 import { finalizeStreamingOnDisconnect, mergeHistoryFromServer } from "./lib/chat_sync";
 import { formatApiError, looksLikeNotFound } from "./lib/api_error";
+import { clearLiveActivityWindow, createLiveActivityWindow, ingestCommandActivity, ingestExploredActivity, renderLiveActivityMarkdown } from "./lib/live_activity";
 
 const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
@@ -77,17 +78,38 @@ const models = ref<ModelConfig[]>([]);
 
 // Keep the command panel focused: show only the most recent few commands.
 const MAX_RECENT_COMMANDS = 5;
+const MAX_LIVE_ACTIVITY_STEPS = 5;
+const MAX_TURN_COMMANDS = 64;
+const MAX_EXECUTE_PREVIEW_LINES = 3;
 // Avoid unbounded in-memory growth during long-running sessions.
 const MAX_CHAT_MESSAGES = 200;
 
 type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command";
+  kind: "text" | "command" | "execute";
   content: string;
+  command?: string;
+  hiddenLineCount?: number;
   streaming?: boolean;
 };
 const LIVE_STEP_ID = "live-step";
+const LIVE_ACTIVITY_ID = "live-activity";
+const LIVE_MESSAGE_IDS = [LIVE_STEP_ID, LIVE_ACTIVITY_ID] as const;
+
+function isLiveMessageId(id: string): boolean {
+  return (LIVE_MESSAGE_IDS as readonly string[]).includes(id);
+}
+
+function findFirstLiveIndex(items: ChatItem[]): number {
+  let idx = -1;
+  for (const liveId of LIVE_MESSAGE_IDS) {
+    const at = items.findIndex((m) => m.id === liveId);
+    if (at < 0) continue;
+    idx = idx < 0 ? at : Math.min(idx, at);
+  }
+  return idx;
+}
 type IncomingImage = { name?: string; mime?: string; data: string };
 type QueuedPrompt = { id: string; text: string; images: IncomingImage[]; createdAt: number };
 
@@ -111,8 +133,12 @@ type ProjectRuntime = {
   plansByTaskId: ReturnType<typeof ref<Map<string, PlanStep[]>>>;
   runBusyIds: ReturnType<typeof ref<Set<string>>>;
   busy: ReturnType<typeof ref<boolean>>;
+  turnInFlight: boolean;
   messages: ReturnType<typeof ref<ChatItem[]>>;
   recentCommands: ReturnType<typeof ref<string[]>>;
+  turnCommands: string[];
+  executePreviewByKey: Map<string, { key: string; command: string; previewLines: string[]; totalLines: number; remainder: string }>;
+  executeOrder: string[];
   seenCommandIds: Set<string>;
   pendingImages: ReturnType<typeof ref<IncomingImage[]>>;
   queuedPrompts: ReturnType<typeof ref<QueuedPrompt[]>>;
@@ -123,6 +149,7 @@ type ProjectRuntime = {
   pendingCdRequestedPath: string | null;
   suppressNextClearHistoryResult: boolean;
   noticeTimer: number | null;
+  liveActivity: ReturnType<typeof createLiveActivityWindow>;
   startedTaskIds: Set<string>;
   taskChatBufferByTaskId: Map<string, TaskChatBuffer>;
 };
@@ -143,8 +170,12 @@ function createProjectRuntime(): ProjectRuntime {
     plansByTaskId: ref<Map<string, PlanStep[]>>(new Map()),
     runBusyIds: ref<Set<string>>(new Set()),
     busy: ref(false),
+    turnInFlight: false,
     messages: ref<ChatItem[]>([]),
     recentCommands: ref<string[]>([]),
+    turnCommands: [],
+    executePreviewByKey: new Map(),
+    executeOrder: [],
     seenCommandIds: new Set<string>(),
     pendingImages: ref<IncomingImage[]>([]),
     queuedPrompts: ref<QueuedPrompt[]>([]),
@@ -155,6 +186,7 @@ function createProjectRuntime(): ProjectRuntime {
     pendingCdRequestedPath: null,
     suppressNextClearHistoryResult: false,
     noticeTimer: null,
+    liveActivity: createLiveActivityWindow(MAX_LIVE_ACTIVITY_STEPS),
     startedTaskIds: new Set<string>(),
     taskChatBufferByTaskId: new Map<string, TaskChatBuffer>(),
   };
@@ -388,6 +420,10 @@ function clearChatState(): void {
   queuedPrompts.value = [];
   pendingImages.value = [];
   recentCommands.value = [];
+  activeRuntime.value.turnCommands = [];
+  activeRuntime.value.executePreviewByKey.clear();
+  activeRuntime.value.executeOrder = [];
+  activeRuntime.value.turnInFlight = false;
   threadWarning.value = null;
   activeThreadId.value = null;
   clearStepLive();
@@ -608,13 +644,16 @@ function runtimeAgentBusy(rt: ProjectRuntime): boolean {
 
 function trimChatItems(items: ChatItem[]): ChatItem[] {
   const existing = Array.isArray(items) ? items : [];
-  const live = existing.find((m) => m.id === LIVE_STEP_ID) ?? null;
-  const nonLive = existing.filter((m) => m.id !== LIVE_STEP_ID);
-  if (nonLive.length <= MAX_CHAT_MESSAGES) {
-    return live ? [...nonLive, live] : nonLive;
+  const liveById = new Map<string, ChatItem>();
+  for (const liveId of LIVE_MESSAGE_IDS) {
+    const msg = existing.find((m) => m.id === liveId) ?? null;
+    if (msg) liveById.set(liveId, msg);
   }
-  const trimmed = nonLive.slice(nonLive.length - MAX_CHAT_MESSAGES);
-  return live ? [...trimmed, live] : trimmed;
+
+  const nonLive = existing.filter((m) => !isLiveMessageId(m.id));
+  const trimmed = nonLive.length <= MAX_CHAT_MESSAGES ? nonLive : nonLive.slice(nonLive.length - MAX_CHAT_MESSAGES);
+  const liveTail = LIVE_MESSAGE_IDS.map((id) => liveById.get(id)).filter(Boolean) as ChatItem[];
+  return [...trimmed, ...liveTail];
 }
 
 function setMessages(items: ChatItem[], rt?: ProjectRuntime): void {
@@ -624,7 +663,7 @@ function setMessages(items: ChatItem[], rt?: ProjectRuntime): void {
 function pushMessageBeforeLive(item: Omit<ChatItem, "id">, rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
   const existing = state.messages.value.slice();
-  const liveIndex = existing.findIndex((m) => m.id === LIVE_STEP_ID);
+  const liveIndex = findFirstLiveIndex(existing);
   const next = { ...item, id: randomId("msg") };
   if (liveIndex < 0) {
     setMessages([...existing, next], state);
@@ -637,13 +676,15 @@ function pushRecentCommand(command: string, rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
   const trimmed = String(command ?? "").trim();
   if (!trimmed) return;
-  const next = [...state.recentCommands.value, trimmed];
-  state.recentCommands.value = next.slice(Math.max(0, next.length - MAX_RECENT_COMMANDS));
+  const turn = [...state.turnCommands, trimmed];
+  state.turnCommands = turn.slice(Math.max(0, turn.length - MAX_TURN_COMMANDS));
+  const recent = [...state.recentCommands.value, trimmed];
+  state.recentCommands.value = recent.slice(Math.max(0, recent.length - MAX_RECENT_COMMANDS));
 }
 
 function resetConversation(rt: ProjectRuntime, notice: string, keepLatestTurn = true): void {
   const existing = rt.messages.value.slice();
-  const withoutLive = existing.filter((m) => m.id !== LIVE_STEP_ID);
+  const withoutLive = existing.filter((m) => !isLiveMessageId(m.id));
   const tail = (() => {
     if (!keepLatestTurn) return [];
     for (let i = withoutLive.length - 1; i >= 0; i--) {
@@ -653,8 +694,12 @@ function resetConversation(rt: ProjectRuntime, notice: string, keepLatestTurn = 
   })();
 
   rt.recentCommands.value = [];
+  rt.turnCommands = [];
+  rt.executePreviewByKey.clear();
+  rt.executeOrder = [];
   rt.seenCommandIds.clear();
   rt.pendingImages.value = [];
+  rt.turnInFlight = false;
   clearStepLive(rt);
 
   const next: ChatItem[] = notice.trim()
@@ -708,84 +753,203 @@ function recordChatClear(reason: "thread_reset", source: string): void {
   }
 }
 
+function dropEmptyAssistantPlaceholder(rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  const existing = state.messages.value.slice();
+  for (let i = existing.length - 1; i >= 0; i--) {
+    const m = existing[i]!;
+    if (isLiveMessageId(m.id)) continue;
+    if (m.role === "assistant" && m.kind === "text" && m.streaming && !String(m.content ?? "").trim()) {
+      setMessages([...existing.slice(0, i), ...existing.slice(i + 1)], state);
+      return;
+    }
+    if (m.role === "assistant" && m.streaming) {
+      return;
+    }
+  }
+}
+
+function shouldIgnoreStepDelta(delta: string): boolean {
+  const text = String(delta ?? "");
+  return text.includes("初始化 Codex 线程") || text.includes("开始处理请求");
+}
+
 function ingestCommand(rawCmd: string, rt?: ProjectRuntime, id?: string | null): void {
   const state = runtimeOrActive(rt);
   const cmd = String(rawCmd ?? "").trim();
   if (!cmd) return;
 
-  const normalized = `$ ${cmd}`;
   if (id) {
     if (state.seenCommandIds.has(id)) return;
     state.seenCommandIds.add(id);
   } else {
-    const prev = state.recentCommands.value[state.recentCommands.value.length - 1] ?? "";
-    if (prev === normalized) return;
+    const prev = state.turnCommands[state.turnCommands.length - 1] ?? "";
+    if (prev === cmd) return;
   }
 
-  pushRecentCommand(normalized, state);
-  upsertCommandBlock(state);
+  pushRecentCommand(cmd, state);
 }
 
-function upsertCommandBlock(rt?: ProjectRuntime): void {
-  const state = runtimeOrActive(rt);
-  const lines = state.recentCommands.value.slice();
-  const content = lines.join("\n").trim();
-  const existing = state.messages.value.slice();
-  let idx = -1;
-  for (let i = existing.length - 1; i >= 0; i--) {
-    const m = existing[i]!;
-    if (m.id === LIVE_STEP_ID) continue;
-    if (m.kind === "command" && m.streaming) {
-      idx = i;
-      break;
-    }
+function commandKeyForWsEvent(command: string, id: string | null): string | null {
+  const cmd = String(command ?? "").trim();
+  if (!cmd) return null;
+  const normalizedId = String(id ?? "").trim();
+  return normalizedId ? `id:${normalizedId}` : `cmd:${cmd}`;
+}
+
+function stripCommandHeader(outputDelta: string, command: string): string {
+  const raw = String(outputDelta ?? "");
+  if (!raw) return "";
+
+  const normalized = raw.replace(/\r\n/g, "\n");
+  const header = `$ ${String(command ?? "").trim()}\n`;
+  if (normalized.startsWith(header)) {
+    return normalized.slice(header.length);
   }
-  if (!content) {
-    if (idx >= 0) {
-      setMessages([...existing.slice(0, idx), ...existing.slice(idx + 1)], state);
+  if (normalized.startsWith(`\n${header}`)) {
+    return normalized.slice(1 + header.length);
+  }
+  return normalized;
+}
+
+function trimRightLine(line: string): string {
+  return String(line ?? "").replace(/\s+$/, "");
+}
+
+function upsertExecuteBlock(key: string, command: string, outputDelta: string, rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  dropEmptyAssistantPlaceholder(state);
+  const existing = state.messages.value.slice();
+
+  const normalizedKey = String(key ?? "").trim();
+  const normalizedCommand = String(command ?? "").trim();
+  if (!normalizedKey || !normalizedCommand) return;
+
+  const current =
+    state.executePreviewByKey.get(normalizedKey) ??
+    (() => {
+      const created = { key: normalizedKey, command: normalizedCommand, previewLines: [] as string[], totalLines: 0, remainder: "" };
+      state.executePreviewByKey.set(normalizedKey, created);
+      state.executeOrder = [...state.executeOrder, normalizedKey];
+      return created;
+    })();
+
+  const cleanedDelta = stripCommandHeader(outputDelta, normalizedCommand).replace(/^\n+/, "");
+  if (cleanedDelta) {
+    const combined = (current.remainder + cleanedDelta).replace(/\r\n/g, "\n");
+    const parts = combined.split("\n");
+    current.remainder = parts.pop() ?? "";
+    for (const rawLine of parts) {
+      const line = trimRightLine(rawLine);
+      if (!line) continue;
+      current.totalLines += 1;
+      if (current.previewLines.length < MAX_EXECUTE_PREVIEW_LINES) {
+        current.previewLines.push(line);
+      }
     }
-    return;
   }
 
-  if (idx >= 0) {
-    existing[idx]!.content = content;
+  const preview = current.previewLines.slice();
+  if (preview.length < MAX_EXECUTE_PREVIEW_LINES) {
+    const partial = trimRightLine(current.remainder);
+    if (partial) preview.push(partial);
+  }
+
+  const hiddenLineCount = Math.max(0, current.totalLines - current.previewLines.length);
+  const itemId = `exec:${normalizedKey}`;
+  const nextItem: ChatItem = {
+    id: itemId,
+    role: "system",
+    kind: "execute",
+    content: preview.join("\n"),
+    command: normalizedCommand,
+    hiddenLineCount,
+    streaming: true,
+  };
+
+  const existingIdx = existing.findIndex((m) => m.id === itemId);
+  if (existingIdx >= 0) {
+    existing[existingIdx] = nextItem;
     setMessages(existing.slice(), state);
     return;
   }
 
-  let insertAt = existing.length;
+  const liveIndex = findFirstLiveIndex(existing);
+  let insertAt = liveIndex < 0 ? existing.length : liveIndex;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
-    if (m.id === LIVE_STEP_ID) {
-      insertAt = i;
-      continue;
-    }
+    if (isLiveMessageId(m.id)) continue;
     if (m.role === "assistant" && m.streaming) {
-      insertAt = i;
+      insertAt = Math.min(insertAt, i);
       break;
     }
   }
-  const item: ChatItem = { id: randomId("cmd"), role: "system", kind: "command", content, streaming: true };
-  setMessages([...existing.slice(0, insertAt), item, ...existing.slice(insertAt)], state);
+
+  let lastExecuteIdx = -1;
+  for (let i = 0; i < insertAt; i++) {
+    if (existing[i]!.kind === "execute") {
+      lastExecuteIdx = i;
+    }
+  }
+  if (lastExecuteIdx >= 0) insertAt = lastExecuteIdx + 1;
+
+  setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
+
+  if (state.executeOrder.length > MAX_TURN_COMMANDS) {
+    const overflow = state.executeOrder.length - MAX_TURN_COMMANDS;
+    const toDrop = state.executeOrder.slice(0, overflow);
+    state.executeOrder = state.executeOrder.slice(overflow);
+    for (const k of toDrop) {
+      state.executePreviewByKey.delete(k);
+    }
+    const pruned = state.messages.value.filter((m) => !(m.kind === "execute" && toDrop.includes(String(m.id).slice("exec:".length))));
+    setMessages(pruned, state);
+  }
 }
 
 function finalizeCommandBlock(rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
-  state.recentCommands.value = [];
-  state.seenCommandIds.clear();
   const existing = state.messages.value.slice();
-  let idx = -1;
-  for (let i = existing.length - 1; i >= 0; i--) {
+  let insertAt = -1;
+  const withoutExecute: ChatItem[] = [];
+  for (let i = 0; i < existing.length; i++) {
     const m = existing[i]!;
-    if (m.id === LIVE_STEP_ID) continue;
-    if (m.kind === "command" && m.streaming) {
-      idx = i;
-      break;
+    if (m.kind === "execute") {
+      if (insertAt < 0) insertAt = withoutExecute.length;
+      continue;
+    }
+    withoutExecute.push(m);
+  }
+
+  const commands = state.turnCommands.slice();
+  const content = commands.map((c) => `$ ${c}`).join("\n").trim();
+
+  state.recentCommands.value = [];
+  state.turnCommands = [];
+  state.executePreviewByKey.clear();
+  state.executeOrder = [];
+  state.seenCommandIds.clear();
+
+  if (!content) {
+    if (withoutExecute.length !== existing.length) setMessages(withoutExecute, state);
+    return;
+  }
+
+  if (insertAt < 0) {
+    const liveIndex = findFirstLiveIndex(withoutExecute);
+    insertAt = liveIndex < 0 ? withoutExecute.length : liveIndex;
+    for (let i = withoutExecute.length - 1; i >= 0; i--) {
+      const m = withoutExecute[i]!;
+      if (isLiveMessageId(m.id)) continue;
+      if (m.role === "assistant" && m.streaming) {
+        insertAt = Math.min(insertAt, i);
+        break;
+      }
     }
   }
-  if (idx < 0) return;
-  existing[idx]!.streaming = false;
-  setMessages(existing.slice(), state);
+
+  const item: ChatItem = { id: randomId("cmd"), role: "system", kind: "command", content, streaming: false };
+  setMessages([...withoutExecute.slice(0, insertAt), item, ...withoutExecute.slice(insertAt)], state);
 }
 
 function removeQueuedPrompt(id: string): void {
@@ -823,11 +987,13 @@ function flushQueuedPrompts(rt?: ProjectRuntime): void {
           ? next.text
           : `[图片 x${next.images.length}]`;
 
+    finalizeCommandBlock(state);
+    clearStepLive(state);
+
     pushMessageBeforeLive({ role: "user", kind: "text", content: display }, state);
     pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
     state.busy.value = true;
-    clearStepLive(state);
-    finalizeCommandBlock(state);
+    state.turnInFlight = true;
     state.ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text);
 	  } catch {
     state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
@@ -838,11 +1004,12 @@ function upsertStreamingDelta(delta: string, rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
   const chunk = String(delta ?? "");
   if (!chunk) return;
+  dropEmptyAssistantPlaceholder(state);
   const existing = state.messages.value.slice();
   let streamIndex = -1;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
-    if (m.id === LIVE_STEP_ID) continue;
+    if (isLiveMessageId(m.id)) continue;
     if (m.role === "assistant" && m.streaming) {
       streamIndex = i;
       break;
@@ -855,7 +1022,7 @@ function upsertStreamingDelta(delta: string, rt?: ProjectRuntime): void {
   }
 
   const nextItem: ChatItem = { id: randomId("stream"), role: "assistant", kind: "text", content: chunk, streaming: true };
-  const liveIndex = existing.findIndex((m) => m.id === LIVE_STEP_ID);
+  const liveIndex = findFirstLiveIndex(existing);
   if (liveIndex < 0) {
     setMessages([...existing, nextItem], state);
     return;
@@ -873,63 +1040,109 @@ function trimToLastLines(text: string, maxLines: number, maxChars = 2500): strin
 
 function upsertStepLiveDelta(delta: string, rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
+  dropEmptyAssistantPlaceholder(state);
   const chunk = String(delta ?? "");
   if (!chunk) return;
-  const existing = state.messages.value
-    .filter(
-      (m) =>
-        !(
-          m.id !== LIVE_STEP_ID &&
-          m.role === "assistant" &&
-          m.streaming &&
-          m.kind === "text" &&
-          String(m.content ?? "").length === 0
-        ),
-    )
-    .slice();
+  const existing = state.messages.value.slice();
   const idx = existing.findIndex((m) => m.id === LIVE_STEP_ID);
   const current = idx >= 0 ? existing[idx]!.content : "";
   const nextText = trimToLastLines(current + chunk, 14);
   const nextItem: ChatItem = { id: LIVE_STEP_ID, role: "assistant", kind: "text", content: nextText, streaming: true };
-  const next = idx >= 0 ? [...existing.slice(0, idx), nextItem, ...existing.slice(idx + 1)] : [...existing, nextItem];
+  const withoutStep = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
+
+  let insertAt = withoutStep.length;
+  for (let i = withoutStep.length - 1; i >= 0; i--) {
+    const m = withoutStep[i]!;
+    if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
+      insertAt = i;
+      break;
+    }
+  }
+
+  const next = [...withoutStep.slice(0, insertAt), nextItem, ...withoutStep.slice(insertAt)];
+  setMessages(next, state);
+}
+
+function upsertLiveActivity(rt?: ProjectRuntime): void {
+  const state = runtimeOrActive(rt);
+  dropEmptyAssistantPlaceholder(state);
+  const markdown = renderLiveActivityMarkdown(state.liveActivity);
+
+  const existing = state.messages.value.slice();
+
+  if (!markdown) {
+    const next = existing.filter((m) => m.id !== LIVE_ACTIVITY_ID);
+    if (next.length === existing.length) return;
+    setMessages(next, state);
+    return;
+  }
+
+  const idx = existing.findIndex((m) => m.id === LIVE_ACTIVITY_ID);
+  const nextItem: ChatItem = { id: LIVE_ACTIVITY_ID, role: "assistant", kind: "text", content: markdown, streaming: true };
+  const withoutActivity = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
+
+  const stepIdx = withoutActivity.findIndex((m) => m.id === LIVE_STEP_ID);
+  let insertAt = stepIdx >= 0 ? stepIdx : withoutActivity.length;
+  if (stepIdx < 0) {
+    for (let i = withoutActivity.length - 1; i >= 0; i--) {
+      const m = withoutActivity[i]!;
+      if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
+        insertAt = i;
+        break;
+      }
+    }
+  }
+
+  const next = [...withoutActivity.slice(0, insertAt), nextItem, ...withoutActivity.slice(insertAt)];
   setMessages(next, state);
 }
 
 function clearStepLive(rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
+  clearLiveActivityWindow(state.liveActivity);
   const existing = state.messages.value.slice();
-  const next = existing.filter((m) => m.id !== LIVE_STEP_ID);
+  const next = existing.filter((m) => !isLiveMessageId(m.id));
   if (next.length === existing.length) return;
   setMessages(next, state);
 }
 
 function finalizeAssistant(content: string, rt?: ProjectRuntime): void {
   const state = runtimeOrActive(rt);
-  const text = String(content ?? "");
-  if (!text) return;
+  const text = String(content ?? "").replace(/\r\n/g, "\n");
+  const trimmedText = text.trim();
   const existing = state.messages.value.slice();
   let streamIndex = -1;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
-    if (m.id === LIVE_STEP_ID) continue;
+    if (isLiveMessageId(m.id)) continue;
     if (m.role === "assistant" && m.streaming) {
       streamIndex = i;
       break;
     }
   }
   if (streamIndex >= 0) {
+    const current = String(existing[streamIndex]!.content ?? "");
+    if (!trimmedText) {
+      if (!current.trim()) {
+        setMessages([...existing.slice(0, streamIndex), ...existing.slice(streamIndex + 1)], state);
+        return;
+      }
+      existing[streamIndex]!.streaming = false;
+      setMessages(existing.slice(), state);
+      return;
+    }
     existing[streamIndex]!.content = text;
     existing[streamIndex]!.streaming = false;
     setMessages(existing.slice(), state);
     return;
   }
 
-  const normalizedText = text.replace(/\r\n/g, "\n").trim();
-  if (!normalizedText) return;
+  if (!trimmedText) return;
+  const normalizedText = trimmedText;
   const lastNonLive = (() => {
     for (let i = existing.length - 1; i >= 0; i--) {
       const m = existing[i]!;
-      if (m.id === LIVE_STEP_ID) continue;
+      if (isLiveMessageId(m.id)) continue;
       return m;
     }
     return null;
@@ -1286,6 +1499,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
     const data = payload.data as { taskId: string; command: string };
     markTaskChatStarted(data.taskId, state);
     ingestCommand(data.command, state, null);
+    upsertExecuteBlock(`task:${String(data.taskId ?? "").trim()}:${randomId("cmd")}`, data.command, "", state);
     return;
   }
   if (payload.event === "message:delta") {
@@ -1687,7 +1901,7 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
         if (!trimmed) continue;
         const isCommand = kind === "command" || (role === "status" && trimmed.startsWith("$ "));
         if (isCommand) {
-          cmdGroup = [...cmdGroup, trimmed].slice(-MAX_RECENT_COMMANDS);
+          cmdGroup = [...cmdGroup, trimmed].slice(-MAX_TURN_COMMANDS);
           continue;
         }
         flushCommands();
@@ -1701,39 +1915,38 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     }
     if (msg.type === "delta") {
       rt.busy.value = true;
-      upsertStreamingDelta(String(msg.delta ?? ""), rt);
+      rt.turnInFlight = true;
+      const source = String((msg as { source?: unknown }).source ?? "").trim();
+      if (source === "step") {
+        const delta = String(msg.delta ?? "");
+        if (shouldIgnoreStepDelta(delta)) return;
+        upsertStepLiveDelta(delta, rt);
+      } else {
+        upsertStreamingDelta(String(msg.delta ?? ""), rt);
+      }
       return;
     }
     if (msg.type === "explored") {
       rt.busy.value = true;
+      rt.turnInFlight = true;
       const entry = (msg as { entry?: unknown }).entry;
       if (entry && typeof entry === "object") {
         const typed = entry as { category?: unknown; summary?: unknown };
         const category = String(typed.category ?? "").trim();
         const summary = String(typed.summary ?? "").trim();
+        if (category === "Execute") {
+          return;
+        }
         if (summary) {
-          // "Execute" is already rendered in the dedicated EXECUTE panel (command block).
-          // Showing it again here causes duplicate command UI.
-          if (category === "Execute") return;
-          const categoryLabels: Record<string, string> = {
-            List: "列出",
-            Search: "搜索",
-            Read: "读取",
-            Write: "写入",
-            Execute: "执行",
-            Agent: "代理",
-            Tool: "工具",
-            WebSearch: "网页搜索",
-          };
-          const label = categoryLabels[category] ?? category;
-          const prefix = label ? `· ${label}: ` : "· ";
-          upsertStepLiveDelta(`${prefix}${summary}\n`, rt);
+          ingestExploredActivity(rt.liveActivity, category, summary);
+          upsertLiveActivity(rt);
         }
       }
       return;
     }
     if (msg.type === "result") {
       rt.busy.value = false;
+      rt.turnInFlight = false;
       const output = String(msg.output ?? "");
       if (rt.suppressNextClearHistoryResult) {
         rt.suppressNextClearHistoryResult = false;
@@ -1777,6 +1990,7 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     }
     if (msg.type === "error") {
       rt.busy.value = false;
+      rt.turnInFlight = false;
       clearStepLive(rt);
       finalizeCommandBlock(rt);
       pushMessageBeforeLive({ role: "system", kind: "text", content: String(msg.message ?? "error") }, rt);
@@ -1786,7 +2000,17 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     if (msg.type === "command") {
       const cmd = String(msg.command?.command ?? "").trim();
       const id = String(msg.command?.id ?? "").trim();
+      const outputDelta = String(msg.command?.outputDelta ?? "");
+      const key = commandKeyForWsEvent(cmd, id || null);
+      if (!key) return;
+      rt.busy.value = true;
+      rt.turnInFlight = true;
       ingestCommand(cmd, rt, id || null);
+      upsertExecuteBlock(key, cmd, outputDelta, rt);
+      if (cmd) {
+        ingestCommandActivity(rt.liveActivity, cmd);
+        upsertLiveActivity(rt);
+      }
       return;
     }
   };

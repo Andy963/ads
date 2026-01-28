@@ -11,7 +11,7 @@ type WsCommandPayload = {
 type WsMessage =
   | { type: "welcome"; sessionId?: string; workspace?: unknown; threadId?: string; reset?: boolean }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
-  | { type: "delta"; delta?: string }
+  | { type: "delta"; delta?: string; source?: "chat" | "step" }
   | { type: "result"; ok: boolean; output: string; kind?: string }
   | { type: "error"; message?: string }
   | { type: "thread_reset" }

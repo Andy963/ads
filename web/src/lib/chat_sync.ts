@@ -1,7 +1,7 @@
 export type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command";
+  kind: "text" | "command" | "execute";
   content: string;
   streaming?: boolean;
 };
@@ -14,7 +14,7 @@ function normalizeContentForMerge(text: string): string {
 
 function toComparable(items: ChatItem[], liveStepId: string): ComparableChat[] {
   return items
-    .filter((m) => m.id !== liveStepId)
+    .filter((m) => m.id !== liveStepId && m.kind !== "execute")
     .map((m) => ({ role: m.role, kind: m.kind, content: normalizeContentForMerge(m.content) }));
 }
 
@@ -43,8 +43,8 @@ export function mergeHistoryFromServer(
   serverHistory: ChatItem[],
   liveStepId: string,
 ): ChatItem[] {
-  const local = localMessages.filter((m) => m.id !== liveStepId);
-  const server = serverHistory.filter((m) => m.id !== liveStepId);
+  const local = localMessages.filter((m) => m.id !== liveStepId && m.kind !== "execute");
+  const server = serverHistory.filter((m) => m.id !== liveStepId && m.kind !== "execute");
   if (local.length === 0) return server;
   if (server.length === 0) return local;
 
@@ -99,4 +99,3 @@ export function mergeHistoryFromServer(
 
   return [...local, ...tail];
 }
-

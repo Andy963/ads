@@ -2479,7 +2479,20 @@ async function start(): Promise<void> {
             return;
           }
 	          orchestrator.setWorkingDirectory(turnCwd);
+            const formatStepTraceLine = (event: AgentEvent): string | null => {
+              // Keep this high-level; do not stream raw model reasoning.
+              const title = String(event.title ?? "").trim();
+              if (!title) {
+                return null;
+              }
+              const phase = String(event.phase ?? "").trim();
+              const prefix = phase ? `[${phase}] ` : "";
+              const detail =
+                phase === "analysis" ? "" : String(event.detail ?? "").trim();
+              return detail ? `${prefix}${title}: ${detail}\n` : `${prefix}${title}\n`;
+            };
 	          let lastRespondingText = "";
+            let lastReasoningText = "";
 	          const lastCommandOutputsByKey = new Map<string, string>();
 	          const announcedCommandKeys = new Set<string>();
 	          let hasCommandOutput = false;
@@ -2509,6 +2522,38 @@ async function start(): Promise<void> {
               }
               return;
 	            }
+              const rawItem = (raw as { item?: { type?: unknown } }).item;
+              const rawItemType =
+                rawItem && typeof rawItem === "object"
+                  ? String((rawItem as { type?: unknown }).type ?? "").trim()
+                  : "";
+              if (rawItemType === "reasoning" && typeof event.delta === "string" && event.delta) {
+                const next = event.delta;
+                const prev = lastReasoningText;
+                let delta = next;
+                if (prev && next.startsWith(prev)) {
+                  delta = next.slice(prev.length);
+                }
+                lastReasoningText = next;
+                if (delta) {
+                  const payload = prev ? delta : `[analysis] ${delta}`;
+                  safeJsonSend(ws, { type: "delta", delta: payload, source: "step" });
+                }
+                return;
+              }
+              if (
+                event.phase === "boot" ||
+                event.phase === "analysis" ||
+                event.phase === "context" ||
+                event.phase === "editing" ||
+                event.phase === "tool" ||
+                event.phase === "connection"
+              ) {
+                const line = formatStepTraceLine(event);
+                if (line) {
+                  safeJsonSend(ws, { type: "delta", delta: line, source: "step" });
+                }
+              }
 		            if (event.phase === "command") {
 		              const commandPayload = extractCommandPayload(event);
 		              logger.info(
