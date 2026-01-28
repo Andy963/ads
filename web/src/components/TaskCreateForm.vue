@@ -27,6 +27,7 @@ const props = defineProps<{ models: ModelConfig[]; apiToken?: string; workspaceR
 const emit = defineEmits<{
   (e: "submit", v: CreateTaskInput): void;
   (e: "reset-thread"): void;
+  (e: "cancel"): void;
 }>();
 
 const title = ref("");
@@ -356,11 +357,11 @@ onBeforeUnmount(() => {
 
       <div class="form-row prompt-row">
         <label class="form-field">
-          <span class="label-text">Prompt</span>
+          <span class="label-text">任务描述</span>
           <textarea
             v-model="prompt"
             rows="10"
-            placeholder="描述要做什么…"
+            placeholder="描述任务内容..."
             @keydown="onPromptKeydown"
             @paste="onPromptPaste"
           />
@@ -416,31 +417,33 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="actions">
-      <button class="btnPrimary" type="button" :disabled="!canSubmit" @click="submit">创建任务</button>
-      <button class="btnSecondary" type="button" @click="resetThread">Reset Thread</button>
+      <button class="btnPrimary" type="button" :disabled="!canSubmit" @click="submit">确认</button>
+      <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
     </div>
   </div>
 </template>
 
 <style scoped>
 .card {
-  border: none;
-  border-radius: 14px;
-  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 24px 26px;
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 .form-title {
-  margin: 0 0 16px 0;
-  font-size: 16px;
-  font-weight: 700;
+  margin: 0 0 22px 0;
+  font-size: 18px;
+  font-weight: 800;
   color: var(--text);
+  text-align: center;
+  letter-spacing: 0.02em;
 }
 .form-row {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 .fields {
   flex: 1 1 auto;
@@ -461,28 +464,28 @@ onBeforeUnmount(() => {
 .form-row-3 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
+  gap: 16px;
 }
 .form-field {
   display: block;
 }
 .label-text {
   display: block;
-  font-size: 13px;
-  font-weight: 600;
-  color: #334155;
-  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 8px;
 }
 input,
 select,
 textarea {
   display: block;
   width: 100%;
-  padding: 10px 12px;
-  border-radius: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
   border: 1px solid var(--border);
-  font-size: 14px;
-  background: rgba(248, 250, 252, 0.9);
+  font-size: 15px;
+  background: rgba(248, 250, 252, 0.95);
   color: #1e293b;
   box-sizing: border-box;
   transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
@@ -511,6 +514,7 @@ textarea {
   min-height: 0;
   max-height: none;
   overflow-y: auto;
+  min-height: 180px;
 }
 .errorBox {
   margin-top: 10px;
@@ -660,48 +664,49 @@ textarea {
 }
 .actions {
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  gap: 16px;
+  margin-top: 18px;
 }
 .btnPrimary {
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-size: 13px;
+  border-radius: 18px;
+  padding: 12px 44px;
+  font-size: 15px;
   font-weight: 700;
   cursor: pointer;
-  border: 1px solid rgba(37, 99, 235, 0.25);
-  background: var(--accent);
+  border: none;
+  background: linear-gradient(90deg, #4f8ef7 0%, #7aa9ff 100%);
   color: white;
-  transition: background-color 0.15s ease, opacity 0.15s ease;
+  box-shadow: 0 10px 20px rgba(79, 142, 247, 0.35);
+  transition: background-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 .btnPrimary:hover:not(:disabled) {
-  background: var(--accent-2);
+  transform: translateY(-1px);
 }
 .btnPrimary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+  box-shadow: none;
 }
 .btnSecondary {
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-size: 13px;
+  border-radius: 18px;
+  padding: 12px 40px;
+  font-size: 15px;
   font-weight: 700;
   cursor: pointer;
-  border: 1px solid rgba(148, 163, 184, 0.55);
-  background: rgba(248, 250, 252, 0.9);
-  color: #0f172a;
-  transition: border-color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
+  border: 1px solid rgba(79, 142, 247, 0.35);
+  background: rgba(79, 142, 247, 0.12);
+  color: #2563eb;
+  transition: border-color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 .btnSecondary:hover {
-  border-color: rgba(148, 163, 184, 0.9);
-  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(79, 142, 247, 0.6);
+  background: rgba(79, 142, 247, 0.18);
+  transform: translateY(-1px);
 }
 .btnSecondary:active {
-  background: white;
+  background: rgba(79, 142, 247, 0.22);
 }
 @media (max-width: 600px) {
   .form-row-3 {

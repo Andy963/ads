@@ -2358,6 +2358,7 @@ function closeTaskCreateDialog(): void {
           @retry="retryTask"
           @delete="deleteTask"
           @create="openTaskCreateDialog"
+          @resetThread="clearActiveChat"
         />
       </aside>
 
@@ -2391,6 +2392,7 @@ function closeTaskCreateDialog(): void {
           :workspace-root="resolveActiveWorkspaceRoot() || ''"
           @submit="submitTaskCreate"
           @reset-thread="clearActiveChat"
+          @cancel="closeTaskCreateDialog"
         />
       </div>
     </div>
@@ -2835,10 +2837,13 @@ function closeTaskCreateDialog(): void {
   min-width: 0;
 }
 .modalCardWide {
-  width: min(760px, 100%);
-  max-height: 85vh;
+  width: min(900px, 100%);
+  max-height: 88vh;
   overflow: hidden;
   padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
 }

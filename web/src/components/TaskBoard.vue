@@ -18,6 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "select", id: string): void;
   (e: "create"): void;
+  (e: "resetThread"): void;
   (e: "togglePlan", id: string): void;
   (e: "ensurePlan", id: string): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
@@ -264,6 +265,14 @@ watch(
             <path d="M4 10h12" />
           </svg>
         </button>
+        <button class="iconBtn" type="button" title="Reset thread" aria-label="Reset thread" @click.stop="emit('resetThread')">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 4v5h5" />
+            <path d="M16 16v-5h-5" />
+            <path d="M5.5 14.5a6 6 0 0 0 8.5 0" />
+            <path d="M14.5 5.5a6 6 0 0 0-8.5 0" />
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -423,6 +432,7 @@ watch(
         </div>
 
         <div class="modalBody">
+          <div class="modalTitle main">编辑任务</div>
           <div v-if="error" class="err">{{ error }}</div>
 
           <label class="field">
@@ -457,16 +467,13 @@ watch(
           </div>
 
           <label class="field">
-            <span class="label">Task description</span>
+            <span class="label">任务描述</span>
             <textarea v-model="editPrompt" rows="6" data-testid="task-edit-prompt" />
           </label>
 
           <div class="actions">
-            <button class="iconBtn primary" type="button" aria-label="Save" title="Save" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.1 3.1 6.8-6.8a1 1 0 0 1 1.4 0Z" clip-rule="evenodd" />
-              </svg>
-            </button>
+            <button class="btnPrimary" type="button" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">保存</button>
+            <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
           </div>
         </div>
       </div>
@@ -744,13 +751,13 @@ watch(
   z-index: 9999;
 }
 .modalCard {
-  width: min(760px, 100%);
-  max-height: 85vh;
-  overflow: auto;
-  border-radius: 14px;
-  background: white;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.35);
+  width: min(900px, 100%);
+  max-height: 88vh;
+  overflow: hidden;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
 }
 .modalHeader {
   display: flex;
@@ -761,19 +768,26 @@ watch(
   border-bottom: 1px solid rgba(226, 232, 240, 0.9);
   background: rgba(248, 250, 252, 0.95);
 }
+@media (max-width: 9999px) {
+  .modalHeader {
+    display: none;
+  }
+}
 .modalTitle {
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 800;
   color: #0f172a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.modalTitle.main {
+  margin: 0 0 6px 0;
 }
 .modalBody {
-  padding: 12px;
+  padding: 24px 26px;
   display: grid;
-  gap: 10px;
-  background: #f8fafc;
+  gap: 16px;
+  background: var(--surface);
 }
 .err {
   border: 1px solid rgba(239, 68, 68, 0.3);
@@ -801,26 +815,42 @@ watch(
 }
 .label {
   display: block;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
-  color: #475569;
-  margin-bottom: 6px;
+  color: #1f2937;
+  margin-bottom: 8px;
 }
 input,
 select,
 textarea {
   width: 100%;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
-  font-size: 14px;
-  background: white;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  font-size: 15px;
+  background: rgba(248, 250, 252, 0.95);
   color: #1e293b;
   box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: rgba(148, 163, 184, 0.8);
+  background: rgba(255, 255, 255, 0.95);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.8);
+  background: white;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 textarea {
   resize: none;
-  max-height: 200px;
+  min-height: 180px;
+  max-height: none;
   overflow-y: auto;
 }
 .check {
@@ -835,7 +865,48 @@ textarea {
 }
 .actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 18px;
+}
+.btnPrimary {
+  border-radius: 18px;
+  padding: 12px 44px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  background: linear-gradient(90deg, #4f8ef7 0%, #7aa9ff 100%);
+  color: white;
+  box-shadow: 0 10px 20px rgba(79, 142, 247, 0.35);
+  transition: background-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+.btnPrimary:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.btnPrimary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.btnSecondary {
+  border-radius: 18px;
+  padding: 12px 40px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid rgba(79, 142, 247, 0.35);
+  background: rgba(79, 142, 247, 0.12);
+  color: #2563eb;
+  transition: border-color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+.btnSecondary:hover {
+  border-color: rgba(79, 142, 247, 0.6);
+  background: rgba(79, 142, 247, 0.18);
+  transform: translateY(-1px);
+}
+.btnSecondary:active {
+  background: rgba(79, 142, 247, 0.22);
 }
 .plan {
   border-top: 1px solid #e2e8f0;
