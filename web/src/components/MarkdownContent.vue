@@ -227,15 +227,20 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   height: 28px;
   padding: 0;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(255, 255, 255, 0.9);
-  color: #475569;
+  border: 1px solid rgba(15, 23, 42, 0.28);
+  background: rgba(15, 23, 42, 0.72);
+  color: rgba(255, 255, 255, 0.95);
   font-size: 11px;
   cursor: pointer;
   opacity: 0.65;
   transition: opacity 120ms ease;
   display: grid;
   place-items: center;
+}
+
+.md :deep(.md-codecopy:hover) {
+  opacity: 1;
+  background: rgba(15, 23, 42, 0.82);
 }
 
 .md.inverted :deep(.md-codecopy) {
