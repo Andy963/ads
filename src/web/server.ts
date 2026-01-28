@@ -2527,6 +2527,35 @@ async function start(): Promise<void> {
                 rawItem && typeof rawItem === "object"
                   ? String((rawItem as { type?: unknown }).type ?? "").trim()
                   : "";
+              if (raw.type === "item.completed" && rawItemType === "file_change") {
+                const item = rawItem as { changes?: unknown };
+                const changes = Array.isArray(item.changes) ? (item.changes as Array<{ kind?: unknown; path?: unknown }>) : [];
+                const toBaseName = (p: string): string => {
+                  const rawPath = String(p ?? "").trim();
+                  if (!rawPath) return "";
+                  const parts = rawPath.split(/[\\/]/).filter(Boolean);
+                  return parts.length ? parts[parts.length - 1]! : rawPath;
+                };
+                const formatted = changes
+                  .map((c) => {
+                    const kind = String(c.kind ?? "").trim();
+                    const path = String(c.path ?? "").trim();
+                    if (!kind || !path) return "";
+                    const label = path.length <= 60 ? path : toBaseName(path);
+                    return `${kind} ${label}`;
+                  })
+                  .filter(Boolean);
+                const shown = formatted.slice(0, 4);
+                const hidden = Math.max(0, formatted.length - shown.length);
+                const summary = shown.join(", ") + (hidden ? ` (+${hidden} more)` : "");
+                if (summary) {
+                  safeJsonSend(ws, {
+                    type: "explored",
+                    header: false,
+                    entry: { category: "Write", summary },
+                  });
+                }
+              }
               if (rawItemType === "reasoning" && typeof event.delta === "string" && event.delta) {
                 const next = event.delta;
                 const prev = lastReasoningText;
