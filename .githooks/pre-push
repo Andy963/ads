@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+if [[ "$branch" == "main" ]]; then
+  echo "ERROR: pushing directly from 'main' is blocked. Switch to 'dev'." >&2
+  exit 1
+fi
+
