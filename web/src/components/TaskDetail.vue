@@ -23,6 +23,7 @@ const emit = defineEmits<{
 
 const listRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
+const showScrollToBottom = ref(false);
 const input = ref("");
 
 const copiedMessageId = ref<string | null>(null);
@@ -65,7 +66,17 @@ function withTokenQuery(url: string): string {
 function handleScroll() {
   if (!listRef.value) return;
   const { scrollTop, scrollHeight, clientHeight } = listRef.value;
-  autoScroll.value = scrollHeight - scrollTop - clientHeight < 50;
+  const distance = scrollHeight - scrollTop - clientHeight;
+  autoScroll.value = distance < 80;
+  showScrollToBottom.value = distance >= 80;
+}
+
+async function scrollToBottom(): Promise<void> {
+  if (!listRef.value) return;
+  await nextTick();
+  listRef.value.scrollTop = listRef.value.scrollHeight;
+  autoScroll.value = true;
+  showScrollToBottom.value = false;
 }
 
 watch(
@@ -74,7 +85,10 @@ watch(
     if (autoScroll.value && listRef.value) {
       await nextTick();
       listRef.value.scrollTop = listRef.value.scrollHeight;
+      showScrollToBottom.value = false;
+      return;
     }
+    showScrollToBottom.value = true;
   },
 );
 
@@ -245,6 +259,18 @@ onBeforeUnmount(() => {
         <span v-else-if="task.status === 'planning'">Generating plan...</span>
         <span v-else>Running...</span>
       </div>
+      <button
+        v-if="showScrollToBottom"
+        class="scrollToBottom"
+        type="button"
+        aria-label="Scroll to bottom"
+        title="Back to bottom"
+        @click="scrollToBottom"
+      >
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 8l6 6 6-6" />
+        </svg>
+      </button>
     </div>
 
     <div class="composer">
@@ -376,6 +402,7 @@ onBeforeUnmount(() => {
   padding: 14px 14px 10px 14px;
   background: #f8fafc;
   min-height: 0;
+  position: relative;
 }
 .chat-empty {
   padding: 18px;
@@ -392,6 +419,22 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 12px;
   text-align: center;
+}
+.scrollToBottom {
+  position: sticky;
+  float: right;
+  bottom: 12px;
+  right: 12px;
+  margin-top: 8px;
+  border: none;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+  padding: 2px;
+  z-index: 2;
+}
+.scrollToBottom:hover {
+  color: #0f172a;
 }
 .msg {
   display: flex;
