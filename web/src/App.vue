@@ -1656,6 +1656,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
       finalizeAssistant(t.result, state);
     }
     flushQueuedPrompts(state);
+    void loadQueueStatus();
     return;
   }
   if (payload.event === "task:failed") {
@@ -1666,6 +1667,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
     finalizeCommandBlock(state);
     pushMessageBeforeLive({ role: "system", kind: "text", content: `[任务失败] ${data.error}` }, state);
     flushQueuedPrompts(state);
+    void loadQueueStatus();
     return;
   }
   if (payload.event === "task:cancelled") {
@@ -1676,6 +1678,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
     finalizeCommandBlock(state);
     pushMessageBeforeLive({ role: "system", kind: "text", content: "[已终止]" }, state);
     flushQueuedPrompts(state);
+    void loadQueueStatus();
     return;
   }
 }
