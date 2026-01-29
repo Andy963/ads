@@ -22,6 +22,7 @@ const emit = defineEmits<{
   (e: "togglePlan", id: string): void;
   (e: "ensurePlan", id: string): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
+  (e: "update-and-run", payload: { id: string; updates: TaskUpdates }): void;
   (e: "queueRun"): void;
   (e: "queuePause"): void;
   (e: "runSingle", id: string): void;
@@ -122,6 +123,14 @@ function stopEdit(): void {
 }
 
 function saveEdit(task: Task): void {
+  saveEditWithEvent(task, "update");
+}
+
+function saveEditAndRun(task: Task): void {
+  saveEditWithEvent(task, "update-and-run");
+}
+
+function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void {
   const title = editTitle.value.trim();
   const prompt = editPrompt.value.trim();
   if (!title) {
@@ -133,7 +142,7 @@ function saveEdit(task: Task): void {
     return;
   }
 
-  emit("update", {
+  emit(event, {
     id: task.id,
     updates: {
       title,
@@ -473,6 +482,15 @@ watch(
 
           <div class="actions">
             <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
+            <button
+              class="btnPrimary"
+              type="button"
+              :disabled="!editingTask"
+              data-testid="task-edit-modal-save-and-run"
+              @click="editingTask && saveEditAndRun(editingTask)"
+            >
+              Save & Run
+            </button>
             <button class="btnPrimary" type="button" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">保存</button>
           </div>
         </div>
@@ -866,8 +884,10 @@ textarea {
   margin-top: 18px;
 }
 .btnPrimary {
-  border-radius: 18px;
-  padding: 12px 44px;
+  border-radius: 14px;
+  padding: 9px 40px;
+  min-height: 38px;
+  line-height: 1.1;
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
@@ -886,8 +906,10 @@ textarea {
   box-shadow: none;
 }
 .btnSecondary {
-  border-radius: 18px;
-  padding: 12px 40px;
+  border-radius: 14px;
+  padding: 9px 36px;
+  min-height: 38px;
+  line-height: 1.1;
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;

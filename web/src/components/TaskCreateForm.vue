@@ -26,6 +26,7 @@ type LocalAttachment = {
 const props = defineProps<{ models: ModelConfig[]; apiToken?: string; workspaceRoot?: string }>();
 const emit = defineEmits<{
   (e: "submit", v: CreateTaskInput): void;
+  (e: "submit-and-run", v: CreateTaskInput): void;
   (e: "reset-thread"): void;
   (e: "cancel"): void;
 }>();
@@ -258,13 +259,21 @@ async function onPromptPaste(ev: ClipboardEvent): Promise<void> {
 }
 
 function submit(): void {
+  emitSubmit("submit");
+}
+
+function submitAndRun(): void {
+  emitSubmit("submit-and-run");
+}
+
+function emitSubmit(event: "submit" | "submit-and-run"): void {
   if (!canSubmit.value) return;
   const titleTrimmed = title.value.trim();
   const uploadedIds = attachments.value
     .filter((a) => a.status === "ready" && a.uploaded?.id)
     .map((a) => String(a.uploaded!.id))
     .filter(Boolean);
-  emit("submit", {
+  emit(event, {
     title: titleTrimmed.length ? titleTrimmed : undefined,
     prompt: prompt.value.trim(),
     model: model.value,
@@ -418,6 +427,9 @@ onBeforeUnmount(() => {
 
     <div class="actions">
       <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
+      <button class="btnPrimary" type="button" :disabled="!canSubmit" data-testid="task-create-submit-and-run" @click="submitAndRun">
+        Save & Run
+      </button>
       <button class="btnPrimary" type="button" :disabled="!canSubmit" @click="submit">确认</button>
     </div>
   </div>
@@ -671,8 +683,10 @@ textarea {
   padding-top: 18px;
 }
 .btnPrimary {
-  border-radius: 18px;
-  padding: 12px 44px;
+  border-radius: 14px;
+  padding: 9px 40px;
+  min-height: 38px;
+  line-height: 1.1;
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
@@ -691,8 +705,10 @@ textarea {
   box-shadow: none;
 }
 .btnSecondary {
-  border-radius: 18px;
-  padding: 12px 40px;
+  border-radius: 14px;
+  padding: 9px 36px;
+  min-height: 38px;
+  line-height: 1.1;
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;

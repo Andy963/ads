@@ -2087,6 +2087,47 @@ async function submitTaskCreate(input: CreateTaskInput): Promise<void> {
   if (created) taskCreateDialogOpen.value = false;
 }
 
+async function submitTaskCreateAndRun(input: CreateTaskInput): Promise<void> {
+  const created = await createTask(input);
+  if (!created) {
+    return;
+  }
+  taskCreateDialogOpen.value = false;
+  await runTaskQueue();
+}
+
+function pendingIdsInQueueOrder(): string[] {
+  return tasks.value
+    .filter((t) => t.status === "pending")
+    .slice()
+    .sort((a, b) => {
+      if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      return a.id.localeCompare(b.id);
+    })
+    .map((t) => t.id);
+}
+
+async function updateQueuedTaskAndRun(id: string, updates: Record<string, unknown>): Promise<void> {
+  const taskId = String(id ?? "").trim();
+  if (!taskId) return;
+
+  await updateQueuedTask(taskId, updates);
+  if (apiError.value) {
+    return;
+  }
+
+  const ids = pendingIdsInQueueOrder();
+  const next = ids.filter((x) => x !== taskId);
+  next.push(taskId);
+  await reorderPendingTasks(next);
+  if (apiError.value) {
+    return;
+  }
+
+  await runTaskQueue();
+}
+
 async function refreshTaskRow(id: string, projectId: string = activeProjectId.value): Promise<void> {
   const taskId = String(id ?? "").trim();
   if (!taskId) return;
@@ -2399,6 +2440,7 @@ function closeTaskCreateDialog(): void {
           @togglePlan="togglePlan"
           @ensurePlan="ensurePlan"
           @update="({ id, updates }) => updateQueuedTask(id, updates)"
+          @update-and-run="({ id, updates }) => updateQueuedTaskAndRun(id, updates)"
           @reorder="(ids) => reorderPendingTasks(ids)"
           @queueRun="runTaskQueue"
           @queuePause="pauseTaskQueue"
@@ -2440,6 +2482,7 @@ function closeTaskCreateDialog(): void {
           :models="models"
           :workspace-root="resolveActiveWorkspaceRoot() || ''"
           @submit="submitTaskCreate"
+          @submit-and-run="submitTaskCreateAndRun"
           @reset-thread="clearActiveChat"
           @cancel="closeTaskCreateDialog"
         />

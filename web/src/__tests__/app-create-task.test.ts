@@ -172,6 +172,34 @@ describe("App.createTask chat insertion", () => {
     expect(wrapper.vm.tasks[0]).toMatchObject({ id: "created-2", prompt: "Hello" });
     wrapper.unmount();
   });
+
+  it("submitTaskCreateAndRun creates the task and starts the queue", async () => {
+    const called: string[] = [];
+    postImpl = async (url: string) => {
+      called.push(url);
+      if (url.includes("/api/tasks") && !url.includes("/reorder") && !url.includes("/run")) {
+        return makeTask({ id: "created-3", status: "pending", prompt: "Hello" });
+      }
+      if (url.includes("/api/task-queue/run")) {
+        return { enabled: true, running: true, ready: true, streaming: false } satisfies TaskQueueStatus;
+      }
+      throw new Error(`unexpected url: ${url}`);
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    await (wrapper.vm as unknown as { submitTaskCreateAndRun: (input: { prompt: string }) => Promise<void> }).submitTaskCreateAndRun({
+      prompt: "Hello",
+    });
+    await settleUi(wrapper);
+
+    expect(called.some((u) => u.includes("/api/tasks"))).toBe(true);
+    expect(called.some((u) => u.includes("/api/task-queue/run"))).toBe(true);
+
+    wrapper.unmount();
+  });
 });
 
 describe("App task:completed result dedupe", () => {
