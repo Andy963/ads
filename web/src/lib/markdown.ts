@@ -179,12 +179,12 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const bodyHtml = [
     `<div class="md-codeblock-body">`,
     `<button class="md-codecopy" type="button" aria-label="Copy code" data-state="idle">` +
-      `<svg class="md-icon copy" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">` +
-        `<path fill-rule="evenodd" d="M6 2a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6.5a.75.75 0 0 0-.22-.53l-3.75-3.75A.75.75 0 0 0 11.5 2H6Zm6.5 1.56 2.94 2.94H13a.5.5 0 0 1-.5-.5V3.56Z" clip-rule="evenodd" />` +
-        `<path d="M4 6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2H9a3 3 0 0 1-3-3V6H4Z" />` +
+      `<svg class="md-icon copy" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+        `<rect x="9" y="9" width="13" height="13" rx="2" />` +
+        `<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />` +
       `</svg>` +
-      `<svg class="md-icon check" width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">` +
-        `<path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.1 3.1 6.8-6.8a1 1 0 0 1 1.4 0Z" clip-rule="evenodd" />` +
+      `<svg class="md-icon check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+        `<path d="M20 6L9 17l-5-5" />` +
       `</svg>` +
     `</button>`,
     `<pre><code class="hljs${langClass}">${highlighted}</code></pre>`,

@@ -226,27 +226,61 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   width: 28px;
   height: 28px;
   padding: 0;
-  border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.28);
-  background: rgba(15, 23, 42, 0.72);
-  color: rgba(255, 255, 255, 0.95);
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: transparent;
+  color: rgba(15, 23, 42, 0.56);
   font-size: 11px;
   cursor: pointer;
-  opacity: 0.65;
-  transition: opacity 120ms ease;
+  opacity: 0.75;
+  transition:
+    opacity 120ms ease,
+    background 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease,
+    outline-color 120ms ease;
   display: grid;
   place-items: center;
 }
 
 .md :deep(.md-codecopy:hover) {
   opacity: 1;
-  background: rgba(15, 23, 42, 0.82);
+  background: transparent;
+  border-color: rgba(15, 23, 42, 0.22);
+  color: rgba(15, 23, 42, 0.78);
+}
+
+.md :deep(.md-codecopy:active),
+.md :deep(.md-codecopy:focus),
+.md :deep(.md-codecopy:focus-visible) {
+  background: transparent;
+  border-color: rgba(15, 23, 42, 0.28);
+  color: rgba(15, 23, 42, 0.86);
+}
+
+.md :deep(.md-codecopy:focus-visible) {
+  outline: 2px solid rgba(124, 58, 237, 0.35);
+  outline-offset: 2px;
 }
 
 .md.inverted :deep(.md-codecopy) {
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(37, 99, 235, 0.55);
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.26);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.md.inverted :deep(.md-codecopy:hover) {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.38);
   color: rgba(255, 255, 255, 0.95);
+}
+
+.md.inverted :deep(.md-codecopy:active),
+.md.inverted :deep(.md-codecopy:focus),
+.md.inverted :deep(.md-codecopy:focus-visible) {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.46);
+  color: rgba(255, 255, 255, 0.98);
 }
 
 .md :deep(.md-codecopy .md-icon.check) {
