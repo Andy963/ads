@@ -46,6 +46,15 @@ const isRunning = computed(() => {
   return t.status === "pending" || t.status === "planning" || t.status === "running";
 });
 
+const showPendingReply = computed(() => {
+  if (!props.task || !isRunning.value) return false;
+  const lastAssistant = [...props.messages]
+    .reverse()
+    .find((m) => m.role === "assistant" && m.kind === "text");
+  if (!lastAssistant) return true;
+  return !String(lastAssistant.content ?? "").trim();
+});
+
 function withTokenQuery(url: string): string {
   const token = String(props.apiToken ?? "").trim();
   if (!token) return url;
@@ -139,7 +148,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="!task" class="empty">
-    <span class="empty-text">选择任务开始对话</span>
+    <span class="empty-text">Select a task to start chatting</span>
   </div>
   <div v-else class="detail">
     <div class="header">
@@ -170,23 +179,23 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="actions">
-        <button class="iconBtn" type="button" title="刷新" @click="emit('refresh', task.id)">
+        <button class="iconBtn" type="button" title="Refresh" @click="emit('refresh', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M15.31 4.69a.75.75 0 0 1 0 1.06l-1.1 1.1A6.5 6.5 0 1 1 10 3.5a.75.75 0 0 1 0 1.5A5 5 0 1 0 14 8.25h-1.75a.75.75 0 0 1 0-1.5H15a.75.75 0 0 1 .75.75V10a.75.75 0 0 1-1.5 0V7.56l-.85.85a.75.75 0 0 1-1.06-1.06l2.97-2.66Z" clip-rule="evenodd" />
           </svg>
         </button>
-        <button class="iconBtn danger" type="button" title="终止" :disabled="!canCancel" @click="emit('cancel', task.id)">
+        <button class="iconBtn danger" type="button" title="Stop" :disabled="!canCancel" @click="emit('cancel', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6Zm0 2h8v8H6V6Z" clip-rule="evenodd" />
           </svg>
         </button>
-        <button class="iconBtn primary" type="button" title="重试" :disabled="!canRetry" @click="emit('retry', task.id)">
+        <button class="iconBtn primary" type="button" title="Retry" :disabled="!canRetry" @click="emit('retry', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M10 3.5a6.5 6.5 0 0 0-6.46 5.75.75.75 0 0 0 1.49.18A5 5 0 1 1 10 15a.75.75 0 0 0 0 1.5A6.5 6.5 0 1 0 10 3.5Z" clip-rule="evenodd" />
             <path d="M4.5 6.25a.75.75 0 0 1 .75-.75H7.5a.75.75 0 0 1 0 1.5H6v1.5a.75.75 0 0 1-1.5 0V6.25Z" />
           </svg>
         </button>
-        <button class="iconBtn danger" type="button" title="删除任务" :disabled="task.status === 'running' || task.status === 'planning'" @click="emit('delete', task.id)">
+        <button class="iconBtn danger" type="button" title="Delete task" :disabled="task.status === 'running' || task.status === 'planning'" @click="emit('delete', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M7 3a1 1 0 0 0-1 1v1H4.75a.75.75 0 0 0 0 1.5h.7l.62 9.1A2 2 0 0 0 8.06 18h3.88a2 2 0 0 0 2-1.9l.62-9.1h.69a.75.75 0 0 0 0-1.5H14V4a1 1 0 0 0-1-1H7Zm1.5 2V4.5h3V5H8.5Zm-1.55 2.5.56 8.25c.03.43.39.75.82.75h3.34c.43 0 .79-.32.82-.75l.56-8.25H6.95Z" clip-rule="evenodd" />
           </svg>
@@ -208,10 +217,10 @@ onBeforeUnmount(() => {
 
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
-        <span v-if="task.status === 'pending'">等待执行…</span>
-        <span v-else-if="task.status === 'planning'">生成计划中…</span>
-        <span v-else-if="task.status === 'running'">执行中…</span>
-        <span v-else>暂无消息</span>
+        <span v-if="task.status === 'pending'">Waiting to start...</span>
+        <span v-else-if="task.status === 'planning'">Generating plan...</span>
+        <span v-else-if="task.status === 'running'">Running...</span>
+        <span v-else>No messages yet</span>
       </div>
       <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
         <div class="bubble" :class="{ hasActions: m.kind !== 'command' }">
@@ -231,6 +240,11 @@ onBeforeUnmount(() => {
           <span v-if="m.streaming" class="cursor">▍</span>
         </div>
       </div>
+      <div v-if="messages.length > 0 && showPendingReply" class="chat-placeholder">
+        <span v-if="task.status === 'pending'">Waiting to start...</span>
+        <span v-else-if="task.status === 'planning'">Generating plan...</span>
+        <span v-else>Running...</span>
+      </div>
     </div>
 
     <div class="composer">
@@ -238,10 +252,10 @@ onBeforeUnmount(() => {
         v-model="input"
         rows="2"
         class="composer-input"
-        :placeholder="isRunning ? '继续输入指令…（Enter 发送，Alt+Enter 换行）' : '输入指令…（Enter 发送，Alt+Enter 换行）'"
+        :placeholder="isRunning ? 'Continue with instruction... (Enter to send, Alt+Enter for newline)' : 'Enter instruction... (Enter to send, Alt+Enter for newline)'"
         @keydown="onInputKeydown"
       />
-      <button class="send" :disabled="!input.trim()" type="button" @click="send">发送</button>
+      <button class="send" :disabled="!input.trim()" type="button" @click="send">Send</button>
     </div>
   </div>
 </template>
@@ -368,6 +382,16 @@ onBeforeUnmount(() => {
   text-align: center;
   color: #94a3b8;
   font-size: 13px;
+}
+.chat-placeholder {
+  margin: 10px 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.45);
+  background: rgba(248, 250, 252, 0.9);
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
 }
 .msg {
   display: flex;
