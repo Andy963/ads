@@ -149,7 +149,7 @@ Claude 集成正在逐步落地，可通过以下环境变量启用实验特性�
 ```json
 {
   "enabled": true,
-  "api_key": "sk-ant-xxx",
+  "api_key": "your_anthropic_api_key",
   "model": "claude-sonnet-4.5",
   "workdir": "/tmp/ads-claude-agent",
   "tool_allowlist": ["bash", "file.edit"]
@@ -274,7 +274,7 @@ ADS 支持通过 Tavily MCP 为 Codex 提供联网搜索能力。
 
 ```bash
 # 设置 API 密钥
-export TAVILY_API_KEY="tvly-xxx"
+export TAVILY_API_KEY="your_tavily_api_key"
 
 # 自动配置 Codex MCP（使用本地 NPX 方式）
 npx ts-node src/tools/search/setupCodexMcp.ts setup
@@ -298,11 +298,11 @@ args = ["-y", "tavily-mcp@latest"]
 tool_timeout_sec = 30
 
 [mcp_servers.tavily.env]
-TAVILY_API_KEY = "tvly-xxx"
+TAVILY_API_KEY = "your_tavily_api_key"
 
 # 方式2：远程 HTTP（无需本地 Node.js）
 [mcp_servers.tavily]
-url = "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-xxx"
+url = "https://mcp.tavily.com/mcp/?tavilyApiKey=your_tavily_api_key"
 tool_timeout_sec = 30
 ```
 
