@@ -417,8 +417,8 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="actions">
-      <button class="btnPrimary" type="button" :disabled="!canSubmit" @click="submit">确认</button>
       <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
+      <button class="btnPrimary" type="button" :disabled="!canSubmit" @click="submit">确认</button>
     </div>
   </div>
 </template>
@@ -664,10 +664,11 @@ textarea {
 }
 .actions {
   display: flex;
-  justify-content: center;
+  justify-content: flex-end;
   align-items: center;
   gap: 16px;
-  margin-top: 18px;
+  margin-top: auto;
+  padding-top: 18px;
 }
 .btnPrimary {
   border-radius: 18px;

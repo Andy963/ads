@@ -472,8 +472,8 @@ watch(
           </label>
 
           <div class="actions">
-            <button class="btnPrimary" type="button" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">保存</button>
             <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
+            <button class="btnPrimary" type="button" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">保存</button>
           </div>
         </div>
       </div>
@@ -860,7 +860,8 @@ textarea {
 }
 .actions {
   display: flex;
-  justify-content: center;
+  justify-content: flex-end;
+  align-items: center;
   gap: 16px;
   margin-top: 18px;
 }
