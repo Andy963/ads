@@ -1,7 +1,3 @@
-/**
- * Web 服务器相关类型定义
- */
-
 export interface WsMessage {
   type: string;
   payload?: unknown;
@@ -23,6 +19,7 @@ export interface WorkspaceState {
   path: string;
   rules: string;
   modified: string[];
+  branch?: string;
 }
 
 export interface CommandPayload {

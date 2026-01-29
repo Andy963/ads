@@ -143,7 +143,7 @@ describe("compact attachment UI", () => {
     wrapper.unmount();
   });
 
-  it("TaskBoard renders attachment filenames without inline previews", async () => {
+  it("TaskBoard does not render attachments inline", async () => {
     const task = makeTask({
       id: "t-1",
       title: "With attachments",
@@ -172,24 +172,16 @@ describe("compact attachment UI", () => {
     });
 
     const row = wrapper.find(".attachmentsRow");
-    expect(row.exists()).toBe(true);
+    expect(row.exists()).toBe(false);
 
     const links = wrapper.findAll(".attachmentLink");
-    // Only first 4 are shown, rest collapses to +N badge.
-    expect(links).toHaveLength(4);
-    expect(links.map((l) => l.text())).toEqual(["a-1.png", "a-2.png", "a-3.png", "a-4.png"]);
+    expect(links).toHaveLength(0);
 
     const thumbs = wrapper.findAll(".thumbStub");
     expect(thumbs).toHaveLength(0);
 
     const more = wrapper.find(".attachmentsMore");
-    expect(more.exists()).toBe(true);
-    expect(more.text()).toBe("+1");
-
-    const sfc = await readSfc("../components/TaskBoard.vue");
-    expect(sfc).toMatch(/\.attachmentLink\s*\{[\s\S]*text-overflow:\s*ellipsis\s*;/);
-    expect(sfc).toMatch(/\.attachmentLink\s*\{[\s\S]*white-space:\s*nowrap\s*;/);
-    expect(sfc).toMatch(/\.attachmentsMore\s*\{[\s\S]*height:\s*16px\s*;/);
+    expect(more.exists()).toBe(false);
 
     wrapper.unmount();
   });

@@ -193,23 +193,23 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="actions">
-        <button class="iconBtn" type="button" title="Refresh" @click="emit('refresh', task.id)">
+        <button class="iconBtn" type="button" title="刷新" @click="emit('refresh', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M15.31 4.69a.75.75 0 0 1 0 1.06l-1.1 1.1A6.5 6.5 0 1 1 10 3.5a.75.75 0 0 1 0 1.5A5 5 0 1 0 14 8.25h-1.75a.75.75 0 0 1 0-1.5H15a.75.75 0 0 1 .75.75V10a.75.75 0 0 1-1.5 0V7.56l-.85.85a.75.75 0 0 1-1.06-1.06l2.97-2.66Z" clip-rule="evenodd" />
           </svg>
         </button>
-        <button class="iconBtn danger" type="button" title="Stop" :disabled="!canCancel" @click="emit('cancel', task.id)">
+        <button class="iconBtn danger" type="button" title="终止" :disabled="!canCancel" @click="emit('cancel', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6Zm0 2h8v8H6V6Z" clip-rule="evenodd" />
           </svg>
         </button>
-        <button class="iconBtn primary" type="button" title="Retry" :disabled="!canRetry" @click="emit('retry', task.id)">
+        <button class="iconBtn primary" type="button" title="重试" :disabled="!canRetry" @click="emit('retry', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M10 3.5a6.5 6.5 0 0 0-6.46 5.75.75.75 0 0 0 1.49.18A5 5 0 1 1 10 15a.75.75 0 0 0 0 1.5A6.5 6.5 0 1 0 10 3.5Z" clip-rule="evenodd" />
             <path d="M4.5 6.25a.75.75 0 0 1 .75-.75H7.5a.75.75 0 0 1 0 1.5H6v1.5a.75.75 0 0 1-1.5 0V6.25Z" />
           </svg>
         </button>
-        <button class="iconBtn danger" type="button" title="Delete task" :disabled="task.status === 'running' || task.status === 'planning'" @click="emit('delete', task.id)">
+        <button class="iconBtn danger" type="button" title="删除任务" :disabled="task.status === 'running' || task.status === 'planning'" @click="emit('delete', task.id)">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M7 3a1 1 0 0 0-1 1v1H4.75a.75.75 0 0 0 0 1.5h.7l.62 9.1A2 2 0 0 0 8.06 18h3.88a2 2 0 0 0 2-1.9l.62-9.1h.69a.75.75 0 0 0 0-1.5H14V4a1 1 0 0 0-1-1H7Zm1.5 2V4.5h3V5H8.5Zm-1.55 2.5.56 8.25c.03.43.39.75.82.75h3.34c.43 0 .79-.32.82-.75l.56-8.25H6.95Z" clip-rule="evenodd" />
           </svg>
@@ -217,7 +217,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="task.attachments && task.attachments.length" class="attachmentsStrip" aria-label="Task attachments">
+    <div v-if="task.attachments && task.attachments.length" class="attachmentsStrip" aria-label="任务附件">
       <AttachmentThumb
         v-for="a in task.attachments"
         :key="a.id"

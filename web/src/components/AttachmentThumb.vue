@@ -59,8 +59,8 @@ function retry(ev?: Event): void {
         @load="onLoad"
       />
       <div v-else class="fallback">
-        <span class="fallbackText">Image</span>
-        <button class="retry" type="button" @click="retry">Retry</button>
+        <span class="fallbackText">图片</span>
+        <button class="retry" type="button" @click="retry">重试</button>
       </div>
     </div>
   </a>
@@ -76,8 +76,8 @@ function retry(ev?: Event): void {
       @load="onLoad"
     />
     <div v-else class="fallback">
-      <span class="fallbackText">Image</span>
-      <button class="retry" type="button" @click="retry">Retry</button>
+      <span class="fallbackText">图片</span>
+      <button class="retry" type="button" @click="retry">重试</button>
     </div>
   </div>
 </template>

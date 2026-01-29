@@ -163,6 +163,35 @@ export class SessionManager {
     return { threadId: record.threadId, cwd: record.cwd };
   }
 
+  getSavedResumeThreadId(userId: number): string | undefined {
+    const record = this.threadStorage?.getRecord(userId);
+    const raw = record?.agentThreads?.resume;
+    const trimmed = typeof raw === "string" ? raw.trim() : "";
+    return trimmed || undefined;
+  }
+
+  clearSavedResumeThreadId(userId: number): void {
+    const storage = this.threadStorage;
+    if (!storage) {
+      return;
+    }
+    const record = storage.getRecord(userId);
+    if (!record?.agentThreads?.resume) {
+      return;
+    }
+    const agentThreads = { ...(record.agentThreads ?? {}) };
+    delete agentThreads.resume;
+    const normalized = Object.fromEntries(
+      Object.entries(agentThreads).filter(([, value]) => typeof value === "string" && value.trim()),
+    ) as Record<string, string>;
+
+    if (!record.threadId && Object.keys(normalized).length === 0) {
+      storage.removeThread(userId);
+      return;
+    }
+    storage.setRecord(userId, { threadId: record.threadId, cwd: record.cwd, agentThreads: normalized });
+  }
+
   ensureLogger(userId: number): ConversationLogger | undefined {
     if (!isConversationLoggingEnabled()) {
       return undefined;
@@ -216,9 +245,25 @@ export class SessionManager {
     return this.defaultModel || 'default';
   }
 
-  reset(userId: number): void {
+  reset(userId: number, options?: { preserveThreadForResume?: boolean }): void {
     const record = this.sessions.get(userId);
-    this.threadStorage?.removeThread(userId);
+    const storage = this.threadStorage;
+    const preserve = Boolean(options?.preserveThreadForResume);
+    if (storage) {
+      if (preserve) {
+        const threadIdFromSession = record?.session.getThreadId() ?? null;
+        const threadIdFromStorage = this.getSavedThreadId(userId);
+        const threadId = threadIdFromSession ?? threadIdFromStorage ?? null;
+        const cwd = record?.cwd ?? storage.getRecord(userId)?.cwd;
+        if (threadId) {
+          storage.setRecord(userId, { threadId: undefined, cwd, agentThreads: { resume: threadId } });
+        } else {
+          storage.removeThread(userId);
+        }
+      } else {
+        storage.removeThread(userId);
+      }
+    }
     if (record) {
       record.session.reset();
       record.lastActivity = Date.now();
@@ -228,6 +273,23 @@ export class SessionManager {
     } else {
       this.logger.debug('Reset requested without active session');
     }
+  }
+
+  dropSession(userId: number, options?: { clearSavedThread?: boolean }): void {
+    const record = this.sessions.get(userId);
+    if (options?.clearSavedThread) {
+      this.threadStorage?.removeThread(userId);
+    }
+    if (!record) {
+      return;
+    }
+    try {
+      record.session.reset();
+    } catch {
+      // ignore
+    }
+    record.logger?.close();
+    this.sessions.delete(userId);
   }
 
   getUserCwd(userId: number): string | undefined {

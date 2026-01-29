@@ -158,7 +158,7 @@ async function addAttachmentFromFile(file: File): Promise<void> {
   const maxBytes = 5 * 1024 * 1024;
   if (!file || file.size <= 0) return;
   if (file.size > maxBytes) {
-    attachmentError.value = "Image too large (>5MB)";
+    attachmentError.value = "图片过大（>5MB）";
     return;
   }
   const mime = String(file.type ?? "").toLowerCase();
@@ -377,15 +377,15 @@ onBeforeUnmount(() => {
         </label>
       </div>
 
-      <div v-if="attachmentError" class="errorBox">Attachments: {{ attachmentError }}</div>
+      <div v-if="attachmentError" class="errorBox">附件：{{ attachmentError }}</div>
 
       <div v-if="attachments.length" class="attachments">
         <div class="attachmentsHeader">
-          <span class="attachmentsTitle">Images</span>
+          <span class="attachmentsTitle">图片</span>
           <span class="attachmentsMeta">
-            <span v-if="uploadingCount">Uploading {{ uploadingCount }}…</span>
-            <span v-else-if="failedCount">Failed {{ failedCount }}</span>
-            <span v-else>Ready {{ attachments.length }}</span>
+            <span v-if="uploadingCount">上传中 {{ uploadingCount }}…</span>
+            <span v-else-if="failedCount">失败 {{ failedCount }}</span>
+            <span v-else>就绪 {{ attachments.length }}</span>
           </span>
         </div>
 
@@ -414,11 +414,11 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-else-if="a.status === 'error'" class="overlay error">
-                <div class="errorText">{{ a.error || "Upload failed" }}</div>
-                <button class="retryBtn" type="button" @click="retryUpload(a.localId)">Retry</button>
+                <div class="errorText">{{ a.error || "上传失败" }}</div>
+                <button class="retryBtn" type="button" @click="retryUpload(a.localId)">重试</button>
               </div>
 
-              <button class="removeBtn" type="button" title="Remove" @click="removeAttachment(a.localId)">×</button>
+              <button class="removeBtn" type="button" title="移除" @click="removeAttachment(a.localId)">×</button>
             </div>
           </div>
         </div>
@@ -427,10 +427,10 @@ onBeforeUnmount(() => {
 
     <div class="actions">
       <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
+      <button class="btnSecondary" type="button" :disabled="!canSubmit" @click="submit">保存</button>
       <button class="btnPrimary" type="button" :disabled="!canSubmit" data-testid="task-create-submit-and-run" @click="submitAndRun">
-        Save & Run
+        保存并提交
       </button>
-      <button class="btnPrimary" type="button" :disabled="!canSubmit" @click="submit">确认</button>
     </div>
   </div>
 </template>
@@ -678,13 +678,13 @@ textarea {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   margin-top: auto;
   padding-top: 18px;
 }
 .btnPrimary {
   border-radius: 14px;
-  padding: 9px 40px;
+  padding: 8px 12px;
   min-height: 38px;
   line-height: 1.1;
   font-size: 15px;
@@ -706,7 +706,7 @@ textarea {
 }
 .btnSecondary {
   border-radius: 14px;
-  padding: 9px 36px;
+  padding: 8px 12px;
   min-height: 38px;
   line-height: 1.1;
   font-size: 15px;

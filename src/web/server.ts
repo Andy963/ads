@@ -6,14 +6,15 @@ import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { WebSocket, RawData } from "ws";
 import { z } from "zod";
-import type {
-  CommandExecutionItem,
-  Input,
-  ItemCompletedEvent,
-  ItemStartedEvent,
-  ItemUpdatedEvent,
-  ThreadEvent,
-  TodoListItem,
+import {
+  Codex,
+  type CommandExecutionItem,
+  type Input,
+  type ItemCompletedEvent,
+  type ItemStartedEvent,
+  type ItemUpdatedEvent,
+  type ThreadEvent,
+  type TodoListItem,
 } from "@openai/codex-sdk";
 
 import "../utils/logSink.js";
@@ -25,7 +26,7 @@ import { DirectoryManager } from "../telegram/utils/directoryManager.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { AgentIdentifier } from "../agents/types.js";
-import { parseSlashCommand } from "../codexConfig.js";
+import { parseSlashCommand, resolveCodexConfig } from "../codexConfig.js";
 import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { runCollaborativeTurn } from "../agents/hub.js";
@@ -2069,6 +2070,26 @@ async function start(): Promise<void> {
         return true;
       }
 
+      const planMatch = /^\/api\/tasks\/([^/]+)\/plan$/.exec(pathname);
+      if (planMatch && req.method === "GET") {
+        let ctx: TaskQueueContext;
+        try {
+          ctx = resolveTaskContext(url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(res, 400, { error: message });
+          return true;
+        }
+        const taskId = planMatch[1] ?? "";
+        const task = ctx.taskStore.getTask(taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "Not Found" });
+          return true;
+        }
+        sendJson(res, 200, ctx.taskStore.getPlan(taskId));
+        return true;
+      }
+
       const taskMatch = /^\/api\/tasks\/([^/]+)$/.exec(pathname);
       if (taskMatch) {
         let ctx: TaskQueueContext;
@@ -2401,17 +2422,178 @@ async function start(): Promise<void> {
 
       if (parsed.type === "clear_history") {
         historyStore.clear(historyKey);
-        // 同时重置 session 和 thread，清除旧的对话上下文
-        sessionManager.reset(userId);
-        safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
+        // Reset the active session/thread, but keep the last thread id for manual resume.
+        sessionManager.reset(userId, { preserveThreadForResume: true });
+        safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话（可使用“恢复上下文”找回）", kind: "clear_history" });
         return;
       }
 
-	        if (isPrompt) {
-	          await taskQueueLock.runExclusive(async () => {
-	          const imageDir = resolveWorkspaceStatePath(detectWorkspaceFrom(currentCwd), "temp", "web-images");
-	          const promptInput = buildPromptInput(parsed.payload, imageDir);
-	          if (!promptInput.ok) {
+      if (parsed.type === "task_resume") {
+        await taskQueueLock.runExclusive(async () => {
+          const resumeWorkspaceRoot = detectWorkspaceFrom(currentCwd);
+          const taskCtx = ensureTaskContext(resumeWorkspaceRoot);
+
+          if (taskCtx.queueRunning || taskCtx.taskStore.getActiveTaskId()) {
+            safeJsonSend(ws, { type: "error", message: "任务执行中，无法恢复上下文" });
+            return;
+          }
+
+          const sendHistorySnapshot = () => {
+            const cachedHistory = historyStore.get(historyKey);
+            if (cachedHistory.length === 0) {
+              safeJsonSend(ws, { type: "history", items: [] });
+              return;
+            }
+            const sanitizedHistory = cachedHistory.map((entry) => {
+              if (entry.role !== "ai") {
+                return entry;
+              }
+              const cleanedText = stripLeadingTranslation(entry.text);
+              if (cleanedText === entry.text) {
+                return entry;
+              }
+              return { ...entry, text: cleanedText };
+            });
+            const cdPattern = /^\/cd\b/i;
+            const isCdCommand = (entry: { role: string; text: string }) =>
+              entry.role === "user" && cdPattern.test(String(entry.text ?? "").trim());
+            let lastCdIndex = -1;
+            for (let i = sanitizedHistory.length - 1; i >= 0; i--) {
+              if (isCdCommand(sanitizedHistory[i])) {
+                lastCdIndex = i;
+                break;
+              }
+            }
+            const filteredHistory =
+              lastCdIndex >= 0
+                ? sanitizedHistory.filter((entry, idx) => !isCdCommand(entry) || idx === lastCdIndex)
+                : sanitizedHistory;
+            safeJsonSend(ws, { type: "history", items: filteredHistory });
+          };
+
+          const activeAgentId = orchestrator.getActiveAgentId();
+          const candidateThreadId =
+            sessionManager.getSavedResumeThreadId(userId) ?? sessionManager.getSavedThreadId(userId, activeAgentId);
+          const threadIdToResume = String(candidateThreadId ?? "").trim();
+
+          if (threadIdToResume) {
+            try {
+              const config = resolveCodexConfig();
+              const codex = new Codex({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+              codex.resumeThread(threadIdToResume, {
+                skipGitRepoCheck: true,
+                sandboxMode: "workspace-write",
+                workingDirectory: currentCwd,
+                networkAccessEnabled: true,
+              });
+
+              historyStore.clear(historyKey);
+              historyStore.add(historyKey, {
+                role: "status",
+                text: "已通过 thread ID 恢复上下文",
+                ts: Date.now(),
+              });
+
+              sessionManager.saveThreadId(userId, threadIdToResume, activeAgentId);
+              sessionManager.clearSavedResumeThreadId(userId);
+              sessionManager.dropSession(userId);
+
+              orchestrator = sessionManager.getOrCreate(userId, currentCwd, true);
+              orchestrator.setWorkingDirectory(currentCwd);
+
+              const status = orchestrator.status();
+              if (!status.ready) {
+                safeJsonSend(ws, { type: "error", message: status.error ?? "代理未启用" });
+                return;
+              }
+
+              sendHistorySnapshot();
+              return;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              logger.warn(`[Web][task_resume] resumeThread failed thread=${threadIdToResume} err=${truncateForLog(message)}`);
+            }
+          }
+
+          const candidates = [
+            ...taskCtx.taskStore.listTasks({ status: "completed", limit: 50 }),
+            ...taskCtx.taskStore.listTasks({ status: "failed", limit: 50 }),
+            ...taskCtx.taskStore.listTasks({ status: "cancelled", limit: 50 }),
+          ];
+          const mostRecentTask =
+            candidates
+              .slice()
+              .sort((a, b) => {
+                const at = (a.completedAt ?? a.startedAt ?? a.createdAt) ?? 0;
+                const bt = (b.completedAt ?? b.startedAt ?? b.createdAt) ?? 0;
+                return bt - at;
+              })[0] ?? null;
+
+          if (!mostRecentTask) {
+            safeJsonSend(ws, { type: "error", message: "未找到可用于恢复的任务历史" });
+            return;
+          }
+
+          const conversationId =
+            String(mostRecentTask.threadId ?? "").trim() || `conv-${String(mostRecentTask.id ?? "").trim()}`;
+          const conversationMessages = taskCtx.taskStore
+            .getConversationMessages(conversationId, { limit: 24 })
+            .filter((m) => m.role === "user" || m.role === "assistant");
+
+          const rawTranscript = conversationMessages
+            .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${String(m.content ?? "").trim()}`)
+            .filter(Boolean)
+            .join("\n");
+          const maxChars = 10_000;
+          const transcript =
+            rawTranscript.length <= maxChars ? rawTranscript : rawTranscript.slice(rawTranscript.length - maxChars);
+
+          historyStore.clear(historyKey);
+          historyStore.add(historyKey, {
+            role: "status",
+            text: `已从最近任务恢复上下文：${String(mostRecentTask.title ?? mostRecentTask.id ?? "").trim()}`,
+            ts: Date.now(),
+          });
+
+          sessionManager.dropSession(userId, { clearSavedThread: true });
+          orchestrator = sessionManager.getOrCreate(userId, currentCwd, false);
+          orchestrator.setWorkingDirectory(currentCwd);
+
+          const status = orchestrator.status();
+          if (!status.ready) {
+            safeJsonSend(ws, { type: "error", message: status.error ?? "代理未启用" });
+            return;
+          }
+          try {
+            const prompt = [
+              "你正在帮助我恢复对话上下文。以下是最近一次任务执行的对话片段（仅用于恢复上下文，不要逐条复述）：",
+              transcript,
+              "",
+              "请回复：OK",
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await orchestrator.send(prompt, { streaming: false });
+            const threadId = orchestrator.getThreadId();
+            if (threadId) {
+              sessionManager.saveThreadId(userId, threadId, orchestrator.getActiveAgentId());
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            safeJsonSend(ws, { type: "error", message: `恢复失败: ${message}` });
+            return;
+          }
+
+          sendHistorySnapshot();
+        });
+        return;
+      }
+
+		        if (isPrompt) {
+		          await taskQueueLock.runExclusive(async () => {
+		          const imageDir = resolveWorkspaceStatePath(detectWorkspaceFrom(currentCwd), "temp", "web-images");
+		          const promptInput = buildPromptInput(parsed.payload, imageDir);
+		          if (!promptInput.ok) {
 	            sessionLogger?.logError(promptInput.message);
             safeJsonSend(ws, { type: "error", message: promptInput.message });
             return;

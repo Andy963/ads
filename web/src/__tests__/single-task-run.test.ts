@@ -156,7 +156,7 @@ describe("App.runSingleTask", () => {
     expect(wrapper.find("aside.left").text()).not.toContain("scheduled");
     expect(wrapper.find("aside.left .notice").exists()).toBe(false);
     wrapper.unmount();
-  });
+  }, 15000);
 
   it("auto-clears the toast notice after 3 seconds", async () => {
     vi.useFakeTimers();

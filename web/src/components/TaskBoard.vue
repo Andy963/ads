@@ -19,6 +19,7 @@ const emit = defineEmits<{
   (e: "select", id: string): void;
   (e: "create"): void;
   (e: "resetThread"): void;
+  (e: "resumeThread"): void;
   (e: "togglePlan", id: string): void;
   (e: "ensurePlan", id: string): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
@@ -73,7 +74,13 @@ function formatPromptPreview(prompt: string, maxChars = 90): string {
 }
 
 const sorted = computed(() => {
-  const weight = (s: string) => (s === "running" ? 0 : s === "planning" ? 1 : s === "pending" ? 2 : 3);
+  const weight = (s: string) => {
+    if (s === "running") return 0;
+    if (s === "planning") return 1;
+    if (s === "pending" || s === "queued") return 2;
+    if (s === "completed") return 9;
+    return 5;
+  };
   return props.tasks
     .slice()
     .sort((a, b) => {
@@ -138,7 +145,7 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
     return;
   }
   if (!prompt) {
-    error.value = "Task description cannot be empty.";
+    error.value = "任务描述不能为空";
     return;
   }
 
@@ -171,6 +178,10 @@ function togglePlan(task: Task): void {
 const queueStatus = computed(() => props.queueStatus ?? null);
 const queueCanRunAll = computed(() => Boolean(queueStatus.value?.enabled) && Boolean(queueStatus.value?.ready));
 const queueIsRunning = computed(() => Boolean(queueStatus.value?.running));
+const canResumeThread = computed(() => {
+  if (queueIsRunning.value) return false;
+  return !props.tasks.some((t) => t.status === "planning" || t.status === "running");
+});
 const canRunSingleNow = computed(() => {
   if (!props.canRunSingle) return false;
   if (!queueStatus.value) return true;
@@ -246,18 +257,17 @@ watch(
     <div class="header">
       <div class="headerLeft">
         <h3 class="title">任务列表</h3>
-        <span class="count">{{ tasks.length }}</span>
       </div>
       <div class="headerRight">
         <div v-if="queueStatus" class="queueControls">
-          <span class="queueDot" :class="{ on: queueIsRunning }" :title="queueIsRunning ? 'Queue running' : 'Queue paused'" />
+          <span class="queueDot" :class="{ on: queueIsRunning }" :title="queueIsRunning ? '队列运行中' : '队列已暂停'" />
           <button
             class="iconBtn"
             :class="queueIsRunning ? 'danger' : 'primary'"
             type="button"
             :disabled="!queueCanRunAll"
-            :title="queueIsRunning ? 'Pause queue' : 'Run queue'"
-            aria-label="Toggle task queue"
+            :title="queueIsRunning ? '暂停队列' : '运行队列'"
+            aria-label="切换任务队列"
             @click.stop="toggleQueue"
           >
             <svg v-if="queueIsRunning" width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -268,13 +278,26 @@ watch(
             </svg>
           </button>
         </div>
-        <button class="iconBtn primary" type="button" title="Create task" aria-label="Create task" @click.stop="emit('create')">
+        <button class="iconBtn primary" type="button" title="新建任务" aria-label="新建任务" @click.stop="emit('create')">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M10 4v12" />
             <path d="M4 10h12" />
           </svg>
         </button>
-        <button class="iconBtn" type="button" title="Reset thread" aria-label="Reset thread" @click.stop="emit('resetThread')">
+        <button
+          class="iconBtn"
+          type="button"
+          title="恢复上下文"
+          aria-label="恢复上下文"
+          :disabled="!canResumeThread"
+          @click.stop="emit('resumeThread')"
+        >
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 7H3v4" />
+            <path d="M3 11a7 7 0 1 0 2-5" />
+          </svg>
+        </button>
+        <button class="iconBtn" type="button" title="重置上下文" aria-label="重置上下文" @click.stop="emit('resetThread')">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 4v5h5" />
             <path d="M16 16v-5h-5" />
@@ -287,49 +310,24 @@ watch(
 
     <div v-if="tasks.length === 0" class="empty">
       <span>暂无任务</span>
-      <span class="hint">Click + to create a task</span>
+      <span class="hint">点击 + 新建任务</span>
     </div>
 
     <div v-else ref="listEl" class="list">
-        <div
-          v-for="t in sorted"
-          :key="t.id"
-          class="item"
-          :data-status="t.status"
-          :data-task-id="t.id"
-          :class="{ active: t.id === selectedId, expanded: expanded.has(t.id) && canShowPlan(t) }"
-        >
+      <div
+        v-for="t in sorted"
+        :key="t.id"
+        class="item"
+        :data-status="t.status"
+        :data-task-id="t.id"
+        :class="{ active: t.id === selectedId, expanded: expanded.has(t.id) && canShowPlan(t) }"
+      >
         <div class="row">
           <button class="row-main" type="button" @click="emit('select', t.id)">
             <div class="row-top">
               <div class="row-head">
                 <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
               </div>
-            </div>
-            <div class="row-sub">
-              <div class="tags">
-                <span class="tag mono">#{{ t.id.slice(0, 8) }}</span>
-                <span class="tag">{{ formatModel(t.model) }}</span>
-                <span v-if="t.priority > 0" class="tag">P{{ t.priority }}</span>
-              </div>
-              <span v-if="t.prompt && t.prompt.trim()" class="preview" :title="t.prompt">
-                {{ formatPromptPreview(t.prompt) }}
-              </span>
-            </div>
-            <div v-if="t.attachments?.length" class="attachmentsRow">
-              <a
-                v-for="a in t.attachments.slice(0, 4)"
-                :key="a.id"
-                class="attachmentLink"
-                :href="a.url"
-                target="_blank"
-                rel="noreferrer"
-                :title="a.filename || a.id"
-                @click.stop
-              >
-                {{ a.filename || a.id }}
-              </a>
-              <span v-if="t.attachments.length > 4" class="attachmentsMore">+{{ t.attachments.length - 4 }}</span>
             </div>
           </button>
           <div class="row-actions">
@@ -338,8 +336,8 @@ watch(
               class="iconBtn primary"
               type="button"
               :disabled="!canRunSingleNow || isRunBusy(t.id)"
-              :title="queueIsRunning ? 'Pause queue to run a single task' : 'Run this task'"
-              aria-label="Run single task"
+              :title="queueIsRunning ? '请先暂停队列，再单独运行' : '单独运行该任务'"
+              aria-label="单独运行任务"
               @click.stop="emit('runSingle', t.id)"
             >
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -409,7 +407,7 @@ watch(
         </div>
 
         <div v-if="expanded.has(t.id) && canShowPlan(t)" class="plan">
-          <div v-if="!(plans.get(t.id)?.length)" class="plan-empty">计划生成中…</div>
+          <div v-if="!(plans.get(t.id)?.length)" class="plan-empty">步骤加载中…</div>
           <div v-else class="plan-rows">
             <div v-for="s in plans.get(t.id)" :key="s.id" class="plan-row" :data-status="s.status">
               <span class="plan-step">{{ s.stepNumber }}.</span>
@@ -425,11 +423,11 @@ watch(
       </div>
     </div>
 
-    <div v-if="editingTask" class="modalOverlay" role="dialog" aria-modal="true" data-testid="task-edit-modal" @click.self="stopEdit">
+        <div v-if="editingTask" class="modalOverlay" role="dialog" aria-modal="true" data-testid="task-edit-modal" @click.self="stopEdit">
       <div class="modalCard">
         <div class="modalHeader">
-          <div class="modalTitle">Edit task</div>
-          <button class="iconBtn" type="button" aria-label="Close" title="Close" data-testid="task-edit-modal-cancel" @click="stopEdit">
+          <div class="modalTitle">编辑任务</div>
+          <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-edit-modal-cancel" @click="stopEdit">
             <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path
                 fill-rule="evenodd"
@@ -482,6 +480,9 @@ watch(
 
           <div class="actions">
             <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
+            <button class="btnSecondary" type="button" :disabled="!editingTask" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
+              保存
+            </button>
             <button
               class="btnPrimary"
               type="button"
@@ -489,9 +490,8 @@ watch(
               data-testid="task-edit-modal-save-and-run"
               @click="editingTask && saveEditAndRun(editingTask)"
             >
-              Save & Run
+              保存并提交
             </button>
-            <button class="btnPrimary" type="button" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">保存</button>
           </div>
         </div>
       </div>
@@ -501,11 +501,11 @@ watch(
 
 <style scoped>
 .card {
-  border: none;
-  border-radius: var(--radius);
-  padding: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-md);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 12px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: none;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -515,7 +515,7 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 .headerLeft {
   display: flex;
@@ -547,15 +547,15 @@ watch(
 }
 .title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
 }
 .count {
-  background: #e2e8f0;
+  background: rgba(226, 232, 240, 0.8);
   color: #475569;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
   padding: 2px 8px;
   border-radius: 999px;
 }
@@ -577,10 +577,10 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 0;
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 12px;
   overflow: hidden;
-  background: rgba(248, 250, 252, 0.65);
+  background: rgba(255, 255, 255, 0.9);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -596,37 +596,38 @@ watch(
   background: rgba(255, 255, 255, 0.92);
   transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
-.item:hover {
-  background: rgba(15, 23, 42, 0.02);
-}
 .item:last-child {
   border-bottom: none;
 }
-.item.active {
+.row {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  background: transparent;
+}
+.item:hover .row {
+  background: rgba(15, 23, 42, 0.02);
+}
+.item.active .row {
   background: rgba(37, 99, 235, 0.05);
   box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.20);
 }
-.item.active::before {
+.item.active .row::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 8px;
-  bottom: 8px;
+  top: 6px;
+  bottom: 6px;
   width: 3px;
   border-radius: 999px;
   background: #2563eb;
-}
-.row {
-  display: flex;
-  gap: 10px;
-  align-items: stretch;
-  background: transparent;
 }
 .row-main {
   flex: 1;
   border: none;
   background: transparent;
-  padding: 8px 12px;
+  padding: 4px 12px;
   cursor: pointer;
   text-align: left;
   min-width: 0;
@@ -646,7 +647,7 @@ watch(
 .row-title {
   flex: 1;
   min-width: 0;
-  font-weight: 700;
+  font-weight: 750;
   font-size: 14px;
   color: #1e293b;
   overflow: hidden;
@@ -654,6 +655,9 @@ watch(
   white-space: nowrap;
 }
 .item[data-status="running"] .row-title {
+  color: var(--accent);
+}
+.item[data-status="planning"] .row-title {
   color: var(--accent);
 }
 .item[data-status="completed"] .row-title {
@@ -665,41 +669,6 @@ watch(
 .item[data-status="cancelled"] .row-title {
   color: var(--muted);
 }
-.row-sub {
-  display: flex;
-  gap: 10px;
-  margin-top: 4px;
-  align-items: center;
-  min-width: 0;
-}
-.tags {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(241, 245, 249, 0.85);
-  color: #475569;
-  font-size: 11px;
-  font-weight: 700;
-}
-.tag.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-.preview {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: rgba(100, 116, 139, 0.95);
-}
 .row-actions {
   display: flex;
   flex-direction: row;
@@ -707,7 +676,7 @@ watch(
   align-items: center;
   flex-wrap: nowrap;
   gap: 6px;
-  padding: 8px 8px 8px 0;
+  padding: 2px 8px 2px 0;
   opacity: 0.65;
   transition: opacity 0.15s ease;
 }
@@ -729,8 +698,8 @@ watch(
   background: #e2e8f0;
 }
 .iconBtn {
-  width: 30px;
-  height: 30px;
+  width: 24px;
+  height: 24px;
   border-radius: 8px;
   border: none;
   display: grid;
@@ -738,10 +707,12 @@ watch(
   cursor: pointer;
   background: transparent;
   color: var(--muted);
-  transition: color 0.15s ease, opacity 0.15s ease;
+  box-shadow: none;
+  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 .iconBtn:hover:not(:disabled) {
   color: var(--text);
+  background: rgba(15, 23, 42, 0.04);
 }
 .iconBtn:disabled {
   opacity: 0.4;
@@ -880,12 +851,12 @@ textarea {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   margin-top: 18px;
 }
 .btnPrimary {
   border-radius: 14px;
-  padding: 9px 40px;
+  padding: 8px 12px;
   min-height: 38px;
   line-height: 1.1;
   font-size: 15px;
@@ -907,7 +878,7 @@ textarea {
 }
 .btnSecondary {
   border-radius: 14px;
-  padding: 9px 36px;
+  padding: 8px 12px;
   min-height: 38px;
   line-height: 1.1;
   font-size: 15px;
@@ -982,44 +953,6 @@ textarea {
   color: #16a34a;
   font-weight: 900;
   font-size: 14px;
-}
-.attachmentsRow {
-  margin-top: 6px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-}
-.attachmentLink {
-  display: inline-block;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 700;
-  color: #334155;
-  text-decoration: none;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(248, 250, 252, 0.9);
-  padding: 2px 6px;
-  border-radius: 999px;
-}
-.attachmentLink:hover {
-  background: rgba(226, 232, 240, 0.9);
-}
-.attachmentsMore {
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 800;
-  color: #475569;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(241, 245, 249, 0.9);
-  flex: 0 0 auto;
 }
 .run {
   width: 8px;

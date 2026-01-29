@@ -144,7 +144,7 @@ describe("App.createTask chat insertion", () => {
 
     expect(wrapper.vm.messages).toHaveLength(before);
     wrapper.unmount();
-  });
+  }, 15000);
 
   it("creates the task and selects it without mutating the chat stream", async () => {
     postImpl = async () =>

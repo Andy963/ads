@@ -1,20 +1,12 @@
-/**
- * Web 服务器工具函数
- */
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import childProcess from "node:child_process";
+
 import type { Input } from "@openai/codex-sdk";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
-import type {
-  IncomingImage,
-  PromptPayload,
-  WorkspaceState,
-  ImagePersistOutcome,
-  PromptInputOutcome,
-} from "./types.js";
+import type { ImagePersistOutcome, IncomingImage, PromptInputOutcome, PromptPayload, WorkspaceState } from "./types.js";
 
 import { createLogger } from "../utils/logger.js";
 import { getStateDatabase } from "../state/database.js";
@@ -156,8 +148,8 @@ export function persistCwdStore(filePath: string, store: Map<string, string>): v
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
     const obj: Record<string, string> = {};
-    for (const [k, v] of store.entries()) {
-      obj[k] = v;
+    for (const [key, value] of store.entries()) {
+      obj[key] = value;
     }
     fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), "utf8");
   } catch (error) {
@@ -172,7 +164,6 @@ export function isProcessRunning(pid: number): boolean {
     return false;
   }
 }
-
 
 export function readCmdline(pid: number): string | null {
   try {
@@ -226,6 +217,8 @@ export function getWorkspaceState(workspaceRoot: string): WorkspaceState {
   migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
   const rulesPath = resolveWorkspaceStatePath(workspaceRoot, "rules.md");
   let modified: string[] = [];
+  let branch = "";
+
   try {
     const gitStatus = childProcess.execSync("git status --porcelain", {
       cwd: workspaceRoot,
@@ -236,11 +229,25 @@ export function getWorkspaceState(workspaceRoot: string): WorkspaceState {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line) => line.replace(/^[A-Z?]{1,2}\s+/, ""));
+      .map((line) => line.replace(/^[A-Z?]{1,2}\s+/, "").trim())
+      .filter(Boolean);
   } catch {
     modified = [];
   }
-  return { path: workspaceRoot, rules: rulesPath, modified };
+
+  try {
+    branch = childProcess
+      .execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+      .trim();
+  } catch {
+    branch = "";
+  }
+
+  return { path: workspaceRoot, rules: rulesPath, modified, branch };
 }
 
 export function resolveImageExt(name: string | undefined, mime: string | undefined): string {
@@ -291,7 +298,7 @@ export function cleanupTempFiles(paths: string[]): void {
     try {
       fs.unlinkSync(p);
     } catch {
-      /* ignore */
+      // ignore
     }
   }
 }
@@ -305,6 +312,7 @@ export function buildPromptInput(payload: unknown, imageDir: string): PromptInpu
     }
     return { ok: true, input: text, attachments: tempPaths };
   }
+
   const inputParts: Exclude<Input, string> = [];
   const parsed = (payload ?? {}) as PromptPayload;
   const text = sanitizeInput(parsed.text);

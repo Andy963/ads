@@ -16,7 +16,7 @@ const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
 const LEGACY_WS_SESSION_KEY = "ADS_WEB_SESSION";
 
-type WorkspaceState = { path?: string; rules?: string; modified?: string[] };
+type WorkspaceState = { path?: string; rules?: string; modified?: string[]; branch?: string };
 type ProjectTab = {
   id: string;
   name: string;
@@ -25,6 +25,8 @@ type ProjectTab = {
   initialized: boolean;
   createdAt: number;
   updatedAt: number;
+  branch?: string;
+  expanded?: boolean;
 };
 
 type BufferedTaskChatEvent =
@@ -131,6 +133,7 @@ type ProjectRuntime = {
   selectedId: ReturnType<typeof ref<string | null>>;
   expanded: ReturnType<typeof ref<Set<string>>>;
   plansByTaskId: ReturnType<typeof ref<Map<string, PlanStep[]>>>;
+  planFetchInFlightByTaskId: Map<string, Promise<void>>;
   runBusyIds: ReturnType<typeof ref<Set<string>>>;
   busy: ReturnType<typeof ref<boolean>>;
   turnInFlight: boolean;
@@ -168,6 +171,7 @@ function createProjectRuntime(): ProjectRuntime {
     selectedId: ref<string | null>(null),
     expanded: ref<Set<string>>(new Set()),
     plansByTaskId: ref<Map<string, PlanStep[]>>(new Map()),
+    planFetchInFlightByTaskId: new Map(),
     runBusyIds: ref<Set<string>>(new Set()),
     busy: ref(false),
     turnInFlight: false,
@@ -359,7 +363,7 @@ function createProjectTab(params: { path: string; name?: string; sessionId?: str
   const path = String(params.path ?? "").trim();
   const name = String(params.name ?? "").trim() || deriveProjectName(path);
   const initialized = params.initialized ?? !path;
-  return { id, name, path, sessionId, initialized, createdAt: now, updatedAt: now };
+  return { id, name, path, sessionId, initialized, createdAt: now, updatedAt: now, expanded: false };
 }
 
 function persistProjects(): void {
@@ -395,11 +399,10 @@ function initializeProjects(): void {
     normalized.push(createProjectTab({ path: "", name: "默认", sessionId: legacySession || undefined, initialized: true }));
   }
 
-  projects.value = normalized;
-
   const storedActive = String(localStorage.getItem(ACTIVE_PROJECT_KEY) ?? "").trim();
   const initialActive = normalized.some((p) => p.id === storedActive) ? storedActive : normalized[0]!.id;
   activeProjectId.value = initialActive;
+  projects.value = normalized.map((p) => ({ ...p, expanded: p.id === initialActive }));
   persistProjects();
 }
 
@@ -410,6 +413,36 @@ function updateProject(id: string, updates: Partial<ProjectTab>): void {
     if (p.id !== targetId) return p;
     return { ...p, ...updates, updatedAt: Date.now() };
   });
+  projects.value = next;
+  persistProjects();
+}
+
+function setExpandedExclusive(targetId: string, expanded: boolean): void {
+  const tid = String(targetId ?? "").trim();
+  if (!tid) return;
+  const now = Date.now();
+  projects.value = projects.value.map((p) => {
+    if (expanded) {
+      const nextExpanded = p.id === tid;
+      if (p.expanded === nextExpanded) return p;
+      return { ...p, expanded: nextExpanded, updatedAt: now };
+    }
+    if (p.id !== tid) return p;
+    if (!p.expanded) return p;
+    return { ...p, expanded: false, updatedAt: now };
+  });
+  persistProjects();
+}
+
+function collapseAllProjects(): void {
+  const now = Date.now();
+  let changed = false;
+  const next = projects.value.map((p) => {
+    if (!p.expanded) return p;
+    changed = true;
+    return { ...p, expanded: false, updatedAt: now };
+  });
+  if (!changed) return;
   projects.value = next;
   persistProjects();
 }
@@ -437,15 +470,31 @@ function performProjectSwitch(id: string): void {
   if (nextId === activeProjectId.value) return;
 
   activeProjectId.value = nextId;
-  persistProjects();
+  setExpandedExclusive(nextId, true);
   void activateProject(nextId);
 }
 
 function requestProjectSwitch(id: string): void {
   const nextId = String(id ?? "").trim();
   if (!nextId) return;
-  if (nextId === activeProjectId.value) return;
+
+  if (nextId === activeProjectId.value) {
+    const nextExpanded = !activeProject.value?.expanded;
+    if (nextExpanded) {
+      setExpandedExclusive(nextId, true);
+    } else {
+      collapseAllProjects();
+    }
+    return;
+  }
   performProjectSwitch(nextId);
+}
+
+function formatProjectBranch(branch?: string): string {
+  const normalized = String(branch ?? "").trim();
+  if (!normalized) return "-";
+  if (normalized === "HEAD") return "detached";
+  return normalized;
 }
 
 function cancelProjectSwitch(): void {
@@ -624,7 +673,7 @@ async function submitProjectDialog(): Promise<void> {
   });
   projects.value = [...projects.value, project];
   activeProjectId.value = project.id;
-  persistProjects();
+  setExpandedExclusive(project.id, true);
 
   closeProjectDialog();
   void activateProject(project.id);
@@ -730,6 +779,14 @@ function threadReset(
     rt.ws?.clearHistory();
   }
   recordChatClear("thread_reset", params.source ?? "unknown");
+}
+
+function clearConversationForResume(rt: ProjectRuntime): void {
+  rt.threadWarning.value = null;
+  rt.ignoreNextHistory = false;
+  resetConversation(rt, "", false);
+  rt.activeThreadId.value = null;
+  finalizeCommandBlock(rt);
 }
 
 function applyStreamingDisconnectCleanup(rt: ProjectRuntime): void {
@@ -1283,14 +1340,31 @@ function resetTaskState(): void {
 async function ensurePlan(taskId: string): Promise<void> {
   const id = String(taskId ?? "").trim();
   if (!id) return;
-  if ((plansByTaskId.value.get(id)?.length ?? 0) > 0) return;
-  try {
-    const detail = await api.get<TaskDetail>(withWorkspaceQuery(`/api/tasks/${id}`));
-    plansByTaskId.value.set(id, detail.plan);
-    plansByTaskId.value = new Map(plansByTaskId.value);
-  } catch {
-    // ignore
+  const pid = normalizeProjectId(activeProjectId.value);
+  const rt = getRuntime(pid);
+  if ((rt.plansByTaskId.value.get(id)?.length ?? 0) > 0) return;
+  const inFlight = rt.planFetchInFlightByTaskId.get(id);
+  if (inFlight) {
+    await inFlight;
+    return;
   }
+
+  const op = (async () => {
+    try {
+      const plan = await api.get<PlanStep[]>(withWorkspaceQuery(`/api/tasks/${id}/plan`));
+      rt.plansByTaskId.value.set(id, Array.isArray(plan) ? plan : []);
+      rt.plansByTaskId.value = new Map(rt.plansByTaskId.value);
+    } catch {
+      // ignore
+    }
+  })().finally(() => {
+    rt.planFetchInFlightByTaskId.delete(id);
+  });
+
+  rt.planFetchInFlightByTaskId.set(id, op);
+  try {
+    await op;
+  } catch {}
 }
 
 function togglePlan(taskId: string): void {
@@ -1856,9 +1930,10 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
 
     if (msg.type === "welcome") {
       let nextPath = "";
+      let wsState: WorkspaceState | null = null;
       const maybeWorkspace = (msg as { workspace?: unknown }).workspace;
       if (maybeWorkspace && typeof maybeWorkspace === "object") {
-        const wsState = maybeWorkspace as WorkspaceState;
+        wsState = maybeWorkspace as WorkspaceState;
         nextPath = String(wsState.path ?? "").trim();
         if (nextPath) rt.workspacePath.value = nextPath;
       }
@@ -1888,7 +1963,14 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
         wsInstance.send("command", { command: `/cd ${current.path.trim()}`, silent: true });
         return;
       }
-      if (current && nextPath) updateProject(current.id, { path: nextPath, initialized: true });
+      if (current) {
+        const updates: Partial<ProjectTab> = { initialized: true };
+        if (nextPath) updates.path = nextPath;
+        if (wsState && Object.prototype.hasOwnProperty.call(wsState, "branch")) {
+          updates.branch = String(wsState.branch ?? "");
+        }
+        updateProject(current.id, updates);
+      }
       return;
     }
 
@@ -1908,7 +1990,14 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
           return;
         }
         const current = projects.value.find((p) => p.id === pid) ?? null;
-        if (current && nextPath) updateProject(current.id, { path: nextPath, initialized: true });
+        if (current) {
+          const updates: Partial<ProjectTab> = { initialized: true };
+          if (nextPath) updates.path = nextPath;
+          if (Object.prototype.hasOwnProperty.call(wsState, "branch")) {
+            updates.branch = String(wsState.branch ?? "");
+          }
+          updateProject(current.id, updates);
+        }
       }
       return;
     }
@@ -2327,6 +2416,31 @@ function clearActiveChat(): void {
   });
 }
 
+async function resumeTaskThread(projectId: string = activeProjectId.value): Promise<void> {
+  const pid = normalizeProjectId(projectId);
+  const rt = getRuntime(pid);
+  rt.apiError.value = null;
+  clearNotice(pid);
+
+  if (runtimeTasksBusy(rt) || Boolean(rt.queueStatus.value?.running)) {
+    rt.apiError.value = "任务执行中，无法恢复";
+    return;
+  }
+
+  clearConversationForResume(rt);
+  setNotice("正在恢复上下文…", pid);
+
+  try {
+    if (!rt.ws || !rt.connected.value) {
+      await connectWs(pid);
+    }
+    rt.ws?.send("task_resume");
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    rt.apiError.value = msg;
+  }
+}
+
 function addPendingImages(imgs: IncomingImage[]): void {
   const rt = activeRuntime.value;
   rt.pendingImages.value = [...rt.pendingImages.value, ...(Array.isArray(imgs) ? imgs : [])];
@@ -2400,23 +2514,6 @@ function closeTaskCreateDialog(): void {
     <header class="topbar">
       <div class="brand">ADS</div>
       <div class="topbarMain">
-        <div class="projectTabs" role="tablist" aria-label="项目">
-          <button
-            v-for="p in projects"
-            :key="p.id"
-            type="button"
-            class="projectTab"
-            :class="{ active: p.id === activeProjectId }"
-            role="tab"
-            :aria-selected="p.id === activeProjectId"
-            :title="p.path || p.name"
-            @click="requestProjectSwitch(p.id)"
-          >
-            <span class="projectTabText">{{ p.path || p.name }}</span>
-          </button>
-          <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog">＋</button>
-        </div>
-
         <div v-if="isMobile" class="paneTabs" role="tablist" aria-label="切换面板">
           <button
             type="button"
@@ -2447,39 +2544,69 @@ function closeTaskCreateDialog(): void {
 
     <main class="layout" :data-pane="mobilePane">
       <aside class="left">
-        <div v-if="queueStatus && (!queueStatus.enabled || !queueStatus.ready)" class="error">
-          <div>任务队列未运行：{{ !queueStatus.enabled ? "TASK_QUEUE_ENABLED=false" : queueStatus.error || "agent not ready" }}</div>
-          <div style="margin-top: 6px; opacity: 0.85;">任务会保持 pending；请在启动 web server 前配置模型 Key，并确保 `TASK_QUEUE_ENABLED=true`。</div>
-        </div>
-        <div v-if="apiError" class="error">API: {{ apiError }}</div>
-        <div v-if="wsError" class="error">WS: {{ wsError }}</div>
-        <div v-if="threadWarning" class="warning">{{ threadWarning }}</div>
+          <div class="projectTree">
+          <div class="projectTreeHeader">
+            <div class="projectTreeTitle">项目</div>
+            <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog">＋</button>
+          </div>
 
-        <TaskBoard
-          class="taskBoard"
-          :tasks="tasks"
-          :models="models"
-          :selected-id="selectedId"
-          :plans="plansByTaskId"
-          :expanded="expanded"
-          :queue-status="queueStatus"
-          :can-run-single="apiAuthorized"
-          :run-busy-ids="runBusyIds"
-          @select="select"
-          @togglePlan="togglePlan"
-          @ensurePlan="ensurePlan"
-          @update="({ id, updates }) => updateQueuedTask(id, updates)"
-          @update-and-run="({ id, updates }) => updateQueuedTaskAndRun(id, updates)"
-          @reorder="(ids) => reorderPendingTasks(ids)"
-          @queueRun="runTaskQueue"
-          @queuePause="pauseTaskQueue"
-          @runSingle="(id) => runSingleTask(id)"
-          @cancel="cancelTask"
-          @retry="retryTask"
-          @delete="deleteTask"
-          @create="openTaskCreateDialog"
-          @resetThread="clearActiveChat"
-        />
+          <div
+            v-for="p in projects"
+            :key="p.id"
+            class="projectNode"
+            :class="{ active: p.id === activeProjectId }"
+          >
+            <button
+              type="button"
+              class="projectRow"
+              :title="p.path || p.name"
+              @click="requestProjectSwitch(p.id)"
+            >
+              <span class="projectStatus" :class="{ spinning: runtimeTasksBusy(getRuntime(p.id)) }" />
+              <span class="projectText">
+                <span class="projectName">{{ p.path || p.name }}</span>
+                <span class="projectBranch">{{ formatProjectBranch(p.branch) }}</span>
+              </span>
+            </button>
+
+            <div v-if="p.expanded" class="projectTasks">
+              <div v-if="queueStatus && (!queueStatus.enabled || !queueStatus.ready)" class="error">
+                <div>任务队列未运行：{{ !queueStatus.enabled ? "TASK_QUEUE_ENABLED=false" : queueStatus.error || "agent not ready" }}</div>
+                <div style="margin-top: 6px; opacity: 0.85;">任务会保持 pending；请在启动 web server 前配置模型 Key，并确保 `TASK_QUEUE_ENABLED=true`。</div>
+              </div>
+              <div v-if="apiError" class="error">API: {{ apiError }}</div>
+              <div v-if="wsError" class="error">WS: {{ wsError }}</div>
+              <div v-if="threadWarning" class="warning">{{ threadWarning }}</div>
+
+              <TaskBoard
+                class="taskBoard"
+                :tasks="tasks"
+                :models="models"
+                :selected-id="selectedId"
+                :plans="plansByTaskId"
+                :expanded="expanded"
+                :queue-status="queueStatus"
+                :can-run-single="apiAuthorized"
+                :run-busy-ids="runBusyIds"
+                @select="select"
+                @togglePlan="togglePlan"
+                @ensurePlan="ensurePlan"
+                @update="({ id, updates }) => updateQueuedTask(id, updates)"
+                @update-and-run="({ id, updates }) => updateQueuedTaskAndRun(id, updates)"
+                @reorder="(ids) => reorderPendingTasks(ids)"
+                @queueRun="runTaskQueue"
+                @queuePause="pauseTaskQueue"
+                @runSingle="(id) => runSingleTask(id)"
+                @cancel="cancelTask"
+                @retry="retryTask"
+                @delete="deleteTask"
+                @create="openTaskCreateDialog"
+                @resumeThread="resumeTaskThread"
+                @resetThread="clearActiveChat"
+              />
+            </div>
+          </div>
+        </div>
       </aside>
 
       <section class="rightPane">
@@ -2684,13 +2811,16 @@ function closeTaskCreateDialog(): void {
 }
 .projectAdd {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
   color: var(--accent);
-  font-weight: 800;
+  font-weight: 900;
+  display: grid;
+  place-items: center;
+  line-height: 1;
   cursor: pointer;
 }
 .projectAdd:hover {
@@ -2929,9 +3059,10 @@ function closeTaskCreateDialog(): void {
   font-size: 13px;
 }
 .layout {
+  --sidebar-width: clamp(280px, 24vw, 360px);
   flex: 1;
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   gap: 12px;
   padding: 12px 12px 8px 12px;
   max-width: 1600px;
@@ -2951,6 +3082,130 @@ function closeTaskCreateDialog(): void {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+.projectTree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(248, 250, 252, 0.95);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 16px;
+  padding: 10px;
+  height: 80vh;
+  min-height: 0;
+  overflow: auto;
+}
+.projectTreeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 2px;
+}
+.projectTreeTitle {
+  font-size: 13px;
+  font-weight: 800;
+  color: #64748b;
+}
+.projectNode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.projectRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 10px;
+  padding: 6px 12px;
+  background: white;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  transition: box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.projectNode.active .projectRow {
+  background: linear-gradient(180deg, #2f80ff 0%, #1f6fff 100%);
+  color: white;
+  box-shadow: 0 8px 16px rgba(79, 142, 247, 0.32);
+}
+.projectRow:hover {
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+.projectStatus {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(148, 163, 184, 0.75);
+  position: relative;
+  flex: 0 0 auto;
+}
+.projectStatus::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 6px;
+  height: 6px;
+  margin: auto;
+  border-radius: 999px;
+  background: transparent;
+}
+.projectNode.active .projectStatus::after {
+  background: rgba(255, 255, 255, 0.9);
+}
+.projectStatus.spinning {
+  border-color: #10b981;
+  border-top-color: transparent;
+  animation: spin 0.9s linear infinite;
+}
+.projectStatus.spinning::after {
+  background: transparent;
+}
+.projectNode.active .projectStatus {
+  border-color: rgba(255, 255, 255, 0.8);
+}
+.projectNode.active .projectStatus.spinning {
+  border-color: #10b981;
+  border-top-color: transparent;
+}
+.projectNode.active .projectStatus.spinning::after {
+  background: transparent;
+}
+.projectText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.projectName {
+  font-size: 14px;
+  font-weight: 700;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projectBranch {
+  display: block;
+  font-size: 11px;
+  line-height: 1.2;
+  color: rgba(100, 116, 139, 0.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projectNode.active .projectBranch {
+  color: rgba(255, 255, 255, 0.75);
+}
+.projectTasks {
+  margin-left: 14px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(226, 232, 240, 0.95);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .taskBoard {
   /* Keep the list compact; it should scroll internally when there are many tasks. */
@@ -3041,6 +3296,10 @@ function closeTaskCreateDialog(): void {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 @media (max-width: 900px) {
   .layout {
