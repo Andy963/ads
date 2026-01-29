@@ -93,6 +93,7 @@ type ChatItem = {
   content: string;
   command?: string;
   hiddenLineCount?: number;
+  ts?: number;
   streaming?: boolean;
 };
 const LIVE_STEP_ID = "live-step";
@@ -713,7 +714,7 @@ function pushMessageBeforeLive(item: Omit<ChatItem, "id">, rt?: ProjectRuntime):
   const state = runtimeOrActive(rt);
   const existing = state.messages.value.slice();
   const liveIndex = findFirstLiveIndex(existing);
-  const next = { ...item, id: randomId("msg") };
+  const next = { ...item, id: randomId("msg"), ts: item.ts ?? Date.now() };
   if (liveIndex < 0) {
     setMessages([...existing, next], state);
     return;
@@ -1109,7 +1110,14 @@ function upsertStreamingDelta(delta: string, rt?: ProjectRuntime): void {
     return;
   }
 
-  const nextItem: ChatItem = { id: randomId("stream"), role: "assistant", kind: "text", content: chunk, streaming: true };
+  const nextItem: ChatItem = {
+    id: randomId("stream"),
+    role: "assistant",
+    kind: "text",
+    content: chunk,
+    streaming: true,
+    ts: Date.now(),
+  };
   const liveIndex = findFirstLiveIndex(existing);
   if (liveIndex < 0) {
     setMessages([...existing, nextItem], state);
@@ -1135,7 +1143,14 @@ function upsertStepLiveDelta(delta: string, rt?: ProjectRuntime): void {
   const idx = existing.findIndex((m) => m.id === LIVE_STEP_ID);
   const current = idx >= 0 ? existing[idx]!.content : "";
   const nextText = trimToLastLines(current + chunk, 14);
-  const nextItem: ChatItem = { id: LIVE_STEP_ID, role: "assistant", kind: "text", content: nextText, streaming: true };
+  const nextItem: ChatItem = {
+    id: LIVE_STEP_ID,
+    role: "assistant",
+    kind: "text",
+    content: nextText,
+    streaming: true,
+    ts: (idx >= 0 ? existing[idx]!.ts : null) ?? Date.now(),
+  };
   const withoutStep = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
 
   let insertAt = withoutStep.length;
@@ -1166,7 +1181,14 @@ function upsertLiveActivity(rt?: ProjectRuntime): void {
   }
 
   const idx = existing.findIndex((m) => m.id === LIVE_ACTIVITY_ID);
-  const nextItem: ChatItem = { id: LIVE_ACTIVITY_ID, role: "assistant", kind: "text", content: markdown, streaming: true };
+  const nextItem: ChatItem = {
+    id: LIVE_ACTIVITY_ID,
+    role: "assistant",
+    kind: "text",
+    content: markdown,
+    streaming: true,
+    ts: (idx >= 0 ? existing[idx]!.ts : null) ?? Date.now(),
+  };
   const withoutActivity = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
 
   const stepIdx = withoutActivity.findIndex((m) => m.id === LIVE_STEP_ID);
@@ -2025,27 +2047,41 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
       rt.seenCommandIds.clear();
       const next: ChatItem[] = [];
       let cmdGroup: string[] = [];
+      let cmdGroupTs: number | null = null;
       const flushCommands = () => {
         if (cmdGroup.length === 0) return;
-        next.push({ id: randomId("h-cmd"), role: "system", kind: "command", content: cmdGroup.join("\n") });
+        next.push({
+          id: randomId("h-cmd"),
+          role: "system",
+          kind: "command",
+          content: cmdGroup.join("\n"),
+          ts: cmdGroupTs ?? undefined,
+        });
         cmdGroup = [];
+        cmdGroupTs = null;
       };
       for (let idx = 0; idx < items.length; idx++) {
-        const entry = items[idx] as { role?: unknown; text?: unknown; kind?: unknown };
+        const entry = items[idx] as { role?: unknown; text?: unknown; kind?: unknown; ts?: unknown };
         const role = String(entry.role ?? "");
         const text = String(entry.text ?? "");
         const kind = String(entry.kind ?? "");
+        const rawTs = entry.ts;
+        const ts =
+          typeof rawTs === "number" && Number.isFinite(rawTs) && rawTs > 0
+            ? Math.floor(rawTs)
+            : null;
         const trimmed = text.trim();
         if (!trimmed) continue;
         const isCommand = kind === "command" || (role === "status" && trimmed.startsWith("$ "));
         if (isCommand) {
           cmdGroup = [...cmdGroup, trimmed].slice(-MAX_TURN_COMMANDS);
+          if (ts) cmdGroupTs = ts;
           continue;
         }
         flushCommands();
-        if (role === "user") next.push({ id: `h-u-${idx}`, role: "user", kind: "text", content: trimmed });
-        else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed });
-        else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed });
+        if (role === "user") next.push({ id: `h-u-${idx}`, role: "user", kind: "text", content: trimmed, ts: ts ?? undefined });
+        else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed, ts: ts ?? undefined });
+        else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }
       flushCommands();
       applyMergedHistory(next, rt);

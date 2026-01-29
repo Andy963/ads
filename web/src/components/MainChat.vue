@@ -9,6 +9,7 @@ type ChatMessage = {
   content: string;
   command?: string;
   hiddenLineCount?: number;
+  ts?: number;
   streaming?: boolean;
 };
 
@@ -148,6 +149,23 @@ async function onCopyMessage(message: ChatMessage): Promise<void> {
     copiedMessageId.value = null;
     copiedTimer = null;
   }, 1400);
+}
+
+function formatMessageTs(ts?: number): string {
+  if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return "";
+  const date = new Date(ts);
+  if (!Number.isFinite(date.getTime())) return "";
+
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+
+  const pad2 = (num: number) => String(num).padStart(2, "0");
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  if (sameDay) return time;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
 }
 
 function setVoiceStatus(
@@ -660,6 +678,7 @@ onBeforeUnmount(() => {
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
               </svg>
             </button>
+            <span v-if="m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
           </div>
         </div>
       </div>
@@ -1081,6 +1100,13 @@ onBeforeUnmount(() => {
 }
 .msgCopyBtn:hover {
   color: #0f172a;
+}
+.msgTime {
+  font-size: 11px;
+  line-height: 1;
+  color: #94a3b8;
+  white-space: nowrap;
+  user-select: none;
 }
 .msg[data-role="user"] .bubble {
   background: rgba(37, 99, 235, 0.08);

@@ -104,9 +104,13 @@ onMounted(() => {
 <style scoped>
 .gate {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: calc(24px + env(safe-area-inset-top, 0px)) 24px calc(24px + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: linear-gradient(135deg, #0b1020 0%, #1e293b 100%);
   color: #e5e7eb;
 }
@@ -201,5 +205,15 @@ code {
   padding: 2px 8px;
   border-radius: 6px;
   font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .gate {
+    align-items: flex-start;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  .card {
+    padding: 24px 20px;
+  }
 }
 </style>

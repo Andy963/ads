@@ -3,6 +3,7 @@ export type ChatItem = {
   role: "user" | "assistant" | "system";
   kind: "text" | "command" | "execute";
   content: string;
+  ts?: number;
   streaming?: boolean;
 };
 
