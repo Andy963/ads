@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount } from "vue";
 import { renderMarkdownToHtml } from "../lib/markdown";
 
 const props = defineProps<{
@@ -47,6 +47,10 @@ function resetCodeCopyToast(): void {
     lastCodeCopyButton = null;
   }
 }
+
+onBeforeUnmount(() => {
+  resetCodeCopyToast();
+});
 
 async function onClick(ev: MouseEvent): Promise<void> {
   const target = ev.target as HTMLElement | null;
@@ -191,6 +195,14 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   letter-spacing: 0.01em;
 }
 
+.md :deep(details.md-codeblock > summary .md-collapsible-hint::before) {
+  content: attr(data-closed);
+}
+
+.md :deep(details.md-codeblock[open] > summary .md-collapsible-hint::before) {
+  content: attr(data-open);
+}
+
 .md :deep(details.md-codeblock[open] > summary) {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
@@ -331,6 +343,30 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.hljs-number) {
   color: #b45309;
+}
+
+.md :deep(.hljs-addition) {
+  color: #15803d;
+}
+
+.md :deep(.hljs-deletion) {
+  color: #b91c1c;
+}
+
+.md :deep(.hljs-meta) {
+  color: #334155;
+}
+
+.md.inverted :deep(.hljs-addition) {
+  color: rgba(134, 239, 172, 0.95);
+}
+
+.md.inverted :deep(.hljs-deletion) {
+  color: rgba(252, 165, 165, 0.95);
+}
+
+.md.inverted :deep(.hljs-meta) {
+  color: rgba(226, 232, 240, 0.9);
 }
 
 .md :deep(img) {

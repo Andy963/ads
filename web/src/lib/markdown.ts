@@ -173,8 +173,10 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const langAttr = normalizedLang ? ` data-lang="${escapeAttr(normalizedLang)}"` : "";
 
   const isDiffLang = normalizedLang === "diff";
-  const patchPaths = isPatchLike(token.content) ? extractPatchFilePaths(token.content) : [];
-  const canCollapse = (isDiffLang || patchPaths.length > 0) && patchPaths.length > 0;
+  const isLikelyPatch = isDiffLang || isPatchLike(token.content);
+  const patchPaths = isLikelyPatch ? extractPatchFilePaths(token.content) : [];
+  const canCollapse = isLikelyPatch;
+  const lineCount = token.content.split("\n").length;
 
   const bodyHtml = [
     `<div class="md-codeblock-body">`,
@@ -194,13 +196,17 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   if (canCollapse) {
     const { summary, hiddenCount } = formatCollapsedFileList(patchPaths, 6);
     const label = isDiffLang ? "Diff" : "Patch";
-    const filesText = summary ? summary + (hiddenCount ? ` (+${hiddenCount} more)` : "") : `${patchPaths.length} files`;
+    const filesText = summary
+      ? summary + (hiddenCount ? ` (+${hiddenCount} more)` : "")
+      : patchPaths.length
+        ? `${patchPaths.length} files`
+        : `${lineCount} lines`;
     return [
       `<details class="md-codeblock md-collapsible"${langAttr} data-kind="patch">`,
       `<summary class="md-collapsible-summary">` +
         `<span class="md-collapsible-title">${escapeHtml(label)}</span>` +
         `<span class="md-collapsible-files">${escapeHtml(filesText)}</span>` +
-        `<span class="md-collapsible-hint">Expand</span>` +
+        `<span class="md-collapsible-hint" aria-hidden="true" data-closed="Expand" data-open="Collapse"></span>` +
       `</summary>`,
       bodyHtml,
       `</details>`,
