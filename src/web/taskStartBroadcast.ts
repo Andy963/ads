@@ -32,6 +32,12 @@ export function broadcastTaskStart<TTask extends TaskStartTaskLike>(options: {
     markResult = "failed";
   }
 
+  options.broadcast({
+    type: "task:event",
+    event: "task:started",
+    data: options.task,
+    ts: options.ts,
+  });
   options.recordHistory({ role: "user", text: content, ts: options.ts, kind: "task" });
   options.broadcast({
     type: "task:event",
@@ -43,12 +49,5 @@ export function broadcastTaskStart<TTask extends TaskStartTaskLike>(options: {
     ts: options.ts,
     taskId,
     reason: prompt ? markResult : "empty_prompt",
-  });
-
-  options.broadcast({
-    type: "task:event",
-    event: "task:started",
-    data: options.task,
-    ts: options.ts,
   });
 }

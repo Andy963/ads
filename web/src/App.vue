@@ -769,6 +769,37 @@ function dropEmptyAssistantPlaceholder(rt?: ProjectRuntime): void {
   }
 }
 
+function hasEmptyAssistantPlaceholder(rt?: ProjectRuntime): boolean {
+  const state = runtimeOrActive(rt);
+  return state.messages.value.some(
+    (m) =>
+      m.role === "assistant" &&
+      m.kind === "text" &&
+      m.streaming &&
+      !String(m.content ?? "").trim(),
+  );
+}
+
+function hasAssistantAfterLastUser(rt?: ProjectRuntime): boolean {
+  const state = runtimeOrActive(rt);
+  const existing = state.messages.value.filter((m) => !isLiveMessageId(m.id));
+  let lastUserIndex = -1;
+  for (let i = existing.length - 1; i >= 0; i--) {
+    if (existing[i]!.role === "user") {
+      lastUserIndex = i;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) return false;
+  for (let i = existing.length - 1; i > lastUserIndex; i--) {
+    const m = existing[i]!;
+    if (m.role === "assistant" && m.kind === "text" && String(m.content ?? "").trim()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function shouldIgnoreStepDelta(delta: string): boolean {
   const text = String(delta ?? "");
   return text.includes("初始化 Codex 线程") || text.includes("开始处理请求");
@@ -1591,7 +1622,22 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
       return;
     }
     if (role === "user") {
+      const normalized = content.trim();
+      if (
+        state.messages.value.some(
+          (m) => m.role === "user" && m.kind === "text" && String(m.content ?? "").trim() === normalized,
+        )
+      ) {
+        return;
+      }
       pushMessageBeforeLive({ role: "user", kind: "text", content }, state);
+      const task = state.tasks.value.find((t) => t.id === taskId) ?? null;
+      const status = String(task?.status ?? "");
+      if (status === "pending" || status === "planning" || status === "running") {
+        if (!hasEmptyAssistantPlaceholder(state)) {
+          pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
+        }
+      }
       return;
     }
     if (role === "system") {
@@ -1606,7 +1652,7 @@ function onTaskEvent(payload: { event: TaskEventPayload["event"]; data: unknown 
     upsertTask(t, state);
     clearStepLive(state);
     finalizeCommandBlock(state);
-    if (t.result && t.result.trim()) {
+    if (t.result && t.result.trim() && !hasAssistantAfterLastUser(state)) {
       finalizeAssistant(t.result, state);
     }
     flushQueuedPrompts(state);
