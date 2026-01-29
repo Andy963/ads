@@ -8,6 +8,18 @@ type WsCommandPayload = {
   outputDelta?: string;
 };
 
+type WsPatchFile = {
+  path: string;
+  added: number | null;
+  removed: number | null;
+};
+
+type WsPatchPayload = {
+  files: WsPatchFile[];
+  diff: string;
+  truncated?: boolean;
+};
+
 type WsMessage =
   | { type: "welcome"; sessionId?: string; workspace?: unknown; threadId?: string; reset?: boolean }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
@@ -16,6 +28,7 @@ type WsMessage =
   | { type: "error"; message?: string }
   | { type: "thread_reset" }
   | { type: "command"; detail?: string; command?: WsCommandPayload | null }
+  | { type: "patch"; patch?: WsPatchPayload | null }
   | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number }
   | { type: string; [k: string]: unknown };
 

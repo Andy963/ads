@@ -1993,6 +1993,35 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
       }
       return;
     }
+    if (msg.type === "patch") {
+      rt.busy.value = true;
+      rt.turnInFlight = true;
+      const patch = (msg as { patch?: unknown }).patch;
+      if (!patch || typeof patch !== "object") return;
+
+      const typed = patch as { files?: unknown; diff?: unknown; truncated?: unknown };
+      const diff = String(typed.diff ?? "").trimEnd();
+      if (!diff.trim()) return;
+
+      const files = Array.isArray(typed.files) ? (typed.files as Array<{ path?: unknown; added?: unknown; removed?: unknown }>) : [];
+      const fileLines = files
+        .map((f) => {
+          const filePath = String(f.path ?? "").trim();
+          if (!filePath) return "";
+          const added = typeof f.added === "number" && Number.isFinite(f.added) ? Math.max(0, Math.floor(f.added)) : null;
+          const removed = typeof f.removed === "number" && Number.isFinite(f.removed) ? Math.max(0, Math.floor(f.removed)) : null;
+          const stat = added === null || removed === null ? "(binary)" : `(+${added} -${removed})`;
+          return `- \`${filePath}\` ${stat}`;
+        })
+        .filter(Boolean);
+
+      const truncated = Boolean(typed.truncated);
+      const header = fileLines.length ? `Modified files:\n${fileLines.join("\n")}\n\n` : "";
+      const note = truncated ? "\n\n_Diff was truncated to avoid flooding the UI._\n" : "";
+      const content = `${header}\`\`\`diff\n${diff}\n\`\`\`${note}`;
+      pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+      return;
+    }
     if (msg.type === "result") {
       rt.busy.value = false;
       rt.turnInFlight = false;
@@ -2455,6 +2484,7 @@ function closeTaskCreateDialog(): void {
 
       <section class="rightPane">
         <MainChatView
+          :key="activeProjectId"
           class="chatHost"
           :messages="messages"
           :queued-prompts="queuedPrompts.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length }))"

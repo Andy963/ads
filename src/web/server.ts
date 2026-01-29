@@ -57,6 +57,7 @@ import { extractMultipartFile } from "./multipart.js";
 import { TaskRunController } from "./taskRunController.js";
 import { broadcastTaskStart } from "./taskStartBroadcast.js";
 import { handleSingleTaskRun, matchSingleTaskRunPath } from "./api/taskRun.js";
+import { buildWorkspacePatch } from "./gitPatch.js";
 import { parseCookies, serializeCookie } from "./auth/cookies.js";
 import { isOriginAllowed, parseAllowedOrigins } from "./auth/origin.js";
 import {
@@ -2554,6 +2555,14 @@ async function start(): Promise<void> {
                     header: false,
                     entry: { category: "Write", summary },
                   });
+                }
+
+                const paths = changes
+                  .map((c) => String(c.path ?? "").trim())
+                  .filter(Boolean);
+                const patch = buildWorkspacePatch(turnCwd, paths);
+                if (patch) {
+                  safeJsonSend(ws, { type: "patch", patch });
                 }
               }
               if (rawItemType === "reasoning" && typeof event.delta === "string" && event.delta) {
