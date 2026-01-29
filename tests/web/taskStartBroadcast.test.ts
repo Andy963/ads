@@ -23,7 +23,7 @@ async function waitFor(fn: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 describe("web/taskStartBroadcast", () => {
-  it("broadcasts the user message before task:started (already injected)", () => {
+  it("broadcasts task:started before the user message (already injected)", () => {
     const events: Array<{ event?: string; data?: unknown }> = [];
     const history: Array<{ role: string; text: string; ts: number; kind?: string }> = [];
     const metrics: Array<{ name: string; event?: { reason?: string } }> = [];
@@ -39,9 +39,9 @@ describe("web/taskStartBroadcast", () => {
     });
 
     assert.equal(events.length, 2);
-    assert.equal(events[0]?.event, "message");
-    assert.deepEqual(events[0]?.data, { taskId: "t-1", role: "user", content: "Hello" });
-    assert.equal(events[1]?.event, "task:started");
+    assert.equal(events[0]?.event, "task:started");
+    assert.equal(events[1]?.event, "message");
+    assert.deepEqual(events[1]?.data, { taskId: "t-1", role: "user", content: "Hello" });
 
     assert.equal(history.length, 1);
     assert.equal(history[0]?.role, "user");
@@ -68,8 +68,9 @@ describe("web/taskStartBroadcast", () => {
     });
 
     const placeholder = "Task t-1 started at 2026-01-01T00:00:00.000Z (no prompt)";
-    assert.equal(events[0]?.event, "message");
-    assert.deepEqual(events[0]?.data, { taskId: "t-1", role: "user", content: placeholder });
+    assert.equal(events[0]?.event, "task:started");
+    assert.equal(events[1]?.event, "message");
+    assert.deepEqual(events[1]?.data, { taskId: "t-1", role: "user", content: placeholder });
     assert.equal(history[0]?.text, placeholder);
     assert.equal(metrics[0]?.event?.reason, "empty_prompt");
   });
@@ -168,9 +169,9 @@ describe("web/taskStartBroadcast integration", () => {
     await waitFor(() => store.getTask(task.id)?.status === "completed");
 
     assert.ok(broadcasted.length >= 3);
-    assert.equal(broadcasted[0]?.event, "message");
-    assert.deepEqual(broadcasted[0]?.data, { taskId: task.id, role: "user", content: "P" });
-    assert.equal(broadcasted[1]?.event, "task:started");
+    assert.equal(broadcasted[0]?.event, "task:started");
+    assert.equal(broadcasted[1]?.event, "message");
+    assert.deepEqual(broadcasted[1]?.data, { taskId: task.id, role: "user", content: "P" });
     assert.equal(broadcasted[broadcasted.length - 1]?.event, "task:completed");
 
     assert.equal(history[0]?.text, "P");
@@ -178,4 +179,3 @@ describe("web/taskStartBroadcast integration", () => {
     assert.equal(metrics[0]?.reason, "already_marked");
   });
 });
-
