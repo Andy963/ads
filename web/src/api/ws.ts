@@ -47,16 +47,22 @@ export class AdsWebSocket {
     this.sessionId = options.sessionId ?? cryptoRandomId();
   }
 
-  send(type: string, payload?: unknown): void {
+  send(type: string, payload?: unknown, options?: { clientMessageId?: string }): void {
     try {
-      this.ws?.send(JSON.stringify({ type, payload }));
+      const clientMessageId = String(options?.clientMessageId ?? "").trim();
+      const msg =
+        clientMessageId
+          ? { type, payload, client_message_id: clientMessageId }
+          : { type, payload };
+      this.ws?.send(JSON.stringify(msg));
     } catch {
       // ignore
     }
   }
 
-  sendPrompt(payload: unknown): void {
-    this.send("prompt", payload);
+  sendPrompt(payload: unknown, clientMessageId?: string): void {
+    const id = String(clientMessageId ?? "").trim() || cryptoRandomUuid();
+    this.send("prompt", payload, { clientMessageId: id });
   }
 
   interrupt(): void {
@@ -144,5 +150,32 @@ function cryptoRandomId(): string {
       .join("");
   } catch {
     return String(Date.now());
+  }
+}
+
+function cryptoRandomUuid(): string {
+  try {
+    if (typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // ignore
+  }
+  // RFC 4122 v4 fallback
+  try {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+    bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return [
+      hex.slice(0, 8),
+      hex.slice(8, 12),
+      hex.slice(12, 16),
+      hex.slice(16, 20),
+      hex.slice(20),
+    ].join("-");
+  } catch {
+    return `${Date.now()}-${cryptoRandomId()}`;
   }
 }
