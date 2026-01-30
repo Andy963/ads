@@ -13,6 +13,11 @@ type ChatMessage = {
   streaming?: boolean;
 };
 
+type RenderMessage = ChatMessage & {
+  stackCount?: number;
+  stackUnderlays?: number;
+};
+
 type IncomingImage = { name?: string; mime?: string; data: string };
 type QueuedPrompt = { id: string; text: string; imagesCount: number };
 
@@ -39,6 +44,60 @@ const autoScroll = ref(true);
 const showScrollToBottom = ref(false);
 const input = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+
+const COMMAND_COLLAPSE_THRESHOLD = 3;
+const openCommandTrees = ref<Set<string>>(new Set());
+
+function isCommandTreeOpen(id: string, commandsCount: number): boolean {
+  if (commandsCount <= COMMAND_COLLAPSE_THRESHOLD) return true;
+  return openCommandTrees.value.has(id);
+}
+
+function toggleCommandTree(id: string): void {
+  const next = new Set(openCommandTrees.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  openCommandTrees.value = next;
+}
+
+function caretPath(open: boolean): string {
+  return open ? "M6 8l4 4 4-4" : "M8 6l4 4-4 4";
+}
+
+const renderMessages = computed<RenderMessage[]>(() => {
+  const out: RenderMessage[] = [];
+  const stack: ChatMessage[] = [];
+
+  const flush = () => {
+    if (stack.length === 0) return;
+    if (stack.length === 1) {
+      out.push(stack[0]!);
+      stack.length = 0;
+      return;
+    }
+    const top = stack[stack.length - 1]!;
+    out.push({
+      ...top,
+      id: `execstack:${top.id}`,
+      role: "system",
+      kind: "execute",
+      stackCount: stack.length,
+      stackUnderlays: Math.min(2, Math.max(0, stack.length - 1)),
+    });
+    stack.length = 0;
+  };
+
+  for (const m of props.messages) {
+    if (m.kind === "execute") {
+      stack.push(m);
+      continue;
+    }
+    flush();
+    out.push(m);
+  }
+  flush();
+  return out;
+});
 
 const canInterrupt = computed(() => props.busy);
 const micSupported = computed(() => {
@@ -626,13 +685,25 @@ onBeforeUnmount(() => {
       <div v-if="messages.length === 0" class="chat-empty">
         <span>直接开始对话…</span>
       </div>
-      <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
+      <div v-for="m in renderMessages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
         <div v-if="m.kind === 'command'" class="command-block">
           <div class="command-tree-header">
+            <button
+              v-if="getCommands(m.content).length > COMMAND_COLLAPSE_THRESHOLD"
+              class="command-caret"
+              type="button"
+              aria-label="Toggle command tree"
+              :aria-expanded="isCommandTreeOpen(m.id, getCommands(m.content).length)"
+              @click="toggleCommandTree(m.id)"
+            >
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path :d="caretPath(isCommandTreeOpen(m.id, getCommands(m.content).length))" />
+              </svg>
+            </button>
             <span class="command-tag">EXECUTE</span>
             <span class="command-count">{{ getCommands(m.content).length }} 条命令</span>
           </div>
-          <div class="command-tree">
+          <div v-if="isCommandTreeOpen(m.id, getCommands(m.content).length)" class="command-tree">
             <div
               v-for="(cmd, cIdx) in getCommands(m.content)"
               :key="cIdx"
@@ -643,13 +714,19 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div v-else-if="m.kind === 'execute'" class="execute-block">
-          <div class="execute-header">
-            <span class="command-tag">EXECUTE</span>
-            <span class="execute-cmd">{{ m.command || "" }}</span>
+        <div v-else-if="m.kind === 'execute'" class="execute-stack" :data-stack="m.stackCount ?? 0">
+          <div v-if="(m.stackUnderlays ?? 0) > 0" class="execute-underlays" aria-hidden="true">
+            <div v-for="n in m.stackUnderlays" :key="n" class="execute-underlay" :data-layer="n" />
           </div>
-          <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
-          <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
+          <div class="execute-block">
+            <div class="execute-header">
+              <span class="command-tag">EXECUTE</span>
+              <span class="execute-cmd">{{ m.command || "" }}</span>
+              <span v-if="m.stackCount" class="execute-stack-count">{{ m.stackCount }} 条命令</span>
+            </div>
+            <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
+            <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
+          </div>
         </div>
         <div
           v-else
@@ -927,7 +1004,7 @@ onBeforeUnmount(() => {
   display: flex;
   margin-bottom: 10px;
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
   justify-content: flex-start;
 }
 .command-block {
@@ -944,6 +1021,36 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   padding: 10px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  position: relative;
+  z-index: 1;
+}
+.execute-stack {
+  width: 100%;
+  position: relative;
+  padding-bottom: 0;
+}
+.execute-stack:not([data-stack="0"]) {
+  padding-bottom: 12px;
+}
+.execute-underlays {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.execute-underlay {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.03);
+  border-radius: 12px;
+  box-shadow: 0 1px 0 rgba(2, 6, 23, 0.02);
+}
+.execute-underlay[data-layer="1"] {
+  transform: translate(0, 6px);
+}
+.execute-underlay[data-layer="2"] {
+  transform: translate(0, 12px);
 }
 .execute-header {
   display: flex;
@@ -951,6 +1058,11 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 10px;
   padding: 2px 0;
+}
+.execute-stack-count {
+  color: #94a3b8;
+  font-size: 12px;
+  margin-left: auto;
 }
 .execute-cmd {
   color: #0f172a;
@@ -981,6 +1093,20 @@ onBeforeUnmount(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+}
+.command-caret {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  padding: 0;
+}
+.command-caret:hover {
+  color: #0f172a;
 }
 .command-tag {
   display: inline-block;
