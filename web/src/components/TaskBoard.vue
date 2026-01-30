@@ -201,6 +201,28 @@ function canRunSingleTask(task: Task): boolean {
   return status === "pending" || status === "queued" || status === "paused" || status === "cancelled";
 }
 
+function canRerunTask(task: Task): boolean {
+  const status = task.status;
+  return status === "completed" || status === "failed";
+}
+
+function canEditTask(task: Task): boolean {
+  if (canRerunTask(task)) return true;
+  return task.status === "pending" || task.status === "cancelled";
+}
+
+const editPrimaryLabel = computed(() => {
+  const task = editingTask.value;
+  if (!task) return "保存并提交";
+  return canRerunTask(task) ? "重新执行" : "保存并提交";
+});
+
+const showEditSaveButton = computed(() => {
+  const task = editingTask.value;
+  if (!task) return true;
+  return !canRerunTask(task);
+});
+
 function toggleQueue(): void {
   if (!queueStatus.value) return;
   if (!queueCanRunAll.value) return;
@@ -346,7 +368,23 @@ watch(
               </svg>
             </button>
             <button
-              v-if="(t.status === 'pending' || t.status === 'cancelled') && editingId !== t.id"
+              v-if="canRerunTask(t) && editingId !== t.id"
+              class="iconBtn primary"
+              type="button"
+              title="重新执行"
+              :disabled="Boolean(editingId)"
+              @click.stop="startEdit(t)"
+            >
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path
+                  fill-rule="evenodd"
+                  d="M10 3a7 7 0 1 0 7 7 .75.75 0 0 0-1.5 0 5.5 5.5 0 1 1-1.38-3.65l-1.62 1.6a.75.75 0 0 0 .53 1.28H17a.75.75 0 0 0 .75-.75V3.5a.75.75 0 0 0-1.28-.53l-1.13 1.12A6.98 6.98 0 0 0 10 3Z"
+                  clip-rule="evenodd"
+                />
+              </svg>
+            </button>
+            <button
+              v-if="canEditTask(t) && !canRerunTask(t) && editingId !== t.id"
               class="iconBtn"
               type="button"
               title="编辑"
@@ -480,7 +518,14 @@ watch(
 
         <div class="actions">
           <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
-          <button class="btnSecondary" type="button" :disabled="!editingTask" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
+          <button
+            v-if="showEditSaveButton"
+            class="btnSecondary"
+            type="button"
+            :disabled="!editingTask"
+            data-testid="task-edit-modal-save"
+            @click="saveEdit(editingTask)"
+          >
             保存
           </button>
           <button
@@ -490,7 +535,7 @@ watch(
             data-testid="task-edit-modal-save-and-run"
             @click="editingTask && saveEditAndRun(editingTask)"
           >
-            保存并提交
+            {{ editPrimaryLabel }}
           </button>
         </div>
       </div>

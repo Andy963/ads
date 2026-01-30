@@ -11,4 +11,5 @@ This file is maintained by ADS. Edit outside the marked block if needed.
 - 0005 - [Chat Message Timestamps and Mobile Login Keyboard Handling](0005-chat-message-timestamps-and-mobile-login-keyboard.md)
 - 0006 - [Collapse Command Trees and Stack Execute Previews](0006-collapse-command-tree-and-stack-execute-previews.md)
 - 0007 - [Queue Task Runs While Agent Is Busy](0007-queue-task-runs-while-agent-busy.md)
+- 0008 - [Task Rerun With Workspace Patch Context](0008-task-rerun-with-workspace-patch-context.md)
 <!-- ADS:ADR_INDEX_END -->

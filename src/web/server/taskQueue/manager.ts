@@ -16,6 +16,7 @@ import { AttachmentStore } from "../../../attachments/store.js";
 import { TaskRunController } from "../../taskRunController.js";
 import { broadcastTaskStart } from "../../taskStartBroadcast.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
+import { buildWorkspacePatch, type WorkspacePatchPayload } from "../../gitPatch.js";
 
 export type TaskQueueMetricName =
   | "TASK_ADDED"
@@ -49,6 +50,68 @@ export type TaskQueueContext = {
   getStatusOrchestrator: () => ReturnType<SessionManager["getOrCreate"]>;
   getTaskQueueOrchestrator: (task: { id: string }) => ReturnType<SessionManager["getOrCreate"]>;
 };
+
+type ChangedPathsContext = { paths?: unknown };
+type TaskWorkspacePatchArtifact = { paths: string[]; patch: WorkspacePatchPayload | null; reason?: string; createdAt: number };
+
+function safeJsonParse<T>(raw: string): T | null {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    return null;
+  }
+}
+
+function recordTaskWorkspacePatchArtifact(ctx: TaskQueueContext, taskId: string, now = Date.now()): void {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+
+  let contexts: ReturnType<QueueTaskStore["getContext"]> = [];
+  try {
+    contexts = ctx.taskStore.getContext(id);
+  } catch {
+    contexts = [];
+  }
+  if (contexts.some((c) => c.contextType === "artifact:workspace_patch")) {
+    return;
+  }
+
+  const changedCtx = (() => {
+    for (let i = contexts.length - 1; i >= 0; i--) {
+      const c = contexts[i];
+      if (c && c.contextType === "artifact:changed_paths") return c;
+    }
+    return null;
+  })();
+
+  const parsed = changedCtx ? safeJsonParse<ChangedPathsContext>(changedCtx.content) : null;
+  const paths = Array.isArray(parsed?.paths) ? (parsed?.paths as unknown[]).map((p) => String(p ?? "").trim()).filter(Boolean) : [];
+
+  let patch: WorkspacePatchPayload | null = null;
+  let reason = "";
+  if (paths.length === 0) {
+    reason = "no_changed_paths_recorded";
+  } else {
+    try {
+      patch = buildWorkspacePatch(ctx.workspaceRoot, paths);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reason = `patch_error:${message}`;
+    }
+    if (!patch && !reason) {
+      reason = "patch_not_available";
+    }
+  }
+
+  const artifact: TaskWorkspacePatchArtifact = { paths, patch, reason: reason || undefined, createdAt: now };
+  try {
+    ctx.taskStore.saveContext(id, { contextType: "artifact:workspace_patch", content: JSON.stringify(artifact), createdAt: now }, now);
+  } catch {
+    // ignore
+  }
+}
 
 function createTaskQueueMetrics(): TaskQueueMetrics {
   const names: TaskQueueMetricName[] = [
@@ -262,6 +325,7 @@ export function createTaskQueueManager(deps: {
     });
     taskQueue.on("task:completed", ({ task }) => {
       recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
+      recordTaskWorkspacePatchArtifact(ctx, task.id);
       deps.broadcastToSession(sessionId, { type: "task:event", event: "task:completed", data: task, ts: Date.now() });
       if (task.result && task.result.trim()) {
         deps.recordToSessionHistories(sessionId, { role: "ai", text: task.result.trim(), ts: Date.now() });
@@ -276,6 +340,7 @@ export function createTaskQueueManager(deps: {
       deps.recordToSessionHistories(sessionId, { role: "status", text: `[Task failed] ${error}`, ts: Date.now(), kind: "error" });
       if (task.status === "failed") {
         recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
+        recordTaskWorkspacePatchArtifact(ctx, task.id);
         if (ctx.runController.onTaskTerminal(ctx, task.id)) {
           return;
         }
@@ -286,6 +351,7 @@ export function createTaskQueueManager(deps: {
       deps.broadcastToSession(sessionId, { type: "task:event", event: "task:cancelled", data: task, ts: Date.now() });
       deps.recordToSessionHistories(sessionId, { role: "status", text: "[Cancelled]", ts: Date.now(), kind: "status" });
       recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
+      recordTaskWorkspacePatchArtifact(ctx, task.id);
       if (ctx.runController.onTaskTerminal(ctx, task.id)) {
         return;
       }

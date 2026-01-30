@@ -130,6 +130,96 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     return true;
   }
 
+  const rerunMatch = /^\/api\/tasks\/([^/]+)\/rerun$/.exec(pathname);
+  if (rerunMatch && req.method === "POST") {
+    let taskCtx;
+    try {
+      taskCtx = deps.resolveTaskContext(url);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 400, { error: message });
+      return true;
+    }
+    const taskId = rerunMatch[1] ?? "";
+    const source = taskCtx.taskStore.getTask(taskId);
+    if (!source) {
+      sendJson(res, 404, { error: "Not Found" });
+      return true;
+    }
+    if (!["completed", "failed", "cancelled"].includes(source.status)) {
+      sendJson(res, 409, { error: `Task not rerunnable in status: ${source.status}` });
+      return true;
+    }
+
+    const body = await readJsonBody(req);
+    const schema = z
+      .object({
+        title: z.string().min(1).optional(),
+        prompt: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        priority: z.number().finite().optional(),
+        inheritContext: z.boolean().optional(),
+        maxRetries: z.number().int().min(0).optional(),
+      })
+      .passthrough();
+    const parsed = schema.parse(body ?? {});
+
+    const now = Date.now();
+    const newId = crypto.randomUUID();
+    const title = parsed.title ?? source.title;
+    const prompt = parsed.prompt ?? source.prompt;
+    const model = parsed.model ?? source.model;
+    const priority = parsed.priority ?? source.priority;
+    const inheritContext = parsed.inheritContext ?? source.inheritContext;
+    const maxRetries = parsed.maxRetries ?? source.maxRetries;
+
+    let created: ReturnType<QueueTaskStore["createTask"]>;
+    try {
+      created = taskCtx.taskStore.createTask(
+        {
+          id: newId,
+          title,
+          prompt,
+          model,
+          priority,
+          inheritContext,
+          parentTaskId: source.id,
+          maxRetries,
+          createdBy: "web",
+        },
+        now,
+        undefined,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 400, { error: message });
+      return true;
+    }
+
+    try {
+      const contexts = taskCtx.taskStore.getContext(source.id);
+      const latestPatch = [...contexts].reverse().find((c) => c.contextType === "artifact:workspace_patch") ?? null;
+      if (latestPatch) {
+        taskCtx.taskStore.saveContext(
+          created.id,
+          { contextType: "artifact:previous_workspace_patch", content: latestPatch.content, createdAt: now },
+          now,
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: `rerun_from:${source.id}` });
+    if (taskCtx.queueRunning) {
+      taskCtx.taskQueue.notifyNewTask();
+    }
+
+    deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
+    sendJson(res, 201, { success: true, sourceTaskId: source.id, task: created });
+    return true;
+  }
+
   const retryMatch = /^\/api\/tasks\/([^/]+)\/retry$/.exec(pathname);
   if (retryMatch && req.method === "POST") {
     let taskCtx;

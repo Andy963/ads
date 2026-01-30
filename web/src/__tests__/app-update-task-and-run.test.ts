@@ -248,4 +248,55 @@ describe("App.updateQueuedTaskAndRun", () => {
 
     wrapper.unmount();
   }, 10_000);
+
+  it("reruns a completed task and starts the task queue", async () => {
+    const calls: Array<{ method: "PATCH" | "POST"; url: string; body: unknown }> = [];
+
+    const completed = makeTask({ id: "t-1", status: "completed" });
+    const rerun = makeTask({ id: "t-2", status: "pending" });
+    tasksFromApi = [completed];
+
+    getImpl = async (url: string) => {
+      if (url === "/api/models") return [] satisfies ModelConfig[];
+      if (url.includes("/api/task-queue/status"))
+        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
+      if (url.startsWith("/api/tasks")) return tasksFromApi;
+      if (url.startsWith("/api/paths/validate")) return { ok: false };
+      return {};
+    };
+
+    patchImpl = async () => {
+      throw new Error("PATCH should not be used for rerun");
+    };
+
+    postImpl = async (url: string, body: unknown) => {
+      calls.push({ method: "POST", url, body });
+      if (url.includes("/api/tasks/t-1/rerun")) {
+        expect(body).toEqual({ title: "Updated", prompt: "Updated prompt" });
+        return { success: true, task: { ...rerun, title: "Updated", prompt: "Updated prompt" } };
+      }
+      if (url.includes("/api/task-queue/run")) {
+        return { enabled: true, running: true, ready: true, streaming: false } satisfies TaskQueueStatus;
+      }
+      throw new Error(`unexpected url: ${url}`);
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await waitForTasks(wrapper, 1);
+
+    await (wrapper.vm as unknown as { updateQueuedTaskAndRun: (id: string, updates: unknown) => Promise<void> }).updateQueuedTaskAndRun(
+      "t-1",
+      { title: "Updated", prompt: "Updated prompt" },
+    );
+    await settleUi(wrapper);
+
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      expect.stringContaining("POST /api/tasks/t-1/rerun"),
+      expect.stringContaining("POST /api/task-queue/run"),
+    ]);
+
+    wrapper.unmount();
+  }, 10_000);
 });

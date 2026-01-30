@@ -208,7 +208,29 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     if (!taskId) return;
 
     const existing = tasks.value.find((t) => t.id === taskId) ?? null;
-    const shouldUseSingleRun = existing?.status === "cancelled";
+    const status = existing?.status ?? null;
+
+    const shouldRerun = status === "completed" || status === "failed";
+    if (shouldRerun) {
+      apiError.value = null;
+      clearNotice();
+      try {
+        const res = await api.post<{ success: boolean; task?: Task; sourceTaskId?: string }>(withWorkspaceQuery(`/api/tasks/${taskId}/rerun`), updates);
+        if (res?.task) {
+          upsertTask(res.task);
+          selectedId.value = res.task.id;
+        } else {
+          await loadTasks();
+        }
+        await runTaskQueue();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        apiError.value = msg;
+      }
+      return;
+    }
+
+    const shouldUseSingleRun = status === "cancelled";
     if (!shouldUseSingleRun) {
       await reorderUpdateQueuedTaskAndRun(taskId, updates);
       return;
