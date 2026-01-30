@@ -13,7 +13,7 @@ describe("execute block style regression", () => {
   it("keeps a fixed execute block height and consistent stack spacing", () => {
     const sfc = readUtf8("../components/MainChat.vue");
 
-    expect(sfc).toMatch(/\.execute-block\s*\{[\s\S]*?height:\s*124px\s*;[\s\S]*?\}/);
+    expect(sfc).toMatch(/\.execute-block\s*\{[\s\S]*?height:\s*100px\s*;[\s\S]*?\}/);
     expect(sfc).toMatch(/\.execute-stack\s*\{[\s\S]*?padding-bottom:\s*12px\s*;[\s\S]*?\}/);
     expect(sfc).toMatch(/\.execute-underlays\s*\{[\s\S]*?bottom:\s*12px\s*;[\s\S]*?bottom:\s*var\(--execute-stack-padding-bottom\)\s*;[\s\S]*?\}/);
     expect(sfc).toMatch(/\.execute-underlay\s*\{[\s\S]*?bottom:\s*12px\s*;[\s\S]*?bottom:\s*var\(--execute-stack-padding-bottom\)\s*;[\s\S]*?\}/);

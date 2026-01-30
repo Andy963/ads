@@ -903,7 +903,7 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-md);
   overflow: hidden;
   --execute-stack-padding-bottom: 12px;
-  --execute-block-height: 124px;
+  --execute-block-height: 100px;
 }
 .header {
   display: flex;
@@ -1014,7 +1014,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: 100%;
   /* Keep a concrete value for environments without CSS custom properties (e.g. jsdom). */
-  height: 124px;
+  height: 100px;
   height: var(--execute-block-height);
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.35);
@@ -1071,11 +1071,15 @@ onBeforeUnmount(() => {
   gap: 10px;
   padding: 2px 0;
   flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 .execute-stack-count {
   color: #94a3b8;
   font-size: 12px;
   margin-left: auto;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 .execute-cmd {
   color: #0f172a;
