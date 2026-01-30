@@ -1,14 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { readFile } from "node:fs/promises";
-
-async function readSfc(relativeToThisTest: string): Promise<string> {
-  const url = new URL(relativeToThisTest, import.meta.url);
-  return readFile(url, "utf8");
-}
+import { readSfc } from "./readSfc";
 
 describe("TaskCreateForm image preview", () => {
   it("renders a compact strip preview instead of large square tiles", async () => {
-    const sfc = await readSfc("../components/TaskCreateForm.vue");
+    const sfc = await readSfc("../components/TaskCreateForm.vue", import.meta.url);
 
     expect(sfc).toMatch(/\.thumbGrid\s*\{[\s\S]*display:\s*flex\s*;/);
     expect(sfc).toMatch(/\.thumbGrid\s*\{[\s\S]*overflow-x:\s*auto\s*;/);
@@ -21,4 +16,3 @@ describe("TaskCreateForm image preview", () => {
     expect(sfc).toMatch(/@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*\.thumbWrap\s*\{[\s\S]*height:\s*52px\s*;/);
   });
 });
-
