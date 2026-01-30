@@ -5,8 +5,12 @@ import { formatVectorSearchOutput } from "./format.js";
 import { prepareVectorUpserts } from "./indexer.js";
 import { setVectorState } from "./state.js";
 import type { VectorQueryHit, VectorUpsertItem } from "./types.js";
+import { sha256Hex } from "./hash.js";
 
 const logger = createLogger("VectorSearch");
+
+let lastDisabledLogAt = 0;
+let lastUnavailableLogAt = 0;
 
 function takeLastWins(entries: Array<{ key: string; value: string }>): Array<{ key: string; value: string }> {
   const map = new Map<string, string>();
@@ -110,6 +114,7 @@ export async function queryVectorSearchHits(params: {
   query: string;
   topK?: number;
 }): Promise<VectorSearchHitsResult> {
+  const startedAt = Date.now();
   const query = String(params.query ?? "").trim();
   const desiredTopK = Math.max(1, Number.isFinite(params.topK) ? Math.floor(params.topK!) : 8);
   const warnings: string[] = [];
@@ -120,6 +125,11 @@ export async function queryVectorSearchHits(params: {
 
   const { config, error } = loadVectorSearchConfig();
   if (!config) {
+    const now = Date.now();
+    if (now - lastDisabledLogAt > 60_000) {
+      lastDisabledLogAt = now;
+      logger.info(`[VectorSearch] disabled: ${error ?? "unknown"}`);
+    }
     return {
       ok: false,
       code: "disabled",
@@ -131,14 +141,21 @@ export async function queryVectorSearchHits(params: {
   }
 
   const topK = Math.max(1, Number.isFinite(params.topK) ? Math.floor(params.topK!) : config.topK);
+  const queryHash = sha256Hex(query).slice(0, 12);
 
   try {
+    logger.info(`[VectorSearch] query_start topK=${topK} qhash=${queryHash} qlen=${query.length}`);
     const health = await checkVectorServiceHealth({
       baseUrl: config.baseUrl,
       token: config.token,
       timeoutMs: config.timeoutMs,
     });
     if (!health.ok) {
+      const now = Date.now();
+      if (now - lastUnavailableLogAt > 60_000) {
+        lastUnavailableLogAt = now;
+        logger.info(`[VectorSearch] service_unavailable: ${health.message ?? "health check failed"}`);
+      }
       return {
         ok: false,
         code: "service_unavailable",
@@ -163,6 +180,11 @@ export async function queryVectorSearchHits(params: {
 
     let upsertOk = true;
     if (itemsToUpsert.length > 0) {
+      logger.info(
+        `[VectorSearch] upsert_start ws=${prepared.workspaceNamespace} items=${itemsToUpsert.length} batches=${Math.ceil(
+          itemsToUpsert.length / Math.max(1, config.upsertBatchSize),
+        )}`,
+      );
       const batches = splitBatches<VectorUpsertItem>(itemsToUpsert, config.upsertBatchSize);
       for (const batch of batches) {
         const result = await upsertVectors({
@@ -178,6 +200,7 @@ export async function queryVectorSearchHits(params: {
           break;
         }
       }
+      logger.info(`[VectorSearch] upsert_done ok=${upsertOk ? 1 : 0}`);
     }
 
     if (upsertOk) {
@@ -197,6 +220,7 @@ export async function queryVectorSearchHits(params: {
     });
     if (!queryResult.ok || !queryResult.hits) {
       logger.warn(`[VectorSearch] query failed: ${queryResult.message ?? "unknown"}`);
+      logger.info(`[VectorSearch] query_end ok=0 ms=${Date.now() - startedAt} qhash=${queryHash}`);
       return {
         ok: false,
         code: "query_failed",
@@ -218,6 +242,10 @@ export async function queryVectorSearchHits(params: {
       hits.push(hit);
     }
 
+    logger.info(
+      `[VectorSearch] query_hits ws=${prepared.workspaceNamespace} raw=${rawHits.length} kept=${hits.length} warnings=${warnings.length} ms=${Date.now() - startedAt} qhash=${queryHash}`,
+    );
+
     let finalHits = hits;
     if (hits.length >= 2) {
       const rerank = await rerankVectors({
@@ -231,15 +259,21 @@ export async function queryVectorSearchHits(params: {
       });
       if (rerank.ok && rerank.ranked && rerank.ranked.length > 0) {
         finalHits = applyRerankOrder(hits, rerank.ranked);
+        logger.info(`[VectorSearch] rerank_ok qhash=${queryHash}`);
       } else if (rerank.message && rerank.message !== "rerank endpoint not found") {
         warnings.push(rerank.message);
+        logger.info(`[VectorSearch] rerank_skip reason=${rerank.message} qhash=${queryHash}`);
       }
     }
 
+    logger.info(
+      `[VectorSearch] query_end ok=1 hits=${finalHits.length} topK=${topK} ms=${Date.now() - startedAt} qhash=${queryHash}`,
+    );
     return { ok: true, hits: finalHits.slice(0, topK), warnings, topK };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`[VectorSearch] Failed to query vectors: ${message}`, error);
+    logger.info(`[VectorSearch] query_end ok=0 ms=${Date.now() - startedAt} qhash=${sha256Hex(query).slice(0, 12)}`);
     return { ok: false, code: "query_failed", message, hits: [], warnings, topK };
   }
 }

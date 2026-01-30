@@ -14,7 +14,7 @@ import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
 import { ActivityTracker, resolveExploredConfig, type ExploredEntry, type ExploredEntryCallback } from "../utils/activityTracker.js";
-import { maybeBuildVectorAutoContext } from "../vectorSearch/context.js";
+import { maybeBuildVectorAutoContext, type VectorAutoContextReport } from "../vectorSearch/context.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
 import { isCoordinatorEnabled, TaskCoordinator } from "./tasks/taskCoordinator.js";
@@ -59,6 +59,18 @@ const logger = createLogger("AgentHub");
 const supervisorPromptLoader = new SupervisorPromptLoader({ logger });
 
 const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
+
+function formatVectorAutoContextSummary(report: VectorAutoContextReport): string {
+  const injected = report.injected ? 1 : 0;
+  const cache = report.cacheHit ? "cache" : "fresh";
+  const ok = report.ok ? 1 : 0;
+  const ms = Math.max(0, Math.floor(report.elapsedMs));
+  const injectedChars = Math.max(0, Math.floor(report.injectedChars));
+  const hits = Math.max(0, Math.floor(report.hits));
+  const filtered = Math.max(0, Math.floor(report.filtered));
+  const code = report.code ? ` code=${report.code}` : "";
+  return `VectorSearch(auto) ${cache} ok=${ok}${code} injected=${injected} hits=${hits} filtered=${filtered} chars=${injectedChars} ms=${ms} qhash=${report.queryHash}`;
+}
 
 function createAbortError(message = "用户中断了请求"): Error {
   const abortError = new Error(message);
@@ -595,12 +607,36 @@ export async function runCollaborativeTurn(
   let vectorContext: string | null = null;
   try {
     const vectorQuery = extractVectorQuery(input);
+    const vectorReports: VectorAutoContextReport[] = [];
     vectorContext = await maybeBuildVectorAutoContext({
       workspaceRoot,
       query: vectorQuery,
       historyNamespace: toolContext.historyNamespace,
       historySessionId: toolContext.historySessionId,
+      onReport: (report) => {
+        vectorReports.push(report);
+      },
     });
+
+    const lastReport = vectorReports[vectorReports.length - 1] ?? null;
+    if (lastReport) {
+      const summary = formatVectorAutoContextSummary(lastReport);
+      options.onExploredEntry?.({
+        category: "Search",
+        summary,
+        ts: Date.now(),
+        source: "tool_hook",
+        meta: { tool: "vector_search" },
+      });
+    } else if (vectorContext && vectorContext.trim()) {
+      options.onExploredEntry?.({
+        category: "Search",
+        summary: `VectorSearch(auto) injected chars=${vectorContext.length}`,
+        ts: Date.now(),
+        source: "tool_hook",
+        meta: { tool: "vector_search" },
+      });
+    }
   } catch (error) {
     logger.warn("[AgentHub] Failed to build vector auto context", error);
   }

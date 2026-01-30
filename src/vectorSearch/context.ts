@@ -3,6 +3,7 @@ import { getStateDatabase } from "../state/database.js";
 import type { VectorQueryHit } from "./types.js";
 import { queryVectorSearchHits } from "./run.js";
 import { resolveWorkspaceStateDbPath } from "./state.js";
+import { sha256Hex } from "./hash.js";
 
 const logger = createLogger("VectorSearchContext");
 
@@ -88,6 +89,22 @@ export function resolveVectorAutoContextConfig(): VectorAutoContextConfig {
   const extras = parseCsv(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS);
   const triggerKeywords = Array.from(new Set([...DEFAULT_TRIGGER_KEYWORDS, ...extras])).filter(Boolean);
   return { enabled, topK, maxChars, minScore, minIntervalMs, triggerKeywords };
+}
+
+export interface VectorAutoContextReport {
+  workspaceRoot: string;
+  queryHash: string;
+  queryLen: number;
+  cacheHit: boolean;
+  attempted: boolean;
+  ok: boolean;
+  code?: string;
+  hits: number;
+  filtered: number;
+  injected: boolean;
+  injectedChars: number;
+  elapsedMs: number;
+  warningsCount: number;
 }
 
 function normalizeForTriggerMatch(text: string): string {
@@ -327,6 +344,7 @@ export async function maybeBuildVectorAutoContext(params: {
   query: string;
   historyNamespace?: string;
   historySessionId?: string;
+  onReport?: (report: VectorAutoContextReport) => void;
 }): Promise<string | null> {
   const config = resolveVectorAutoContextConfig();
   if (!config.enabled) {
@@ -351,6 +369,9 @@ export async function maybeBuildVectorAutoContext(params: {
       })
     : originalQuery;
 
+  const queryHash = sha256Hex(query).slice(0, 12);
+  const queryLen = query.length;
+
   const cacheKey = [
     String(params.workspaceRoot ?? "").trim(),
     safeString(params.historyNamespace),
@@ -361,19 +382,57 @@ export async function maybeBuildVectorAutoContext(params: {
   const now = Date.now();
   const cached = cacheKey ? AUTO_CONTEXT_CACHE.get(cacheKey) : undefined;
   if (cached && now - cached.updatedAtMs < config.minIntervalMs) {
+    const injected = Boolean(cached.context && cached.context.trim());
+    params.onReport?.({
+      workspaceRoot: params.workspaceRoot,
+      queryHash,
+      queryLen,
+      cacheHit: true,
+      attempted: false,
+      ok: true,
+      hits: 0,
+      filtered: 0,
+      injected,
+      injectedChars: injected ? cached.context!.length : 0,
+      elapsedMs: 0,
+      warningsCount: 0,
+    });
+    logger.info(
+      `[VectorAutoContext] cache_hit injected=${injected ? 1 : 0} chars=${injected ? cached.context!.length : 0} qhash=${queryHash} qlen=${queryLen}`,
+    );
     return cached.context;
   }
 
+  const startedAt = Date.now();
   const requestTopK = Math.min(24, Math.max(6, config.topK * 3));
   const result = await queryVectorSearchHits({
     workspaceRoot: params.workspaceRoot,
     query,
     topK: requestTopK,
   });
+  const elapsedMs = Date.now() - startedAt;
   if (!result.ok || result.hits.length === 0) {
     if (cacheKey) {
       AUTO_CONTEXT_CACHE.set(cacheKey, { updatedAtMs: now, context: null });
     }
+    params.onReport?.({
+      workspaceRoot: params.workspaceRoot,
+      queryHash,
+      queryLen,
+      cacheHit: false,
+      attempted: true,
+      ok: Boolean(result.ok),
+      code: result.ok ? undefined : result.code,
+      hits: result.hits.length,
+      filtered: 0,
+      injected: false,
+      injectedChars: 0,
+      elapsedMs,
+      warningsCount: result.warnings.length,
+    });
+    logger.info(
+      `[VectorAutoContext] query_done ok=${result.ok ? 1 : 0} hits=${result.hits.length} injected=0 ms=${elapsedMs} qhash=${queryHash} qlen=${queryLen}`,
+    );
     return null;
   }
 
@@ -392,6 +451,23 @@ export async function maybeBuildVectorAutoContext(params: {
     if (cacheKey) {
       AUTO_CONTEXT_CACHE.set(cacheKey, { updatedAtMs: now, context: null });
     }
+    params.onReport?.({
+      workspaceRoot: params.workspaceRoot,
+      queryHash,
+      queryLen,
+      cacheHit: false,
+      attempted: true,
+      ok: true,
+      hits: result.hits.length,
+      filtered: 0,
+      injected: false,
+      injectedChars: 0,
+      elapsedMs,
+      warningsCount: result.warnings.length,
+    });
+    logger.info(
+      `[VectorAutoContext] filtered_empty hits=${result.hits.length} injected=0 ms=${elapsedMs} qhash=${queryHash} qlen=${queryLen}`,
+    );
     return null;
   }
 
@@ -401,6 +477,24 @@ export async function maybeBuildVectorAutoContext(params: {
     if (cacheKey) {
       AUTO_CONTEXT_CACHE.set(cacheKey, { updatedAtMs: now, context });
     }
+    const injected = Boolean(context && context.trim());
+    params.onReport?.({
+      workspaceRoot: params.workspaceRoot,
+      queryHash,
+      queryLen,
+      cacheHit: false,
+      attempted: true,
+      ok: true,
+      hits: result.hits.length,
+      filtered: filtered.length,
+      injected,
+      injectedChars: injected ? context!.length : 0,
+      elapsedMs,
+      warningsCount: result.warnings.length,
+    });
+    logger.info(
+      `[VectorAutoContext] injected=${injected ? 1 : 0} hits=${result.hits.length} filtered=${filtered.length} chars=${injected ? context!.length : 0} ms=${elapsedMs} qhash=${queryHash} qlen=${queryLen}`,
+    );
     return context;
   } catch (error) {
     logger.warn(`[VectorSearchContext] Failed to format context`, error);
