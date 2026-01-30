@@ -154,4 +154,28 @@ describe("TaskBoard edit modal", () => {
 
     wrapper.unmount();
   });
+
+  it("allows editing a cancelled task", async () => {
+    const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "cancelled" });
+
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task],
+        models,
+        selectedId: null,
+        plans: new Map<string, PlanStep[]>(),
+        expanded: new Set<string>(),
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set<string>(),
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
 });

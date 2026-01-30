@@ -189,12 +189,33 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const { onTaskEvent } = createTaskEventActions(ctx, { upsertTask, loadQueueStatus });
 
-  const { reorderPendingTasks, updateQueuedTask, updateQueuedTaskAndRun } = createTaskReorderActions(ctx, {
+  const {
+    reorderPendingTasks,
+    updateQueuedTask,
+    updateQueuedTaskAndRun: reorderUpdateQueuedTaskAndRun,
+  } = createTaskReorderActions(ctx, {
     clearNotice,
     loadTasks,
     runTaskQueue,
     upsertTask: (t) => upsertTask(t),
   });
+  const updateQueuedTaskAndRun = async (id: string, updates: Record<string, unknown>): Promise<void> => {
+    const taskId = String(id ?? "").trim();
+    if (!taskId) return;
+
+    const existing = tasks.value.find((t) => t.id === taskId) ?? null;
+    const shouldUseSingleRun = existing?.status === "cancelled";
+    if (!shouldUseSingleRun) {
+      await reorderUpdateQueuedTaskAndRun(taskId, updates);
+      return;
+    }
+
+    await updateQueuedTask(taskId, updates);
+    if (apiError.value) {
+      return;
+    }
+    await runSingleTask(taskId);
+  };
 
   const refreshTaskRow = async (id: string, projectId: string = activeProjectId.value): Promise<void> => {
     const taskId = String(id ?? "").trim();

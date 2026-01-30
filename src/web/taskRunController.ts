@@ -76,7 +76,8 @@ export class TaskRunController {
    * - idempotent while the single-run is in progress (202, no requeue / no extra audit record)
    * - if another task is active, returns 409
    * - if task is not found: 404
-   * - if task is terminal: 409 (use retry endpoint instead)
+   * - if task is completed/failed: 409 (use retry endpoint instead)
+   * - if task is cancelled: resets it to pending and schedules a new single-run
    */
   requestSingleTaskRun(ctx: TaskRunControllerContext, taskId: string, now = Date.now()): SingleTaskRunResult {
     const id = String(taskId ?? "").trim();
@@ -88,6 +89,7 @@ export class TaskRunController {
     if (!task) {
       return { status: 404, body: { error: "Not Found" } };
     }
+    let latest = task;
 
     if (this.mode === "single") {
       if (this.singleTaskId === id) {
@@ -106,16 +108,30 @@ export class TaskRunController {
     const activeTaskId = ctx.taskStore.getActiveTaskId();
     if (activeTaskId) {
       if (activeTaskId === id) {
-        return { status: 202, body: { success: true, mode: this.mode, taskId: id, state: "running" }, task };
+        return { status: 202, body: { success: true, mode: this.mode, taskId: id, state: "running" }, task: latest };
       }
       return { status: 409, body: { error: "Another task is active", taskId: activeTaskId } };
     }
 
-    if (isTerminalStatus(task.status)) {
-      return { status: 409, body: { error: `Task not runnable in status: ${task.status}` } };
+    if (latest.status === "cancelled") {
+      latest = ctx.taskStore.updateTask(
+        id,
+        {
+          status: "pending",
+          retryCount: 0,
+          error: null,
+          result: null,
+          queuedAt: null,
+          startedAt: null,
+          completedAt: null,
+        },
+        now,
+      );
+    } else if (isTerminalStatus(latest.status)) {
+      return { status: 409, body: { error: `Task not runnable in status: ${latest.status}` } };
     }
-    if (isActiveStatus(task.status)) {
-      return { status: 202, body: { success: true, mode: this.mode, taskId: id, state: "running" }, task };
+    if (isActiveStatus(latest.status)) {
+      return { status: 202, body: { success: true, mode: this.mode, taskId: id, state: "running" }, task: latest };
     }
 
     // Switch to single-run mode before resuming to keep idempotency window consistent.
@@ -124,7 +140,7 @@ export class TaskRunController {
 
     const frontOrder = toFrontQueueOrder(ctx.taskStore, now);
     const updates: Partial<Omit<Task, "id">> = { queueOrder: frontOrder };
-    if (shouldNormalizeToPending(task.status)) {
+    if (shouldNormalizeToPending(latest.status)) {
       updates.status = "pending";
     }
     const updated = ctx.taskStore.updateTask(id, updates, now);
@@ -192,4 +208,3 @@ export class TaskRunController {
     return !(this.mode === "single" && this.singleTaskId === id);
   }
 }
-

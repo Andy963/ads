@@ -198,7 +198,7 @@ function isRunBusy(taskId: string): boolean {
 
 function canRunSingleTask(task: Task): boolean {
   const status = task.status;
-  return status === "pending" || status === "queued" || status === "paused";
+  return status === "pending" || status === "queued" || status === "paused" || status === "cancelled";
 }
 
 function toggleQueue(): void {
@@ -346,7 +346,7 @@ watch(
               </svg>
             </button>
             <button
-              v-if="t.status === 'pending' && editingId !== t.id"
+              v-if="(t.status === 'pending' || t.status === 'cancelled') && editingId !== t.id"
               class="iconBtn"
               type="button"
               title="编辑"
@@ -362,7 +362,7 @@ watch(
                 />
               </svg>
             </button>
-            <button v-if="t.status === 'pending' && editingId === t.id" class="iconBtn" type="button" title="取消编辑" @click.stop="stopEdit()">
+            <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑" @click.stop="stopEdit()">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path
                   fill-rule="evenodd"
