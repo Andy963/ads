@@ -4,6 +4,7 @@ import type { VectorQueryHit } from "./types.js";
 import { queryVectorSearchHits } from "./run.js";
 import { resolveWorkspaceStateDbPath } from "./state.js";
 import { sha256Hex } from "./hash.js";
+import { parseBoolean, parseCsv, parseFloatNumber, parsePositiveInt } from "./contextHelpers.js";
 
 const logger = createLogger("VectorSearchContext");
 
@@ -14,36 +15,6 @@ export interface VectorAutoContextConfig {
   minScore: number;
   minIntervalMs: number;
   triggerKeywords: string[];
-}
-
-function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return undefined;
-}
-
-function parsePositiveInt(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return parsed;
-}
-
-function parseCsv(value: string | undefined): string[] {
-  if (!value) return [];
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
-function parseFloatNumber(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return parsed;
 }
 
 const DEFAULT_TRIGGER_KEYWORDS = [
