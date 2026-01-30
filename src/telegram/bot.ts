@@ -21,6 +21,7 @@ import { formatLocalSearchOutput, searchWorkspaceFiles } from '../utils/localSea
 import { runVectorSearch, syncVectorSearch } from '../vectorSearch/run.js';
 import { closeAllStateDatabases } from '../state/database.js';
 import { closeAllWorkspaceDatabases } from '../storage/database.js';
+import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag } from './botSetup.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
@@ -35,20 +36,6 @@ async function requireUserId(ctx: Context, action: string): Promise<number | nul
     await ctx.reply('❌ 无法识别用户信息（可能是匿名/频道消息），请用普通用户身份发送消息后重试。');
   }
   return null;
-}
-
-function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boolean {
-  if (value == null) {
-    return defaultValue;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
-    return true;
-  }
-  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
-    return false;
-  }
-  return defaultValue;
 }
 
 async function main() {
@@ -109,31 +96,8 @@ async function main() {
 
   const bot = new Bot(config.botToken, clientConfig ? { client: clientConfig } : undefined);
 
-  // Debug: Log all API calls to see exactly what's being sent
-  bot.api.config.use(async (prev, method, payload, signal) => {
-    if (method === 'sendMessage' || method === 'sendDocument' || method === 'sendPhoto') {
-      const p = payload as Record<string, unknown>;
-      logger.info(`[API Debug] ${method} disable_notification=${p.disable_notification} (type: ${typeof p.disable_notification})`);
-    }
-    return prev(method, payload, signal);
-  });
-
-  // 根据配置静音：所有 ctx.reply 默认禁用通知，除非调用方显式覆盖
-  bot.use(async (ctx, next) => {
-    const originalReply = ctx.reply.bind(ctx);
-    const wrappedReply = (text: Parameters<Context["reply"]>[0], other?: Parameters<Context["reply"]>[1]) => {
-      if (!silentNotifications) {
-        return originalReply(text as never, other as never);
-      }
-      if (other && Object.prototype.hasOwnProperty.call(other, 'disable_notification')) {
-        return originalReply(text as never, other as never);
-      }
-      const merged = { ...(other ?? {}), disable_notification: true };
-      return originalReply(text as never, merged as never);
-    };
-    ctx.reply = wrappedReply as Context["reply"];
-    await next();
-  });
+  installApiDebugLogging(bot, logger);
+  installSilentReplyMiddleware(bot, silentNotifications);
 
   // 注册中间件
   bot.use(createAuthMiddleware(config.allowedUsers));
