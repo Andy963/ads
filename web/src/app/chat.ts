@@ -1,12 +1,9 @@
 import { finalizeStreamingOnDisconnect, mergeHistoryFromServer } from "../lib/chat_sync";
-import {
-  clearLiveActivityWindow,
-  ingestCommandActivity,
-  ingestExploredActivity,
-  renderLiveActivityMarkdown,
-} from "../lib/live_activity";
+import { ingestCommandActivity, ingestExploredActivity } from "../lib/live_activity";
 
 import type { AppContext, BufferedTaskChatEvent, ChatItem, IncomingImage, ProjectRuntime, QueuedPrompt } from "./controller";
+import { createExecuteActions } from "./chatExecute";
+import { createStreamingActions } from "./chatStreaming";
 
 export const LIVE_STEP_ID = "live-step";
 export const LIVE_ACTIVITY_ID = "live-activity";
@@ -39,10 +36,6 @@ function findLastLiveIndex(items: ChatItem[]): number {
     idx = Math.max(idx, at);
   }
   return idx;
-}
-
-function trimRightLine(line: string): string {
-  return String(line ?? "").replace(/\s+$/, "");
 }
 
 export function createChatActions(ctx: AppContext) {
@@ -284,188 +277,28 @@ export function createChatActions(ctx: AppContext) {
     return false;
   };
 
-  const shouldIgnoreStepDelta = (delta: string): boolean => {
-    const normalized = String(delta ?? "");
-    if (!normalized) return true;
-    if (normalized.length > 2000) return false;
-    const trimmed = normalized.trim();
-    if (!trimmed) return true;
-    const firstLine = trimmed.split("\n")[0]!.trim().toLowerCase();
-    if (firstLine.startsWith("[boot]") || firstLine.startsWith("[analysis]")) {
-      return true;
-    }
-    return firstLine === "active" || firstLine === "thinking…" || firstLine === "thinking..." || firstLine === "working…";
-  };
+  const { ingestCommand, commandKeyForWsEvent, upsertExecuteBlock, finalizeCommandBlock } = createExecuteActions({
+    runtimeOrActive,
+    setMessages,
+    pushRecentCommand,
+    randomId,
+    maxExecutePreviewLines,
+    maxTurnCommands,
+    isLiveMessageId,
+    findFirstLiveIndex,
+    findLastLiveIndex,
+  });
 
-  const ingestCommand = (rawCmd: string, rt?: ProjectRuntime, id?: string | null): void => {
-    const state = runtimeOrActive(rt);
-    const cmd = String(rawCmd ?? "").trim();
-    if (!cmd) return;
-
-    if (id) {
-      if (state.seenCommandIds.has(id)) return;
-      state.seenCommandIds.add(id);
-    }
-    pushRecentCommand(cmd, state);
-  };
-
-  const commandKeyForWsEvent = (command: string, id: string | null): string | null => {
-    const normalizedCmd = String(command ?? "").trim();
-    if (!normalizedCmd) return null;
-    const normalizedId = String(id ?? "").trim();
-    if (!normalizedId) return normalizedCmd;
-    return `${normalizedId}:${normalizedCmd}`;
-  };
-
-  const stripCommandHeader = (outputDelta: string, command: string): string => {
-    const normalizedDelta = String(outputDelta ?? "");
-    const normalizedCommand = String(command ?? "").trim();
-    if (!normalizedCommand) return normalizedDelta;
-    const header = `$ ${normalizedCommand}\n`;
-    if (normalizedDelta.startsWith(header)) {
-      return normalizedDelta.slice(header.length);
-    }
-    return normalizedDelta;
-  };
-
-  const upsertExecuteBlock = (key: string, command: string, outputDelta: string, rt?: ProjectRuntime): void => {
-    const state = runtimeOrActive(rt);
-    const normalizedKey = String(key ?? "").trim();
-    if (!normalizedKey) return;
-    const normalizedCommand = String(command ?? "").trim();
-    if (!normalizedCommand) return;
-
-    const existing = state.messages.value.slice();
-    const current = state.executePreviewByKey.get(normalizedKey) ??
-      (() => {
-        const created = { key: normalizedKey, command: normalizedCommand, previewLines: [] as string[], totalLines: 0, remainder: "" };
-        state.executePreviewByKey.set(normalizedKey, created);
-        state.executeOrder = [...state.executeOrder, normalizedKey];
-        return created;
-      })();
-
-    const cleanedDelta = stripCommandHeader(outputDelta, normalizedCommand).replace(/^\n+/, "");
-    if (cleanedDelta) {
-      const combined = (current.remainder + cleanedDelta).replace(/\r\n/g, "\n");
-      const parts = combined.split("\n");
-      current.remainder = parts.pop() ?? "";
-      for (const rawLine of parts) {
-        const line = trimRightLine(rawLine);
-        if (!line) continue;
-        current.totalLines += 1;
-        if (current.previewLines.length < maxExecutePreviewLines) {
-          current.previewLines.push(line);
-        }
-      }
-    }
-
-    const preview = current.previewLines.slice();
-    if (preview.length < maxExecutePreviewLines) {
-      const partial = trimRightLine(current.remainder);
-      if (partial) preview.push(partial);
-    }
-
-    const hiddenLineCount = Math.max(0, current.totalLines - current.previewLines.length);
-    const itemId = `exec:${normalizedKey}`;
-    const nextItem: ChatItem = {
-      id: itemId,
-      role: "system",
-      kind: "execute",
-      content: preview.join("\n"),
-      command: normalizedCommand,
-      hiddenLineCount,
-      streaming: true,
-    };
-
-    const existingIdx = existing.findIndex((m) => m.id === itemId);
-    if (existingIdx >= 0) {
-      existing[existingIdx] = nextItem;
-      setMessages(existing.slice(), state);
-      return;
-    }
-
-    const lastLiveIndex = findLastLiveIndex(existing);
-    let insertAt = lastLiveIndex < 0 ? existing.length : lastLiveIndex + 1;
-    for (let i = existing.length - 1; i >= 0; i--) {
-      const m = existing[i]!;
-      if (isLiveMessageId(m.id)) continue;
-      if (m.role === "assistant" && m.streaming) {
-        insertAt = Math.min(insertAt, i);
-        break;
-      }
-    }
-    if (lastLiveIndex >= 0) {
-      insertAt = Math.max(insertAt, lastLiveIndex + 1);
-    }
-
-    let lastExecuteIdx = -1;
-    for (let i = 0; i < insertAt; i++) {
-      if (existing[i]!.kind === "execute") {
-        lastExecuteIdx = i;
-      }
-    }
-    if (lastExecuteIdx >= 0) insertAt = lastExecuteIdx + 1;
-
-    setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
-
-    if (state.executeOrder.length > maxTurnCommands) {
-      const overflow = state.executeOrder.length - maxTurnCommands;
-      const toDrop = state.executeOrder.slice(0, overflow);
-      state.executeOrder = state.executeOrder.slice(overflow);
-      for (const k of toDrop) {
-        state.executePreviewByKey.delete(k);
-      }
-      const pruned = state.messages.value.filter(
-        (m) => !(m.kind === "execute" && toDrop.includes(String(m.id).slice("exec:".length))),
-      );
-      setMessages(pruned, state);
-    }
-  };
-
-  const finalizeCommandBlock = (rt?: ProjectRuntime): void => {
-    const state = runtimeOrActive(rt);
-    const existing = state.messages.value.slice();
-    let insertAt = -1;
-    const withoutExecute: ChatItem[] = [];
-    for (let i = 0; i < existing.length; i++) {
-      const m = existing[i]!;
-      if (m.kind === "execute") {
-        if (insertAt < 0) insertAt = withoutExecute.length;
-        continue;
-      }
-      withoutExecute.push(m);
-    }
-
-    const commands = state.turnCommands.slice();
-    const content = commands.map((c) => `$ ${c}`).join("\n").trim();
-
-    state.recentCommands.value = [];
-    state.turnCommands = [];
-    state.executePreviewByKey.clear();
-    state.executeOrder = [];
-    state.seenCommandIds.clear();
-
-    if (!content) {
-      if (withoutExecute.length !== existing.length) setMessages(withoutExecute, state);
-      return;
-    }
-
-    if (insertAt < 0) {
-      const liveIndex = findFirstLiveIndex(withoutExecute);
-      insertAt = liveIndex < 0 ? withoutExecute.length : liveIndex;
-      for (let i = withoutExecute.length - 1; i >= 0; i--) {
-        const m = withoutExecute[i]!;
-        if (isLiveMessageId(m.id)) continue;
-        if (m.role === "assistant" && m.streaming) {
-          insertAt = Math.min(insertAt, i);
-          break;
-        }
-      }
-    }
-
-    const item: ChatItem = { id: randomId("cmd"), role: "system", kind: "command", content, streaming: false };
-    setMessages([...withoutExecute.slice(0, insertAt), item, ...withoutExecute.slice(insertAt)], state);
-  };
+  const { shouldIgnoreStepDelta, upsertStreamingDelta, upsertStepLiveDelta, upsertLiveActivity, clearStepLive } = createStreamingActions({
+    liveStepId: LIVE_STEP_ID,
+    liveActivityId: LIVE_ACTIVITY_ID,
+    runtimeOrActive,
+    setMessages,
+    dropEmptyAssistantPlaceholder,
+    findLastLiveIndex,
+    isLiveMessageId,
+    randomId,
+  });
 
   const removeQueuedPrompt = (id: string): void => {
     const target = String(id ?? "").trim();
@@ -515,134 +348,6 @@ export function createChatActions(ctx: AppContext) {
     } catch {
       state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
     }
-  };
-
-  const upsertStreamingDelta = (delta: string, rt?: ProjectRuntime): void => {
-    const state = runtimeOrActive(rt);
-    const chunk = String(delta ?? "");
-    if (!chunk) return;
-    dropEmptyAssistantPlaceholder(state);
-    const existing = state.messages.value.slice();
-    let streamIndex = -1;
-    for (let i = existing.length - 1; i >= 0; i--) {
-      const m = existing[i]!;
-      if (isLiveMessageId(m.id)) continue;
-      if (m.role === "assistant" && m.streaming) {
-        streamIndex = i;
-        break;
-      }
-    }
-    if (streamIndex >= 0) {
-      existing[streamIndex]!.content += chunk;
-      setMessages(existing.slice(), state);
-      return;
-    }
-
-    const nextItem: ChatItem = {
-      id: randomId("stream"),
-      role: "assistant",
-      kind: "text",
-      content: chunk,
-      streaming: true,
-      ts: Date.now(),
-    };
-    const lastLiveIndex = findLastLiveIndex(existing);
-    if (lastLiveIndex < 0) {
-      setMessages([...existing, nextItem], state);
-      return;
-    }
-    const insertAt = Math.min(existing.length, lastLiveIndex + 1);
-    setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
-  };
-
-  const trimToLastLines = (text: string, maxLines: number, maxChars = 2500): string => {
-    const normalized = String(text ?? "");
-    const recent = normalized.length > maxChars ? normalized.slice(normalized.length - maxChars) : normalized;
-    const lines = recent.split("\n");
-    if (lines.length <= maxLines) return recent;
-    return lines.slice(lines.length - maxLines).join("\n");
-  };
-
-  const upsertStepLiveDelta = (delta: string, rt?: ProjectRuntime): void => {
-    const state = runtimeOrActive(rt);
-    dropEmptyAssistantPlaceholder(state);
-    const chunk = String(delta ?? "");
-    if (!chunk) return;
-    const existing = state.messages.value.slice();
-    const idx = existing.findIndex((m) => m.id === LIVE_STEP_ID);
-    const current = idx >= 0 ? existing[idx]!.content : "";
-    const nextText = trimToLastLines(current + chunk, 14);
-    const nextItem: ChatItem = {
-      id: LIVE_STEP_ID,
-      role: "assistant",
-      kind: "text",
-      content: nextText,
-      streaming: true,
-      ts: (idx >= 0 ? existing[idx]!.ts : null) ?? Date.now(),
-    };
-    const withoutStep = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
-
-    let insertAt = withoutStep.length;
-    for (let i = withoutStep.length - 1; i >= 0; i--) {
-      const m = withoutStep[i]!;
-      if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
-        insertAt = i;
-        break;
-      }
-    }
-
-    const next = [...withoutStep.slice(0, insertAt), nextItem, ...withoutStep.slice(insertAt)];
-    setMessages(next, state);
-  };
-
-  const upsertLiveActivity = (rt?: ProjectRuntime): void => {
-    const state = runtimeOrActive(rt);
-    dropEmptyAssistantPlaceholder(state);
-    const markdown = renderLiveActivityMarkdown(state.liveActivity);
-
-    const existing = state.messages.value.slice();
-
-    if (!markdown) {
-      const next = existing.filter((m) => m.id !== LIVE_ACTIVITY_ID);
-      if (next.length === existing.length) return;
-      setMessages(next, state);
-      return;
-    }
-
-    const idx = existing.findIndex((m) => m.id === LIVE_ACTIVITY_ID);
-    const nextItem: ChatItem = {
-      id: LIVE_ACTIVITY_ID,
-      role: "assistant",
-      kind: "text",
-      content: markdown,
-      streaming: true,
-      ts: (idx >= 0 ? existing[idx]!.ts : null) ?? Date.now(),
-    };
-    const withoutActivity = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
-
-    const stepIdx = withoutActivity.findIndex((m) => m.id === LIVE_STEP_ID);
-    let insertAt = stepIdx >= 0 ? stepIdx : withoutActivity.length;
-    if (stepIdx < 0) {
-      for (let i = withoutActivity.length - 1; i >= 0; i--) {
-        const m = withoutActivity[i]!;
-        if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
-          insertAt = i;
-          break;
-        }
-      }
-    }
-
-    const next = [...withoutActivity.slice(0, insertAt), nextItem, ...withoutActivity.slice(insertAt)];
-    setMessages(next, state);
-  };
-
-  const clearStepLive = (rt?: ProjectRuntime): void => {
-    const state = runtimeOrActive(rt);
-    clearLiveActivityWindow(state.liveActivity);
-    const existing = state.messages.value.slice();
-    const next = existing.filter((m) => !isLiveMessageId(m.id));
-    if (next.length === existing.length) return;
-    setMessages(next, state);
   };
 
   const finalizeAssistant = (content: string, rt?: ProjectRuntime): void => {
