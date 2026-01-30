@@ -7,104 +7,32 @@ import { createLiveActivityWindow } from "../lib/live_activity";
 
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
+import type {
+  ChatItem,
+  IncomingImage,
+  PathValidateResponse,
+  ProjectRuntime,
+  ProjectTab,
+  QueuedPrompt,
+  WorkspaceState,
+} from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
 import type { ProjectDeps } from "./projectsWs";
 import { createTaskActions } from "./tasks";
 import type { TaskDeps } from "./tasks";
 import { createWebSocketActions } from "./projectsWs";
 
-export type WorkspaceState = { path?: string; rules?: string; modified?: string[]; branch?: string };
-
-export type ProjectTab = {
-  id: string;
-  name: string;
-  path: string;
-  sessionId: string;
-  initialized: boolean;
-  createdAt: number;
-  updatedAt: number;
-  branch?: string;
-  expanded?: boolean;
-};
-
-export type IncomingImage = { name?: string; mime?: string; data: string };
-
-export type QueuedPrompt = {
-  id: string;
-  clientMessageId: string;
-  text: string;
-  images: IncomingImage[];
-  createdAt: number;
-};
-
-export type ChatItem = {
-  id: string;
-  role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute";
-  content: string;
-  command?: string;
-  hiddenLineCount?: number;
-  ts?: number;
-  streaming?: boolean;
-};
-
-export type BufferedTaskChatEvent =
-  | { kind: "message"; role: "user" | "assistant" | "system"; content: string }
-  | { kind: "delta"; role: "assistant"; delta: string; source?: "chat" | "step"; modelUsed?: string | null }
-  | { kind: "command"; command: string };
-
-export type TaskChatBuffer = { firstTs: number; events: BufferedTaskChatEvent[] };
-
-export type ProjectRuntime = {
-  projectSessionId: string;
-  connected: ReturnType<typeof ref<boolean>>;
-  apiError: ReturnType<typeof ref<string | null>>;
-  apiNotice: ReturnType<typeof ref<string | null>>;
-  wsError: ReturnType<typeof ref<string | null>>;
-  threadWarning: ReturnType<typeof ref<string | null>>;
-  activeThreadId: ReturnType<typeof ref<string | null>>;
-  queueStatus: ReturnType<typeof ref<TaskQueueStatus | null>>;
-  workspacePath: ReturnType<typeof ref<string>>;
-  tasks: ReturnType<typeof ref<Task[]>>;
-  selectedId: ReturnType<typeof ref<string | null>>;
-  expanded: ReturnType<typeof ref<Set<string>>>;
-  plansByTaskId: ReturnType<typeof ref<Map<string, PlanStep[]>>>;
-  planFetchInFlightByTaskId: Map<string, Promise<void>>;
-  runBusyIds: ReturnType<typeof ref<Set<string>>>;
-  busy: ReturnType<typeof ref<boolean>>;
-  turnInFlight: boolean;
-  pendingAckClientMessageId: string | null;
-  messages: ReturnType<typeof ref<ChatItem[]>>;
-  recentCommands: ReturnType<typeof ref<string[]>>;
-  turnCommands: string[];
-  executePreviewByKey: Map<string, { key: string; command: string; previewLines: string[]; totalLines: number; remainder: string }>;
-  executeOrder: string[];
-  seenCommandIds: Set<string>;
-  pendingImages: ReturnType<typeof ref<IncomingImage[]>>;
-  queuedPrompts: ReturnType<typeof ref<QueuedPrompt[]>>;
-  ignoreNextHistory: boolean;
-  ws: unknown;
-  reconnectTimer: number | null;
-  reconnectAttempts: number;
-  pendingCdRequestedPath: string | null;
-  suppressNextClearHistoryResult: boolean;
-  noticeTimer: number | null;
-  liveActivity: ReturnType<typeof createLiveActivityWindow>;
-  startedTaskIds: Set<string>;
-  taskChatBufferByTaskId: Map<string, TaskChatBuffer>;
-};
-
-export type PathValidateResponse = {
-  ok: boolean;
-  allowed: boolean;
-  exists: boolean;
-  isDirectory: boolean;
-  resolvedPath?: string;
-  workspaceRoot?: string;
-  projectSessionId?: string;
-  error?: string;
-  allowedDirs?: string[];
-};
+export type {
+  BufferedTaskChatEvent,
+  ChatItem,
+  IncomingImage,
+  PathValidateResponse,
+  ProjectRuntime,
+  ProjectTab,
+  QueuedPrompt,
+  TaskChatBuffer,
+  WorkspaceState,
+} from "./controllerTypes";
 
 function createProjectRuntime(options: { maxLiveActivitySteps: number }): ProjectRuntime {
   return {
