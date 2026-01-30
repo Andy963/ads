@@ -118,6 +118,7 @@ export class TaskStore {
   private readonly updateQueueOrderStmt: SqliteStatement;
 
   private readonly deletePlanStmt: SqliteStatement;
+  private readonly clearPlanStepRefsStmt: SqliteStatement;
   private readonly insertPlanStepStmt: SqliteStatement;
   private readonly getPlanStmt: SqliteStatement;
   private readonly updatePlanStepStatusStmt: SqliteStatement;
@@ -259,6 +260,11 @@ export class TaskStore {
     );
 
     this.deletePlanStmt = this.db.prepare(`DELETE FROM task_plans WHERE task_id = ?`);
+    this.clearPlanStepRefsStmt = this.db.prepare(
+      `UPDATE task_messages
+       SET plan_step_id = NULL
+       WHERE task_id = ? AND plan_step_id IS NOT NULL`,
+    );
     this.insertPlanStepStmt = this.db.prepare(
       `INSERT INTO task_plans (task_id, step_number, title, description, status, started_at, completed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -776,6 +782,8 @@ export class TaskStore {
       .filter((step) => step.title);
 
     const tx = this.db.transaction(() => {
+      // Replanning deletes task_plans rows. Null out references first so old messages remain valid.
+      this.clearPlanStepRefsStmt.run(id);
       this.deletePlanStmt.run(id);
       for (const step of normalizedSteps) {
         this.insertPlanStepStmt.run(
