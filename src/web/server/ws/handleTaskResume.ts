@@ -8,6 +8,7 @@ import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import { truncateForLog } from "../../utils.js";
 import type { WsMessage } from "./schema.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
+import { parseTaskResumeRequest, selectTaskResumeThread } from "./taskResume.js";
 
 export async function handleTaskResumeMessage(deps: {
   parsed: WsMessage;
@@ -71,10 +72,14 @@ export async function handleTaskResumeMessage(deps: {
     };
 
     const activeAgentId = orchestrator.getActiveAgentId();
-    const candidateThreadId =
-      deps.sessionManager.getSavedResumeThreadId(deps.userId) ??
-      deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId);
-    const threadIdToResume = String(candidateThreadId ?? "").trim();
+    const request = parseTaskResumeRequest(deps.parsed.payload);
+    const selection = selectTaskResumeThread({
+      request,
+      currentThreadId: orchestrator.getThreadId(),
+      savedThreadId: deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId),
+      savedResumeThreadId: deps.sessionManager.getSavedResumeThreadId(deps.userId),
+    });
+    const threadIdToResume = selection.threadId;
 
     if (threadIdToResume) {
       try {
@@ -95,7 +100,9 @@ export async function handleTaskResumeMessage(deps: {
         });
 
         deps.sessionManager.saveThreadId(deps.userId, threadIdToResume, activeAgentId);
-        deps.sessionManager.clearSavedResumeThreadId(deps.userId);
+        if (selection.source === "saved") {
+          deps.sessionManager.clearSavedResumeThreadId(deps.userId);
+        }
         deps.sessionManager.dropSession(deps.userId);
 
         orchestrator = deps.sessionManager.getOrCreate(deps.userId, deps.currentCwd, true);
@@ -190,4 +197,3 @@ export async function handleTaskResumeMessage(deps: {
 
   return { handled: true, orchestrator };
 }
-

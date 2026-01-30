@@ -251,8 +251,8 @@ export function attachWebSocketServer(deps: {
 
       if (parsed.type === "clear_history") {
         deps.historyStore.clear(historyKey);
-        deps.sessionManager.reset(userId, { preserveThreadForResume: true });
-        safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话（可使用“恢复上下文”找回）", kind: "clear_history" });
+        deps.sessionManager.reset(userId);
+        safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
         return;
       }
 
