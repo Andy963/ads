@@ -3,40 +3,14 @@ import { ingestCommandActivity, ingestExploredActivity } from "../lib/live_activ
 
 import type { AppContext, BufferedTaskChatEvent, ChatItem, IncomingImage, ProjectRuntime, QueuedPrompt } from "./controller";
 import { createExecuteActions } from "./chatExecute";
+import { findFirstLiveIndex, findLastLiveIndex, isLiveMessageId, LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
+export { LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
 import { createStreamingActions } from "./chatStreaming";
-
-export const LIVE_STEP_ID = "live-step";
-export const LIVE_ACTIVITY_ID = "live-activity";
-export const LIVE_MESSAGE_IDS = [LIVE_STEP_ID, LIVE_ACTIVITY_ID] as const;
 
 export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
 
 type PersistedPrompt = { clientMessageId: string; text: string; createdAt: number };
-
-function isLiveMessageId(id: string): boolean {
-  return (LIVE_MESSAGE_IDS as readonly string[]).includes(id);
-}
-
-function findFirstLiveIndex(items: ChatItem[]): number {
-  let idx = -1;
-  for (const liveId of LIVE_MESSAGE_IDS) {
-    const at = items.findIndex((m) => m.id === liveId);
-    if (at < 0) continue;
-    idx = idx < 0 ? at : Math.min(idx, at);
-  }
-  return idx;
-}
-
-function findLastLiveIndex(items: ChatItem[]): number {
-  let idx = -1;
-  for (const liveId of LIVE_MESSAGE_IDS) {
-    const at = items.findIndex((m) => m.id === liveId);
-    if (at < 0) continue;
-    idx = Math.max(idx, at);
-  }
-  return idx;
-}
 
 export function createChatActions(ctx: AppContext) {
   const {
