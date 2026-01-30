@@ -99,6 +99,12 @@ export interface VectorAutoContextReport {
   attempted: boolean;
   ok: boolean;
   code?: string;
+  message?: string;
+  httpStatus?: number;
+  providerCode?: string;
+  retryCount?: number;
+  timeoutMs?: number;
+  indexName?: string;
   hits: number;
   filtered: number;
   injected: boolean;
@@ -390,6 +396,7 @@ export async function maybeBuildVectorAutoContext(params: {
       cacheHit: true,
       attempted: false,
       ok: true,
+      retryCount: 0,
       hits: 0,
       filtered: 0,
       injected,
@@ -423,6 +430,12 @@ export async function maybeBuildVectorAutoContext(params: {
       attempted: true,
       ok: Boolean(result.ok),
       code: result.ok ? undefined : result.code,
+      message: result.message,
+      httpStatus: result.httpStatus,
+      providerCode: result.providerCode,
+      retryCount: result.retryCount,
+      timeoutMs: result.timeoutMs,
+      indexName: result.indexName,
       hits: result.hits.length,
       filtered: 0,
       injected: false,
@@ -458,6 +471,9 @@ export async function maybeBuildVectorAutoContext(params: {
       cacheHit: false,
       attempted: true,
       ok: true,
+      retryCount: result.retryCount,
+      timeoutMs: result.timeoutMs,
+      indexName: result.indexName,
       hits: result.hits.length,
       filtered: 0,
       injected: false,
@@ -485,6 +501,9 @@ export async function maybeBuildVectorAutoContext(params: {
       cacheHit: false,
       attempted: true,
       ok: true,
+      retryCount: result.retryCount,
+      timeoutMs: result.timeoutMs,
+      indexName: result.indexName,
       hits: result.hits.length,
       filtered: filtered.length,
       injected,

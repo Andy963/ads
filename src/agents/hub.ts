@@ -63,13 +63,18 @@ const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
 function formatVectorAutoContextSummary(report: VectorAutoContextReport): string {
   const injected = report.injected ? 1 : 0;
   const cache = report.cacheHit ? "cache" : "fresh";
-  const ok = report.ok ? 1 : 0;
+  const status = report.ok ? "ok" : report.code === "disabled" ? "skipped" : "failed";
   const ms = Math.max(0, Math.floor(report.elapsedMs));
   const injectedChars = Math.max(0, Math.floor(report.injectedChars));
   const hits = Math.max(0, Math.floor(report.hits));
   const filtered = Math.max(0, Math.floor(report.filtered));
+  const retryCount = Math.max(0, Math.floor(report.retryCount ?? 0));
+  const http = report.httpStatus ? ` http=${report.httpStatus}` : "";
   const code = report.code ? ` code=${report.code}` : "";
-  return `VectorSearch(auto) ${cache} ok=${ok}${code} injected=${injected} hits=${hits} filtered=${filtered} chars=${injectedChars} ms=${ms} qhash=${report.queryHash}`;
+  const provider = report.providerCode ? ` provider=${report.providerCode}` : "";
+  const reasonRaw = String(report.message ?? "").trim();
+  const reason = reasonRaw ? ` reason=${reasonRaw.length > 160 ? reasonRaw.slice(0, 159) + "…" : reasonRaw}` : "";
+  return `VectorSearch(auto) ${cache} status=${status}${code}${http}${provider}${reason} injected=${injected} hits=${hits} filtered=${filtered} chars=${injectedChars} retry=${retryCount} ms=${ms} qhash=${report.queryHash}`;
 }
 
 function createAbortError(message = "用户中断了请求"): Error {

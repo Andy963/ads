@@ -104,9 +104,53 @@ export interface VectorSearchHitsResult {
   ok: boolean;
   code?: VectorSearchFailureCode;
   message?: string;
+  httpStatus?: number;
+  providerCode?: string;
+  retryCount?: number;
+  timeoutMs?: number;
+  indexName?: string;
   hits: VectorQueryHit[];
   warnings: string[];
   topK: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  const delay = Math.max(0, Math.floor(ms));
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+function isRetryableHttpStatus(status: number | undefined): boolean {
+  if (!status) return false;
+  return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function shouldRetryVectorRequest(params: {
+  httpStatus?: number;
+  errorKind?: string;
+  providerCode?: string;
+}): boolean {
+  const kind = String(params.errorKind ?? "").trim();
+  if (kind === "timeout" || kind === "network") return true;
+  if (isRetryableHttpStatus(params.httpStatus)) return true;
+  // Some providers encode transient errors in a code field even when status is 200.
+  const provider = String(params.providerCode ?? "").trim().toLowerCase();
+  if (provider.includes("rate") || provider.includes("overload") || provider.includes("timeout")) return true;
+  return false;
+}
+
+function formatVectorFailureSummary(params: {
+  code: VectorSearchFailureCode;
+  message?: string;
+  httpStatus?: number;
+  providerCode?: string;
+}): string {
+  const parts: string[] = [];
+  parts.push(String(params.code));
+  if (params.httpStatus) parts.push(`http=${params.httpStatus}`);
+  if (params.providerCode) parts.push(`provider=${params.providerCode}`);
+  const msg = String(params.message ?? "").trim();
+  if (msg) parts.push(`reason=${msg.length > 160 ? msg.slice(0, 159) + "…" : msg}`);
+  return parts.join(" ");
 }
 
 export async function queryVectorSearchHits(params: {
@@ -134,6 +178,7 @@ export async function queryVectorSearchHits(params: {
       ok: false,
       code: "disabled",
       message: error ?? "vector search disabled",
+      retryCount: 0,
       hits: [],
       warnings,
       topK: desiredTopK,
@@ -142,24 +187,53 @@ export async function queryVectorSearchHits(params: {
 
   const topK = Math.max(1, Number.isFinite(params.topK) ? Math.floor(params.topK!) : config.topK);
   const queryHash = sha256Hex(query).slice(0, 12);
+  const timeoutMs = config.timeoutMs;
 
   try {
     logger.info(`[VectorSearch] query_start topK=${topK} qhash=${queryHash} qlen=${query.length}`);
-    const health = await checkVectorServiceHealth({
+    let retryCount = 0;
+    let health = await checkVectorServiceHealth({
       baseUrl: config.baseUrl,
       token: config.token,
-      timeoutMs: config.timeoutMs,
+      timeoutMs,
     });
+    if (!health.ok && shouldRetryVectorRequest(health) && retryCount < 1) {
+      retryCount += 1;
+      await sleep(250);
+      health = await checkVectorServiceHealth({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs,
+      });
+    }
     if (!health.ok) {
       const now = Date.now();
       if (now - lastUnavailableLogAt > 60_000) {
         lastUnavailableLogAt = now;
         logger.info(`[VectorSearch] service_unavailable: ${health.message ?? "health check failed"}`);
       }
+      logger.info(
+        `[VectorSearch] query_end ${JSON.stringify({
+          ok: 0,
+          error_kind: "service_unavailable",
+          http_status: health.httpStatus ?? null,
+          provider_code: health.providerCode ?? null,
+          timeout_ms: timeoutMs,
+          retry_count: retryCount,
+          ms: Date.now() - startedAt,
+          qhash: queryHash,
+        })}`,
+      );
       return {
         ok: false,
         code: "service_unavailable",
+        // Keep message as the raw provider/user-facing message. Structured fields carry
+        // code/http/provider and the UI summary layer is responsible for formatting.
         message: health.message ?? "health check failed",
+        httpStatus: health.httpStatus,
+        providerCode: health.providerCode,
+        retryCount,
+        timeoutMs,
         hits: [],
         warnings,
         topK,
@@ -177,6 +251,7 @@ export async function queryVectorSearchHits(params: {
 
     const itemsToUpsert = prepared.items;
     const stateUpdates = takeLastWins(prepared.stateUpdates);
+    const indexName = prepared.workspaceNamespace;
 
     let upsertOk = true;
     if (itemsToUpsert.length > 0) {
@@ -190,13 +265,20 @@ export async function queryVectorSearchHits(params: {
         const result = await upsertVectors({
           baseUrl: config.baseUrl,
           token: config.token,
-          timeoutMs: config.timeoutMs,
+          timeoutMs,
           workspaceNamespace: prepared.workspaceNamespace,
           items: batch,
         });
         if (!result.ok) {
           upsertOk = false;
-          warnings.push(result.message ?? "index update failed");
+          warnings.push(
+            formatVectorFailureSummary({
+              code: "query_failed",
+              message: result.message ?? "index update failed",
+              httpStatus: result.httpStatus,
+              providerCode: result.providerCode,
+            }),
+          );
           break;
         }
       }
@@ -210,21 +292,52 @@ export async function queryVectorSearchHits(params: {
     }
 
     const queryTopK = Math.min(60, Math.max(topK * 3, topK));
-    const queryResult = await queryVectors({
+    let queryResult = await queryVectors({
       baseUrl: config.baseUrl,
       token: config.token,
-      timeoutMs: config.timeoutMs,
+      timeoutMs,
       workspaceNamespace: prepared.workspaceNamespace,
       query,
       topK: queryTopK,
     });
+    if (!queryResult.ok && shouldRetryVectorRequest(queryResult) && retryCount < 2) {
+      retryCount += 1;
+      await sleep(250);
+      queryResult = await queryVectors({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs,
+        workspaceNamespace: prepared.workspaceNamespace,
+        query,
+        topK: queryTopK,
+      });
+    }
     if (!queryResult.ok || !queryResult.hits) {
       logger.warn(`[VectorSearch] query failed: ${queryResult.message ?? "unknown"}`);
-      logger.info(`[VectorSearch] query_end ok=0 ms=${Date.now() - startedAt} qhash=${queryHash}`);
+      logger.info(
+        `[VectorSearch] query_end ${JSON.stringify({
+          ok: 0,
+          error_kind: "query_failed",
+          http_status: queryResult.httpStatus ?? null,
+          provider_code: queryResult.providerCode ?? null,
+          timeout_ms: timeoutMs,
+          retry_count: retryCount,
+          index_name: indexName,
+          ms: Date.now() - startedAt,
+          qhash: queryHash,
+        })}`,
+      );
       return {
         ok: false,
         code: "query_failed",
+        // Keep message as the raw provider/user-facing message. Structured fields carry
+        // code/http/provider and the UI summary layer is responsible for formatting.
         message: queryResult.message ?? "unknown",
+        httpStatus: queryResult.httpStatus,
+        providerCode: queryResult.providerCode,
+        retryCount,
+        timeoutMs,
+        indexName,
         hits: [],
         warnings,
         topK,
@@ -251,7 +364,7 @@ export async function queryVectorSearchHits(params: {
       const rerank = await rerankVectors({
         baseUrl: config.baseUrl,
         token: config.token,
-        timeoutMs: config.timeoutMs,
+        timeoutMs,
         workspaceNamespace: prepared.workspaceNamespace,
         query,
         hits,
@@ -267,14 +380,40 @@ export async function queryVectorSearchHits(params: {
     }
 
     logger.info(
-      `[VectorSearch] query_end ok=1 hits=${finalHits.length} topK=${topK} ms=${Date.now() - startedAt} qhash=${queryHash}`,
+      `[VectorSearch] query_end ${JSON.stringify({
+        ok: 1,
+        hits: finalHits.length,
+        topK,
+        timeout_ms: timeoutMs,
+        retry_count: retryCount,
+        index_name: indexName,
+        ms: Date.now() - startedAt,
+        qhash: queryHash,
+      })}`,
     );
-    return { ok: true, hits: finalHits.slice(0, topK), warnings, topK };
+    return {
+      ok: true,
+      hits: finalHits.slice(0, topK),
+      warnings,
+      topK,
+      retryCount,
+      timeoutMs,
+      indexName,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`[VectorSearch] Failed to query vectors: ${message}`, error);
-    logger.info(`[VectorSearch] query_end ok=0 ms=${Date.now() - startedAt} qhash=${sha256Hex(query).slice(0, 12)}`);
-    return { ok: false, code: "query_failed", message, hits: [], warnings, topK };
+    logger.info(
+      `[VectorSearch] query_end ${JSON.stringify({
+        ok: 0,
+        error_kind: "query_failed",
+        timeout_ms: timeoutMs,
+        retry_count: 0,
+        ms: Date.now() - startedAt,
+        qhash: sha256Hex(query).slice(0, 12),
+      })}`,
+    );
+    return { ok: false, code: "query_failed", message, hits: [], warnings, topK, retryCount: 0, timeoutMs };
   }
 }
 

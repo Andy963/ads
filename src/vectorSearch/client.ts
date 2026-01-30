@@ -3,6 +3,14 @@ import type { VectorQueryHit, VectorQueryResponse, VectorUpsertItem } from "./ty
 
 const logger = createLogger("VectorSearchClient");
 
+type FetchErrorKind = "timeout" | "network";
+
+type FetchError = {
+  kind: FetchErrorKind;
+  name?: string;
+  message: string;
+};
+
 function normalizeBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/g, "");
 }
@@ -36,7 +44,7 @@ function pickRerankText(hit: VectorQueryHit): string {
 async function fetchJson(
   url: string,
   options: RequestInit & { timeoutMs: number },
-): Promise<{ ok: boolean; status: number; json?: unknown; text?: string }> {
+): Promise<{ ok: boolean; status: number; json?: unknown; text?: string; error?: FetchError }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
   try {
@@ -49,16 +57,54 @@ async function fetchJson(
     }
     const text = await res.text().catch(() => "");
     return { ok: res.ok, status, text };
+  } catch (error) {
+    const anyErr = error as { name?: unknown; message?: unknown };
+    const name = typeof anyErr?.name === "string" ? anyErr.name : undefined;
+    const message = typeof anyErr?.message === "string" ? anyErr.message : String(error);
+    const kind: FetchErrorKind = name === "AbortError" ? "timeout" : "network";
+    return { ok: false, status: 0, error: { kind, name, message } };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function extractErrorInfo(payload: { json?: unknown; text?: string; status: number; error?: FetchError }): {
+  providerCode?: string;
+  message?: string;
+} {
+  if (payload.error) {
+    const label = payload.error.kind === "timeout" ? "timeout" : "network";
+    return { providerCode: label, message: payload.error.message };
+  }
+
+  const json = payload.json;
+  if (json && typeof json === "object" && !Array.isArray(json)) {
+    const record = json as Record<string, unknown>;
+    const codeRaw = record.code ?? record.error_code ?? record.errorCode ?? record.type ?? record.status;
+    const providerCode =
+      typeof codeRaw === "string"
+        ? codeRaw.trim()
+        : typeof codeRaw === "number" && Number.isFinite(codeRaw)
+          ? String(codeRaw)
+          : undefined;
+
+    const msgRaw = record.message ?? record.error ?? record.detail ?? record.reason;
+    const message = typeof msgRaw === "string" ? msgRaw.trim() : undefined;
+    return { providerCode: providerCode || undefined, message: message || undefined };
+  }
+
+  const text = String(payload.text ?? "").trim();
+  if (text) {
+    return { message: text.slice(0, 280) };
+  }
+  return { message: payload.status ? `http ${payload.status}` : "request failed" };
 }
 
 export async function checkVectorServiceHealth(params: {
   baseUrl: string;
   token: string;
   timeoutMs: number;
-}): Promise<{ ok: boolean; message?: string }> {
+}): Promise<{ ok: boolean; httpStatus?: number; providerCode?: string; message?: string; errorKind?: FetchErrorKind | "http" }> {
   const url = `${normalizeBaseUrl(params.baseUrl)}/health`;
   const res = await fetchJson(url, {
     method: "GET",
@@ -68,7 +114,15 @@ export async function checkVectorServiceHealth(params: {
     timeoutMs: params.timeoutMs,
   });
   if (!res.ok) {
-    return { ok: false, message: `health check failed (${res.status})` };
+    const info = extractErrorInfo(res);
+    const errorKind: FetchErrorKind | "http" = res.error ? res.error.kind : "http";
+    return {
+      ok: false,
+      httpStatus: res.status || undefined,
+      providerCode: info.providerCode,
+      message: info.message ?? `health check failed (${res.status})`,
+      errorKind,
+    };
   }
   return { ok: true };
 }
@@ -79,7 +133,7 @@ export async function upsertVectors(params: {
   timeoutMs: number;
   workspaceNamespace: string;
   items: VectorUpsertItem[];
-}): Promise<{ ok: boolean; message?: string }> {
+}): Promise<{ ok: boolean; httpStatus?: number; providerCode?: string; message?: string; errorKind?: FetchErrorKind | "http" }> {
   const url = `${normalizeBaseUrl(params.baseUrl)}/upsert`;
   const res = await fetchJson(url, {
     method: "POST",
@@ -94,8 +148,16 @@ export async function upsertVectors(params: {
     timeoutMs: params.timeoutMs,
   });
   if (!res.ok) {
-    logger.warn(`[VectorSearchClient] upsert failed (${res.status})`);
-    return { ok: false, message: `upsert failed (${res.status})` };
+    const info = extractErrorInfo(res);
+    logger.warn(`[VectorSearchClient] upsert failed (${res.status || 0})`);
+    const errorKind: FetchErrorKind | "http" = res.error ? res.error.kind : "http";
+    return {
+      ok: false,
+      httpStatus: res.status || undefined,
+      providerCode: info.providerCode,
+      message: info.message ?? `upsert failed (${res.status})`,
+      errorKind,
+    };
   }
   return { ok: true };
 }
@@ -107,7 +169,14 @@ export async function queryVectors(params: {
   workspaceNamespace: string;
   query: string;
   topK: number;
-}): Promise<{ ok: boolean; message?: string; hits?: VectorQueryResponse["hits"] }> {
+}): Promise<{
+  ok: boolean;
+  httpStatus?: number;
+  providerCode?: string;
+  message?: string;
+  errorKind?: FetchErrorKind | "http" | "invalid_json";
+  hits?: VectorQueryResponse["hits"];
+}> {
   const url = `${normalizeBaseUrl(params.baseUrl)}/query`;
   const res = await fetchJson(url, {
     method: "POST",
@@ -123,15 +192,23 @@ export async function queryVectors(params: {
     timeoutMs: params.timeoutMs,
   });
   if (!res.ok) {
-    return { ok: false, message: `query failed (${res.status})` };
+    const info = extractErrorInfo(res);
+    const errorKind: FetchErrorKind | "http" = res.error ? res.error.kind : "http";
+    return {
+      ok: false,
+      httpStatus: res.status || undefined,
+      providerCode: info.providerCode,
+      message: info.message ?? `query failed (${res.status})`,
+      errorKind,
+    };
   }
   const json = res.json as unknown;
   if (!json || typeof json !== "object") {
-    return { ok: false, message: "query response is not json" };
+    return { ok: false, httpStatus: res.status || undefined, message: "query response is not json", errorKind: "invalid_json" };
   }
   const hits = (json as Record<string, unknown>).hits;
   if (!Array.isArray(hits)) {
-    return { ok: false, message: "query response missing hits" };
+    return { ok: false, httpStatus: res.status || undefined, message: "query response missing hits", errorKind: "invalid_json" };
   }
   return { ok: true, hits };
 }
@@ -212,7 +289,14 @@ export async function rerankVectors(params: {
   query: string;
   hits: VectorQueryHit[];
   topK: number;
-}): Promise<{ ok: boolean; message?: string; ranked?: RerankItem[] }> {
+}): Promise<{
+  ok: boolean;
+  httpStatus?: number;
+  providerCode?: string;
+  message?: string;
+  errorKind?: FetchErrorKind | "http" | "invalid_json";
+  ranked?: RerankItem[];
+}> {
   const url = `${normalizeBaseUrl(params.baseUrl)}/rerank`;
   const candidates = params.hits
     .map((hit) => ({ id: hit.id, text: pickRerankText(hit), metadata: hit.metadata }))
@@ -240,15 +324,23 @@ export async function rerankVectors(params: {
 
   if (!res.ok) {
     if (res.status === 404) {
-      return { ok: false, message: "rerank endpoint not found" };
+      return { ok: false, httpStatus: 404, message: "rerank endpoint not found", errorKind: "http" };
     }
+    const info = extractErrorInfo(res);
     logger.warn(`[VectorSearchClient] rerank failed (${res.status})`);
-    return { ok: false, message: `rerank failed (${res.status})` };
+    const errorKind: FetchErrorKind | "http" = res.error ? res.error.kind : "http";
+    return {
+      ok: false,
+      httpStatus: res.status || undefined,
+      providerCode: info.providerCode,
+      message: info.message ?? `rerank failed (${res.status})`,
+      errorKind,
+    };
   }
 
   const ranked = parseRerankItems(res.json, ids);
   if (!ranked || ranked.length === 0) {
-    return { ok: false, message: "rerank response missing ranked results" };
+    return { ok: false, httpStatus: res.status || undefined, message: "rerank response missing ranked results", errorKind: "invalid_json" };
   }
 
   return { ok: true, ranked };
