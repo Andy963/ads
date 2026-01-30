@@ -215,15 +215,8 @@ function formatMessageTs(ts?: number): string {
   const date = new Date(ts);
   if (!Number.isFinite(date.getTime())) return "";
 
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-
   const pad2 = (num: number) => String(num).padStart(2, "0");
   const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-  if (sameDay) return time;
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
 }
 
