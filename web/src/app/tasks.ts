@@ -133,7 +133,11 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const pid = normalizeProjectId(projectId);
     const rt = getRuntime(pid);
     try {
-      rt.queueStatus.value = await api.post<TaskQueueStatus>(withWorkspaceQueryFor(pid, "/api/task-queue/run"), {});
+      const res = await api.post<TaskQueueStatus & { queued?: boolean }>(withWorkspaceQueryFor(pid, "/api/task-queue/run"), {});
+      rt.queueStatus.value = res;
+      if (res?.queued) {
+        setNotice("已加入队列，等待当前任务完成…", pid);
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       apiError.value = msg;
@@ -310,12 +314,16 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
     setTaskRunBusy(taskId, true, pid);
     try {
-      const res = await api.post<{ success: boolean; taskId?: string; state?: string; mode?: string }>(
+      const res = await api.post<{ success: boolean; queued?: boolean; taskId?: string; state?: string; mode?: string }>(
         withWorkspaceQueryFor(pid, `/api/tasks/${taskId}/run`),
         {},
       );
       void res;
-      setNotice(`Task ${taskId.slice(0, 8)} scheduled`, pid);
+      if (res?.queued) {
+        setNotice(`Task ${taskId.slice(0, 8)} queued`, pid);
+      } else {
+        setNotice(`Task ${taskId.slice(0, 8)} scheduled`, pid);
+      }
       await refreshTaskRow(taskId, pid);
       await loadQueueStatus(pid);
     } catch (error) {

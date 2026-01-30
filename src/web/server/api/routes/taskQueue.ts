@@ -3,7 +3,7 @@ import { sendJson } from "../../http.js";
 
 export async function handleTaskQueueRoutes(
   ctx: ApiRouteContext,
-  deps: Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending">,
+  deps: Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending" | "taskQueueLock">,
 ): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
 
@@ -47,12 +47,21 @@ export async function handleTaskQueueRoutes(
       sendJson(res, 400, { error: message });
       return true;
     }
-    taskCtx.runController.setModeAll();
-    taskCtx.taskQueue.resume();
-    taskCtx.queueRunning = true;
-    deps.promoteQueuedTasksToPending(taskCtx);
+    const action = async () => {
+      taskCtx.runController.setModeAll();
+      taskCtx.taskQueue.resume();
+      taskCtx.queueRunning = true;
+      deps.promoteQueuedTasksToPending(taskCtx);
+    };
+    if (deps.taskQueueLock.isBusy()) {
+      void deps.taskQueueLock.runExclusive(action);
+      const status = taskCtx.getStatusOrchestrator().status();
+      sendJson(res, 202, { success: true, queued: true, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
+      return true;
+    }
+    await deps.taskQueueLock.runExclusive(action);
     const status = taskCtx.getStatusOrchestrator().status();
-    sendJson(res, 200, { success: true, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
+    sendJson(res, 200, { success: true, queued: false, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
     return true;
   }
 
@@ -79,4 +88,3 @@ export async function handleTaskQueueRoutes(
 
   return false;
 }
-

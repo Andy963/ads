@@ -52,91 +52,91 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     plan: PlanStepInput[],
     options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks },
   ): Promise<{ resultSummary?: string }> {
-    const orchestrator = this.getOrchestrator(task);
-    const desiredModel = String(task.model ?? "").trim() || "auto";
-    const modelToUse = desiredModel === "auto" ? this.defaultModel : desiredModel;
-    const agentId = selectAgentForModel(modelToUse);
-    orchestrator.setModel(modelToUse);
+    const run = async (): Promise<{ resultSummary?: string }> => {
+      const orchestrator = this.getOrchestrator(task);
+      const desiredModel = String(task.model ?? "").trim() || "auto";
+      const modelToUse = desiredModel === "auto" ? this.defaultModel : desiredModel;
+      const agentId = selectAgentForModel(modelToUse);
+      orchestrator.setModel(modelToUse);
 
-    const conversationId = String(task.threadId ?? "").trim() || `conv-${task.id}`;
-    this.store.upsertConversation({ id: conversationId, taskId: task.id, title: task.title, lastModel: modelToUse }, Date.now());
+      const conversationId = String(task.threadId ?? "").trim() || `conv-${task.id}`;
+      this.store.upsertConversation({ id: conversationId, taskId: task.id, title: task.title, lastModel: modelToUse }, Date.now());
 
-    let lastOutput = "";
+      let lastOutput = "";
 
-    for (const step of plan) {
-      options?.hooks?.onStepStart?.(step);
+      for (const step of plan) {
+        options?.hooks?.onStepStart?.(step);
 
-      const history = this.store
-        .getConversationMessages(conversationId, { limit: 16 })
-        .filter((msg) => msg.role === "user" || msg.role === "assistant");
-      const historySnippet =
-        history.length > 0
-          ? ["历史记录（最近）：", ...history.map((msg) => `- ${msg.role}: ${truncate(msg.content, 800)}`), ""].join("\n")
-          : "";
+        const history = this.store
+          .getConversationMessages(conversationId, { limit: 16 })
+          .filter((msg) => msg.role === "user" || msg.role === "assistant");
+        const historySnippet =
+          history.length > 0
+            ? ["历史记录（最近）：", ...history.map((msg) => `- ${msg.role}: ${truncate(msg.content, 800)}`), ""].join("\n")
+            : "";
 
-      this.store.updatePlanStep(task.id, step.stepNumber, "running", Date.now());
-      const planStepId = this.store.getPlanStepId(task.id, step.stepNumber);
+        this.store.updatePlanStep(task.id, step.stepNumber, "running", Date.now());
+        const planStepId = this.store.getPlanStepId(task.id, step.stepNumber);
 
-      const stepHeader = `步骤 ${step.stepNumber}: ${step.title}`;
-      this.store.addMessage({
-        taskId: task.id,
-        planStepId,
-        role: "system",
-        content: `开始执行：${stepHeader}`,
-        messageType: "step",
-        modelUsed: null,
-        tokenCount: null,
-        createdAt: Date.now(),
-      });
-      this.store.addConversationMessage({
-        conversationId,
-        taskId: task.id,
-        role: "system",
-        content: `开始执行：${stepHeader}`,
-        modelId: null,
-        tokenCount: null,
-        metadata: { planStepNumber: step.stepNumber },
-        createdAt: Date.now(),
-      });
+        const stepHeader = `步骤 ${step.stepNumber}: ${step.title}`;
+        this.store.addMessage({
+          taskId: task.id,
+          planStepId,
+          role: "system",
+          content: `开始执行：${stepHeader}`,
+          messageType: "step",
+          modelUsed: null,
+          tokenCount: null,
+          createdAt: Date.now(),
+        });
+        this.store.addConversationMessage({
+          conversationId,
+          taskId: task.id,
+          role: "system",
+          content: `开始执行：${stepHeader}`,
+          modelId: null,
+          tokenCount: null,
+          metadata: { planStepNumber: step.stepNumber },
+          createdAt: Date.now(),
+        });
 
-      const prompt = [
-        "你正在执行一个任务队列中的步骤。请按当前步骤完成工作，并输出结果。",
-        "",
-        historySnippet ? "（上下文）\n" + historySnippet : "",
-        `任务标题: ${task.title}`,
-        `任务描述: ${task.prompt}`,
-        "",
-        `当前步骤: ${step.stepNumber}. ${step.title}`,
-        step.description ? `步骤说明: ${step.description}` : "",
-        "",
-        "要求：",
-        "- 直接完成该步骤，不要输出多余的流程性内容",
-        "- 如果需要更多信息，说明缺失点并提出具体问题",
-      ]
-        .filter(Boolean)
-        .join("\n");
+        const prompt = [
+          "你正在执行一个任务队列中的步骤。请按当前步骤完成工作，并输出结果。",
+          "",
+          historySnippet ? "（上下文）\n" + historySnippet : "",
+          `任务标题: ${task.title}`,
+          `任务描述: ${task.prompt}`,
+          "",
+          `当前步骤: ${step.stepNumber}. ${step.title}`,
+          step.description ? `步骤说明: ${step.description}` : "",
+          "",
+          "要求：",
+          "- 直接完成该步骤，不要输出多余的流程性内容",
+          "- 如果需要更多信息，说明缺失点并提出具体问题",
+        ]
+          .filter(Boolean)
+          .join("\n");
 
-      const storedPrompt = [
-        `任务标题: ${task.title}`,
-        `任务描述: ${task.prompt}`,
-        `步骤: ${step.stepNumber}. ${step.title}`,
-        step.description ? `步骤说明: ${step.description}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
+        const storedPrompt = [
+          `任务标题: ${task.title}`,
+          `任务描述: ${task.prompt}`,
+          `步骤: ${step.stepNumber}. ${step.title}`,
+          step.description ? `步骤说明: ${step.description}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
 
-      this.store.addConversationMessage({
-        conversationId,
-        taskId: task.id,
-        role: "user",
-        content: storedPrompt,
-        modelId: modelToUse,
-        tokenCount: null,
-        metadata: { planStepNumber: step.stepNumber },
-        createdAt: Date.now(),
-      });
+        this.store.addConversationMessage({
+          conversationId,
+          taskId: task.id,
+          role: "user",
+          content: storedPrompt,
+          modelId: modelToUse,
+          tokenCount: null,
+          metadata: { planStepNumber: step.stepNumber },
+          createdAt: Date.now(),
+        });
 
-      const invoke = async () => {
         let lastRespondingText = "";
         const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
           try {
@@ -179,8 +179,9 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           }
         });
 
+        let result;
         try {
-          return await orchestrator.invokeAgent(agentId, prompt, {
+          result = await orchestrator.invokeAgent(agentId, prompt, {
             signal: options?.signal,
             streaming: true,
           });
@@ -191,37 +192,40 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
             // ignore
           }
         }
-      };
 
-      const result = await (this.lock ? this.lock.runExclusive(invoke) : invoke());
+        lastOutput =
+          typeof (result as { response?: unknown } | null)?.response === "string"
+            ? (result as { response: string }).response
+            : String((result as { response?: unknown } | null)?.response ?? "");
 
-      lastOutput = typeof (result as { response?: unknown } | null)?.response === "string" ? (result as { response: string }).response : String((result as { response?: unknown } | null)?.response ?? "");
+        this.store.addMessage({
+          taskId: task.id,
+          planStepId,
+          role: "assistant",
+          content: lastOutput,
+          messageType: "text",
+          modelUsed: modelToUse,
+          tokenCount: null,
+          createdAt: Date.now(),
+        });
+        this.store.addConversationMessage({
+          conversationId,
+          taskId: task.id,
+          role: "assistant",
+          content: lastOutput,
+          modelId: modelToUse,
+          tokenCount: null,
+          metadata: { planStepNumber: step.stepNumber },
+          createdAt: Date.now(),
+        });
 
-      this.store.addMessage({
-        taskId: task.id,
-        planStepId,
-        role: "assistant",
-        content: lastOutput,
-        messageType: "text",
-        modelUsed: modelToUse,
-        tokenCount: null,
-        createdAt: Date.now(),
-      });
-      this.store.addConversationMessage({
-        conversationId,
-        taskId: task.id,
-        role: "assistant",
-        content: lastOutput,
-        modelId: modelToUse,
-        tokenCount: null,
-        metadata: { planStepNumber: step.stepNumber },
-        createdAt: Date.now(),
-      });
+        this.store.updatePlanStep(task.id, step.stepNumber, "completed", Date.now());
+        options?.hooks?.onStepComplete?.(step, lastOutput);
+      }
 
-      this.store.updatePlanStep(task.id, step.stepNumber, "completed", Date.now());
-      options?.hooks?.onStepComplete?.(step, lastOutput);
-    }
+      return { resultSummary: truncate(lastOutput, 1600) };
+    };
 
-    return { resultSummary: truncate(lastOutput, 1600) };
+    return this.lock ? this.lock.runExclusive(run) : run();
   }
 }

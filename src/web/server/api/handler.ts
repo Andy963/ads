@@ -79,6 +79,7 @@ export function createApiRequestHandler(deps: {
     if (
       await handleTaskQueueRoutes(routeCtx, {
         taskQueueAvailable: deps.taskQueueAvailable,
+        taskQueueLock: deps.taskQueueLock,
         resolveTaskContext: deps.resolveTaskContext,
         promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
       })

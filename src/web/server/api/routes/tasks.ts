@@ -161,18 +161,34 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
     const now = Date.now();
-    const result = handleSingleTaskRun({
-      taskQueueAvailable: deps.taskQueueAvailable,
-      controller: taskCtx.runController,
-      ctx: taskCtx,
-      taskId: runSingleTaskId,
-      now,
-    });
-
-    if ("task" in result && result.task) {
-      deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: result.task, ts: now });
+    const taskExists = Boolean(taskCtx.taskStore.getTask(runSingleTaskId));
+    if (!taskExists) {
+      sendJson(res, 404, { error: "Not Found" });
+      return true;
     }
-    sendJson(res, result.status, result.body);
+
+    const run = async () => {
+      const result = handleSingleTaskRun({
+        taskQueueAvailable: deps.taskQueueAvailable,
+        controller: taskCtx.runController,
+        ctx: taskCtx,
+        taskId: runSingleTaskId,
+        now: Date.now(),
+      });
+      if ("task" in result && result.task) {
+        deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: result.task, ts: Date.now() });
+      }
+      return result;
+    };
+
+    if (deps.taskQueueLock.isBusy()) {
+      void deps.taskQueueLock.runExclusive(run);
+      sendJson(res, 202, { success: true, queued: true, mode: "single", taskId: runSingleTaskId, state: "queued" });
+      return true;
+    }
+
+    const result = await deps.taskQueueLock.runExclusive(run);
+    sendJson(res, result.status, { ...result.body, queued: false });
     return true;
   }
 
