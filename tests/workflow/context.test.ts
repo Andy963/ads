@@ -112,4 +112,31 @@ describe("workflow/context", () => {
     const templateResult = WorkflowContext.switchWorkflow("unified", workspace);
     assert.equal(templateResult.success, true);
   });
+
+  it("switches workflows using keyword aliases", () => {
+    createNode({
+      id: "req_x",
+      type: "requirement",
+      label: "需求X",
+      content: "X",
+      isDraft: false,
+      metadata: { workflow_template: "unified" },
+    });
+    createNode({
+      id: "task_y",
+      type: "task",
+      label: "任务Y",
+      content: "Y",
+      isDraft: false,
+      metadata: { workflow_template: "adhoc" },
+    });
+
+    const unified = WorkflowContext.switchWorkflow("流程", workspace);
+    assert.equal(unified.success, true);
+    assert.equal(unified.workflow?.template, "unified");
+
+    const adhoc = WorkflowContext.switchWorkflow("直通", workspace);
+    assert.equal(adhoc.success, true);
+    assert.equal(adhoc.workflow?.template, "adhoc");
+  });
 });
