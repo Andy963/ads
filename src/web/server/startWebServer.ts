@@ -217,6 +217,7 @@ export async function startWebServer(): Promise<void> {
 
   attachWebSocketServer({
     server,
+    workspaceRoot,
     allowedOrigins,
     maxClients: MAX_CLIENTS,
     pingIntervalMs: WS_PING_INTERVAL_MS,

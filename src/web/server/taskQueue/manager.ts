@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
 
 import type { Logger } from "../../../utils/logger.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import { ThreadStorage } from "../../../telegram/utils/threadStorage.js";
 import { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import { deriveProjectSessionId } from "../projectSessionId.js";
 
 import { TaskQueue } from "../../../tasks/queue.js";
 import { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
@@ -117,18 +117,6 @@ export function createTaskQueueManager(deps: {
 } {
   const taskContexts = new Map<string, TaskQueueContext>();
   const allowedDirValidator = new DirectoryManager(deps.allowedDirs);
-
-  const toBase64Url = (value: Buffer): string =>
-    value
-      .toString("base64")
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/g, "");
-
-  const deriveProjectSessionId = (projectRoot: string): string => {
-    const digest = crypto.createHash("sha256").update(projectRoot).digest();
-    return toBase64Url(digest);
-  };
 
   const promoteQueuedTasksToPending = (ctx: TaskQueueContext): void => {
     if (!ctx.queueRunning) {

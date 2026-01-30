@@ -188,6 +188,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (disconnectCleanupDone) return;
       disconnectCleanupDone = true;
       disconnectWasBusy = rt.busy.value;
+      rt.needsTaskResync = true;
       rt.connected.value = false;
       rt.busy.value = false;
       clearStepLive(rt as any);
@@ -213,6 +214,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       clearReconnectTimer(rt);
       restorePendingPrompt(rt as any);
       flushQueuedPrompts(rt as any);
+      if (rt.needsTaskResync) {
+        rt.needsTaskResync = false;
+        void deps.syncProjectState?.(pid).catch(() => {
+          // Best-effort: if sync fails we still keep the connection; next reconnect will retry.
+          rt.needsTaskResync = true;
+        });
+      }
     };
 
     wsInstance.onClose = (ev) => {
@@ -289,4 +297,3 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     connectWs,
   };
 }
-

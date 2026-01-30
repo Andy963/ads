@@ -12,6 +12,7 @@ import type { TodoListItem } from "@openai/codex-sdk";
 import { deriveWebUserId, getWorkspaceState } from "../../utils.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { wsMessageSchema } from "./schema.js";
+import { resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, formatCloseReason, summarizeWsPayloadForLog } from "./utils.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import { handlePromptMessage } from "./handlePrompt.js";
@@ -21,6 +22,7 @@ type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
 export function attachWebSocketServer(deps: {
   server: import("node:http").Server;
+  workspaceRoot: string;
   allowedOrigins: Set<string>;
   maxClients: number;
   pingIntervalMs: number;
@@ -98,25 +100,6 @@ export function attachWebSocketServer(deps: {
           ? protocolHeader.split(",").map((p) => p.trim())
           : [];
 
-    const parseProtocols = (protocols: string[]): { session?: string } => {
-      let session: string | undefined;
-      for (let i = 0; i < protocols.length; i++) {
-        const entry = protocols[i];
-        if (entry.startsWith("ads-session.")) {
-          session = entry.slice("ads-session.".length);
-          continue;
-        }
-        if (entry.startsWith("ads-session:")) {
-          session = entry.split(":").slice(1).join(":");
-          continue;
-        }
-        if (entry === "ads-session" && i + 1 < protocols.length) {
-          session = protocols[i + 1];
-        }
-      }
-      return { session };
-    };
-
     if (!deps.isOriginAllowed(req.headers["origin"], deps.allowedOrigins)) {
       ws.close(4403, "forbidden");
       return;
@@ -128,8 +111,7 @@ export function attachWebSocketServer(deps: {
       return;
     }
 
-    const { session: wsSession } = parseProtocols(parsedProtocols);
-    const sessionId = wsSession && wsSession.trim() ? wsSession.trim() : crypto.randomBytes(4).toString("hex");
+    const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: deps.workspaceRoot });
 
     if (deps.clients.size >= deps.maxClients) {
       ws.close(4409, `max clients reached (${deps.maxClients})`);

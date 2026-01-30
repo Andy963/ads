@@ -51,9 +51,9 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
   const createProjectTab = (params: { path: string; name?: string; sessionId?: string; initialized?: boolean }): ProjectTab => {
     const now = Date.now();
-    const sessionId = params.sessionId?.trim() || (crypto.randomUUID?.() ?? randomId("sess"));
-    const id = sessionId;
     const path = String(params.path ?? "").trim();
+    const sessionId = path ? (params.sessionId?.trim() || (crypto.randomUUID?.() ?? randomId("sess"))) : "default";
+    const id = sessionId;
     const name = String(params.name ?? "").trim() || deriveProjectName(path);
     const initialized = params.initialized ?? !path;
     return { id, name, path, sessionId, initialized, createdAt: now, updatedAt: now, expanded: false };
@@ -367,4 +367,3 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     submitProjectDialog,
   };
 }
-

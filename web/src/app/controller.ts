@@ -38,6 +38,7 @@ function createProjectRuntime(options: { maxLiveActivitySteps: number }): Projec
   return {
     projectSessionId: "",
     connected: ref(false),
+    needsTaskResync: false,
     apiError: ref<string | null>(null),
     apiNotice: ref<string | null>(null),
     wsError: ref<string | null>(null),
@@ -409,6 +410,10 @@ export function createAppController() {
     onTaskEvent: tasks.onTaskEvent,
     updateProject: projects.updateProject,
     persistProjects: projects.persistProjects,
+    syncProjectState: async (projectId: string) => {
+      const pid = ctx.normalizeProjectId(projectId);
+      await Promise.all([tasks.loadQueueStatus(pid), tasks.loadTasks(pid)]);
+    },
   });
 
   taskDeps.connectWs = ws.connectWs;

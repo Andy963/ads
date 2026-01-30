@@ -1,25 +1,12 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import { DirectoryManager } from "../../../../telegram/utils/directoryManager.js";
 import { detectWorkspaceFrom } from "../../../../workspace/detector.js";
+import { deriveProjectSessionId } from "../../projectSessionId.js";
 
 import type { ApiRouteContext } from "../types.js";
 import { sendJson } from "../../http.js";
-
-function toBase64Url(value: Buffer): string {
-  return value
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
-function deriveProjectSessionId(projectRoot: string): string {
-  const digest = crypto.createHash("sha256").update(projectRoot).digest();
-  return toBase64Url(digest);
-}
 
 export async function handlePathRoutes(ctx: ApiRouteContext, deps: { allowedDirs: string[] }): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -113,4 +100,3 @@ export async function handlePathRoutes(ctx: ApiRouteContext, deps: { allowedDirs
   });
   return true;
 }
-
