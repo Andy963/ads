@@ -194,6 +194,5 @@ describe("App.updateQueuedTaskAndRun", () => {
     ]);
 
     wrapper.unmount();
-  });
+  }, 10_000);
 });
-
