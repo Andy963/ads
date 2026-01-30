@@ -1,14 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { mount } from "@vue/test-utils";
-import { readFile } from "node:fs/promises";
 
 import TaskBoard from "../components/TaskBoard.vue";
 import type { ModelConfig, PlanStep, Task } from "../api/types";
-
-async function readSfc(relativeToThisTest: string): Promise<string> {
-  const url = new URL(relativeToThisTest, import.meta.url);
-  return readFile(url, "utf8");
-}
+import { readSfc } from "./readSfc";
 
 async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
   await wrapper.vm.$nextTick();
@@ -129,7 +124,7 @@ describe("TaskBoard plan expansion", () => {
   });
 
   it("keeps the plan panel height bounded and scrollable", async () => {
-    const sfc = await readSfc("../components/TaskBoard.vue");
+    const sfc = await readSfc("../components/TaskBoard.vue", import.meta.url);
     expect(sfc).toMatch(/\.plan\s*\{[\s\S]*max-height:\s*min\(40vh,\s*320px\)\s*;/);
     expect(sfc).toMatch(/\.plan\s*\{[\s\S]*overflow-y:\s*auto\s*;/);
     expect(sfc).toMatch(/\.plan\s*\{[\s\S]*scrollbar-gutter:\s*stable\s*;/);
