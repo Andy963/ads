@@ -7,6 +7,7 @@ import MainChat from "../components/MainChat.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import TaskDetail from "../components/TaskDetail.vue";
 import type { Attachment, ModelConfig, Task, TaskDetail as TaskDetailType } from "../api/types";
+import { readSfc } from "./readSfc";
 
 async function readText(relativeToThisTest: string): Promise<string> {
   const url = new URL(relativeToThisTest, import.meta.url);
@@ -137,7 +138,7 @@ describe("compact attachment UI", () => {
       expect(t.attributes("data-h")).toBe("10");
     }
 
-    const sfc = await readText("../components/TaskDetail.vue");
+    const sfc = await readSfc("../components/TaskDetail.vue", import.meta.url);
     expect(sfc).toMatch(/\.attachmentsStrip\s*\{[\s\S]*height:\s*10px\s*;/);
 
     wrapper.unmount();
