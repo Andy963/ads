@@ -8,7 +8,7 @@ import TaskBoard from "../components/TaskBoard.vue";
 import TaskDetail from "../components/TaskDetail.vue";
 import type { Attachment, ModelConfig, Task, TaskDetail as TaskDetailType } from "../api/types";
 
-async function readSfc(relativeToThisTest: string): Promise<string> {
+async function readText(relativeToThisTest: string): Promise<string> {
   const url = new URL(relativeToThisTest, import.meta.url);
   return readFile(url, "utf8");
 }
@@ -98,10 +98,10 @@ describe("compact attachment UI", () => {
     await wrapper.find(".attachmentsClear").trigger("click");
     expect(wrapper.emitted("clearImages")).toBeTruthy();
 
-    const sfc = await readSfc("../components/MainChat.vue");
-    expect(sfc).toMatch(/\.attachmentsBar\s*\{[\s\S]*height:\s*10px\s*;/);
-    expect(sfc).toMatch(/\.attachmentsPill\s*\{[\s\S]*height:\s*10px\s*;/);
-    expect(sfc).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*10px\s*;[\s\S]*height:\s*10px\s*;/);
+    const css = await readText("../components/MainChat.css");
+    expect(css).toMatch(/\.attachmentsBar\s*\{[\s\S]*height:\s*10px\s*;/);
+    expect(css).toMatch(/\.attachmentsPill\s*\{[\s\S]*height:\s*10px\s*;/);
+    expect(css).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*10px\s*;[\s\S]*height:\s*10px\s*;/);
 
     wrapper.unmount();
   });
@@ -137,7 +137,7 @@ describe("compact attachment UI", () => {
       expect(t.attributes("data-h")).toBe("10");
     }
 
-    const sfc = await readSfc("../components/TaskDetail.vue");
+    const sfc = await readText("../components/TaskDetail.vue");
     expect(sfc).toMatch(/\.attachmentsStrip\s*\{[\s\S]*height:\s*10px\s*;/);
 
     wrapper.unmount();

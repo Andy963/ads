@@ -1,0 +1,596 @@
+.boot {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #0b1020 0%, #1e293b 100%);
+  color: rgba(229, 231, 235, 0.8);
+}
+.app {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: var(--app-bg);
+  color: var(--text);
+}
+.topbar {
+  flex-shrink: 0;
+  height: calc(48px + env(safe-area-inset-top, 0px));
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: env(safe-area-inset-top, 0px) 12px 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  width: 100%;
+  gap: 10px;
+}
+.topbarMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.projectTabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.projectTabs::-webkit-scrollbar {
+  display: none;
+}
+.projectTab {
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.04);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+}
+.projectTab.active {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.45);
+  color: #1d4ed8;
+  box-shadow: var(--shadow-sm);
+}
+.projectTabText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projectAdd {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 900;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  cursor: pointer;
+}
+.projectAdd:hover {
+  background: rgba(37, 99, 235, 0.06);
+}
+.modalOverlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(10px);
+  z-index: 50;
+}
+.modalCard {
+  width: min(520px, 100%);
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+  padding: 18px 18px 16px 18px;
+}
+.modalTitle {
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.modalDesc {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+.modalPreview {
+  margin-top: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.modalPreviewTitle {
+  font-size: 13px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.modalPreviewPrompt {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+.modalForm {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modalLabel {
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.modalInput {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(248, 250, 252, 0.9);
+  font-size: 14px;
+  color: #0f172a;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+.modalInput::placeholder {
+  color: rgba(100, 116, 139, 0.65);
+}
+.modalInput:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.8);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  background: white;
+}
+.modalHintRow {
+  margin-top: -6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.pathStatus {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+.pathStatus.ok {
+  color: #059669;
+}
+.pathStatus.error {
+  color: #dc2626;
+}
+.pathStatus.checking {
+  color: #64748b;
+}
+.inlineAction {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.inlineAction:disabled {
+  color: rgba(100, 116, 139, 0.5);
+  cursor: not-allowed;
+}
+.modalError {
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #dc2626;
+}
+.modalActions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.btnSecondary,
+.btnPrimary,
+.btnDanger {
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+.btnSecondary {
+  background: var(--surface);
+  color: var(--text);
+}
+.btnSecondary:hover {
+  background: rgba(15, 23, 42, 0.03);
+}
+.btnPrimary {
+  border-color: rgba(37, 99, 235, 0.25);
+  background: var(--accent);
+  color: white;
+}
+.btnPrimary:hover:not(:disabled) {
+  background: var(--accent-2);
+}
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btnDanger {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: var(--danger);
+  color: white;
+}
+.btnDanger:hover {
+  background: var(--danger-2);
+}
+.brand {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.paneTabs {
+  display: flex;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+  flex: 0 0 auto;
+  width: min(180px, 42vw);
+  justify-content: center;
+  min-width: 0;
+}
+.paneTab {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+}
+.paneTab.active {
+  background: white;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.right {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ef4444;
+}
+.dot.on {
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+}
+.muted {
+  color: #64748b;
+  font-size: 13px;
+}
+.layout {
+  --sidebar-width: clamp(280px, 24vw, 360px);
+  flex: 1;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 12px 8px 12px;
+  max-width: 1600px;
+  width: 100%;
+  margin: 0 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.chatHost {
+  flex: 1;
+  min-height: 0;
+}
+.left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.projectTree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(248, 250, 252, 0.95);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 16px;
+  padding: 10px;
+  height: 80vh;
+  min-height: 0;
+  overflow: auto;
+}
+.projectTreeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 2px;
+}
+.projectTreeTitle {
+  font-size: 13px;
+  font-weight: 800;
+  color: #64748b;
+}
+.projectNode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.projectRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 10px;
+  padding: 6px 12px;
+  background: white;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  transition: box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.projectNode.active .projectRow {
+  background: linear-gradient(180deg, #2f80ff 0%, #1f6fff 100%);
+  color: white;
+  box-shadow: 0 8px 16px rgba(79, 142, 247, 0.32);
+}
+.projectRow:hover {
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+.projectStatus {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(148, 163, 184, 0.75);
+  position: relative;
+  flex: 0 0 auto;
+}
+.projectStatus::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 6px;
+  height: 6px;
+  margin: auto;
+  border-radius: 999px;
+  background: transparent;
+}
+.projectNode.active .projectStatus::after {
+  background: rgba(255, 255, 255, 0.9);
+}
+.projectStatus.spinning {
+  border-color: #10b981;
+  border-top-color: transparent;
+  animation: spin 0.9s linear infinite;
+}
+.projectStatus.spinning::after {
+  background: transparent;
+}
+.projectNode.active .projectStatus {
+  border-color: rgba(255, 255, 255, 0.8);
+}
+.projectNode.active .projectStatus.spinning {
+  border-color: #10b981;
+  border-top-color: transparent;
+}
+.projectNode.active .projectStatus.spinning::after {
+  background: transparent;
+}
+.projectText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.projectName {
+  font-size: 14px;
+  font-weight: 700;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projectBranch {
+  display: block;
+  font-size: 11px;
+  line-height: 1.2;
+  color: rgba(100, 116, 139, 0.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projectNode.active .projectBranch {
+  color: rgba(255, 255, 255, 0.75);
+}
+.projectTasks {
+  margin-left: 14px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(226, 232, 240, 0.95);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.taskBoard {
+  /* Keep the list compact; it should scroll internally when there are many tasks. */
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.modalCardWide {
+  width: min(900px, 100%);
+  max-height: 88vh;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+}
+.taskCreateModal {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.rightPane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+.link {
+  background: transparent;
+  border: none;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color 0.15s;
+}
+.link:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+.error {
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #dc2626;
+}
+.warning {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #b45309;
+}
+.noticeToast {
+  position: fixed;
+  left: 50%;
+  top: calc(48px + env(safe-area-inset-top, 0px) + 12px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  background: rgba(34, 197, 94, 0.1);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  color: #15803d;
+  max-width: min(92vw, 620px);
+  pointer-events: none;
+  z-index: 40;
+  animation: noticeToastIn 0.14s ease-out;
+}
+.noticeToastText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes noticeToastIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+    padding: 8px;
+    gap: 8px;
+    max-width: 100%;
+  }
+  :deep(input),
+  :deep(textarea),
+  :deep(select) {
+    font-size: 16px;
+  }
+  .topbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .left,
+  .rightPane {
+    display: none;
+  }
+  .layout[data-pane="tasks"] .left {
+    display: flex;
+  }
+  .layout[data-pane="chat"] .rightPane {
+    display: flex;
+  }
+}
