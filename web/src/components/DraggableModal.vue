@@ -32,10 +32,13 @@ let minOffsetX = -Infinity;
 let maxOffsetX = Infinity;
 let minOffsetY = -Infinity;
 let maxOffsetY = Infinity;
+let draggedThisGesture = false;
+let suppressOverlayClick = false;
 
 const MIN_VISIBLE_X_PX = 48;
 const MIN_VISIBLE_TOP_PX = 64;
 const MIN_VISIBLE_BOTTOM_PX = 48;
+const CLICK_SUPPRESS_PX = 4;
 
 const cardStyle = computed(() => {
   return {
@@ -93,6 +96,7 @@ function onPointerDown(ev: PointerEvent): void {
   updateBounds();
 
   dragging.value = true;
+  draggedThisGesture = false;
   activePointerId = ev.pointerId;
   startClientX = ev.clientX;
   startClientY = ev.clientY;
@@ -108,6 +112,13 @@ function onPointerMove(ev: PointerEvent): void {
   if (activePointerId !== ev.pointerId) return;
   const nextX = startOffsetX + (ev.clientX - startClientX);
   const nextY = startOffsetY + (ev.clientY - startClientY);
+  if (!draggedThisGesture) {
+    const dx = Math.abs(ev.clientX - startClientX);
+    const dy = Math.abs(ev.clientY - startClientY);
+    if (dx + dy >= CLICK_SUPPRESS_PX) {
+      draggedThisGesture = true;
+    }
+  }
   offsetX.value = clamp(nextX, minOffsetX, maxOffsetX);
   offsetY.value = clamp(nextY, minOffsetY, maxOffsetY);
   ev.preventDefault();
@@ -125,10 +136,23 @@ function stopDragging(ev: PointerEvent): void {
   }
   dragging.value = false;
   activePointerId = null;
+  if (draggedThisGesture) {
+    suppressOverlayClick = true;
+    setTimeout(() => {
+      suppressOverlayClick = false;
+    }, 0);
+  }
 }
 
 function onWindowResize(): void {
   updateBounds();
+}
+
+function onOverlayClick(): void {
+  if (suppressOverlayClick) {
+    return;
+  }
+  emit("close");
 }
 
 onMounted(() => {
@@ -147,7 +171,7 @@ onBeforeUnmount(() => {
     :class="{ isDragging: dragging }"
     role="dialog"
     aria-modal="true"
-    @click.self="emit('close')"
+    @click.self="onOverlayClick"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="stopDragging"
@@ -166,8 +190,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 18px;
-  background: rgba(15, 23, 42, 0.55);
-  backdrop-filter: blur(10px);
+  background: rgba(15, 23, 42, 0.18);
   z-index: 9999;
 }
 
