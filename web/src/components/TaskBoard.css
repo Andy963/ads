@@ -268,12 +268,12 @@
   letter-spacing: 0.02em;
 }
 .modalTitle.main {
-  margin: 0 0 4px 0;
+  margin: 0 0 2px 0;
 }
 .modalBody {
-  padding: 16px 18px;
+  padding: 12px 14px;
   display: grid;
-  gap: 16px;
+  gap: 12px;
   background: var(--surface);
 }
 .err {
@@ -349,8 +349,8 @@ textarea {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 16px;
-  margin-top: 18px;
+  gap: 32px;
+  margin-top: 12px;
 }
 .btnPrimary {
   border-radius: 14px;
