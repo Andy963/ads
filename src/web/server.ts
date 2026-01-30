@@ -126,6 +126,7 @@ const cwdStore = loadCwdStore(cwdStorePath);
 const wsMessageSchema = z.object({
   type: z.string(),
   payload: z.unknown().optional(),
+  client_message_id: z.string().optional(),
 });
 
 function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boolean {
@@ -157,6 +158,34 @@ function parseTaskStatus(value: string | undefined | null): QueueTaskStatus | un
     default:
       return undefined;
   }
+}
+
+function summarizeWsPayloadForLog(payload: unknown): string {
+  if (payload === undefined) {
+    return "";
+  }
+  if (typeof payload === "string") {
+    return truncateForLog(payload, 160);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return truncateForLog(String(payload), 160);
+  }
+  const rec = payload as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof rec.command === "string") {
+    parts.push(`command=${truncateForLog(rec.command, 160)}`);
+  }
+  if (typeof rec.text === "string") {
+    parts.push(`text=${truncateForLog(rec.text, 160)}`);
+  }
+  if (Array.isArray(rec.images)) {
+    parts.push(`images=${rec.images.length}`);
+  }
+  if (parts.length > 0) {
+    return `{${parts.join(" ")}}`;
+  }
+  const keys = Object.keys(rec).slice(0, 8).join(",");
+  return keys ? `{keys=${keys}}` : "{object}";
 }
 
 function toBase64Url(value: Buffer): string {
@@ -638,7 +667,11 @@ async function start(): Promise<void> {
   const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
 
   const clients: Set<WebSocket> = new Set();
-  const clientMetaByWs = new Map<WebSocket, { historyKey: string; sessionId: string }>();
+  const traceWsDuplication = parseBooleanFlag(process.env.ADS_TRACE_WS_DUPLICATION, false);
+  const clientMetaByWs = new Map<
+    WebSocket,
+    { historyKey: string; sessionId: string; connectionId: string; userId: number }
+  >();
 
   const broadcastToSession = (sessionId: string, payload: unknown): void => {
     for (const [ws, meta] of clientMetaByWs.entries()) {
@@ -653,10 +686,21 @@ async function start(): Promise<void> {
     sessionId: string,
     entry: { role: string; text: string; ts: number; kind?: string },
   ): void => {
-    for (const meta of clientMetaByWs.values()) {
-      if (meta.sessionId !== sessionId) {
-        continue;
+    const targets = traceWsDuplication
+      ? Array.from(clientMetaByWs.values()).filter((meta) => meta.sessionId === sessionId)
+      : null;
+    if (traceWsDuplication && targets) {
+      const uniqueKeys = new Set(targets.map((t) => t.historyKey));
+      if (targets.length > 1) {
+        logger.warn(
+          `[Web][HistoryBroadcast] session=${sessionId} targets=${targets.length} uniqueKeys=${uniqueKeys.size}`,
+        );
+      } else {
+        logger.info(`[Web][HistoryBroadcast] session=${sessionId} targets=${targets.length}`);
       }
+    }
+    for (const meta of clientMetaByWs.values()) {
+      if (meta.sessionId !== sessionId) continue;
       try {
         historyStore.add(meta.historyKey, entry);
       } catch {
@@ -2310,7 +2354,8 @@ async function start(): Promise<void> {
     const clientKey = auth.userId;
     const userId = deriveWebUserId(clientKey, sessionId);
     const historyKey = `${clientKey}::${sessionId}`;
-    clientMetaByWs.set(ws, { historyKey, sessionId });
+    const connectionId = crypto.randomBytes(3).toString("hex");
+    clientMetaByWs.set(ws, { historyKey, sessionId, connectionId, userId });
     const directoryManager = new DirectoryManager(allowedDirs);
 
     const cacheKey = `${clientKey}::${sessionId}`;
@@ -2339,7 +2384,9 @@ async function start(): Promise<void> {
     let lastPlanSignature: string | null = null;
     let lastPlanItems: TodoListItem["items"] | null = null;
 
-    log("client connected");
+    log(
+      `client connected conn=${connectionId} session=${sessionId} user=${userId} history=${historyKey} clients=${clients.size}`,
+    );
     safeJsonSend(ws, {
       type: "welcome",
       message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
@@ -2401,6 +2448,17 @@ async function start(): Promise<void> {
 
       if (parsed.type === "pong") {
         return;
+      }
+
+      const requestId = crypto.randomBytes(4).toString("hex");
+      const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
+      const clientMessageId = clientMessageIdRaw || null;
+      if (traceWsDuplication) {
+        const meta = clientMetaByWs.get(ws);
+        const payloadPreview = summarizeWsPayloadForLog(parsed.payload);
+        logger.info(
+          `[WebSocket][Recv] req=${requestId} conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} type=${parsed.type} client_message_id=${clientMessageId ?? ""} payload=${payloadPreview}`,
+        );
       }
 
       const sessionLogger = sessionManager.ensureLogger(userId);
@@ -2605,7 +2663,12 @@ async function start(): Promise<void> {
           // 不重置 lastPlanItems，保留上一轮的 plan 状态以便续传
 	          const userLogEntry = buildUserLogEntry(promptInput.input, currentCwd);
 	          sessionLogger?.logInput(userLogEntry);
-	          historyStore.add(historyKey, { role: "user", text: userLogEntry, ts: Date.now() });
+	          historyStore.add(historyKey, {
+              role: "user",
+              text: userLogEntry,
+              ts: Date.now(),
+              kind: clientMessageId ? `client_message_id:${clientMessageId}` : undefined,
+            });
           const promptText = extractTextFromInput(promptInput.input).trim();
 
           const promptSlash = parseSlashCommand(promptText);
@@ -2989,7 +3052,12 @@ async function start(): Promise<void> {
 	      const isCdCommand = normalizedSlash === "cd";
       if (!isSilentCommandPayload && !isCdCommand) {
         sessionLogger?.logInput(command);
-        historyStore.add(historyKey, { role: "user", text: command, ts: Date.now() });
+        historyStore.add(historyKey, {
+          role: "user",
+          text: command,
+          ts: Date.now(),
+          kind: clientMessageId ? `client_message_id:${clientMessageId}` : undefined,
+        });
       }
 
 	      if (slash?.command === "vsearch") {
@@ -3192,10 +3260,13 @@ async function start(): Promise<void> {
 
 	    ws.on("close", (code, reason) => {
 	      clients.delete(ws);
+        const meta = clientMetaByWs.get(ws);
 	      clientMetaByWs.delete(ws);
 	      const reasonText = formatCloseReason(reason);
 	      const suffix = reasonText ? ` reason=${reasonText}` : "";
-	      log(`client disconnected session=${sessionId} user=${userId} code=${code}${suffix}`);
+	      log(
+          `client disconnected conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} code=${code}${suffix}`,
+        );
 	    });
 	  });
 

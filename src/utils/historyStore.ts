@@ -6,6 +6,7 @@ import type { Database as DatabaseType, Statement as StatementType } from "bette
 import { getStateDatabase } from "../state/database.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { createLogger } from "./logger.js";
+import { truncateForLog } from "./text.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
 
@@ -25,6 +26,11 @@ interface HistoryStoreOptions {
 }
 
 const logger = createLogger("HistoryStore");
+
+function isHistoryInsertTraceEnabled(): boolean {
+  const raw = String(process.env.ADS_TRACE_HISTORY_INSERT ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
 
 function isSqlitePath(storagePath: string): boolean {
   const lowered = storagePath.trim().toLowerCase();
@@ -105,7 +111,7 @@ export class HistoryStore {
     }
 
     const tx = this.db.transaction(() => {
-      this.insertStmt!.run(
+      const info = this.insertStmt!.run(
         this.namespace,
         normalizedKey,
         normalized.role,
@@ -113,6 +119,18 @@ export class HistoryStore {
         normalized.ts,
         normalized.kind ?? null,
       );
+      if (isHistoryInsertTraceEnabled()) {
+        const lastInsertRowid = (info as { lastInsertRowid?: unknown }).lastInsertRowid;
+        const rowId =
+          typeof lastInsertRowid === "bigint"
+            ? lastInsertRowid.toString()
+            : typeof lastInsertRowid === "number"
+              ? String(lastInsertRowid)
+              : "unknown";
+        logger.info(
+          `[HistoryStore] insert ns=${this.namespace} session=${normalizedKey} id=${rowId} role=${normalized.role} kind=${normalized.kind ?? ""} ts=${normalized.ts} text=${truncateForLog(normalized.text, 160)}`,
+        );
+      }
       this.trimSqlite(normalizedKey);
     });
     try {
