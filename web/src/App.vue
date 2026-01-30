@@ -136,7 +136,7 @@ function findLastLiveIndex(items: ChatItem[]): number {
   return idx;
 }
 type IncomingImage = { name?: string; mime?: string; data: string };
-type QueuedPrompt = { id: string; text: string; images: IncomingImage[]; createdAt: number };
+type QueuedPrompt = { id: string; clientMessageId: string; text: string; images: IncomingImage[]; createdAt: number };
 
 const isMobile = ref(false);
 const mobilePane = ref<"tasks" | "chat">("chat");
@@ -358,6 +358,17 @@ function updateIsMobile(): void {
 
 function randomId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function randomUuid(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // ignore
+  }
+  return randomId("uuid");
 }
 
 function safeJsonParse<T>(raw: string | null): T | null {
@@ -1107,7 +1118,7 @@ function enqueueMainPrompt(text: string, images: IncomingImage[]): void {
   if (!content && imgs.length === 0) return;
   queuedPrompts.value = [
     ...queuedPrompts.value,
-    { id: randomId("q"), text: content, images: imgs, createdAt: Date.now() },
+    { id: randomId("q"), clientMessageId: randomUuid(), text: content, images: imgs, createdAt: Date.now() },
   ];
   flushQueuedPrompts();
 }
@@ -1137,10 +1148,10 @@ function flushQueuedPrompts(rt?: ProjectRuntime): void {
     pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
     state.busy.value = true;
     state.turnInFlight = true;
-    state.ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text);
-	  } catch {
+    state.ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text, next.clientMessageId);
+  } catch {
     state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
-	  }
+  }
 }
 
 function upsertStreamingDelta(delta: string, rt?: ProjectRuntime): void {
