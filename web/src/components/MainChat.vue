@@ -714,7 +714,7 @@ onBeforeUnmount(() => {
           <div class="execute-block">
             <div class="execute-header">
               <span class="command-tag">EXECUTE</span>
-              <span class="execute-cmd">{{ m.command || "" }}</span>
+              <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
               <span v-if="m.stackCount" class="execute-stack-count">{{ m.stackCount }} 条命令</span>
             </div>
             <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
@@ -902,6 +902,8 @@ onBeforeUnmount(() => {
   border-radius: var(--radius);
   box-shadow: var(--shadow-md);
   overflow: hidden;
+  --execute-stack-padding-bottom: 12px;
+  --execute-block-height: 180px;
 }
 .header {
   display: flex;
@@ -1000,6 +1002,9 @@ onBeforeUnmount(() => {
   overflow: visible;
   justify-content: flex-start;
 }
+.msg[data-kind="execute"] {
+  margin-bottom: 0;
+}
 .command-block {
   width: 100%;
   max-width: 100%;
@@ -1008,6 +1013,9 @@ onBeforeUnmount(() => {
 .execute-block {
   width: 100%;
   max-width: 100%;
+  /* Keep a concrete value for environments without CSS custom properties (e.g. jsdom). */
+  height: 180px;
+  height: var(--execute-block-height);
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.35);
   background: rgba(15, 23, 42, 0.04);
@@ -1016,24 +1024,35 @@ onBeforeUnmount(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   position: relative;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
 }
 .execute-stack {
   width: 100%;
   position: relative;
-  padding-bottom: 0;
-}
-.execute-stack:not([data-stack="0"]) {
+  /* Keep a concrete value for environments without CSS custom properties (e.g. jsdom). */
   padding-bottom: 12px;
+  padding-bottom: var(--execute-stack-padding-bottom);
 }
 .execute-underlays {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Keep a concrete value for environments without CSS custom properties (e.g. jsdom). */
+  bottom: 12px;
+  bottom: var(--execute-stack-padding-bottom);
   pointer-events: none;
   z-index: 0;
 }
 .execute-underlay {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Keep a concrete value for environments without CSS custom properties (e.g. jsdom). */
+  bottom: 12px;
+  bottom: var(--execute-stack-padding-bottom);
   border: 1px solid rgba(148, 163, 184, 0.25);
   background: rgba(15, 23, 42, 0.03);
   border-radius: 12px;
@@ -1048,9 +1067,10 @@ onBeforeUnmount(() => {
 .execute-header {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 10px;
   padding: 2px 0;
+  flex: 0 0 auto;
 }
 .execute-stack-count {
   color: #94a3b8;
@@ -1061,10 +1081,11 @@ onBeforeUnmount(() => {
   color: #0f172a;
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  flex: 1 1 auto;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .execute-output {
   margin: 8px 0 0 0;
@@ -1074,11 +1095,15 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 .execute-more {
   margin-top: 8px;
   font-size: 12px;
   color: #94a3b8;
+  flex: 0 0 auto;
 }
 .command-tree-header {
   padding: 4px 0;

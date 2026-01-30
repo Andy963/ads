@@ -335,7 +335,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="card">
-    <h3 class="form-title">新建任务</h3>
+    <h3 class="form-title" data-drag-handle>新建任务</h3>
 
     <div class="fields">
       <div class="form-row">

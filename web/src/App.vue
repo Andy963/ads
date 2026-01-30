@@ -5,12 +5,15 @@ import { ApiClient } from "./api/client";
 import type { AuthMe, CreateTaskInput, ModelConfig, PlanStep, Task, TaskDetail, TaskEventPayload, TaskQueueStatus } from "./api/types";
 import { AdsWebSocket } from "./api/ws";
 import LoginGate from "./components/LoginGate.vue";
+import DraggableModal from "./components/DraggableModal.vue";
 import TaskCreateForm from "./components/TaskCreateForm.vue";
 import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
+import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import { finalizeStreamingOnDisconnect, mergeHistoryFromServer } from "./lib/chat_sync";
 import { formatApiError, looksLikeNotFound } from "./lib/api_error";
 import { clearLiveActivityWindow, createLiveActivityWindow, ingestCommandActivity, ingestExploredActivity, renderLiveActivityMarkdown } from "./lib/live_activity";
+import { isProjectInProgress } from "./lib/project_status";
 
 const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
@@ -38,6 +41,15 @@ type TaskChatBuffer = { firstTs: number; events: BufferedTaskChatEvent[] };
 
 const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
+
+const fixtureMode = computed(() => {
+  try {
+    return new URLSearchParams(window.location.search).get("fixture") || "";
+  } catch {
+    return "";
+  }
+});
+const isExecuteBlockFixture = computed(() => fixtureMode.value === "execute-block");
 
 const loggedIn = ref(false);
 const currentUser = ref<AuthMe | null>(null);
@@ -110,6 +122,16 @@ function findFirstLiveIndex(items: ChatItem[]): number {
     const at = items.findIndex((m) => m.id === liveId);
     if (at < 0) continue;
     idx = idx < 0 ? at : Math.min(idx, at);
+  }
+  return idx;
+}
+
+function findLastLiveIndex(items: ChatItem[]): number {
+  let idx = -1;
+  for (const liveId of LIVE_MESSAGE_IDS) {
+    const at = items.findIndex((m) => m.id === liveId);
+    if (at < 0) continue;
+    idx = Math.max(idx, at);
   }
   return idx;
 }
@@ -688,6 +710,13 @@ function runtimeTasksBusy(rt: ProjectRuntime): boolean {
   return rt.tasks.value.some((t) => t.status === "planning" || t.status === "running");
 }
 
+function runtimeProjectInProgress(rt: ProjectRuntime): boolean {
+  return isProjectInProgress({
+    taskStatuses: rt.tasks.value.map((t) => t.status),
+    conversationInProgress: rt.busy.value,
+  });
+}
+
 function runtimeAgentBusy(rt: ProjectRuntime): boolean {
   return rt.busy.value || runtimeTasksBusy(rt);
 }
@@ -702,8 +731,30 @@ function trimChatItems(items: ChatItem[]): ChatItem[] {
 
   const nonLive = existing.filter((m) => !isLiveMessageId(m.id));
   const trimmed = nonLive.length <= MAX_CHAT_MESSAGES ? nonLive : nonLive.slice(nonLive.length - MAX_CHAT_MESSAGES);
-  const liveTail = LIVE_MESSAGE_IDS.map((id) => liveById.get(id)).filter(Boolean) as ChatItem[];
-  return [...trimmed, ...liveTail];
+  const liveBlock = LIVE_MESSAGE_IDS.map((id) => liveById.get(id)).filter(Boolean) as ChatItem[];
+  if (liveBlock.length === 0) {
+    return trimmed;
+  }
+
+  // Keep live activity/step traces anchored to the current turn by inserting them directly
+  // before any turn output (execute blocks / assistant stream). This avoids the UX bug where
+  // early tool status appears after execute blocks or after the assistant answer.
+  let insertAt = trimmed.length;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    const m = trimmed[i]!;
+    if (m.role === "assistant" && m.streaming) {
+      insertAt = i;
+      break;
+    }
+  }
+  for (let i = 0; i < insertAt; i++) {
+    if (trimmed[i]!.kind === "execute") {
+      insertAt = i;
+      break;
+    }
+  }
+
+  return [...trimmed.slice(0, insertAt), ...liveBlock, ...trimmed.slice(insertAt)];
 }
 
 function setMessages(items: ChatItem[], rt?: ProjectRuntime): void {
@@ -963,8 +1014,8 @@ function upsertExecuteBlock(key: string, command: string, outputDelta: string, r
     return;
   }
 
-  const liveIndex = findFirstLiveIndex(existing);
-  let insertAt = liveIndex < 0 ? existing.length : liveIndex;
+  const lastLiveIndex = findLastLiveIndex(existing);
+  let insertAt = lastLiveIndex < 0 ? existing.length : lastLiveIndex + 1;
   for (let i = existing.length - 1; i >= 0; i--) {
     const m = existing[i]!;
     if (isLiveMessageId(m.id)) continue;
@@ -972,6 +1023,9 @@ function upsertExecuteBlock(key: string, command: string, outputDelta: string, r
       insertAt = Math.min(insertAt, i);
       break;
     }
+  }
+  if (lastLiveIndex >= 0) {
+    insertAt = Math.max(insertAt, lastLiveIndex + 1);
   }
 
   let lastExecuteIdx = -1;
@@ -1118,12 +1172,14 @@ function upsertStreamingDelta(delta: string, rt?: ProjectRuntime): void {
     streaming: true,
     ts: Date.now(),
   };
-  const liveIndex = findFirstLiveIndex(existing);
-  if (liveIndex < 0) {
+  const lastLiveIndex = findLastLiveIndex(existing);
+  if (lastLiveIndex < 0) {
     setMessages([...existing, nextItem], state);
     return;
   }
-  setMessages([...existing.slice(0, liveIndex), nextItem, ...existing.slice(liveIndex)], state);
+  // Keep live activity/step traces above the assistant stream when the placeholder was dropped.
+  const insertAt = Math.min(existing.length, lastLiveIndex + 1);
+  setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
 }
 
 function trimToLastLines(text: string, maxLines: number, maxChars = 2500): string {
@@ -2545,7 +2601,8 @@ function closeTaskCreateDialog(): void {
 </script>
 
 <template>
-  <LoginGate v-if="!loggedIn" @logged-in="handleLoggedIn" />
+  <ExecuteBlockFixture v-if="isExecuteBlockFixture" />
+  <LoginGate v-else-if="!loggedIn" @logged-in="handleLoggedIn" />
   <div v-else class="app">
     <header class="topbar">
       <div class="brand">ADS</div>
@@ -2598,7 +2655,7 @@ function closeTaskCreateDialog(): void {
               :title="p.path || p.name"
               @click="requestProjectSwitch(p.id)"
             >
-              <span class="projectStatus" :class="{ spinning: runtimeTasksBusy(getRuntime(p.id)) }" />
+              <span class="projectStatus" :class="{ spinning: runtimeProjectInProgress(getRuntime(p.id)) }" />
               <span class="projectText">
                 <span class="projectName">{{ p.path || p.name }}</span>
                 <span class="projectBranch">{{ formatProjectBranch(p.branch) }}</span>
@@ -2668,19 +2725,17 @@ function closeTaskCreateDialog(): void {
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
 
-    <div v-if="taskCreateDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeTaskCreateDialog">
-      <div class="modalCard modalCardWide">
-        <TaskCreateForm
-          class="taskCreateModal"
-          :models="models"
-          :workspace-root="resolveActiveWorkspaceRoot() || ''"
-          @submit="submitTaskCreate"
-          @submit-and-run="submitTaskCreateAndRun"
-          @reset-thread="clearActiveChat"
-          @cancel="closeTaskCreateDialog"
-        />
-      </div>
-    </div>
+    <DraggableModal v-if="taskCreateDialogOpen" card-variant="wide" @close="closeTaskCreateDialog">
+      <TaskCreateForm
+        class="taskCreateModal"
+        :models="models"
+        :workspace-root="resolveActiveWorkspaceRoot() || ''"
+        @submit="submitTaskCreate"
+        @submit-and-run="submitTaskCreateAndRun"
+        @reset-thread="clearActiveChat"
+        @cancel="closeTaskCreateDialog"
+      />
+    </DraggableModal>
 
     <div v-if="projectDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeProjectDialog">
       <div class="modalCard">

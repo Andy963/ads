@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import type { ModelConfig, PlanStep, Task, TaskQueueStatus } from "../api/types";
+import DraggableModal from "./DraggableModal.vue";
 
 type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "model" | "priority" | "inheritContext" | "maxRetries">>;
 
@@ -423,79 +424,77 @@ watch(
       </div>
     </div>
 
-        <div v-if="editingTask" class="modalOverlay" role="dialog" aria-modal="true" data-testid="task-edit-modal" @click.self="stopEdit">
-      <div class="modalCard">
-        <div class="modalHeader">
-          <div class="modalTitle">编辑任务</div>
-          <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-edit-modal-cancel" @click="stopEdit">
-            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path
-                fill-rule="evenodd"
-                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                clip-rule="evenodd"
-              />
-            </svg>
+    <DraggableModal v-if="editingTask" card-variant="large" data-testid="task-edit-modal" @close="stopEdit">
+      <div class="modalHeader">
+        <div class="modalTitle" data-drag-handle>编辑任务</div>
+        <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-edit-modal-cancel" @click="stopEdit">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path
+              fill-rule="evenodd"
+              d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+              clip-rule="evenodd"
+            />
+          </svg>
+        </button>
+      </div>
+
+      <div class="modalBody">
+        <div class="modalTitle main" data-drag-handle>编辑任务</div>
+        <div v-if="error" class="err">{{ error }}</div>
+
+        <label class="field">
+          <span class="label">标题</span>
+          <input ref="editTitleEl" v-model="editTitle" />
+        </label>
+
+        <div class="configRow">
+          <label class="field">
+            <span class="label">模型</span>
+            <select v-model="editModel">
+              <option v-for="m in modelOptions" :key="m.id" :value="m.id">
+                {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">优先级</span>
+            <input v-model.number="editPriority" type="number" />
+          </label>
+          <label class="field">
+            <span class="label">最大重试</span>
+            <input v-model.number="editMaxRetries" type="number" min="0" />
+          </label>
+          <label class="field">
+            <span class="label">继承上下文</span>
+            <select v-model="editInheritContext">
+              <option :value="true">True</option>
+              <option :value="false">False</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="label">任务描述</span>
+          <textarea v-model="editPrompt" rows="6" data-testid="task-edit-prompt" />
+        </label>
+
+        <div class="actions">
+          <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
+          <button class="btnSecondary" type="button" :disabled="!editingTask" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
+            保存
+          </button>
+          <button
+            class="btnPrimary"
+            type="button"
+            :disabled="!editingTask"
+            data-testid="task-edit-modal-save-and-run"
+            @click="editingTask && saveEditAndRun(editingTask)"
+          >
+            保存并提交
           </button>
         </div>
-
-        <div class="modalBody">
-          <div class="modalTitle main">编辑任务</div>
-          <div v-if="error" class="err">{{ error }}</div>
-
-          <label class="field">
-            <span class="label">标题</span>
-            <input ref="editTitleEl" v-model="editTitle" />
-          </label>
-
-          <div class="configRow">
-            <label class="field">
-              <span class="label">模型</span>
-              <select v-model="editModel">
-                <option v-for="m in modelOptions" :key="m.id" :value="m.id">
-                  {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
-                </option>
-              </select>
-            </label>
-            <label class="field">
-              <span class="label">优先级</span>
-              <input v-model.number="editPriority" type="number" />
-            </label>
-            <label class="field">
-              <span class="label">最大重试</span>
-              <input v-model.number="editMaxRetries" type="number" min="0" />
-            </label>
-            <label class="field">
-              <span class="label">继承上下文</span>
-              <select v-model="editInheritContext">
-                <option :value="true">True</option>
-                <option :value="false">False</option>
-              </select>
-            </label>
-          </div>
-
-          <label class="field">
-            <span class="label">任务描述</span>
-            <textarea v-model="editPrompt" rows="6" data-testid="task-edit-prompt" />
-          </label>
-
-          <div class="actions">
-            <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
-            <button class="btnSecondary" type="button" :disabled="!editingTask" data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
-              保存
-            </button>
-            <button
-              class="btnPrimary"
-              type="button"
-              :disabled="!editingTask"
-              data-testid="task-edit-modal-save-and-run"
-              @click="editingTask && saveEditAndRun(editingTask)"
-            >
-              保存并提交
-            </button>
-          </div>
-        </div>
       </div>
-    </div>
+    </DraggableModal>
   </div>
 </template>
 

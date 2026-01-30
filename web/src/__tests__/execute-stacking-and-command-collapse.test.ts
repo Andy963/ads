@@ -54,6 +54,45 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
+  it("keeps a stable execute stack structure even for large stacks", async () => {
+    const execs = Array.from({ length: 20 }, (_, i) => {
+      const n = i + 1;
+      return { id: `e-${n}`, role: "system", kind: "execute", content: `out-${n}`, command: `cmd-${n}` } as const;
+    });
+
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [{ id: "u-1", role: "user", kind: "text", content: "hi" }, ...execs, { id: "a-1", role: "assistant", kind: "text", content: "done" }],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
+    expect(wrapper.findAll(".execute-underlay")).toHaveLength(2);
+
+    const count = wrapper.find(".execute-stack-count");
+    expect(count.exists()).toBe(true);
+    expect(count.text()).toContain("20");
+
+    const output = wrapper.find(".execute-output");
+    expect(output.exists()).toBe(true);
+    expect(output.text()).toContain("out-20");
+    expect(output.text()).not.toContain("out-1");
+
+    wrapper.unmount();
+  });
+
   it("collapses command trees longer than 3 by default and toggles via caret", async () => {
     const wrapper = mount(MainChat, {
       props: {
@@ -100,4 +139,3 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 });
-
