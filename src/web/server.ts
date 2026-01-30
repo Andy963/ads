@@ -686,21 +686,23 @@ async function start(): Promise<void> {
     sessionId: string,
     entry: { role: string; text: string; ts: number; kind?: string },
   ): void => {
-    const targets = traceWsDuplication
-      ? Array.from(clientMetaByWs.values()).filter((meta) => meta.sessionId === sessionId)
-      : null;
-    if (traceWsDuplication && targets) {
-      const uniqueKeys = new Set(targets.map((t) => t.historyKey));
-      if (targets.length > 1) {
+    const metas = Array.from(clientMetaByWs.values()).filter((meta) => meta.sessionId === sessionId);
+    if (traceWsDuplication) {
+      const uniqueKeys = new Set(metas.map((t) => t.historyKey));
+      if (metas.length > 1) {
         logger.warn(
-          `[Web][HistoryBroadcast] session=${sessionId} targets=${targets.length} uniqueKeys=${uniqueKeys.size}`,
+          `[Web][HistoryBroadcast] session=${sessionId} targets=${metas.length} uniqueKeys=${uniqueKeys.size}`,
         );
       } else {
-        logger.info(`[Web][HistoryBroadcast] session=${sessionId} targets=${targets.length}`);
+        logger.info(`[Web][HistoryBroadcast] session=${sessionId} targets=${metas.length}`);
       }
     }
-    for (const meta of clientMetaByWs.values()) {
-      if (meta.sessionId !== sessionId) continue;
+    const written = new Set<string>();
+    for (const meta of metas) {
+      if (written.has(meta.historyKey)) {
+        continue;
+      }
+      written.add(meta.historyKey);
       try {
         historyStore.add(meta.historyKey, entry);
       } catch {
@@ -2663,12 +2665,25 @@ async function start(): Promise<void> {
           // 不重置 lastPlanItems，保留上一轮的 plan 状态以便续传
 	          const userLogEntry = buildUserLogEntry(promptInput.input, currentCwd);
 	          sessionLogger?.logInput(userLogEntry);
-	          historyStore.add(historyKey, {
+            const entryKind = clientMessageId ? `client_message_id:${clientMessageId}` : undefined;
+	          const inserted = historyStore.add(historyKey, {
               role: "user",
               text: userLogEntry,
               ts: Date.now(),
-              kind: clientMessageId ? `client_message_id:${clientMessageId}` : undefined,
+              kind: entryKind,
             });
+            if (clientMessageId) {
+              safeJsonSend(ws, { type: "ack", client_message_id: clientMessageId, duplicate: !inserted });
+              if (!inserted) {
+                if (traceWsDuplication) {
+                  logger.warn(
+                    `[WebSocket][Dedupe] req=${requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${clientMessageId}`,
+                  );
+                }
+                cleanupAttachments();
+                return;
+              }
+            }
           const promptText = extractTextFromInput(promptInput.input).trim();
 
           const promptSlash = parseSlashCommand(promptText);
@@ -3052,12 +3067,24 @@ async function start(): Promise<void> {
 	      const isCdCommand = normalizedSlash === "cd";
       if (!isSilentCommandPayload && !isCdCommand) {
         sessionLogger?.logInput(command);
-        historyStore.add(historyKey, {
+        const entryKind = clientMessageId ? `client_message_id:${clientMessageId}` : undefined;
+        const inserted = historyStore.add(historyKey, {
           role: "user",
           text: command,
           ts: Date.now(),
-          kind: clientMessageId ? `client_message_id:${clientMessageId}` : undefined,
+          kind: entryKind,
         });
+        if (clientMessageId) {
+          safeJsonSend(ws, { type: "ack", client_message_id: clientMessageId, duplicate: !inserted });
+          if (!inserted) {
+            if (traceWsDuplication) {
+              logger.warn(
+                `[WebSocket][Dedupe] req=${requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${clientMessageId}`,
+              );
+            }
+            return;
+          }
+        }
       }
 
 	      if (slash?.command === "vsearch") {

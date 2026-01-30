@@ -144,6 +144,7 @@ const mobilePane = ref<"tasks" | "chat">("chat");
 const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
 
 type ProjectRuntime = {
+  projectSessionId: string;
   connected: ReturnType<typeof ref<boolean>>;
   apiError: ReturnType<typeof ref<string | null>>;
   apiNotice: ReturnType<typeof ref<string | null>>;
@@ -160,6 +161,7 @@ type ProjectRuntime = {
   runBusyIds: ReturnType<typeof ref<Set<string>>>;
   busy: ReturnType<typeof ref<boolean>>;
   turnInFlight: boolean;
+  pendingAckClientMessageId: string | null;
   messages: ReturnType<typeof ref<ChatItem[]>>;
   recentCommands: ReturnType<typeof ref<string[]>>;
   turnCommands: string[];
@@ -182,6 +184,7 @@ type ProjectRuntime = {
 
 function createProjectRuntime(): ProjectRuntime {
   return {
+    projectSessionId: "",
     connected: ref(false),
     apiError: ref<string | null>(null),
     apiNotice: ref<string | null>(null),
@@ -198,6 +201,7 @@ function createProjectRuntime(): ProjectRuntime {
     runBusyIds: ref<Set<string>>(new Set()),
     busy: ref(false),
     turnInFlight: false,
+    pendingAckClientMessageId: null,
     messages: ref<ChatItem[]>([]),
     recentCommands: ref<string[]>([]),
     turnCommands: [],
@@ -380,6 +384,57 @@ function safeJsonParse<T>(raw: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+type PersistedPrompt = { clientMessageId: string; text: string; createdAt: number };
+
+function pendingPromptStorageKey(sessionId: string): string {
+  const normalized = String(sessionId ?? "").trim();
+  return normalized ? `ads.pendingPrompt.${normalized}` : "ads.pendingPrompt.unknown";
+}
+
+function savePendingPrompt(rt: ProjectRuntime, prompt: QueuedPrompt): void {
+  if (!rt.projectSessionId) return;
+  // Avoid persisting large image payloads into sessionStorage.
+  if (prompt.images.length > 0) return;
+  const key = pendingPromptStorageKey(rt.projectSessionId);
+  const payload: PersistedPrompt = {
+    clientMessageId: prompt.clientMessageId,
+    text: prompt.text,
+    createdAt: prompt.createdAt,
+  };
+  try {
+    sessionStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+}
+
+function clearPendingPrompt(rt: ProjectRuntime): void {
+  if (!rt.projectSessionId) return;
+  const key = pendingPromptStorageKey(rt.projectSessionId);
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+function restorePendingPrompt(rt: ProjectRuntime): void {
+  if (!rt.projectSessionId) return;
+  const key = pendingPromptStorageKey(rt.projectSessionId);
+  const stored = safeJsonParse<PersistedPrompt>(sessionStorage.getItem(key));
+  if (!stored) return;
+  const clientMessageId = String(stored.clientMessageId ?? "").trim();
+  const text = String(stored.text ?? "");
+  if (!clientMessageId) return;
+  const alreadyQueued = rt.queuedPrompts.value.some((q) => q.clientMessageId === clientMessageId);
+  if (alreadyQueued) return;
+  if (runtimeAgentBusy(rt)) return;
+  rt.queuedPrompts.value = [
+    { id: randomId("q"), clientMessageId, text, images: [], createdAt: Number(stored.createdAt) || Date.now() },
+    ...rt.queuedPrompts.value,
+  ];
 }
 
 function deriveProjectName(path: string): string {
@@ -1148,6 +1203,8 @@ function flushQueuedPrompts(rt?: ProjectRuntime): void {
     pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
     state.busy.value = true;
     state.turnInFlight = true;
+    state.pendingAckClientMessageId = next.clientMessageId;
+    savePendingPrompt(state, next);
     state.ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text, next.clientMessageId);
   } catch {
     state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
@@ -1921,6 +1978,7 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
   if (!project) return;
 
   let rt = getRuntime(pid);
+  rt.projectSessionId = String(project.sessionId ?? "").trim();
 
   const identity = await resolveProjectIdentity(project);
   if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
@@ -1935,6 +1993,7 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     pid = nextProject.id;
     project = nextProject;
     rt = getRuntime(pid);
+    rt.projectSessionId = String(project.sessionId ?? "").trim();
   }
 
   clearReconnectTimer(rt);
@@ -1979,6 +2038,7 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     rt.wsError.value = null;
     rt.reconnectAttempts = 0;
     clearReconnectTimer(rt);
+    restorePendingPrompt(rt);
     flushQueuedPrompts(rt);
   };
 
@@ -2016,6 +2076,15 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
 
   wsInstance.onMessage = (msg) => {
     if (rt.ws !== wsInstance) return;
+
+    if (msg.type === "ack") {
+      const id = String((msg as { client_message_id?: unknown }).client_message_id ?? "").trim();
+      if (id && rt.pendingAckClientMessageId === id) {
+        rt.pendingAckClientMessageId = null;
+        clearPendingPrompt(rt);
+      }
+      return;
+    }
 
     if (msg.type === "welcome") {
       let nextPath = "";
@@ -2217,6 +2286,8 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     if (msg.type === "result") {
       rt.busy.value = false;
       rt.turnInFlight = false;
+      rt.pendingAckClientMessageId = null;
+      clearPendingPrompt(rt);
       const output = String(msg.output ?? "");
       if (rt.suppressNextClearHistoryResult) {
         rt.suppressNextClearHistoryResult = false;
@@ -2261,6 +2332,8 @@ async function connectWs(projectId: string = activeProjectId.value): Promise<voi
     if (msg.type === "error") {
       rt.busy.value = false;
       rt.turnInFlight = false;
+      rt.pendingAckClientMessageId = null;
+      clearPendingPrompt(rt);
       clearStepLive(rt);
       finalizeCommandBlock(rt);
       pushMessageBeforeLive({ role: "system", kind: "text", content: String(msg.message ?? "error") }, rt);

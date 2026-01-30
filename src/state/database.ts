@@ -66,6 +66,10 @@ function initializeStateDatabase(db: DatabaseType): void {
     CREATE INDEX IF NOT EXISTS idx_history_entries_session
       ON history_entries(namespace, session_id, id);
 
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_history_entries_client_message_id
+      ON history_entries(namespace, session_id, kind)
+      WHERE kind LIKE 'client_message_id:%';
+
     CREATE TABLE IF NOT EXISTS tasks (
       task_id TEXT NOT NULL PRIMARY KEY,
       parent_task_id TEXT,

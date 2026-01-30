@@ -93,24 +93,30 @@ export class HistoryStore {
     }));
   }
 
-  add(sessionId: string, entry: HistoryEntry): void {
+  add(sessionId: string, entry: HistoryEntry): boolean {
     const normalized = this.normalize(entry);
-    if (!normalized) return;
+    if (!normalized) return false;
     const normalizedKey = String(sessionId ?? "").trim();
     if (!normalizedKey) {
-      return;
+      return false;
     }
 
     if (!this.useSqlite || !this.db || !this.insertStmt) {
       const existing = this.store.get(normalizedKey) ?? [];
+      if (String(normalized.kind ?? "").startsWith("client_message_id:")) {
+        const already = existing.some((e) => e.kind === normalized.kind);
+        if (already) {
+          return false;
+        }
+      }
       existing.push(normalized);
       const trimmed = this.trim(existing);
       this.store.set(normalizedKey, trimmed);
       this.persist();
-      return;
+      return true;
     }
 
-    const tx = this.db.transaction(() => {
+    const tx = this.db.transaction((): boolean => {
       const info = this.insertStmt!.run(
         this.namespace,
         normalizedKey,
@@ -127,17 +133,26 @@ export class HistoryStore {
             : typeof lastInsertRowid === "number"
               ? String(lastInsertRowid)
               : "unknown";
+        const changes = (info as { changes?: unknown }).changes;
+        const inserted = typeof changes === "number" ? changes > 0 : true;
+        const action = inserted ? "insert" : "dedupe";
         logger.info(
-          `[HistoryStore] insert ns=${this.namespace} session=${normalizedKey} id=${rowId} role=${normalized.role} kind=${normalized.kind ?? ""} ts=${normalized.ts} text=${truncateForLog(normalized.text, 160)}`,
+          `[HistoryStore] ${action} ns=${this.namespace} session=${normalizedKey} id=${rowId} role=${normalized.role} kind=${normalized.kind ?? ""} ts=${normalized.ts} text=${truncateForLog(normalized.text, 160)}`,
         );
       }
+      const changes = (info as { changes?: unknown }).changes;
+      const inserted = typeof changes === "number" ? changes > 0 : true;
+      if (inserted) {
       this.trimSqlite(normalizedKey);
+      }
+      return inserted;
     });
     try {
-      tx();
+      return tx();
     } catch (error) {
       logger.warn(`[HistoryStore] Failed to insert history entry (sqlite)`, error);
       // Fallback to best-effort: do not throw in callers
+      return false;
     }
   }
 
@@ -188,7 +203,7 @@ export class HistoryStore {
       return;
     }
     this.insertStmt = this.db.prepare(
-      `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)
+      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
     this.selectStmt = this.db.prepare(
