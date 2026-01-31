@@ -80,6 +80,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
 
       const serverThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
+      const serverChatSessionId = String((msg as { chatSessionId?: unknown }).chatSessionId ?? "").trim();
+      if (serverChatSessionId) {
+        rt.chatSessionId = serverChatSessionId;
+      }
       const handshakeReset = Boolean((msg as { reset?: unknown }).reset);
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       if (handshakeReset) {
@@ -344,4 +348,3 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 }
-

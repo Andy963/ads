@@ -152,6 +152,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     let rt = getRuntime(pid);
     rt.projectSessionId = String(project.sessionId ?? "").trim();
+    rt.chatSessionId = String(project.chatSessionId ?? "").trim() || "main";
 
     const identity = await resolveProjectIdentity(project);
     if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
@@ -167,6 +168,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       project = nextProject;
       rt = getRuntime(pid);
       rt.projectSessionId = String(project.sessionId ?? "").trim();
+      rt.chatSessionId = String(project.chatSessionId ?? "").trim() || "main";
     }
 
     clearReconnectTimer(rt);
@@ -179,7 +181,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       // ignore
     }
 
-    const wsInstance = new AdsWebSocket({ sessionId: project.sessionId });
+    const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: project.chatSessionId });
     rt.ws = wsInstance;
     let disconnectCleanupDone = false;
     let disconnectWasBusy = false;

@@ -37,6 +37,7 @@ export type {
 function createProjectRuntime(options: { maxLiveActivitySteps: number }): ProjectRuntime {
   return {
     projectSessionId: "",
+    chatSessionId: "main",
     connected: ref(false),
     needsTaskResync: false,
     apiError: ref<string | null>(null),

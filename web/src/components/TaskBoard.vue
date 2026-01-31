@@ -19,7 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "select", id: string): void;
   (e: "create"): void;
-  (e: "resetThread"): void;
+  (e: "newSession"): void;
   (e: "resumeThread"): void;
   (e: "togglePlan", id: string): void;
   (e: "ensurePlan", id: string): void;
@@ -320,12 +320,9 @@ watch(
             <path d="M3 11a7 7 0 1 0 2-5" />
           </svg>
         </button>
-        <button class="iconBtn" type="button" title="重置上下文" aria-label="重置上下文" @click.stop="emit('resetThread')">
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 4v5h5" />
-            <path d="M16 16v-5h-5" />
-            <path d="M5.5 14.5a6 6 0 0 0 8.5 0" />
-            <path d="M14.5 5.5a6 6 0 0 0-8.5 0" />
+        <button class="iconBtn" type="button" title="创建新会话" aria-label="创建新会话" @click.stop="emit('newSession')">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" aria-hidden="true" class="icon">
+            <use href="/cdn/assets/sprites-core-c9exbsc1.svg#3a5c87" fill="currentColor"></use>
           </svg>
         </button>
       </div>

@@ -51,6 +51,7 @@ const {
   openTaskCreateDialog,
   resumeTaskThread,
   clearActiveChat,
+  startNewChatSession,
   messages,
   queuedPrompts,
   pendingImages,
@@ -179,7 +180,7 @@ const {
                 @delete="deleteTask"
                 @create="openTaskCreateDialog"
                 @resumeThread="resumeTaskThread"
-                @resetThread="clearActiveChat"
+                @newSession="startNewChatSession"
               />
             </div>
           </div>

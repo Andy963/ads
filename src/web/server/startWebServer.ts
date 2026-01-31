@@ -152,7 +152,7 @@ export async function startWebServer(): Promise<void> {
   const traceWsDuplication = parseBooleanFlag(process.env.ADS_TRACE_WS_DUPLICATION, false);
   const clientMetaByWs = new Map<
     import("ws").WebSocket,
-    { historyKey: string; sessionId: string; connectionId: string; userId: number }
+    { historyKey: string; sessionId: string; chatSessionId: string; connectionId: string; userId: number }
   >();
 
   const broadcastToSession = (sessionId: string, payload: unknown): void => {

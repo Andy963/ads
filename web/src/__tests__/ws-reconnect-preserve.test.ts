@@ -50,7 +50,7 @@ vi.mock("../api/ws", () => {
 
     clearHistory = vi.fn();
 
-    constructor(_: { sessionId: string }) {
+    constructor(_: { sessionId: string; chatSessionId?: string }) {
       lastWs = this as unknown as typeof lastWs;
     }
 

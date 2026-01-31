@@ -10,6 +10,7 @@ export type ProjectTab = {
   name: string;
   path: string;
   sessionId: string;
+  chatSessionId: string;
   initialized: boolean;
   createdAt: number;
   updatedAt: number;
@@ -47,6 +48,7 @@ export type TaskChatBuffer = { firstTs: number; events: BufferedTaskChatEvent[] 
 
 export type ProjectRuntime = {
   projectSessionId: string;
+  chatSessionId: string;
   connected: Ref<boolean>;
   // When the WS disconnects, the UI may miss task status transitions.
   // Mark the runtime as needing a resync on the next successful connect.

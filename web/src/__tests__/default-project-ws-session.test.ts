@@ -42,7 +42,7 @@ vi.mock("../api/ws", () => {
     onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
 
-    constructor(options: { sessionId: string }) {
+    constructor(options: { sessionId: string; chatSessionId?: string }) {
       wsSessionIds.push(String(options.sessionId));
     }
 
@@ -104,4 +104,3 @@ describe("Default project websocket session", () => {
     expect(wsSessionIds[0]).toBe("default");
   });
 });
-

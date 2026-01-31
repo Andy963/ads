@@ -45,7 +45,7 @@ vi.mock("../api/ws", () => {
     onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
 
-    constructor(_: { sessionId: string }) {}
+    constructor(_: { sessionId: string; chatSessionId?: string }) {}
 
     connect(): void {
       queueMicrotask(() => this.onOpen?.());

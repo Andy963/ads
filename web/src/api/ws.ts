@@ -21,7 +21,7 @@ type WsPatchPayload = {
 };
 
 type WsMessage =
-  | { type: "welcome"; sessionId?: string; workspace?: unknown; threadId?: string; reset?: boolean }
+  | { type: "welcome"; sessionId?: string; chatSessionId?: string; workspace?: unknown; threadId?: string; reset?: boolean }
   | { type: "ack"; client_message_id?: string; duplicate?: boolean }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
   | { type: "delta"; delta?: string; source?: "chat" | "step" }
@@ -36,6 +36,7 @@ type WsMessage =
 export class AdsWebSocket {
   private ws: WebSocket | null = null;
   private readonly sessionId: string;
+  private readonly chatSessionId: string;
   private pingTimer: number | null = null;
 
   onOpen?: () => void;
@@ -44,8 +45,9 @@ export class AdsWebSocket {
   onTaskEvent?: (payload: { event: TaskEventPayload["event"]; data: unknown }) => void;
   onMessage?: (msg: WsMessage) => void;
 
-  constructor(options: { sessionId?: string }) {
+  constructor(options: { sessionId?: string; chatSessionId?: string }) {
     this.sessionId = options.sessionId ?? cryptoRandomId();
+    this.chatSessionId = String(options.chatSessionId ?? "").trim() || "main";
   }
 
   send(type: string, payload?: unknown, options?: { clientMessageId?: string }): void {
@@ -77,7 +79,7 @@ export class AdsWebSocket {
   connect(): void {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const url = proto + location.host + "/ws";
-    const protocols = ["ads-v1", `ads-session.${this.sessionId}`].filter(Boolean);
+    const protocols = ["ads-v1", `ads-session.${this.sessionId}`, `ads-chat.${this.chatSessionId}`].filter(Boolean);
 
     this.ws = new WebSocket(url, protocols);
     this.ws.onopen = () => {

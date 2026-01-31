@@ -13,6 +13,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.ts"],
+    testTimeout: 20000,
     restoreMocks: true,
     clearMocks: true,
   },

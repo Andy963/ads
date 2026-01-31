@@ -56,7 +56,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     const id = sessionId;
     const name = String(params.name ?? "").trim() || deriveProjectName(path);
     const initialized = params.initialized ?? !path;
-    return { id, name, path, sessionId, initialized, createdAt: now, updatedAt: now, expanded: false };
+    return { id, name, path, sessionId, chatSessionId: "main", initialized, createdAt: now, updatedAt: now, expanded: false };
   };
 
   const persistProjects = (): void => {
@@ -73,16 +73,14 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     const normalized: ProjectTab[] = Array.isArray(stored)
       ? stored
           .map((p) => {
-            const sessionId = String((p as Partial<ProjectTab>)?.sessionId ?? "").trim();
-            const path = String((p as Partial<ProjectTab>)?.path ?? "").trim();
-            const name = String((p as Partial<ProjectTab>)?.name ?? "").trim() || deriveProjectName(path);
+            const raw = p as Partial<ProjectTab> & { chatSessionId?: unknown };
+            const sessionId = String(raw.sessionId ?? "").trim();
+            const path = String(raw.path ?? "").trim();
+            const name = String(raw.name ?? "").trim() || deriveProjectName(path);
+            const chatSessionId = String(raw.chatSessionId ?? "").trim() || "main";
             if (!sessionId) return null;
-            return createProjectTab({
-              path,
-              name,
-              sessionId,
-              initialized: Boolean((p as Partial<ProjectTab>)?.initialized) || !path,
-            });
+            const base = createProjectTab({ path, name, sessionId, initialized: Boolean(raw.initialized) || !path });
+            return { ...base, chatSessionId };
           })
           .filter((p): p is ProjectTab => Boolean(p))
       : [];
@@ -155,6 +153,35 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     ctx.clearStepLive();
     ctx.finalizeCommandBlock();
     ctx.setMessages([]);
+  };
+
+  const startNewChatSession = async (): Promise<void> => {
+    if (!ctx.loggedIn.value) return;
+    const pid = String(activeProjectId.value ?? "").trim();
+    if (!pid) return;
+
+    const project = projects.value.find((p) => p.id === pid) ?? null;
+    if (!project) return;
+
+    const newChatSessionId = crypto.randomUUID?.() ?? randomId("chat");
+    updateProject(pid, { chatSessionId: newChatSessionId });
+    activeRuntime.value.chatSessionId = newChatSessionId;
+    activeRuntime.value.ignoreNextHistory = false;
+    activeRuntime.value.suppressNextClearHistoryResult = false;
+
+    clearChatState();
+
+    const prev = activeRuntime.value.ws as { close?: () => void } | null;
+    activeRuntime.value.ws = null;
+    try {
+      prev?.close?.();
+    } catch {
+      // ignore
+    }
+    activeRuntime.value.connected.value = false;
+    activeRuntime.value.wsError.value = null;
+
+    await deps.activateProject(pid);
   };
 
   const performProjectSwitch = (id: string): void => {
@@ -365,5 +392,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     onProjectDialogPathInput,
     validateProjectDialogPath,
     submitProjectDialog,
+    startNewChatSession,
   };
 }

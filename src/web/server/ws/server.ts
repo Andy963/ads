@@ -12,7 +12,7 @@ import type { TodoListItem } from "@openai/codex-sdk";
 import { deriveWebUserId, getWorkspaceState } from "../../utils.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { wsMessageSchema } from "./schema.js";
-import { resolveWebSocketSessionId } from "./session.js";
+import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, formatCloseReason, summarizeWsPayloadForLog } from "./utils.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import { handlePromptMessage } from "./handlePrompt.js";
@@ -31,7 +31,7 @@ export function attachWebSocketServer(deps: {
   allowedDirs: string[];
   workspaceCache: Map<string, string>;
   interruptControllers: Map<number, AbortController>;
-  clientMetaByWs: Map<WebSocket, { historyKey: string; sessionId: string; connectionId: string; userId: number }>;
+  clientMetaByWs: Map<WebSocket, { historyKey: string; sessionId: string; chatSessionId: string; connectionId: string; userId: number }>;
   clients: Set<WebSocket>;
   cwdStore: Map<string, string>;
   cwdStorePath: string;
@@ -112,6 +112,7 @@ export function attachWebSocketServer(deps: {
     }
 
     const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: deps.workspaceRoot });
+    const chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
 
     if (deps.clients.size >= deps.maxClients) {
       ws.close(4409, `max clients reached (${deps.maxClients})`);
@@ -127,10 +128,11 @@ export function attachWebSocketServer(deps: {
     });
 
     const clientKey = String(auth.userId ?? "").trim();
-    const userId = deriveWebUserId(clientKey, sessionId);
-    const historyKey = `${clientKey}::${sessionId}`;
+    const chatKey = `${sessionId}:${chatSessionId}`;
+    const userId = deriveWebUserId(clientKey, chatKey);
+    const historyKey = `${clientKey}::${sessionId}::${chatSessionId}`;
     const connectionId = crypto.randomBytes(3).toString("hex");
-    deps.clientMetaByWs.set(ws, { historyKey, sessionId, connectionId, userId });
+    deps.clientMetaByWs.set(ws, { historyKey, sessionId, chatSessionId, connectionId, userId });
     const directoryManager = new DirectoryManager(deps.allowedDirs);
 
     const cacheKey = `${clientKey}::${sessionId}`;
@@ -160,13 +162,14 @@ export function attachWebSocketServer(deps: {
     let lastPlanItems: TodoListItem["items"] | null = null;
 
     deps.logger.info(
-      `client connected conn=${connectionId} session=${sessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}`,
+      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}`,
     );
     safeJsonSend(ws, {
       type: "welcome",
       message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
       workspace: getWorkspaceState(currentCwd),
       sessionId,
+      chatSessionId,
       threadId: deps.sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
     });
 
