@@ -5,6 +5,8 @@ import DraggableModal from "./DraggableModal.vue";
 
 type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "model" | "priority" | "inheritContext" | "maxRetries">>;
 
+const newSessionIconHref = "/cdn/assets/sprites-core-c9exbsc1.svg#3a5c87";
+
 const props = defineProps<{
   tasks: Task[];
   models: ModelConfig[];
@@ -322,7 +324,7 @@ watch(
         </button>
         <button class="iconBtn" type="button" title="创建新会话" aria-label="创建新会话" @click.stop="emit('newSession')">
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" aria-hidden="true" class="icon">
-            <use href="/cdn/assets/sprites-core-c9exbsc1.svg#3a5c87" fill="currentColor"></use>
+            <use :href="newSessionIconHref" fill="currentColor"></use>
           </svg>
         </button>
       </div>
