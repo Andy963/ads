@@ -6,6 +6,7 @@ export function createTaskEventActions(
   ctx: AppContext & ChatActions,
   deps: {
     upsertTask: (t: Task, rt?: ProjectRuntime) => void;
+    removeTask: (taskId: string, rt: ProjectRuntime) => void;
     loadQueueStatus: (projectId?: string) => Promise<void>;
   },
 ) {
@@ -25,11 +26,19 @@ export function createTaskEventActions(
     finalizeCommandBlock,
     clearStepLive,
   } = ctx;
-  const { upsertTask, loadQueueStatus } = deps;
+  const { upsertTask, removeTask, loadQueueStatus } = deps;
 
   const onTaskEvent = (payload: { event: TaskEventPayload["event"]; data: unknown }, rt?: ProjectRuntime): void => {
     const state = ctx.runtimeOrActive(rt);
     pruneTaskChatBuffer(state);
+    if (payload.event === "task:deleted") {
+      const data = payload.data as { taskId?: unknown };
+      const taskId = String(data?.taskId ?? "").trim();
+      if (taskId) {
+        removeTask(taskId, state);
+      }
+      return;
+    }
     if (payload.event === "task:updated") {
       const t = payload.data as Task;
       upsertTask(t, state);
@@ -196,4 +205,3 @@ export function createTaskEventActions(
 
   return { onTaskEvent };
 }
-

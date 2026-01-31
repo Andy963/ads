@@ -100,6 +100,7 @@ export interface TaskQueueStatus {
 export type TaskEventPayload =
   | { event: "task:started"; data: Task }
   | { event: "task:updated"; data: Task }
+  | { event: "task:deleted"; data: { taskId: string } }
   | { event: "task:running"; data: Task }
   | { event: "task:completed"; data: Task }
   | { event: "task:cancelled"; data: Task }

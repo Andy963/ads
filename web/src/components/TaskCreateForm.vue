@@ -380,16 +380,6 @@ onBeforeUnmount(() => {
       <div v-if="attachmentError" class="errorBox">附件：{{ attachmentError }}</div>
 
       <div v-if="attachments.length" class="attachments">
-        <div class="attachmentsHeader">
-          <span class="attachmentsTitle">图片</span>
-          <span class="attachmentsMeta">
-            <span v-if="uploadingCount">上传中 {{ uploadingCount }}…</span>
-            <span v-else-if="failedCount">失败 {{ failedCount }}</span>
-            <span v-else>就绪 {{ attachments.length }}</span>
-          </span>
-        </div>
-
-        <div class="thumbGrid">
           <div v-for="a in attachments" :key="a.localId" class="thumbCard" :data-status="a.status">
             <div class="thumbWrap">
               <a
@@ -421,7 +411,6 @@ onBeforeUnmount(() => {
               <button class="removeBtn" type="button" title="移除" @click="removeAttachment(a.localId)">×</button>
             </div>
           </div>
-        </div>
       </div>
     </div>
 

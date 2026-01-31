@@ -30,6 +30,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     expanded,
     plansByTaskId,
     apiAuthorized,
+    pendingDeleteProjectId,
     pendingDeleteTaskId,
     deleteConfirmOpen,
     deleteConfirmButtonEl,
@@ -191,7 +192,42 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     }
   };
 
-  const { onTaskEvent } = createTaskEventActions(ctx, { upsertTask, loadQueueStatus });
+  function pickNextSelectedTaskId(nextTasks: Task[]): string | null {
+    if (!nextTasks.length) return null;
+    const nextPending = nextTasks
+      .filter((t) => t.status === "pending")
+      .slice()
+      .sort((a, b) => {
+        if (a.priority !== b.priority) return b.priority - a.priority;
+        if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
+        return a.createdAt - b.createdAt;
+      })[0];
+    return (nextPending ?? nextTasks[0])!.id;
+  }
+
+  function removeTaskLocal(taskId: string, rt: ProjectRuntime): void {
+    const normalized = String(taskId ?? "").trim();
+    if (!normalized) return;
+
+    const nextTasks = rt.tasks.value.filter((t) => t.id !== normalized);
+    if (nextTasks.length === rt.tasks.value.length) {
+      return;
+    }
+    rt.tasks.value = nextTasks;
+
+    rt.expanded.value = new Set([...rt.expanded.value].filter((x) => x !== normalized));
+    rt.plansByTaskId.value.delete(normalized);
+    rt.plansByTaskId.value = new Map(rt.plansByTaskId.value);
+    rt.planFetchInFlightByTaskId.delete(normalized);
+    rt.startedTaskIds.delete(normalized);
+    rt.taskChatBufferByTaskId.delete(normalized);
+
+    if (rt.selectedId.value === normalized) {
+      rt.selectedId.value = pickNextSelectedTaskId(rt.tasks.value);
+    }
+  }
+
+  const { onTaskEvent } = createTaskEventActions(ctx, { upsertTask, removeTask: removeTaskLocal, loadQueueStatus });
 
   const {
     reorderPendingTasks,
@@ -398,11 +434,14 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     clearNotice();
     const taskId = String(id ?? "").trim();
     if (!taskId) return;
-    const t = tasks.value.find((x) => x.id === taskId);
+    const pid = normalizeProjectId(activeProjectId.value);
+    const rt = getRuntime(pid);
+    const t = rt.tasks.value.find((x) => x.id === taskId);
     if (t && (t.status === "running" || t.status === "planning")) {
       apiError.value = "任务执行中，无法删除（请先终止）";
       return;
     }
+    pendingDeleteProjectId.value = pid;
     pendingDeleteTaskId.value = taskId;
     deleteConfirmOpen.value = true;
     void nextTick(() => deleteConfirmButtonEl.value?.focus());
@@ -410,26 +449,24 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const cancelDeleteTask = (): void => {
     deleteConfirmOpen.value = false;
+    pendingDeleteProjectId.value = null;
     pendingDeleteTaskId.value = null;
   };
 
   const confirmDeleteTask = async (): Promise<void> => {
     const taskId = pendingDeleteTaskId.value;
+    const projectId = pendingDeleteProjectId.value ?? activeProjectId.value;
     deleteConfirmOpen.value = false;
+    pendingDeleteProjectId.value = null;
     pendingDeleteTaskId.value = null;
     if (!taskId) return;
 
     apiError.value = null;
     try {
-      await api.delete<{ success: boolean }>(withWorkspaceQuery(`/api/tasks/${taskId}`));
-      tasks.value = tasks.value.filter((x) => x.id !== taskId);
-      expanded.value = new Set([...expanded.value].filter((x) => x !== taskId));
-      plansByTaskId.value.delete(taskId);
-      plansByTaskId.value = new Map(plansByTaskId.value);
-
-      if (selectedId.value === taskId) {
-        selectedId.value = tasks.value[0]?.id ?? null;
-      }
+      const pid = normalizeProjectId(projectId);
+      const rt = getRuntime(pid);
+      await api.delete<{ success: boolean }>(withWorkspaceQueryFor(pid, `/api/tasks/${taskId}`));
+      removeTaskLocal(taskId, rt);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       apiError.value = msg;
@@ -521,6 +558,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     loadTasks,
     upsertTask,
     onTaskEvent,
+    removeTaskLocal,
     updateQueuedTask,
     updateQueuedTaskAndRun,
     refreshTaskRow,

@@ -80,7 +80,7 @@ export function createAppContext() {
   const maxRecentCommands = 5;
   const maxLiveActivitySteps = 5;
   const maxTurnCommands = 64;
-  const maxExecutePreviewLines = 3;
+  const maxExecutePreviewLines = 1;
   const maxChatMessages = 200;
 
   const fixtureMode = computed(() => {
@@ -105,6 +105,7 @@ export function createAppContext() {
   const switchConfirmOpen = ref(false);
   const pendingSwitchProjectId = ref<string | null>(null);
   const deleteConfirmOpen = ref(false);
+  const pendingDeleteProjectId = ref<string | null>(null);
   const pendingDeleteTaskId = ref<string | null>(null);
   const deleteConfirmButtonEl = ref<HTMLButtonElement | null>(null);
   const taskCreateDialogOpen = ref(false);
@@ -251,7 +252,13 @@ export function createAppContext() {
 
   const tasksBusy = computed(() => tasks.value.some((t) => t.status === "planning" || t.status === "running"));
   const agentBusy = computed(() => busy.value || tasksBusy.value);
-  const pendingDeleteTask = computed(() => tasks.value.find((t) => t.id === pendingDeleteTaskId.value) ?? null);
+  const pendingDeleteTask = computed(() => {
+    const taskId = String(pendingDeleteTaskId.value ?? "").trim();
+    if (!taskId) return null;
+    const pid = normalizeProjectId(pendingDeleteProjectId.value ?? activeProjectId.value);
+    const rt = getRuntime(pid);
+    return rt.tasks.value.find((t) => t.id === taskId) ?? null;
+  });
   const apiAuthorized = computed(() => loggedIn.value);
 
   const runtimeOrActive = (rt?: ProjectRuntime): ProjectRuntime => rt ?? activeRuntime.value;
@@ -336,6 +343,7 @@ export function createAppContext() {
     switchConfirmOpen,
     pendingSwitchProjectId,
     deleteConfirmOpen,
+    pendingDeleteProjectId,
     pendingDeleteTaskId,
     deleteConfirmButtonEl,
     taskCreateDialogOpen,

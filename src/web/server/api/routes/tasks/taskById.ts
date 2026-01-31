@@ -47,7 +47,18 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
   }
 
   if (req.method === "DELETE") {
+    const task = taskCtx.taskStore.getTask(taskId);
+    if (!task) {
+      sendJson(res, 404, { error: "Not Found" });
+      return true;
+    }
+    if (task.status === "running" || task.status === "planning") {
+      sendJson(res, 409, { error: `Task not deletable in status: ${task.status}` });
+      return true;
+    }
+
     taskCtx.taskStore.deleteTask(taskId);
+    deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:deleted", data: { taskId }, ts: Date.now() });
     sendJson(res, 200, { success: true });
     return true;
   }

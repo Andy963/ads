@@ -100,9 +100,9 @@ describe("compact attachment UI", () => {
     expect(wrapper.emitted("clearImages")).toBeTruthy();
 
     const css = await readText("../components/MainChat.css");
-    expect(css).toMatch(/\.attachmentsBar\s*\{[\s\S]*height:\s*10px\s*;/);
-    expect(css).toMatch(/\.attachmentsPill\s*\{[\s\S]*height:\s*10px\s*;/);
-    expect(css).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*10px\s*;[\s\S]*height:\s*10px\s*;/);
+    expect(css).toMatch(/\.attachmentsBar\s*\{[\s\S]*height:\s*14px\s*;/);
+    expect(css).toMatch(/\.attachmentsPill\s*\{[\s\S]*height:\s*14px\s*;/);
+    expect(css).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*14px\s*;[\s\S]*height:\s*14px\s*;/);
 
     wrapper.unmount();
   });

@@ -202,18 +202,18 @@
 .bubble {
   max-width: min(900px, 100%);
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: white;
   position: relative;
 }
 .bubble.hasActions {
-  padding-bottom: 32px;
+  padding-bottom: 34px;
 }
 .msgActions {
   position: absolute;
-  left: 10px;
-  bottom: 8px;
+  left: 12px;
+  bottom: 10px;
   display: inline-flex;
   gap: 8px;
   align-items: center;
@@ -224,8 +224,8 @@
   opacity: 1;
 }
 .msgCopyBtn {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: 1px solid rgba(226, 232, 240, 0.95);
   background: rgba(255, 255, 255, 0.92);
@@ -242,6 +242,7 @@
 .msgTime {
   font-size: 11px;
   line-height: 1;
+  padding: 2px;
   color: #94a3b8;
   white-space: nowrap;
   user-select: none;
@@ -349,4 +350,3 @@
     width: 100%;
   }
 }
-

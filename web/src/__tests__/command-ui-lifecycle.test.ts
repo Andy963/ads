@@ -139,10 +139,8 @@ describe("command UI lifecycle", () => {
     expect(execute).toBeTruthy();
     expect(execute.command).toBe("git status --porcelain");
     expect(String(execute.content)).toContain("M a");
-    expect(String(execute.content)).toContain("M b");
-    expect(String(execute.content)).toContain("M c");
     expect(String(execute.content)).not.toContain("M d");
-    expect(execute.hiddenLineCount).toBe(1);
+    expect(execute.hiddenLineCount).toBe(3);
 
     lastWs!.onMessage?.({ type: "result", ok: true, output: "Summary" });
     await settleUi(wrapper);

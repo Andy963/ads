@@ -155,9 +155,7 @@
   top: 0;
   left: 0;
   right: 0;
-  /* Keep a concrete value for environments without CSS custom properties (e.g. jsdom). */
-  bottom: 12px;
-  bottom: var(--execute-stack-padding-bottom);
+  bottom: 0;
   border: 1px solid rgba(148, 163, 184, 0.25);
   background: rgba(15, 23, 42, 0.03);
   border-radius: 12px;
@@ -201,12 +199,10 @@
   font-size: 12px;
   line-height: 1.55;
   color: #0f172a;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex: 0 0 auto;
 }
 .execute-more {
   margin-top: 8px;
@@ -283,7 +279,7 @@
   width: 100%;
   max-width: 100%;
   border-radius: 12px;
-  padding: 10px 12px 14px 12px;
+  padding: 12px 14px 22px 14px;
   border: 1px solid var(--border);
   background: var(--surface);
   position: relative;
@@ -291,7 +287,7 @@
 }
 .bubble--compact {
   /* When there is no content and actions are hidden, avoid the extra bottom padding. */
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 .copyBtn {
   position: absolute;
@@ -329,7 +325,7 @@
 .msgActions {
   position: absolute;
   left: 10px;
-  bottom: -6px;
+  bottom: -4px;
   display: inline-flex;
   gap: 8px;
   align-items: center;
@@ -340,9 +336,10 @@
   opacity: 1;
 }
 .msgCopyBtn {
-  width: 28px;
-  height: 28px;
-  padding: 0;
+  width: 30px;
+  height: 30px;
+  padding: 2px;
+  box-sizing: border-box;
   border: none;
   background: transparent;
   color: #64748b;
@@ -357,6 +354,7 @@
 .msgTime {
   font-size: 11px;
   line-height: 1;
+  padding: 2px;
   color: #94a3b8;
   white-space: nowrap;
   user-select: none;
@@ -604,29 +602,30 @@
 .attachmentsBar {
   display: flex;
   justify-content: flex-start;
-  height: 10px;
+  height: 14px;
+  margin-bottom: 4px;
 }
 .attachmentsPill {
   display: flex;
   align-items: center;
   gap: 6px;
   box-sizing: border-box;
-  height: 10px;
-  padding: 0 6px;
+  height: 14px;
+  padding: 0 8px;
   border-radius: 999px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: rgba(15, 23, 42, 0.04);
   color: #0f172a;
 }
 .attachmentsText {
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   color: #475569;
-  line-height: 10px;
+  line-height: 14px;
 }
 .attachmentsClear {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   border-radius: 999px;
   border: none;
   background: transparent;
@@ -636,8 +635,8 @@
   cursor: pointer;
 }
 .attachmentsClear svg {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   display: block;
 }
 .attachmentsClear:hover {

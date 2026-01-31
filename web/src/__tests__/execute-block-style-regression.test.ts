@@ -16,12 +16,14 @@ describe("execute block style regression", () => {
     expect(css).toMatch(/\.execute-block\s*\{[\s\S]*?height:\s*100px\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-stack\s*\{[\s\S]*?padding-bottom:\s*12px\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-underlays\s*\{[\s\S]*?bottom:\s*12px\s*;[\s\S]*?bottom:\s*var\(--execute-stack-padding-bottom\)\s*;[\s\S]*?\}/);
-    expect(css).toMatch(/\.execute-underlay\s*\{[\s\S]*?bottom:\s*12px\s*;[\s\S]*?bottom:\s*var\(--execute-stack-padding-bottom\)\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.execute-underlay\s*\{[\s\S]*?bottom:\s*0\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-underlay\[data-layer="1"\]\s*\{[\s\S]*?transform:\s*translate\(0,\s*6px\)\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-underlay\[data-layer="2"\]\s*\{[\s\S]*?transform:\s*translate\(0,\s*12px\)\s*;[\s\S]*?\}/);
 
     expect(css).toMatch(/\.execute-header\s*\{[\s\S]*?flex-wrap:\s*nowrap\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-cmd\s*\{[\s\S]*?text-overflow:\s*ellipsis\s*;[\s\S]*?\}/);
-    expect(css).toMatch(/\.execute-output\s*\{[\s\S]*?overflow:\s*auto\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.execute-output\s*\{[\s\S]*?overflow:\s*hidden\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.execute-output\s*\{[\s\S]*?white-space:\s*nowrap\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.execute-output\s*\{[\s\S]*?text-overflow:\s*ellipsis\s*;[\s\S]*?\}/);
   });
 });

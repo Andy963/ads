@@ -273,7 +273,7 @@ function getCommands(content: string): string[] {
         <textarea
           v-model="input"
           ref="inputEl"
-          rows="2"
+          rows="3"
           class="composer-input"
           placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）"
           @keydown="onInputKeydown"

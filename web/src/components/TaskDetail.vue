@@ -295,7 +295,7 @@ onBeforeUnmount(() => {
     <div class="composer">
       <textarea
         v-model="input"
-        rows="2"
+        rows="3"
         class="composer-input"
         :placeholder="isRunning ? 'Continue with instruction... (Enter to send, Alt+Enter for newline)' : 'Enter instruction... (Enter to send, Alt+Enter for newline)'"
         @keydown="onInputKeydown"
