@@ -250,7 +250,6 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       sendJson(res, 400, { error: message });
       return true;
     }
-    const now = Date.now();
     const taskExists = Boolean(taskCtx.taskStore.getTask(runSingleTaskId));
     if (!taskExists) {
       sendJson(res, 404, { error: "Not Found" });
