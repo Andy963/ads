@@ -12,4 +12,5 @@ This file is maintained by ADS. Edit outside the marked block if needed.
 - 0006 - [Collapse Command Trees and Stack Execute Previews](0006-collapse-command-tree-and-stack-execute-previews.md)
 - 0007 - [Queue Task Runs While Agent Is Busy](0007-queue-task-runs-while-agent-busy.md)
 - 0008 - [Task Rerun With Workspace Patch Context](0008-task-rerun-with-workspace-patch-context.md)
+- 0009 - [Constrain Live Step Trace Output](0009-constrain-live-step-trace-output.md)
 <!-- ADS:ADR_INDEX_END -->
