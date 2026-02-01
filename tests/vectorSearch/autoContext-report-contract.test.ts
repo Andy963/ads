@@ -37,6 +37,7 @@ describe("vectorSearch/autoContext report contract", () => {
     originalEnv.ADS_VECTOR_SEARCH_TOKEN = process.env.ADS_VECTOR_SEARCH_TOKEN;
     originalEnv.ADS_VECTOR_SEARCH_TIMEOUT_MS = process.env.ADS_VECTOR_SEARCH_TIMEOUT_MS;
     originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED = process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED;
+    originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MODE = process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MODE;
     originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS = process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS;
 
     adsState = installTempAdsStateDir("ads-state-vsearch-autocontext-");
@@ -47,6 +48,7 @@ describe("vectorSearch/autoContext report contract", () => {
     setEnv("ADS_VECTOR_SEARCH_TOKEN", "test-token");
     setEnv("ADS_VECTOR_SEARCH_TIMEOUT_MS", "50");
     setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED", "1");
+    setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_MODE", "always");
     setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS", "0");
   });
 
@@ -56,6 +58,7 @@ describe("vectorSearch/autoContext report contract", () => {
     setEnv("ADS_VECTOR_SEARCH_TOKEN", originalEnv.ADS_VECTOR_SEARCH_TOKEN);
     setEnv("ADS_VECTOR_SEARCH_TIMEOUT_MS", originalEnv.ADS_VECTOR_SEARCH_TIMEOUT_MS);
     setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED", originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED);
+    setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_MODE", originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MODE);
     setEnv("ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS", originalEnv.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS);
 
     globalThis.fetch = originalFetch;
@@ -126,4 +129,3 @@ describe("vectorSearch/autoContext report contract", () => {
     assert.equal(last.message, "query failed (400)");
   });
 });
-
