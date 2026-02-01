@@ -438,6 +438,15 @@
   border-color: rgba(148, 163, 184, 0.35);
 }
 
+.msg[data-id="live-step"] .bubble :deep(.md) {
+  /* Keep the reasoning/step trace from taking over the layout; let it scroll in-place. */
+  max-height: 8em;
+  max-height: 5lh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .msg[data-kind="command"] .bubble {
   background: white;
   border-color: rgba(226, 232, 240, 0.9);

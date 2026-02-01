@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./mainChat/types";
@@ -30,8 +30,79 @@ const showScrollToBottom = ref(false);
 
 const openCommandTrees = ref<Set<string>>(new Set());
 
+const LIVE_STEP_MESSAGE_ID = "live-step";
+const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
+
 const MAX_EXECUTE_STACK_LAYERS = 5;
 const MAX_EXECUTE_STACK_UNDERLAYS = MAX_EXECUTE_STACK_LAYERS - 1;
+
+const liveStepPinnedToBottom = ref(true);
+let liveStepScrollEl: HTMLElement | null = null;
+let liveStepScrollFrame: number | null = null;
+
+function scheduleFrame(cb: () => void): number {
+  if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
+  return window.setTimeout(cb, 0);
+}
+
+function cancelFrame(id: number): void {
+  if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(id);
+  else window.clearTimeout(id);
+}
+
+function detachLiveStepScrollEl(): void {
+  if (!liveStepScrollEl) return;
+  liveStepScrollEl.removeEventListener("scroll", onLiveStepScroll);
+  liveStepScrollEl = null;
+}
+
+function isNearBottom(el: HTMLElement, thresholdPx: number): boolean {
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+  return distance <= thresholdPx;
+}
+
+function onLiveStepScroll(): void {
+  const el = liveStepScrollEl;
+  if (!el) return;
+  liveStepPinnedToBottom.value = isNearBottom(el, LIVE_STEP_STICKY_THRESHOLD_PX);
+}
+
+function ensureLiveStepScrollEl(): HTMLElement | null {
+  const host = listRef.value;
+  if (!host) return null;
+
+  const selector = `.msg[data-id="${LIVE_STEP_MESSAGE_ID}"] .bubble .md`;
+  const el = host.querySelector<HTMLElement>(selector);
+  if (!el) {
+    detachLiveStepScrollEl();
+    return null;
+  }
+
+  if (el === liveStepScrollEl) return el;
+
+  detachLiveStepScrollEl();
+  liveStepScrollEl = el;
+  // When the live-step element is (re)mounted, follow the newest content by default.
+  liveStepPinnedToBottom.value = true;
+  el.addEventListener("scroll", onLiveStepScroll, { passive: true });
+  return el;
+}
+
+function scheduleLiveStepScrollToBottom(): void {
+  if (!liveStepPinnedToBottom.value) return;
+
+  const el = ensureLiveStepScrollEl();
+  if (!el) return;
+
+  if (liveStepScrollFrame !== null) cancelFrame(liveStepScrollFrame);
+  liveStepScrollFrame = scheduleFrame(() => {
+    liveStepScrollFrame = null;
+    if (!liveStepPinnedToBottom.value) return;
+    const target = liveStepScrollEl;
+    if (!target) return;
+    target.scrollTop = target.scrollHeight;
+  });
+}
 
 function isCommandTreeOpen(id: string, commandsCount: number): boolean {
   void commandsCount;
@@ -54,6 +125,11 @@ function underlayLayers(count?: number): number[] {
   // Render back-to-front so every 6px "peek" stays visible.
   return Array.from({ length: n }, (_, i) => n - i);
 }
+
+const liveStepMessage = computed(
+  () =>
+    props.messages.find((m) => m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text") ?? null,
+);
 
 const renderMessages = computed<RenderMessage[]>(() => {
   const out: RenderMessage[] = [];
@@ -134,6 +210,32 @@ watch(
   },
 );
 
+watch(
+  [() => Boolean(liveStepMessage.value?.streaming), () => liveStepMessage.value?.content.length ?? 0],
+  ([streaming], [prevStreaming]) => {
+    if (!liveStepMessage.value) {
+      detachLiveStepScrollEl();
+      return;
+    }
+
+    if (streaming && !prevStreaming) {
+      // New streaming session: follow the newest content until the user scrolls away.
+      liveStepPinnedToBottom.value = true;
+    }
+
+    scheduleLiveStepScrollToBottom();
+  },
+  { flush: "post", immediate: true },
+);
+
+onBeforeUnmount(() => {
+  detachLiveStepScrollEl();
+  if (liveStepScrollFrame !== null) {
+    cancelFrame(liveStepScrollFrame);
+    liveStepScrollFrame = null;
+  }
+});
+
 function getCommands(content: string): string[] {
   return content
     .split("\n")
@@ -157,7 +259,7 @@ function getCommands(content: string): string[] {
       <div v-if="messages.length === 0" class="chat-empty">
         <span>直接开始对话…</span>
       </div>
-      <div v-for="m in renderMessages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
+      <div v-for="m in renderMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
         <div v-if="m.kind === 'command'" class="command-block">
           <div class="command-tree-header">
             <button v-if="getCommands(m.content).length > 0" class="command-caret" type="button"
