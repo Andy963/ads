@@ -1,4 +1,12 @@
+import { config } from "@vue/test-utils";
 import { beforeAll } from "vitest";
+
+// TaskBoard uses Element Plus <el-icon>; in unit tests we don't mount the ElementPlus plugin.
+// Stub it globally to avoid noisy "Failed to resolve component" warnings.
+config.global.stubs = {
+  ...(config.global.stubs ?? {}),
+  "el-icon": true,
+};
 
 beforeAll(() => {
   const g = globalThis as unknown as { crypto?: Crypto };

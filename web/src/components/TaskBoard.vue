@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { ChatDotRound, Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 import type { ModelConfig, PlanStep, Task, TaskQueueStatus } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
 
 type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "model" | "priority" | "inheritContext" | "maxRetries">>;
-
-const newSessionIconHref = "/cdn/assets/sprites-core-c9exbsc1.svg#3a5c87";
 
 const props = defineProps<{
   tasks: Task[];
@@ -286,16 +285,11 @@ watch(
       <div class="headerRight">
         <div v-if="queueStatus" class="queueControls">
           <span class="queueDot" :class="{ on: queueIsRunning }" :title="queueIsRunning ? '队列运行中' : '队列已暂停'" />
-          <button
-            class="iconBtn"
-            :class="queueIsRunning ? 'danger' : 'primary'"
-            type="button"
-            :disabled="!queueCanRunAll"
-            :title="queueIsRunning ? '暂停队列' : '运行队列'"
-            aria-label="切换任务队列"
-            @click.stop="toggleQueue"
-          >
-            <svg v-if="queueIsRunning" width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <button class="iconBtn" :class="queueIsRunning ? 'danger' : 'primary'" type="button"
+            :disabled="!queueCanRunAll" :title="queueIsRunning ? '暂停队列' : '运行队列'" aria-label="切换任务队列"
+            @click.stop="toggleQueue">
+            <svg v-if="queueIsRunning" width="16" height="16" viewBox="0 0 20 20" fill="currentColor"
+              aria-hidden="true">
               <path d="M6 4h2v12H6V4Zm6 0h2v12h-2V4Z" />
             </svg>
             <svg v-else width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -304,28 +298,20 @@ watch(
           </button>
         </div>
         <button class="iconBtn primary" type="button" title="新建任务" aria-label="新建任务" @click.stop="emit('create')">
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M10 4v12" />
-            <path d="M4 10h12" />
-          </svg>
+          <el-icon :size="16" aria-hidden="true" class="icon">
+            <Plus />
+          </el-icon>
         </button>
-        <button
-          class="iconBtn"
-          type="button"
-          title="恢复上下文"
-          aria-label="恢复上下文"
-          :disabled="!canResumeThread"
-          @click.stop="emit('resumeThread')"
-        >
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M7 7H3v4" />
-            <path d="M3 11a7 7 0 1 0 2-5" />
-          </svg>
+        <button class="iconBtn" type="button" title="恢复上下文" aria-label="恢复上下文" :disabled="!canResumeThread"
+          @click.stop="emit('resumeThread')">
+          <el-icon :size="16" aria-hidden="true" class="icon">
+            <Refresh />
+          </el-icon>
         </button>
-        <button class="iconBtn" type="button" title="创建新会话" aria-label="创建新会话" @click.stop="emit('newSession')">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" aria-hidden="true" class="icon">
-            <use :href="newSessionIconHref" fill="currentColor"></use>
-          </svg>
+        <button class="iconBtn" type="button" title="新会话" aria-label="新会话" @click.stop="emit('newSession')">
+          <el-icon :size="16" aria-hidden="true" class="icon">
+            <ChatDotRound />
+          </el-icon>
         </button>
       </div>
     </div>
@@ -336,14 +322,8 @@ watch(
     </div>
 
     <div v-else ref="listEl" class="list">
-      <div
-        v-for="t in sorted"
-        :key="t.id"
-        class="item"
-        :data-status="t.status"
-        :data-task-id="t.id"
-        :class="{ active: t.id === selectedId, expanded: expanded.has(t.id) && canShowPlan(t) }"
-      >
+      <div v-for="t in sorted" :key="t.id" class="item" :data-status="t.status" :data-task-id="t.id"
+        :class="{ active: t.id === selectedId, expanded: expanded.has(t.id) && canShowPlan(t) }">
         <div class="row">
           <button class="row-main" type="button" @click="emit('select', t.id)">
             <div class="row-top">
@@ -353,93 +333,66 @@ watch(
             </div>
           </button>
           <div class="row-actions">
-            <button
-              v-if="canRunSingleTask(t)"
-              class="iconBtn primary"
-              type="button"
-              :disabled="!canRunSingleNow || isRunBusy(t.id)"
-              :title="queueIsRunning ? '请先暂停队列，再单独运行' : '单独运行该任务'"
-              aria-label="单独运行任务"
-              @click.stop="emit('runSingle', t.id)"
-            >
+            <button v-if="canRunSingleTask(t)" class="iconBtn primary" type="button"
+              :disabled="!canRunSingleNow || isRunBusy(t.id)" :title="queueIsRunning ? '请先暂停队列，再单独运行' : '单独运行该任务'"
+              aria-label="单独运行任务" @click.stop="emit('runSingle', t.id)">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path d="M7 4.5v11l9-5.5-9-5.5Z" />
               </svg>
             </button>
-            <button
-              v-if="canRerunTask(t) && editingId !== t.id"
-              class="iconBtn primary"
-              type="button"
-              title="重新执行"
-              :disabled="Boolean(editingId)"
-              @click.stop="startEdit(t)"
-            >
+            <button v-if="canRerunTask(t) && editingId !== t.id" class="iconBtn primary" type="button" title="重新执行"
+              :disabled="Boolean(editingId)" @click.stop="startEdit(t)">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path
-                  fill-rule="evenodd"
+                <path fill-rule="evenodd"
                   d="M10 3a7 7 0 1 0 7 7 .75.75 0 0 0-1.5 0 5.5 5.5 0 1 1-1.38-3.65l-1.62 1.6a.75.75 0 0 0 .53 1.28H17a.75.75 0 0 0 .75-.75V3.5a.75.75 0 0 0-1.28-.53l-1.13 1.12A6.98 6.98 0 0 0 10 3Z"
-                  clip-rule="evenodd"
-                />
+                  clip-rule="evenodd" />
               </svg>
             </button>
-            <button
-              v-if="canEditTask(t) && !canRerunTask(t) && editingId !== t.id"
-              class="iconBtn"
-              type="button"
-              title="编辑"
-              :disabled="Boolean(editingId)"
-              data-testid="task-edit"
-              @click.stop="startEdit(t)"
-            >
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path
-                  fill-rule="evenodd"
-                  d="M13.59 2.59a2 2 0 0 1 2.82 2.82l-8.7 8.7a2 2 0 0 1-.88.5l-3.15.9a1 1 0 0 1-1.24-1.24l.9-3.15a2 2 0 0 1 .5-.88l8.7-8.7Zm1.41 1.41a.5.5 0 0 0-.7 0l-1.3 1.3 1.7 1.7 1.3-1.3a.5.5 0 0 0 0-.7L15 4Zm-2.36 2.36-7.68 7.68-.5 1.76 1.76-.5 7.68-7.68-1.26-1.26Z"
-                  clip-rule="evenodd"
-                />
-              </svg>
+            <button v-if="canEditTask(t) && !canRerunTask(t) && editingId !== t.id" class="iconBtn" type="button"
+              title="编辑" :disabled="Boolean(editingId)" data-testid="task-edit" @click.stop="startEdit(t)">
+              <el-icon :size="16" aria-hidden="true" class="icon">
+                <Edit />
+              </el-icon>
+
             </button>
             <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑" @click.stop="stopEdit()">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path
-                  fill-rule="evenodd"
+                <path fill-rule="evenodd"
                   d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                  clip-rule="evenodd"
-                />
+                  clip-rule="evenodd" />
               </svg>
             </button>
-            <button
-              v-if="t.status === 'running' || t.status === 'planning'"
-              class="iconBtn danger"
-              type="button"
-              title="终止任务"
-              @click.stop="emit('cancel', t.id)"
-            >
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd" d="M6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6Zm0 2h8v8H6V6Z" clip-rule="evenodd" />
-              </svg>
+            <button v-if="t.status === 'running' || t.status === 'planning'" class="iconBtn danger" type="button"
+              title="终止任务" @click.stop="emit('cancel', t.id)">
+              <span class="interruptSpinner" aria-hidden="true" />
             </button>
-            <button v-if="t.status === 'failed'" class="iconBtn" type="button" title="重试" @click.stop="emit('retry', t.id)">
+            <button v-if="t.status === 'failed'" class="iconBtn" type="button" title="重试"
+              @click.stop="emit('retry', t.id)">
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path
-                  fill-rule="evenodd"
+                <path fill-rule="evenodd"
                   d="M10 4a6 6 0 0 0-5.2 9h2.1a1 1 0 0 1 .8 1.6l-2.4 3.2a1 1 0 0 1-1.6 0l-2.4-3.2A1 1 0 0 1 2.1 13h1.2A8 8 0 1 1 10 18a.75.75 0 0 1 0-1.5A6.5 6.5 0 1 0 3.62 10a.75.75 0 1 1-1.5 0A8 8 0 0 1 10 2a.75.75 0 0 1 0 1.5Z"
-                  clip-rule="evenodd"
-                />
+                  clip-rule="evenodd" />
               </svg>
             </button>
-            <button v-if="canShowPlan(t)" class="iconBtn" type="button" :title="expanded.has(t.id) ? '收起 Plan' : '展开 Plan'" @click="togglePlan(t)">
-              <svg v-if="expanded.has(t.id)" width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd" d="M5.23 12.21a.75.75 0 0 1 .02-1.06l4.22-4.06a.75.75 0 0 1 1.06.02l4.24 4.38a.75.75 0 1 1-1.08 1.04L10 8.71l-3.73 3.59a.75.75 0 0 1-1.06-.02Z" clip-rule="evenodd" />
+            <button v-if="canShowPlan(t)" class="iconBtn" type="button"
+              :title="expanded.has(t.id) ? '收起 Plan' : '展开 Plan'" @click="togglePlan(t)">
+              <svg v-if="expanded.has(t.id)" width="16" height="16" viewBox="0 0 20 20" fill="currentColor"
+                aria-hidden="true">
+                <path fill-rule="evenodd"
+                  d="M5.23 12.21a.75.75 0 0 1 .02-1.06l4.22-4.06a.75.75 0 0 1 1.06.02l4.24 4.38a.75.75 0 1 1-1.08 1.04L10 8.71l-3.73 3.59a.75.75 0 0 1-1.06-.02Z"
+                  clip-rule="evenodd" />
               </svg>
               <svg v-else width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd" d="M14.77 7.79a.75.75 0 0 1-.02 1.06l-4.22 4.06a.75.75 0 0 1-1.06-.02L5.23 8.51a.75.75 0 0 1 1.08-1.04L10 11.29l3.73-3.59a.75.75 0 0 1 1.06.02Z" clip-rule="evenodd" />
+                <path fill-rule="evenodd"
+                  d="M14.77 7.79a.75.75 0 0 1-.02 1.06l-4.22 4.06a.75.75 0 0 1-1.06-.02L5.23 8.51a.75.75 0 0 1 1.08-1.04L10 11.29l3.73-3.59a.75.75 0 0 1 1.06.02Z"
+                  clip-rule="evenodd" />
               </svg>
             </button>
-            <button class="iconBtn danger" type="button" title="删除任务" :disabled="t.status === 'running' || t.status === 'planning'" @click.stop="emit('delete', t.id)">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd" d="M7 3a1 1 0 0 0-1 1v1H4.75a.75.75 0 0 0 0 1.5h.7l.62 9.1A2 2 0 0 0 8.06 18h3.88a2 2 0 0 0 2-1.9l.62-9.1h.69a.75.75 0 0 0 0-1.5H14V4a1 1 0 0 0-1-1H7Zm1.5 2V4.5h3V5H8.5Zm-1.55 2.5.56 8.25c.03.43.39.75.82.75h3.34c.43 0 .79-.32.82-.75l.56-8.25H6.95Z" clip-rule="evenodd" />
-              </svg>
+            <button class="iconBtn danger" type="button" title="删除任务"
+              :disabled="t.status === 'running' || t.status === 'planning'" @click.stop="emit('delete', t.id)">
+              <el-icon :size="16" aria-hidden="true" class="icon">
+                <Delete />
+              </el-icon>
             </button>
           </div>
         </div>
@@ -464,13 +417,12 @@ watch(
     <DraggableModal v-if="editingTask" card-variant="large" data-testid="task-edit-modal" @close="stopEdit">
       <div class="modalHeader">
         <div class="modalTitle" data-drag-handle>编辑任务</div>
-        <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-edit-modal-cancel" @click="stopEdit">
+        <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-edit-modal-cancel"
+          @click="stopEdit">
           <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path
-              fill-rule="evenodd"
+            <path fill-rule="evenodd"
               d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-              clip-rule="evenodd"
-            />
+              clip-rule="evenodd" />
           </svg>
         </button>
       </div>
@@ -517,23 +469,12 @@ watch(
 
         <div class="actions">
           <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
-          <button
-            v-if="showEditSaveButton"
-            class="btnSecondary"
-            type="button"
-            :disabled="!editingTask"
-            data-testid="task-edit-modal-save"
-            @click="saveEdit(editingTask)"
-          >
+          <button v-if="showEditSaveButton" class="btnSecondary" type="button" :disabled="!editingTask"
+            data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
             保存
           </button>
-          <button
-            class="btnPrimary"
-            type="button"
-            :disabled="!editingTask"
-            data-testid="task-edit-modal-save-and-run"
-            @click="editingTask && saveEditAndRun(editingTask)"
-          >
+          <button class="btnPrimary" type="button" :disabled="!editingTask" data-testid="task-edit-modal-save-and-run"
+            @click="editingTask && saveEditAndRun(editingTask)">
             {{ editPrimaryLabel }}
           </button>
         </div>

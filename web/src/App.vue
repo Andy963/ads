@@ -7,7 +7,7 @@ import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 
 import { createAppController } from "./app/controller";
-
+import { CirclePlus } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -133,7 +133,7 @@ const {
         <div class="projectTree">
           <div class="projectTreeHeader">
             <div class="projectTreeTitle">项目</div>
-            <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog">＋</button>
+            <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog"><el-icon :size="16" aria-hidden="true" class="icon"><CirclePlus /></el-icon></button>
           </div>
 
           <div v-for="p in projects" :key="p.id" class="projectNode" :class="{ active: p.id === activeProjectId }">

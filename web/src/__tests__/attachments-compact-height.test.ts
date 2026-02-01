@@ -167,6 +167,8 @@ describe("compact attachment UI", () => {
       global: {
         stubs: {
           AttachmentThumb: AttachmentThumbStub,
+          // Element Plus component used by TaskBoard; stub to avoid global plugin wiring in this unit test.
+          "el-icon": true,
         },
       },
       attachTo: document.body,
