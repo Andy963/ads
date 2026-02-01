@@ -9,18 +9,16 @@ mkdir -p "$RUN_DIR" "$LOG_DIR"
 declare -A CMDS=(
   [web]="node dist/src/web/server.js"
   [telegram]="node dist/src/telegram/bot.js"
-  [mcp]="node dist/src/mcp/server.js"
 )
 
 declare -A ARTIFACTS=(
   [web]="dist/src/web/server.js"
   [telegram]="dist/src/telegram/bot.js"
-  [mcp]="dist/src/mcp/server.js"
 )
 
 usage() {
   cat <<'EOF'
-Usage: npm run services -- <start|stop|restart|status|list> [web|telegram|mcp|all]
+Usage: npm run services -- <start|stop|restart|status|list> [web|telegram|all]
 
 Environment:
   ADS_WEB_HOST / ADS_WEB_PORT   Configure web server binding.
@@ -138,7 +136,7 @@ fi
 
 SERVICES=()
 if [[ "$TARGET" == "all" || -z "$TARGET" ]]; then
-  SERVICES=(web telegram mcp)
+  SERVICES=(web telegram)
 else
   SERVICES=("$TARGET")
 fi

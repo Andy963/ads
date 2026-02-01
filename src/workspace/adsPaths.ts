@@ -121,7 +121,7 @@ export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolea
     migrated = true;
   }
 
-  // Always ensure per-workspace state exists under ADS_STATE_DIR, even without explicit `ads init`.
+  // Always ensure per-workspace state exists under ADS_STATE_DIR, even if the workspace was never explicitly initialized.
   ensureWorkspaceConfig(stateDir, resolvedWorkspace);
   return migrated;
 }

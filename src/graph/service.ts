@@ -43,9 +43,9 @@ export async function getWorkspaceInfo(params: { workspace_path?: string }): Pro
   try {
     if (!isWorkspaceInitialized(workspace)) {
       return safeStringify({
-        error: "工作空间未初始化",
+        error: "Workspace not initialized",
         workspace_path: workspace,
-        hint: "请先运行 'ads init' 初始化工作空间",
+        hint: "Initialize the workspace from Web Console or Telegram before using graph commands.",
       });
     }
 

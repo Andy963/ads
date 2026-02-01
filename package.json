@@ -29,23 +29,23 @@
     "test:web": "vitest --config web/vitest.config.ts run",
     "dev:console": "bash scripts/dev-console.sh",
     "postbuild": "node scripts/chmod-bins.js",
-    "start": "node dist/src/ads.js",
-    "dev": "tsx watch src/ads.ts",
+    "start": "node dist/src/web/server.js",
+    "dev": "tsx watch src/web/server.ts",
     "test": "tsx --test tests/**/*.test.ts",
     "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
     "web": "node dist/src/web/server.js",
+    "web:init-admin": "node dist/src/web/auth/initAdminCli.js",
+    "web:reset-admin": "node dist/src/web/auth/resetAdminCli.js",
     "web:bg": "npm run services -- start web",
     "web:stop": "npm run services -- stop web",
     "web:status": "npm run services -- status web",
     "services": "bash scripts/services.sh",
-    "lint": "eslint . --ext .ts",
-    "mcp": "node dist/src/mcp/server.js"
+    "lint": "eslint . --ext .ts"
   },
   "engines": {
     "node": ">=20"
   },
   "bin": {
-    "ads": "./dist/src/ads.js",
     "ads-telegram": "./dist/src/telegram/cli.js"
   },
   "dependencies": {
@@ -55,7 +55,6 @@
     "@google/genai": "^1.38.0",
     "@google/generative-ai": "^0.24.1",
     "@grammyjs/types": "^3.22.2",
-    "@modelcontextprotocol/sdk": "^1.22.0",
     "@openai/codex-sdk": "^0.92.0",
     "@tavily/core": "^0.5.4",
     "better-sqlite3": "^12.5.0",

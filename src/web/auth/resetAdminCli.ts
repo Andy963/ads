@@ -1,8 +1,9 @@
 import { resetAdmin } from "./resetAdmin.js";
 
 function printUsage(): void {
-  console.error("Usage: ads web reset-admin --username <u> --password-stdin");
-  console.error("  Or:  ads web reset-admin --username <u> --password <p>");
+  console.error("Usage: npm run web:reset-admin -- --username <u> --password-stdin");
+  console.error("  Or:  npm run web:reset-admin -- --username <u> --password <p>");
+  console.error("  Or:  node dist/src/web/auth/resetAdminCli.js --username <u> --password-stdin");
 }
 
 function parseFlagValue(args: string[], name: string): string | null {
@@ -74,4 +75,3 @@ export async function runResetAdminFromCli(args: string[]): Promise<number> {
   console.log(`OK (updated user=${outcome.username} id=${outcome.userId} prev=${outcome.previousUsername})`);
   return 0;
 }
-

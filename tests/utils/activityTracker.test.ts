@@ -111,12 +111,12 @@ describe("utils/activityTracker", () => {
     } as ThreadEvent);
 
     tracker.ingestToolInvoke("read", '{"path":"src/utils/logger.ts","startLine":1,"endLine":10}');
-    tracker.ingestToolInvoke("read", '{"path":"src/ads.ts","startLine":1,"endLine":10}');
+    tracker.ingestToolInvoke("read", '{"path":"src/index.ts","startLine":1,"endLine":10}');
 
     const entries = tracker.compact({ maxItems: 20, dedupe: "consecutive" });
     assert.deepEqual(
       entries.map((entry) => `${entry.category} ${entry.summary}`),
-      ["List src/utils (x2)", "Read utils/logger.ts, src/ads.ts"],
+      ["List src/utils (x2)", "Read utils/logger.ts, src/index.ts"],
     );
   });
 

@@ -40,7 +40,7 @@ export async function readRules(workspacePath?: string): Promise<string> {
     "",
     `**来源**: ${source}`,
     `**路径**: ${targetPath}`,
-    `**说明**: ${source === "workspace" ? "工作空间自定义规则（可编辑上面的路径）" : "默认模板规则（运行 'ads init' 来创建可编辑的工作空间规则）"}`,
+    `**说明**: ${source === "workspace" ? "工作空间自定义规则（可编辑上面的路径）" : "默认模板规则（请先初始化工作空间以生成可编辑的规则文件）"}`,
     "",
     "---",
     "",

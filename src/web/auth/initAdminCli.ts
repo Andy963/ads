@@ -1,8 +1,9 @@
 import { initAdmin } from "./initAdmin.js";
 
 function printUsage(): void {
-  console.error("Usage: ads web init-admin --username <u> --password-stdin");
-  console.error("  Or:  ads web init-admin --username <u> --password <p>");
+  console.error("Usage: npm run web:init-admin -- --username <u> --password-stdin");
+  console.error("  Or:  npm run web:init-admin -- --username <u> --password <p>");
+  console.error("  Or:  node dist/src/web/auth/initAdminCli.js --username <u> --password-stdin");
 }
 
 function parseFlagValue(args: string[], name: string): string | null {
@@ -74,4 +75,3 @@ export async function runInitAdminFromCli(args: string[]): Promise<number> {
   console.log("OK");
   return 0;
 }
-

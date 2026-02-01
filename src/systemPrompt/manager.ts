@@ -294,8 +294,8 @@ export class SystemPromptManager {
       this.workspaceWarningLogged = true;
     }
     return [
-      "[Workspace Notice] 当前工作区尚未初始化（workspace.json 缺失）。",
-      "将使用内置 templates/ 指令与规则；如需自定义，请运行 `ads init` 初始化工作区。",
+      "[Workspace Notice] Workspace not initialized (workspace.json missing).",
+      "Using built-in templates for instructions/rules. Initialize the workspace via Web Console or Telegram to customize.",
     ].join("\n");
   }
 
