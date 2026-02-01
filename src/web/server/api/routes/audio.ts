@@ -2,12 +2,16 @@ import type { ApiRouteContext } from "../types.js";
 
 import { readRawBody, sendJson } from "../../http.js";
 
-export async function handleAudioRoutes(ctx: ApiRouteContext, deps: { logger: { warn: (msg: string) => void } }): Promise<boolean> {
+export async function handleAudioRoutes(
+  ctx: ApiRouteContext,
+  deps: { logger: { info?: (msg: string) => void; warn: (msg: string) => void } },
+): Promise<boolean> {
   const { req, res, pathname } = ctx;
   if (req.method !== "POST" || pathname !== "/api/audio/transcriptions") {
     return false;
   }
 
+  const startedAt = Date.now();
   const preferProviderRaw = String(process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER ?? "together").trim().toLowerCase();
   const preferProvider = preferProviderRaw === "openai" ? "openai" : "together";
   const togetherKey = String(process.env.TOGETHER_API_KEY ?? "").trim();
@@ -43,6 +47,7 @@ export async function handleAudioRoutes(ctx: ApiRouteContext, deps: { logger: { 
     return true;
   }
 
+  const audioBytes = audio.length;
   const ext = (() => {
     const t = contentType.toLowerCase();
     if (t.includes("webm")) return "webm";
@@ -146,15 +151,32 @@ export async function handleAudioRoutes(ctx: ApiRouteContext, deps: { logger: { 
         if (!text) {
           throw new Error("未识别到文本");
         }
+        deps.logger.info?.(
+          `[Audio] transcription ok provider=${attempt.name} duration_ms=${Date.now() - startedAt} bytes=${audioBytes} content_type=${contentType}`,
+        );
         sendJson(res, 200, { ok: true, text });
         return true;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(`${attempt.name}: ${message || "unknown error"}`);
         deps.logger.warn(`[Audio] transcription via ${attempt.name} failed: ${message}`);
+        if (controller.signal.aborted) {
+          break;
+        }
       }
     }
 
+    if (controller.signal.aborted) {
+      deps.logger.warn(
+        `[Audio] transcription timeout duration_ms=${Date.now() - startedAt} bytes=${audioBytes} content_type=${contentType} prefer_provider=${preferProvider}`,
+      );
+      sendJson(res, 504, { error: "语音识别超时" });
+      return true;
+    }
+
+    deps.logger.warn(
+      `[Audio] transcription failed duration_ms=${Date.now() - startedAt} bytes=${audioBytes} content_type=${contentType} prefer_provider=${preferProvider}`,
+    );
     sendJson(res, 502, { error: errors[0] ?? "语音识别失败" });
     return true;
   } catch (error) {
@@ -166,4 +188,3 @@ export async function handleAudioRoutes(ctx: ApiRouteContext, deps: { logger: { 
     clearTimeout(timeout);
   }
 }
-
