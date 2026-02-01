@@ -11,12 +11,13 @@ export function formatVectorAutoContextSummary(report: VectorAutoContextReport):
   const hits = Math.max(0, Math.floor(report.hits));
   const filtered = Math.max(0, Math.floor(report.filtered));
   const retryCount = Math.max(0, Math.floor(report.retryCount ?? 0));
+  const queryLen = Math.max(0, Math.floor(report.queryLen ?? 0));
   const http = report.httpStatus ? ` http=${report.httpStatus}` : "";
   const code = report.code ? ` code=${report.code}` : "";
   const provider = report.providerCode ? ` provider=${report.providerCode}` : "";
   const reasonRaw = String(report.message ?? "").trim();
   const reason = reasonRaw ? ` reason=${reasonRaw.length > 160 ? reasonRaw.slice(0, 159) + "…" : reasonRaw}` : "";
-  return `VectorSearch(auto) ${cache} status=${status}${code}${http}${provider}${reason} injected=${injected} hits=${hits} filtered=${filtered} chars=${injectedChars} retry=${retryCount} ms=${ms} qhash=${report.queryHash}`;
+  return `VectorSearch(auto) ${cache} status=${status}${code}${http}${provider}${reason} injected=${injected} hits=${hits} filtered=${filtered} chars=${injectedChars} retry=${retryCount} ms=${ms} qhash=${report.queryHash} qlen=${queryLen}`;
 }
 
 function normalizeInputToText(input: Input): string {
@@ -105,4 +106,3 @@ export function injectVectorContext(input: Input, context: string): Input {
   }
   return input;
 }
-

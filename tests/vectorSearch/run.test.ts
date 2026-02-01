@@ -36,6 +36,8 @@ describe("vectorSearch/run bucketing + retry", () => {
     originalEnv.ADS_VECTOR_SEARCH_URL = process.env.ADS_VECTOR_SEARCH_URL;
     originalEnv.ADS_VECTOR_SEARCH_TOKEN = process.env.ADS_VECTOR_SEARCH_TOKEN;
     originalEnv.ADS_VECTOR_SEARCH_TIMEOUT_MS = process.env.ADS_VECTOR_SEARCH_TIMEOUT_MS;
+    originalEnv.ADS_VECTOR_SEARCH_MAX_TOPK = process.env.ADS_VECTOR_SEARCH_MAX_TOPK;
+    originalEnv.ADS_VECTOR_SEARCH_MAX_QUERY_CHARS = process.env.ADS_VECTOR_SEARCH_MAX_QUERY_CHARS;
 
     adsState = installTempAdsStateDir("ads-state-vsearch-run-");
     workspaceRoot = makeWorkspace();
@@ -51,6 +53,8 @@ describe("vectorSearch/run bucketing + retry", () => {
     setEnv("ADS_VECTOR_SEARCH_URL", originalEnv.ADS_VECTOR_SEARCH_URL);
     setEnv("ADS_VECTOR_SEARCH_TOKEN", originalEnv.ADS_VECTOR_SEARCH_TOKEN);
     setEnv("ADS_VECTOR_SEARCH_TIMEOUT_MS", originalEnv.ADS_VECTOR_SEARCH_TIMEOUT_MS);
+    setEnv("ADS_VECTOR_SEARCH_MAX_TOPK", originalEnv.ADS_VECTOR_SEARCH_MAX_TOPK);
+    setEnv("ADS_VECTOR_SEARCH_MAX_QUERY_CHARS", originalEnv.ADS_VECTOR_SEARCH_MAX_QUERY_CHARS);
 
     globalThis.fetch = originalFetch;
 
@@ -163,5 +167,99 @@ describe("vectorSearch/run bucketing + retry", () => {
     assert.ok(String(result.message ?? "").includes("disabled"));
     assert.equal(result.retryCount, 0);
   });
-});
 
+  it("clamps query topK to maxTopK before sending to the provider", async () => {
+    assert.ok(workspaceRoot);
+    setEnv("ADS_VECTOR_SEARCH_MAX_TOPK", "50");
+
+    let seenQueryTopK: number | undefined;
+    globalThis.fetch = async (url, options) => {
+      const target = String(url);
+      const request = (options ?? {}) as RequestInit;
+      const method = String(request.method ?? "GET").toUpperCase();
+      const pathname = new URL(target).pathname;
+
+      if (pathname === "/health" && method === "GET") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/upsert" && method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/query" && method === "POST") {
+        const body = JSON.parse(String(request.body ?? "{}")) as { topK?: number };
+        seenQueryTopK = typeof body.topK === "number" ? body.topK : undefined;
+        return new Response(JSON.stringify({ hits: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const result = await queryVectorSearchHits({ workspaceRoot, query: "hello", topK: 18 });
+    assert.equal(result.ok, true);
+    assert.equal(seenQueryTopK, 50);
+  });
+
+  it("surfaces nested provider errors instead of generic http status", async () => {
+    assert.ok(workspaceRoot);
+    globalThis.fetch = async (url, options) => {
+      const target = String(url);
+      const request = (options ?? {}) as RequestInit;
+      const method = String(request.method ?? "GET").toUpperCase();
+      const pathname = new URL(target).pathname;
+
+      if (pathname === "/health" && method === "GET") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/upsert" && method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pathname === "/query" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: { code: "bad_request", message: "topK too large", details: { max_topk: 50 } },
+            request_id: "req-test",
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const result = await queryVectorSearchHits({ workspaceRoot, query: "hello" });
+    assert.equal(result.ok, false);
+    assert.equal(result.httpStatus, 400);
+    assert.equal(result.providerCode, "bad_request");
+    assert.ok(String(result.message ?? "").includes("topK too large"));
+    assert.ok(String(result.message ?? "").includes("max_topk=50"));
+    assert.ok(String(result.message ?? "").includes("request_id=req-test"));
+  });
+
+  it("rejects oversized queries before making network calls", async () => {
+    assert.ok(workspaceRoot);
+    setEnv("ADS_VECTOR_SEARCH_MAX_QUERY_CHARS", "8");
+
+    globalThis.fetch = async () => {
+      throw new Error("fetch should not be called");
+    };
+
+    const result = await queryVectorSearchHits({ workspaceRoot, query: "a".repeat(9) });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "invalid_request");
+    assert.ok(String(result.message ?? "").includes("query too large"));
+  });
+});

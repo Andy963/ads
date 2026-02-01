@@ -17,6 +17,7 @@ export type VectorSearchEntryNamespace = "cli" | "web" | "telegram" | "agent";
 
 export type VectorSearchFailureCode =
   | "empty_query"
+  | "invalid_request"
   | "disabled"
   | "service_unavailable"
   | "query_failed";
@@ -88,6 +89,8 @@ export async function queryVectorSearchHits(params: {
     return { ok: false, code: "empty_query", message: "empty query", hits: [], warnings, topK: desiredTopK };
   }
 
+  const queryHash = sha256Hex(query).slice(0, 12);
+
   const { config, error } = loadVectorSearchConfig();
   if (!config) {
     const now = Date.now();
@@ -106,8 +109,26 @@ export async function queryVectorSearchHits(params: {
     };
   }
 
-  const topK = Math.max(1, Number.isFinite(params.topK) ? Math.floor(params.topK!) : config.topK);
-  const queryHash = sha256Hex(query).slice(0, 12);
+  const maxTopK = Math.max(1, Math.floor(config.maxTopK));
+  const maxQueryChars = Math.max(1, Math.floor(config.maxQueryChars));
+
+  const topKRaw = Math.max(1, Number.isFinite(params.topK) ? Math.floor(params.topK!) : config.topK);
+  const topK = Math.min(maxTopK, topKRaw);
+  if (query.length > maxQueryChars) {
+    logger.info(
+      `[VectorSearch] invalid_request query_too_large qhash=${queryHash} qlen=${query.length} max_query_chars=${maxQueryChars}`,
+    );
+    return {
+      ok: false,
+      code: "invalid_request",
+      message: `query too large (max ${maxQueryChars} chars)`,
+      retryCount: 0,
+      timeoutMs: config.timeoutMs,
+      hits: [],
+      warnings,
+      topK,
+    };
+  }
   const timeoutMs = config.timeoutMs;
 
   try {
@@ -212,7 +233,7 @@ export async function queryVectorSearchHits(params: {
       }
     }
 
-    const queryTopK = Math.min(60, Math.max(topK * 3, topK));
+    const queryTopK = Math.min(maxTopK, Math.min(60, Math.max(topK * 3, topK)));
     let queryResult = await queryVectors({
       baseUrl: config.baseUrl,
       token: config.token,
@@ -241,6 +262,8 @@ export async function queryVectorSearchHits(params: {
           error_kind: "query_failed",
           http_status: queryResult.httpStatus ?? null,
           provider_code: queryResult.providerCode ?? null,
+          topK,
+          query_topk: queryTopK,
           timeout_ms: timeoutMs,
           retry_count: retryCount,
           index_name: indexName,
@@ -305,6 +328,7 @@ export async function queryVectorSearchHits(params: {
         ok: 1,
         hits: finalHits.length,
         topK,
+        query_topk: queryTopK,
         timeout_ms: timeoutMs,
         retry_count: retryCount,
         index_name: indexName,

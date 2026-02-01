@@ -30,6 +30,44 @@ function safeString(value: unknown): string {
   return String(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function joinNonEmpty(parts: Array<string | undefined>): string {
+  return parts
+    .map((part) => (typeof part === "string" ? part.trim() : ""))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function summarizeErrorDetails(details: unknown): string | undefined {
+  if (!details) return undefined;
+
+  if (Array.isArray(details) && details.length > 0) {
+    const first = details[0];
+    if (!isRecord(first)) return undefined;
+    const loc = Array.isArray(first.loc) ? first.loc.map((v) => safeString(v)).filter(Boolean).join(".") : "";
+    const msg = safeString(first.msg) || safeString(first.message);
+    const type = safeString(first.type);
+    const location = loc ? `at ${loc}` : "";
+    return joinNonEmpty([type, location, msg]);
+  }
+
+  if (isRecord(details)) {
+    if (details.max_topk !== undefined) {
+      const maxTopK = safeString(details.max_topk);
+      return maxTopK ? `max_topk=${maxTopK}` : undefined;
+    }
+    if (details.max_query_chars !== undefined) {
+      const maxChars = safeString(details.max_query_chars);
+      return maxChars ? `max_query_chars=${maxChars}` : undefined;
+    }
+  }
+
+  return undefined;
+}
+
 function pickRerankText(hit: VectorQueryHit): string {
   const md = hit.metadata ?? {};
   const candidate =
@@ -78,19 +116,39 @@ function extractErrorInfo(payload: { json?: unknown; text?: string; status: numb
   }
 
   const json = payload.json;
-  if (json && typeof json === "object" && !Array.isArray(json)) {
-    const record = json as Record<string, unknown>;
-    const codeRaw = record.code ?? record.error_code ?? record.errorCode ?? record.type ?? record.status;
-    const providerCode =
-      typeof codeRaw === "string"
-        ? codeRaw.trim()
-        : typeof codeRaw === "number" && Number.isFinite(codeRaw)
-          ? String(codeRaw)
-          : undefined;
+  if (isRecord(json)) {
+    const root = json;
+    const nested = isRecord(root.error) ? (root.error as Record<string, unknown>) : null;
 
-    const msgRaw = record.message ?? record.error ?? record.detail ?? record.reason;
-    const message = typeof msgRaw === "string" ? msgRaw.trim() : undefined;
-    return { providerCode: providerCode || undefined, message: message || undefined };
+    const pickCode = (record: Record<string, unknown>): string | undefined => {
+      const codeRaw = record.code ?? record.error_code ?? record.errorCode ?? record.type ?? record.status;
+      if (typeof codeRaw === "string" && codeRaw.trim()) return codeRaw.trim();
+      if (typeof codeRaw === "number" && Number.isFinite(codeRaw)) return String(codeRaw);
+      return undefined;
+    };
+
+    const pickMessage = (record: Record<string, unknown>): string | undefined => {
+      const msgRaw = record.message ?? record.error ?? record.detail ?? record.reason;
+      if (typeof msgRaw === "string" && msgRaw.trim()) return msgRaw.trim();
+      return undefined;
+    };
+
+    const requestIdRaw = root.request_id ?? root.requestId;
+    const requestId = typeof requestIdRaw === "string" && requestIdRaw.trim() ? requestIdRaw.trim() : "";
+
+    const providerCode = pickCode(nested ?? root) ?? pickCode(root);
+    const message = pickMessage(nested ?? root) ?? pickMessage(root);
+    const details = summarizeErrorDetails((nested ?? root).details);
+
+    const combined = (() => {
+      const base = joinNonEmpty([message, details ? `(${details})` : undefined]);
+      if (requestId) {
+        return joinNonEmpty([base, `(request_id=${requestId})`]);
+      }
+      return base;
+    })();
+
+    return { providerCode: providerCode || undefined, message: combined || undefined };
   }
 
   const text = String(payload.text ?? "").trim();

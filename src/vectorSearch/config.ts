@@ -30,6 +30,8 @@ export interface VectorSearchConfig {
   baseUrl: string;
   token: string;
   topK: number;
+  maxTopK: number;
+  maxQueryChars: number;
   namespaces: string[];
   timeoutMs: number;
   upsertBatchSize: number;
@@ -59,6 +61,8 @@ export function loadVectorSearchConfig(): VectorSearchConfigLoadResult {
   }
 
   const topK = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_TOPK, 8);
+  const maxTopK = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_MAX_TOPK, 50);
+  const maxQueryChars = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_MAX_QUERY_CHARS, 8000);
   const timeoutMs = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_TIMEOUT_MS, 15_000);
   const upsertBatchSize = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_UPSERT_BATCH_SIZE, 64);
   const historyScanLimit = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_HISTORY_SCAN_LIMIT, 800);
@@ -80,7 +84,9 @@ export function loadVectorSearchConfig(): VectorSearchConfigLoadResult {
       enabled: true,
       baseUrl,
       token,
-      topK,
+      topK: Math.max(1, Math.min(topK, maxTopK)),
+      maxTopK: Math.max(1, maxTopK),
+      maxQueryChars: Math.max(1, maxQueryChars),
       namespaces: effectiveNamespaces,
       timeoutMs,
       upsertBatchSize,
@@ -90,4 +96,3 @@ export function loadVectorSearchConfig(): VectorSearchConfigLoadResult {
     },
   };
 }
-
