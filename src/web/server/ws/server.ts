@@ -9,6 +9,11 @@ import type { HistoryStore } from "../../../utils/historyStore.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import type { TodoListItem } from "@openai/codex-sdk";
 
+import { getStateDatabase } from "../../../state/database.js";
+import { ensureWebAuthTables } from "../../auth/schema.js";
+import { ensureWebProjectTables } from "../../projects/schema.js";
+import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
+
 import { deriveWebUserId, getWorkspaceState } from "../../utils.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { wsMessageSchema } from "./schema.js";
@@ -140,7 +145,18 @@ export function attachWebSocketServer(deps: {
     const savedState = deps.sessionManager.getSavedState(userId);
     const storedCwd = deps.cwdStore.get(String(userId));
     let currentCwd = directoryManager.getUserCwd(userId);
-    const preferredCwd = cachedWorkspace ?? savedState?.cwd ?? storedCwd;
+    const preferredProjectCwd = (() => {
+      try {
+        const db = getStateDatabase();
+        ensureWebAuthTables(db);
+        ensureWebProjectTables(db);
+        return getWebProjectWorkspaceRoot(db, clientKey, sessionId);
+      } catch {
+        return null;
+      }
+    })();
+
+    const preferredCwd = preferredProjectCwd ?? cachedWorkspace ?? savedState?.cwd ?? storedCwd;
     if (preferredCwd) {
       const restoreResult = directoryManager.setUserCwd(userId, preferredCwd);
       if (!restoreResult.success) {

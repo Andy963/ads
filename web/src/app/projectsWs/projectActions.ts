@@ -12,6 +12,7 @@ const LEGACY_WS_SESSION_KEY = "ADS_WEB_SESSION";
 export function createProjectActions(ctx: AppContext & ChatActions, deps: ProjectDeps) {
   const {
     api,
+    loggedIn,
     projects,
     activeProjectId,
     activeProject,
@@ -59,6 +60,14 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     return { id, name, path, sessionId, chatSessionId: "main", initialized, createdAt: now, updatedAt: now, expanded: false };
   };
 
+  const mergeProjectsInto = (target: ProjectTab, candidate: ProjectTab): ProjectTab => {
+    const name = target.name || candidate.name;
+    const initialized = target.initialized || candidate.initialized;
+    const createdAt = Math.min(target.createdAt, candidate.createdAt);
+    const updatedAt = Date.now();
+    return { ...target, ...candidate, name, initialized, createdAt, updatedAt };
+  };
+
   const persistProjects = (): void => {
     try {
       localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects.value));
@@ -97,6 +106,57 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     persistProjects();
   };
 
+  const loadProjectsFromServer = async (): Promise<void> => {
+    if (!loggedIn.value) return;
+    try {
+      const result = await api.get<{
+        projects: Array<{ id: string; workspaceRoot: string; name: string; chatSessionId: string; createdAt?: number; updatedAt?: number }>;
+        activeProjectId: string | null;
+      }>(
+        "/api/projects",
+      );
+      const remote = Array.isArray(result.projects) ? result.projects : [];
+      if (remote.length === 0) {
+        return;
+      }
+
+      // Server is the source of truth. Rebuild the list to avoid localStorage duplicates.
+      const now = Date.now();
+      const seenWorkspaceRoots = new Set<string>();
+      const next: ProjectTab[] = [];
+
+      // Keep a single explicit default entry for UI affordances.
+      next.push(createProjectTab({ path: "", name: "默认", sessionId: "default", initialized: true }));
+
+      for (const entry of remote) {
+        const id = String(entry.id ?? "").trim();
+        const workspaceRoot = String(entry.workspaceRoot ?? "").trim();
+        const name = String(entry.name ?? "").trim();
+        if (!id || !workspaceRoot || !name) continue;
+        if (seenWorkspaceRoots.has(workspaceRoot)) continue;
+        seenWorkspaceRoots.add(workspaceRoot);
+
+        const base = createProjectTab({ path: workspaceRoot, name, sessionId: id, initialized: false });
+        const createdAt =
+          typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : base.createdAt;
+        const updatedAt =
+          typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : now;
+        const chatSessionId = String(entry.chatSessionId ?? "").trim() || "main";
+        next.push({ ...base, createdAt, updatedAt, chatSessionId });
+      }
+
+      const desiredActive = String(result.activeProjectId ?? "").trim();
+      const nextActive =
+        desiredActive && next.some((p) => p.id === desiredActive) ? desiredActive : next.find((p) => p.id !== "default")?.id ?? "default";
+
+      activeProjectId.value = nextActive;
+      projects.value = next.map((p) => ({ ...p, expanded: p.id === nextActive }));
+      persistProjects();
+    } catch {
+      // ignore
+    }
+  };
+
   const updateProject = (id: string, updates: Partial<ProjectTab>): void => {
     const targetId = String(id ?? "").trim();
     if (!targetId) return;
@@ -106,6 +166,21 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     });
     projects.value = next;
     persistProjects();
+
+    const shouldSync =
+      loggedIn.value &&
+      targetId !== "default" &&
+      (typeof (updates as { name?: unknown }).name === "string" || typeof (updates as { chatSessionId?: unknown }).chatSessionId === "string");
+    if (shouldSync) {
+      const payload: Record<string, unknown> = {};
+      if (typeof (updates as { name?: unknown }).name === "string") payload.name = (updates as { name: string }).name;
+      if (typeof (updates as { chatSessionId?: unknown }).chatSessionId === "string") {
+        payload.chatSessionId = (updates as { chatSessionId: string }).chatSessionId;
+      }
+      void api.patch<{ success: boolean }>(`/api/projects/${encodeURIComponent(targetId)}`, payload).catch(() => {
+        // ignore
+      });
+    }
   };
 
   const setExpandedExclusive = (targetId: string, expanded: boolean): void => {
@@ -192,6 +267,11 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     activeProjectId.value = nextId;
     setExpandedExclusive(nextId, true);
     void deps.activateProject(nextId);
+    if (loggedIn.value) {
+      void api.patch<{ success: boolean }>("/api/projects/active", { projectId: nextId }).catch(() => {
+        // ignore
+      });
+    }
   };
 
   const requestProjectSwitch = (id: string): void => {
@@ -357,18 +437,32 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     }
 
     const name = projectDialogName.value.trim() || deriveProjectName(path);
-    const project = createProjectTab({
-      path,
-      name,
-      initialized: false,
-      sessionId: lastValidatedProjectSessionId || undefined,
-    });
-    projects.value = [...projects.value, project];
-    activeProjectId.value = project.id;
-    setExpandedExclusive(project.id, true);
+    try {
+      const created = await api.post<{ project: { id: string; workspaceRoot: string; name: string; chatSessionId: string }; activeProjectId: string }>(
+        "/api/projects",
+        { path, name },
+      );
 
-    closeProjectDialog();
-    void deps.activateProject(project.id);
+      const project = createProjectTab({
+        path: created.project.workspaceRoot,
+        name: created.project.name,
+        initialized: false,
+        sessionId: created.project.id,
+      });
+      project.chatSessionId = created.project.chatSessionId;
+      const canonicalRoot = String(created.project.workspaceRoot ?? "").trim();
+      projects.value = [
+        ...projects.value.filter((p) => p.id !== project.id && (!canonicalRoot || String(p.path ?? "").trim() !== canonicalRoot)),
+        project,
+      ];
+      activeProjectId.value = created.activeProjectId;
+      setExpandedExclusive(activeProjectId.value, true);
+      persistProjects();
+      closeProjectDialog();
+      void deps.activateProject(activeProjectId.value);
+    } catch (error) {
+      projectDialogError.value = error instanceof Error ? error.message : String(error);
+    }
   };
 
   return {
@@ -392,6 +486,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     onProjectDialogPathInput,
     validateProjectDialogPath,
     submitProjectDialog,
+    loadProjectsFromServer,
     startNewChatSession,
   };
 }

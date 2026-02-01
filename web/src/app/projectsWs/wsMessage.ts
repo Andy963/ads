@@ -103,14 +103,21 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (serverThreadId) rt.activeThreadId.value = serverThreadId;
 
       const current = projects.value.find((p) => p.id === pid) ?? null;
-      if (current && !current.initialized && current.path.trim()) {
-        rt.pendingCdRequestedPath = current.path.trim();
-        wsInstance.send("command", { command: `/cd ${current.path.trim()}`, silent: true });
-        return;
+      if (current) {
+        const desiredRoot = current.id !== "default" ? current.path.trim() : "";
+        const shouldForceCd =
+          Boolean(desiredRoot) &&
+          rt.pendingCdRequestedPath == null &&
+          (!current.initialized || (nextPath && nextPath !== desiredRoot));
+        if (shouldForceCd) {
+          rt.pendingCdRequestedPath = desiredRoot;
+          wsInstance.send("command", { command: `/cd ${desiredRoot}`, silent: true });
+          return;
+        }
       }
       if (current) {
         const updates: Partial<ProjectTab> = { initialized: true };
-        if (nextPath) updates.path = nextPath;
+        if (nextPath && (current.id === "default" || !current.path.trim())) updates.path = nextPath;
         if (wsState && Object.prototype.hasOwnProperty.call(wsState, "branch")) {
           updates.branch = String(wsState.branch ?? "");
         }
@@ -129,7 +136,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (rt.pendingCdRequestedPath) {
           const current = projects.value.find((p) => p.id === pid) ?? null;
           if (current) {
-            updateProject(current.id, { path: nextPath || rt.pendingCdRequestedPath, initialized: true });
+            const updates: Partial<ProjectTab> = { initialized: true };
+            if (Object.prototype.hasOwnProperty.call(wsState, "branch")) {
+              updates.branch = String(wsState.branch ?? "");
+            }
+            if (nextPath && (current.id === "default" || !current.path.trim())) {
+              updates.path = nextPath;
+            }
+            updateProject(current.id, updates);
           }
           rt.pendingCdRequestedPath = null;
           return;
@@ -137,7 +151,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const current = projects.value.find((p) => p.id === pid) ?? null;
         if (current) {
           const updates: Partial<ProjectTab> = { initialized: true };
-          if (nextPath) updates.path = nextPath;
+          if (nextPath && (current.id === "default" || !current.path.trim())) updates.path = nextPath;
           if (Object.prototype.hasOwnProperty.call(wsState, "branch")) {
             updates.branch = String(wsState.branch ?? "");
           }

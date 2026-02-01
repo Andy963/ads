@@ -11,6 +11,7 @@ import type { ApiRouteContext, ApiSharedDeps } from "./types.js";
 import { handleAuthRoutes } from "./routes/auth.js";
 import { handleAudioRoutes } from "./routes/audio.js";
 import { handlePathRoutes } from "./routes/paths.js";
+import { handleProjectRoutes } from "./routes/projects.js";
 import { handleModelRoutes } from "./routes/models.js";
 import { handleTaskQueueRoutes } from "./routes/taskQueue.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
@@ -72,9 +73,10 @@ export function createApiRequestHandler(deps: {
       res.setHeader("Set-Cookie", auth.setCookie);
     }
 
-    const routeCtx: ApiRouteContext = { req, res, url, pathname };
+    const routeCtx: ApiRouteContext = { req, res, url, pathname, auth: { userId: auth.userId, username: auth.username } };
     if (await handleAudioRoutes(routeCtx, { logger: deps.logger })) return true;
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
+    if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleModelRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
     if (
       await handleTaskQueueRoutes(routeCtx, {

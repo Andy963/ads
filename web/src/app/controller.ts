@@ -463,9 +463,11 @@ export function createAppController() {
     ctx.loggedIn.value = true;
     ctx.currentUser.value = me;
     ws.closeAllConnections();
-    if (appMounted) {
-      void bootstrap();
-    }
+    if (!appMounted) return;
+    void (async () => {
+      await projects.loadProjectsFromServer();
+      await bootstrap();
+    })();
   };
 
   onMounted(() => {

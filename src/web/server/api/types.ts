@@ -9,6 +9,7 @@ export type ApiRouteContext = {
   res: http.ServerResponse;
   url: URL;
   pathname: string;
+  auth: { userId: string; username: string };
 };
 
 export type ApiSharedDeps = {
@@ -22,4 +23,3 @@ export type ApiSharedDeps = {
   broadcastToSession: (sessionId: string, payload: unknown) => void;
   buildAttachmentRawUrl: (url: URL, attachmentId: string) => string;
 };
-
