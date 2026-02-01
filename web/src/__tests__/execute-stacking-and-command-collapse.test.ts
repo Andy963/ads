@@ -38,6 +38,11 @@ describe("chat execute stacking and command collapse", () => {
     const blocks = wrapper.findAll(".execute-block");
     expect(blocks).toHaveLength(1);
 
+    const left = wrapper.find(".execute-left");
+    expect(left.exists()).toBe(true);
+    expect(left.find(".command-tag").exists()).toBe(true);
+    expect(left.find(".execute-cmd").exists()).toBe(true);
+
     const underlays = wrapper.findAll(".execute-underlay");
     expect(underlays).toHaveLength(2);
 
@@ -54,7 +59,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("keeps a stable execute stack structure even for large stacks", async () => {
+  it("caps visible underlays even for large stacks", async () => {
     const execs = Array.from({ length: 20 }, (_, i) => {
       const n = i + 1;
       return { id: `e-${n}`, role: "system", kind: "execute", content: `out-${n}`, command: `cmd-${n}` } as const;
@@ -78,8 +83,9 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
+    const maxUnderlays = 4; // 5 layers total (top card + 4 underlays)
     expect(wrapper.findAll(".execute-block")).toHaveLength(1);
-    expect(wrapper.findAll(".execute-underlay")).toHaveLength(2);
+    expect(wrapper.findAll(".execute-underlay")).toHaveLength(maxUnderlays);
 
     const count = wrapper.find(".execute-stack-count");
     expect(count.exists()).toBe(true);
@@ -93,7 +99,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("collapses command trees longer than 3 by default and toggles via caret", async () => {
+  it("collapses command trees by default and toggles via caret", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
