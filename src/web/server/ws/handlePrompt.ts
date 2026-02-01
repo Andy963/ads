@@ -21,6 +21,53 @@ import { runCollaborativeTurn } from "../../../agents/hub.js";
 import { buildPlanSignature, extractCommandPayload, isTodoListEvent } from "./utils.js";
 import type { WsMessage } from "./schema.js";
 
+type FileChangeLike = { kind?: unknown; path?: unknown };
+type PatchFileStatLike = { added: number | null; removed: number | null };
+
+export function formatWriteExploredSummary(
+  changes: FileChangeLike[],
+  patchFiles?: PatchFileStatLike[],
+): string {
+  const safeChanges = Array.isArray(changes) ? changes : [];
+
+  const diffstat = (() => {
+    const files = Array.isArray(patchFiles) ? patchFiles : [];
+    let added = 0;
+    let removed = 0;
+    let hasKnown = false;
+    for (const file of files) {
+      if (typeof file.added === "number" && typeof file.removed === "number") {
+        added += file.added;
+        removed += file.removed;
+        hasKnown = true;
+      }
+    }
+    if (!hasKnown) return "";
+    return `(+${added} -${removed})`;
+  })();
+
+  const toBaseName = (p: string): string => {
+    const rawPath = String(p ?? "").trim();
+    if (!rawPath) return "";
+    const parts = rawPath.split(/[\\/]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1]! : rawPath;
+  };
+
+  const formatted = safeChanges
+    .map((c) => {
+      const kind = String(c.kind ?? "").trim();
+      const path = String(c.path ?? "").trim();
+      if (!kind || !path) return "";
+      const label = path.length <= 60 ? path : toBaseName(path);
+      return `${kind} ${label}`;
+    })
+    .filter(Boolean);
+  const shown = formatted.slice(0, 4);
+  const hidden = Math.max(0, formatted.length - shown.length);
+  const coreSummary = shown.join(", ") + (hidden ? ` (+${hidden} more)` : "");
+  return coreSummary && diffstat ? `${coreSummary} ${diffstat}` : coreSummary;
+}
+
 export async function handlePromptMessage(deps: {
   parsed: WsMessage;
   ws: import("ws").WebSocket;
@@ -197,24 +244,9 @@ export async function handlePromptMessage(deps: {
       if (raw.type === "item.completed" && rawItemType === "file_change") {
         const item = rawItem as { changes?: unknown };
         const changes = Array.isArray(item.changes) ? (item.changes as Array<{ kind?: unknown; path?: unknown }>) : [];
-        const toBaseName = (p: string): string => {
-          const rawPath = String(p ?? "").trim();
-          if (!rawPath) return "";
-          const parts = rawPath.split(/[\\/]/).filter(Boolean);
-          return parts.length ? parts[parts.length - 1]! : rawPath;
-        };
-        const formatted = changes
-          .map((c) => {
-            const kind = String(c.kind ?? "").trim();
-            const path = String(c.path ?? "").trim();
-            if (!kind || !path) return "";
-            const label = path.length <= 60 ? path : toBaseName(path);
-            return `${kind} ${label}`;
-          })
-          .filter(Boolean);
-        const shown = formatted.slice(0, 4);
-        const hidden = Math.max(0, formatted.length - shown.length);
-        const summary = shown.join(", ") + (hidden ? ` (+${hidden} more)` : "");
+        const paths = changes.map((c) => String(c.path ?? "").trim()).filter(Boolean);
+        const patch = buildWorkspacePatch(turnCwd, paths);
+        const summary = formatWriteExploredSummary(changes, patch?.files);
         if (summary) {
           deps.safeJsonSend(deps.ws, {
             type: "explored",
@@ -223,8 +255,6 @@ export async function handlePromptMessage(deps: {
           });
         }
 
-        const paths = changes.map((c) => String(c.path ?? "").trim()).filter(Boolean);
-        const patch = buildWorkspacePatch(turnCwd, paths);
         if (patch) {
           deps.safeJsonSend(deps.ws, { type: "patch", patch });
         }
@@ -417,4 +447,3 @@ export async function handlePromptMessage(deps: {
 
   return { handled: true, orchestrator, lastPlanSignature, lastPlanItems };
 }
-
