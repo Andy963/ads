@@ -49,7 +49,7 @@ describe("live-step reasoning scroll style", () => {
 
     const css = readUtf8("../components/MainChat.css");
     expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.bubble\s+:deep\(\.md\)\s*\{[\s\S]*?\}/);
-    expect(css).toMatch(/max-height:\s*5lh\s*;/);
+    expect(css).toMatch(/max-height:\s*3lh\s*;/);
     expect(css).toMatch(/overflow-y:\s*auto\s*;/);
 
     wrapper.unmount();

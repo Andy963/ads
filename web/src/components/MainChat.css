@@ -440,8 +440,8 @@
 
 .msg[data-id="live-step"] .bubble :deep(.md) {
   /* Keep the reasoning/step trace from taking over the layout; let it scroll in-place. */
-  max-height: 8em;
-  max-height: 5lh;
+  max-height: 4.8em;
+  max-height: 3lh;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
