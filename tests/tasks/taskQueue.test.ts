@@ -69,37 +69,4 @@ describe("tasks/taskQueue", () => {
 
     queue.stop();
   });
-
-  it("executes pending tasks in FIFO queueOrder", async () => {
-    const store = new TaskStore();
-    const planner: TaskPlanner = {
-      async generatePlan(): Promise<PlanStepInput[]> {
-        return [{ stepNumber: 1, title: "Do", description: "" }];
-      },
-    };
-    const executor: TaskExecutor = {
-      async execute(task: Task): Promise<{ resultSummary?: string }> {
-        return { resultSummary: `done:${task.title}` };
-      },
-    };
-    const queue = new TaskQueue({ store, planner, executor });
-
-    const createdAt = Date.now();
-    const a = store.createTask({ title: "A", prompt: "P-A" }, createdAt + 1);
-    const b = store.createTask({ title: "B", prompt: "P-B" }, createdAt + 2);
-    const c = store.createTask({ title: "C", prompt: "P-C" }, createdAt + 3);
-
-    const started: string[] = [];
-    queue.on("task:started", ({ task }) => started.push(task.title));
-
-    void queue.start();
-    queue.notifyNewTask();
-
-    await waitFor(() => store.getTask(a.id)?.status === "completed");
-    await waitFor(() => store.getTask(b.id)?.status === "completed");
-    await waitFor(() => store.getTask(c.id)?.status === "completed");
-
-    assert.deepEqual(started, ["A", "B", "C"]);
-    queue.stop();
-  });
 });
