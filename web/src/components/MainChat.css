@@ -4,6 +4,7 @@
   flex-direction: column;
   min-height: 0;
   background: var(--surface);
+  border-top: 2px solid #22c55e;
   border-radius: var(--radius);
   box-shadow: var(--shadow-md);
   overflow: hidden;
