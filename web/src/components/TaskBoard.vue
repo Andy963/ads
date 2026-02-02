@@ -83,6 +83,15 @@ const sorted = computed(() => {
     if (s === "completed") return 9;
     return 5;
   };
+
+  const compareQueue = (a: Task, b: Task) => {
+    const aq = Number.isFinite(a.queueOrder) ? a.queueOrder : Number.POSITIVE_INFINITY;
+    const bq = Number.isFinite(b.queueOrder) ? b.queueOrder : Number.POSITIVE_INFINITY;
+    if (aq !== bq) return aq - bq;
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    return a.id.localeCompare(b.id);
+  };
+
   return props.tasks
     .slice()
     .sort((a, b) => {
@@ -90,6 +99,9 @@ const sorted = computed(() => {
       const wb = weight(b.status);
       if (wa !== wb) return wa - wb;
       if (a.status !== b.status) return a.status.localeCompare(b.status);
+      if ((a.status === "pending" || a.status === "queued") && (b.status === "pending" || b.status === "queued")) {
+        return compareQueue(a, b);
+      }
       if (a.priority !== b.priority) return b.priority - a.priority;
       return b.createdAt - a.createdAt;
     });

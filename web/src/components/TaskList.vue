@@ -6,13 +6,31 @@ const props = defineProps<{ tasks: Task[]; selectedId?: string | null }>();
 const emit = defineEmits<{ (e: "select", id: string): void }>();
 
 const sorted = computed(() => {
+  const weight = (s: string) => {
+    if (s === "running") return 0;
+    if (s === "planning") return 1;
+    if (s === "pending" || s === "queued") return 2;
+    if (s === "completed") return 9;
+    return 5;
+  };
+
+  const compareQueue = (a: Task, b: Task) => {
+    const aq = Number.isFinite(a.queueOrder) ? a.queueOrder : Number.POSITIVE_INFINITY;
+    const bq = Number.isFinite(b.queueOrder) ? b.queueOrder : Number.POSITIVE_INFINITY;
+    if (aq !== bq) return aq - bq;
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    return a.id.localeCompare(b.id);
+  };
+
   return [...props.tasks].sort((a, b) => {
-    if (a.status !== b.status) {
-      return a.status.localeCompare(b.status);
+    const wa = weight(a.status);
+    const wb = weight(b.status);
+    if (wa !== wb) return wa - wb;
+    if (a.status !== b.status) return a.status.localeCompare(b.status);
+    if ((a.status === "pending" || a.status === "queued") && (b.status === "pending" || b.status === "queued")) {
+      return compareQueue(a, b);
     }
-    if (a.priority !== b.priority) {
-      return b.priority - a.priority;
-    }
+    if (a.priority !== b.priority) return b.priority - a.priority;
     return b.createdAt - a.createdAt;
   });
 });

@@ -166,9 +166,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
         .filter((t) => t.status === "pending")
         .slice()
         .sort((a, b) => {
-          if (a.priority !== b.priority) return b.priority - a.priority;
           if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
-          return a.createdAt - b.createdAt;
+          if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+          return a.id.localeCompare(b.id);
         })[0];
       rt.selectedId.value = (nextPending ?? rt.tasks.value[0])!.id;
     }
@@ -198,9 +198,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       .filter((t) => t.status === "pending")
       .slice()
       .sort((a, b) => {
-        if (a.priority !== b.priority) return b.priority - a.priority;
         if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
-        return a.createdAt - b.createdAt;
+        if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+        return a.id.localeCompare(b.id);
       })[0];
     return (nextPending ?? nextTasks[0])!.id;
   }
