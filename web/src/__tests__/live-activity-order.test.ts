@@ -187,4 +187,47 @@ describe("live activity ordering", () => {
 
     wrapper.unmount();
   });
+
+  it("auto-clears explored live activity after 3 seconds (resets on new events)", async () => {
+    vi.useFakeTimers();
+    try {
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+
+      // First explored event should show the live activity panel.
+      lastWs!.onMessage?.({
+        type: "explored",
+        header: true,
+        entry: { category: "Search", summary: "VectorSearch(auto) first" },
+      });
+      await settleUi(wrapper);
+      expect(String((wrapper.vm as any).messages.map((m: any) => m.id).join(","))).toContain("live-activity");
+
+      // After 1.5 seconds, send another explored event; TTL should reset.
+      vi.advanceTimersByTime(1500);
+      await settleUi(wrapper);
+      lastWs!.onMessage?.({
+        type: "explored",
+        header: true,
+        entry: { category: "Search", summary: "VectorSearch(auto) second" },
+      });
+      await settleUi(wrapper);
+
+      // 2.999s after the last event: still visible.
+      vi.advanceTimersByTime(2999);
+      await settleUi(wrapper);
+      expect((wrapper.vm as any).messages.some((m: any) => m.id === "live-activity")).toBe(true);
+
+      // 3.000s after the last event: cleared.
+      vi.advanceTimersByTime(1);
+      await settleUi(wrapper);
+      expect((wrapper.vm as any).messages.some((m: any) => m.id === "live-activity")).toBe(false);
+
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

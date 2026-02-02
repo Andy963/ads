@@ -2,6 +2,8 @@ import { clearLiveActivityWindow, renderLiveActivityMarkdown } from "../lib/live
 
 import type { ChatItem, ProjectRuntime } from "./controller";
 
+const LIVE_ACTIVITY_TTL_MS = 3000;
+
 function trimToLastLines(text: string, maxLines: number, maxChars = 2500): string {
   const normalized = String(text ?? "");
   const recent = normalized.length > maxChars ? normalized.slice(normalized.length - maxChars) : normalized;
@@ -22,6 +24,23 @@ export function createStreamingActions(params: {
 }) {
   const { liveStepId, liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, findLastLiveIndex, isLiveMessageId, randomId } =
     params;
+
+  const clearLiveActivityTimer = (state: ProjectRuntime): void => {
+    if (state.liveActivityTtlTimer === null) return;
+    window.clearTimeout(state.liveActivityTtlTimer);
+    state.liveActivityTtlTimer = null;
+  };
+
+  const clearLiveActivity = (rt?: ProjectRuntime): void => {
+    const state = runtimeOrActive(rt);
+    clearLiveActivityTimer(state);
+    clearLiveActivityWindow(state.liveActivity);
+
+    const existing = state.messages.value.slice();
+    const next = existing.filter((m) => m.id !== liveActivityId);
+    if (next.length === existing.length) return;
+    setMessages(next, state);
+  };
 
   const shouldIgnoreStepDelta = (delta: string): boolean => {
     const normalized = String(delta ?? "");
@@ -114,6 +133,7 @@ export function createStreamingActions(params: {
     const existing = state.messages.value.slice();
 
     if (!markdown) {
+      clearLiveActivityTimer(state);
       const next = existing.filter((m) => m.id !== liveActivityId);
       if (next.length === existing.length) return;
       setMessages(next, state);
@@ -145,10 +165,16 @@ export function createStreamingActions(params: {
 
     const next = [...withoutActivity.slice(0, insertAt), nextItem, ...withoutActivity.slice(insertAt)];
     setMessages(next, state);
+
+    clearLiveActivityTimer(state);
+    state.liveActivityTtlTimer = window.setTimeout(() => {
+      clearLiveActivity(state);
+    }, LIVE_ACTIVITY_TTL_MS);
   };
 
   const clearStepLive = (rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
+    clearLiveActivityTimer(state);
     clearLiveActivityWindow(state.liveActivity);
     const existing = state.messages.value.slice();
     const next = existing.filter((m) => !isLiveMessageId(m.id));
@@ -158,4 +184,3 @@ export function createStreamingActions(params: {
 
   return { shouldIgnoreStepDelta, upsertStreamingDelta, upsertStepLiveDelta, upsertLiveActivity, clearStepLive };
 }
-

@@ -85,6 +85,7 @@ export type ProjectRuntime = {
   suppressNextClearHistoryResult: boolean;
   noticeTimer: number | null;
   liveActivity: ReturnType<typeof createLiveActivityWindow>;
+  liveActivityTtlTimer: number | null;
   startedTaskIds: Set<string>;
   taskChatBufferByTaskId: Map<string, TaskChatBuffer>;
 };

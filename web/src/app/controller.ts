@@ -72,6 +72,7 @@ function createProjectRuntime(options: { maxLiveActivitySteps: number }): Projec
     suppressNextClearHistoryResult: false,
     noticeTimer: null,
     liveActivity: createLiveActivityWindow(options.maxLiveActivitySteps),
+    liveActivityTtlTimer: null,
     startedTaskIds: new Set(),
     taskChatBufferByTaskId: new Map(),
   };
@@ -482,6 +483,11 @@ export function createAppController() {
 
   onBeforeUnmount(() => {
     window.removeEventListener("resize", ctx.updateIsMobile);
+    for (const rt of ctx.runtimeByProjectId.values()) {
+      if (rt.liveActivityTtlTimer === null) continue;
+      window.clearTimeout(rt.liveActivityTtlTimer);
+      rt.liveActivityTtlTimer = null;
+    }
     ws.closeAllConnections();
   });
 
