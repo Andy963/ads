@@ -278,7 +278,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         .filter(Boolean);
 
       const truncated = Boolean(typed.truncated);
-      const header = fileLines.length ? `Modified files:\n${fileLines.join("\n")}\n\n` : "";
+      let header = "";
+      if (fileLines.length > 0) {
+        const first = fileLines[0]?.replace(/^-\s+/, "") ?? "";
+        const rest = fileLines.slice(1);
+        header = rest.length ? `Modified files: ${first}\n${rest.join("\n")}\n\n` : `Modified files: ${first}\n\n`;
+      }
       const note = truncated ? "\n\n_Diff was truncated to avoid flooding the UI._\n" : "";
       const content = `${header}\`\`\`diff\n${diff}\n\`\`\`${note}`;
       pushMessageBeforeLive({ role: "system", kind: "text", content }, rt as any);

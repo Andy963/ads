@@ -115,7 +115,8 @@
   position: relative;
   display: flex;
   gap: 8px;
-  align-items: stretch;
+  align-items: center;
+  flex-wrap: nowrap;
   background: transparent;
 }
 
@@ -200,6 +201,7 @@
   justify-content: center;
   align-items: center;
   flex-wrap: nowrap;
+  flex: 0 0 auto;
   gap: 6px;
   padding: 2px 8px 2px 0;
   opacity: 0.65;
@@ -571,15 +573,5 @@ textarea {
 @media (max-width: 600px) {
   .configRow {
     grid-template-columns: 1fr;
-  }
-
-  .row {
-    flex-direction: column;
-  }
-
-  .row-actions {
-    flex-direction: row;
-    flex-wrap: wrap;
-    padding: 0 12px 12px 12px;
   }
 }

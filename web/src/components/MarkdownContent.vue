@@ -137,6 +137,30 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   border: 1px solid rgba(226, 232, 240, 0.9);
 }
 
+.md :deep(.md-diffstat) {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.md :deep(.md-diffstat-add) {
+  color: #16a34a;
+  font-weight: 700;
+}
+
+.md :deep(.md-diffstat-del) {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.md.inverted :deep(.md-diffstat-add) {
+  color: #4ade80;
+}
+
+.md.inverted :deep(.md-diffstat-del) {
+  color: #f87171;
+}
+
 .md.inverted :deep(:not(pre) > code) {
   background: rgba(255, 255, 255, 0.14);
   border-color: rgba(255, 255, 255, 0.22);

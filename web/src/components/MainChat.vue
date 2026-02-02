@@ -32,6 +32,8 @@ const openCommandTrees = ref<Set<string>>(new Set());
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
+const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
+const CHAT_STICKY_THRESHOLD_PX = 80;
 
 const MAX_EXECUTE_STACK_LAYERS = 3;
 const MAX_EXECUTE_STACK_UNDERLAYS = MAX_EXECUTE_STACK_LAYERS - 1;
@@ -39,6 +41,9 @@ const MAX_EXECUTE_STACK_UNDERLAYS = MAX_EXECUTE_STACK_LAYERS - 1;
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
 let liveStepScrollFrame: number | null = null;
+
+let chatResizeObserver: ResizeObserver | null = null;
+let chatScrollQueued = false;
 
 function scheduleFrame(cb: () => void): number {
   if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
@@ -65,6 +70,35 @@ function onLiveStepScroll(): void {
   const el = liveStepScrollEl;
   if (!el) return;
   liveStepPinnedToBottom.value = isNearBottom(el, LIVE_STEP_STICKY_THRESHOLD_PX);
+}
+
+async function scrollChatToBottom(): Promise<void> {
+  if (!listRef.value) return;
+  await nextTick();
+  if (!listRef.value) return;
+  listRef.value.scrollTop = listRef.value.scrollHeight;
+  autoScroll.value = true;
+  showScrollToBottom.value = false;
+}
+
+function scheduleChatScrollToBottom(): void {
+  if (!autoScroll.value) return;
+  if (chatScrollQueued) return;
+  chatScrollQueued = true;
+  void (async () => {
+    try {
+      // Allow Vue + MarkdownContent to commit DOM updates before measuring scrollHeight.
+      await nextTick();
+      await nextTick();
+      if (!autoScroll.value) return;
+      const host = listRef.value;
+      if (!host) return;
+      host.scrollTop = host.scrollHeight;
+      showScrollToBottom.value = false;
+    } finally {
+      chatScrollQueued = false;
+    }
+  })();
 }
 
 function ensureLiveStepScrollEl(): HTMLElement | null {
@@ -185,22 +219,24 @@ function handleScroll() {
   if (!listRef.value) return;
   const { scrollTop, scrollHeight, clientHeight } = listRef.value;
   const distance = scrollHeight - scrollTop - clientHeight;
-  autoScroll.value = distance < 80;
-  showScrollToBottom.value = distance >= 80;
-}
-
-async function scrollToBottom(): Promise<void> {
-  if (!listRef.value) return;
-  await nextTick();
-  if (!listRef.value) return;
-  listRef.value.scrollTop = listRef.value.scrollHeight;
-  autoScroll.value = true;
-  showScrollToBottom.value = false;
+  autoScroll.value = distance < CHAT_STICKY_THRESHOLD_PX;
+  showScrollToBottom.value = distance >= CHAT_STICKY_THRESHOLD_PX;
 }
 
 onMounted(() => {
   // Project switches remount this component (keyed by activeProjectId). Ensure we start at the newest message.
-  void scrollToBottom();
+  autoScroll.value = true;
+  void scrollChatToBottom();
+
+  const host = listRef.value;
+  if (host && typeof ResizeObserver !== "undefined") {
+    chatResizeObserver = new ResizeObserver(() => {
+      // If the chat pane is initially hidden (e.g. mobile tab), scrollHeight can be 0.
+      // Once the pane becomes visible, ensure we still land at the bottom.
+      scheduleChatScrollToBottom();
+    });
+    chatResizeObserver.observe(host);
+  }
 });
 
 watch(
@@ -215,6 +251,27 @@ watch(
     }
     showScrollToBottom.value = true;
   },
+);
+
+const lastMessage = computed(() => props.messages[props.messages.length - 1] ?? null);
+const liveActivityMessage = computed(
+  () => props.messages.find((m) => m.id === LIVE_ACTIVITY_MESSAGE_ID) ?? null,
+);
+
+watch(
+  [() => lastMessage.value?.id ?? "", () => lastMessage.value?.content.length ?? 0, () => Boolean(lastMessage.value?.streaming)],
+  () => {
+    scheduleChatScrollToBottom();
+  },
+  { flush: "post" },
+);
+
+watch(
+  [() => Boolean(liveActivityMessage.value), () => liveActivityMessage.value?.content.length ?? 0],
+  () => {
+    scheduleChatScrollToBottom();
+  },
+  { flush: "post" },
 );
 
 watch(
@@ -240,6 +297,14 @@ onBeforeUnmount(() => {
   if (liveStepScrollFrame !== null) {
     cancelFrame(liveStepScrollFrame);
     liveStepScrollFrame = null;
+  }
+  if (chatResizeObserver) {
+    try {
+      chatResizeObserver.disconnect();
+    } catch {
+      // ignore
+    }
+    chatResizeObserver = null;
   }
 });
 

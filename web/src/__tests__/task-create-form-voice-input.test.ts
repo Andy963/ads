@@ -60,9 +60,9 @@ describe("TaskCreateForm voice input", () => {
     (navigator as any).mediaDevices = originalMediaDevices;
   });
 
-  it("does not render voice UI by default", () => {
+  it("renders voice UI by default", () => {
     const wrapper = mount(TaskCreateForm, { props: { models, workspaceRoot: "" } });
-    expect(wrapper.find("button.micIcon").exists()).toBe(false);
+    expect(wrapper.find("button.micIcon").exists()).toBe(true);
     wrapper.unmount();
   });
 
@@ -151,4 +151,3 @@ describe("TaskCreateForm voice input", () => {
     wrapper.unmount();
   });
 });
-

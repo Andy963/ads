@@ -95,20 +95,22 @@ textarea {
 }
 .promptInputWrap.voiceEnabled textarea {
   padding-right: 62px;
-  padding-bottom: 52px;
+  padding-bottom: 44px;
 }
 .promptInputWrap.voiceEnabled.voiceExpanded textarea {
   padding-right: 160px;
-  padding-bottom: 92px;
+  padding-bottom: 78px;
 }
-.promptInputWrap.voiceEnabled.voiceCentered textarea {
+.promptInputWrap.voiceEnabled.voiceBottomCentered textarea {
   padding-right: 14px;
-  padding-bottom: 12px;
+}
+.promptInputWrap.voiceEnabled.voiceExpanded.voiceBottomCentered textarea {
+  padding-right: 14px;
 }
 .voiceAffordance {
   position: absolute;
   right: 10px;
-  bottom: 10px;
+  bottom: 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -120,15 +122,15 @@ textarea {
   justify-content: flex-end;
   gap: 6px;
 }
-.promptInputWrap.voiceCentered .voiceAffordance {
+.promptInputWrap.voiceBottomCentered .voiceAffordance {
   right: auto;
-  bottom: auto;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  bottom: 6px;
+  top: auto;
+  transform: translateX(-50%);
   align-items: center;
 }
-.promptInputWrap.voiceCentered .voiceRow {
+.promptInputWrap.voiceBottomCentered .voiceRow {
   justify-content: center;
 }
 .voiceIndicator {
@@ -231,13 +233,16 @@ textarea {
   cursor: pointer;
   transition: color 0.15s, transform 0.1s, background-color 0.15s;
 }
-.promptInputWrap.voiceCentered .micIcon {
-  width: 60px;
-  height: 60px;
-  border-radius: 18px;
-  border: 1px dashed rgba(148, 163, 184, 0.85);
-  background: rgba(255, 255, 255, 0.7);
+.promptInputWrap.voiceBottomCentered .micIcon,
+.promptInputWrap.voiceBottomCentered .micIcon:hover:not(:disabled),
+.promptInputWrap.voiceBottomCentered .micIcon:active:not(:disabled) {
+  background: transparent;
+}
+.promptInputWrap.voiceBottomCentered .micIcon:not(.recording):not(.transcribing) {
   color: #2563eb;
+}
+.promptInputWrap.voiceBottomCentered .micIcon:hover:not(:disabled):not(.recording):not(.transcribing) {
+  color: #1d4ed8;
 }
 .micIcon:hover:not(:disabled) {
   color: #0f172a;
@@ -253,21 +258,19 @@ textarea {
 .micIcon.recording {
   color: #dc2626;
 }
-.promptInputWrap.voiceCentered .micIcon.recording {
-  border-color: rgba(220, 38, 38, 0.4);
-  background: rgba(220, 38, 38, 0.06);
+.promptInputWrap.voiceBottomCentered .micIcon.recording {
+  color: #dc2626;
 }
 .micIcon.transcribing {
   color: #2563eb;
 }
-.promptInputWrap.voiceCentered .micIcon.transcribing {
-  border-color: rgba(37, 99, 235, 0.35);
-  background: rgba(37, 99, 235, 0.05);
+.promptInputWrap.voiceBottomCentered .micIcon.transcribing {
+  color: #2563eb;
 }
 .voiceToast {
   position: absolute;
   right: 10px;
-  bottom: 96px;
+  bottom: 82px;
   display: inline-flex;
   align-items: center;
   padding: 6px 10px;

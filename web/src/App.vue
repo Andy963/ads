@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted } from "vue";
+
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
 import TaskCreateForm from "./components/TaskCreateForm.vue";
@@ -18,6 +20,7 @@ const {
   openProjectDialog,
   projects,
   activeProjectId,
+  activeProject,
   requestProjectSwitch,
   getRuntime,
   connectWs,
@@ -91,6 +94,32 @@ const {
   confirmDeleteTask,
   deleteConfirmButtonEl,
 } = createAppController();
+
+const activeProjectDisplay = computed(() => {
+  const p = activeProject.value;
+  if (!p) return "";
+  return String(p.path || p.name || p.id || "").trim();
+});
+
+const updateViewportHeightVar = (): void => {
+  if (typeof window === "undefined") return;
+  const vv = window.visualViewport;
+  const height = vv && Number.isFinite(vv.height) && vv.height > 0 ? vv.height : window.innerHeight;
+  document.documentElement.style.setProperty("--ads-visual-viewport-height", `${Math.round(height)}px`);
+};
+
+onMounted(() => {
+  updateViewportHeightVar();
+  window.addEventListener("resize", updateViewportHeightVar, { passive: true });
+  window.visualViewport?.addEventListener("resize", updateViewportHeightVar, { passive: true });
+  window.visualViewport?.addEventListener("scroll", updateViewportHeightVar, { passive: true });
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", updateViewportHeightVar);
+  window.visualViewport?.removeEventListener("resize", updateViewportHeightVar);
+  window.visualViewport?.removeEventListener("scroll", updateViewportHeightVar);
+});
 </script>
 
 <template>
@@ -104,6 +133,16 @@ const {
           <button
             type="button"
             class="paneTab"
+            :class="{ active: mobilePane === 'tasks' }"
+            role="tab"
+            :aria-selected="mobilePane === 'tasks'"
+            @click="mobilePane = 'tasks'"
+          >
+            项目
+          </button>
+          <button
+            type="button"
+            class="paneTab"
             :class="{ active: mobilePane === 'chat' }"
             role="tab"
             :aria-selected="mobilePane === 'chat'"
@@ -111,16 +150,9 @@ const {
           >
             对话
           </button>
-          <button
-            type="button"
-            class="paneTab"
-            :class="{ active: mobilePane === 'tasks' }"
-            role="tab"
-            :aria-selected="mobilePane === 'tasks'"
-            @click="mobilePane = 'tasks'"
-          >
-            任务
-          </button>
+        </div>
+        <div v-if="isMobile && activeProjectDisplay" class="activeProjectDisplay" :title="activeProjectDisplay">
+          {{ activeProjectDisplay }}
         </div>
       </div>
       <div class="right">

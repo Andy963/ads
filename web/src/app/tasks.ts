@@ -312,16 +312,16 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   };
 
   const submitTaskCreate = async (input: CreateTaskInput): Promise<void> => {
-    const created = await createTask(input);
-    if (created) taskCreateDialogOpen.value = false;
+    // Close the modal immediately so the UI feels responsive (network calls can take a while).
+    taskCreateDialogOpen.value = false;
+    await createTask(input);
   };
 
   const submitTaskCreateAndRun = async (input: CreateTaskInput): Promise<void> => {
-    const created = await createTask(input);
-    if (!created) {
-      return;
-    }
+    // Close the modal immediately so the UI feels responsive (network calls can take a while).
     taskCreateDialogOpen.value = false;
+    const created = await createTask(input);
+    if (!created) return;
     await runTaskQueue();
   };
 

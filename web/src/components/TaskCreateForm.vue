@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 import type { CreateTaskInput, ModelConfig } from "../api/types";
-import { isTaskVoiceInputEnabled } from "../app/featureFlags";
 
 type UploadedImageAttachment = {
   id: string;
@@ -42,7 +41,7 @@ const maxRetries = ref(3);
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
 type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
 
-const voiceEnabled = ref(isTaskVoiceInputEnabled());
+const voiceEnabled = ref(true);
 const recording = ref(false);
 const transcribing = ref(false);
 const voiceStatusKind = ref<VoiceStatusKind>("idle");
@@ -150,6 +149,38 @@ async function insertIntoPrompt(text: string): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+async function insertPromptNewline(): Promise<void> {
+  if (disposed) return;
+  const el = promptEl.value;
+  const current = prompt.value;
+  if (!el) {
+    prompt.value = `${current}\n`;
+    return;
+  }
+
+  const start = typeof el.selectionStart === "number" ? el.selectionStart : current.length;
+  const end = typeof el.selectionEnd === "number" ? el.selectionEnd : start;
+  const before = current.slice(0, start);
+  const after = current.slice(end);
+  prompt.value = `${before}\n${after}`;
+  await nextTick();
+  try {
+    const pos = before.length + 1;
+    el.focus();
+    el.setSelectionRange(pos, pos);
+  } catch {
+    // ignore
+  }
+}
+
+function onPromptKeydown(ev: KeyboardEvent): void {
+  if (ev.key !== "Enter") return;
+  if ((ev as { isComposing?: boolean }).isComposing) return;
+  if (!ev.altKey) return;
+  ev.preventDefault();
+  void insertPromptNewline();
 }
 
 function pickRecorderMime(): string {
@@ -673,15 +704,6 @@ function resetThread(): void {
   emit("reset-thread");
 }
 
-function onPromptKeydown(ev: KeyboardEvent): void {
-  if (ev.key !== "Enter") return;
-  if ((ev as { isComposing?: boolean }).isComposing) return;
-  if (ev.altKey) return; // Alt+Enter: newline
-  if (ev.shiftKey || ev.ctrlKey || ev.metaKey) return;
-  ev.preventDefault();
-  submit();
-}
-
 const modelOptions = computed(() => {
   const enabled = props.models.filter((m) => m.isEnabled);
   return [{ id: "auto", displayName: "Auto", provider: "" }, ...enabled];
@@ -751,7 +773,11 @@ onBeforeUnmount(() => {
           <span class="label-text">任务描述</span>
           <div
             class="promptInputWrap"
-            :class="{ voiceEnabled, voiceExpanded: voiceOverlayExpanded, voiceCentered: voiceEnabled && !prompt.trim() }"
+            :class="{
+              voiceEnabled,
+              voiceExpanded: voiceOverlayExpanded,
+              voiceBottomCentered: voiceEnabled && !prompt.trim(),
+            }"
           >
             <textarea
               v-model="prompt"

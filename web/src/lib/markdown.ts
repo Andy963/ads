@@ -163,6 +163,37 @@ const md = new MarkdownIt({
 
 md.validateLink = (url) => isSafeUrl(url);
 
+md.inline.ruler.before("text", "diffstat", (state, silent) => {
+  const pos = state.pos;
+  const src = state.src;
+  if (pos >= src.length) return false;
+
+  const match = /^[\t ]*\(\+(\d+)\s+-(\d+)\)/.exec(src.slice(pos));
+  if (!match) return false;
+  if (silent) return true;
+
+  const prefix = /^[\t ]*/.exec(match[0])?.[0] ?? "";
+  if (prefix) {
+    const text = state.push("text", "", 0);
+    text.content = prefix;
+  }
+
+  const token = state.push("diffstat", "", 0);
+  token.meta = { added: match[1], removed: match[2] };
+  state.pos += match[0].length;
+  return true;
+});
+
+md.renderer.rules.diffstat = (tokens, idx) => {
+  const meta = (tokens[idx]?.meta ?? {}) as { added?: unknown; removed?: unknown };
+  const rawAdded = String(meta.added ?? "").trim();
+  const rawRemoved = String(meta.removed ?? "").trim();
+  const added = /^\d+$/.test(rawAdded) ? rawAdded : "0";
+  const removed = /^\d+$/.test(rawRemoved) ? rawRemoved : "0";
+
+  return `<span class="md-diffstat">(<span class="md-diffstat-add">+${added}</span> <span class="md-diffstat-del">-${removed}</span>)</span>`;
+};
+
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const token = tokens[idx];
   const rawInfo = String(token.info ?? "").trim();

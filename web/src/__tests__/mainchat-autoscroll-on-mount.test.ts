@@ -50,6 +50,44 @@ describe("MainChat auto-scroll on mount", () => {
     wrapper.unmount();
   });
 
+  it("keeps scrolling to bottom while the last message grows (streaming updates)", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [msg("u-1", "user", "hello"), msg("a-1", "assistant", "start")],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: true,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    let height = 400;
+    Object.defineProperty(chat, "scrollHeight", {
+      configurable: true,
+      get: () => height,
+    });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(400);
+
+    height = 520;
+    await wrapper.setProps({
+      messages: [msg("u-1", "user", "hello"), { ...msg("a-1", "assistant", "start"), streaming: true, content: "start\nmore" }],
+    });
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(520);
+
+    wrapper.unmount();
+  });
+
   it("scrolls to bottom when mounting a project with many messages", async () => {
     const messages = Array.from({ length: 120 }, (_, idx) =>
       msg(`m-${idx}`, idx % 2 === 0 ? "user" : "assistant", `line ${idx}`),
@@ -108,4 +146,3 @@ describe("MainChat auto-scroll on mount", () => {
     wrapper.unmount();
   });
 });
-
