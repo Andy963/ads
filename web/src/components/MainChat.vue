@@ -250,7 +250,6 @@ function getCommands(content: string): string[] {
     <div class="header">
       <div class="header-left">
         <div class="meta">
-          <span v-if="busy" class="meta-item">busy</span>
         </div>
       </div>
     </div>
