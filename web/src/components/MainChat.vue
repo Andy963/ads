@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./mainChat/types";
@@ -192,16 +192,23 @@ function handleScroll() {
 async function scrollToBottom(): Promise<void> {
   if (!listRef.value) return;
   await nextTick();
+  if (!listRef.value) return;
   listRef.value.scrollTop = listRef.value.scrollHeight;
   autoScroll.value = true;
   showScrollToBottom.value = false;
 }
+
+onMounted(() => {
+  // Project switches remount this component (keyed by activeProjectId). Ensure we start at the newest message.
+  void scrollToBottom();
+});
 
 watch(
   () => props.messages.length,
   async () => {
     if (autoScroll.value && listRef.value) {
       await nextTick();
+      if (!listRef.value) return;
       listRef.value.scrollTop = listRef.value.scrollHeight;
       showScrollToBottom.value = false;
       return;
