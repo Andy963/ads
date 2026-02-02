@@ -33,7 +33,7 @@ const openCommandTrees = ref<Set<string>>(new Set());
 const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
 
-const MAX_EXECUTE_STACK_LAYERS = 5;
+const MAX_EXECUTE_STACK_LAYERS = 3;
 const MAX_EXECUTE_STACK_UNDERLAYS = MAX_EXECUTE_STACK_LAYERS - 1;
 
 const liveStepPinnedToBottom = ref(true);

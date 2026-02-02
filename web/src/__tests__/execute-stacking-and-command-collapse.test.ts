@@ -83,7 +83,7 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    const maxUnderlays = 4; // 5 layers total (top card + 4 underlays)
+    const maxUnderlays = 2; // 3 layers total (top card + 2 underlays)
     expect(wrapper.findAll(".execute-block")).toHaveLength(1);
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(maxUnderlays);
 
