@@ -344,7 +344,26 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       clearPendingPrompt(rt as any);
       clearStepLive(rt as any);
       finalizeCommandBlock(rt as any);
-      pushMessageBeforeLive({ role: "system", kind: "text", content: String((msg as { message?: unknown }).message ?? "error") }, rt as any);
+
+      const errorInfo = (msg as any).errorInfo as {
+        code?: string;
+        retryable?: boolean;
+        needsReset?: boolean;
+        originalError?: string;
+      } | undefined;
+
+      const userMessage = String((msg as { message?: unknown }).message ?? "error");
+      const errorContent = errorInfo
+        ? `⚠️ ${userMessage}\n\n` +
+          `错误类型: ${errorInfo.code ?? "unknown"}\n` +
+          (errorInfo.retryable ? "💡 可以重试\n" : "") +
+          (errorInfo.needsReset ? "⚠️ 建议使用 /reset 重置会话\n" : "") +
+          (errorInfo.originalError && errorInfo.originalError !== userMessage
+            ? `\n详细信息: ${errorInfo.originalError}`
+            : "")
+        : userMessage;
+
+      pushMessageBeforeLive({ role: "system", kind: "text", content: errorContent }, rt as any);
       flushQueuedPrompts(rt as any);
       return;
     }

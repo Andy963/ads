@@ -1,6 +1,7 @@
 import type { Input, ThreadEvent, TodoListItem } from "@openai/codex-sdk";
 
 import type { AgentEvent } from "../../../codex/events.js";
+import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";
 import { parseSlashCommand } from "../../../codexConfig.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import { extractTextFromInput } from "../../../utils/inputText.js";
@@ -429,15 +430,38 @@ export async function handlePromptMessage(deps: {
       }
       deps.sendWorkspaceState(deps.ws, turnCwd);
     } catch (error) {
-      const message = (error as Error).message ?? String(error);
       const aborted = controller.signal.aborted;
-      if (!aborted) {
-        deps.sessionLogger?.logError(message);
+      if (aborted) {
+        deps.safeJsonSend(deps.ws, { type: "error", message: "已中断，输出可能不完整" });
+      } else {
+        const errorInfo: CodexErrorInfo =
+          error instanceof CodexClassifiedError
+            ? error.info
+            : classifyError(error);
+
+        const logMessage = `[${errorInfo.code}] ${errorInfo.message}`;
+        const stack = error instanceof Error ? error.stack : undefined;
+        deps.sessionLogger?.logError(stack ? `${logMessage}\n${stack}` : logMessage);
+        deps.logger.warn(`[Prompt Error] code=${errorInfo.code} retryable=${errorInfo.retryable} needsReset=${errorInfo.needsReset} message=${errorInfo.message}`);
+
+        deps.historyStore.add(deps.historyKey, {
+          role: "status",
+          text: `[${errorInfo.code}] ${errorInfo.userHint}`,
+          ts: Date.now(),
+          kind: "error",
+        });
+
+        deps.safeJsonSend(deps.ws, {
+          type: "error",
+          message: errorInfo.userHint,
+          errorInfo: {
+            code: errorInfo.code,
+            retryable: errorInfo.retryable,
+            needsReset: errorInfo.needsReset,
+            originalError: errorInfo.originalError,
+          },
+        });
       }
-      if (!aborted) {
-        deps.historyStore.add(deps.historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
-      }
-      deps.safeJsonSend(deps.ws, { type: "error", message: aborted ? "已中断，输出可能不完整" : message });
     } finally {
       unsubscribe();
       deps.interruptControllers.delete(deps.userId);

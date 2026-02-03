@@ -13,4 +13,5 @@ This file is maintained by ADS. Edit outside the marked block if needed.
 - 0007 - [Queue Task Runs While Agent Is Busy](0007-queue-task-runs-while-agent-busy.md)
 - 0008 - [Task Rerun With Workspace Patch Context](0008-task-rerun-with-workspace-patch-context.md)
 - 0009 - [Constrain Live Step Trace Output](0009-constrain-live-step-trace-output.md)
+- 0010 - [Codex Error Classification and WS `errorInfo` Propagation](0010-codex-error-classification-and-ws-errorinfo.md)
 <!-- ADS:ADR_INDEX_END -->

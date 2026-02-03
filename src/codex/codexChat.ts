@@ -12,6 +12,8 @@ import { resolveCodexConfig, type CodexResolvedConfig } from "../codexConfig.js"
 import { mapThreadEventToAgentEvent, parseReconnectingMessage, type AgentEvent } from "../codex/events.js";
 import {
   CodexThreadCorruptedError,
+  CodexClassifiedError,
+  classifyError,
   isEncryptedThreadError,
 } from "../codex/errors.js";
 import type { IntakeClassification } from "../intake/types.js";
@@ -327,15 +329,18 @@ export class CodexSession {
       if (signal?.aborted || isAbortError(error)) {
         throw error instanceof Error ? error : createAbortError();
       }
-      const message = error instanceof Error ? error.message : String(error);
-      this.emitSynthetic("error", "事件流异常", message, "error");
-      throw error;
+      const errorInfo = classifyError(error);
+      logger.warn(`[Stream Error] code=${errorInfo.code} retryable=${errorInfo.retryable} needsReset=${errorInfo.needsReset}`);
+      this.emitSynthetic("error", errorInfo.userHint, `[${errorInfo.code}] ${errorInfo.message}`, "error");
+      throw new CodexClassifiedError(error);
     }
 
     const final = aggregator.final();
     if (final.error) {
-      this.emitSynthetic("error", "执行失败", final.error.message, "turn.failed");
-      throw final.error;
+      const errorInfo = classifyError(final.error);
+      logger.warn(`[Turn Failed] code=${errorInfo.code} retryable=${errorInfo.retryable} needsReset=${errorInfo.needsReset}`);
+      this.emitSynthetic("error", errorInfo.userHint, `[${errorInfo.code}] ${errorInfo.message}`, "turn.failed");
+      throw new CodexClassifiedError(final.error);
     }
     return {
       response: this.normalizeResponse(final.finalResponse ?? ""),
