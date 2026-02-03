@@ -16,4 +16,5 @@ This file is maintained by ADS. Edit outside the marked block if needed.
 - 0010 - [Codex Error Classification and WS `errorInfo` Propagation](0010-codex-error-classification-and-ws-errorinfo.md)
 - 0011 - [Mobile UI Project List + Topbar Layout Tweaks](0011-mobile-ui-project-list-and-topbar.md)
 - 0012 - [Stabilize TaskCreateForm Voice Icon Position](0012-task-createform-voice-icon-position.md)
+- 0013 - [Execute Stack Underlay Headers and Live-Step Auto-Scroll Robustness](0013-execute-stack-underlay-headers-and-live-step-autoscroll.md)
 <!-- ADS:ADR_INDEX_END -->

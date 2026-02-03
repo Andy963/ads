@@ -81,14 +81,16 @@ onMounted(() => {
     const underlays = Array.from(stack?.querySelectorAll<HTMLElement>(".execute-underlay") || []);
     if (stackBlock && underlays.length > 0) {
       const blockTop = stackBlock.getBoundingClientRect().top;
+      const peekRaw = stack ? getComputedStyle(stack).getPropertyValue("--execute-stack-peek") : "";
+      const peekPx = Number.parseInt(peekRaw || "0", 10) || 0;
       const deltas = underlays
         .map((el) => {
           const top = el.getBoundingClientRect().top;
           return Math.round(top - blockTop);
         })
-        // Expect the closest underlay to be around -6px, then -12px, etc.
+        // Expect the closest underlay to be around -peekPx, then -2*peekPx, etc.
         .sort((a, b) => b - a);
-      const ok = deltas.every((d, idx) => Math.abs(d + (idx + 1) * 6) <= 1);
+      const ok = deltas.every((d, idx) => Math.abs(d + (idx + 1) * peekPx) <= 1);
       offsetCheck.value = { deltas, ok };
 
       // Underlays should not visibly extend beyond the main block.

@@ -10,6 +10,64 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 }
 
 describe("chat execute stacking and command collapse", () => {
+  it("renders no execute stack when there are no execute messages", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [
+          { id: "u-1", role: "user", kind: "text", content: "hi" },
+          { id: "a-1", role: "assistant", kind: "text", content: "done" },
+        ],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    expect(wrapper.findAll(".execute-block")).toHaveLength(0);
+    expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
+
+    wrapper.unmount();
+  });
+
+  it("renders a single execute block without underlays when there is only one execute message", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [
+          { id: "u-1", role: "user", kind: "text", content: "hi" },
+          { id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" },
+          { id: "a-1", role: "assistant", kind: "text", content: "done" },
+        ],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
+    expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
+    expect(wrapper.find(".execute-cmd").text()).toContain("cmd-1");
+
+    wrapper.unmount();
+  });
+
   it("stacks consecutive execute blocks and shows only the latest content", async () => {
     const wrapper = mount(MainChat, {
       props: {
@@ -42,9 +100,12 @@ describe("chat execute stacking and command collapse", () => {
     expect(left.exists()).toBe(true);
     expect(left.find(".command-tag").exists()).toBe(true);
     expect(left.find(".execute-cmd").exists()).toBe(true);
+    expect(left.find(".execute-cmd").text()).toContain("cmd-3");
 
     const underlays = wrapper.findAll(".execute-underlay");
     expect(underlays).toHaveLength(2);
+    expect(underlays[0]!.text()).toContain("cmd-1");
+    expect(underlays[1]!.text()).toContain("cmd-2");
 
     const count = wrapper.find(".execute-stack-count");
     expect(count.exists()).toBe(true);
@@ -55,6 +116,46 @@ describe("chat execute stacking and command collapse", () => {
     expect(output.text()).toContain("out-3");
     expect(output.text()).not.toContain("out-1");
     expect(output.text()).not.toContain("out-2");
+
+    wrapper.unmount();
+  });
+
+  it("keeps only the latest 3 execute commands visible in the stack", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [
+          { id: "u-1", role: "user", kind: "text", content: "hi" },
+          { id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" },
+          { id: "e-2", role: "system", kind: "execute", content: "out-2", command: "cmd-2" },
+          { id: "e-3", role: "system", kind: "execute", content: "out-3", command: "cmd-3" },
+          { id: "e-4", role: "system", kind: "execute", content: "out-4", command: "cmd-4" },
+          { id: "a-1", role: "assistant", kind: "text", content: "done" },
+        ],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
+
+    const topCmd = wrapper.find(".execute-cmd");
+    expect(topCmd.exists()).toBe(true);
+    expect(topCmd.text()).toContain("cmd-4");
+
+    const underlays = wrapper.findAll(".execute-underlay");
+    expect(underlays).toHaveLength(2);
+    expect(underlays[0]!.text()).toContain("cmd-2");
+    expect(underlays[1]!.text()).toContain("cmd-3");
 
     wrapper.unmount();
   });
@@ -90,6 +191,15 @@ describe("chat execute stacking and command collapse", () => {
     const count = wrapper.find(".execute-stack-count");
     expect(count.exists()).toBe(true);
     expect(count.text()).toContain("20");
+
+    const topCmd = wrapper.find(".execute-cmd");
+    expect(topCmd.exists()).toBe(true);
+    expect(topCmd.text()).toContain("cmd-20");
+
+    const underlays = wrapper.findAll(".execute-underlay");
+    expect(underlays).toHaveLength(maxUnderlays);
+    expect(underlays[0]!.text()).toContain("cmd-18");
+    expect(underlays[1]!.text()).toContain("cmd-19");
 
     const output = wrapper.find(".execute-output");
     expect(output.exists()).toBe(true);

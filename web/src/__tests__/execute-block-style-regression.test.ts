@@ -16,7 +16,7 @@ describe("execute block style regression", () => {
     expect(css).toMatch(/\.execute-block\s*\{[\s\S]*?height:\s*100px\s*;[\s\S]*?\}/);
 
     // "Real" stacking: underlays peek above the top edge and are clipped at the bottom.
-    expect(css).toMatch(/execute-stack-peek:\s*6px\s*;/);
+    expect(css).toMatch(/execute-stack-peek:\s*24px\s*;/);
     expect(css).toMatch(/\.execute-stack\s*\{[\s\S]*?overflow:\s*hidden\s*;[\s\S]*?padding-top:\s*calc\(var\(--execute-stack-peek\)\s*\*\s*var\(--execute-stack-underlays\)\)\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-underlays\s*\{[\s\S]*?top:\s*0\s*;[\s\S]*?bottom:\s*0\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-underlay\s*\{[\s\S]*?bottom:\s*0\s*;[\s\S]*?\}/);

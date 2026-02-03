@@ -36,7 +36,6 @@ const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
 const CHAT_STICKY_THRESHOLD_PX = 80;
 
 const MAX_EXECUTE_STACK_LAYERS = 3;
-const MAX_EXECUTE_STACK_UNDERLAYS = MAX_EXECUTE_STACK_LAYERS - 1;
 
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
@@ -154,12 +153,6 @@ function caretPath(open: boolean): string {
   return open ? "M6 8l4 4 4-4" : "M8 6l4 4-4 4";
 }
 
-function underlayLayers(count?: number): number[] {
-  const n = Math.max(0, count ?? 0);
-  // Render back-to-front so every 6px "peek" stays visible.
-  return Array.from({ length: n }, (_, i) => n - i);
-}
-
 const liveStepMessage = computed(
   () =>
     props.messages.find((m) => m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text") ?? null,
@@ -177,15 +170,18 @@ const renderMessages = computed<RenderMessage[]>(() => {
       return;
     }
 
-    const top = stack[stack.length - 1]!;
+    const visibleCount = Math.min(MAX_EXECUTE_STACK_LAYERS, stack.length);
+    const stackItems = stack.slice(Math.max(0, stack.length - visibleCount));
+    const top = stackItems[stackItems.length - 1]!;
     out.push({
       ...top,
       id: `execstack:${top.id}`,
       role: "system",
       kind: "execute",
       stackCount: stack.length,
-      // Keep a stable UI footprint: show at most N stacked cards visually.
-      stackUnderlays: Math.min(MAX_EXECUTE_STACK_UNDERLAYS, Math.max(0, stack.length - 1)),
+      // Keep a stable UI footprint: show at most N stacked cards, but always take the newest ones.
+      stackUnderlays: Math.max(0, stackItems.length - 1),
+      stackItems,
     });
     stack.length = 0;
   };
@@ -276,7 +272,10 @@ watch(
 );
 
 watch(
-  [() => Boolean(liveStepMessage.value?.streaming), () => liveStepMessage.value?.content.length ?? 0],
+  // Watch the entire content string instead of `content.length` because the live-step
+  // stream is trimmed (max chars/lines). Once it reaches the cap, length can stay
+  // constant even as new content arrives, which would otherwise stall auto-scroll.
+  [() => Boolean(liveStepMessage.value?.streaming), () => liveStepMessage.value?.content ?? ""],
   ([streaming], [prevStreaming]) => {
     if (!liveStepMessage.value) {
       detachLiveStepScrollEl();
@@ -349,8 +348,14 @@ function getCommands(content: string): string[] {
           :data-underlays="m.stackUnderlays ?? 0"
           :style="{ '--execute-stack-underlays': String(m.stackUnderlays ?? 0) }">
           <div v-if="(m.stackUnderlays ?? 0) > 0" class="execute-underlays" aria-hidden="true">
-            <div v-for="n in underlayLayers(m.stackUnderlays)" :key="n" class="execute-underlay" :data-layer="n"
-              :style="{ '--execute-underlay-layer': String(n) }" />
+            <div v-for="(u, idx) in (m.stackItems ?? []).slice(0, -1)" :key="u.id" class="execute-underlay"
+              :data-layer="String((m.stackUnderlays ?? 0) - idx)"
+              :style="{ '--execute-underlay-layer': String((m.stackUnderlays ?? 0) - idx) }">
+              <div class="execute-underlay-header">
+                <span class="command-tag">EXECUTE</span>
+                <span class="execute-underlay-cmd" :title="u.command || ''">{{ u.command || "" }}</span>
+              </div>
+            </div>
           </div>
           <div class="execute-block">
             <div class="execute-header">

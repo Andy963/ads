@@ -127,4 +127,55 @@ describe("live-step reasoning scroll style", () => {
     globalThis.requestAnimationFrame = originalRaf;
     globalThis.cancelAnimationFrame = originalCancel;
   });
+
+  it("keeps auto-scrolling when the live-step content is trimmed to a fixed length", async () => {
+    const originalRaf = globalThis.requestAnimationFrame;
+    const originalCancel = globalThis.cancelAnimationFrame;
+
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    }) as unknown as typeof globalThis.requestAnimationFrame;
+    globalThis.cancelAnimationFrame = (() => {}) as unknown as typeof globalThis.cancelAnimationFrame;
+
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [
+          { id: "live-step", role: "assistant", kind: "text", content: "aaaaa", streaming: true },
+          { id: "a-1", role: "assistant", kind: "text", content: "final answer" },
+        ],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.vm.$nextTick();
+
+    const md = wrapper.find('.msg[data-id="live-step"] .md').element as HTMLElement;
+    Object.defineProperty(md, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(md, "clientHeight", { configurable: true, get: () => 100 });
+
+    md.scrollTop = 0;
+    await wrapper.setProps({
+      messages: [
+        { id: "live-step", role: "assistant", kind: "text", content: "bbbbb", streaming: true }, // same length, different content
+        { id: "a-1", role: "assistant", kind: "text", content: "final answer" },
+      ],
+    });
+    await wrapper.vm.$nextTick();
+    expect(md.scrollTop).toBe(1000);
+
+    wrapper.unmount();
+
+    globalThis.requestAnimationFrame = originalRaf;
+    globalThis.cancelAnimationFrame = originalCancel;
+  });
 });

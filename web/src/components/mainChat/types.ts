@@ -12,8 +12,8 @@ export type ChatMessage = {
 export type RenderMessage = ChatMessage & {
   stackCount?: number;
   stackUnderlays?: number;
+  stackItems?: ChatMessage[];
 };
 
 export type IncomingImage = { name?: string; mime?: string; data: string };
 export type QueuedPrompt = { id: string; text: string; imagesCount: number };
-

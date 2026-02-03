@@ -11,7 +11,7 @@
 
   --execute-block-height: 100px;
   /* "Real" stack: underlays peek above the top edge by this amount (per layer). */
-  --execute-stack-peek: 6px;
+  --execute-stack-peek: 24px;
 }
 
 .detail--active {
@@ -132,6 +132,26 @@
   /* Default for older CSS/DOM; MainChat.vue sets this inline per underlay. */
   --execute-underlay-layer: 1;
   transform: translate(0, calc(-1 * var(--execute-stack-peek) * var(--execute-underlay-layer)));
+}
+
+.execute-underlay-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.execute-underlay-cmd {
+  color: #475569;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .execute-header {
