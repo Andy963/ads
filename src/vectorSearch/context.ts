@@ -1,116 +1,18 @@
 import { createLogger } from "../utils/logger.js";
 import { getStateDatabase } from "../state/database.js";
-import type { VectorQueryHit } from "./types.js";
 import { queryVectorSearchHits } from "./run.js";
 import { loadVectorSearchConfig } from "./config.js";
 import { resolveWorkspaceStateDbPath } from "./state.js";
 import { sha256Hex } from "./hash.js";
-import { parseBoolean, parseCsv, parseFloatNumber, parsePositiveInt } from "./contextHelpers.js";
+import { resolveVectorAutoContextConfig, type VectorAutoContextConfig } from "./autoContextConfig.js";
+import { formatVectorAutoContext, isChatUserEcho } from "./autoContextFormat.js";
+import { normalizeWhitespace, safeString, toNumber } from "./autoContextUtils.js";
 
 const logger = createLogger("VectorSearchContext");
 
-export interface VectorAutoContextConfig {
-  enabled: boolean;
-  mode: "always" | "intent";
-  topK: number;
-  maxChars: number;
-  minScore: number;
-  minIntervalMs: number;
-  minQueryChars: number;
-  allowBareTriggers: boolean;
-  triggerKeywords: string[];
-  intentKeywords: string[];
-}
-
-const DEFAULT_TRIGGER_KEYWORDS = [
-  // 中文：指代/延续
-  "继续",
-  "刚才",
-  "刚刚",
-  "上面",
-  "前面",
-  "之前",
-  "上次",
-  "回顾",
-  "复盘",
-  "总结一下",
-  "按之前",
-  "按照之前",
-  "基于之前",
-  "沿用",
-  "复用",
-  "照旧",
-  "同样",
-  "回忆",
-  "你还记得",
-  "还记得",
-  "还记得吗",
-  // English: continuity / references
-  "continue",
-  "previous",
-  "earlier",
-  "above",
-  "as discussed",
-  "as before",
-  "recap",
-  "remind me",
-];
-
-const DEFAULT_INTENT_KEYWORDS = [
-  // Chinese: codebase / docs / troubleshooting
-  "代码",
-  "源码",
-  "仓库",
-  "哪个文件",
-  "报错",
-  "错误",
-  "日志",
-  "堆栈",
-  "栈",
-  "调用链",
-  "配置",
-  "文档",
-  "设计",
-  "adr",
-  // English: codebase / docs / troubleshooting
-  "ads",
-  "web",
-  "api",
-  "ws",
-  "sqlite",
-  "codebase",
-  "repo",
-  "repository",
-  "source",
-  "which file",
-  "where is",
-  "error",
-  "exception",
-  "stack",
-  "traceback",
-  "panic",
-  "readme",
-  "docs",
-  "design",
-  "adr",
-];
-
-export function resolveVectorAutoContextConfig(): VectorAutoContextConfig {
-  const enabled = parseBoolean(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_ENABLED) ?? true;
-  const modeRaw = String(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MODE ?? "").trim().toLowerCase();
-  const mode: VectorAutoContextConfig["mode"] = modeRaw === "always" ? "always" : "intent";
-  const topK = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TOPK, 6);
-  const maxChars = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MAX_CHARS, 6000);
-  const minScore = parseFloatNumber(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_SCORE, 0.62);
-  const minIntervalMs = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_INTERVAL_MS, 0);
-  const minQueryChars = parsePositiveInt(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_MIN_QUERY_CHARS, 40);
-  const allowBareTriggers = parseBoolean(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_ALLOW_BARE_TRIGGERS) ?? true;
-  const extras = parseCsv(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_TRIGGER_KEYWORDS);
-  const intentExtras = parseCsv(process.env.ADS_VECTOR_SEARCH_AUTO_CONTEXT_INTENT_KEYWORDS);
-  const triggerKeywords = Array.from(new Set([...DEFAULT_TRIGGER_KEYWORDS, ...extras])).filter(Boolean);
-  const intentKeywords = Array.from(new Set([...DEFAULT_INTENT_KEYWORDS, ...intentExtras])).filter(Boolean);
-  return { enabled, mode, topK, maxChars, minScore, minIntervalMs, minQueryChars, allowBareTriggers, triggerKeywords, intentKeywords };
-}
+export { resolveVectorAutoContextConfig } from "./autoContextConfig.js";
+export type { VectorAutoContextConfig } from "./autoContextConfig.js";
+export { formatVectorAutoContext } from "./autoContextFormat.js";
 
 export interface VectorAutoContextReport {
   workspaceRoot: string;
@@ -329,62 +231,6 @@ function deriveQueryFromHistory(params: {
   return params.originalQuery;
 }
 
-function toNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Number.parseFloat(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return undefined;
-}
-
-function safeString(value: unknown): string {
-  return typeof value === "string" ? value : value === undefined || value === null ? "" : String(value);
-}
-
-function normalizeWhitespace(text: string): string {
-  return String(text ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function pickHitText(hit: VectorQueryHit): string {
-  return normalizeWhitespace(
-    safeString(hit.text) || safeString(hit.snippet) || safeString(hit.metadata?.snippet) || safeString(hit.metadata?.text_preview),
-  );
-}
-
-function labelForHit(hit: VectorQueryHit): string {
-  const md = hit.metadata ?? {};
-  const sourceType = safeString(md["source_type"]) || "unknown";
-  if (sourceType === "spec" || sourceType === "adr") {
-    const relPath = safeString(md["path"]);
-    return relPath ? `${sourceType}:${relPath}` : sourceType;
-  }
-  if (sourceType === "chat") {
-    const ns = safeString(md["namespace"]);
-    const role = safeString(md["role"]);
-    const nsPart = ns ? `chat:${ns}` : "chat";
-    const rolePart = role ? `/${role}` : "";
-    return `${nsPart}${rolePart}`;
-  }
-  return sourceType;
-}
-
-function isChatUserEcho(hit: VectorQueryHit, normalizedQuery: string): boolean {
-  if (!normalizedQuery) return false;
-  const md = hit.metadata ?? {};
-  const sourceType = safeString(md["source_type"]) || "";
-  if (sourceType !== "chat") return false;
-  const role = safeString(md["role"]) || "";
-  if (role !== "user") return false;
-  const text = pickHitText(hit).toLowerCase();
-  if (!text) return false;
-  if (text === normalizedQuery) return true;
-  if (text.length >= 40 && normalizedQuery.includes(text)) return true;
-  return false;
-}
-
 type AutoContextCacheEntry = {
   updatedAtMs: number;
   context: string | null;
@@ -392,44 +238,6 @@ type AutoContextCacheEntry = {
 };
 
 const AUTO_CONTEXT_CACHE = new Map<string, AutoContextCacheEntry>();
-
-export function formatVectorAutoContext(params: {
-  hits: VectorQueryHit[];
-  maxChars: number;
-}): string {
-  const hits = params.hits ?? [];
-  if (hits.length === 0) {
-    return "";
-  }
-
-  const maxChars = Math.max(600, params.maxChars);
-  const seen = new Set<string>();
-  const lines: string[] = [];
-  lines.push("【补充上下文】");
-  lines.push("（系统自动提供的历史对话/文档片段，仅供参考；如与当前用户输入冲突，以当前用户输入为准；不要在回复中提及检索过程或内部标识。）");
-  lines.push("");
-
-  let used = lines.join("\n").length;
-  for (const hit of hits) {
-    const text = pickHitText(hit);
-    if (!text) continue;
-    const label = labelForHit(hit);
-    const clippedText = text.length > 900 ? `${text.slice(0, 899)}…` : text;
-    const entry = `- ${label}: ${clippedText}`;
-    const signature = normalizeWhitespace(entry).toLowerCase();
-    if (seen.has(signature)) continue;
-    seen.add(signature);
-
-    if (used + entry.length + 1 > maxChars) {
-      break;
-    }
-    lines.push(entry);
-    used += entry.length + 1;
-  }
-
-  const output = lines.join("\n").trim();
-  return output.length > maxChars ? output.slice(0, maxChars - 1).trimEnd() + "…" : output;
-}
 
 export async function maybeBuildVectorAutoContext(params: {
   workspaceRoot: string;
