@@ -3,7 +3,7 @@ import { sendJson } from "../../http.js";
 
 export async function handleTaskQueueRoutes(
   ctx: ApiRouteContext,
-  deps: Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending" | "taskQueueLock">,
+  deps: Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending">,
 ): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
 
@@ -53,13 +53,13 @@ export async function handleTaskQueueRoutes(
       taskCtx.queueRunning = true;
       deps.promoteQueuedTasksToPending(taskCtx);
     };
-    if (deps.taskQueueLock.isBusy()) {
-      void deps.taskQueueLock.runExclusive(action);
+    if (taskCtx.lock.isBusy()) {
+      void taskCtx.lock.runExclusive(action);
       const status = taskCtx.getStatusOrchestrator().status();
       sendJson(res, 202, { success: true, queued: true, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
       return true;
     }
-    await deps.taskQueueLock.runExclusive(action);
+    await taskCtx.lock.runExclusive(action);
     const status = taskCtx.getStatusOrchestrator().status();
     sendJson(res, 200, { success: true, queued: false, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
     return true;

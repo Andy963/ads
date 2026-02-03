@@ -40,6 +40,7 @@ export type TaskQueueMetrics = {
 export type TaskQueueContext = {
   workspaceRoot: string;
   sessionId: string;
+  lock: AsyncLock;
   taskStore: QueueTaskStore;
   attachmentStore: AttachmentStore;
   taskQueue: TaskQueue;
@@ -166,7 +167,7 @@ export function createTaskQueueManager(deps: {
   workspaceRoot: string;
   allowedDirs: string[];
   adsStateDir: string;
-  lock: AsyncLock;
+  lockForWorkspace: (workspaceRoot: string) => AsyncLock;
   available: boolean;
   autoStart: boolean;
   logger: Logger;
@@ -222,6 +223,7 @@ export function createTaskQueueManager(deps: {
       return existing;
     }
 
+    const lock = deps.lockForWorkspace(key);
     const sessionId = deriveProjectSessionId(key);
     const taskStore = new QueueTaskStore({ workspacePath: key });
     const attachmentStore = new AttachmentStore({ workspacePath: key });
@@ -247,19 +249,20 @@ export function createTaskQueueManager(deps: {
     const planner = new OrchestratorTaskPlanner({
       getOrchestrator: getTaskQueueOrchestrator,
       planModel: process.env.TASK_QUEUE_PLAN_MODEL ?? "gpt-5.2",
-      lock: deps.lock,
+      lock,
     });
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: getTaskQueueOrchestrator,
       store: taskStore,
       defaultModel: process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2",
-      lock: deps.lock,
+      lock,
     });
     const taskQueue = new TaskQueue({ store: taskStore, planner, executor });
 
     const ctx: TaskQueueContext = {
       workspaceRoot: key,
       sessionId,
+      lock,
       taskStore,
       attachmentStore,
       taskQueue,

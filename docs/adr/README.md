@@ -17,4 +17,5 @@ This file is maintained by ADS. Edit outside the marked block if needed.
 - 0011 - [Mobile UI Project List + Topbar Layout Tweaks](0011-mobile-ui-project-list-and-topbar.md)
 - 0012 - [Stabilize TaskCreateForm Voice Icon Position](0012-task-createform-voice-icon-position.md)
 - 0013 - [Execute Stack Underlay Headers and Live-Step Auto-Scroll Robustness](0013-execute-stack-underlay-headers-and-live-step-autoscroll.md)
+- 0014 - [Per-Project Keyed Locks for Cross-Project Parallelism](0014-per-project-keyed-locks-for-parallelism.md)
 <!-- ADS:ADR_INDEX_END -->

@@ -4,6 +4,7 @@ import { resolveCodexConfig } from "../../../codexConfig.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
+import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import { truncateForLog } from "../../utils.js";
 import type { WsMessage } from "./schema.js";
@@ -21,7 +22,7 @@ export async function handleTaskResumeMessage(deps: {
   sessionManager: SessionManager;
   safeJsonSend: (ws: import("ws").WebSocket, payload: unknown) => void;
   logger: { warn: (msg: string) => void };
-  taskQueueLock: { runExclusive: <T>(fn: () => Promise<T>) => Promise<T> };
+  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }): Promise<{ handled: boolean; orchestrator?: ReturnType<SessionManager["getOrCreate"]> }> {
   if (deps.parsed.type !== "task_resume") {
@@ -29,8 +30,10 @@ export async function handleTaskResumeMessage(deps: {
   }
 
   let orchestrator = deps.orchestrator;
-  await deps.taskQueueLock.runExclusive(async () => {
-    const resumeWorkspaceRoot = detectWorkspaceFrom(deps.currentCwd);
+  const resumeWorkspaceRoot = detectWorkspaceFrom(deps.currentCwd);
+  const lock = deps.getWorkspaceLock(resumeWorkspaceRoot);
+
+  await lock.runExclusive(async () => {
     const taskCtx = deps.ensureTaskContext(resumeWorkspaceRoot);
 
     if (taskCtx.queueRunning || taskCtx.taskStore.getActiveTaskId()) {

@@ -3,7 +3,6 @@ import type http from "node:http";
 import { isOriginAllowed } from "../../auth/origin.js";
 import { authenticateRequest } from "../auth.js";
 import { isStateChangingMethod, sendJson } from "../http.js";
-import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { Logger } from "../../../utils/logger.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 
@@ -25,7 +24,6 @@ export function createApiRequestHandler(deps: {
   sessionTtlSeconds: number;
   sessionPepper: string;
   taskQueueAvailable: boolean;
-  taskQueueLock: AsyncLock;
   resolveTaskContext: (url: URL) => TaskQueueContext;
   promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
@@ -44,7 +42,6 @@ export function createApiRequestHandler(deps: {
     allowedDirs: deps.allowedDirs,
     workspaceRoot: deps.workspaceRoot,
     taskQueueAvailable: deps.taskQueueAvailable,
-    taskQueueLock: deps.taskQueueLock,
     resolveTaskContext: deps.resolveTaskContext,
     promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
     broadcastToSession: deps.broadcastToSession,
@@ -81,7 +78,6 @@ export function createApiRequestHandler(deps: {
     if (
       await handleTaskQueueRoutes(routeCtx, {
         taskQueueAvailable: deps.taskQueueAvailable,
-        taskQueueLock: deps.taskQueueLock,
         resolveTaskContext: deps.resolveTaskContext,
         promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
       })

@@ -16,8 +16,8 @@ import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
 import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
 import { SessionManager } from "../../telegram/utils/sessionManager.js";
-import { AsyncLock } from "../../utils/asyncLock.js";
 import { createTaskQueueManager } from "./taskQueue/manager.js";
+import { WorkspaceLockPool } from "./workspaceLockPool.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, resolveAllowedDirs, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
 import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions.js";
@@ -144,7 +144,8 @@ async function ensureWebPidFile(): Promise<string> {
 export async function startWebServer(): Promise<void> {
   const workspaceRoot = detectWorkspace();
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
-  const taskQueueLock = new AsyncLock();
+  const workspaceLocks = new WorkspaceLockPool();
+  const getWorkspaceLock = (workspaceRootForLock: string) => workspaceLocks.get(workspaceRootForLock);
   const taskQueueAvailable = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
   const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
 
@@ -191,7 +192,7 @@ export async function startWebServer(): Promise<void> {
     workspaceRoot,
     allowedDirs,
     adsStateDir,
-    lock: taskQueueLock,
+    lockForWorkspace: getWorkspaceLock,
     available: taskQueueAvailable,
     autoStart: taskQueueAutoStart,
     logger,
@@ -207,7 +208,6 @@ export async function startWebServer(): Promise<void> {
     sessionTtlSeconds,
     sessionPepper,
     taskQueueAvailable,
-    taskQueueLock,
     resolveTaskContext: taskQueueManager.resolveTaskContext,
     promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
     broadcastToSession,
@@ -234,7 +234,7 @@ export async function startWebServer(): Promise<void> {
     sessionManager,
     historyStore,
     ensureTaskContext: taskQueueManager.ensureTaskContext,
-    taskQueueLock,
+    getWorkspaceLock,
     runAdsCommandLine,
     sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
     syncWorkspaceTemplates,

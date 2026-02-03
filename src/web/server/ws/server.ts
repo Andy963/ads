@@ -15,6 +15,7 @@ import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
 
 import { deriveWebUserId, getWorkspaceState } from "../../utils.js";
+import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { wsMessageSchema } from "./schema.js";
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
@@ -44,7 +45,7 @@ export function attachWebSocketServer(deps: {
   sessionManager: SessionManager;
   historyStore: HistoryStore;
   ensureTaskContext: (workspaceRoot: string) => TaskQueueContext;
-  taskQueueLock: { runExclusive: <T>(fn: () => Promise<T>) => Promise<T> };
+  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
   syncWorkspaceTemplates: () => void;
@@ -287,7 +288,7 @@ export function attachWebSocketServer(deps: {
           sessionManager: deps.sessionManager,
           safeJsonSend,
           logger: deps.logger,
-          taskQueueLock: deps.taskQueueLock,
+          getWorkspaceLock: deps.getWorkspaceLock,
           orchestrator,
         });
         if (resume.orchestrator) {
@@ -310,7 +311,7 @@ export function attachWebSocketServer(deps: {
         historyKey,
         currentCwd,
         allowedDirs: deps.allowedDirs,
-        taskQueueLock: deps.taskQueueLock,
+        getWorkspaceLock: deps.getWorkspaceLock,
         interruptControllers: deps.interruptControllers,
         historyStore: deps.historyStore,
         sessionManager: deps.sessionManager,
@@ -355,7 +356,7 @@ export function attachWebSocketServer(deps: {
         lastPlanSignature,
         lastPlanItems,
         orchestrator,
-        taskQueueLock: deps.taskQueueLock,
+        getWorkspaceLock: deps.getWorkspaceLock,
       });
       if (commandResult.handled) {
         orchestrator = commandResult.orchestrator;

@@ -13,6 +13,7 @@ import { formatSearchResults } from "../../../tools/search/format.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { truncateForLog } from "../../utils.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
+import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
@@ -89,7 +90,7 @@ export async function handlePromptMessage(deps: {
   historyKey: string;
   currentCwd: string;
   allowedDirs: string[];
-  taskQueueLock: { runExclusive: <T>(fn: () => Promise<T>) => Promise<T> };
+  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   interruptControllers: Map<number, AbortController>;
   historyStore: HistoryStore;
   sessionManager: SessionManager;
@@ -111,8 +112,11 @@ export async function handlePromptMessage(deps: {
   let lastPlanSignature = deps.lastPlanSignature;
   let lastPlanItems = deps.lastPlanItems;
 
-  await deps.taskQueueLock.runExclusive(async () => {
-    const imageDir = resolveWorkspaceStatePath(detectWorkspaceFrom(deps.currentCwd), "temp", "web-images");
+  const workspaceRoot = detectWorkspaceFrom(deps.currentCwd);
+  const lock = deps.getWorkspaceLock(workspaceRoot);
+
+  await lock.runExclusive(async () => {
+    const imageDir = resolveWorkspaceStatePath(workspaceRoot, "temp", "web-images");
     const promptInput = buildPromptInput(deps.parsed.payload, imageDir);
     if (!promptInput.ok) {
       deps.sessionLogger?.logError(promptInput.message);

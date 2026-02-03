@@ -1,7 +1,6 @@
 import type http from "node:http";
 
 import type { Logger } from "../../../utils/logger.js";
-import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 
 export type ApiRouteContext = {
@@ -17,7 +16,6 @@ export type ApiSharedDeps = {
   allowedDirs: string[];
   workspaceRoot: string;
   taskQueueAvailable: boolean;
-  taskQueueLock: AsyncLock;
   resolveTaskContext: (url: URL) => TaskQueueContext;
   promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
   broadcastToSession: (sessionId: string, payload: unknown) => void;

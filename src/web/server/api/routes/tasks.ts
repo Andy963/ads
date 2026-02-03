@@ -270,13 +270,13 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return result;
     };
 
-    if (deps.taskQueueLock.isBusy()) {
-      void deps.taskQueueLock.runExclusive(run);
+    if (taskCtx.lock.isBusy()) {
+      void taskCtx.lock.runExclusive(run);
       sendJson(res, 202, { success: true, queued: true, mode: "single", taskId: runSingleTaskId, state: "queued" });
       return true;
     }
 
-    const result = await deps.taskQueueLock.runExclusive(run);
+    const result = await taskCtx.lock.runExclusive(run);
     sendJson(res, result.status, { ...result.body, queued: false });
     return true;
   }

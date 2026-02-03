@@ -7,6 +7,7 @@ import { formatLocalSearchOutput, searchWorkspaceFiles } from "../../../utils/lo
 import { parseSlashCommand } from "../../../codexConfig.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { runVectorSearch } from "../../../vectorSearch/run.js";
+import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
@@ -42,7 +43,7 @@ export async function handleCommandMessage(deps: {
   lastPlanSignature: string | null;
   lastPlanItems: TodoListItem["items"] | null;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
-  taskQueueLock: { runExclusive: <T>(fn: () => Promise<T>) => Promise<T> };
+  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
@@ -65,7 +66,8 @@ export async function handleCommandMessage(deps: {
   let lastPlanSignature = deps.lastPlanSignature;
   let lastPlanItems = deps.lastPlanItems;
 
-  await deps.taskQueueLock.runExclusive(async () => {
+  const lock = deps.getWorkspaceLock(detectWorkspaceFrom(currentCwd));
+  await lock.runExclusive(async () => {
     const commandRaw = deps.sanitizeInput(deps.parsed.payload);
     if (!commandRaw) {
       deps.safeJsonSend(deps.ws, { type: "error", message: "Payload must be a command string" });
