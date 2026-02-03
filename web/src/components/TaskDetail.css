@@ -300,6 +300,7 @@
 .composer-input {
   flex: 1;
   resize: none;
+  overflow-y: hidden;
   border-radius: 10px;
   border: 1px solid #e2e8f0;
   padding: 10px 12px;

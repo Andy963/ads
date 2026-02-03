@@ -55,6 +55,7 @@ function createProjectRuntime(options: { maxLiveActivitySteps: number }): Projec
     runBusyIds: ref(new Set()),
     busy: ref(false),
     turnInFlight: false,
+    turnHasPatch: false,
     pendingAckClientMessageId: null,
     messages: ref([]),
     recentCommands: ref([]),

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient } from "../api/client";
 import type { AuthMe, AuthStatus } from "../api/types";
 
@@ -14,8 +14,32 @@ const username = ref("");
 const password = ref("");
 const error = ref<string | null>(null);
 const busy = ref(false);
+const keyboardOpen = ref(false);
+let focusOutTimer: number | null = null;
 
 const canSubmit = computed(() => Boolean(username.value.trim()) && Boolean(password.value));
+
+function updateKeyboardOpenFromActiveElement(): void {
+  const active = document.activeElement;
+  const focused =
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    (active instanceof HTMLElement && active.isContentEditable);
+  keyboardOpen.value = focused;
+}
+
+function handleFocusIn(): void {
+  updateKeyboardOpenFromActiveElement();
+}
+
+function handleFocusOut(): void {
+  // Let the browser update `document.activeElement` before we compute state.
+  if (focusOutTimer !== null) window.clearTimeout(focusOutTimer);
+  focusOutTimer = window.setTimeout(() => {
+    focusOutTimer = null;
+    updateKeyboardOpenFromActiveElement();
+  }, 0);
+}
 
 async function refresh(): Promise<void> {
   loading.value = true;
@@ -56,12 +80,18 @@ async function submit(): Promise<void> {
 }
 
 onMounted(() => {
+  updateKeyboardOpenFromActiveElement();
   void refresh();
+});
+
+onBeforeUnmount(() => {
+  // Prevent stray timers if the component is torn down while a blur is pending.
+  if (focusOutTimer !== null) window.clearTimeout(focusOutTimer);
 });
 </script>
 
 <template>
-  <div class="gate">
+  <div class="gate" :class="{ 'keyboard-open': keyboardOpen }" @focusin="handleFocusIn" @focusout="handleFocusOut">
     <div class="card">
       <div class="logo">
         <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -207,10 +237,12 @@ code {
   font-size: 13px;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 640px), (max-height: 480px) {
   .gate {
-    align-items: flex-start;
     padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  .gate.keyboard-open {
+    align-items: flex-start;
   }
   .card {
     padding: 24px 20px;

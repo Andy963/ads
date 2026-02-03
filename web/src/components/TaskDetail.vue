@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { TaskDetail } from "../api/types";
 import MarkdownContent from "./MarkdownContent.vue";
 import AttachmentThumb from "./AttachmentThumb.vue";
+import { autosizeTextarea } from "../lib/textarea_autosize";
 
 type ChatMessage = {
   id: string;
@@ -26,6 +27,7 @@ const listRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const showScrollToBottom = ref(false);
 const input = ref("");
+const inputEl = ref<HTMLTextAreaElement | null>(null);
 
 const copiedMessageId = ref<string | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -56,6 +58,14 @@ const showPendingReply = computed(() => {
   if (!lastAssistant) return true;
   return !String(lastAssistant.content ?? "").trim();
 });
+
+const resizeComposer = (): void => {
+  const el = inputEl.value;
+  if (!el) return;
+  autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+};
+
+watch([input, inputEl], resizeComposer, { flush: "post" });
 
 function withTokenQuery(url: string): string {
   const token = String(props.apiToken ?? "").trim();
@@ -295,6 +305,7 @@ onBeforeUnmount(() => {
     <div class="composer">
       <textarea
         v-model="input"
+        ref="inputEl"
         rows="3"
         class="composer-input"
         :placeholder="isRunning ? 'Continue with instruction... (Enter to send, Alt+Enter for newline)' : 'Enter instruction... (Enter to send, Alt+Enter for newline)'"

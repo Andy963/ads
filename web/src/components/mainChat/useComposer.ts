@@ -1,6 +1,7 @@
-import { nextTick, onBeforeUnmount, ref } from "vue";
+import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import type { IncomingImage } from "./types";
+import { autosizeTextarea } from "../../lib/textarea_autosize";
 
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
 type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
@@ -82,6 +83,14 @@ export function useMainChatComposer(params: {
 }) {
   const input = ref("");
   const inputEl = ref<HTMLTextAreaElement | null>(null);
+
+  const resizeComposer = (): void => {
+    const el = inputEl.value;
+    if (!el) return;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+  };
+
+  watch([input, inputEl], resizeComposer, { flush: "post" });
 
   const recording = ref(false);
   const transcribing = ref(false);
@@ -470,4 +479,3 @@ export function useMainChatComposer(params: {
     toggleRecording,
   };
 }
-

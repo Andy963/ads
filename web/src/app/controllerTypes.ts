@@ -68,6 +68,9 @@ export type ProjectRuntime = {
   runBusyIds: Ref<Set<string>>;
   busy: Ref<boolean>;
   turnInFlight: boolean;
+  // Tracks whether the current WS turn already emitted a patch diff message.
+  // Used to suppress redundant diff-like command outputs (e.g. `git diff`) in the same turn.
+  turnHasPatch: boolean;
   pendingAckClientMessageId: string | null;
   messages: Ref<ChatItem[]>;
   recentCommands: Ref<string[]>;

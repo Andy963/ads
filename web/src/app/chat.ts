@@ -150,6 +150,7 @@ export function createChatActions(ctx: AppContext) {
     rt.seenCommandIds.clear();
     rt.pendingImages.value = [];
     rt.turnInFlight = false;
+    rt.turnHasPatch = false;
     clearStepLive(rt);
 
     const next: ChatItem[] = notice.trim()

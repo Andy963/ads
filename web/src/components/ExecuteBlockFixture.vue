@@ -40,6 +40,26 @@ const showDebug = ref(false);
 const messages = computed<ChatMessage[]>(() => {
   const longOutput = Array.from({ length: 40 }, (_, i) => `line ${String(i + 1).padStart(2, "0")}: lorem ipsum`).join("\n");
   const longCommand = "cat /var/log/example.log | tail -n 200 | sed -n '1,120p'";
+  const patchDiff = [
+    "diff --git a/web/src/lib/markdown.ts b/web/src/lib/markdown.ts",
+    "index 1111111..2222222 100644",
+    "--- a/web/src/lib/markdown.ts",
+    "+++ b/web/src/lib/markdown.ts",
+    "@@ -1,3 +1,4 @@",
+    " import MarkdownIt from \"markdown-it\";",
+    "+import hljs from \"highlight.js/lib/core\";",
+    " import bash from \"highlight.js/lib/languages/bash\";",
+    " import diff from \"highlight.js/lib/languages/diff\";",
+  ].join("\n");
+
+  const patchMessage = [
+    "Modified files: `web/src/lib/markdown.ts` (+1 -0)",
+    "",
+    "```diff",
+    patchDiff,
+    "```",
+  ].join("\n");
+
   return [
     { id: "u-1", role: "user", kind: "text", content: "Execute block fixture: stacked then single." },
     { id: "e-1", role: "system", kind: "execute", content: "short output", command: "echo short" },
@@ -47,6 +67,8 @@ const messages = computed<ChatMessage[]>(() => {
     { id: "e-3", role: "system", kind: "execute", content: longOutput, command: longCommand },
     { id: "a-1", role: "assistant", kind: "text", content: "done" },
     { id: "e-4", role: "system", kind: "execute", content: "", command: "echo single" },
+    { id: "p-1", role: "system", kind: "text", content: patchMessage },
+    { id: "e-5", role: "system", kind: "execute", content: patchDiff, command: "git diff -- web/src/lib/markdown.ts" },
   ];
 });
 

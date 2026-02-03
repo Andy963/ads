@@ -59,6 +59,55 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     upsertStreamingDelta,
   } = args;
 
+  const isGitDiffCommand = (raw: string): boolean => {
+    const cmd = String(raw ?? "").trim().toLowerCase();
+    if (!cmd) return false;
+    // Handle common compositions like `cd x && git diff ...`.
+    return /(^|[;&|]|\|\||&&)\s*git(?:\s+--[^\s]+|\s+-[^\s]+|\s+-c\s+[^\s=]+=[^\s]+)*\s+diff\b/.test(cmd);
+  };
+
+  const looksLikeUnifiedDiff = (raw: string): boolean => {
+    const text = String(raw ?? "");
+    if (!text.trim()) return false;
+    if (text.includes("*** Begin Patch")) return true;
+    if (text.includes("diff --git ")) return true;
+    if (text.includes("\n+++ ") || text.startsWith("+++ ")) return true;
+    if (text.includes("\n--- ") || text.startsWith("--- ")) return true;
+    if (text.includes("\n@@ ") || text.startsWith("@@ ")) return true;
+    return false;
+  };
+
+  const dropExecuteBlockForKey = (key: string): void => {
+    const normalizedKey = String(key ?? "").trim();
+    if (!normalizedKey) return;
+    const itemId = `exec:${normalizedKey}`;
+    const existing = Array.isArray(rt.messages.value) ? rt.messages.value : [];
+    const next = existing.filter((m) => String(m?.id ?? "") !== itemId);
+    if (next.length !== existing.length) {
+      rt.messages.value = next;
+    }
+    rt.executePreviewByKey?.delete?.(normalizedKey);
+    if (Array.isArray(rt.executeOrder) && rt.executeOrder.length > 0) {
+      rt.executeOrder = rt.executeOrder.filter((k: unknown) => String(k ?? "") !== normalizedKey);
+    }
+  };
+
+  const dropRedundantDiffExecuteBlocks = (): void => {
+    const existing = Array.isArray(rt.messages.value) ? rt.messages.value : [];
+    if (existing.length === 0) return;
+    for (const msg of existing) {
+      if (!msg || msg.kind !== "execute") continue;
+      const cmd = String(msg.command ?? "").trim();
+      const preview = String(msg.content ?? "");
+      if (!cmd) continue;
+      if (!isGitDiffCommand(cmd)) continue;
+      if (!looksLikeUnifiedDiff(preview)) continue;
+      const id = String(msg.id ?? "");
+      if (!id.startsWith("exec:")) continue;
+      dropExecuteBlockForKey(id.slice("exec:".length));
+    }
+  };
+
   return (msg: unknown): void => {
     if ((msg as any).type === "ack") {
       const id = String((msg as { client_message_id?: unknown }).client_message_id ?? "").trim();
@@ -265,6 +314,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const diff = String(typed.diff ?? "").trimEnd();
       if (!diff.trim()) return;
 
+      rt.turnHasPatch = true;
+      // If the agent also ran `git diff`, it can show up as an execute preview line.
+      // Prefer the structured patch diff message to avoid showing two diffs at once.
+      dropRedundantDiffExecuteBlocks();
+
       const files = Array.isArray(typed.files) ? (typed.files as Array<{ path?: unknown; added?: unknown; removed?: unknown }>) : [];
       const fileLines = files
         .map((f) => {
@@ -293,6 +347,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if ((msg as any).type === "result") {
       rt.busy.value = false;
       rt.turnInFlight = false;
+      rt.turnHasPatch = false;
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt as any);
       const output = String((msg as { output?: unknown }).output ?? "");
@@ -340,6 +395,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if ((msg as any).type === "error") {
       rt.busy.value = false;
       rt.turnInFlight = false;
+      rt.turnHasPatch = false;
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt as any);
       clearStepLive(rt as any);
@@ -377,7 +433,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = true;
       rt.turnInFlight = true;
       ingestCommand(cmd, rt as any, id || null);
-      upsertExecuteBlock(key, cmd, outputDelta, rt as any);
+      if (rt.turnHasPatch && isGitDiffCommand(cmd) && looksLikeUnifiedDiff(outputDelta)) {
+        dropExecuteBlockForKey(key);
+      } else {
+        upsertExecuteBlock(key, cmd, outputDelta, rt as any);
+      }
       if (cmd) {
         ingestCommandActivity(rt.liveActivity, cmd);
         upsertLiveActivity(rt as any);
