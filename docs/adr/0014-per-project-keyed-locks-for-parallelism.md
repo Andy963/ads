@@ -40,4 +40,4 @@ ADS Web 目前的执行路径在 `startWebServer` 中创建了单个全局 `Asyn
 - WebSocket keyed lock：`src/web/server/ws/handlePrompt.ts`, `src/web/server/ws/handleCommand.ts`, `src/web/server/ws/handleTaskResume.ts`, `src/web/server/ws/server.ts`
 - Task Queue keyed lock：`src/web/server/taskQueue/manager.ts`
 - API keyed lock：`src/web/server/api/routes/taskQueue.ts`, `src/web/server/api/routes/tasks.ts`, `src/web/server/api/routes/tasks/chat.ts`, `src/web/server/api/handler.ts`, `src/web/server/api/types.ts`
-
+- WebSocket 连接数：前端为每个项目会话建立独立 WS；需保证 `ADS_WEB_MAX_CLIENTS` 足够大（默认 32）以支持多项目同时在线
