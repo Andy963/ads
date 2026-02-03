@@ -19,6 +19,7 @@ function normalizeFilename(value: unknown): string | null {
 
   // Browsers may include fake paths like "C:\\fakepath\\foo.png".
   const basename = raw.split(/[\\/]/).pop() ?? raw;
+  // eslint-disable-next-line no-control-regex
   const cleaned = basename.replace(/[\u0000-\u001f\u007f]/g, "").trim();
   if (!cleaned) return null;
 
