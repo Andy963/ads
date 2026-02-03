@@ -15,4 +15,5 @@ This file is maintained by ADS. Edit outside the marked block if needed.
 - 0009 - [Constrain Live Step Trace Output](0009-constrain-live-step-trace-output.md)
 - 0010 - [Codex Error Classification and WS `errorInfo` Propagation](0010-codex-error-classification-and-ws-errorinfo.md)
 - 0011 - [Mobile UI Project List + Topbar Layout Tweaks](0011-mobile-ui-project-list-and-topbar.md)
+- 0012 - [Stabilize TaskCreateForm Voice Icon Position](0012-task-createform-voice-icon-position.md)
 <!-- ADS:ADR_INDEX_END -->

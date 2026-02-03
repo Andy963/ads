@@ -776,7 +776,6 @@ onBeforeUnmount(() => {
             :class="{
               voiceEnabled,
               voiceExpanded: voiceOverlayExpanded,
-              voiceBottomCentered: voiceEnabled && !prompt.trim(),
             }"
           >
             <textarea

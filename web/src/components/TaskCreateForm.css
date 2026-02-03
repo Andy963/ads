@@ -101,12 +101,6 @@ textarea {
   padding-right: 160px;
   padding-bottom: 78px;
 }
-.promptInputWrap.voiceEnabled.voiceBottomCentered textarea {
-  padding-right: 14px;
-}
-.promptInputWrap.voiceEnabled.voiceExpanded.voiceBottomCentered textarea {
-  padding-right: 14px;
-}
 .voiceAffordance {
   position: absolute;
   right: 10px;
@@ -121,17 +115,6 @@ textarea {
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-}
-.promptInputWrap.voiceBottomCentered .voiceAffordance {
-  right: auto;
-  left: 50%;
-  bottom: 6px;
-  top: auto;
-  transform: translateX(-50%);
-  align-items: center;
-}
-.promptInputWrap.voiceBottomCentered .voiceRow {
-  justify-content: center;
 }
 .voiceIndicator {
   height: 18px;
@@ -233,17 +216,6 @@ textarea {
   cursor: pointer;
   transition: color 0.15s, transform 0.1s, background-color 0.15s;
 }
-.promptInputWrap.voiceBottomCentered .micIcon,
-.promptInputWrap.voiceBottomCentered .micIcon:hover:not(:disabled),
-.promptInputWrap.voiceBottomCentered .micIcon:active:not(:disabled) {
-  background: transparent;
-}
-.promptInputWrap.voiceBottomCentered .micIcon:not(.recording):not(.transcribing) {
-  color: #2563eb;
-}
-.promptInputWrap.voiceBottomCentered .micIcon:hover:not(:disabled):not(.recording):not(.transcribing) {
-  color: #1d4ed8;
-}
 .micIcon:hover:not(:disabled) {
   color: #0f172a;
   background: rgba(15, 23, 42, 0.04);
@@ -258,13 +230,7 @@ textarea {
 .micIcon.recording {
   color: #dc2626;
 }
-.promptInputWrap.voiceBottomCentered .micIcon.recording {
-  color: #dc2626;
-}
 .micIcon.transcribing {
-  color: #2563eb;
-}
-.promptInputWrap.voiceBottomCentered .micIcon.transcribing {
   color: #2563eb;
 }
 .voiceToast {
