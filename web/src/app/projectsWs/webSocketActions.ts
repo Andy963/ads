@@ -193,9 +193,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.needsTaskResync = true;
       rt.connected.value = false;
       rt.busy.value = false;
-      clearStepLive(rt as any);
-      finalizeCommandBlock(rt as any);
-      applyStreamingDisconnectCleanup(rt as any);
+      clearStepLive(rt);
+      finalizeCommandBlock(rt);
+      applyStreamingDisconnectCleanup(rt);
       if (disconnectWasBusy) {
         pushMessageBeforeLive(
           {
@@ -203,7 +203,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             kind: "text",
             content: "Connection lost while a request was running. Reconnecting and syncing history…",
           },
-          rt as any,
+          rt,
         );
       }
     };
@@ -214,8 +214,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.wsError.value = null;
       rt.reconnectAttempts = 0;
       clearReconnectTimer(rt);
-      restorePendingPrompt(rt as any);
-      flushQueuedPrompts(rt as any);
+      restorePendingPrompt(rt);
+      flushQueuedPrompts(rt);
       if (rt.needsTaskResync) {
         rt.needsTaskResync = false;
         void deps.syncProjectState?.(pid).catch(() => {

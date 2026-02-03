@@ -1,0 +1,50 @@
+import { ref } from "vue";
+
+import { createLiveActivityWindow } from "../lib/live_activity";
+import type { ProjectRuntime } from "./controllerTypes";
+
+export function createProjectRuntime(options: { maxLiveActivitySteps: number }): ProjectRuntime {
+  return {
+    projectSessionId: "",
+    chatSessionId: "main",
+    connected: ref(false),
+    needsTaskResync: false,
+    apiError: ref<string | null>(null),
+    apiNotice: ref<string | null>(null),
+    wsError: ref<string | null>(null),
+    threadWarning: ref<string | null>(null),
+    activeThreadId: ref<string | null>(null),
+    queueStatus: ref(null),
+    workspacePath: ref(""),
+    tasks: ref([]),
+    selectedId: ref<string | null>(null),
+    expanded: ref(new Set<string>()),
+    plansByTaskId: ref(new Map()),
+    planFetchInFlightByTaskId: new Map(),
+    runBusyIds: ref(new Set()),
+    busy: ref(false),
+    turnInFlight: false,
+    turnHasPatch: false,
+    pendingAckClientMessageId: null,
+    messages: ref([]),
+    recentCommands: ref([]),
+    turnCommands: [],
+    executePreviewByKey: new Map(),
+    executeOrder: [],
+    seenCommandIds: new Set(),
+    pendingImages: ref([]),
+    queuedPrompts: ref([]),
+    ignoreNextHistory: false,
+    ws: null,
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+    pendingCdRequestedPath: null,
+    suppressNextClearHistoryResult: false,
+    noticeTimer: null,
+    liveActivity: createLiveActivityWindow(options.maxLiveActivitySteps),
+    liveActivityTtlTimer: null,
+    startedTaskIds: new Set(),
+    taskChatBufferByTaskId: new Map(),
+  };
+}
+

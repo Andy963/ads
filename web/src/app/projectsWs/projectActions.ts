@@ -39,7 +39,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     pendingSwitchProjectId,
   } = ctx;
 
-  let lastValidatedProjectSessionId = "";
   let projectPathValidationSeq = 0;
 
   const deriveProjectName = (value: string): string => {
@@ -58,14 +57,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     const name = String(params.name ?? "").trim() || deriveProjectName(path);
     const initialized = params.initialized ?? !path;
     return { id, name, path, sessionId, chatSessionId: "main", initialized, createdAt: now, updatedAt: now, expanded: false };
-  };
-
-  const mergeProjectsInto = (target: ProjectTab, candidate: ProjectTab): ProjectTab => {
-    const name = target.name || candidate.name;
-    const initialized = target.initialized || candidate.initialized;
-    const createdAt = Math.min(target.createdAt, candidate.createdAt);
-    const updatedAt = Date.now();
-    return { ...target, ...candidate, name, initialized, createdAt, updatedAt };
   };
 
   const persistProjects = (): void => {
@@ -351,7 +342,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       projectDialogPathMessage.value = "";
     }
     lastValidatedProjectPath.value = "";
-    lastValidatedProjectSessionId = "";
   };
 
   const validateProjectDialogPath = async (options?: { force?: boolean }): Promise<boolean> => {
@@ -360,7 +350,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       projectDialogPathStatus.value = "idle";
       projectDialogPathMessage.value = "";
       lastValidatedProjectPath.value = "";
-      lastValidatedProjectSessionId = "";
       return false;
     }
 
@@ -385,7 +374,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
         if (nextPath && nextPath !== path) {
           projectDialogPath.value = nextPath;
         }
-        lastValidatedProjectSessionId = String(result.projectSessionId ?? "").trim();
         lastValidatedProjectPath.value = projectDialogPath.value.trim();
         projectDialogPathStatus.value = "ok";
         projectDialogPathMessage.value = "目录可用";

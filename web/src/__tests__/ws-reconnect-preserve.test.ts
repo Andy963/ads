@@ -96,30 +96,6 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
   expect(lastWs).toBeTruthy();
 }
 
-function makeTask(overrides: Partial<Task>): Task {
-  const now = Date.now();
-  return {
-    id: overrides.id ?? `t-${now}`,
-    title: overrides.title ?? "Test Task",
-    prompt: overrides.prompt ?? "",
-    model: overrides.model ?? "mock",
-    status: overrides.status ?? "pending",
-    priority: overrides.priority ?? 0,
-    queueOrder: overrides.queueOrder ?? 0,
-    inheritContext: overrides.inheritContext ?? true,
-    retryCount: overrides.retryCount ?? 0,
-    maxRetries: overrides.maxRetries ?? 0,
-    createdAt: overrides.createdAt ?? now,
-    queuedAt: overrides.queuedAt ?? null,
-    startedAt: overrides.startedAt ?? null,
-    completedAt: overrides.completedAt ?? null,
-    result: overrides.result ?? null,
-    error: overrides.error ?? null,
-    createdBy: overrides.createdBy ?? null,
-    attachments: overrides.attachments,
-  };
-}
-
 describe("WS reconnect preserves UI unless thread_reset", () => {
   beforeEach(() => {
     lastWs = null;

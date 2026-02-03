@@ -8,7 +8,10 @@ import type { ChatActions } from "./chat";
 import type { IncomingImage, ProjectRuntime } from "./controller";
 
 import { createTaskEventActions } from "./tasks/events";
+import { removeTaskLocal } from "./tasks/localState";
+import { createNoticeActions } from "./tasks/notice";
 import { createTaskReorderActions } from "./tasks/reorder";
+import { createTaskRunHelpers } from "./tasks/runHelpers";
 
 export type TaskDeps = {
   connectWs: (projectId?: string) => Promise<void>;
@@ -41,37 +44,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const { threadReset, clearConversationForResume, enqueueMainPrompt } = ctx;
 
-  const setNotice = (message: string, projectId: string = activeProjectId.value): void => {
-    const pid = normalizeProjectId(projectId);
-    const rt = getRuntime(pid);
-    rt.apiNotice.value = message;
-    if (rt.noticeTimer !== null) {
-      try {
-        clearTimeout(rt.noticeTimer);
-      } catch {
-        // ignore
-      }
-      rt.noticeTimer = null;
-    }
-    rt.noticeTimer = window.setTimeout(() => {
-      rt.noticeTimer = null;
-      rt.apiNotice.value = null;
-    }, 3000);
-  };
-
-  const clearNotice = (projectId: string = activeProjectId.value): void => {
-    const pid = normalizeProjectId(projectId);
-    const rt = getRuntime(pid);
-    rt.apiNotice.value = null;
-    if (rt.noticeTimer !== null) {
-      try {
-        clearTimeout(rt.noticeTimer);
-      } catch {
-        // ignore
-      }
-      rt.noticeTimer = null;
-    }
-  };
+  const { setNotice, clearNotice } = createNoticeActions({ activeProjectId, normalizeProjectId, getRuntime });
 
   const resetTaskState = (): void => {
     tasks.value = [];
@@ -105,9 +78,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     });
 
     rt.planFetchInFlightByTaskId.set(id, op);
-    try {
-      await op;
-    } catch {}
+    await op;
   };
 
   const togglePlan = (taskId: string): void => {
@@ -192,40 +163,12 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     }
   };
 
-  function pickNextSelectedTaskId(nextTasks: Task[]): string | null {
-    if (!nextTasks.length) return null;
-    const nextPending = nextTasks
-      .filter((t) => t.status === "pending")
-      .slice()
-      .sort((a, b) => {
-        if (a.priority !== b.priority) return b.priority - a.priority;
-        if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
-        return a.createdAt - b.createdAt;
-      })[0];
-    return (nextPending ?? nextTasks[0])!.id;
-  }
-
-  function removeTaskLocal(taskId: string, rt: ProjectRuntime): void {
-    const normalized = String(taskId ?? "").trim();
-    if (!normalized) return;
-
-    const nextTasks = rt.tasks.value.filter((t) => t.id !== normalized);
-    if (nextTasks.length === rt.tasks.value.length) {
-      return;
-    }
-    rt.tasks.value = nextTasks;
-
-    rt.expanded.value = new Set([...rt.expanded.value].filter((x) => x !== normalized));
-    rt.plansByTaskId.value.delete(normalized);
-    rt.plansByTaskId.value = new Map(rt.plansByTaskId.value);
-    rt.planFetchInFlightByTaskId.delete(normalized);
-    rt.startedTaskIds.delete(normalized);
-    rt.taskChatBufferByTaskId.delete(normalized);
-
-    if (rt.selectedId.value === normalized) {
-      rt.selectedId.value = pickNextSelectedTaskId(rt.tasks.value);
-    }
-  }
+  const { setTaskRunBusy, mockSingleTaskRun } = createTaskRunHelpers({
+    activeProjectId,
+    normalizeProjectId,
+    getRuntime,
+    upsertTask,
+  });
 
   const { onTaskEvent } = createTaskEventActions(ctx, { upsertTask, removeTask: removeTaskLocal, loadQueueStatus });
 
@@ -323,35 +266,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const created = await createTask(input);
     if (!created) return;
     await runTaskQueue();
-  };
-
-  const setTaskRunBusy = (id: string, busy: boolean, projectId: string = activeProjectId.value): void => {
-    const taskId = String(id ?? "").trim();
-    if (!taskId) return;
-    const pid = normalizeProjectId(projectId);
-    const rt = getRuntime(pid);
-    const next = new Set(rt.runBusyIds.value);
-    if (busy) next.add(taskId);
-    else next.delete(taskId);
-    rt.runBusyIds.value = next;
-  };
-
-  const mockSingleTaskRun = (taskId: string, projectId: string = activeProjectId.value): void => {
-    const id = String(taskId ?? "").trim();
-    if (!id) return;
-    const pid = normalizeProjectId(projectId);
-    const rt = getRuntime(pid);
-    const now = Date.now();
-
-    const existing = rt.tasks.value.find((t) => t.id === id);
-    if (!existing) return;
-
-    upsertTask({ ...existing, status: "running", startedAt: now, completedAt: null, error: null, result: null }, rt);
-    window.setTimeout(() => {
-      const t = rt.tasks.value.find((x) => x.id === id);
-      if (!t) return;
-      upsertTask({ ...t, status: "completed", completedAt: Date.now(), result: "mock: completed", error: null }, rt);
-    }, 900);
   };
 
   const runSingleTask = async (id: string, projectId: string = activeProjectId.value): Promise<void> => {

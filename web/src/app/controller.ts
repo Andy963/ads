@@ -3,18 +3,16 @@ import { computed, ref, onBeforeUnmount, onMounted } from "vue";
 import { ApiClient } from "../api/client";
 import type { AuthMe, ModelConfig, PlanStep, Task, TaskQueueStatus } from "../api/types";
 import { isProjectInProgress } from "../lib/project_status";
-import { createLiveActivityWindow } from "../lib/live_activity";
 
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
+import { createProjectRuntime } from "./projectRuntime";
 import type {
   ChatItem,
   IncomingImage,
-  PathValidateResponse,
   ProjectRuntime,
   ProjectTab,
   QueuedPrompt,
-  WorkspaceState,
 } from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
 import type { ProjectDeps } from "./projectsWs";
@@ -33,51 +31,6 @@ export type {
   TaskChatBuffer,
   WorkspaceState,
 } from "./controllerTypes";
-
-function createProjectRuntime(options: { maxLiveActivitySteps: number }): ProjectRuntime {
-  return {
-    projectSessionId: "",
-    chatSessionId: "main",
-    connected: ref(false),
-    needsTaskResync: false,
-    apiError: ref<string | null>(null),
-    apiNotice: ref<string | null>(null),
-    wsError: ref<string | null>(null),
-    threadWarning: ref<string | null>(null),
-    activeThreadId: ref<string | null>(null),
-    queueStatus: ref(null),
-    workspacePath: ref(""),
-    tasks: ref([]),
-    selectedId: ref<string | null>(null),
-    expanded: ref(new Set<string>()),
-    plansByTaskId: ref(new Map()),
-    planFetchInFlightByTaskId: new Map(),
-    runBusyIds: ref(new Set()),
-    busy: ref(false),
-    turnInFlight: false,
-    turnHasPatch: false,
-    pendingAckClientMessageId: null,
-    messages: ref([]),
-    recentCommands: ref([]),
-    turnCommands: [],
-    executePreviewByKey: new Map(),
-    executeOrder: [],
-    seenCommandIds: new Set(),
-    pendingImages: ref([]),
-    queuedPrompts: ref([]),
-    ignoreNextHistory: false,
-    ws: null,
-    reconnectTimer: null,
-    reconnectAttempts: 0,
-    pendingCdRequestedPath: null,
-    suppressNextClearHistoryResult: false,
-    noticeTimer: null,
-    liveActivity: createLiveActivityWindow(options.maxLiveActivitySteps),
-    liveActivityTtlTimer: null,
-    startedTaskIds: new Set(),
-    taskChatBufferByTaskId: new Map(),
-  };
-}
 
 export function createAppContext() {
   const maxRecentCommands = 5;
@@ -415,9 +368,9 @@ export function createAppController() {
   const projectDeps: ProjectDeps = {
     activateProject: async () => {},
   };
-  const projects = createProjectActions({ ...ctx, ...chat, ...tasks } as any, projectDeps);
+  const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ChatActions, projectDeps);
 
-  const ws = createWebSocketActions({ ...ctx, ...chat } as any, {
+  const ws = createWebSocketActions({ ...ctx, ...chat } as AppContext & ChatActions, {
     onTaskEvent: tasks.onTaskEvent,
     updateProject: projects.updateProject,
     persistProjects: projects.persistProjects,

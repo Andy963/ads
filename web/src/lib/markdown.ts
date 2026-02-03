@@ -194,7 +194,7 @@ md.renderer.rules.diffstat = (tokens, idx) => {
   return `<span class="md-diffstat">(<span class="md-diffstat-add">+${added}</span> <span class="md-diffstat-del">-${removed}</span>)</span>`;
 };
 
-md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+md.renderer.rules.fence = (tokens, idx, options, _env, _self) => {
   const token = tokens[idx];
   const rawInfo = String(token.info ?? "").trim();
   const lang = rawInfo ? rawInfo.split(/\s+/)[0] ?? "" : "";

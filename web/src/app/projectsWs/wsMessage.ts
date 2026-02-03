@@ -1,34 +1,35 @@
-import type { ProjectTab, WorkspaceState } from "../controller";
+import type { ChatActions } from "../chat";
+import type { ChatItem, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
 
 type Ref<T> = { value: T };
 
 export type WsMessageHandlerArgs = {
   projects: Ref<ProjectTab[]>;
   pid: string;
-  rt: any;
+  rt: ProjectRuntime;
   wsInstance: { send: (type: string, payload: unknown) => void };
   maxTurnCommands: number;
   randomId: (prefix: string) => string;
 
   updateProject: (id: string, updates: Partial<ProjectTab>) => void;
 
-  applyMergedHistory: (items: any[], rt: any) => void;
-  clearPendingPrompt: (rt: any) => void;
-  clearStepLive: (rt: any) => void;
-  commandKeyForWsEvent: (cmd: string, id: string | null) => string | null;
-  finalizeAssistant: (output: string, rt: any) => void;
-  finalizeCommandBlock: (rt: any) => void;
-  flushQueuedPrompts: (rt: any) => void;
-  ingestCommand: (cmd: string, rt: any, id: string | null) => void;
-  ingestCommandActivity: (liveActivity: any, cmd: string) => void;
-  ingestExploredActivity: (liveActivity: any, category: string, summary: string) => void;
-  pushMessageBeforeLive: (msg: any, rt: any) => void;
-  shouldIgnoreStepDelta: (delta: string) => boolean;
-  threadReset: (rt: any, payload: any) => void;
-  upsertExecuteBlock: (key: string, cmd: string, outputDelta: string, rt: any) => void;
-  upsertLiveActivity: (rt: any) => void;
-  upsertStepLiveDelta: (delta: string, rt: any) => void;
-  upsertStreamingDelta: (delta: string, rt: any) => void;
+  applyMergedHistory: ChatActions["applyMergedHistory"];
+  clearPendingPrompt: ChatActions["clearPendingPrompt"];
+  clearStepLive: ChatActions["clearStepLive"];
+  commandKeyForWsEvent: ChatActions["commandKeyForWsEvent"];
+  finalizeAssistant: ChatActions["finalizeAssistant"];
+  finalizeCommandBlock: ChatActions["finalizeCommandBlock"];
+  flushQueuedPrompts: ChatActions["flushQueuedPrompts"];
+  ingestCommand: ChatActions["ingestCommand"];
+  ingestCommandActivity: ChatActions["ingestCommandActivity"];
+  ingestExploredActivity: ChatActions["ingestExploredActivity"];
+  pushMessageBeforeLive: ChatActions["pushMessageBeforeLive"];
+  shouldIgnoreStepDelta: ChatActions["shouldIgnoreStepDelta"];
+  threadReset: ChatActions["threadReset"];
+  upsertExecuteBlock: ChatActions["upsertExecuteBlock"];
+  upsertLiveActivity: ChatActions["upsertLiveActivity"];
+  upsertStepLiveDelta: ChatActions["upsertStepLiveDelta"];
+  upsertStreamingDelta: ChatActions["upsertStreamingDelta"];
 };
 
 export function createWsMessageHandler(args: WsMessageHandlerArgs) {
@@ -86,10 +87,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (next.length !== existing.length) {
       rt.messages.value = next;
     }
-    rt.executePreviewByKey?.delete?.(normalizedKey);
-    if (Array.isArray(rt.executeOrder) && rt.executeOrder.length > 0) {
-      rt.executeOrder = rt.executeOrder.filter((k: unknown) => String(k ?? "") !== normalizedKey);
-    }
+    rt.executePreviewByKey.delete(normalizedKey);
+    rt.executeOrder = rt.executeOrder.filter((k) => k !== normalizedKey);
   };
 
   const dropRedundantDiffExecuteBlocks = (): void => {
@@ -108,35 +107,42 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object";
+
   return (msg: unknown): void => {
-    if ((msg as any).type === "ack") {
-      const id = String((msg as { client_message_id?: unknown }).client_message_id ?? "").trim();
+    if (!isRecord(msg)) return;
+    const typeValue = msg.type;
+    if (typeof typeValue !== "string") return;
+    const type = typeValue;
+
+    if (type === "ack") {
+      const id = String(msg.client_message_id ?? "").trim();
       if (id && rt.pendingAckClientMessageId === id) {
         rt.pendingAckClientMessageId = null;
-        clearPendingPrompt(rt as any);
+        clearPendingPrompt(rt);
       }
       return;
     }
 
-    if ((msg as any).type === "welcome") {
+    if (type === "welcome") {
       let nextPath = "";
       let wsState: WorkspaceState | null = null;
-      const maybeWorkspace = (msg as { workspace?: unknown }).workspace;
+      const maybeWorkspace = msg.workspace;
       if (maybeWorkspace && typeof maybeWorkspace === "object") {
         wsState = maybeWorkspace as WorkspaceState;
         nextPath = String(wsState.path ?? "").trim();
         if (nextPath) rt.workspacePath.value = nextPath;
       }
 
-      const serverThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
-      const serverChatSessionId = String((msg as { chatSessionId?: unknown }).chatSessionId ?? "").trim();
+      const serverThreadId = String(msg.threadId ?? "").trim();
+      const serverChatSessionId = String(msg.chatSessionId ?? "").trim();
       if (serverChatSessionId) {
         rt.chatSessionId = serverChatSessionId;
       }
-      const handshakeReset = Boolean((msg as { reset?: unknown }).reset);
+      const handshakeReset = Boolean(msg.reset);
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       if (handshakeReset) {
-        threadReset(rt as any, {
+        threadReset(rt, {
           notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
           warning: "Context thread was reset by backend handshake. Chat history was cleared automatically.",
           keepLatestTurn: false,
@@ -175,8 +181,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
-    if ((msg as any).type === "workspace") {
-      const data = (msg as { data?: unknown }).data;
+    if (type === "workspace") {
+      const data = msg.data;
       if (data && typeof data === "object") {
         const wsState = data as WorkspaceState;
         const nextPath = String(wsState.path ?? "").trim();
@@ -210,8 +216,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
-    if ((msg as any).type === "thread_reset") {
-      threadReset(rt as any, {
+    if (type === "thread_reset") {
+      threadReset(rt, {
         notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
         warning: "Context thread was reset by backend signal. Chat history was cleared automatically.",
         keepLatestTurn: false,
@@ -222,16 +228,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
-    if ((msg as any).type === "history") {
+    if (type === "history") {
       if (rt.busy.value || rt.queuedPrompts.value.length > 0) return;
       if (rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
         return;
       }
-      const items = Array.isArray((msg as any).items) ? (msg as any).items : [];
+      const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       rt.recentCommands.value = [];
       rt.seenCommandIds.clear();
-      const next: any[] = [];
+      const next: ChatItem[] = [];
       let cmdGroup: string[] = [];
       let cmdGroupTs: number | null = null;
       const flushCommands = () => {
@@ -267,28 +273,28 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }
       flushCommands();
-      applyMergedHistory(next as any, rt as any);
+      applyMergedHistory(next, rt);
       return;
     }
 
-    if ((msg as any).type === "delta") {
+    if (type === "delta") {
       rt.busy.value = true;
       rt.turnInFlight = true;
-      const source = String((msg as { source?: unknown }).source ?? "").trim();
+      const source = String(msg.source ?? "").trim();
       if (source === "step") {
-        const delta = String((msg as { delta?: unknown }).delta ?? "");
+        const delta = String(msg.delta ?? "");
         if (shouldIgnoreStepDelta(delta)) return;
-        upsertStepLiveDelta(delta, rt as any);
+        upsertStepLiveDelta(delta, rt);
       } else {
-        upsertStreamingDelta(String((msg as { delta?: unknown }).delta ?? ""), rt as any);
+        upsertStreamingDelta(String(msg.delta ?? ""), rt);
       }
       return;
     }
 
-    if ((msg as any).type === "explored") {
+    if (type === "explored") {
       rt.busy.value = true;
       rt.turnInFlight = true;
-      const entry = (msg as { entry?: unknown }).entry;
+      const entry = msg.entry;
       if (entry && typeof entry === "object") {
         const typed = entry as { category?: unknown; summary?: unknown };
         const category = String(typed.category ?? "").trim();
@@ -298,16 +304,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         if (summary) {
           ingestExploredActivity(rt.liveActivity, category, summary);
-          upsertLiveActivity(rt as any);
+          upsertLiveActivity(rt);
         }
       }
       return;
     }
 
-    if ((msg as any).type === "patch") {
+    if (type === "patch") {
       rt.busy.value = true;
       rt.turnInFlight = true;
-      const patch = (msg as { patch?: unknown }).patch;
+      const patch = msg.patch;
       if (!patch || typeof patch !== "object") return;
 
       const typed = patch as { files?: unknown; diff?: unknown; truncated?: unknown };
@@ -340,36 +346,36 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       const note = truncated ? "\n\n_Diff was truncated to avoid flooding the UI._\n" : "";
       const content = `${header}\`\`\`diff\n${diff}\n\`\`\`${note}`;
-      pushMessageBeforeLive({ role: "system", kind: "text", content }, rt as any);
+      pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
       return;
     }
 
-    if ((msg as any).type === "result") {
+    if (type === "result") {
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt as any);
-      const output = String((msg as { output?: unknown }).output ?? "");
+      clearPendingPrompt(rt);
+      const output = String(msg.output ?? "");
       if (rt.suppressNextClearHistoryResult) {
         rt.suppressNextClearHistoryResult = false;
-        const kind = String((msg as { kind?: unknown }).kind ?? "").trim();
-        if ((msg as { ok?: unknown }).ok === true && kind === "clear_history") {
-          clearStepLive(rt as any);
-          finalizeCommandBlock(rt as any);
-          flushQueuedPrompts(rt as any);
+        const kind = String(msg.kind ?? "").trim();
+        if (msg.ok === true && kind === "clear_history") {
+          clearStepLive(rt);
+          finalizeCommandBlock(rt);
+          flushQueuedPrompts(rt);
           return;
         }
       }
-      const threadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
+      const threadId = String(msg.threadId ?? "").trim();
       if (threadId) {
         rt.activeThreadId.value = threadId;
       }
-      const expectedThreadId = String((msg as { expectedThreadId?: unknown }).expectedThreadId ?? "").trim();
-      const didThreadReset = Boolean((msg as { threadReset?: unknown }).threadReset);
+      const expectedThreadId = String(msg.expectedThreadId ?? "").trim();
+      const didThreadReset = Boolean(msg.threadReset);
       if (didThreadReset) {
         const detail = expectedThreadId && threadId ? ` (expected=${expectedThreadId}, actual=${threadId})` : "";
-        threadReset(rt as any, {
+        threadReset(rt, {
           notice: "Context thread was reset. Chat history was cleared to start a new conversation.",
           warning:
             `Context thread was reset${detail}. Chat history may not match model context. ` +
@@ -380,35 +386,32 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           source: "result_thread_reset",
         });
       }
-      if (rt.pendingCdRequestedPath && (msg as { ok?: unknown }).ok === false) {
+      if (rt.pendingCdRequestedPath && msg.ok === false) {
         if (output.includes("/cd") || output.includes("目录")) {
           rt.pendingCdRequestedPath = null;
         }
       }
-      clearStepLive(rt as any);
-      finalizeCommandBlock(rt as any);
-      finalizeAssistant(output, rt as any);
-      flushQueuedPrompts(rt as any);
+      clearStepLive(rt);
+      finalizeCommandBlock(rt);
+      finalizeAssistant(output, rt);
+      flushQueuedPrompts(rt);
       return;
     }
 
-    if ((msg as any).type === "error") {
+    if (type === "error") {
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt as any);
-      clearStepLive(rt as any);
-      finalizeCommandBlock(rt as any);
+      clearPendingPrompt(rt);
+      clearStepLive(rt);
+      finalizeCommandBlock(rt);
 
-      const errorInfo = (msg as any).errorInfo as {
-        code?: string;
-        retryable?: boolean;
-        needsReset?: boolean;
-        originalError?: string;
-      } | undefined;
+      const errorInfo = msg.errorInfo && typeof msg.errorInfo === "object"
+        ? (msg.errorInfo as { code?: string; retryable?: boolean; needsReset?: boolean; originalError?: string })
+        : undefined;
 
-      const userMessage = String((msg as { message?: unknown }).message ?? "error");
+      const userMessage = String(msg.message ?? "error");
       const errorContent = errorInfo
         ? `⚠️ ${userMessage}\n\n` +
           `错误类型: ${errorInfo.code ?? "unknown"}\n` +
@@ -419,28 +422,29 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             : "")
         : userMessage;
 
-      pushMessageBeforeLive({ role: "system", kind: "text", content: errorContent }, rt as any);
-      flushQueuedPrompts(rt as any);
+      pushMessageBeforeLive({ role: "system", kind: "text", content: errorContent }, rt);
+      flushQueuedPrompts(rt);
       return;
     }
 
-    if ((msg as any).type === "command") {
-      const cmd = String((msg as any).command?.command ?? "").trim();
-      const id = String((msg as any).command?.id ?? "").trim();
-      const outputDelta = String((msg as any).command?.outputDelta ?? "");
+    if (type === "command") {
+      const payload = msg.command && typeof msg.command === "object" ? (msg.command as Record<string, unknown>) : null;
+      const cmd = String(payload?.command ?? "").trim();
+      const id = String(payload?.id ?? "").trim();
+      const outputDelta = String(payload?.outputDelta ?? "");
       const key = commandKeyForWsEvent(cmd, id || null);
       if (!key) return;
       rt.busy.value = true;
       rt.turnInFlight = true;
-      ingestCommand(cmd, rt as any, id || null);
+      ingestCommand(cmd, rt, id || null);
       if (rt.turnHasPatch && isGitDiffCommand(cmd) && looksLikeUnifiedDiff(outputDelta)) {
         dropExecuteBlockForKey(key);
       } else {
-        upsertExecuteBlock(key, cmd, outputDelta, rt as any);
+        upsertExecuteBlock(key, cmd, outputDelta, rt);
       }
       if (cmd) {
         ingestCommandActivity(rt.liveActivity, cmd);
-        upsertLiveActivity(rt as any);
+        upsertLiveActivity(rt);
       }
       return;
     }
