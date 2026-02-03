@@ -203,6 +203,7 @@ const renderMessages = computed<RenderMessage[]>(() => {
 });
 
 const canInterrupt = computed(() => props.busy);
+const showActiveBorder = computed(() => props.busy || props.messages.length > 0);
 
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
@@ -318,14 +319,7 @@ function getCommands(content: string): string[] {
 </script>
 
 <template>
-  <div class="detail">
-    <div class="header">
-      <div class="header-left">
-        <div class="meta">
-        </div>
-      </div>
-    </div>
-
+  <div class="detail" :class="{ 'detail--active': showActiveBorder }">
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
         <span>直接开始对话…</span>

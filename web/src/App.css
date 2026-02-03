@@ -38,16 +38,6 @@
   min-width: 0;
   overflow: hidden;
 }
-.activeProjectDisplay {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 700;
-  color: rgba(100, 116, 139, 0.95);
-}
 .projectTabs {
   display: flex;
   align-items: center;
@@ -603,20 +593,5 @@
   }
   .layout[data-pane="chat"] .rightPane {
     display: flex;
-  }
-
-  .projectText {
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-  }
-  .projectName {
-    flex: 1 1 auto;
-  }
-  .projectBranch {
-    display: inline;
-    flex: 0 0 auto;
-    font-size: 12px;
-    line-height: 1;
   }
 }

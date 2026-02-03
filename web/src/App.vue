@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { onBeforeUnmount, onMounted } from "vue";
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
@@ -20,7 +20,6 @@ const {
   openProjectDialog,
   projects,
   activeProjectId,
-  activeProject,
   requestProjectSwitch,
   getRuntime,
   connectWs,
@@ -95,12 +94,6 @@ const {
   deleteConfirmButtonEl,
 } = createAppController();
 
-const activeProjectDisplay = computed(() => {
-  const p = activeProject.value;
-  if (!p) return "";
-  return String(p.path || p.name || p.id || "").trim();
-});
-
 const updateViewportHeightVar = (): void => {
   if (typeof window === "undefined") return;
   const vv = window.visualViewport;
@@ -150,9 +143,6 @@ onBeforeUnmount(() => {
           >
             对话
           </button>
-        </div>
-        <div v-if="isMobile && activeProjectDisplay" class="activeProjectDisplay" :title="activeProjectDisplay">
-          {{ activeProjectDisplay }}
         </div>
       </div>
       <div class="right">

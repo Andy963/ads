@@ -15,8 +15,8 @@ describe("mobile pane tabs", () => {
     expect(sfc).toMatch(/<div v-if="isMobile" class="paneTabs"[\s\S]*?>[\s\S]*?>\s*项目\s*<\/button>[\s\S]*?>\s*对话\s*<\/button>/);
   });
 
-  it("shows the active project label on mobile", async () => {
+  it("does not show the active project label on mobile", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toContain('class="activeProjectDisplay"');
+    expect(sfc).not.toContain('class="activeProjectDisplay"');
   });
 });
