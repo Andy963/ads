@@ -8,8 +8,6 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-export type PlanStepStatus = "pending" | "running" | "completed" | "skipped" | "failed";
-
 export type TaskRole = "system" | "user" | "assistant" | "tool";
 
 export interface TaskContext {
@@ -87,23 +85,6 @@ export interface CreateTaskInput {
 export interface TaskFilter {
   status?: TaskStatus;
   limit?: number;
-}
-
-export interface PlanStep {
-  id?: number;
-  taskId: string;
-  stepNumber: number;
-  title: string;
-  description?: string | null;
-  status: PlanStepStatus;
-  startedAt?: number | null;
-  completedAt?: number | null;
-}
-
-export interface PlanStepInput {
-  stepNumber: number;
-  title: string;
-  description?: string | null;
 }
 
 export interface TaskMessage {

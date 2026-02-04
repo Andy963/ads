@@ -33,13 +33,9 @@ const {
   tasks,
   models,
   selectedId,
-  plansByTaskId,
-  expanded,
   apiAuthorized,
   runBusyIds,
   select,
-  togglePlan,
-  ensurePlan,
   updateQueuedTask,
   updateQueuedTaskAndRun,
   reorderPendingTasks,
@@ -348,14 +344,10 @@ onBeforeUnmount(() => {
                 :tasks="tasks"
                 :models="models"
                 :selected-id="selectedId"
-                :plans="plansByTaskId"
-                :expanded="expanded"
                 :queue-status="queueStatus"
                 :can-run-single="apiAuthorized"
                 :run-busy-ids="runBusyIds"
                 @select="select"
-                @togglePlan="togglePlan"
-                @ensurePlan="ensurePlan"
                 @update="({ id, updates }) => updateQueuedTask(id, updates)"
                 @update-and-run="({ id, updates }) => updateQueuedTaskAndRun(id, updates)"
                 @reorder="(ids) => reorderPendingTasks(ids)"

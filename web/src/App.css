@@ -551,12 +551,12 @@
   color: rgba(255, 255, 255, 0.75);
 }
 .projectTasks {
-  margin-left: 14px;
-  padding-left: 10px;
-  border-left: 2px solid rgba(226, 232, 240, 0.95);
+  position: relative;
+  margin-left: 7px;
+  padding-left: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .taskBoard {
   /* Keep the list compact; it should scroll internally when there are many tasks. */

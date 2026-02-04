@@ -1,7 +1,7 @@
 import { computed, ref, onBeforeUnmount, onMounted } from "vue";
 
 import { ApiClient } from "../api/client";
-import type { AuthMe, ModelConfig, PlanStep, Task, TaskQueueStatus } from "../api/types";
+import type { AuthMe, ModelConfig, Task, TaskQueueStatus } from "../api/types";
 import { isProjectInProgress } from "../lib/project_status";
 
 import { createChatActions } from "./chat";
@@ -155,18 +155,6 @@ export function createAppContext() {
     get: () => activeRuntime.value.selectedId.value,
     set: (v: string | null) => {
       activeRuntime.value.selectedId.value = v;
-    },
-  });
-  const expanded = computed({
-    get: () => activeRuntime.value.expanded.value,
-    set: (v: Set<string>) => {
-      activeRuntime.value.expanded.value = v;
-    },
-  });
-  const plansByTaskId = computed({
-    get: () => activeRuntime.value.plansByTaskId.value,
-    set: (v: Map<string, PlanStep[]>) => {
-      activeRuntime.value.plansByTaskId.value = v;
     },
   });
   const runBusyIds = computed({
@@ -327,8 +315,6 @@ export function createAppContext() {
     workspacePath,
     tasks,
     selectedId,
-    expanded,
-    plansByTaskId,
     runBusyIds,
     busy,
     messages,

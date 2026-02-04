@@ -1,5 +1,5 @@
-import type { PlanStep, Task, TaskMessage } from "../types.js";
-import { normalizePlanStepStatus, normalizeRole, normalizeTaskStatus, parseJson } from "./normalize.js";
+import type { Task, TaskMessage } from "../types.js";
+import { normalizeRole, normalizeTaskStatus, parseJson } from "./normalize.js";
 
 export function toTask(row: Record<string, unknown>): Task {
   const createdAt = typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0);
@@ -36,19 +36,6 @@ export function toTask(row: Record<string, unknown>): Task {
   };
 }
 
-export function toPlanStep(row: Record<string, unknown>): PlanStep {
-  return {
-    id: typeof row.id === "number" ? row.id : Number(row.id ?? 0),
-    taskId: String(row.task_id ?? ""),
-    stepNumber: typeof row.step_number === "number" ? row.step_number : Number(row.step_number ?? 0),
-    title: String(row.title ?? ""),
-    description: row.description == null ? null : String(row.description),
-    status: normalizePlanStepStatus(row.status),
-    startedAt: row.started_at == null ? null : (typeof row.started_at === "number" ? row.started_at : Number(row.started_at ?? 0)),
-    completedAt: row.completed_at == null ? null : (typeof row.completed_at === "number" ? row.completed_at : Number(row.completed_at ?? 0)),
-  };
-}
-
 export function toTaskMessage(row: Record<string, unknown>): TaskMessage {
   return {
     id: typeof row.id === "number" ? row.id : Number(row.id ?? 0),
@@ -62,4 +49,3 @@ export function toTaskMessage(row: Record<string, unknown>): TaskMessage {
     createdAt: typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0),
   };
 }
-

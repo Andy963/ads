@@ -24,13 +24,6 @@ export type TaskStoreStatements = {
   listPendingForReorderStmt: SqliteStatement;
   updateQueueOrderStmt: SqliteStatement;
 
-  deletePlanStmt: SqliteStatement;
-  clearPlanStepRefsStmt: SqliteStatement;
-  insertPlanStepStmt: SqliteStatement;
-  getPlanStmt: SqliteStatement;
-  updatePlanStepStatusStmt: SqliteStatement;
-  getPlanStepIdStmt: SqliteStatement;
-
   insertMessageStmt: SqliteStatement;
   getMessagesStmt: SqliteStatement;
   getMessagesLimitedStmt: SqliteStatement;
@@ -167,33 +160,6 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
 
     updateQueueOrderStmt: db.prepare(
       `UPDATE tasks SET queue_order = ? WHERE id = ? AND status = 'pending'`,
-    ),
-
-    deletePlanStmt: db.prepare(`DELETE FROM task_plans WHERE task_id = ?`),
-
-    clearPlanStepRefsStmt: db.prepare(
-      `UPDATE task_messages
-       SET plan_step_id = NULL
-       WHERE task_id = ? AND plan_step_id IS NOT NULL`,
-    ),
-
-    insertPlanStepStmt: db.prepare(
-      `INSERT INTO task_plans (task_id, step_number, title, description, status, started_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ),
-
-    getPlanStmt: db.prepare(
-      `SELECT * FROM task_plans WHERE task_id = ? ORDER BY step_number ASC`,
-    ),
-
-    getPlanStepIdStmt: db.prepare(
-      `SELECT id FROM task_plans WHERE task_id = ? AND step_number = ? LIMIT 1`,
-    ),
-
-    updatePlanStepStatusStmt: db.prepare(
-      `UPDATE task_plans
-       SET status = ?, started_at = ?, completed_at = ?
-       WHERE task_id = ? AND step_number = ?`,
     ),
 
     insertMessageStmt: db.prepare(

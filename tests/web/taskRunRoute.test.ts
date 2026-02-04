@@ -7,9 +7,8 @@ import path from "node:path";
 import { resetDatabaseForTests } from "../../src/storage/database.js";
 import { TaskStore } from "../../src/tasks/store.js";
 import { TaskQueue } from "../../src/tasks/queue.js";
-import type { TaskPlanner } from "../../src/tasks/planner.js";
 import type { TaskExecutor } from "../../src/tasks/executor.js";
-import type { PlanStepInput, Task } from "../../src/tasks/types.js";
+import type { Task } from "../../src/tasks/types.js";
 import { TaskRunController } from "../../src/web/taskRunController.js";
 import { handleSingleTaskRun, matchSingleTaskRunPath } from "../../src/web/api/taskRun.js";
 
@@ -41,18 +40,12 @@ describe("web/api/taskRun", () => {
 
   it("should reject when task queue is disabled", () => {
     const store = new TaskStore();
-    const planner: TaskPlanner = {
-      async generatePlan(task: Task): Promise<PlanStepInput[]> {
-        void task;
-        return [{ stepNumber: 1, title: "Do", description: "" }];
-      },
-    };
     const executor: TaskExecutor = {
       async execute(task: Task): Promise<{ resultSummary?: string }> {
         return { resultSummary: `done:${task.id}` };
       },
     };
-    const queue = new TaskQueue({ store, planner, executor });
+    const queue = new TaskQueue({ store, executor });
     const controller = new TaskRunController();
     const ctx = { taskStore: store, taskQueue: queue, queueRunning: false };
 
@@ -68,4 +61,3 @@ describe("web/api/taskRun", () => {
     assert.deepEqual(result.body, { error: "Task queue disabled" });
   });
 });
-

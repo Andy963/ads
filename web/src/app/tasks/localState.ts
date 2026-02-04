@@ -23,11 +23,6 @@ export function removeTaskLocal(taskId: string, rt: ProjectRuntime): void {
     return;
   }
   rt.tasks.value = nextTasks;
-
-  rt.expanded.value = new Set([...rt.expanded.value].filter((x) => x !== normalized));
-  rt.plansByTaskId.value.delete(normalized);
-  rt.plansByTaskId.value = new Map(rt.plansByTaskId.value);
-  rt.planFetchInFlightByTaskId.delete(normalized);
   rt.startedTaskIds.delete(normalized);
   rt.taskChatBufferByTaskId.delete(normalized);
 

@@ -108,7 +108,7 @@ describe("App.runSingleTask", () => {
       if (url.startsWith("/api/tasks/")) {
         const taskId = url.split("/api/tasks/")[1]?.split("?")[0]?.split("/")[0] ?? "t-1";
         const task = makeTask({ id: taskId, status: "pending" });
-        return { ...task, plan: [], messages: [] } satisfies TaskDetail;
+        return { ...task, messages: [] } satisfies TaskDetail;
       }
       if (url.startsWith("/api/tasks")) return [] satisfies Task[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };

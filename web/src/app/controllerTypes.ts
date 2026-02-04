@@ -1,6 +1,6 @@
 import type { Ref } from "vue";
 
-import type { PlanStep, Task, TaskQueueStatus } from "../api/types";
+import type { Task, TaskQueueStatus } from "../api/types";
 import type { createLiveActivityWindow } from "../lib/live_activity";
 
 export type WorkspaceState = { path?: string; rules?: string; modified?: string[]; branch?: string };
@@ -67,9 +67,6 @@ export type ProjectRuntime = {
   workspacePath: Ref<string>;
   tasks: Ref<Task[]>;
   selectedId: Ref<string | null>;
-  expanded: Ref<Set<string>>;
-  plansByTaskId: Ref<Map<string, PlanStep[]>>;
-  planFetchInFlightByTaskId: Map<string, Promise<void>>;
   runBusyIds: Ref<Set<string>>;
   busy: Ref<boolean>;
   turnInFlight: boolean;

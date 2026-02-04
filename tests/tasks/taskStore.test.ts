@@ -119,55 +119,6 @@ describe("tasks/taskStore", () => {
     assert.equal(third.id, t2.id);
   });
 
-  it("should set plan steps and update step status", () => {
-    const store = new TaskStore();
-    const task = store.createTask({ title: "T", prompt: "P" });
-    store.setPlan(task.id, [
-      { stepNumber: 1, title: "S1", description: "D1" },
-      { stepNumber: 2, title: "S2" },
-    ]);
-
-    const plan = store.getPlan(task.id);
-    assert.equal(plan.length, 2);
-    assert.equal(plan[0]?.title, "S1");
-    assert.equal(plan[0]?.status, "pending");
-
-    store.updatePlanStep(task.id, 1, "running", Date.now());
-    const plan2 = store.getPlan(task.id);
-    assert.equal(plan2[0]?.status, "running");
-    assert.ok(plan2[0]?.startedAt);
-  });
-
-  it("should allow replanning when messages reference previous plan steps", () => {
-    const store = new TaskStore();
-    const task = store.createTask({ title: "T", prompt: "P" });
-    store.setPlan(task.id, [
-      { stepNumber: 1, title: "S1" },
-      { stepNumber: 2, title: "S2" },
-    ]);
-
-    const step1Id = store.getPlanStepId(task.id, 1);
-    assert.ok(step1Id);
-
-    store.addMessage({
-      taskId: task.id,
-      planStepId: step1Id,
-      role: "assistant",
-      content: "hello",
-      createdAt: Date.now(),
-    });
-
-    store.setPlan(task.id, [{ stepNumber: 1, title: "S1b" }]);
-
-    const messages = store.getMessages(task.id);
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0]?.planStepId, null);
-
-    const plan = store.getPlan(task.id);
-    assert.equal(plan.length, 1);
-    assert.equal(plan[0]?.title, "S1b");
-  });
-
   it("should add and list task messages", () => {
     const store = new TaskStore();
     const task = store.createTask({ title: "T", prompt: "P" });

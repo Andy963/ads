@@ -2,7 +2,7 @@ import { nextTick } from "vue";
 
 import { formatApiError, looksLikeNotFound } from "../lib/api_error";
 
-import type { CreateTaskInput, ModelConfig, PlanStep, Task, TaskDetail, TaskQueueStatus } from "../api/types";
+import type { CreateTaskInput, ModelConfig, Task, TaskDetail, TaskQueueStatus } from "../api/types";
 import type { AppContext } from "./controller";
 import type { ChatActions } from "./chat";
 import type { IncomingImage, ProjectRuntime } from "./controller";
@@ -30,8 +30,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     withWorkspaceQuery,
     tasks,
     selectedId,
-    expanded,
-    plansByTaskId,
     apiAuthorized,
     pendingDeleteProjectId,
     pendingDeleteTaskId,
@@ -49,45 +47,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const resetTaskState = (): void => {
     tasks.value = [];
     selectedId.value = null;
-    expanded.value = new Set();
-    plansByTaskId.value = new Map();
-  };
-
-  const ensurePlan = async (taskId: string): Promise<void> => {
-    const id = String(taskId ?? "").trim();
-    if (!id) return;
-    const pid = normalizeProjectId(activeProjectId.value);
-    const rt = getRuntime(pid);
-    if ((rt.plansByTaskId.value.get(id)?.length ?? 0) > 0) return;
-    const inFlight = rt.planFetchInFlightByTaskId.get(id);
-    if (inFlight) {
-      await inFlight;
-      return;
-    }
-
-    const op = (async () => {
-      try {
-        const plan = await api.get<PlanStep[]>(withWorkspaceQuery(`/api/tasks/${id}/plan`));
-        rt.plansByTaskId.value.set(id, Array.isArray(plan) ? plan : []);
-        rt.plansByTaskId.value = new Map(rt.plansByTaskId.value);
-      } catch {
-        // ignore
-      }
-    })().finally(() => {
-      rt.planFetchInFlightByTaskId.delete(id);
-    });
-
-    rt.planFetchInFlightByTaskId.set(id, op);
-    await op;
-  };
-
-  const togglePlan = (taskId: string): void => {
-    const id = String(taskId ?? "").trim();
-    if (!id) return;
-    const next = new Set(expanded.value);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    expanded.value = next;
   };
 
   const loadModels = async (): Promise<void> => {
@@ -230,10 +189,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     try {
       const detail = await api.get<TaskDetail>(withWorkspaceQueryFor(pid, `/api/tasks/${taskId}`));
       upsertTask(detail, rt);
-      if (Array.isArray(detail.plan)) {
-        rt.plansByTaskId.value.set(taskId, detail.plan);
-        rt.plansByTaskId.value = new Map(rt.plansByTaskId.value);
-      }
     } catch {
       // ignore
     }
@@ -462,8 +417,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     setNotice,
     clearNotice,
     resetTaskState,
-    ensurePlan,
-    togglePlan,
     loadModels,
     loadQueueStatus,
     runTaskQueue,

@@ -207,7 +207,7 @@ describe("App.updateQueuedTaskAndRun", () => {
       if (url.includes("/api/task-queue/status"))
         return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
       if (url.includes("/api/tasks/t-1") && !url.includes("?limit=")) {
-        return { ...cancelled, plan: [], messages: [] };
+        return { ...cancelled, messages: [] };
       }
       if (url.startsWith("/api/tasks")) return tasksFromApi;
       if (url.startsWith("/api/paths/validate")) return { ok: false };

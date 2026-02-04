@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import TaskBoard from "../components/TaskBoard.vue";
-import type { ModelConfig, PlanStep, Task } from "../api/types";
+import type { ModelConfig, Task } from "../api/types";
 
 function makeTask(overrides: Partial<Task>): Task {
   const now = Date.now();
@@ -40,8 +40,6 @@ describe("TaskBoard edit modal", () => {
         tasks: [task],
         models,
         selectedId: null,
-        plans: new Map<string, PlanStep[]>(),
-        expanded: new Set<string>(),
         queueStatus: null,
         canRunSingle: true,
         runBusyIds: new Set<string>(),
@@ -90,8 +88,6 @@ describe("TaskBoard edit modal", () => {
         tasks: [task],
         models,
         selectedId: null,
-        plans: new Map<string, PlanStep[]>(),
-        expanded: new Set<string>(),
         queueStatus: null,
         canRunSingle: true,
         runBusyIds: new Set<string>(),
@@ -121,8 +117,6 @@ describe("TaskBoard edit modal", () => {
         tasks: [task],
         models,
         selectedId: null,
-        plans: new Map<string, PlanStep[]>(),
-        expanded: new Set<string>(),
         queueStatus: null,
         canRunSingle: true,
         runBusyIds: new Set<string>(),
@@ -163,8 +157,6 @@ describe("TaskBoard edit modal", () => {
         tasks: [task],
         models,
         selectedId: null,
-        plans: new Map<string, PlanStep[]>(),
-        expanded: new Set<string>(),
         queueStatus: null,
         canRunSingle: true,
         runBusyIds: new Set<string>(),
@@ -187,8 +179,6 @@ describe("TaskBoard edit modal", () => {
         tasks: [task],
         models,
         selectedId: null,
-        plans: new Map<string, PlanStep[]>(),
-        expanded: new Set<string>(),
         queueStatus: null,
         canRunSingle: true,
         runBusyIds: new Set<string>(),

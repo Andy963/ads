@@ -1,4 +1,4 @@
-import type { PlanStep, Task, TaskEventPayload } from "../../api/types";
+import type { Task, TaskEventPayload } from "../../api/types";
 import type { ChatActions } from "../chat";
 import type { AppContext, ProjectRuntime } from "../controller";
 
@@ -76,56 +76,10 @@ export function createTaskEventActions(
       markTaskChatStarted(t.id, state);
       return;
     }
-    if (payload.event === "task:planned") {
-      const data = payload.data as { task: Task; plan?: Array<{ stepNumber: number; title: string; description?: string | null }> };
-      upsertTask(data.task, state);
-      markTaskChatStarted(data.task.id, state);
-      if (Array.isArray(data.plan) && data.plan.length > 0) {
-        const steps: PlanStep[] = data.plan.map((step) => ({
-          id: step.stepNumber,
-          taskId: data.task.id,
-          stepNumber: step.stepNumber,
-          title: step.title,
-          description: step.description ?? null,
-          status: "pending",
-          startedAt: null,
-          completedAt: null,
-        }));
-        state.plansByTaskId.value.set(data.task.id, steps);
-        state.plansByTaskId.value = new Map(state.plansByTaskId.value);
-      }
-      return;
-    }
     if (payload.event === "task:running") {
       const t = payload.data as Task;
       upsertTask(t, state);
       markTaskChatStarted(t.id, state);
-      return;
-    }
-    if (payload.event === "step:started") {
-      const data = payload.data as { taskId: string; step: { title: string; stepNumber: number } };
-      markTaskChatStarted(data.taskId, state);
-      const plan = state.plansByTaskId.value.get(data.taskId);
-      if (plan) {
-        for (const s of plan) {
-          if (s.stepNumber === data.step.stepNumber) s.status = "running";
-        }
-        state.plansByTaskId.value = new Map(state.plansByTaskId.value);
-      }
-      clearStepLive(state);
-      return;
-    }
-    if (payload.event === "step:completed") {
-      const data = payload.data as { taskId: string; step: { title: string; stepNumber: number } };
-      markTaskChatStarted(data.taskId, state);
-      const plan = state.plansByTaskId.value.get(data.taskId);
-      if (plan) {
-        for (const s of plan) {
-          if (s.stepNumber === data.step.stepNumber) s.status = "completed";
-        }
-        state.plansByTaskId.value = new Map(state.plansByTaskId.value);
-      }
-      clearStepLive(state);
       return;
     }
     if (payload.event === "message") {

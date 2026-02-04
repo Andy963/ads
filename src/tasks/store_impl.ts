@@ -7,9 +7,6 @@ import type {
   Conversation,
   ConversationMessage,
   ModelConfig,
-  PlanStep,
-  PlanStepInput,
-  PlanStepStatus,
   Task,
   TaskContext,
   TaskFilter,
@@ -20,7 +17,6 @@ import type {
 import { createTaskStoreConversationOps } from "./storeImpl/conversationOps.js";
 import { createTaskStoreMessageOps } from "./storeImpl/messageOps.js";
 import { createTaskStoreModelConfigOps } from "./storeImpl/modelConfigOps.js";
-import { createTaskStorePlanOps } from "./storeImpl/planOps.js";
 import { createTaskStoreTaskOps } from "./storeImpl/taskOps.js";
 
 export class TaskStore {
@@ -28,7 +24,6 @@ export class TaskStore {
   private readonly stmts: TaskStoreStatements;
 
   private readonly taskOps: ReturnType<typeof createTaskStoreTaskOps>;
-  private readonly planOps: ReturnType<typeof createTaskStorePlanOps>;
   private readonly messageOps: ReturnType<typeof createTaskStoreMessageOps>;
   private readonly modelConfigOps: ReturnType<typeof createTaskStoreModelConfigOps>;
   private readonly conversationOps: ReturnType<typeof createTaskStoreConversationOps>;
@@ -38,7 +33,6 @@ export class TaskStore {
     this.stmts = prepareTaskStoreStatements(this.db);
 
     this.taskOps = createTaskStoreTaskOps({ db: this.db, stmts: this.stmts });
-    this.planOps = createTaskStorePlanOps({ db: this.db, stmts: this.stmts });
     this.messageOps = createTaskStoreMessageOps({ stmts: this.stmts });
     this.modelConfigOps = createTaskStoreModelConfigOps({ db: this.db, stmts: this.stmts });
     this.conversationOps = createTaskStoreConversationOps({ stmts: this.stmts });
@@ -90,22 +84,6 @@ export class TaskStore {
 
   reorderPendingTasks(taskIds: string[]): Task[] {
     return this.taskOps.reorderPendingTasks(taskIds);
-  }
-
-  getPlan(taskId: string): PlanStep[] {
-    return this.planOps.getPlan(taskId);
-  }
-
-  setPlan(taskId: string, steps: PlanStepInput[]): PlanStep[] {
-    return this.planOps.setPlan(taskId, steps);
-  }
-
-  updatePlanStep(taskId: string, stepNumber: number, status: PlanStepStatus, now = Date.now()): void {
-    this.planOps.updatePlanStep(taskId, stepNumber, status, now);
-  }
-
-  getPlanStepId(taskId: string, stepNumber: number): number | null {
-    return this.planOps.getPlanStepId(taskId, stepNumber);
   }
 
   addMessage(message: Omit<TaskMessage, "id">): TaskMessage {
@@ -163,4 +141,3 @@ export class TaskStore {
     return this.conversationOps.getConversationMessages(conversationId, options);
   }
 }
-

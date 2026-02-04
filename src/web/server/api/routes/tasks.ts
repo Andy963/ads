@@ -357,26 +357,6 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     return true;
   }
 
-  const planMatch = /^\/api\/tasks\/([^/]+)\/plan$/.exec(pathname);
-  if (planMatch && req.method === "GET") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
-    const taskId = planMatch[1] ?? "";
-    const task = taskCtx.taskStore.getTask(taskId);
-    if (!task) {
-      sendJson(res, 404, { error: "Not Found" });
-      return true;
-    }
-    sendJson(res, 200, taskCtx.taskStore.getPlan(taskId));
-    return true;
-  }
-
   if (await handleTaskByIdRoute(ctx, deps)) {
     return true;
   }

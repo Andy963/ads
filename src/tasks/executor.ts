@@ -4,18 +4,16 @@ import type { AgentEvent } from "../codex/events.js";
 import type { AsyncLock } from "../utils/asyncLock.js";
 
 import type { TaskStore } from "./store.js";
-import type { PlanStepInput, Task, TaskContext } from "./types.js";
+import type { Task, TaskContext } from "./types.js";
 
 export interface TaskExecutorHooks {
-  onStepStart?: (step: PlanStepInput) => void;
-  onStepComplete?: (step: PlanStepInput, output: string) => void;
   onMessage?: (message: { role: string; content: string; modelUsed?: string | null }) => void;
   onMessageDelta?: (message: { role: string; delta: string; modelUsed?: string | null }) => void;
   onCommand?: (payload: { command: string }) => void;
 }
 
 export interface TaskExecutor {
-  execute(task: Task, plan: PlanStepInput[], options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks }): Promise<{ resultSummary?: string }>;
+  execute(task: Task, options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks }): Promise<{ resultSummary?: string }>;
 }
 
 function selectAgentForModel(model: string): AgentIdentifier {
@@ -100,7 +98,6 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
 
   async execute(
     task: Task,
-    plan: PlanStepInput[],
     options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks },
   ): Promise<{ resultSummary?: string }> {
     const run = async (): Promise<{ resultSummary?: string }> => {
@@ -127,180 +124,161 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       const patchHint = formatWorkspacePatchArtifactForPrompt(latestPatchContext);
 
       try {
-        for (const step of plan) {
-          options?.hooks?.onStepStart?.(step);
+        const history = this.store
+          .getConversationMessages(conversationId, { limit: 16 })
+          .filter((msg) => msg.role === "user" || msg.role === "assistant");
+        const historySnippet =
+          history.length > 0
+            ? ["历史记录（最近）：", ...history.map((msg) => `- ${msg.role}: ${truncate(msg.content, 800)}`), ""].join("\n")
+            : "";
 
-          const history = this.store
-            .getConversationMessages(conversationId, { limit: 16 })
-            .filter((msg) => msg.role === "user" || msg.role === "assistant");
-          const historySnippet =
-            history.length > 0
-              ? ["历史记录（最近）：", ...history.map((msg) => `- ${msg.role}: ${truncate(msg.content, 800)}`), ""].join("\n")
-              : "";
-
-          this.store.updatePlanStep(task.id, step.stepNumber, "running", Date.now());
-          const planStepId = this.store.getPlanStepId(task.id, step.stepNumber);
-
-          const stepHeader = `步骤 ${step.stepNumber}: ${step.title}`;
-          this.store.addMessage({
-            taskId: task.id,
-            planStepId,
-            role: "system",
-            content: `开始执行：${stepHeader}`,
-            messageType: "step",
-            modelUsed: null,
-            tokenCount: null,
-            createdAt: Date.now(),
-          });
-          this.store.addConversationMessage({
-            conversationId,
-            taskId: task.id,
-            role: "system",
-            content: `开始执行：${stepHeader}`,
-            modelId: null,
-            tokenCount: null,
-            metadata: { planStepNumber: step.stepNumber },
-            createdAt: Date.now(),
-          });
-
-          const includePatchHint = step.stepNumber === 1 && Boolean(patchHint);
-          const prompt = [
-            "你正在执行一个任务队列中的步骤。请按当前步骤完成工作，并输出结果。",
-            "",
-            includePatchHint ? patchHint : "",
-            includePatchHint ? "" : "",
-            historySnippet ? "（上下文）\n" + historySnippet : "",
-            `任务标题: ${task.title}`,
-            `任务描述: ${task.prompt}`,
-            "",
-            `当前步骤: ${step.stepNumber}. ${step.title}`,
-            step.description ? `步骤说明: ${step.description}` : "",
-            "",
-            "要求：",
-            "- 直接完成该步骤，不要输出多余的流程性内容",
-            "- 如果需要更多信息，说明缺失点并提出具体问题",
-          ]
-            .filter(Boolean)
-            .join("\n");
-
-          const storedPrompt = [
-            `任务标题: ${task.title}`,
-            `任务描述: ${task.prompt}`,
-            `步骤: ${step.stepNumber}. ${step.title}`,
-            step.description ? `步骤说明: ${step.description}` : "",
-          ]
-            .filter(Boolean)
-            .join("\n");
-
-          this.store.addConversationMessage({
-            conversationId,
-            taskId: task.id,
-            role: "user",
-            content: storedPrompt,
-            modelId: modelToUse,
-            tokenCount: null,
-            metadata: { planStepNumber: step.stepNumber },
-            createdAt: Date.now(),
-          });
-
-          let lastRespondingText = "";
-          const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-            try {
-              const raw = event.raw as unknown as { type?: unknown; item?: unknown };
-              const rawItem = raw && typeof raw === "object" ? (raw as { item?: unknown }).item : null;
-              const rawItemType =
-                rawItem && typeof rawItem === "object" ? String((rawItem as { type?: unknown }).type ?? "").trim() : "";
-              if (raw && typeof raw === "object" && String((raw as { type?: unknown }).type ?? "") === "item.completed" && rawItemType === "file_change") {
-                const item = rawItem as { changes?: unknown };
-                const changes = Array.isArray(item.changes) ? (item.changes as Array<{ path?: unknown }>) : [];
-                for (const change of changes) {
-                  const p = String(change?.path ?? "").trim();
-                  if (p) changedPaths.add(p);
-                }
-              }
-
-              if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
-                const next = event.delta;
-                let delta = next;
-                if (lastRespondingText && next.startsWith(lastRespondingText)) {
-                  delta = next.slice(lastRespondingText.length);
-                }
-                if (next.length >= lastRespondingText.length) {
-                  lastRespondingText = next;
-                }
-                if (delta) {
-                  options?.hooks?.onMessageDelta?.({ role: "assistant", delta, modelUsed: modelToUse });
-                }
-                return;
-              }
-              if (event.phase === "command" && event.title === "执行命令" && event.detail) {
-                const command = String(event.detail).split(" | ")[0]?.trim();
-                if (command) {
-                  try {
-                    this.store.addMessage({
-                      taskId: task.id,
-                      planStepId,
-                      role: "system",
-                      content: `$ ${command}`,
-                      messageType: "command",
-                      modelUsed: null,
-                      tokenCount: null,
-                      createdAt: Date.now(),
-                    });
-                  } catch {
-                    // ignore
-                  }
-                  options?.hooks?.onCommand?.({ command });
-                }
-              }
-            } catch {
-              // ignore
-            }
-          });
-
-          let result;
-          try {
-            result = await orchestrator.invokeAgent(agentId, prompt, {
-              signal: options?.signal,
-              streaming: true,
+        const storedPrompt = [`任务标题: ${task.title}`, `任务描述: ${task.prompt}`].join("\n");
+        try {
+          const rawPrompt = String(task.prompt ?? "").trim();
+          if (rawPrompt) {
+            this.store.addMessage({
+              taskId: task.id,
+              planStepId: null,
+              role: "user",
+              content: rawPrompt,
+              messageType: "task",
+              modelUsed: null,
+              tokenCount: null,
+              createdAt: Date.now(),
             });
-          } finally {
-            try {
-              unsubscribe();
-            } catch {
-              // ignore
-            }
           }
-
-          lastOutput =
-            typeof (result as { response?: unknown } | null)?.response === "string"
-              ? (result as { response: string }).response
-              : String((result as { response?: unknown } | null)?.response ?? "");
-
-          this.store.addMessage({
-            taskId: task.id,
-            planStepId,
-            role: "assistant",
-            content: lastOutput,
-            messageType: "text",
-            modelUsed: modelToUse,
-            tokenCount: null,
-            createdAt: Date.now(),
-          });
-          this.store.addConversationMessage({
-            conversationId,
-            taskId: task.id,
-            role: "assistant",
-            content: lastOutput,
-            modelId: modelToUse,
-            tokenCount: null,
-            metadata: { planStepNumber: step.stepNumber },
-            createdAt: Date.now(),
-          });
-
-          this.store.updatePlanStep(task.id, step.stepNumber, "completed", Date.now());
-          options?.hooks?.onStepComplete?.(step, lastOutput);
+        } catch {
+          // ignore
         }
+        this.store.addConversationMessage({
+          conversationId,
+          taskId: task.id,
+          role: "user",
+          content: storedPrompt,
+          modelId: modelToUse,
+          tokenCount: null,
+          metadata: null,
+          createdAt: Date.now(),
+        });
+
+        const prompt = [
+          "你正在执行一个任务队列中的任务。请完成任务并输出结果。",
+          "",
+          patchHint ? patchHint : "",
+          patchHint ? "" : "",
+          historySnippet ? "（上下文）\n" + historySnippet : "",
+          `任务标题: ${task.title}`,
+          `任务描述: ${task.prompt}`,
+          "",
+          "要求：",
+          "- 直接完成任务，不要输出多余的流程性内容",
+          "- 如果需要更多信息，说明缺失点并提出具体问题",
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        let lastRespondingText = "";
+        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+          try {
+            const raw = event.raw as unknown as { type?: unknown; item?: unknown };
+            const rawItem = raw && typeof raw === "object" ? (raw as { item?: unknown }).item : null;
+            const rawItemType =
+              rawItem && typeof rawItem === "object" ? String((rawItem as { type?: unknown }).type ?? "").trim() : "";
+            if (raw && typeof raw === "object" && String((raw as { type?: unknown }).type ?? "") === "item.completed" && rawItemType === "file_change") {
+              const item = rawItem as { changes?: unknown };
+              const changes = Array.isArray(item.changes) ? (item.changes as Array<{ path?: unknown }>) : [];
+              for (const change of changes) {
+                const p = String(change?.path ?? "").trim();
+                if (p) changedPaths.add(p);
+              }
+            }
+
+            if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
+              const next = event.delta;
+              let delta = next;
+              if (lastRespondingText && next.startsWith(lastRespondingText)) {
+                delta = next.slice(lastRespondingText.length);
+              }
+              if (next.length >= lastRespondingText.length) {
+                lastRespondingText = next;
+              }
+              if (delta) {
+                options?.hooks?.onMessageDelta?.({ role: "assistant", delta, modelUsed: modelToUse });
+              }
+              return;
+            }
+            if (event.phase === "command" && event.title === "执行命令" && event.detail) {
+              const command = String(event.detail).split(" | ")[0]?.trim();
+              if (command) {
+                try {
+                  this.store.addMessage({
+                    taskId: task.id,
+                    planStepId: null,
+                    role: "system",
+                    content: `$ ${command}`,
+                    messageType: "command",
+                    modelUsed: null,
+                    tokenCount: null,
+                    createdAt: Date.now(),
+                  });
+                } catch {
+                  // ignore
+                }
+                options?.hooks?.onCommand?.({ command });
+              }
+            }
+          } catch {
+            // ignore
+          }
+        });
+
+        let result;
+        try {
+          result = await orchestrator.invokeAgent(agentId, prompt, {
+            signal: options?.signal,
+            streaming: true,
+          });
+        } finally {
+          try {
+            unsubscribe();
+          } catch {
+            // ignore
+          }
+        }
+
+        lastOutput =
+          typeof (result as { response?: unknown } | null)?.response === "string"
+            ? (result as { response: string }).response
+            : String((result as { response?: unknown } | null)?.response ?? "");
+
+        try {
+          const trimmed = lastOutput.trim();
+          if (trimmed) {
+            this.store.addMessage({
+              taskId: task.id,
+              planStepId: null,
+              role: "assistant",
+              content: lastOutput,
+              messageType: "text",
+              modelUsed: modelToUse,
+              tokenCount: null,
+              createdAt: Date.now(),
+            });
+          }
+        } catch {
+          // ignore
+        }
+        this.store.addConversationMessage({
+          conversationId,
+          taskId: task.id,
+          role: "assistant",
+          content: lastOutput,
+          modelId: modelToUse,
+          tokenCount: null,
+          metadata: null,
+          createdAt: Date.now(),
+        });
+        options?.hooks?.onMessage?.({ role: "assistant", content: lastOutput, modelUsed: modelToUse });
       } finally {
         try {
           const payload = { paths: Array.from(changedPaths.values()) };

@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { resetDatabaseForTests } from "../../src/storage/database.js";
 import { TaskStore } from "../../src/tasks/store.js";
-import type { PlanStepInput, Task } from "../../src/tasks/types.js";
+import type { Task } from "../../src/tasks/types.js";
 import { OrchestratorTaskExecutor } from "../../src/tasks/executor.js";
 
 describe("tasks/executor artifacts", () => {
@@ -74,12 +74,7 @@ describe("tasks/executor artifacts", () => {
       defaultModel: "mock",
     });
 
-    const plan: PlanStepInput[] = [
-      { stepNumber: 1, title: "S1", description: "" },
-      { stepNumber: 2, title: "S2", description: "" },
-    ];
-
-    await executor.execute(task, plan, {});
+    await executor.execute(task, {});
 
     assert.ok(seenPrompts.length >= 1);
     assert.ok(seenPrompts[0]?.includes("```diff"));
@@ -92,4 +87,3 @@ describe("tasks/executor artifacts", () => {
     assert.deepEqual(payload.paths, ["src/a.ts"]);
   });
 });
-

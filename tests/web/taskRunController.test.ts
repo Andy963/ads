@@ -7,9 +7,8 @@ import path from "node:path";
 import { resetDatabaseForTests } from "../../src/storage/database.js";
 import { TaskStore } from "../../src/tasks/store.js";
 import { TaskQueue } from "../../src/tasks/queue.js";
-import type { TaskPlanner } from "../../src/tasks/planner.js";
 import type { TaskExecutor } from "../../src/tasks/executor.js";
-import type { PlanStepInput, Task } from "../../src/tasks/types.js";
+import type { Task } from "../../src/tasks/types.js";
 import { TaskRunController } from "../../src/web/taskRunController.js";
 
 async function waitFor(fn: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -43,18 +42,12 @@ describe("web/taskRunController", () => {
 
   it("should run only the requested task and pause the queue afterwards", async () => {
     const store = new TaskStore();
-    const planner: TaskPlanner = {
-      async generatePlan(task: Task): Promise<PlanStepInput[]> {
-        void task;
-        return [{ stepNumber: 1, title: "Do", description: "" }];
-      },
-    };
     const executor: TaskExecutor = {
       async execute(task: Task): Promise<{ resultSummary?: string }> {
         return { resultSummary: `done:${task.id}` };
       },
     };
-    const queue = new TaskQueue({ store, planner, executor });
+    const queue = new TaskQueue({ store, executor });
     queue.pause("manual");
     void queue.start();
 
@@ -102,18 +95,12 @@ describe("web/taskRunController", () => {
 
   it("should be idempotent while the same single-task run is in progress", async () => {
     const store = new TaskStore();
-    const planner: TaskPlanner = {
-      async generatePlan(task: Task): Promise<PlanStepInput[]> {
-        void task;
-        return [{ stepNumber: 1, title: "Do", description: "" }];
-      },
-    };
     const executor: TaskExecutor = {
       async execute(task: Task): Promise<{ resultSummary?: string }> {
         return { resultSummary: `done:${task.id}` };
       },
     };
-    const queue = new TaskQueue({ store, planner, executor });
+    const queue = new TaskQueue({ store, executor });
     queue.pause("manual");
     void queue.start();
 
@@ -137,18 +124,12 @@ describe("web/taskRunController", () => {
 
   it("should allow running a cancelled task via single-task run", async () => {
     const store = new TaskStore();
-    const planner: TaskPlanner = {
-      async generatePlan(task: Task): Promise<PlanStepInput[]> {
-        void task;
-        return [{ stepNumber: 1, title: "Do", description: "" }];
-      },
-    };
     const executor: TaskExecutor = {
       async execute(task: Task): Promise<{ resultSummary?: string }> {
         return { resultSummary: `done:${task.id}` };
       },
     };
-    const queue = new TaskQueue({ store, planner, executor });
+    const queue = new TaskQueue({ store, executor });
     queue.pause("manual");
     void queue.start();
 

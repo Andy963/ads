@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { resetDatabaseForTests } from "../../src/storage/database.js";
 import { TaskStore } from "../../src/tasks/store.js";
-import type { PlanStepInput, Task } from "../../src/tasks/types.js";
+import type { Task } from "../../src/tasks/types.js";
 import { OrchestratorTaskExecutor } from "../../src/tasks/executor.js";
 import { AsyncLock } from "../../src/utils/asyncLock.js";
 
@@ -34,8 +34,7 @@ describe("tasks/executor lock", () => {
     const store = new TaskStore();
     const lock = new AsyncLock();
 
-    const step1Gate = Promise.withResolvers<void>();
-    const step2Gate = Promise.withResolvers<void>();
+    const runGate = Promise.withResolvers<void>();
     const called: string[] = [];
 
     const orchestrator = {
@@ -45,13 +44,8 @@ describe("tasks/executor lock", () => {
       },
       async invokeAgent(_: string, __: string) {
         called.push("invoke:start");
-        const idx = called.filter((x) => x === "invoke:start").length;
-        if (idx === 1) {
-          await step1Gate.promise;
-        } else {
-          await step2Gate.promise;
-        }
-        return { response: `ok:${idx}` };
+        await runGate.promise;
+        return { response: "ok" };
       },
     };
 
@@ -63,15 +57,11 @@ describe("tasks/executor lock", () => {
     });
 
     const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
-    const plan: PlanStepInput[] = [
-      { stepNumber: 1, title: "S1", description: "" },
-      { stepNumber: 2, title: "S2", description: "" },
-    ];
 
     let otherRan = false;
-    const run = executor.execute(task, plan, {});
+    const run = executor.execute(task, {});
 
-    // Let the executor reach step 1.
+    // Let the executor enter the critical section.
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(lock.isBusy(), true);
 
@@ -79,20 +69,18 @@ describe("tasks/executor lock", () => {
       otherRan = true;
     });
 
-    step1Gate.resolve();
-
-    // If the lock is held across the entire execution, "other" should still be blocked even after step 1 finishes.
+    // If the lock is held across the entire execution, "other" should still be blocked while the task is running.
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(otherRan, false);
 
-    step2Gate.resolve();
+    runGate.resolve();
     await run;
     await other;
 
     assert.equal(otherRan, true);
     assert.deepEqual(
       called.filter((x) => x === "invoke:start"),
-      ["invoke:start", "invoke:start"],
+      ["invoke:start"],
     );
   });
 });

@@ -7,9 +7,8 @@ import os from "node:os";
 import { resetDatabaseForTests } from "../../src/storage/database.js";
 import { TaskStore } from "../../src/tasks/store.js";
 import { TaskQueue } from "../../src/tasks/queue.js";
-import type { TaskPlanner } from "../../src/tasks/planner.js";
 import type { TaskExecutor } from "../../src/tasks/executor.js";
-import type { PlanStepInput, Task } from "../../src/tasks/types.js";
+import type { Task } from "../../src/tasks/types.js";
 
 type MetricName =
   | "TASK_ADDED"
@@ -59,12 +58,6 @@ describe("tasks/promptInjectionLifecycle", () => {
       unblockFirst = resolve;
     });
 
-    const planner: TaskPlanner = {
-      async generatePlan(): Promise<PlanStepInput[]> {
-        return [{ stepNumber: 1, title: "Do", description: "" }];
-      },
-    };
-
     const executor: TaskExecutor = {
       async execute(task: Task): Promise<{ resultSummary?: string }> {
         if (task.title === "T1") {
@@ -113,7 +106,7 @@ describe("tasks/promptInjectionLifecycle", () => {
       record("PROMPT_INJECTED", task.id);
     };
 
-    const queue = new TaskQueue({ store, planner, executor });
+    const queue = new TaskQueue({ store, executor });
     queue.on("task:started", ({ task }) => tryInject(task));
     let pausedAfterFirstComplete = false;
     queue.on("task:completed", ({ task }) => {

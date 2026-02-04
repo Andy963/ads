@@ -55,7 +55,6 @@ function makeTaskDetail(overrides: Partial<TaskDetailType>): TaskDetailType {
   const t = makeTask(overrides);
   return {
     ...t,
-    plan: overrides.plan ?? [],
     messages: overrides.messages ?? [],
   };
 }
@@ -158,8 +157,6 @@ describe("compact attachment UI", () => {
         tasks: [task],
         models,
         selectedId: null,
-        plans: new Map(),
-        expanded: new Set(),
         queueStatus: null,
         canRunSingle: true,
         runBusyIds: new Set<string>(),

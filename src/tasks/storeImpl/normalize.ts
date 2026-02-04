@@ -1,4 +1,4 @@
-import type { ConversationStatus, PlanStepStatus, TaskRole, TaskStatus } from "../types.js";
+import type { ConversationStatus, TaskRole, TaskStatus } from "../types.js";
 
 export function parseJson<T>(raw: unknown): T | null {
   if (typeof raw !== "string") {
@@ -32,20 +32,6 @@ export function normalizeTaskStatus(value: unknown): TaskStatus {
   }
 }
 
-export function normalizePlanStepStatus(value: unknown): PlanStepStatus {
-  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
-  switch (raw) {
-    case "pending":
-    case "running":
-    case "completed":
-    case "skipped":
-    case "failed":
-      return raw;
-    default:
-      return "pending";
-  }
-}
-
 export function normalizeRole(value: unknown): TaskRole {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   switch (raw) {
@@ -69,4 +55,3 @@ export function normalizeConversationStatus(value: unknown): ConversationStatus 
       return "active";
   }
 }
-

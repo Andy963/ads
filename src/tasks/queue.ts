@@ -1,9 +1,8 @@
 import { EventEmitter } from "node:events";
 
 import type { TaskStore } from "./store.js";
-import type { PlanStepInput, Task } from "./types.js";
+import type { Task } from "./types.js";
 import type { TaskExecutor } from "./executor.js";
-import type { TaskPlanner } from "./planner.js";
 import type { TaskQueueEventMap, TaskQueueEventName } from "./events.js";
 
 function isAbortError(error: unknown): boolean {
@@ -29,7 +28,6 @@ function formatError(error: unknown): string {
 
 export class TaskQueue extends EventEmitter {
   private readonly store: TaskStore;
-  private readonly planner: TaskPlanner;
   private readonly executor: TaskExecutor;
 
   private paused = false;
@@ -39,10 +37,9 @@ export class TaskQueue extends EventEmitter {
   private runningTaskId: string | null = null;
   private runningAbort: AbortController | null = null;
 
-  constructor(options: { store: TaskStore; planner: TaskPlanner; executor: TaskExecutor }) {
+  constructor(options: { store: TaskStore; executor: TaskExecutor }) {
     super();
     this.store = options.store;
-    this.planner = options.planner;
     this.executor = options.executor;
   }
 
@@ -161,24 +158,11 @@ export class TaskQueue extends EventEmitter {
       this.emit("task:started", { task });
 
       try {
-        // Plan
-        const plan = await this.planner.generatePlan(task, { signal: this.runningAbort.signal });
-        if (this.runningAbort.signal.aborted || this.store.getTask(task.id)?.status === "cancelled") {
-          throw createAbortError();
-        }
-        this.store.setPlan(task.id, plan);
-        this.emit("task:planned", { task, plan });
-
         // Run
         const runningTask = this.store.getTask(task.id) ?? task;
         this.emit("task:running", { task: runningTask });
 
         const hooks = {
-          onStepStart: (step: PlanStepInput) => this.emit("step:started", { task: runningTask, step }),
-          onStepComplete: (step: PlanStepInput, output: string) => {
-            void output;
-            this.emit("step:completed", { task: runningTask, step });
-          },
           onMessage: (message: { role: string; content: string; modelUsed?: string | null }) =>
             this.emit("message", { task: runningTask, role: message.role, content: message.content }),
           onMessageDelta: (message: { role: string; delta: string; modelUsed?: string | null }) =>
@@ -187,12 +171,12 @@ export class TaskQueue extends EventEmitter {
               role: message.role,
               delta: message.delta,
               modelUsed: message.modelUsed,
-              source: "step",
+              source: "chat",
             }),
           onCommand: (payload: { command: string }) => this.emit("command", { task: runningTask, command: payload.command }),
         };
 
-        const { resultSummary } = await this.executor.execute(runningTask, plan, {
+        const { resultSummary } = await this.executor.execute(runningTask, {
           signal: this.runningAbort.signal,
           hooks,
         });

@@ -10,7 +10,6 @@ import { deriveProjectSessionId } from "../projectSessionId.js";
 
 import { TaskQueue } from "../../../tasks/queue.js";
 import { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
-import { OrchestratorTaskPlanner } from "../../../tasks/planner.js";
 import { OrchestratorTaskExecutor } from "../../../tasks/executor.js";
 import { AttachmentStore } from "../../../attachments/store.js";
 import { TaskRunController } from "../../taskRunController.js";
@@ -246,18 +245,13 @@ export function createTaskQueueManager(deps: {
       return taskQueueSessionManager.getOrCreate(userId, key, true);
     };
 
-    const planner = new OrchestratorTaskPlanner({
-      getOrchestrator: getTaskQueueOrchestrator,
-      planModel: process.env.TASK_QUEUE_PLAN_MODEL ?? "gpt-5.2",
-      lock,
-    });
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: getTaskQueueOrchestrator,
       store: taskStore,
       defaultModel: process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2",
       lock,
     });
-    const taskQueue = new TaskQueue({ store: taskStore, planner, executor });
+    const taskQueue = new TaskQueue({ store: taskStore, executor });
 
     const ctx: TaskQueueContext = {
       workspaceRoot: key,
@@ -299,17 +293,8 @@ export function createTaskQueueManager(deps: {
         broadcast: (payload) => deps.broadcastToSession(sessionId, payload),
       });
     });
-    taskQueue.on("task:planned", ({ task, plan }) =>
-      deps.broadcastToSession(sessionId, { type: "task:event", event: "task:planned", data: { task, plan }, ts: Date.now() }),
-    );
     taskQueue.on("task:running", ({ task }) =>
       deps.broadcastToSession(sessionId, { type: "task:event", event: "task:running", data: task, ts: Date.now() }),
-    );
-    taskQueue.on("step:started", ({ task, step }) =>
-      deps.broadcastToSession(sessionId, { type: "task:event", event: "step:started", data: { taskId: task.id, step }, ts: Date.now() }),
-    );
-    taskQueue.on("step:completed", ({ task, step }) =>
-      deps.broadcastToSession(sessionId, { type: "task:event", event: "step:completed", data: { taskId: task.id, step }, ts: Date.now() }),
     );
     taskQueue.on("message", ({ task, role, content }) =>
       deps.broadcastToSession(sessionId, { type: "task:event", event: "message", data: { taskId: task.id, role, content }, ts: Date.now() }),

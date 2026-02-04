@@ -40,7 +40,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     sendJson(res, 200, {
       ...task,
       attachments,
-      plan: taskCtx.taskStore.getPlan(taskId),
       messages: taskCtx.taskStore.getMessages(taskId),
     });
     return true;

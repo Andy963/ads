@@ -1,17 +1,32 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { ChatDotRound, Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
-import type { ModelConfig, PlanStep, Task, TaskQueueStatus } from "../api/types";
+import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
 
 type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "model" | "priority" | "inheritContext" | "maxRetries">>;
+
+const TASK_CARD_PALETTE = [
+  "#dbeafe",
+  "#e0e7ff",
+  "#ede9fe",
+  "#fae8ff",
+  "#fce7f3",
+  "#ffe4e6",
+  "#ffedd5",
+  "#fef3c7",
+  "#ecfccb",
+  "#dcfce7",
+  "#d1fae5",
+  "#cffafe",
+  "#e0f2fe",
+  "#f1f5f9",
+];
 
 const props = defineProps<{
   tasks: Task[];
   models: ModelConfig[];
   selectedId?: string | null;
-  plans: Map<string, PlanStep[]>;
-  expanded: Set<string>;
   queueStatus?: TaskQueueStatus | null;
   canRunSingle?: boolean;
   runBusyIds?: Set<string>;
@@ -22,8 +37,6 @@ const emit = defineEmits<{
   (e: "create"): void;
   (e: "newSession"): void;
   (e: "resumeThread"): void;
-  (e: "togglePlan", id: string): void;
-  (e: "ensurePlan", id: string): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
   (e: "update-and-run", payload: { id: string; updates: TaskUpdates }): void;
   (e: "queueRun"): void;
@@ -40,6 +53,90 @@ const modelOptions = computed(() => {
 });
 
 const modelLabelById = computed(() => new Map(modelOptions.value.map((m) => [m.id, m.displayName])));
+
+function hashStringFNV1a(input: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function normalizeHex(hex: string): string | null {
+  const raw = String(hex ?? "").trim().replace(/^#/, "");
+  if (!raw) return null;
+  if (/^[0-9a-fA-F]{6}$/.test(raw)) return `#${raw.toLowerCase()}`;
+  if (/^[0-9a-fA-F]{3}$/.test(raw)) {
+    const expanded = raw
+      .split("")
+      .map((c) => `${c}${c}`)
+      .join("");
+    return `#${expanded.toLowerCase()}`;
+  }
+  return null;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const normalized = normalizeHex(hex);
+  if (!normalized) return null;
+  const v = normalized.slice(1);
+  const r = Number.parseInt(v.slice(0, 2), 16);
+  const g = Number.parseInt(v.slice(2, 4), 16);
+  const b = Number.parseInt(v.slice(4, 6), 16);
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+  return { r, g, b };
+}
+
+function toHexChannel(v: number): string {
+  const clamped = Math.max(0, Math.min(255, Math.round(v)));
+  return clamped.toString(16).padStart(2, "0");
+}
+
+function mixHex(a: string, b: string, t: number): string {
+  const aa = hexToRgb(a);
+  const bb = hexToRgb(b);
+  const ratio = Math.max(0, Math.min(1, t));
+  if (!aa || !bb) return a;
+  const r = aa.r + (bb.r - aa.r) * ratio;
+  const g = aa.g + (bb.g - aa.g) * ratio;
+  const b2 = aa.b + (bb.b - aa.b) * ratio;
+  return `#${toHexChannel(r)}${toHexChannel(g)}${toHexChannel(b2)}`;
+}
+
+function srgbToLinear(v: number): number {
+  const s = v / 255;
+  if (s <= 0.04045) return s / 12.92;
+  return ((s + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance(rgb: { r: number; g: number; b: number }): number {
+  const r = srgbToLinear(rgb.r);
+  const g = srgbToLinear(rgb.g);
+  const b = srgbToLinear(rgb.b);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function pickInk(bgHex: string): { ink: string; inkMuted: string } {
+  const rgb = hexToRgb(bgHex);
+  if (!rgb) return { ink: "#0f172a", inkMuted: "#334155" };
+  const lum = relativeLuminance(rgb);
+  if (lum < 0.46) return { ink: "#f8fafc", inkMuted: "rgba(248, 250, 252, 0.85)" };
+  return { ink: "#0f172a", inkMuted: "#334155" };
+}
+
+function taskColorVars(task: Task): Record<string, string> {
+  const id = String(task.id ?? "").trim();
+  const bg = TASK_CARD_PALETTE[hashStringFNV1a(id || JSON.stringify(task)) % TASK_CARD_PALETTE.length];
+  const border = mixHex(bg, "#0f172a", 0.16);
+  const { ink, inkMuted } = pickInk(bg);
+  return {
+    "--task-bg": bg,
+    "--task-border": border,
+    "--task-ink": ink,
+    "--task-ink-muted": inkMuted,
+  };
+}
 
 function formatModel(id: string | null | undefined): string {
   const raw = String(id ?? "").trim();
@@ -165,18 +262,6 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
   stopEdit();
 }
 
-function canShowPlan(task: Task): boolean {
-  return task.status !== "pending";
-}
-
-function togglePlan(task: Task): void {
-  if (!canShowPlan(task)) return;
-  emit("togglePlan", task.id);
-  if (!props.plans.get(task.id)?.length) {
-    emit("ensurePlan", task.id);
-  }
-}
-
 const queueStatus = computed(() => props.queueStatus ?? null);
 const queueCanRunAll = computed(() => Boolean(queueStatus.value?.enabled) && Boolean(queueStatus.value?.ready));
 const queueIsRunning = computed(() => Boolean(queueStatus.value?.running));
@@ -229,51 +314,6 @@ function toggleQueue(): void {
   if (!queueCanRunAll.value) return;
   emit(queueIsRunning.value ? "queuePause" : "queueRun");
 }
-
-const listEl = ref<HTMLElement | null>(null);
-
-function escapeCssValue(v: string): string {
-  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(v);
-  return v.replace(/["\\\\]/g, "\\\\$&");
-}
-
-function scrollPlanIntoView(taskId: string): void {
-  const list = listEl.value;
-  if (!list) return;
-
-  const selector = `[data-task-id="${escapeCssValue(taskId)}"] .plan`;
-  const plan = list.querySelector(selector) as HTMLElement | null;
-  if (!plan) return;
-
-  const listRect = list.getBoundingClientRect();
-  const planRect = plan.getBoundingClientRect();
-
-  if (planRect.bottom > listRect.bottom) {
-    const delta = planRect.bottom - listRect.bottom;
-    list.scrollTo?.({ top: list.scrollTop + delta });
-    if (!("scrollTo" in list)) {
-      list.scrollTop += delta;
-    }
-  } else if (planRect.top < listRect.top) {
-    const delta = planRect.top - listRect.top;
-    list.scrollTo?.({ top: list.scrollTop + delta });
-    if (!("scrollTo" in list)) {
-      list.scrollTop += delta;
-    }
-  }
-}
-
-watch(
-  () => props.expanded,
-  async (next, prev) => {
-    const prevSet = prev ?? new Set<string>();
-    const added = Array.from(next).filter((id) => !prevSet.has(id));
-    if (!added.length) return;
-    await nextTick();
-    scrollPlanIntoView(added[0]);
-  },
-  { flush: "post" },
-);
 </script>
 
 <template>
@@ -321,93 +361,66 @@ watch(
       <span class="hint">点击 + 新建任务</span>
     </div>
 
-    <div v-else ref="listEl" class="list">
-      <div v-for="t in sorted" :key="t.id" class="item" :data-status="t.status" :data-task-id="t.id"
-        :class="{ active: t.id === selectedId, expanded: expanded.has(t.id) && canShowPlan(t) }">
-        <div class="row">
-          <button class="row-main" type="button" @click="emit('select', t.id)">
-            <div class="row-top">
-              <div class="row-head">
-                <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
+    <div v-else class="list">
+      <div class="mindmap">
+        <div v-for="t in sorted" :key="t.id" class="item" :data-status="t.status" :data-task-id="t.id"
+          :class="{ active: t.id === selectedId }" :style="taskColorVars(t)">
+          <div class="row">
+            <button class="row-main" type="button" @click="emit('select', t.id)">
+              <div class="row-top">
+                <div class="row-head">
+                  <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
+                </div>
               </div>
-            </div>
-          </button>
-          <div class="row-actions">
-            <button v-if="canRunSingleTask(t)" class="iconBtn primary" type="button"
-              :disabled="!canRunSingleNow || isRunBusy(t.id)" :title="queueIsRunning ? '请先暂停队列，再单独运行' : '单独运行该任务'"
-              aria-label="单独运行任务" @click.stop="emit('runSingle', t.id)">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path d="M7 4.5v11l9-5.5-9-5.5Z" />
-              </svg>
             </button>
-            <button v-if="canRerunTask(t) && editingId !== t.id" class="iconBtn primary" type="button" title="重新执行"
-              :disabled="Boolean(editingId)" @click.stop="startEdit(t)">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd"
-                  d="M10 3a7 7 0 1 0 7 7 .75.75 0 0 0-1.5 0 5.5 5.5 0 1 1-1.38-3.65l-1.62 1.6a.75.75 0 0 0 .53 1.28H17a.75.75 0 0 0 .75-.75V3.5a.75.75 0 0 0-1.28-.53l-1.13 1.12A6.98 6.98 0 0 0 10 3Z"
-                  clip-rule="evenodd" />
-              </svg>
-            </button>
-            <button v-if="canEditTask(t) && !canRerunTask(t) && editingId !== t.id" class="iconBtn" type="button"
-              title="编辑" :disabled="Boolean(editingId)" data-testid="task-edit" @click.stop="startEdit(t)">
-              <el-icon :size="16" aria-hidden="true" class="icon">
-                <Edit />
-              </el-icon>
+            <div class="row-actions">
+              <button v-if="canRunSingleTask(t)" class="iconBtn primary" type="button"
+                :disabled="!canRunSingleNow || isRunBusy(t.id)" :title="queueIsRunning ? '请先暂停队列，再单独运行' : '单独运行该任务'"
+                aria-label="单独运行任务" @click.stop="emit('runSingle', t.id)">
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M7 4.5v11l9-5.5-9-5.5Z" />
+                </svg>
+              </button>
+              <button v-if="canRerunTask(t) && editingId !== t.id" class="iconBtn primary" type="button" title="重新执行"
+                :disabled="Boolean(editingId)" @click.stop="startEdit(t)">
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd"
+                    d="M10 3a7 7 0 1 0 7 7 .75.75 0 0 0-1.5 0 5.5 5.5 0 1 1-1.38-3.65l-1.62 1.6a.75.75 0 0 0 .53 1.28H17a.75.75 0 0 0 .75-.75V3.5a.75.75 0 0 0-1.28-.53l-1.13 1.12A6.98 6.98 0 0 0 10 3Z"
+                    clip-rule="evenodd" />
+                </svg>
+              </button>
+              <button v-if="canEditTask(t) && !canRerunTask(t) && editingId !== t.id" class="iconBtn" type="button"
+                title="编辑" :disabled="Boolean(editingId)" data-testid="task-edit" @click.stop="startEdit(t)">
+                <el-icon :size="16" aria-hidden="true" class="icon">
+                  <Edit />
+                </el-icon>
 
-            </button>
-            <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑" @click.stop="stopEdit()">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd"
-                  d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                  clip-rule="evenodd" />
-              </svg>
-            </button>
-            <button v-if="t.status === 'running' || t.status === 'planning'" class="iconBtn danger" type="button"
-              title="终止任务" @click.stop="emit('cancel', t.id)">
-              <span class="interruptSpinner" aria-hidden="true" />
-            </button>
-            <button v-if="t.status === 'failed'" class="iconBtn" type="button" title="重试"
-              @click.stop="emit('retry', t.id)">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd"
-                  d="M10 4a6 6 0 0 0-5.2 9h2.1a1 1 0 0 1 .8 1.6l-2.4 3.2a1 1 0 0 1-1.6 0l-2.4-3.2A1 1 0 0 1 2.1 13h1.2A8 8 0 1 1 10 18a.75.75 0 0 1 0-1.5A6.5 6.5 0 1 0 3.62 10a.75.75 0 1 1-1.5 0A8 8 0 0 1 10 2a.75.75 0 0 1 0 1.5Z"
-                  clip-rule="evenodd" />
-              </svg>
-            </button>
-            <button v-if="canShowPlan(t)" class="iconBtn" type="button"
-              :title="expanded.has(t.id) ? '收起 Plan' : '展开 Plan'" @click="togglePlan(t)">
-              <svg v-if="expanded.has(t.id)" width="16" height="16" viewBox="0 0 20 20" fill="currentColor"
-                aria-hidden="true">
-                <path fill-rule="evenodd"
-                  d="M5.23 12.21a.75.75 0 0 1 .02-1.06l4.22-4.06a.75.75 0 0 1 1.06.02l4.24 4.38a.75.75 0 1 1-1.08 1.04L10 8.71l-3.73 3.59a.75.75 0 0 1-1.06-.02Z"
-                  clip-rule="evenodd" />
-              </svg>
-              <svg v-else width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fill-rule="evenodd"
-                  d="M14.77 7.79a.75.75 0 0 1-.02 1.06l-4.22 4.06a.75.75 0 0 1-1.06-.02L5.23 8.51a.75.75 0 0 1 1.08-1.04L10 11.29l3.73-3.59a.75.75 0 0 1 1.06.02Z"
-                  clip-rule="evenodd" />
-              </svg>
-            </button>
-            <button class="iconBtn danger" type="button" title="删除任务"
-              :disabled="t.status === 'running' || t.status === 'planning'" @click.stop="emit('delete', t.id)">
-              <el-icon :size="16" aria-hidden="true" class="icon">
-                <Delete />
-              </el-icon>
-            </button>
-          </div>
-        </div>
-
-        <div v-if="expanded.has(t.id) && canShowPlan(t)" class="plan">
-          <div v-if="!(plans.get(t.id)?.length)" class="plan-empty">步骤加载中…</div>
-          <div v-else class="plan-rows">
-            <div v-for="s in plans.get(t.id)" :key="s.id" class="plan-row" :data-status="s.status">
-              <span class="plan-step">{{ s.stepNumber }}.</span>
-              <span class="plan-title" :title="s.title">{{ s.title }}</span>
-              <span class="plan-status" :data-status="s.status">
-                <span v-if="s.status === 'completed'" class="ok">✓</span>
-                <span v-else-if="s.status === 'running'" class="run"></span>
-                <span v-else class="wait"></span>
-              </span>
+              </button>
+              <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑" @click.stop="stopEdit()">
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd"
+                    d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                    clip-rule="evenodd" />
+                </svg>
+              </button>
+              <button v-if="t.status === 'running' || t.status === 'planning'" class="iconBtn danger" type="button"
+                title="终止任务" @click.stop="emit('cancel', t.id)">
+                <span class="interruptSpinner" aria-hidden="true" />
+              </button>
+              <button v-if="t.status === 'failed'" class="iconBtn" type="button" title="重试"
+                @click.stop="emit('retry', t.id)">
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd"
+                    d="M10 4a6 6 0 0 0-5.2 9h2.1a1 1 0 0 1 .8 1.6l-2.4 3.2a1 1 0 0 1-1.6 0l-2.4-3.2A1 1 0 0 1 2.1 13h1.2A8 8 0 1 1 10 18a.75.75 0 0 1 0-1.5A6.5 6.5 0 1 0 3.62 10a.75.75 0 1 1-1.5 0A8 8 0 0 1 10 2a.75.75 0 0 1 0 1.5Z"
+                    clip-rule="evenodd" />
+                </svg>
+              </button>
+              <button class="iconBtn danger" type="button" title="删除任务"
+                :disabled="t.status === 'running' || t.status === 'planning'" @click.stop="emit('delete', t.id)">
+                <el-icon :size="16" aria-hidden="true" class="icon">
+                  <Delete />
+                </el-icon>
+              </button>
             </div>
           </div>
         </div>
