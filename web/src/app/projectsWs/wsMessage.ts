@@ -302,6 +302,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (category === "Execute") {
           return;
         }
+        // Vector auto-context is an internal optimization. If it didn't inject any context,
+        // the log line is pure noise for end users.
+        if (category === "Search" && summary.startsWith("VectorSearch(auto)")) {
+          const injected = summary.includes("injected=1") || summary.includes("injected chars=");
+          if (!injected) {
+            return;
+          }
+        }
         if (summary) {
           ingestExploredActivity(rt.liveActivity, category, summary);
           upsertLiveActivity(rt);

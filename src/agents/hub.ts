@@ -119,7 +119,9 @@ export async function runCollaborativeTurn(
     });
 
     const lastReport = vectorReports[vectorReports.length - 1] ?? null;
-    if (lastReport) {
+    // Vector auto-context is an internal optimization; only surface it in the web UI when it actually
+    // injected context. Emitting "no hit" / "disabled" / "skipped" lines is noisy for end users.
+    if (lastReport && lastReport.injected) {
       const summary = formatVectorAutoContextSummary(lastReport);
       options.onExploredEntry?.({
         category: "Search",

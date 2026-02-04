@@ -127,7 +127,10 @@ describe("live activity ordering", () => {
     lastWs!.onMessage?.({
       type: "explored",
       header: true,
-      entry: { category: "Search", summary: "VectorSearch(auto) fresh ok=0 code=disabled injected=0 hits=0 filtered=0 chars=0 ms=1 qhash=deadbeef0000" },
+      entry: {
+        category: "Search",
+        summary: "VectorSearch(auto) fresh status=ok injected=1 hits=3 filtered=2 chars=120 retry=0 ms=1 qhash=deadbeef0000 qlen=5",
+      },
     });
     await settleUi(wrapper);
 
@@ -162,7 +165,7 @@ describe("live activity ordering", () => {
       header: true,
       entry: {
         category: "Search",
-        summary: "VectorSearch(auto) fresh status=failed code=query_failed http=400 reason=query failed (400) injected=0 hits=0 filtered=0 chars=0 retry=0 ms=1 qhash=deadbeef0000",
+        summary: "VectorSearch(auto) fresh status=ok injected=1 hits=2 filtered=2 chars=90 retry=0 ms=1 qhash=deadbeef0000 qlen=5",
       },
     });
     await settleUi(wrapper);
@@ -188,6 +191,27 @@ describe("live activity ordering", () => {
     wrapper.unmount();
   });
 
+  it("ignores vector auto-context explored entries when not injected", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    (wrapper.vm as any).sendMainPrompt("hello");
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "explored",
+      header: true,
+      entry: { category: "Search", summary: "VectorSearch(auto) fresh status=ok injected=0 hits=0 filtered=0 chars=0 retry=0 ms=1 qhash=deadbeef0000 qlen=5" },
+    });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).messages.some((m: any) => m.id === "live-activity")).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("auto-clears explored live activity after 3 seconds (resets on new events)", async () => {
     vi.useFakeTimers();
     try {
@@ -200,7 +224,7 @@ describe("live activity ordering", () => {
       lastWs!.onMessage?.({
         type: "explored",
         header: true,
-        entry: { category: "Search", summary: "VectorSearch(auto) first" },
+        entry: { category: "Search", summary: "Search first" },
       });
       await settleUi(wrapper);
       expect(String((wrapper.vm as any).messages.map((m: any) => m.id).join(","))).toContain("live-activity");
@@ -211,7 +235,7 @@ describe("live activity ordering", () => {
       lastWs!.onMessage?.({
         type: "explored",
         header: true,
-        entry: { category: "Search", summary: "VectorSearch(auto) second" },
+        entry: { category: "Search", summary: "Search second" },
       });
       await settleUi(wrapper);
 
