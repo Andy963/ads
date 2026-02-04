@@ -211,6 +211,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     pendingImages.value = [];
     recentCommands.value = [];
     activeRuntime.value.turnCommands = [];
+    activeRuntime.value.turnCommandCount = 0;
     activeRuntime.value.executePreviewByKey.clear();
     activeRuntime.value.executeOrder = [];
     activeRuntime.value.turnInFlight = false;

@@ -315,6 +315,38 @@ function getCommands(content: string): string[] {
     .map((line) => line.replace(/^\$\s*/, ""));
 }
 
+function getCommandTreeShownCount(m: RenderMessage): number {
+  if (typeof m.commandsShown === "number" && Number.isFinite(m.commandsShown) && m.commandsShown >= 0) return m.commandsShown;
+  return getCommands(m.content).length;
+}
+
+function getCommandTreeTotalCount(m: RenderMessage): number {
+  const shown = getCommandTreeShownCount(m);
+  if (typeof m.commandsTotal === "number" && Number.isFinite(m.commandsTotal) && m.commandsTotal >= 0) return m.commandsTotal;
+  return shown;
+}
+
+function hasCommandTreeOverflow(m: RenderMessage): boolean {
+  return getCommandTreeTotalCount(m) > getCommandTreeShownCount(m);
+}
+
+function getExecuteStackShownCount(m: RenderMessage): number {
+  if (typeof m.stackCount === "number" && Number.isFinite(m.stackCount) && m.stackCount > 0) return m.stackCount;
+  return 0;
+}
+
+function getExecuteStackTotalCount(m: RenderMessage): number {
+  const shown = getExecuteStackShownCount(m);
+  if (typeof m.commandsTotal === "number" && Number.isFinite(m.commandsTotal) && m.commandsTotal > 0) return m.commandsTotal;
+  return shown;
+}
+
+function hasExecuteStackOverflow(m: RenderMessage): boolean {
+  const shown = getExecuteStackShownCount(m);
+  if (shown <= 0) return false;
+  return getExecuteStackTotalCount(m) > shown;
+}
+
 </script>
 
 <template>
@@ -335,7 +367,10 @@ function getCommands(content: string): string[] {
               </svg>
             </button>
             <span class="prompt-tag">execute</span>
-            <span class="command-count">{{ getCommands(m.content).length }} 条命令</span>
+            <span class="command-count">
+              {{ getCommandTreeTotalCount(m) }} 条命令<span v-if="hasCommandTreeOverflow(m)">
+                (showing last {{ getCommandTreeShownCount(m) }})</span>
+            </span>
           </div>
           <div v-if="isCommandTreeOpen(m.id, getCommands(m.content).length)" class="command-tree">
             <div v-for="(cmd, cIdx) in getCommands(m.content)" :key="cIdx" class="command-tree-item">
@@ -363,7 +398,9 @@ function getCommands(content: string): string[] {
                 <span class="prompt-tag">&gt;_</span>
                 <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
               </div>
-              <span v-if="m.stackCount" class="execute-stack-count">{{ m.stackCount }} 条命令</span>
+              <span v-if="m.stackCount" class="execute-stack-count">
+                {{ getExecuteStackTotalCount(m) }} 条命令<span v-if="hasExecuteStackOverflow(m)"> (showing last {{ m.stackCount }})</span>
+              </span>
             </div>
             <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
             <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>

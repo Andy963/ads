@@ -29,6 +29,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     messages: ref([]),
     recentCommands: ref([]),
     turnCommands: [],
+    turnCommandCount: 0,
     executePreviewByKey: new Map(),
     executeOrder: [],
     seenCommandIds: new Set(),
@@ -47,4 +48,3 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     taskChatBufferByTaskId: new Map(),
   };
 }
-

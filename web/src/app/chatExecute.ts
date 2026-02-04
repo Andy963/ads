@@ -105,6 +105,8 @@ export function createExecuteActions(params: {
       content: preview.join("\n"),
       command: normalizedCommand,
       hiddenLineCount,
+      commandsTotal: state.turnCommandCount,
+      commandsLimit: maxTurnCommands,
       streaming: true,
     };
 
@@ -166,10 +168,13 @@ export function createExecuteActions(params: {
     }
 
     const commands = state.turnCommands.slice();
+    const shownCount = commands.length;
+    const totalCount = Math.max(state.turnCommandCount, shownCount);
     const content = commands.map((c) => `$ ${c}`).join("\n").trim();
 
     state.recentCommands.value = [];
     state.turnCommands = [];
+    state.turnCommandCount = 0;
     state.executePreviewByKey.clear();
     state.executeOrder = [];
     state.seenCommandIds.clear();
@@ -192,10 +197,18 @@ export function createExecuteActions(params: {
       }
     }
 
-    const item: ChatItem = { id: randomId("cmd"), role: "system", kind: "command", content, streaming: false };
+    const item: ChatItem = {
+      id: randomId("cmd"),
+      role: "system",
+      kind: "command",
+      content,
+      commandsTotal: totalCount,
+      commandsShown: shownCount,
+      commandsLimit: maxTurnCommands,
+      streaming: false,
+    };
     setMessages([...withoutExecute.slice(0, insertAt), item, ...withoutExecute.slice(insertAt)], state);
   };
 
   return { ingestCommand, commandKeyForWsEvent, upsertExecuteBlock, finalizeCommandBlock };
 }
-

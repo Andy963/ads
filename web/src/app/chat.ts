@@ -126,6 +126,7 @@ export function createChatActions(ctx: AppContext) {
     const state = runtimeOrActive(rt);
     const trimmed = String(command ?? "").trim();
     if (!trimmed) return;
+    state.turnCommandCount += 1;
     const turn = [...state.turnCommands, trimmed];
     state.turnCommands = turn.slice(Math.max(0, turn.length - maxTurnCommands));
     const recent = [...state.recentCommands.value, trimmed];
@@ -145,6 +146,7 @@ export function createChatActions(ctx: AppContext) {
 
     rt.recentCommands.value = [];
     rt.turnCommands = [];
+    rt.turnCommandCount = 0;
     rt.executePreviewByKey.clear();
     rt.executeOrder = [];
     rt.seenCommandIds.clear();

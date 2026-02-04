@@ -5,6 +5,9 @@ export type ChatMessage = {
   content: string;
   command?: string;
   hiddenLineCount?: number;
+  commandsTotal?: number;
+  commandsShown?: number;
+  commandsLimit?: number;
   ts?: number;
   streaming?: boolean;
 };

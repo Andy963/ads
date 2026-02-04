@@ -35,6 +35,11 @@ export type ChatItem = {
   content: string;
   command?: string;
   hiddenLineCount?: number;
+  // When commands are truncated for UI safety, preserve the real count so the UI can
+  // show "N total (M shown)" and avoid misleading the user.
+  commandsTotal?: number;
+  commandsShown?: number;
+  commandsLimit?: number;
   ts?: number;
   streaming?: boolean;
 };
@@ -75,6 +80,7 @@ export type ProjectRuntime = {
   messages: Ref<ChatItem[]>;
   recentCommands: Ref<string[]>;
   turnCommands: string[];
+  turnCommandCount: number;
   executePreviewByKey: Map<string, { key: string; command: string; previewLines: string[]; totalLines: number; remainder: string }>;
   executeOrder: string[];
   seenCommandIds: Set<string>;
