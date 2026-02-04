@@ -15,6 +15,7 @@ import {
   deleteWebProject,
   getActiveWebProjectId,
   listWebProjects,
+  reorderWebProjects,
   setActiveWebProjectId,
   updateWebProject,
   upsertWebProject,
@@ -126,6 +127,32 @@ export async function handleProjectRoutes(
     return true;
   }
 
+  if (req.method === "POST" && pathname === "/api/projects/reorder") {
+    const body = await readJsonBody(req);
+    const schema = z.object({ ids: z.array(z.string().min(1)) }).passthrough();
+    const parsed = schema.safeParse(body ?? {});
+    if (!parsed.success) {
+      sendJson(res, 400, { error: "Invalid payload" });
+      return true;
+    }
+
+    const ids = parsed.data.ids.map((id) => String(id ?? "").trim()).filter(Boolean);
+
+    const db = getStateDatabase();
+    ensureWebAuthTables(db);
+    ensureWebProjectTables(db);
+    try {
+      reorderWebProjects(db, auth.userId, ids);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 400, { error: message });
+      return true;
+    }
+
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
   const deleteMatch = /^\/api\/projects\/([^/]+)$/.exec(pathname);
   if (deleteMatch && req.method === "DELETE") {
     const projectId = String(deleteMatch[1] ?? "").trim();
@@ -201,4 +228,3 @@ export async function handleProjectRoutes(
 
   return false;
 }
-

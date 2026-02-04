@@ -401,6 +401,61 @@
 .projectRow:hover {
   box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
 }
+.projectRow.isDragging {
+  opacity: 0.7;
+}
+.projectRow.dropBefore,
+.projectRow.dropAfter {
+  position: relative;
+}
+.projectRow.dropBefore::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: -2px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(47, 128, 255, 0.75);
+}
+.projectRow.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -2px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(47, 128, 255, 0.75);
+}
+.projectDragSpacer {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+.projectDragHandle {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(226, 232, 240, 0.8);
+  color: rgba(100, 116, 139, 0.95);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+}
+.projectDragHandle:active {
+  cursor: grabbing;
+}
+.projectNode.active .projectDragHandle {
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.9);
+}
 .projectStatus {
   width: 14px;
   height: 14px;

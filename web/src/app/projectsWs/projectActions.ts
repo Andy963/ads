@@ -12,6 +12,7 @@ const LEGACY_WS_SESSION_KEY = "ADS_WEB_SESSION";
 export function createProjectActions(ctx: AppContext & ChatActions, deps: ProjectDeps) {
   const {
     api,
+    apiError,
     loggedIn,
     projects,
     activeProjectId,
@@ -145,6 +146,55 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       persistProjects();
     } catch {
       // ignore
+    }
+  };
+
+  const reorderProjects = async (ids: string[]): Promise<void> => {
+    apiError.value = null;
+    const ordered = (ids ?? [])
+      .map((id) => String(id ?? "").trim())
+      .filter((id) => id && id !== "default");
+    if (ordered.length === 0) return;
+
+    const prev = projects.value.slice();
+    const defaultProject = prev.find((p) => p.id === "default") ?? null;
+    const currentOrder = prev.filter((p) => p.id !== "default").map((p) => p.id);
+    const existing = new Set(currentOrder);
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const id of ordered) {
+      if (!existing.has(id)) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      normalized.push(id);
+    }
+    if (normalized.length === 0) return;
+
+    const nextIds = [...normalized, ...currentOrder.filter((id) => !seen.has(id))];
+    if (nextIds.length === currentOrder.length && nextIds.every((id, idx) => id === currentOrder[idx])) {
+      return;
+    }
+
+    const byId = new Map(prev.map((p) => [p.id, p] as const));
+    const next: ProjectTab[] = [];
+    if (defaultProject) next.push(defaultProject);
+    for (const id of nextIds) {
+      const project = byId.get(id);
+      if (!project) continue;
+      if (project.id === "default") continue;
+      next.push(project);
+    }
+    projects.value = next;
+    persistProjects();
+
+    if (!loggedIn.value) return;
+    try {
+      await api.post<{ success: boolean }>("/api/projects/reorder", { ids: nextIds });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      apiError.value = msg;
+      projects.value = prev;
+      persistProjects();
     }
   };
 
@@ -459,6 +509,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     createProjectTab,
     persistProjects,
     initializeProjects,
+    reorderProjects,
     updateProject,
     setExpandedExclusive,
     collapseAllProjects,

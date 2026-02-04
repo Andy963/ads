@@ -22,7 +22,7 @@ export function listWebProjects(db: DatabaseType, userId: string): WebProjectRec
           updated_at AS updatedAt
         FROM web_projects
         WHERE user_id = ?
-        ORDER BY updated_at DESC, created_at DESC, project_id ASC
+        ORDER BY sort_order ASC, updated_at DESC, created_at DESC, project_id ASC
       `,
     )
     .all(userId) as Array<Partial<WebProjectRecord>>;
@@ -37,6 +37,59 @@ export function listWebProjects(db: DatabaseType, userId: string): WebProjectRec
       updatedAt: typeof r.updatedAt === "number" && Number.isFinite(r.updatedAt) ? r.updatedAt : 0,
     }))
     .filter((p) => Boolean(p.id) && Boolean(p.workspaceRoot) && Boolean(p.name));
+}
+
+function getNextProjectSortOrder(db: DatabaseType, userId: string): number {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return 0;
+  const row = db
+    .prepare(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM web_projects WHERE user_id = ?`)
+    .get(uid) as { nextSortOrder?: unknown } | undefined;
+  const next = Number(row?.nextSortOrder ?? 0);
+  return Number.isFinite(next) && next >= 0 ? next : 0;
+}
+
+export function reorderWebProjects(db: DatabaseType, userId: string, ids: string[]): void {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return;
+
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const pid = String(id ?? "").trim();
+    if (!pid) continue;
+    if (pid === "default") {
+      throw new Error("default project cannot be reordered");
+    }
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    ordered.push(pid);
+  }
+  if (ordered.length === 0) return;
+
+  const existingRows = db
+    .prepare(`SELECT project_id AS id FROM web_projects WHERE user_id = ? ORDER BY sort_order ASC, updated_at DESC, created_at DESC, project_id ASC`)
+    .all(uid) as Array<{ id?: unknown }>;
+  const existing = existingRows.map((row) => String(row.id ?? "").trim()).filter(Boolean);
+  if (existing.length === 0) return;
+
+  const existingSet = new Set(existing);
+  for (const id of ordered) {
+    if (!existingSet.has(id)) {
+      throw new Error(`Unknown project id: ${id}`);
+    }
+  }
+  const nextOrder = [...ordered, ...existing.filter((id) => !seen.has(id))].filter((id) => existingSet.has(id));
+
+  const update = db.prepare(`UPDATE web_projects SET sort_order = ? WHERE user_id = ? AND project_id = ?`);
+  const tx = db.transaction(() => {
+    let idx = 0;
+    for (const id of nextOrder) {
+      update.run(idx, uid, id);
+      idx += 1;
+    }
+  });
+  tx();
 }
 
 export function getWebProjectWorkspaceRoot(db: DatabaseType, userId: string, projectId: string): string | null {
@@ -102,23 +155,27 @@ export function upsertWebProject(
 
   const existing = db
     .prepare(
-      `SELECT created_at AS createdAt FROM web_projects WHERE user_id = ? AND project_id = ? LIMIT 1`,
+      `SELECT created_at AS createdAt, sort_order AS sortOrder FROM web_projects WHERE user_id = ? AND project_id = ? LIMIT 1`,
     )
-    .get(userId, projectId) as { createdAt?: unknown } | undefined;
+    .get(userId, projectId) as { createdAt?: unknown; sortOrder?: unknown } | undefined;
   const createdAt =
     typeof existing?.createdAt === "number" && Number.isFinite(existing.createdAt) ? existing.createdAt : now;
+  const sortOrder =
+    typeof existing?.sortOrder === "number" && Number.isFinite(existing.sortOrder)
+      ? existing.sortOrder
+      : getNextProjectSortOrder(db, userId);
 
   db.prepare(
     `
-      INSERT INTO web_projects (user_id, project_id, workspace_root, display_name, chat_session_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO web_projects (user_id, project_id, workspace_root, display_name, chat_session_id, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id, project_id) DO UPDATE SET
         workspace_root = excluded.workspace_root,
         display_name = excluded.display_name,
         chat_session_id = excluded.chat_session_id,
         updated_at = excluded.updated_at
     `,
-  ).run(userId, projectId, workspaceRoot, name, chatSessionId, createdAt, now);
+  ).run(userId, projectId, workspaceRoot, name, chatSessionId, sortOrder, createdAt, now);
 
   return { id: projectId, workspaceRoot, name, chatSessionId, createdAt, updatedAt: now };
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
@@ -21,6 +21,7 @@ const {
   projects,
   activeProjectId,
   requestProjectSwitch,
+  reorderProjects,
   getRuntime,
   connectWs,
   runtimeProjectInProgress,
@@ -94,6 +95,86 @@ const {
   deleteConfirmButtonEl,
 } = createAppController();
 
+const draggingProjectId = ref<string | null>(null);
+const dropTargetProjectId = ref<string | null>(null);
+const dropTargetPosition = ref<"before" | "after">("before");
+
+function canDragProject(id: string): boolean {
+  const pid = String(id ?? "").trim();
+  return pid !== "default";
+}
+
+function onProjectDragStart(ev: DragEvent, projectId: string): void {
+  const id = String(projectId ?? "").trim();
+  if (!canDragProject(id)) return;
+
+  draggingProjectId.value = id;
+  dropTargetProjectId.value = null;
+  dropTargetPosition.value = "before";
+  try {
+    ev.dataTransfer?.setData("text/plain", id);
+    if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+  } catch {
+    // ignore
+  }
+}
+
+function onProjectDragEnd(): void {
+  draggingProjectId.value = null;
+  dropTargetProjectId.value = null;
+  dropTargetPosition.value = "before";
+}
+
+function onProjectDragOver(ev: DragEvent, targetProjectId: string): void {
+  const dragging = draggingProjectId.value;
+  const targetId = String(targetProjectId ?? "").trim();
+  if (!dragging) return;
+  if (!canDragProject(targetId)) return;
+  if (dragging === targetId) return;
+
+  ev.preventDefault();
+  try {
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+  } catch {
+    // ignore
+  }
+
+  dropTargetProjectId.value = targetId;
+  const el = ev.currentTarget as HTMLElement | null;
+  if (!el) {
+    dropTargetPosition.value = "before";
+    return;
+  }
+  const rect = el.getBoundingClientRect();
+  const midpoint = rect.top + rect.height / 2;
+  dropTargetPosition.value = ev.clientY > midpoint ? "after" : "before";
+}
+
+async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<void> {
+  const dragging = draggingProjectId.value;
+  const targetId = String(targetProjectId ?? "").trim();
+  const position = dropTargetPosition.value;
+  onProjectDragEnd();
+
+  if (!dragging) return;
+  if (!targetId) return;
+  if (!canDragProject(targetId)) return;
+  if (dragging === targetId) return;
+
+  ev.preventDefault();
+
+  const ids = projects.value.filter((p) => p.id !== "default").map((p) => p.id);
+  const fromIdx = ids.indexOf(dragging);
+  const toIdx = ids.indexOf(targetId);
+  if (fromIdx < 0 || toIdx < 0) return;
+
+  ids.splice(fromIdx, 1);
+  const adjustedTo = fromIdx < toIdx ? toIdx - 1 : toIdx;
+  const insertAt = position === "after" ? adjustedTo + 1 : adjustedTo;
+  ids.splice(Math.max(0, Math.min(ids.length, insertAt)), 0, dragging);
+  await reorderProjects(ids);
+}
+
 const updateViewportHeightVar = (): void => {
   if (typeof window === "undefined") return;
   const vv = window.visualViewport;
@@ -159,7 +240,32 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-for="p in projects" :key="p.id" class="projectNode" :class="{ active: p.id === activeProjectId }">
-            <button type="button" class="projectRow" :title="p.path || p.name" @click="requestProjectSwitch(p.id)">
+            <button
+              type="button"
+              class="projectRow"
+              :class="{
+                isDragging: draggingProjectId === p.id,
+                dropBefore: dropTargetProjectId === p.id && dropTargetPosition === 'before',
+                dropAfter: dropTargetProjectId === p.id && dropTargetPosition === 'after',
+              }"
+              :title="p.path || p.name"
+              @click="requestProjectSwitch(p.id)"
+              @dragover="(ev) => onProjectDragOver(ev, p.id)"
+              @drop="(ev) => onProjectDrop(ev, p.id)"
+            >
+              <span v-if="p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
+              <span
+                v-else
+                class="projectDragHandle"
+                draggable="true"
+                title="Drag to reorder"
+                @dragstart="(ev) => onProjectDragStart(ev, p.id)"
+                @dragend="onProjectDragEnd"
+                @click.stop.prevent
+                @mousedown.stop
+              >
+                ::
+              </span>
               <span class="projectStatus" :class="{ spinning: runtimeProjectInProgress(getRuntime(p.id)) }" />
               <span class="projectText">
                 <span class="projectName">{{ p.path || p.name }}</span>
