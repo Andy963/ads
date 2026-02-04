@@ -235,6 +235,12 @@
   white-space: nowrap;
 }
 
+.item[data-status="completed"] .row-title {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--status-accent);
+}
+
 .row-actions {
   display: flex;
   flex-direction: row;
