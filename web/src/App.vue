@@ -99,9 +99,23 @@ const draggingProjectId = ref<string | null>(null);
 const dropTargetProjectId = ref<string | null>(null);
 const dropTargetPosition = ref<"before" | "after">("before");
 
+let suppressProjectRowClick = false;
+
 function canDragProject(id: string): boolean {
   const pid = String(id ?? "").trim();
   return pid !== "default";
+}
+
+function scheduleSuppressProjectRowClick(): void {
+  suppressProjectRowClick = true;
+  setTimeout(() => {
+    suppressProjectRowClick = false;
+  }, 0);
+}
+
+function onProjectRowClick(projectId: string): void {
+  if (suppressProjectRowClick) return;
+  requestProjectSwitch(projectId);
 }
 
 function onProjectDragStart(ev: DragEvent, projectId: string): void {
@@ -154,6 +168,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
   const dragging = draggingProjectId.value;
   const targetId = String(targetProjectId ?? "").trim();
   const position = dropTargetPosition.value;
+  if (dragging) scheduleSuppressProjectRowClick();
   onProjectDragEnd();
 
   if (!dragging) return;
@@ -173,6 +188,35 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
   const insertAt = position === "after" ? adjustedTo + 1 : adjustedTo;
   ids.splice(Math.max(0, Math.min(ids.length, insertAt)), 0, dragging);
   await reorderProjects(ids);
+}
+
+function canMoveProjectToTop(projectId: string): boolean {
+  const id = String(projectId ?? "").trim();
+  if (!canDragProject(id)) return false;
+  const ids = projects.value.filter((p) => p.id !== "default").map((p) => p.id);
+  return ids.indexOf(id) > 0;
+}
+
+async function moveProjectToTop(projectId: string): Promise<void> {
+  const id = String(projectId ?? "").trim();
+  if (!canDragProject(id)) return;
+
+  const ids = projects.value.filter((p) => p.id !== "default").map((p) => p.id);
+  const idx = ids.indexOf(id);
+  if (idx <= 0) return;
+
+  ids.splice(idx, 1);
+  ids.unshift(id);
+  await reorderProjects(ids);
+}
+
+function onProjectMoveToTopClick(ev: MouseEvent, projectId: string): void {
+  if (!canMoveProjectToTop(projectId)) {
+    return;
+  }
+  ev.preventDefault();
+  ev.stopPropagation();
+  void moveProjectToTop(projectId);
 }
 
 const updateViewportHeightVar = (): void => {
@@ -249,27 +293,42 @@ onBeforeUnmount(() => {
                 dropAfter: dropTargetProjectId === p.id && dropTargetPosition === 'after',
               }"
               :title="p.path || p.name"
-              @click="requestProjectSwitch(p.id)"
+              @click="onProjectRowClick(p.id)"
               @dragover="(ev) => onProjectDragOver(ev, p.id)"
               @drop="(ev) => onProjectDrop(ev, p.id)"
             >
-              <span v-if="p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
-              <span
-                v-else
-                class="projectDragHandle"
-                draggable="true"
-                title="Drag to reorder"
-                @dragstart="(ev) => onProjectDragStart(ev, p.id)"
-                @dragend="onProjectDragEnd"
-                @click.stop.prevent
-                @mousedown.stop
-              >
-                ::
-              </span>
               <span class="projectStatus" :class="{ spinning: runtimeProjectInProgress(getRuntime(p.id)) }" />
               <span class="projectText">
                 <span class="projectName">{{ p.path || p.name }}</span>
                 <span class="projectBranch">{{ formatProjectBranch(p.branch) }}</span>
+              </span>
+              <span class="projectRowActions">
+                <span
+                  class="projectMoveToTop"
+                  :class="{ disabled: !canMoveProjectToTop(p.id) }"
+                  title="Move to top"
+                  @click="(ev) => onProjectMoveToTopClick(ev, p.id)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path d="M4 3h12v2H4V3zm6 14V8.9l2.8 2.8 1.4-1.4L10 5.7 5.8 10.3l1.4 1.4L9 8.9V17h2z" />
+                  </svg>
+                </span>
+
+                <span v-if="p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
+                <span
+                  v-else
+                  class="projectDragHandle"
+                  draggable="true"
+                  title="Drag to reorder"
+                  @dragstart="(ev) => onProjectDragStart(ev, p.id)"
+                  @dragend="onProjectDragEnd"
+                  @click.stop.prevent
+                  @mousedown.stop
+                >
+                  <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path d="M4 6h12v2H4V6zm0 5h12v2H4v-2zm0 5h12v2H4v-2z" />
+                  </svg>
+                </span>
               </span>
             </button>
 
