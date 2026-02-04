@@ -36,7 +36,7 @@ Web 对话区在高频命令执行与长时间推理输出时，存在两个可�
   - Live-step 在裁剪场景下持续跟随最新输出，减少“看不到更新”的困扰。
 
 - 负向/限制：
-  - Underlay 的 header 会占用更多 peek 空间，需要增大 `--execute-stack-peek` 以避免布局拥挤；
+  - Underlay 的 header 会占用 peek 空间；当前使用两段 peek（`--execute-stack-peek-1` / `--execute-stack-peek-2`）在保证可读性的同时控制堆叠顶部留白；
   - 仍不提供“展开查看旧 execute 正文”的交互（设计保持不变）。
 
 ## Implementation Notes
@@ -45,4 +45,3 @@ Web 对话区在高频命令执行与长时间推理输出时，存在两个可�
 - Stack peek 与 underlay header 样式：`web/src/components/MainChat.css`
 - Live-step auto-scroll watch：`web/src/components/MainChat.vue`
 - 回归测试：`web/src/__tests__/execute-stacking-and-command-collapse.test.ts`, `web/src/__tests__/execute-preview-queue-order.test.ts`, `web/src/__tests__/live-step-scroll-style.test.ts`
-
