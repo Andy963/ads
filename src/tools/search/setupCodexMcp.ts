@@ -7,9 +7,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
-const CODEX_CONFIG_DIR = path.join(os.homedir(), ".codex");
+import { resolveCodexHomeDir } from "../../utils/codexHome.js";
+
+const CODEX_CONFIG_DIR = resolveCodexHomeDir();
 const CODEX_CONFIG_FILE = path.join(CODEX_CONFIG_DIR, "config.toml");
 const writeStdout = (text: string): void => {
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);

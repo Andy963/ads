@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { createLogger } from "./logger.js";
+import { resolveCodexHomeDir } from "./codexHome.js";
 
 const logger = createLogger("Env");
 
@@ -150,3 +151,7 @@ export function resetEnvForTests(): void {
 }
 
 loadEnv();
+
+if (!String(process.env.CODEX_HOME ?? "").trim()) {
+  process.env.CODEX_HOME = resolveCodexHomeDir();
+}

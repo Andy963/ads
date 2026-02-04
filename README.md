@@ -128,7 +128,7 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
 
 ### Codex 配置
 
-- 优先级：CLI 传参 `--base-url`/`--api-key` > 环境变量 `CODEX_BASE_URL`/`OPENAI_BASE_URL`、`CODEX_API_KEY`/`OPENAI_API_KEY` > `~/.codex/config.toml` 的 provider 配置 > `~/.codex/auth.json` 中的 API Key 或 `codex login` 生成的 `tokens`（access/refresh token）。
+- 优先级：CLI 传参 `--base-url`/`--api-key` > 环境变量 `CODEX_BASE_URL`/`OPENAI_BASE_URL`、`CODEX_API_KEY`/`OPENAI_API_KEY` > `${CODEX_HOME:-~/.codex}/config.toml` 的 provider 配置 > `${CODEX_HOME:-~/.codex}/auth.json` 中的 API Key 或 `codex login` 生成的 `tokens`（access/refresh token）。
 - 若只提供 API Key 而未指定 baseUrl，默认使用 `https://api.openai.com/v1`；仅使用 `codex login` 的设备令牌时可不填 baseUrl。
 - 建议：使用 `codex login` 或设置 `CODEX_API_KEY`，避免在仓库中保存明文密钥。
 

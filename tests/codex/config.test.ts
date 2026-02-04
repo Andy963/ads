@@ -13,17 +13,20 @@ describe("codexConfig", () => {
   beforeEach(() => {
     originalEnv.CODEX_BASE_URL = process.env.CODEX_BASE_URL;
     originalEnv.CODEX_API_KEY = process.env.CODEX_API_KEY;
+    originalEnv.CODEX_HOME = process.env.CODEX_HOME;
     originalEnv.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
     originalEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     originalEnv.HOME = process.env.HOME;
     originalEnv.USERPROFILE = process.env.USERPROFILE;
     process.env.CODEX_BASE_URL = "https://api.example.com/v1";
     process.env.CODEX_API_KEY = "sk-test-1234567890";
+    delete process.env.CODEX_HOME;
   });
 
   afterEach(() => {
     process.env.CODEX_BASE_URL = originalEnv.CODEX_BASE_URL;
     process.env.CODEX_API_KEY = originalEnv.CODEX_API_KEY;
+    process.env.CODEX_HOME = originalEnv.CODEX_HOME;
     process.env.OPENAI_BASE_URL = originalEnv.OPENAI_BASE_URL;
     process.env.OPENAI_API_KEY = originalEnv.OPENAI_API_KEY;
     process.env.HOME = originalEnv.HOME;
@@ -130,6 +133,73 @@ describe("codexConfig", () => {
     const cfg = resolveCodexConfig();
     assert.equal(cfg.baseUrl, "https://from-config.example.com/v1");
     assert.equal(cfg.apiKey, "sk-from-config");
+    assert.equal(cfg.authMode, "apiKey");
+  });
+
+  it("respects CODEX_HOME for config lookup", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const codexHome = join(tempHomeDir, "codex-home");
+    const otherHome = join(tempHomeDir, "other-home");
+    mkdirSync(codexHome, { recursive: true });
+    mkdirSync(otherHome, { recursive: true });
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      [
+        'model_provider = "test"',
+        "[model_providers.test]",
+        'base_url = "https://from-codex-home.example.com/v1"',
+        'api_key = "sk-from-codex-home"',
+      ].join("\n"),
+      "utf-8",
+    );
+
+    process.env.CODEX_HOME = codexHome;
+    process.env.HOME = otherHome;
+    process.env.USERPROFILE = otherHome;
+
+    const cfg = resolveCodexConfig();
+    assert.equal(cfg.baseUrl, "https://from-codex-home.example.com/v1");
+    assert.equal(cfg.apiKey, "sk-from-codex-home");
+    assert.equal(cfg.authMode, "apiKey");
+  });
+
+  it("expands ~ in CODEX_HOME", () => {
+    delete process.env.CODEX_BASE_URL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_BASE;
+    delete process.env.CODEX_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    tempHomeDir = mkdtempSync(join(tmpdir(), "codex-config-"));
+    const fakeHome = join(tempHomeDir, "fake-home");
+    mkdirSync(fakeHome, { recursive: true });
+
+    const resolvedCodexHome = join(fakeHome, ".codex-home");
+    mkdirSync(resolvedCodexHome, { recursive: true });
+    writeFileSync(
+      join(resolvedCodexHome, "config.toml"),
+      [
+        'model_provider = "test"',
+        "[model_providers.test]",
+        'base_url = "https://from-tilde.example.com/v1"',
+        'api_key = "sk-from-tilde"',
+      ].join("\n"),
+      "utf-8",
+    );
+
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    process.env.CODEX_HOME = "~/.codex-home";
+
+    const cfg = resolveCodexConfig();
+    assert.equal(cfg.baseUrl, "https://from-tilde.example.com/v1");
+    assert.equal(cfg.apiKey, "sk-from-tilde");
     assert.equal(cfg.authMode, "apiKey");
   });
 

@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseToml } from "toml";
 import type { ModelReasoningEffort } from "@openai/codex-sdk";
 import { createLogger } from "./utils/logger.js";
+import { resolveCodexHomeDir } from "./utils/codexHome.js";
 
 const logger = createLogger("CodexConfig");
 
@@ -69,8 +69,9 @@ export function resolveCodexConfig(
       : undefined;
 
   if (!authMode) {
+    const codexHome = resolveCodexHomeDir();
     throw new Error(
-      "Codex credentials not found. Provide --api-key (or CODEX_API_KEY), or sign in with `codex login` to use saved access/refresh tokens in ~/.codex/auth.json."
+      `Codex credentials not found. Provide --api-key (or CODEX_API_KEY), or sign in with \`codex login\` to use saved access/refresh tokens in ${codexHome}/auth.json.`
     );
   }
 
@@ -127,8 +128,7 @@ function parseReasoningEffort(value: unknown): ModelReasoningEffort | undefined 
 }
 
 function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens: boolean } {
-  const home = homedir();
-  const codexDir = join(home, ".codex");
+  const codexDir = resolveCodexHomeDir();
   const configPath = join(codexDir, "config.toml");
   const authPath = join(codexDir, "auth.json");
 
