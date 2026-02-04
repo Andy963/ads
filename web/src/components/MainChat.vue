@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import DraggableModal from "./DraggableModal.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
@@ -175,6 +176,91 @@ const showActiveBorder = computed(() => props.busy || props.messages.length > 0)
 
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
+const pendingImageViewerOpen = ref(false);
+const pendingImageViewerIndex = ref(0);
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+
+const activePendingImage = computed<IncomingImage | null>(() => {
+  const list = props.pendingImages;
+  if (!list.length) return null;
+  const idx = clamp(pendingImageViewerIndex.value, 0, list.length - 1);
+  return list[idx] ?? null;
+});
+
+const activePendingImageAlt = computed(() => {
+  const total = props.pendingImages.length;
+  if (!total) return "Attachment image";
+  const idx = clamp(pendingImageViewerIndex.value, 0, total - 1);
+  return `Attachment image ${idx + 1} of ${total}`;
+});
+
+function openPendingImageViewer(index = 0): void {
+  const total = props.pendingImages.length;
+  if (!total) return;
+  pendingImageViewerIndex.value = clamp(index, 0, total - 1);
+  pendingImageViewerOpen.value = true;
+}
+
+function closePendingImageViewer(): void {
+  pendingImageViewerOpen.value = false;
+}
+
+function showPrevPendingImage(): void {
+  const total = props.pendingImages.length;
+  if (total <= 1) return;
+  pendingImageViewerIndex.value = (pendingImageViewerIndex.value - 1 + total) % total;
+}
+
+function showNextPendingImage(): void {
+  const total = props.pendingImages.length;
+  if (total <= 1) return;
+  pendingImageViewerIndex.value = (pendingImageViewerIndex.value + 1) % total;
+}
+
+function onPendingImageViewerKeydown(ev: KeyboardEvent): void {
+  if (!pendingImageViewerOpen.value) return;
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    closePendingImageViewer();
+    return;
+  }
+  if (ev.key === "ArrowLeft") {
+    ev.preventDefault();
+    showPrevPendingImage();
+    return;
+  }
+  if (ev.key === "ArrowRight") {
+    ev.preventDefault();
+    showNextPendingImage();
+  }
+}
+
+watch(
+  () => pendingImageViewerOpen.value,
+  (open) => {
+    if (typeof window === "undefined") return;
+    if (open) window.addEventListener("keydown", onPendingImageViewerKeydown);
+    else window.removeEventListener("keydown", onPendingImageViewerKeydown);
+  },
+  { flush: "post" },
+);
+
+watch(
+  () => props.pendingImages.length,
+  (len) => {
+    if (len <= 0) {
+      pendingImageViewerOpen.value = false;
+      pendingImageViewerIndex.value = 0;
+      return;
+    }
+    pendingImageViewerIndex.value = clamp(pendingImageViewerIndex.value, 0, len - 1);
+  },
+  { flush: "post" },
+);
+
 function shouldShowMsgActions(m: RenderMessage): boolean {
   if (m.streaming && m.content.length === 0) return false;
   // Patch diffs are machine-generated; hide copy/timestamp chrome to keep them compact.
@@ -277,6 +363,9 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("keydown", onPendingImageViewerKeydown);
+  }
   detachLiveStepScrollEl();
   if (liveStepScrollFrame !== null) {
     cancelFrame(liveStepScrollFrame);
@@ -410,9 +499,17 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       </div>
 
       <div v-if="pendingImages.length" class="attachmentsBar" aria-label="已粘贴图片">
-        <div class="attachmentsPill">
+        <div
+          class="attachmentsPill"
+          role="button"
+          tabindex="0"
+          title="Preview images"
+          @click="openPendingImageViewer(0)"
+          @keydown.enter.prevent="openPendingImageViewer(0)"
+          @keydown.space.prevent="openPendingImageViewer(0)"
+        >
           <span class="attachmentsText">图片 x{{ pendingImages.length }}</span>
-          <button class="attachmentsClear" type="button" title="清空图片" @click="emit('clearImages')">
+          <button class="attachmentsClear" type="button" title="清空图片" @click.stop="emit('clearImages')">
             <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd"
                 d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
@@ -474,6 +571,43 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
         </div>
       </div>
     </div>
+
+    <DraggableModal v-if="pendingImageViewerOpen && activePendingImage" card-variant="large" @close="closePendingImageViewer">
+      <div class="attachmentsViewer">
+        <div class="attachmentsViewerHeader" data-drag-handle>
+          <div class="attachmentsViewerTitle">
+            Attachments {{ pendingImageViewerIndex + 1 }} / {{ pendingImages.length }}
+          </div>
+          <div class="attachmentsViewerActions">
+            <button class="attachmentsViewerPrev" type="button" :disabled="pendingImages.length <= 1" @click="showPrevPendingImage">
+              Prev
+            </button>
+            <button class="attachmentsViewerNext" type="button" :disabled="pendingImages.length <= 1" @click="showNextPendingImage">
+              Next
+            </button>
+            <button class="attachmentsViewerClose" type="button" @click="closePendingImageViewer">
+              Close
+            </button>
+          </div>
+        </div>
+        <div class="attachmentsViewerBody">
+          <img class="attachmentsViewerImg" :src="activePendingImage.data" :alt="activePendingImageAlt" />
+        </div>
+        <div v-if="pendingImages.length > 1" class="attachmentsViewerThumbs" aria-label="Attachment thumbnails">
+          <button
+            v-for="(img, idx) in pendingImages"
+            :key="`${idx}-${img.data.slice(0, 32)}`"
+            class="attachmentsViewerThumb"
+            type="button"
+            :class="{ active: idx === pendingImageViewerIndex }"
+            :title="`Attachment ${idx + 1}`"
+            @click="openPendingImageViewer(idx)"
+          >
+            <img class="attachmentsViewerThumbImg" :src="img.data" alt="" />
+          </button>
+        </div>
+      </div>
+    </DraggableModal>
   </div>
 </template>
 
