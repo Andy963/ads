@@ -334,7 +334,7 @@ function getCommands(content: string): string[] {
                 <path :d="caretPath(isCommandTreeOpen(m.id, getCommands(m.content).length))" />
               </svg>
             </button>
-            <span class="command-tag">EXECUTE</span>
+            <span class="prompt-tag">execute</span>
             <span class="command-count">{{ getCommands(m.content).length }} 条命令</span>
           </div>
           <div v-if="isCommandTreeOpen(m.id, getCommands(m.content).length)" class="command-tree">
@@ -352,7 +352,7 @@ function getCommands(content: string): string[] {
               :data-layer="String((m.stackUnderlays ?? 0) - idx)"
               :style="{ '--execute-underlay-layer': String((m.stackUnderlays ?? 0) - idx) }">
               <div class="execute-underlay-header">
-                <span class="command-tag">&gt;_</span>
+                <span class="prompt-tag">&gt;_</span>
                 <span class="execute-underlay-cmd" :title="u.command || ''">{{ u.command || "" }}</span>
               </div>
             </div>
@@ -360,7 +360,7 @@ function getCommands(content: string): string[] {
           <div class="execute-block">
             <div class="execute-header">
               <div class="execute-left">
-                <span class="command-tag">&gt;_</span>
+                <span class="prompt-tag">&gt;_</span>
                 <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
               </div>
               <span v-if="m.stackCount" class="execute-stack-count">{{ m.stackCount }} 条命令</span>

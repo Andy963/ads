@@ -98,7 +98,7 @@ describe("chat execute stacking and command collapse", () => {
 
     const left = wrapper.find(".execute-left");
     expect(left.exists()).toBe(true);
-    expect(left.find(".command-tag").exists()).toBe(true);
+    expect(left.find(".prompt-tag").exists()).toBe(true);
     expect(left.find(".execute-cmd").exists()).toBe(true);
     expect(left.find(".execute-cmd").text()).toContain("cmd-3");
 
