@@ -68,7 +68,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("stacks consecutive execute blocks and shows only the latest content", async () => {
+  it("shows only the latest execute block when multiple execute messages are consecutive", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -102,14 +102,8 @@ describe("chat execute stacking and command collapse", () => {
     expect(left.find(".execute-cmd").exists()).toBe(true);
     expect(left.find(".execute-cmd").text()).toContain("cmd-3");
 
-    const underlays = wrapper.findAll(".execute-underlay");
-    expect(underlays).toHaveLength(2);
-    expect(underlays[0]!.text()).toContain("cmd-1");
-    expect(underlays[1]!.text()).toContain("cmd-2");
-
-    const count = wrapper.find(".execute-stack-count");
-    expect(count.exists()).toBe(true);
-    expect(count.text()).toContain("3");
+    expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
+    expect(wrapper.find(".execute-stack-count").exists()).toBe(false);
 
     const output = wrapper.find(".execute-output");
     expect(output.exists()).toBe(true);
@@ -120,7 +114,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("keeps only the latest 3 execute commands visible in the stack", async () => {
+  it("shows only the latest execute block even when many execute messages are consecutive", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -152,15 +146,12 @@ describe("chat execute stacking and command collapse", () => {
     expect(topCmd.exists()).toBe(true);
     expect(topCmd.text()).toContain("cmd-4");
 
-    const underlays = wrapper.findAll(".execute-underlay");
-    expect(underlays).toHaveLength(2);
-    expect(underlays[0]!.text()).toContain("cmd-2");
-    expect(underlays[1]!.text()).toContain("cmd-3");
+    expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
 
     wrapper.unmount();
   });
 
-  it("caps visible underlays even for large stacks", async () => {
+  it("does not render underlays even for large stacks", async () => {
     const execs = Array.from({ length: 20 }, (_, i) => {
       const n = i + 1;
       return { id: `e-${n}`, role: "system", kind: "execute", content: `out-${n}`, command: `cmd-${n}` } as const;
@@ -184,22 +175,13 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    const maxUnderlays = 2; // 3 layers total (top card + 2 underlays)
     expect(wrapper.findAll(".execute-block")).toHaveLength(1);
-    expect(wrapper.findAll(".execute-underlay")).toHaveLength(maxUnderlays);
-
-    const count = wrapper.find(".execute-stack-count");
-    expect(count.exists()).toBe(true);
-    expect(count.text()).toContain("20");
+    expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
+    expect(wrapper.find(".execute-stack-count").exists()).toBe(false);
 
     const topCmd = wrapper.find(".execute-cmd");
     expect(topCmd.exists()).toBe(true);
     expect(topCmd.text()).toContain("cmd-20");
-
-    const underlays = wrapper.findAll(".execute-underlay");
-    expect(underlays).toHaveLength(maxUnderlays);
-    expect(underlays[0]!.text()).toContain("cmd-18");
-    expect(underlays[1]!.text()).toContain("cmd-19");
 
     const output = wrapper.find(".execute-output");
     expect(output.exists()).toBe(true);
@@ -209,7 +191,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("collapses command trees by default and toggles via caret", async () => {
+  it("collapses command trees by default and toggles via header and caret", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -236,20 +218,34 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     expect(wrapper.find(".command-tree").exists()).toBe(false);
+    const header = wrapper.find(".command-tree-header");
+    expect(header.exists()).toBe(true);
+    expect(header.attributes("aria-expanded")).toBe("false");
+
     const caret = wrapper.find(".command-caret");
     expect(caret.exists()).toBe(true);
-    expect(caret.attributes("aria-expanded")).toBe("false");
 
+    // Clicking the caret should toggle exactly once via bubbling to the header button.
     await caret.trigger("click");
     await settleUi(wrapper);
 
     expect(wrapper.find(".command-tree").exists()).toBe(true);
     expect(wrapper.findAll(".command-tree-item")).toHaveLength(4);
-    expect(wrapper.find(".command-caret").attributes("aria-expanded")).toBe("true");
+    expect(wrapper.find(".command-tree-header").attributes("aria-expanded")).toBe("true");
 
     await wrapper.find(".command-caret").trigger("click");
     await settleUi(wrapper);
 
+    expect(wrapper.find(".command-tree").exists()).toBe(false);
+    expect(wrapper.find(".command-tree-header").attributes("aria-expanded")).toBe("false");
+
+    // Clicking anywhere on the header row should behave the same.
+    await header.trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find(".command-tree").exists()).toBe(true);
+
+    await header.trigger("click");
+    await settleUi(wrapper);
     expect(wrapper.find(".command-tree").exists()).toBe(false);
 
     wrapper.unmount();

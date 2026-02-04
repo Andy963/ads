@@ -8,10 +8,6 @@
   border-radius: var(--radius);
   box-shadow: var(--shadow-md);
   overflow: hidden;
-
-  --execute-block-height: 100px;
-  /* "Real" stack: underlays peek above the top edge by this amount (per layer). */
-  --execute-stack-peek: 20px;
 }
 
 .detail--active {
@@ -75,15 +71,12 @@
 .execute-block {
   width: 100%;
   max-width: 100%;
-  /* Keep a concrete value for environments without CSS custom properties (e.g. jsdom). */
-  height: 100px;
-  height: var(--execute-block-height);
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.35);
-  /* Opaque fill so stacked underlays never show through. */
+  /* Opaque fill for legibility. */
   background: #f5f6f6;
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 6px 12px 4px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   position: relative;
   z-index: 1;
@@ -91,75 +84,12 @@
   flex-direction: column;
 }
 
-.execute-stack {
-  width: 100%;
-  position: relative;
-  /* Default for non-stacked executes. MainChat.vue sets this per-message when stacked. */
-  --execute-stack-underlays: 0;
-
-  /* Clip to the exact footprint of the top card: underlays may peek above, but never below. */
-  overflow: hidden;
-  border-radius: 12px;
-
-  /* Make room for the peeking stack while keeping the main card aligned. */
-  padding-top: calc(var(--execute-stack-peek) * var(--execute-stack-underlays));
-}
-
-.execute-underlays {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.execute-underlay {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  /* Same outer size as the main execute card. */
-  height: 100px;
-  height: var(--execute-block-height);
-
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  background: rgba(15, 23, 42, 0.03);
-  border-radius: 12px;
-  box-shadow: 0 1px 0 rgba(2, 6, 23, 0.02);
-
-  /* Default for older CSS/DOM; MainChat.vue sets this inline per underlay. */
-  --execute-underlay-layer: 1;
-  transform: translate(0, calc(-1 * var(--execute-stack-peek) * var(--execute-underlay-layer)));
-}
-
-.execute-underlay-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 2px 12px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.execute-underlay-cmd {
-  color: #475569;
-  font-size: 11px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  flex: 1 1 auto;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .execute-header {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 10px;
-  padding: 2px 0;
+  gap: 8px;
+  padding: 0;
   flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
@@ -171,18 +101,10 @@
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 10px;
+  gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-}
-
-.execute-stack-count {
-  color: #94a3b8;
-  font-size: 12px;
-  margin-left: auto;
-  white-space: nowrap;
-  flex: 0 0 auto;
 }
 
 .execute-cmd {
@@ -198,29 +120,39 @@
 }
 
 .execute-output {
-  margin: 8px 0 0 0;
+  margin: 4px 0 0 0;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.35;
   color: #0f172a;
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
   flex: 0 0 auto;
 }
 
 .execute-more {
-  margin-top: 8px;
+  margin-top: 4px;
   font-size: 12px;
   color: #94a3b8;
   flex: 0 0 auto;
 }
 
 .command-tree-header {
+  width: 100%;
   padding: 4px 0;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
 }
 
 .command-caret {
@@ -231,11 +163,11 @@
   border: none;
   background: transparent;
   color: #64748b;
-  cursor: pointer;
+  cursor: inherit;
   padding: 0;
 }
 
-.command-caret:hover {
+.command-tree-header:hover .command-caret {
   color: #0f172a;
 }
 

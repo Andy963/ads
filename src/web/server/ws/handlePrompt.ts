@@ -1,4 +1,4 @@
-import type { Input, ThreadEvent, TodoListItem } from "@openai/codex-sdk";
+import type { Input, ThreadEvent } from "@openai/codex-sdk";
 
 import type { AgentEvent } from "../../../codex/events.js";
 import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";
@@ -20,7 +20,7 @@ import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runCollaborativeTurn } from "../../../agents/hub.js";
-import { buildPlanSignature, extractCommandPayload, isTodoListEvent } from "./utils.js";
+import { extractCommandPayload } from "./utils.js";
 import type { WsMessage } from "./schema.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
@@ -95,22 +95,16 @@ export async function handlePromptMessage(deps: {
   historyStore: HistoryStore;
   sessionManager: SessionManager;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
-  lastPlanSignature: string | null;
-  lastPlanItems: TodoListItem["items"] | null;
   sendWorkspaceState: (ws: import("ws").WebSocket, workspaceRoot: string) => void;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
-  lastPlanSignature: string | null;
-  lastPlanItems: TodoListItem["items"] | null;
 }> {
   if (deps.parsed.type !== "prompt") {
-    return { handled: false, orchestrator: deps.orchestrator, lastPlanSignature: deps.lastPlanSignature, lastPlanItems: deps.lastPlanItems };
+    return { handled: false, orchestrator: deps.orchestrator };
   }
 
   let orchestrator = deps.orchestrator;
-  let lastPlanSignature = deps.lastPlanSignature;
-  let lastPlanItems = deps.lastPlanItems;
 
   const workspaceRoot = detectWorkspaceFrom(deps.currentCwd);
   const lock = deps.getWorkspaceLock(workspaceRoot);
@@ -125,7 +119,6 @@ export async function handlePromptMessage(deps: {
     }
     const tempAttachments = promptInput.attachments || [];
     const cleanupAttachments = () => cleanupTempFiles(tempAttachments);
-    lastPlanSignature = null;
     const userLogEntry = buildUserLogEntry(promptInput.input, deps.currentCwd);
     deps.sessionLogger?.logInput(userLogEntry);
     const entryKind = deps.clientMessageId ? `client_message_id:${deps.clientMessageId}` : undefined;
@@ -222,14 +215,6 @@ export async function handlePromptMessage(deps: {
       deps.sessionLogger?.logEvent(event);
       deps.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
       const raw = event.raw as ThreadEvent;
-      if (isTodoListEvent(raw)) {
-        const signature = buildPlanSignature(raw.item.items);
-        lastPlanItems = raw.item.items;
-        if (signature !== lastPlanSignature) {
-          lastPlanSignature = signature;
-          deps.safeJsonSend(deps.ws, { type: "plan", items: raw.item.items });
-        }
-      }
       if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
         const next = event.delta;
         let delta = next;
@@ -302,8 +287,13 @@ export async function handlePromptMessage(deps: {
           })}`,
         );
 
-        const commandLine = commandPayload?.command ? String(commandPayload.command) : "";
-        const commandKey = commandLine ? (commandPayload?.id ? `id:${commandPayload.id}` : `cmd:${commandLine}`) : "";
+        const commandLine = commandPayload?.command ? String(commandPayload.command).trim() : "";
+        // Some runtimes may reuse a command_execution id while changing the command string (e.g. batched execution).
+        // Track deltas per (id, command) so "new commands" are detected correctly and output deltas don't bleed
+        // across unrelated commands that happen to share an id.
+        const commandKey = commandLine
+          ? (commandPayload?.id ? `id:${commandPayload.id}:cmd:${commandLine}` : `cmd:${commandLine}`)
+          : "";
 
         if (!commandPayload || !commandLine || !commandKey) {
           return;
@@ -418,9 +408,6 @@ export async function handlePromptMessage(deps: {
         const message = error instanceof Error ? error.message : String(error);
         outputToSend = `${finalOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
       }
-      if (lastPlanItems) {
-        deps.safeJsonSend(deps.ws, { type: "plan", items: lastPlanItems });
-      }
       const threadId = orchestrator.getThreadId();
       const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       deps.safeJsonSend(deps.ws, { type: "result", ok: true, output: outputToSend, threadId, expectedThreadId, threadReset });
@@ -473,5 +460,5 @@ export async function handlePromptMessage(deps: {
     }
   });
 
-  return { handled: true, orchestrator, lastPlanSignature, lastPlanItems };
+  return { handled: true, orchestrator };
 }

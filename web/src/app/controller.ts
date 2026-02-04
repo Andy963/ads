@@ -36,7 +36,7 @@ export function createAppContext() {
   const maxRecentCommands = 5;
   const maxLiveActivitySteps = 5;
   const maxTurnCommands = 64;
-  const maxExecutePreviewLines = 1;
+  const maxExecutePreviewLines = 3;
   const maxChatMessages = 200;
 
   const fixtureMode = computed(() => {

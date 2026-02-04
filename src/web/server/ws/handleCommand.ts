@@ -11,7 +11,6 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
-import type { TodoListItem } from "@openai/codex-sdk";
 import type { WsMessage } from "./schema.js";
 
 export async function handleCommandMessage(deps: {
@@ -40,31 +39,23 @@ export async function handleCommandMessage(deps: {
   syncWorkspaceTemplates: () => void;
   sanitizeInput: (payload: unknown) => string;
   currentCwd: string;
-  lastPlanSignature: string | null;
-  lastPlanItems: TodoListItem["items"] | null;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   currentCwd: string;
-  lastPlanSignature: string | null;
-  lastPlanItems: TodoListItem["items"] | null;
 }> {
   if (deps.parsed.type !== "command") {
     return {
       handled: false,
       orchestrator: deps.orchestrator,
       currentCwd: deps.currentCwd,
-      lastPlanSignature: deps.lastPlanSignature,
-      lastPlanItems: deps.lastPlanItems,
     };
   }
 
   let orchestrator = deps.orchestrator;
   let currentCwd = deps.currentCwd;
-  let lastPlanSignature = deps.lastPlanSignature;
-  let lastPlanItems = deps.lastPlanItems;
 
   const lock = deps.getWorkspaceLock(detectWorkspaceFrom(currentCwd));
   await lock.runExclusive(async () => {
@@ -174,11 +165,6 @@ export async function handleCommandMessage(deps: {
         return;
       }
       currentCwd = deps.directoryManager.getUserCwd(deps.userId);
-      if (prevCwd !== currentCwd) {
-        lastPlanSignature = null;
-        lastPlanItems = null;
-        deps.safeJsonSend(deps.ws, { type: "plan", items: [] });
-      }
       deps.workspaceCache.set(deps.cacheKey, currentCwd);
       deps.cwdStore.set(String(deps.userId), currentCwd);
       deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
@@ -303,5 +289,5 @@ export async function handleCommandMessage(deps: {
     }
   });
 
-  return { handled: true, orchestrator, currentCwd, lastPlanSignature, lastPlanItems };
+  return { handled: true, orchestrator, currentCwd };
 }

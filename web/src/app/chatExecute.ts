@@ -38,24 +38,30 @@ export function createExecuteActions(params: {
     findLastLiveIndex,
   } = params;
 
-  const ingestCommand = (rawCmd: string, rt?: ProjectRuntime, id?: string | null): void => {
-    const state = runtimeOrActive(rt);
-    const cmd = String(rawCmd ?? "").trim();
-    if (!cmd) return;
-
-    if (id) {
-      if (state.seenCommandIds.has(id)) return;
-      state.seenCommandIds.add(id);
-    }
-    pushRecentCommand(cmd, state);
-  };
-
   const commandKeyForWsEvent = (command: string, id: string | null): string | null => {
     const normalizedCmd = String(command ?? "").trim();
     if (!normalizedCmd) return null;
     const normalizedId = String(id ?? "").trim();
     if (!normalizedId) return normalizedCmd;
     return `${normalizedId}:${normalizedCmd}`;
+  };
+
+  const ingestCommand = (rawCmd: string, rt?: ProjectRuntime, id?: string | null): void => {
+    const state = runtimeOrActive(rt);
+    const cmd = String(rawCmd ?? "").trim();
+    if (!cmd) return;
+
+    // `command_execution.id` is not always unique per visible command (e.g. batched execution that reuses an id
+    // while changing the command string). Dedup on (id, command) so we still count distinct commands, while
+    // avoiding overcounting multiple output deltas for the same command.
+    const normalizedId = String(id ?? "").trim();
+    if (normalizedId) {
+      const key = commandKeyForWsEvent(cmd, normalizedId);
+      if (!key) return;
+      if (state.seenCommandIds.has(key)) return;
+      state.seenCommandIds.add(key);
+    }
+    pushRecentCommand(cmd, state);
   };
 
   const upsertExecuteBlock = (key: string, command: string, outputDelta: string, rt?: ProjectRuntime): void => {

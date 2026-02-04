@@ -14,18 +14,8 @@ type ChatMessage = {
   streaming?: boolean;
 };
 
-type HeightCheck = { heights: number[]; ok: boolean };
-const heightCheck = ref<HeightCheck | null>(null);
-
-type OffsetCheck = { deltas: number[]; ok: boolean };
-const offsetCheck = ref<OffsetCheck | null>(null);
-
-type UnderlayPeekCheck = { peeks: number[]; ok: boolean };
-const underlayPeekCheck = ref<UnderlayPeekCheck | null>(null);
-
 type LayoutMetric = {
-  kind: "execute-block" | "execute-underlay";
-  layer?: string;
+  kind: "execute-block";
   height: number;
   width: number;
   top: number;
@@ -52,37 +42,24 @@ const messages = computed<ChatMessage[]>(() => {
     " import diff from \"highlight.js/lib/languages/diff\";",
   ].join("\n");
 
-  const patchMessage = [
-    "Modified files: `web/src/lib/markdown.ts` (+1 -0)",
-    "",
-    "```diff",
-    patchDiff,
-    "```",
-  ].join("\n");
-
   return [
-    { id: "u-1", role: "user", kind: "text", content: "Execute block fixture: stacked then single." },
+    { id: "u-1", role: "user", kind: "text", content: "Execute block fixture: only the newest execute message is rendered." },
     { id: "e-1", role: "system", kind: "execute", content: "short output", command: "echo short" },
     { id: "e-2", role: "system", kind: "execute", content: "", command: "echo no output" },
     { id: "e-3", role: "system", kind: "execute", content: longOutput, command: longCommand },
+    { id: "e-4", role: "system", kind: "execute", content: patchDiff, command: "git diff -- web/src/lib/markdown.ts" },
     { id: "a-1", role: "assistant", kind: "text", content: "done" },
-    { id: "e-4", role: "system", kind: "execute", content: "", command: "echo single" },
-    { id: "p-1", role: "system", kind: "text", content: patchMessage },
-    { id: "e-5", role: "system", kind: "execute", content: patchDiff, command: "git diff -- web/src/lib/markdown.ts" },
   ];
 });
 
 onMounted(() => {
   void (async () => {
     await nextTick();
-    const blocks = Array.from(document.querySelectorAll<HTMLElement>(".execute-block, .execute-underlay"));
+    const blocks = Array.from(document.querySelectorAll<HTMLElement>(".execute-block"));
     const metrics = blocks.map((el) => {
       const rect = el.getBoundingClientRect();
-      const kind = el.classList.contains("execute-underlay") ? "execute-underlay" : "execute-block";
-      const layer = el.getAttribute("data-layer") || undefined;
       return {
-        kind,
-        layer,
+        kind: "execute-block",
         height: Math.round(rect.height),
         width: Math.round(rect.width),
         top: Math.round(rect.top),
@@ -92,43 +69,6 @@ onMounted(() => {
       } satisfies LayoutMetric;
     });
     layoutMetrics.value = metrics;
-
-    const heights = metrics.map((m) => m.height);
-    const min = heights.length ? Math.min(...heights) : 0;
-    const max = heights.length ? Math.max(...heights) : 0;
-    heightCheck.value = { heights, ok: heights.length > 0 && max - min <= 1 };
-
-    const stack = document.querySelector<HTMLElement>(".execute-stack[data-stack]");
-    const stackBlock = stack?.querySelector<HTMLElement>(".execute-block") || null;
-    const underlays = Array.from(stack?.querySelectorAll<HTMLElement>(".execute-underlay") || []);
-    if (stackBlock && underlays.length > 0) {
-      const blockTop = stackBlock.getBoundingClientRect().top;
-      const peekRaw = stack ? getComputedStyle(stack).getPropertyValue("--execute-stack-peek") : "";
-      const peekPx = Number.parseInt(peekRaw || "0", 10) || 0;
-      const deltas = underlays
-        .map((el) => {
-          const top = el.getBoundingClientRect().top;
-          return Math.round(top - blockTop);
-        })
-        // Expect the closest underlay to be around -peekPx, then -2*peekPx, etc.
-        .sort((a, b) => b - a);
-      const ok = deltas.every((d, idx) => Math.abs(d + (idx + 1) * peekPx) <= 1);
-      offsetCheck.value = { deltas, ok };
-
-      // Underlays should not visibly extend beyond the main block.
-      const stackRect = stack.getBoundingClientRect();
-      const peeks = underlays
-        .map((el) => {
-          const r = el.getBoundingClientRect();
-          const peekBottom = Math.max(0, Math.round(r.bottom - stackRect.bottom));
-          return peekBottom;
-        })
-        .sort((a, b) => a - b);
-      underlayPeekCheck.value = { peeks, ok: peeks.every((n) => n === 0) };
-    } else {
-      offsetCheck.value = { deltas: [], ok: false };
-      underlayPeekCheck.value = { peeks: [], ok: false };
-    }
   })();
 });
 </script>
@@ -137,23 +77,8 @@ onMounted(() => {
   <div class="fixture">
     <div class="fixtureHeader">
       <div class="fixtureTitle">Execute Block Fixture</div>
-      <div class="fixtureHint">Use this page to visually confirm all execute blocks have the same outer size.</div>
-      <div class="fixtureHint">Stacked blocks should keep the main card height stable; underlays should only peek above the top edge.</div>
-      <div v-if="heightCheck" class="fixtureCheck" :data-ok="heightCheck.ok ? 'true' : 'false'">
-        <span class="fixtureCheckLabel">Height check:</span>
-        <span class="fixtureCheckValue">{{ heightCheck.ok ? "OK" : "MISMATCH" }}</span>
-        <span class="fixtureCheckValue">({{ heightCheck.heights.join(", ") }}px)</span>
-      </div>
-      <div v-if="offsetCheck" class="fixtureCheck" :data-ok="offsetCheck.ok ? 'true' : 'false'">
-        <span class="fixtureCheckLabel">Offset check:</span>
-        <span class="fixtureCheckValue">{{ offsetCheck.ok ? "OK" : "MISMATCH" }}</span>
-        <span class="fixtureCheckValue">({{ offsetCheck.deltas.join(", ") }}px)</span>
-      </div>
-      <div v-if="underlayPeekCheck" class="fixtureCheck" :data-ok="underlayPeekCheck.ok ? 'true' : 'false'">
-        <span class="fixtureCheckLabel">Underlay peek:</span>
-        <span class="fixtureCheckValue">{{ underlayPeekCheck.ok ? "OK" : "PEEK" }}</span>
-        <span class="fixtureCheckValue">({{ underlayPeekCheck.peeks.join(", ") }}px)</span>
-      </div>
+      <div class="fixtureHint">Use this page to visually confirm only the newest execute preview is shown.</div>
+      <div class="fixtureHint">Execute output is clamped to at most 3 lines; short output should not reserve extra height.</div>
       <label class="fixtureDebugToggle">
         <input v-model="showDebug" type="checkbox" />
         <span>Show layout metrics</span>

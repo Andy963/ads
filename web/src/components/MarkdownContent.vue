@@ -193,6 +193,17 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   gap: 10px;
 }
 
+.md :deep(details.md-codeblock[data-kind="patch"]) {
+  margin: 6px 0;
+}
+
+.md :deep(details.md-codeblock[data-kind="patch"] > summary) {
+  padding: 6px 10px;
+  line-height: 1.35;
+  align-items: center;
+  gap: 8px;
+}
+
 .md :deep(details.md-codeblock > summary::-webkit-details-marker) {
   display: none;
 }
@@ -243,6 +254,10 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   max-height: min(40vh, 360px);
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
+}
+
+.md :deep(details.md-codeblock[data-kind="patch"] .md-codeblock-body pre) {
+  padding: 8px 10px;
 }
 
 .md :deep(details.md-codeblock[open] .md-codeblock-body pre) {

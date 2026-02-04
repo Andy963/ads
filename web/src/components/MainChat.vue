@@ -5,6 +5,7 @@ import MarkdownContent from "./MarkdownContent.vue";
 import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
+import { isPatchMessageMarkdown } from "../lib/patch_message";
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -34,8 +35,6 @@ const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
 const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
 const CHAT_STICKY_THRESHOLD_PX = 80;
-
-const MAX_EXECUTE_STACK_LAYERS = 3;
 
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
@@ -159,49 +158,34 @@ const liveStepMessage = computed(
 );
 
 const renderMessages = computed<RenderMessage[]>(() => {
-  const out: RenderMessage[] = [];
-  const stack: ChatMessage[] = [];
-
-  const flush = () => {
-    if (stack.length === 0) return;
-    if (stack.length === 1) {
-      out.push(stack[0]!);
-      stack.length = 0;
-      return;
-    }
-
-    const visibleCount = Math.min(MAX_EXECUTE_STACK_LAYERS, stack.length);
-    const stackItems = stack.slice(Math.max(0, stack.length - visibleCount));
-    const top = stackItems[stackItems.length - 1]!;
-    out.push({
-      ...top,
-      id: `execstack:${top.id}`,
-      role: "system",
-      kind: "execute",
-      stackCount: stack.length,
-      // Keep a stable UI footprint: show at most N stacked cards, but always take the newest ones.
-      stackUnderlays: Math.max(0, stackItems.length - 1),
-      stackItems,
-    });
-    stack.length = 0;
-  };
-
-  for (const m of props.messages) {
+  let latestExecuteId: string | null = null;
+  for (let i = props.messages.length - 1; i >= 0; i--) {
+    const m = props.messages[i]!;
     if (m.kind === "execute") {
-      stack.push(m);
-      continue;
+      latestExecuteId = m.id;
+      break;
     }
-    flush();
-    out.push(m);
   }
-  flush();
-  return out;
+
+  return props.messages.filter((m) => m.kind !== "execute" || m.id === latestExecuteId);
 });
 
 const canInterrupt = computed(() => props.busy);
 const showActiveBorder = computed(() => props.busy || props.messages.length > 0);
 
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
+
+function shouldShowMsgActions(m: RenderMessage): boolean {
+  if (m.streaming && m.content.length === 0) return false;
+  // Patch diffs are machine-generated; hide copy/timestamp chrome to keep them compact.
+  if (m.kind === "text" && m.role === "system" && isPatchMessageMarkdown(m.content)) return false;
+  return true;
+}
+
+function shouldUseCompactBubble(m: RenderMessage): boolean {
+  // Compact layout when we don't render footer actions.
+  return !shouldShowMsgActions(m);
+}
 
 const { input, inputEl, send, onInputKeydown, onPaste, recording, transcribing, voiceStatusKind, voiceStatusMessage, toggleRecording } =
   useMainChatComposer({
@@ -330,23 +314,6 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
   return getCommandTreeTotalCount(m) > getCommandTreeShownCount(m);
 }
 
-function getExecuteStackShownCount(m: RenderMessage): number {
-  if (typeof m.stackCount === "number" && Number.isFinite(m.stackCount) && m.stackCount > 0) return m.stackCount;
-  return 0;
-}
-
-function getExecuteStackTotalCount(m: RenderMessage): number {
-  const shown = getExecuteStackShownCount(m);
-  if (typeof m.commandsTotal === "number" && Number.isFinite(m.commandsTotal) && m.commandsTotal > 0) return m.commandsTotal;
-  return shown;
-}
-
-function hasExecuteStackOverflow(m: RenderMessage): boolean {
-  const shown = getExecuteStackShownCount(m);
-  if (shown <= 0) return false;
-  return getExecuteStackTotalCount(m) > shown;
-}
-
 </script>
 
 <template>
@@ -357,21 +324,20 @@ function hasExecuteStackOverflow(m: RenderMessage): boolean {
       </div>
       <div v-for="m in renderMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
         <div v-if="m.kind === 'command'" class="command-block">
-          <div class="command-tree-header">
-            <button v-if="getCommands(m.content).length > 0" class="command-caret" type="button"
-              aria-label="Toggle command tree" :aria-expanded="isCommandTreeOpen(m.id, getCommands(m.content).length)"
-              @click="toggleCommandTree(m.id)">
+          <button class="command-tree-header" type="button" aria-label="Toggle commands"
+            :aria-expanded="isCommandTreeOpen(m.id, getCommands(m.content).length)" @click="toggleCommandTree(m.id)">
+            <span v-if="getCommands(m.content).length > 0" class="command-caret" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path :d="caretPath(isCommandTreeOpen(m.id, getCommands(m.content).length))" />
               </svg>
-            </button>
-            <span class="prompt-tag">execute</span>
+            </span>
+            <span class="prompt-tag">Executes</span>
             <span class="command-count">
               {{ getCommandTreeTotalCount(m) }} 条命令<span v-if="hasCommandTreeOverflow(m)">
                 (showing last {{ getCommandTreeShownCount(m) }})</span>
             </span>
-          </div>
+          </button>
           <div v-if="isCommandTreeOpen(m.id, getCommands(m.content).length)" class="command-tree">
             <div v-for="(cmd, cIdx) in getCommands(m.content)" :key="cIdx" class="command-tree-item">
               <span class="command-tree-branch">├─</span>
@@ -379,41 +345,20 @@ function hasExecuteStackOverflow(m: RenderMessage): boolean {
             </div>
           </div>
         </div>
-        <div v-else-if="m.kind === 'execute'" class="execute-stack" :data-stack="m.stackCount ?? 0"
-          :data-underlays="m.stackUnderlays ?? 0"
-          :style="{ '--execute-stack-underlays': String(m.stackUnderlays ?? 0) }">
-          <div v-if="(m.stackUnderlays ?? 0) > 0" class="execute-underlays" aria-hidden="true">
-            <div v-for="(u, idx) in (m.stackItems ?? []).slice(0, -1)" :key="u.id" class="execute-underlay"
-              :data-layer="String((m.stackUnderlays ?? 0) - idx)"
-              :style="{ '--execute-underlay-layer': String((m.stackUnderlays ?? 0) - idx) }">
-              <div class="execute-underlay-header">
-                <span class="prompt-tag">&gt;_</span>
-                <span class="execute-underlay-cmd" :title="u.command || ''">{{ u.command || "" }}</span>
-              </div>
+        <div v-else-if="m.kind === 'execute'" class="execute-block">
+          <div class="execute-header">
+            <div class="execute-left">
+              <span class="prompt-tag">&gt;_</span>
+              <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
             </div>
           </div>
-          <div class="execute-block">
-            <div class="execute-header">
-              <div class="execute-left">
-                <span class="prompt-tag">&gt;_</span>
-                <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
-              </div>
-              <span v-if="m.stackCount" class="execute-stack-count">
-                {{ getExecuteStackTotalCount(m) }} 条命令<span v-if="hasExecuteStackOverflow(m)"> (showing last {{ m.stackCount }})</span>
-              </span>
-            </div>
-            <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
-            <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
-          </div>
+          <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
+          <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
         </div>
         <div v-else :class="[
           'bubble',
           {
-            'bubble--compact':
-              m.role === 'assistant' &&
-              m.kind === 'text' &&
-              m.streaming &&
-              m.content.length === 0,
+            'bubble--compact': shouldUseCompactBubble(m),
           },
         ]">
           <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0"
@@ -421,7 +366,7 @@ function hasExecuteStackOverflow(m: RenderMessage): boolean {
             <span class="thinkingText">thinking</span>
           </div>
           <MarkdownContent v-else :content="m.content" />
-          <div v-if="!(m.streaming && m.content.length === 0)" class="msgActions">
+          <div v-if="shouldShowMsgActions(m)" class="msgActions">
             <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="onCopyMessage(m)">
               <svg v-if="copiedMessageId === m.id" width="14" height="14" viewBox="0 0 24 24" fill="none"
                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"

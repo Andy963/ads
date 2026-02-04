@@ -4,6 +4,7 @@ import type { TaskDetail } from "../api/types";
 import MarkdownContent from "./MarkdownContent.vue";
 import AttachmentThumb from "./AttachmentThumb.vue";
 import { autosizeTextarea } from "../lib/textarea_autosize";
+import { isPatchMessageMarkdown } from "../lib/patch_message";
 
 type ChatMessage = {
   id: string;
@@ -116,6 +117,13 @@ function clearCopiedToast(): void {
     copiedTimer = null;
   }
   copiedMessageId.value = null;
+}
+
+function shouldShowMsgActions(m: ChatMessage): boolean {
+  if (m.streaming && m.content.length === 0) return false;
+  // Patch diffs are machine-generated; hide copy/timestamp chrome to keep them compact.
+  if (m.kind === "text" && m.role === "system" && isPatchMessageMarkdown(m.content)) return false;
+  return m.kind !== "command";
 }
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -260,15 +268,15 @@ onBeforeUnmount(() => {
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
         <span v-if="task.status === 'pending'">Waiting to start...</span>
-        <span v-else-if="task.status === 'planning'">Generating plan...</span>
+        <span v-else-if="task.status === 'planning'">Preparing...</span>
         <span v-else-if="task.status === 'running'">Running...</span>
         <span v-else>No messages yet</span>
       </div>
       <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
-        <div class="bubble" :class="{ hasActions: m.kind !== 'command' }">
+        <div class="bubble" :class="{ hasActions: shouldShowMsgActions(m) }">
           <pre v-if="m.kind === 'command'" class="mono">{{ m.content }}</pre>
           <MarkdownContent v-else :content="m.content" :tone="m.role === 'user' ? 'inverted' : 'default'" />
-          <div v-if="m.kind !== 'command'" class="msgActions">
+          <div v-if="shouldShowMsgActions(m)" class="msgActions">
             <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="onCopyMessage(m)">
               <svg v-if="copiedMessageId === m.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M20 6L9 17l-5-5" />
@@ -285,7 +293,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="messages.length > 0 && showPendingReply" class="chat-placeholder">
         <span v-if="task.status === 'pending'">Waiting to start...</span>
-        <span v-else-if="task.status === 'planning'">Generating plan...</span>
+        <span v-else-if="task.status === 'planning'">Preparing...</span>
         <span v-else>Running...</span>
       </div>
       <button

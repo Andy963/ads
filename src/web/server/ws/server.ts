@@ -7,7 +7,6 @@ import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
-import type { TodoListItem } from "@openai/codex-sdk";
 
 import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
@@ -175,8 +174,6 @@ export function attachWebSocketServer(deps: {
 
     const resumeThread = !deps.sessionManager.hasSession(userId);
     let orchestrator = deps.sessionManager.getOrCreate(userId, currentCwd, resumeThread);
-    let lastPlanSignature: string | null = null;
-    let lastPlanItems: TodoListItem["items"] | null = null;
 
     deps.logger.info(
       `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}`,
@@ -316,14 +313,10 @@ export function attachWebSocketServer(deps: {
         historyStore: deps.historyStore,
         sessionManager: deps.sessionManager,
         orchestrator,
-        lastPlanSignature,
-        lastPlanItems,
         sendWorkspaceState,
       });
       if (promptResult.handled) {
         orchestrator = promptResult.orchestrator;
-        lastPlanSignature = promptResult.lastPlanSignature;
-        lastPlanItems = promptResult.lastPlanItems;
         return;
       }
 
@@ -353,16 +346,12 @@ export function attachWebSocketServer(deps: {
         syncWorkspaceTemplates: deps.syncWorkspaceTemplates,
         sanitizeInput: deps.sanitizeInput,
         currentCwd,
-        lastPlanSignature,
-        lastPlanItems,
         orchestrator,
         getWorkspaceLock: deps.getWorkspaceLock,
       });
       if (commandResult.handled) {
         orchestrator = commandResult.orchestrator;
         currentCwd = commandResult.currentCwd;
-        lastPlanSignature = commandResult.lastPlanSignature;
-        lastPlanItems = commandResult.lastPlanItems;
         return;
       }
 

@@ -1,13 +1,6 @@
 import type { WebSocket } from "ws";
 
-import type {
-  CommandExecutionItem,
-  ItemCompletedEvent,
-  ItemStartedEvent,
-  ItemUpdatedEvent,
-  ThreadEvent,
-  TodoListItem,
-} from "@openai/codex-sdk";
+import type { CommandExecutionItem } from "@openai/codex-sdk";
 
 import type { AgentEvent } from "../../../codex/events.js";
 import { truncateForLog } from "../../utils.js";
@@ -85,21 +78,6 @@ export function formatCloseReason(reason: unknown): string {
     }
   }
   return "";
-}
-
-type TodoListThreadEvent = (ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent) & {
-  item: TodoListItem;
-};
-
-export function isTodoListEvent(event: ThreadEvent): event is TodoListThreadEvent {
-  if (!event || (event.type !== "item.started" && event.type !== "item.updated" && event.type !== "item.completed")) {
-    return false;
-  }
-  return (event as ItemStartedEvent).item?.type === "todo_list";
-}
-
-export function buildPlanSignature(items: TodoListItem["items"]): string {
-  return items.map((entry) => `${entry.completed ? "1" : "0"}:${entry.text}`).join("|");
 }
 
 export function extractCommandPayload(
