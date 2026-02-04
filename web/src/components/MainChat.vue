@@ -434,7 +434,7 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
             </div>
           </div>
         </div>
-        <div v-else-if="m.kind === 'execute'" class="execute-block">
+        <div v-else-if="m.kind === 'execute'" :class="['bubble', 'bubble--compact', 'execute-block']">
           <div class="execute-header">
             <div class="execute-left">
               <span class="prompt-tag">&gt;_</span>

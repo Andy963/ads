@@ -58,10 +58,6 @@
   justify-content: flex-start;
 }
 
-.msg[data-kind="execute"] {
-  margin-bottom: 0;
-}
-
 .command-block {
   width: 100%;
   max-width: 100%;
@@ -72,14 +68,7 @@
   width: 100%;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  /* Opaque fill for legibility. */
-  background: #f5f6f6;
-  border-radius: 12px;
-  padding: 6px 12px 4px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  position: relative;
-  z-index: 1;
   display: flex;
   flex-direction: column;
 }
