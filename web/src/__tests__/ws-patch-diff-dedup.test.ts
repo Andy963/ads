@@ -9,6 +9,7 @@ function createRuntime(): any {
     busy: { value: false } satisfies Ref<boolean>,
     turnInFlight: false,
     turnHasPatch: false,
+    delegationsInFlight: { value: [] } satisfies Ref<any[]>,
     pendingAckClientMessageId: null,
     suppressNextClearHistoryResult: false,
     pendingCdRequestedPath: null,
@@ -197,4 +198,3 @@ describe("ws patch diff dedup", () => {
     expect(rt.messages.value.some((m: any) => m.kind === "execute" && m.command === "git status --porcelain")).toBe(true);
   });
 });
-

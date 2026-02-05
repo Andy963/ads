@@ -38,6 +38,15 @@ type WsMessage =
   | { type: "thread_reset" }
   | { type: "command"; detail?: string; command?: WsCommandPayload | null }
   | { type: "patch"; patch?: WsPatchPayload | null }
+  | {
+      type: "agent";
+      event: "delegation:start" | "delegation:result";
+      delegationId?: string;
+      agentId?: string;
+      agentName?: string;
+      prompt?: string;
+      ts?: number;
+    }
   | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number }
   | { type: string; [k: string]: unknown };
 

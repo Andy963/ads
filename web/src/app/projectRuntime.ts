@@ -32,6 +32,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     seenCommandIds: new Set(),
     pendingImages: ref([]),
     queuedPrompts: ref([]),
+    delegationsInFlight: ref([]),
     ignoreNextHistory: false,
     ws: null,
     reconnectTimer: null,

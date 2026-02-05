@@ -28,6 +28,14 @@ export type QueuedPrompt = {
   createdAt: number;
 };
 
+export type AgentDelegationInFlight = {
+  id: string;
+  agentId: string;
+  agentName: string;
+  prompt: string;
+  startedAt: number;
+};
+
 export type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -83,6 +91,7 @@ export type ProjectRuntime = {
   seenCommandIds: Set<string>;
   pendingImages: Ref<IncomingImage[]>;
   queuedPrompts: Ref<QueuedPrompt[]>;
+  delegationsInFlight: Ref<AgentDelegationInFlight[]>;
   ignoreNextHistory: boolean;
   ws: unknown;
   reconnectTimer: number | null;

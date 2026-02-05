@@ -117,14 +117,14 @@
   background: rgba(37, 99, 235, 0.06);
 }
 .modalOverlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
   display: grid;
   place-items: center;
   padding: 18px;
   background: rgba(15, 23, 42, 0.55);
   backdrop-filter: blur(10px);
-  z-index: 50;
+  z-index: 9999;
 }
 .modalCard {
   width: min(520px, 100%);

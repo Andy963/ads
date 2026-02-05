@@ -65,6 +65,7 @@ const {
   createPrompt,
   updatePrompt,
   deletePrompt,
+  agentDelegations,
   sendMainPrompt,
   interruptActive,
   addPendingImages,
@@ -395,6 +396,7 @@ onBeforeUnmount(() => {
           :pending-images="pendingImages"
           :connected="connected"
           :busy="agentBusy"
+          :agent-delegations="agentDelegations"
           @send="sendMainPrompt"
           @interrupt="interruptActive"
           @clear="clearActiveChat"

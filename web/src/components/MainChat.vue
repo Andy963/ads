@@ -14,6 +14,13 @@ const props = defineProps<{
   pendingImages: IncomingImage[];
   connected: boolean;
   busy: boolean;
+  agentDelegations?: Array<{
+    id: string;
+    agentId: string;
+    agentName: string;
+    prompt: string;
+    startedAt: number;
+  }>;
   apiToken?: string;
 }>();
 
@@ -173,6 +180,22 @@ const renderMessages = computed<RenderMessage[]>(() => {
 
 const canInterrupt = computed(() => props.busy);
 const showActiveBorder = computed(() => props.busy);
+
+const agentDelegationLabel = computed(() => {
+  const entries = Array.isArray(props.agentDelegations) ? props.agentDelegations : [];
+  if (!props.busy || entries.length === 0) return "";
+  const names: string[] = [];
+  for (const entry of entries) {
+    const label = String(entry.agentName || entry.agentId || "").trim();
+    if (!label) continue;
+    if (!names.includes(label)) names.push(label);
+  }
+  if (names.length === 0) return "Delegating to agents…";
+  const shown = names.slice(0, 3).join(", ");
+  const hidden = Math.max(0, names.length - 3);
+  const suffix = hidden ? ` +${hidden} more` : "";
+  return `Delegating to: ${shown}${suffix}`;
+});
 
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
@@ -482,6 +505,11 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
     </div>
 
     <div class="composer">
+      <div v-if="agentDelegationLabel" class="delegationBar" aria-label="Agent delegation status">
+        <span class="delegationSpinner" aria-hidden="true" />
+        <span class="delegationText">{{ agentDelegationLabel }}</span>
+      </div>
+
       <div v-if="queuedPrompts.length" class="queue" aria-label="排队消息">
         <div v-for="q in queuedPrompts" :key="q.id" class="queue-item">
           <div class="queue-text">

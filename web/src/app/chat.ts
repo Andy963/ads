@@ -318,6 +318,7 @@ export function createChatActions(ctx: AppContext) {
 
       pushMessageBeforeLive({ role: "user", kind: "text", content: display }, state);
       pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
+      state.delegationsInFlight.value = [];
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;

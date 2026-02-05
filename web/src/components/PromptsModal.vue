@@ -92,21 +92,30 @@ function onDelete(): void {
 
 <template>
   <div class="modalOverlay" role="dialog" aria-modal="true" @click.self="emit('close')">
-    <div class="modalCard promptsModal">
+    <div class="modalCard promptsModal" data-testid="prompts-modal">
       <div class="promptsHeader">
         <div class="promptsTitle">Prompts</div>
-        <div class="promptsActions">
-          <button type="button" class="promptsBtn" :disabled="busy" @click="onNew">New</button>
-          <button type="button" class="promptsBtn danger" :disabled="!canDelete" @click="onDelete">Delete</button>
-          <button type="button" class="promptsBtn primary" :disabled="!canSave" @click="onSave">Save</button>
-          <button type="button" class="promptsBtn" @click="emit('close')">Close</button>
-        </div>
+        <button type="button" class="promptsCloseBtn" title="Close" @click="emit('close')">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
+          </svg>
+        </button>
       </div>
 
       <div class="promptsBody">
         <div class="promptsList" aria-label="Prompt list">
-          <div class="promptsListHeader">Library</div>
+          <div class="promptsListHeader">
+            <span>Library</span>
+            <button type="button" class="promptsNewBtn" :disabled="busy" title="New" @click="onNew">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10 3a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H4a1 1 0 1 1 0-2h5V4a1 1 0 0 1 1-1Z" />
+              </svg>
+            </button>
+          </div>
           <div class="promptsListItems">
+            <div v-if="!prompts.length" class="promptsEmpty">
+              No prompts yet. Click + to create one.
+            </div>
             <button
               v-for="p in prompts"
               :key="p.id"
@@ -125,22 +134,32 @@ function onDelete(): void {
         <div class="promptsEditor" aria-label="Prompt editor">
           <label class="promptsField">
             <span class="promptsFieldLabel">Name</span>
-            <input v-model="draftName" :disabled="busy" placeholder="Prompt name" />
+            <input v-model="draftName" class="promptsInput" :disabled="busy" placeholder="Prompt name" />
           </label>
 
-          <label class="promptsField" style="min-height: 0">
+          <label class="promptsField promptsFieldGrow">
             <span class="promptsFieldLabel">Content</span>
-            <textarea v-model="draftContent" :disabled="busy" rows="12" placeholder="Prompt content..." />
+            <textarea
+              v-model="draftContent"
+              class="promptsTextarea"
+              :disabled="busy"
+              rows="12"
+              placeholder="Prompt content..."
+            />
           </label>
         </div>
       </div>
 
       <div class="promptsFooter">
-        <div v-if="error" class="promptsError" :title="error">{{ error }}</div>
-        <div v-else class="promptsHint">Saved in state database.</div>
-        <div class="promptsHint" style="text-align: right">{{ busy ? "Working..." : "" }}</div>
+        <div class="promptsFooterLeft">
+          <div v-if="error" class="promptsError" :title="error">{{ error }}</div>
+          <div v-else class="promptsHint">{{ busy ? "Working..." : "" }}</div>
+        </div>
+        <div class="promptsFooterRight">
+          <button type="button" class="promptsBtn danger" :disabled="!canDelete" @click="onDelete">Delete</button>
+          <button type="button" class="promptsBtn primary" :disabled="!canSave" @click="onSave">Save</button>
+        </div>
       </div>
     </div>
   </div>
 </template>
-

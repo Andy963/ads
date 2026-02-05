@@ -364,6 +364,30 @@ export async function handlePromptMessage(deps: {
 
     try {
       const expectedThreadId = deps.sessionManager.getSavedThreadId(deps.userId, orchestrator.getActiveAgentId());
+
+      const delegationIdsByFingerprint = new Map<string, string[]>();
+      const delegationFingerprint = (agentId: string, prompt: string): string =>
+        `${String(agentId ?? "").trim().toLowerCase()}:${truncateForLog(prompt, 200)}`;
+      const nextDelegationId = (): string => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const stashDelegationId = (agentId: string, prompt: string): string => {
+        const fp = delegationFingerprint(agentId, prompt);
+        const next = delegationIdsByFingerprint.get(fp) ?? [];
+        const id = nextDelegationId();
+        delegationIdsByFingerprint.set(fp, [...next, id]);
+        return id;
+      };
+      const popDelegationId = (agentId: string, prompt: string): string => {
+        const fp = delegationFingerprint(agentId, prompt);
+        const existing = delegationIdsByFingerprint.get(fp) ?? [];
+        if (existing.length === 0) {
+          return nextDelegationId();
+        }
+        const [head, ...tail] = existing;
+        if (tail.length > 0) delegationIdsByFingerprint.set(fp, tail);
+        else delegationIdsByFingerprint.delete(fp);
+        return head!;
+      };
+
       const result = await runCollaborativeTurn(orchestrator, inputToSend, {
         streaming: true,
         signal: controller.signal,
@@ -372,6 +396,18 @@ export async function handlePromptMessage(deps: {
           onSupervisorRound: (round, directives) => deps.logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
           onDelegationStart: ({ agentId, agentName, prompt }) => {
             deps.logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
+            // The LiveActivity UI is intentionally short-lived (TTL). Emit a structured message so
+            // the frontend can keep a persistent "agents in progress" indicator while delegations run.
+            const delegationId = stashDelegationId(agentId, prompt);
+            deps.safeJsonSend(deps.ws, {
+              type: "agent",
+              event: "delegation:start",
+              delegationId,
+              agentId,
+              agentName,
+              prompt: truncateForLog(prompt, 200),
+              ts: Date.now(),
+            });
             handleExploredEntry({
               category: "Agent",
               summary: `${agentName}（${agentId}）在后台执行：${truncateForLog(prompt, 140)}`,
@@ -381,6 +417,16 @@ export async function handlePromptMessage(deps: {
           },
           onDelegationResult: (summary) => {
             deps.logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`);
+            const delegationId = popDelegationId(summary.agentId, summary.prompt);
+            deps.safeJsonSend(deps.ws, {
+              type: "agent",
+              event: "delegation:result",
+              delegationId,
+              agentId: summary.agentId,
+              agentName: summary.agentName,
+              prompt: truncateForLog(summary.prompt, 200),
+              ts: Date.now(),
+            });
             handleExploredEntry({
               category: "Agent",
               summary: `✓ ${summary.agentName} 完成：${truncateForLog(summary.prompt, 140)}`,
