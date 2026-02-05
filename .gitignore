@@ -42,6 +42,8 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 .vscode/
+.worktrees/
+worktrees/
 .gemini
 .claude
 .codex
