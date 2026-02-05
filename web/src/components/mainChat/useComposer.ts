@@ -1,4 +1,4 @@
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import type { IncomingImage } from "./types";
 import { autosizeTextarea } from "../../lib/textarea_autosize";
@@ -90,7 +90,43 @@ export function useMainChatComposer(params: {
     autosizeTextarea(el, { minRows: 3, maxRows: 8 });
   };
 
-  watch([input, inputEl], resizeComposer, { flush: "post" });
+  // Resize after Vue commits DOM updates (v-model, conditional UI that affects wrapping, etc).
+  watch([input, inputEl], resizeComposer, { flush: "post", immediate: true });
+
+  // Some environments/layout changes won't trigger reactive updates (e.g. viewport resize affects wrapping).
+  // Attach lightweight native listeners so the composer reliably grows up to maxRows.
+  let attachedEl: HTMLTextAreaElement | null = null;
+  const onNativeInput = (): void => {
+    resizeComposer();
+  };
+
+  const attachNativeListeners = (el: HTMLTextAreaElement | null): void => {
+    if (attachedEl) {
+      attachedEl.removeEventListener("input", onNativeInput);
+      attachedEl = null;
+    }
+    if (!el) return;
+    attachedEl = el;
+    el.addEventListener("input", onNativeInput, { passive: true });
+  };
+
+  watch(
+    inputEl,
+    (el) => {
+      attachNativeListeners(el);
+      resizeComposer();
+    },
+    { flush: "post", immediate: true },
+  );
+
+  const onWindowResize = (): void => {
+    resizeComposer();
+  };
+
+  onMounted(() => {
+    window.addEventListener("resize", onWindowResize, { passive: true });
+    resizeComposer();
+  });
 
   const recording = ref(false);
   const transcribing = ref(false);
@@ -145,6 +181,11 @@ export function useMainChatComposer(params: {
     recorderChunks = [];
     recorderMime = "";
   };
+
+  onBeforeUnmount(() => {
+    window.removeEventListener("resize", onWindowResize);
+    attachNativeListeners(null);
+  });
 
   const insertIntoComposer = async (text: string): Promise<void> => {
     const normalized = String(text ?? "").trim();
