@@ -17,6 +17,7 @@ import { createLogger } from "../../utils/logger.js";
 import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
 import { SessionManager } from "../../telegram/utils/sessionManager.js";
 import { createTaskQueueManager } from "./taskQueue/manager.js";
+import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
 import { WorkspaceLockPool } from "./workspaceLockPool.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, resolveAllowedDirs, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
@@ -204,6 +205,8 @@ export async function startWebServer(): Promise<void> {
     recordToSessionHistories,
   });
 
+  const purgeScheduler = new WorkspacePurgeScheduler({ logger });
+
   const apiHandler = createApiRequestHandler({
     logger,
     allowedOrigins,
@@ -215,6 +218,7 @@ export async function startWebServer(): Promise<void> {
     resolveTaskContext: taskQueueManager.resolveTaskContext,
     promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
     broadcastToSession,
+    scheduleWorkspacePurge: (ctx) => purgeScheduler.schedule(ctx),
   });
 
   const server = createHttpServer({ handleApiRequest: apiHandler });

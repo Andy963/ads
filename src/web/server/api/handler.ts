@@ -27,6 +27,7 @@ export function createApiRequestHandler(deps: {
   resolveTaskContext: (url: URL) => TaskQueueContext;
   promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
+  scheduleWorkspacePurge?: (ctx: TaskQueueContext) => void;
 }): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
   const buildAttachmentRawUrl = (url: URL, attachmentId: string): string => {
     const workspaceParam = url.searchParams.get("workspace");
@@ -46,6 +47,7 @@ export function createApiRequestHandler(deps: {
     promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
     broadcastToSession: deps.broadcastToSession,
     buildAttachmentRawUrl,
+    scheduleWorkspacePurge: deps.scheduleWorkspacePurge,
   };
 
   return async (req, res) => {

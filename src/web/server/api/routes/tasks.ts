@@ -28,7 +28,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const status = parseTaskStatus(url.searchParams.get("status"));
     const limitRaw = url.searchParams.get("limit")?.trim();
     const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
-    const tasks = taskCtx.taskStore.listTasks({ status, limit });
+    const tasks = taskCtx.taskStore.listTasks({ status, limit }).filter((t) => t.archivedAt == null);
     const enriched = tasks.map((task) => {
       const attachments = taskCtx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
         id: a.id,
@@ -43,6 +43,19 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return { ...task, attachments };
     });
     sendJson(res, 200, enriched);
+
+    // Schedule maintenance asynchronously; never block the response path.
+    if (deps.scheduleWorkspacePurge) {
+      res.once("finish", () => {
+        setImmediate(() => {
+          try {
+            deps.scheduleWorkspacePurge?.(taskCtx);
+          } catch {
+            // ignore
+          }
+        });
+      });
+    }
     return true;
   }
 

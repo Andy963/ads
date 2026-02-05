@@ -20,4 +20,5 @@ export type ApiSharedDeps = {
   promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
   buildAttachmentRawUrl: (url: URL, attachmentId: string) => string;
+  scheduleWorkspacePurge?: (ctx: TaskQueueContext) => void;
 };
