@@ -185,10 +185,10 @@ function truncateOutput(text: string, maxChars: number): string {
 }
 
 function collectChildOutput(child: ReturnType<typeof spawn>, maxBytes: number): { getStdout: () => string; getStderr: () => string } {
-  let stdout = Buffer.alloc(0);
-  let stderr = Buffer.alloc(0);
+  let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
-  const append = (target: Buffer, chunk: Buffer): Buffer => {
+  const append = (target: Buffer<ArrayBufferLike>, chunk: Buffer): Buffer<ArrayBufferLike> => {
     if (target.length >= maxBytes) return target;
     const remaining = maxBytes - target.length;
     if (chunk.length > remaining) {
