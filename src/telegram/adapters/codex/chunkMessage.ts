@@ -40,8 +40,9 @@ export function chunkMessage(text: string, maxLen = 3900): string[] {
       if (openFence) {
         openFence = null;
       } else {
-        const fence = trimmed.match(/^```[^\s]*?/);
-        openFence = fence ? fence[0] : "```";
+        const info = trimmed.slice(3).trim();
+        const lang = info ? (info.split(/\s+/)[0] ?? "") : "";
+        openFence = lang ? `\`\`\`${lang}` : "```";
       }
     }
   }
@@ -52,4 +53,3 @@ export function chunkMessage(text: string, maxLen = 3900): string[] {
   flushChunk();
   return chunks;
 }
-

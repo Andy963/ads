@@ -17,6 +17,9 @@ describe("telegram/adapters/codex/chunkMessage", () => {
     const chunks = chunkMessage(text, maxLen);
     assert.ok(chunks.length > 1, "should split into multiple chunks");
 
+    assert.ok(chunks[0]?.startsWith("```ts\n"), "first chunk should keep original fence language");
+    assert.ok(chunks[1]?.startsWith("```ts\n"), "continuation chunks should reopen with the same fence language");
+
     for (const chunk of chunks) {
       assert.ok(chunk.length <= maxLen, `chunk should not exceed maxLen, got ${chunk.length}`);
       const fenceCount = (chunk.match(/```/g) ?? []).length;
@@ -26,4 +29,3 @@ describe("telegram/adapters/codex/chunkMessage", () => {
     assert.ok(chunks.at(-1)?.includes("tail"), "last chunk should include tail");
   });
 });
-
