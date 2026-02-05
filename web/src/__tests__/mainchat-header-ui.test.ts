@@ -94,7 +94,7 @@ describe("MainChat header UI", () => {
       },
       global: { stubs: { MarkdownContent: true } },
     });
-    expect(withHistory.classes()).toContain("detail--active");
+    expect(withHistory.classes()).not.toContain("detail--active");
     withHistory.unmount();
   });
 

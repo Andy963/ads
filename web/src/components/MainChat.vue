@@ -172,7 +172,7 @@ const renderMessages = computed<RenderMessage[]>(() => {
 });
 
 const canInterrupt = computed(() => props.busy);
-const showActiveBorder = computed(() => props.busy || props.messages.length > 0);
+const showActiveBorder = computed(() => props.busy);
 
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
