@@ -388,10 +388,30 @@ export function createAppController() {
 
   projectDeps.activateProject = activateProject;
 
+  const prefetchProjectStatusSpinners = async (): Promise<void> => {
+    if (!ctx.loggedIn.value) return;
+    const activePid = ctx.normalizeProjectId(ctx.activeProjectId.value);
+    const targets = ctx.projects.value.map((p) => ctx.normalizeProjectId(p.id));
+    const seen = new Set<string>();
+    for (const pid of targets) {
+      if (!pid || seen.has(pid)) continue;
+      seen.add(pid);
+      if (pid === activePid) continue;
+      const rt = ctx.getRuntime(pid);
+      if (Array.isArray(rt.tasks.value) && rt.tasks.value.length > 0) continue;
+      try {
+        await tasks.loadTasks(pid, { status: "running", limit: 1, preserveSelection: true });
+      } catch {
+        // Best-effort only: status spinners should not break boot.
+      }
+    }
+  };
+
   const bootstrap = async (): Promise<void> => {
     if (!ctx.loggedIn.value) return;
     try {
       await Promise.all([tasks.loadModels(), activateProject(ctx.activeProjectId.value)]);
+      await prefetchProjectStatusSpinners();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       ctx.apiError.value = msg;

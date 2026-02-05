@@ -17,6 +17,12 @@ export type TaskDeps = {
   connectWs: (projectId?: string) => Promise<void>;
 };
 
+export type LoadTasksOptions = {
+  status?: Task["status"];
+  limit?: number;
+  preserveSelection?: boolean;
+};
+
 export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps) {
   const {
     api,
@@ -87,10 +93,22 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     }
   };
 
-  const loadTasks = async (projectId: string = activeProjectId.value): Promise<void> => {
+  const loadTasks = async (projectId: string = activeProjectId.value, options?: LoadTasksOptions): Promise<void> => {
     const pid = normalizeProjectId(projectId);
     const rt = getRuntime(pid);
-    rt.tasks.value = await api.get<Task[]>(withWorkspaceQueryFor(pid, "/api/tasks?limit=100"));
+    const limit =
+      typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit > 0
+        ? Math.floor(options.limit)
+        : 100;
+    const status = String(options?.status ?? "").trim();
+    const base = `/api/tasks?limit=${encodeURIComponent(String(limit))}`;
+    const url = status ? `${base}&status=${encodeURIComponent(status)}` : base;
+    rt.tasks.value = await api.get<Task[]>(withWorkspaceQueryFor(pid, url));
+
+    if (options?.preserveSelection) {
+      return;
+    }
+
     if (!rt.selectedId.value && rt.tasks.value.length > 0) {
       const nextPending = rt.tasks.value
         .filter((t) => t.status === "pending")
