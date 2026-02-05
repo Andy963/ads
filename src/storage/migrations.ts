@@ -352,6 +352,29 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    description: "Tasks - add archived_at for completed task auto-archive + retention purge",
+    up: (db) => {
+      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
+      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      if (!names.has("archived_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN archived_at INTEGER`);
+      }
+
+      // Backfill: archive existing completed tasks so the default UI no longer shows them.
+      db.exec(`
+        UPDATE tasks
+        SET archived_at = COALESCE(archived_at, completed_at, created_at)
+        WHERE status = 'completed' AND archived_at IS NULL
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_archived_at
+          ON tasks(archived_at, completed_at DESC, created_at DESC)
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 2,
