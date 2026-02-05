@@ -60,6 +60,7 @@ const {
   prompts,
   promptsBusy,
   promptsError,
+  loadPrompts,
   openPromptsModal,
   closePromptsModal,
   createPrompt,
@@ -107,6 +108,13 @@ const dropTargetProjectId = ref<string | null>(null);
 const dropTargetPosition = ref<"before" | "after">("before");
 
 let suppressProjectRowClick = false;
+
+function openTaskCreateDialogWithPrompts(): void {
+  openTaskCreateDialog();
+  // Best-effort: prompt list may still be loading when the dialog opens, but will
+  // populate reactively once fetched.
+  void loadPrompts();
+}
 
 function canDragProject(id: string): boolean {
   const pid = String(id ?? "").trim();
@@ -378,7 +386,7 @@ onBeforeUnmount(() => {
                 @cancel="cancelTask"
                 @retry="retryTask"
                 @delete="deleteTask"
-                @create="openTaskCreateDialog"
+                @create="openTaskCreateDialogWithPrompts"
                 @resumeThread="resumeTaskThread"
                 @newSession="startNewChatSession"
               />
@@ -427,6 +435,8 @@ onBeforeUnmount(() => {
       <TaskCreateForm
         class="taskCreateModal"
         :models="models"
+        :prompts="prompts"
+        :prompts-busy="promptsBusy"
         :workspace-root="resolveActiveWorkspaceRoot() || ''"
         @submit="submitTaskCreate"
         @submit-and-run="submitTaskCreateAndRun"

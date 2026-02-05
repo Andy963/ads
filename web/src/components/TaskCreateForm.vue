@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
-import type { CreateTaskInput, ModelConfig } from "../api/types";
+import { computed, nextTick, ref, watch } from "vue";
+import type { CreateTaskInput, ModelConfig, Prompt } from "../api/types";
 
 import { useImageAttachments } from "./taskCreateForm/useImageAttachments";
 import { useVoiceInput } from "./taskCreateForm/useVoiceInput";
 
-const props = defineProps<{ models: ModelConfig[]; apiToken?: string; workspaceRoot?: string }>();
+const props = defineProps<{
+  models: ModelConfig[];
+  prompts?: Prompt[];
+  promptsBusy?: boolean;
+  apiToken?: string;
+  workspaceRoot?: string;
+}>();
 const emit = defineEmits<{
   (e: "submit", v: CreateTaskInput): void;
   (e: "submit-and-run", v: CreateTaskInput): void;
@@ -19,6 +25,20 @@ const promptEl = ref<HTMLTextAreaElement | null>(null);
 const model = ref("auto");
 const priority = ref(0);
 const maxRetries = ref(3);
+
+const pinnedPromptId = ref("");
+const pinnedPrompt = computed(() => {
+  const pid = String(pinnedPromptId.value ?? "").trim();
+  if (!pid) return null;
+  const entries = Array.isArray(props.prompts) ? props.prompts : [];
+  return entries.find((p) => p.id === pid) ?? null;
+});
+
+const pinnedPromptPlaceholder = computed(() => {
+  if (props.promptsBusy) return "Loading prompts...";
+  const entries = Array.isArray(props.prompts) ? props.prompts : [];
+  return entries.length ? "None" : "No prompts available";
+});
 
 async function insertIntoPrompt(text: string): Promise<void> {
   const normalized = String(text ?? "").trim();
@@ -118,12 +138,46 @@ const {
 } = imageAttachments;
 
 const canSubmit = computed(() => {
-  if (prompt.value.trim().length === 0) return false;
+  const userTextOk = prompt.value.trim().length > 0;
+  const pinnedOk = Boolean(String(pinnedPrompt.value?.content ?? "").trim());
+  if (!userTextOk && !pinnedOk) return false;
   if (recording.value || transcribing.value) return false;
   if (uploadingCount.value > 0) return false;
   if (failedCount.value > 0) return false;
   return true;
 });
+
+function mergePinnedPrompt(userText: string, pinned: Prompt | null): string {
+  const user = String(userText ?? "").trim();
+  const template = String(pinned?.content ?? "").trim();
+  if (!template) return user;
+
+  const name = String(pinned?.name ?? "").trim();
+  const id = String(pinned?.id ?? "").trim();
+  const label = name ? `${name}${id ? ` (${id})` : ""}` : id || "template";
+  const header = `# Template: ${label}`;
+
+  if (!user) {
+    return `${header}\n\n${template}`.trim();
+  }
+
+  return `${header}\n\n${template}\n\n---\n\n# Task\n\n${user}`.trim();
+}
+
+function derivePinnedTitle(userText: string, pinned: Prompt | null): string {
+  const userFirstLine = String(userText ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (userFirstLine) {
+    return userFirstLine.length > 80 ? userFirstLine.slice(0, 80) : userFirstLine;
+  }
+
+  const name = String(pinned?.name ?? "").trim();
+  if (name) return name.length > 80 ? name.slice(0, 80) : name;
+
+  return "";
+}
 
 function submit(): void {
   emitSubmit("submit");
@@ -140,9 +194,13 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     .filter((a) => a.status === "ready" && a.uploaded?.id)
     .map((a) => String(a.uploaded!.id))
     .filter(Boolean);
+
+  const mergedPrompt = mergePinnedPrompt(prompt.value, pinnedPrompt.value).trim();
+  const pinnedDerivedTitle = titleTrimmed ? "" : derivePinnedTitle(prompt.value, pinnedPrompt.value);
+
   emit(event, {
-    title: titleTrimmed.length ? titleTrimmed : undefined,
-    prompt: prompt.value.trim(),
+    title: titleTrimmed.length ? titleTrimmed : pinnedPrompt.value ? pinnedDerivedTitle || undefined : undefined,
+    prompt: mergedPrompt,
     model: model.value,
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
@@ -151,6 +209,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
   title.value = "";
   prompt.value = "";
+  pinnedPromptId.value = "";
   clearAllAttachments();
 }
 
@@ -158,6 +217,18 @@ const modelOptions = computed(() => {
   const enabled = props.models.filter((m) => m.isEnabled);
   return [{ id: "auto", displayName: "Auto", provider: "" }, ...enabled];
 });
+
+watch(
+  () => props.prompts,
+  () => {
+    const pid = String(pinnedPromptId.value ?? "").trim();
+    if (!pid) return;
+    const entries = Array.isArray(props.prompts) ? props.prompts : [];
+    if (!entries.some((p) => p.id === pid)) {
+      pinnedPromptId.value = "";
+    }
+  },
+);
 </script>
 
 <template>
@@ -189,6 +260,34 @@ const modelOptions = computed(() => {
           <span class="label-text">最大重试</span>
           <input v-model.number="maxRetries" type="number" min="0" />
         </label>
+      </div>
+
+      <div class="form-row">
+        <label class="form-field">
+          <span class="label-text">Pinned prompt (optional)</span>
+          <select
+            v-model="pinnedPromptId"
+            data-testid="task-create-pinned-prompt-select"
+            :disabled="Boolean(props.promptsBusy) || recording || transcribing"
+          >
+            <option value="">{{ pinnedPromptPlaceholder }}</option>
+            <option v-for="p in props.prompts || []" :key="p.id" :value="p.id">
+              {{ p.name }}
+            </option>
+          </select>
+        </label>
+
+        <div v-if="pinnedPrompt" class="pinnedPromptCard" aria-label="Pinned prompt preview">
+          <div class="pinnedPromptHeader">
+            <div class="pinnedPromptTitle">
+              <span class="pinnedPromptBadge">Pinned</span>
+              <span class="pinnedPromptName" :title="pinnedPrompt.name">{{ pinnedPrompt.name }}</span>
+            </div>
+            <button type="button" class="pinnedPromptUnpin" @click="pinnedPromptId = ''">Unpin</button>
+          </div>
+          <div class="pinnedPromptHint">This template will be prepended to the task prompt on submit.</div>
+          <pre class="pinnedPromptContent">{{ pinnedPrompt.content }}</pre>
+        </div>
       </div>
 
       <div class="form-row prompt-row">

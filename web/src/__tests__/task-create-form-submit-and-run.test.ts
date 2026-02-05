@@ -71,4 +71,32 @@ describe("TaskCreateForm submit-and-run", () => {
 
     wrapper.unmount();
   });
+
+  it("merges a pinned prompt template into the submitted prompt", async () => {
+    const wrapper = mount(TaskCreateForm, {
+      props: {
+        models,
+        prompts: [
+          { id: "p-1", name: "Template 1", content: "Pinned content", createdAt: Date.now(), updatedAt: Date.now() },
+        ],
+        promptsBusy: false,
+        workspaceRoot: "",
+      },
+    });
+
+    await wrapper.find('[data-testid="task-create-pinned-prompt-select"]').setValue("p-1");
+    await wrapper.find('[data-testid="task-create-submit-and-run"]').trigger("click");
+
+    const emitted = wrapper.emitted("submit-and-run");
+    expect(emitted).toBeTruthy();
+    expect(emitted?.[0]?.[0]).toEqual({
+      title: "Template 1",
+      prompt: "# Template: Template 1 (p-1)\n\nPinned content",
+      model: "auto",
+      priority: 0,
+      maxRetries: 3,
+    });
+
+    wrapper.unmount();
+  });
 });

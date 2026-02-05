@@ -19,6 +19,89 @@
 .form-row {
   margin-bottom: 16px;
 }
+.pinnedPromptCard {
+  margin-top: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  background: rgba(248, 250, 252, 0.82);
+  padding: 10px 12px;
+}
+.pinnedPromptHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pinnedPromptTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pinnedPromptBadge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 900;
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.1);
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.pinnedPromptName {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pinnedPromptUnpin {
+  flex: 0 0 auto;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, opacity 0.15s, transform 0.1s;
+}
+.pinnedPromptUnpin:hover:not(:disabled) {
+  border-color: rgba(148, 163, 184, 0.85);
+  background: #ffffff;
+}
+.pinnedPromptUnpin:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.pinnedPromptUnpin:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.pinnedPromptHint {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  line-height: 1.35;
+}
+.pinnedPromptContent {
+  margin: 10px 0 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.65);
+  background: rgba(255, 255, 255, 0.65);
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: #0f172a;
+}
 .fields {
   flex: 1 1 auto;
   min-height: 0;
