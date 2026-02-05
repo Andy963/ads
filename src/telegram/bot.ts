@@ -26,6 +26,25 @@ import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
 
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception', error);
+  try {
+    closeAllWorkspaceDatabases();
+  } catch {
+    // ignore
+  }
+  try {
+    closeAllStateDatabases();
+  } catch {
+    // ignore
+  }
+  process.exit(1);
+});
+
 async function requireUserId(ctx: Context, action: string): Promise<number | null> {
   const userId = ctx.from?.id;
   if (typeof userId === 'number') {
@@ -95,6 +114,10 @@ async function main() {
     : undefined;
 
   const bot = new Bot(config.botToken, clientConfig ? { client: clientConfig } : undefined);
+
+  bot.catch((error) => {
+    logger.error('Unhandled bot error', (error as { error?: unknown }).error ?? error);
+  });
 
   installApiDebugLogging(bot, logger);
   installSilentReplyMiddleware(bot, silentNotifications);

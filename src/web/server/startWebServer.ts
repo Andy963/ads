@@ -132,10 +132,12 @@ async function ensureWebPidFile(): Promise<string> {
   };
   process.once("exit", shutdown);
   process.once("SIGINT", () => {
+    logger.warn("Received SIGINT, shutting down");
     shutdown();
     process.exit(0);
   });
   process.once("SIGTERM", () => {
+    logger.warn("Received SIGTERM, shutting down");
     shutdown();
     process.exit(0);
   });
