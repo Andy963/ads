@@ -74,6 +74,54 @@ export class TaskStore {
     this.taskOps.deleteTask(id);
   }
 
+  purgeArchivedCompletedTasksBatch(
+    archivedBeforeMs: number,
+    options?: { limit?: number },
+  ): { taskIds: string[]; attachments: Array<{ id: string; storageKey: string }> } {
+    const cutoffMs =
+      typeof archivedBeforeMs === "number" && Number.isFinite(archivedBeforeMs) ? Math.floor(archivedBeforeMs) : 0;
+    const limit =
+      typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit > 0
+        ? Math.floor(options.limit)
+        : 100;
+
+    const tx = this.db.transaction(() => {
+      const rows = this.db
+        .prepare(
+          `SELECT id
+           FROM tasks
+           WHERE status = 'completed' AND archived_at IS NOT NULL AND archived_at <= ?
+           ORDER BY archived_at ASC, completed_at ASC, created_at ASC, id ASC
+           LIMIT ?`,
+        )
+        .all(cutoffMs, limit) as Array<{ id?: unknown }>;
+
+      const taskIds = rows.map((r) => String(r?.id ?? "").trim()).filter(Boolean);
+      if (taskIds.length === 0) {
+        return { taskIds: [], attachments: [] as Array<{ id: string; storageKey: string }> };
+      }
+
+      const placeholders = taskIds.map(() => "?").join(", ");
+      const attachments = this.db
+        .prepare(`SELECT id, storage_key FROM attachments WHERE task_id IN (${placeholders})`)
+        .all(...taskIds) as Array<{ id?: unknown; storage_key?: unknown }>;
+
+      // tasks.parent_task_id uses a self-FK without ON DELETE SET NULL, so detach children first.
+      this.db.prepare(`UPDATE tasks SET parent_task_id = NULL WHERE parent_task_id IN (${placeholders})`).run(...taskIds);
+      this.db.prepare(`DELETE FROM attachments WHERE task_id IN (${placeholders})`).run(...taskIds);
+      this.db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...taskIds);
+
+      return {
+        taskIds,
+        attachments: attachments
+          .map((a) => ({ id: String(a.id ?? "").trim(), storageKey: String(a.storage_key ?? "").trim() }))
+          .filter((a) => a.id && a.storageKey),
+      };
+    });
+
+    return tx();
+  }
+
   claimNextPendingTask(now = Date.now()): Task | null {
     return this.taskOps.claimNextPendingTask(now);
   }
