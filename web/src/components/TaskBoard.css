@@ -163,7 +163,9 @@
 }
 
 .item[data-status="completed"] {
-  --status-accent: #16a34a;
+  --status-accent: #94a3b8;
+  opacity: 0.6;
+  border-color: rgba(148, 163, 184, 0.3);
 }
 
 .item[data-status="failed"] {
