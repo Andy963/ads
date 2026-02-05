@@ -165,4 +165,39 @@ describe("task chat gating", () => {
 
     wrapper.unmount();
   });
+
+  it("drops the empty assistant placeholder once a task command arrives", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    wrapper.vm.messages = [{ id: "m-1", role: "user", kind: "text", content: "previous" }];
+    wrapper.vm.tasks = [makeTask({ id: "t-1", status: "running", prompt: "task prompt" })];
+    await settleUi(wrapper);
+
+    const onTaskEvent = (wrapper.vm as unknown as { onTaskEvent: (p: unknown) => void }).onTaskEvent;
+
+    onTaskEvent({ event: "task:started", data: makeTask({ id: "t-1", status: "running", prompt: "task prompt" }) });
+    await settleUi(wrapper);
+
+    onTaskEvent({ event: "message", data: { taskId: "t-1", role: "user", content: "task prompt" } });
+    await settleUi(wrapper);
+
+    expect(
+      wrapper.vm.messages.some(
+        (m: any) => m.role === "assistant" && m.streaming && m.kind === "text" && String(m.content ?? "").trim() === "",
+      ),
+    ).toBe(true);
+
+    onTaskEvent({ event: "command", data: { taskId: "t-1", command: "echo hi" } });
+    await settleUi(wrapper);
+
+    expect(
+      wrapper.vm.messages.some(
+        (m: any) => m.role === "assistant" && m.streaming && m.kind === "text" && String(m.content ?? "").trim() === "",
+      ),
+    ).toBe(false);
+
+    wrapper.unmount();
+  });
 });

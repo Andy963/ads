@@ -19,6 +19,7 @@ export function createExecuteActions(params: {
   runtimeOrActive: (rt?: ProjectRuntime) => ProjectRuntime;
   setMessages: (items: ChatItem[], rt?: ProjectRuntime) => void;
   pushRecentCommand: (command: string, rt?: ProjectRuntime) => void;
+  dropEmptyAssistantPlaceholder?: (rt?: ProjectRuntime) => void;
   randomId: (prefix: string) => string;
   maxExecutePreviewLines: number;
   maxTurnCommands: number;
@@ -30,6 +31,7 @@ export function createExecuteActions(params: {
     runtimeOrActive,
     setMessages,
     pushRecentCommand,
+    dropEmptyAssistantPlaceholder,
     randomId,
     maxExecutePreviewLines,
     maxTurnCommands,
@@ -66,6 +68,7 @@ export function createExecuteActions(params: {
 
   const upsertExecuteBlock = (key: string, command: string, outputDelta: string, rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
+    dropEmptyAssistantPlaceholder?.(state);
     const normalizedKey = String(key ?? "").trim();
     if (!normalizedKey) return;
     const normalizedCommand = String(command ?? "").trim();

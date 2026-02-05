@@ -134,6 +134,7 @@ describe("command UI lifecycle", () => {
     await settleUi(wrapper);
 
     const during = (wrapper.vm as any).messages as Array<any>;
+    expect(during.some((m) => m.role === "assistant" && m.streaming && String(m.content).trim() === "")).toBe(false);
     expect(during.some((m) => m.kind === "command")).toBe(false);
     const execute = during.find((m) => m.kind === "execute");
     expect(execute).toBeTruthy();

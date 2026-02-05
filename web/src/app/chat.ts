@@ -258,6 +258,7 @@ export function createChatActions(ctx: AppContext) {
     runtimeOrActive,
     setMessages,
     pushRecentCommand,
+    dropEmptyAssistantPlaceholder,
     randomId,
     maxExecutePreviewLines,
     maxTurnCommands,
