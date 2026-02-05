@@ -30,6 +30,8 @@ const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
 const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 32));
 const pingIntervalMsRaw = Number(process.env.ADS_WEB_WS_PING_INTERVAL_MS ?? 15_000);
 const WS_PING_INTERVAL_MS = Number.isFinite(pingIntervalMsRaw) ? Math.max(0, pingIntervalMsRaw) : 15_000;
+const maxMissedPongsRaw = Number(process.env.ADS_WEB_WS_MAX_MISSED_PONGS ?? 3);
+const WS_MAX_MISSED_PONGS = Number.isFinite(maxMissedPongsRaw) ? Math.max(0, Math.floor(maxMissedPongsRaw)) : 3;
 
 const logger = createLogger("WebSocket");
 const allowedOrigins = parseAllowedOrigins(process.env.ADS_WEB_ALLOWED_ORIGINS);
@@ -229,6 +231,7 @@ export async function startWebServer(): Promise<void> {
     allowedOrigins,
     maxClients: MAX_CLIENTS,
     pingIntervalMs: WS_PING_INTERVAL_MS,
+    maxMissedPongs: WS_MAX_MISSED_PONGS,
     logger,
     traceWsDuplication,
     allowedDirs,

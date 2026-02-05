@@ -31,6 +31,7 @@ export function attachWebSocketServer(deps: {
   allowedOrigins: Set<string>;
   maxClients: number;
   pingIntervalMs: number;
+  maxMissedPongs: number;
   logger: { info: (msg: string) => void; warn: (msg: string) => void; debug: (msg: string) => void };
   traceWsDuplication: boolean;
   allowedDirs: string[];
@@ -72,8 +73,10 @@ export function attachWebSocketServer(deps: {
             }
             if (candidate.isAlive === false) {
               candidate.missedPongs = (candidate.missedPongs ?? 0) + 1;
-              if (candidate.missedPongs >= 3) {
-                deps.logger.warn("[WebSocket] terminating stale client connection");
+              if (deps.maxMissedPongs > 0 && candidate.missedPongs >= deps.maxMissedPongs) {
+                deps.logger.warn(
+                  `[WebSocket] terminating stale client connection missedPongs=${candidate.missedPongs} maxMissedPongs=${deps.maxMissedPongs}`,
+                );
                 try {
                   candidate.terminate();
                 } catch {
