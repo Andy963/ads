@@ -222,4 +222,37 @@ describe("tasks/taskStore", () => {
     const d3 = store.dequeueNextQueuedTask(now);
     assert.equal(d3, null);
   });
+
+  it("should set archivedAt when a task becomes completed", () => {
+    const store = new TaskStore();
+    const created = store.createTask({ title: "T", prompt: "P" });
+    const now = Date.now();
+
+    const completed = store.updateTask(created.id, { status: "completed" }, now);
+    assert.equal(completed.status, "completed");
+    assert.ok(completed.completedAt);
+
+    // archivedAt is a new field; use an escape hatch so this test fails by assertion
+    // before the implementation exists (instead of failing to compile).
+    const archivedAt = (completed as unknown as { archivedAt?: unknown }).archivedAt;
+    assert.equal(typeof archivedAt, "number");
+    assert.equal(archivedAt, now);
+
+    const fetched = store.getTask(created.id);
+    assert.ok(fetched);
+    const fetchedArchivedAt = (fetched as unknown as { archivedAt?: unknown }).archivedAt;
+    assert.equal(fetchedArchivedAt, now);
+  });
+
+  it("should clear archivedAt when a completed task is reopened", () => {
+    const store = new TaskStore();
+    const created = store.createTask({ title: "T", prompt: "P" });
+    const t1 = Date.now();
+    store.updateTask(created.id, { status: "completed" }, t1);
+
+    const reopened = store.updateTask(created.id, { status: "pending" }, t1 + 1);
+    assert.equal(reopened.status, "pending");
+    const reopenedArchivedAt = (reopened as unknown as { archivedAt?: unknown }).archivedAt;
+    assert.equal(reopenedArchivedAt, null);
+  });
 });

@@ -32,6 +32,7 @@ export function toTask(row: Record<string, unknown>): Task {
     createdAt,
     startedAt: row.started_at == null ? null : (typeof row.started_at === "number" ? row.started_at : Number(row.started_at)),
     completedAt: row.completed_at == null ? null : (typeof row.completed_at === "number" ? row.completed_at : Number(row.completed_at ?? 0)),
+    archivedAt: row.archived_at == null ? null : (typeof row.archived_at === "number" ? row.archived_at : Number(row.archived_at ?? 0)),
     createdBy: row.created_by == null ? null : String(row.created_by),
   };
 }

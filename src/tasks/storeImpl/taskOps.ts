@@ -92,6 +92,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       createdAt: now,
       startedAt: null,
       completedAt: null,
+      archivedAt: status === "completed" ? now : null,
       createdBy: input.createdBy ?? null,
     };
 
@@ -115,6 +116,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.createdAt,
       task.startedAt ?? null,
       task.completedAt ?? null,
+      task.archivedAt ?? null,
       task.createdBy ?? null,
     );
 
@@ -188,6 +190,11 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     if (["completed", "failed", "cancelled"].includes(merged.status) && !merged.completedAt) {
       merged.completedAt = now;
     }
+    if (merged.status === "completed") {
+      merged.archivedAt = merged.archivedAt != null && Number.isFinite(merged.archivedAt) ? merged.archivedAt : now;
+    } else {
+      merged.archivedAt = null;
+    }
 
     stmts.updateTaskStmt.run(
       merged.title,
@@ -208,6 +215,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.createdAt,
       merged.startedAt ?? null,
       merged.completedAt ?? null,
+      merged.archivedAt ?? null,
       merged.createdBy ?? null,
       merged.id,
     );
@@ -389,4 +397,3 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     reorderPendingTasks,
   };
 }
-

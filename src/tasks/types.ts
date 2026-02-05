@@ -65,6 +65,7 @@ export interface Task {
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
+  archivedAt?: number | null;
   createdBy?: string | null;
 }
 
