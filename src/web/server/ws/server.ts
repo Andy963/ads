@@ -217,145 +217,158 @@ export function attachWebSocketServer(deps: {
     }
 
     ws.on("message", async (data: RawData) => {
-      aliveWs.isAlive = true;
-      aliveWs.missedPongs = 0;
-      let parsed: import("./schema.js").WsMessage;
       try {
-        const raw = JSON.parse(String(data)) as unknown;
-        const result = wsMessageSchema.safeParse(raw);
-        if (!result.success) {
-          safeJsonSend(ws, { type: "error", message: "Invalid message payload" });
+        aliveWs.isAlive = true;
+        aliveWs.missedPongs = 0;
+        let parsed: import("./schema.js").WsMessage;
+        try {
+          const raw = JSON.parse(String(data)) as unknown;
+          const result = wsMessageSchema.safeParse(raw);
+          if (!result.success) {
+            safeJsonSend(ws, { type: "error", message: "Invalid message payload" });
+            return;
+          }
+          parsed = result.data;
+        } catch {
+          safeJsonSend(ws, { type: "error", message: "Invalid JSON message" });
           return;
         }
-        parsed = result.data;
-      } catch {
-        safeJsonSend(ws, { type: "error", message: "Invalid JSON message" });
-        return;
-      }
 
-      if (parsed.type === "ping") {
-        safeJsonSend(ws, { type: "pong", ts: Date.now() });
-        return;
-      }
-      if (parsed.type === "pong") {
-        return;
-      }
-
-      const requestId = crypto.randomBytes(4).toString("hex");
-      const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
-      const clientMessageId = clientMessageIdRaw || null;
-      if (deps.traceWsDuplication) {
-        const meta = deps.clientMetaByWs.get(ws);
-        const payloadPreview = summarizeWsPayloadForLog(parsed.payload);
-        deps.logger.info(
-          `[WebSocket][Recv] req=${requestId} conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} type=${parsed.type} client_message_id=${clientMessageId ?? ""} payload=${payloadPreview}`,
-        );
-      }
-
-      const sessionLogger = deps.sessionManager.ensureLogger(userId) ?? null;
-
-      if (parsed.type === "interrupt") {
-        const controller = deps.interruptControllers.get(userId);
-        if (controller) {
-          controller.abort();
-          deps.interruptControllers.delete(userId);
-          safeJsonSend(ws, { type: "result", ok: false, output: "⛔ 已中断，输出可能不完整" });
-        } else {
-          safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
+        if (parsed.type === "ping") {
+          safeJsonSend(ws, { type: "pong", ts: Date.now() });
+          return;
         }
-        return;
-      }
+        if (parsed.type === "pong") {
+          return;
+        }
 
-      if (parsed.type === "clear_history") {
-        deps.historyStore.clear(historyKey);
-        deps.sessionManager.reset(userId);
-        safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
-        return;
-      }
+        const requestId = crypto.randomBytes(4).toString("hex");
+        const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
+        const clientMessageId = clientMessageIdRaw || null;
+        if (deps.traceWsDuplication) {
+          const meta = deps.clientMetaByWs.get(ws);
+          const payloadPreview = summarizeWsPayloadForLog(parsed.payload);
+          deps.logger.info(
+            `[WebSocket][Recv] req=${requestId} conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} type=${parsed.type} client_message_id=${clientMessageId ?? ""} payload=${payloadPreview}`,
+          );
+        }
 
-      if (parsed.type === "task_resume") {
-        const resume = await handleTaskResumeMessage({
+        let sessionLogger: NonNullable<ReturnType<SessionManager["ensureLogger"]>> | null = null;
+        try {
+          sessionLogger = deps.sessionManager.ensureLogger(userId) ?? null;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          deps.logger.warn(`[WebSocket] Failed to initialize session logger: ${message}`);
+          sessionLogger = null;
+        }
+
+        if (parsed.type === "interrupt") {
+          const controller = deps.interruptControllers.get(userId);
+          if (controller) {
+            controller.abort();
+            deps.interruptControllers.delete(userId);
+            safeJsonSend(ws, { type: "result", ok: false, output: "⛔ 已中断，输出可能不完整" });
+          } else {
+            safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
+          }
+          return;
+        }
+
+        if (parsed.type === "clear_history") {
+          deps.historyStore.clear(historyKey);
+          deps.sessionManager.reset(userId);
+          safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
+          return;
+        }
+
+        if (parsed.type === "task_resume") {
+          const resume = await handleTaskResumeMessage({
+            parsed,
+            ws,
+            userId,
+            historyKey,
+            currentCwd,
+            ensureTaskContext: deps.ensureTaskContext,
+            historyStore: deps.historyStore,
+            sessionManager: deps.sessionManager,
+            safeJsonSend,
+            logger: deps.logger,
+            getWorkspaceLock: deps.getWorkspaceLock,
+            orchestrator,
+          });
+          if (resume.orchestrator) {
+            orchestrator = resume.orchestrator;
+          }
+          return;
+        }
+
+        const promptResult = await handlePromptMessage({
           parsed,
           ws,
+          safeJsonSend,
+          logger: deps.logger,
+          sessionLogger,
+          requestId,
+          clientMessageId,
+          traceWsDuplication: deps.traceWsDuplication,
+          sessionId,
           userId,
           historyKey,
           currentCwd,
-          ensureTaskContext: deps.ensureTaskContext,
+          allowedDirs: deps.allowedDirs,
+          getWorkspaceLock: deps.getWorkspaceLock,
+          interruptControllers: deps.interruptControllers,
           historyStore: deps.historyStore,
           sessionManager: deps.sessionManager,
+          orchestrator,
+          sendWorkspaceState,
+        });
+        if (promptResult.handled) {
+          orchestrator = promptResult.orchestrator;
+          return;
+        }
+
+        const commandResult = await handleCommandMessage({
+          parsed,
+          ws,
           safeJsonSend,
           logger: deps.logger,
-          getWorkspaceLock: deps.getWorkspaceLock,
+          sessionLogger,
+          requestId,
+          sessionId,
+          userId,
+          historyKey,
+          clientMessageId,
+          traceWsDuplication: deps.traceWsDuplication,
+          directoryManager,
+          cacheKey,
+          workspaceCache: deps.workspaceCache,
+          cwdStore: deps.cwdStore,
+          cwdStorePath: deps.cwdStorePath,
+          persistCwdStore: deps.persistCwdStore,
+          sessionManager: deps.sessionManager,
+          historyStore: deps.historyStore,
+          interruptControllers: deps.interruptControllers,
+          runAdsCommandLine: deps.runAdsCommandLine,
+          sendWorkspaceState,
+          syncWorkspaceTemplates: deps.syncWorkspaceTemplates,
+          sanitizeInput: deps.sanitizeInput,
+          currentCwd,
           orchestrator,
+          getWorkspaceLock: deps.getWorkspaceLock,
         });
-        if (resume.orchestrator) {
-          orchestrator = resume.orchestrator;
+        if (commandResult.handled) {
+          orchestrator = commandResult.orchestrator;
+          currentCwd = commandResult.currentCwd;
+          return;
         }
-        return;
-      }
 
-      const promptResult = await handlePromptMessage({
-        parsed,
-        ws,
-        safeJsonSend,
-        logger: deps.logger,
-        sessionLogger,
-        requestId,
-        clientMessageId,
-        traceWsDuplication: deps.traceWsDuplication,
-        sessionId,
-        userId,
-        historyKey,
-        currentCwd,
-        allowedDirs: deps.allowedDirs,
-        getWorkspaceLock: deps.getWorkspaceLock,
-        interruptControllers: deps.interruptControllers,
-        historyStore: deps.historyStore,
-        sessionManager: deps.sessionManager,
-        orchestrator,
-        sendWorkspaceState,
-      });
-      if (promptResult.handled) {
-        orchestrator = promptResult.orchestrator;
-        return;
+        safeJsonSend(ws, { type: "error", message: "Unsupported message type" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger.warn(`[WebSocket] Message handler error: ${message}`);
+        safeJsonSend(ws, { type: "error", message: "Internal server error" });
       }
-
-      const commandResult = await handleCommandMessage({
-        parsed,
-        ws,
-        safeJsonSend,
-        logger: deps.logger,
-        sessionLogger,
-        requestId,
-        sessionId,
-        userId,
-        historyKey,
-        clientMessageId,
-        traceWsDuplication: deps.traceWsDuplication,
-        directoryManager,
-        cacheKey,
-        workspaceCache: deps.workspaceCache,
-        cwdStore: deps.cwdStore,
-        cwdStorePath: deps.cwdStorePath,
-        persistCwdStore: deps.persistCwdStore,
-        sessionManager: deps.sessionManager,
-        historyStore: deps.historyStore,
-        interruptControllers: deps.interruptControllers,
-        runAdsCommandLine: deps.runAdsCommandLine,
-        sendWorkspaceState,
-        syncWorkspaceTemplates: deps.syncWorkspaceTemplates,
-        sanitizeInput: deps.sanitizeInput,
-        currentCwd,
-        orchestrator,
-        getWorkspaceLock: deps.getWorkspaceLock,
-      });
-      if (commandResult.handled) {
-        orchestrator = commandResult.orchestrator;
-        currentCwd = commandResult.currentCwd;
-        return;
-      }
-
-      safeJsonSend(ws, { type: "error", message: "Unsupported message type" });
     });
 
     ws.on("close", (code, reason) => {
