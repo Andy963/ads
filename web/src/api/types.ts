@@ -58,6 +58,14 @@ export interface Attachment {
   filename?: string | null;
 }
 
+export interface Prompt {
+  id: string;
+  name: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface CreateTaskInput {
   title?: string;
   prompt: string;

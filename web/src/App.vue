@@ -7,9 +7,10 @@ import TaskCreateForm from "./components/TaskCreateForm.vue";
 import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
+import PromptsModal from "./components/PromptsModal.vue";
 
 import { createAppController } from "./app/controller";
-import { CirclePlus } from "@element-plus/icons-vue";
+import { CirclePlus, Setting } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -55,6 +56,15 @@ const {
   queuedPrompts,
   pendingImages,
   agentBusy,
+  promptsModalOpen,
+  prompts,
+  promptsBusy,
+  promptsError,
+  openPromptsModal,
+  closePromptsModal,
+  createPrompt,
+  updatePrompt,
+  deletePrompt,
   sendMainPrompt,
   interruptActive,
   addPendingImages,
@@ -267,6 +277,16 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="right">
+        <button
+          type="button"
+          class="topbarGear"
+          title="Prompts"
+          aria-label="Prompts"
+          data-testid="prompts-button"
+          @click="openPromptsModal"
+        >
+          <el-icon :size="16" aria-hidden="true" class="icon"><Setting /></el-icon>
+        </button>
         <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
       </div>
     </header>
@@ -388,6 +408,18 @@ onBeforeUnmount(() => {
     <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
+
+    <PromptsModal
+      v-if="promptsModalOpen"
+      data-testid="prompts-modal"
+      :prompts="prompts"
+      :busy="promptsBusy"
+      :error="promptsError"
+      @close="closePromptsModal"
+      @create="(input) => createPrompt(input)"
+      @update="(id, input) => updatePrompt(id, input)"
+      @delete="(id) => deletePrompt(id)"
+    />
 
     <DraggableModal v-if="taskCreateDialogOpen" card-variant="wide" @close="closeTaskCreateDialog">
       <TaskCreateForm

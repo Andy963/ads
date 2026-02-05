@@ -6,6 +6,7 @@ import { isProjectInProgress } from "../lib/project_status";
 
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
+import { createPromptActions } from "./prompts";
 import { createProjectRuntime } from "./projectRuntime";
 import type {
   ChatItem,
@@ -345,6 +346,7 @@ export type AppContext = ReturnType<typeof createAppContext>;
 export function createAppController() {
   const ctx = createAppContext();
   const chat = createChatActions(ctx as AppContext);
+  const prompts = createPromptActions({ api: ctx.api, loggedIn: ctx.loggedIn });
 
   const taskDeps: TaskDeps = {
     connectWs: async () => {},
@@ -454,6 +456,7 @@ export function createAppController() {
   return {
     ...ctx,
     ...chat,
+    ...prompts,
     ...tasks,
     ...projects,
     ...ws,
