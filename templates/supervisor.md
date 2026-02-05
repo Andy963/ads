@@ -8,6 +8,7 @@
 TaskSpec 约束：
 - 必须包含：`taskId`、`revision`、`agentId`、`goal`、`constraints`、`deliverables`、`acceptanceCriteria`、`verification`。
 - `verification.commands` 是系统要自动执行的命令列表（用于客观验收信号）；只写你确信安全且必要的命令。
+- 如涉及前端/UI 变更，优先补充 `verification.uiSmokes`：系统会使用 `agent-browser` 做 UI smoke（可选启动服务并等待 readyUrl），作为客观验收信号的一部分。
 
 示例：
 ```text
@@ -23,6 +24,28 @@ TaskSpec 约束：
   "verification": {
     "commands": [
       { "cmd": "npm", "args": ["test"], "timeoutMs": 600000, "expectExitCode": 0 }
+    ],
+    "uiSmokes": [
+      {
+        "name": "web-smoke",
+        "service": {
+          "cmd": "npm",
+          "args": ["run", "web"],
+          "readyUrl": "http://127.0.0.1:8787/healthz",
+          "readyTimeoutMs": 30000
+        },
+        "steps": [
+          { "args": ["open", "http://127.0.0.1:8787/"] },
+          { "args": ["find", "testid", "login-username", "fill", "admin"] },
+          { "args": ["find", "testid", "login-password", "fill", "admin"] },
+          { "args": ["find", "testid", "login-submit", "click"] },
+          { "args": ["wait", "1000"] },
+          { "args": ["find", "testid", "prompts-button", "click"] },
+          { "args": ["wait", "[data-testid=prompts-modal]"] },
+          { "args": ["find", "testid", "task-board-create", "click"] },
+          { "args": ["wait", "[data-testid=task-create-submit-and-run]"] }
+        ]
+      }
     ]
   }
 }

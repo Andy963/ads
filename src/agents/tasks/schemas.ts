@@ -12,8 +12,40 @@ export const VerificationCommandSchema = z.object({
 
 export type VerificationCommand = z.infer<typeof VerificationCommandSchema>;
 
+export const UiSmokeStepSchema = z.object({
+  args: z.array(z.string()).min(1),
+  timeoutMs: z.number().int().positive().optional(),
+  expectExitCode: z.number().int().optional(),
+  assertContains: z.array(z.string()).optional(),
+  assertNotContains: z.array(z.string()).optional(),
+  assertRegex: z.array(z.string()).optional(),
+});
+
+export type UiSmokeStep = z.infer<typeof UiSmokeStepSchema>;
+
+export const ManagedServiceSchema = z.object({
+  cmd: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().min(1).optional(),
+  env: z.record(z.string()).optional(),
+  readyUrl: z.string().min(1),
+  readyTimeoutMs: z.number().int().positive().optional(),
+  shutdownGraceMs: z.number().int().positive().optional(),
+});
+
+export type ManagedServiceSpec = z.infer<typeof ManagedServiceSchema>;
+
+export const UiSmokeSpecSchema = z.object({
+  name: z.string().min(1).optional(),
+  service: ManagedServiceSchema.optional(),
+  steps: z.array(UiSmokeStepSchema).default([]),
+});
+
+export type UiSmokeSpec = z.infer<typeof UiSmokeSpecSchema>;
+
 export const VerificationSpecSchema = z.object({
   commands: z.array(VerificationCommandSchema).default([]),
+  uiSmokes: z.array(UiSmokeSpecSchema).default([]),
 });
 
 export type VerificationSpec = z.infer<typeof VerificationSpecSchema>;
@@ -76,4 +108,3 @@ export function extractJsonPayload(raw: string): string | null {
   }
   return null;
 }
-

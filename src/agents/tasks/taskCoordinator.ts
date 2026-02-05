@@ -207,7 +207,7 @@ export class TaskCoordinator {
           allDelegations.push(summary);
           await this.options.hooks?.onDelegationResult?.(summary);
 
-          const verificationReport = await runVerification(spec.verification.commands ?? [], {
+          const verificationReport = await runVerification(spec.verification, {
             cwd: this.options.verificationCwd,
             signal: this.options.signal,
           });

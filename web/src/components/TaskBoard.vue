@@ -338,7 +338,14 @@ function toggleQueue(): void {
             </svg>
           </button>
         </div>
-        <button class="iconBtn primary" type="button" title="新建任务" aria-label="新建任务" @click.stop="emit('create')">
+        <button
+          class="iconBtn primary"
+          type="button"
+          title="新建任务"
+          aria-label="新建任务"
+          data-testid="task-board-create"
+          @click.stop="emit('create')"
+        >
           <el-icon :size="16" aria-hidden="true" class="icon">
             <Plus />
           </el-icon>

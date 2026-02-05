@@ -208,7 +208,18 @@ export function formatVerification(report: Awaited<ReturnType<typeof runVerifica
     return "（自动验收：无命令）";
   }
   const lines: string[] = [];
+  let currentSuite: string | null = null;
   for (const result of report.results) {
+    const suite = typeof result.suite === "string" && result.suite.trim() ? result.suite.trim() : null;
+    if (suite && suite !== currentSuite) {
+      if (lines.length) lines.push("");
+      lines.push(`【UI Smoke】${suite}`);
+      currentSuite = suite;
+    }
+    if (!suite && currentSuite) {
+      currentSuite = null;
+    }
+
     const cmd = [result.cmd, ...(result.args ?? [])].join(" ").trim();
     const marker = result.ok ? "✅" : "❌";
     const exitPart = `exit=${result.exitCode ?? "null"} expect=${result.expectedExitCode}`;

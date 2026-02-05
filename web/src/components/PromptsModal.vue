@@ -106,7 +106,7 @@ function onDelete(): void {
         <div class="promptsList" aria-label="Prompt list">
           <div class="promptsListHeader">
             <span>Library</span>
-            <button type="button" class="promptsNewBtn" :disabled="busy" title="New" @click="onNew">
+            <button type="button" class="promptsNewBtn" :disabled="busy" title="New" data-testid="prompts-new" @click="onNew">
               <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                 <path d="M10 3a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H4a1 1 0 1 1 0-2h5V4a1 1 0 0 1 1-1Z" />
               </svg>
@@ -134,7 +134,7 @@ function onDelete(): void {
         <div class="promptsEditor" aria-label="Prompt editor">
           <label class="promptsField">
             <span class="promptsFieldLabel">Name</span>
-            <input v-model="draftName" class="promptsInput" :disabled="busy" placeholder="Prompt name" />
+            <input v-model="draftName" class="promptsInput" :disabled="busy" placeholder="Prompt name" data-testid="prompts-name" />
           </label>
 
           <label class="promptsField promptsFieldGrow">
@@ -145,6 +145,7 @@ function onDelete(): void {
               :disabled="busy"
               rows="12"
               placeholder="Prompt content..."
+              data-testid="prompts-content"
             />
           </label>
         </div>
@@ -156,8 +157,8 @@ function onDelete(): void {
           <div v-else class="promptsHint">{{ busy ? "Working..." : "" }}</div>
         </div>
         <div class="promptsFooterRight">
-          <button type="button" class="promptsBtn danger" :disabled="!canDelete" @click="onDelete">Delete</button>
-          <button type="button" class="promptsBtn primary" :disabled="!canSave" @click="onSave">Save</button>
+          <button type="button" class="promptsBtn danger" :disabled="!canDelete" data-testid="prompts-delete" @click="onDelete">Delete</button>
+          <button type="button" class="promptsBtn primary" :disabled="!canSave" data-testid="prompts-save" @click="onSave">Save</button>
         </div>
       </div>
     </div>

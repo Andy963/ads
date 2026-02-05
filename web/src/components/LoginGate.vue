@@ -111,15 +111,16 @@ onBeforeUnmount(() => {
           <p class="desc">Sign in to continue.</p>
 
           <div class="form">
-            <input v-model="username" type="text" autocomplete="username" placeholder="Username" />
+            <input v-model="username" type="text" autocomplete="username" placeholder="Username" data-testid="login-username" />
             <input
               v-model="password"
               type="password"
               autocomplete="current-password"
               placeholder="Password"
+              data-testid="login-password"
               @keydown.enter.prevent="submit"
             />
-            <button class="submit-btn" :disabled="!canSubmit || busy" @click="submit">
+            <button class="submit-btn" :disabled="!canSubmit || busy" data-testid="login-submit" @click="submit">
               {{ busy ? "Signing in…" : "Sign in" }}
             </button>
           </div>
