@@ -138,6 +138,38 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("keeps busy true on ws close until welcome resync clears it", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    const activeProjectId = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const rt = (wrapper.vm as any).getRuntime?.(activeProjectId);
+    expect(rt).toBeTruthy();
+
+    rt.busy.value = true;
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(true);
+
+    await (wrapper.vm as any).connectWs?.();
+    await settleUi(wrapper);
+    expect(lastWs).toBeTruthy();
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    wrapper.unmount();
+  });
+
   it("clears messages and records a thread_reset reason when receiving thread_reset", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const App = (await import("../App.vue")).default;

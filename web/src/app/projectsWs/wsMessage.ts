@@ -134,6 +134,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (nextPath) rt.workspacePath.value = nextPath;
       }
 
+      const inFlight = (msg as { inFlight?: unknown }).inFlight;
+      if (typeof inFlight === "boolean") {
+        rt.busy.value = inFlight;
+        rt.turnInFlight = inFlight;
+        if (!inFlight) {
+          rt.turnHasPatch = false;
+        }
+      }
+
       const serverThreadId = String(msg.threadId ?? "").trim();
       const serverChatSessionId = String(msg.chatSessionId ?? "").trim();
       if (serverChatSessionId) {
@@ -177,6 +186,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           updates.branch = String(wsState.branch ?? "");
         }
         updateProject(current.id, updates);
+      }
+
+      if (typeof inFlight === "boolean" && !inFlight) {
+        flushQueuedPrompts(rt);
       }
       return;
     }
@@ -229,7 +242,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "history") {
-      if (rt.busy.value || rt.queuedPrompts.value.length > 0) return;
+      if ((rt.busy.value || rt.queuedPrompts.value.length > 0) && rt.messages.value.length > 0) return;
       if (rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
         return;

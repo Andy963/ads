@@ -192,7 +192,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       disconnectWasBusy = rt.busy.value;
       rt.needsTaskResync = true;
       rt.connected.value = false;
-      rt.busy.value = false;
       clearStepLive(rt);
       finalizeCommandBlock(rt);
       applyStreamingDisconnectCleanup(rt);

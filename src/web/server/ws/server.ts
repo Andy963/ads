@@ -181,12 +181,14 @@ export function attachWebSocketServer(deps: {
     deps.logger.info(
       `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}`,
     );
+    const inFlight = deps.interruptControllers.has(userId);
     safeJsonSend(ws, {
       type: "welcome",
       message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
       workspace: getWorkspaceState(currentCwd),
       sessionId,
       chatSessionId,
+      inFlight,
       threadId: deps.sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
     });
 

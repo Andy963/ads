@@ -21,7 +21,15 @@ type WsPatchPayload = {
 };
 
 type WsMessage =
-  | { type: "welcome"; sessionId?: string; chatSessionId?: string; workspace?: unknown; threadId?: string; reset?: boolean }
+  | {
+      type: "welcome";
+      sessionId?: string;
+      chatSessionId?: string;
+      workspace?: unknown;
+      threadId?: string;
+      reset?: boolean;
+      inFlight?: boolean;
+    }
   | { type: "ack"; client_message_id?: string; duplicate?: boolean }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
   | { type: "delta"; delta?: string; source?: "chat" | "step" }
