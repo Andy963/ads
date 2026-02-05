@@ -181,6 +181,7 @@ const sorted = computed(() => {
     return 5;
   };
   return props.tasks
+    .filter((t) => t.archivedAt == null)
     .slice()
     .sort((a, b) => {
       const wa = weight(a.status);

@@ -28,6 +28,10 @@ export function createTaskEventActions(
   } = ctx;
   const { upsertTask, removeTask, loadQueueStatus } = deps;
 
+  const shouldHideTask = (t: Task): boolean => {
+    return t.status === "completed" && t.archivedAt != null;
+  };
+
   const onTaskEvent = (payload: { event: TaskEventPayload["event"]; data: unknown }, rt?: ProjectRuntime): void => {
     const state = ctx.runtimeOrActive(rt);
     pruneTaskChatBuffer(state);
@@ -41,6 +45,10 @@ export function createTaskEventActions(
     }
     if (payload.event === "task:updated") {
       const t = payload.data as Task;
+      if (shouldHideTask(t)) {
+        removeTask(t.id, state);
+        return;
+      }
       upsertTask(t, state);
       return;
     }
@@ -123,7 +131,11 @@ export function createTaskEventActions(
     if (payload.event === "task:completed") {
       const t = payload.data as Task;
       markTaskChatStarted(t.id, state);
-      upsertTask(t, state);
+      if (shouldHideTask(t)) {
+        removeTask(t.id, state);
+      } else {
+        upsertTask(t, state);
+      }
       clearStepLive(state);
       finalizeCommandBlock(state);
       if (t.result && t.result.trim() && !hasAssistantAfterLastUser(state)) {
