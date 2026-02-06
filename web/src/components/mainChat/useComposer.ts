@@ -87,7 +87,7 @@ export function useMainChatComposer(params: {
   const resizeComposer = (): void => {
     const el = inputEl.value;
     if (!el) return;
-    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    autosizeTextarea(el, { minRows: 5, maxRows: 8 });
   };
 
   // Resize after Vue commits DOM updates (v-model, conditional UI that affects wrapping, etc).

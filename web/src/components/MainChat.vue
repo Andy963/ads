@@ -612,7 +612,7 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       </div>
 
       <div class="inputWrap">
-        <textarea v-model="input" ref="inputEl" rows="3" class="composer-input"
+        <textarea v-model="input" ref="inputEl" rows="5" class="composer-input"
           placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）" @keydown="onInputKeydown" @paste="onPaste" />
         <div class="inputActions">
           <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
