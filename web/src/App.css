@@ -532,6 +532,27 @@
   margin-left: auto;
   flex: 0 0 auto;
 }
+.projectRemove {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(254, 202, 202, 0.55);
+  color: rgba(185, 28, 28, 0.95);
+  cursor: pointer;
+  user-select: none;
+}
+.projectRemove.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.projectNode.active .projectRemove {
+  background: rgba(248, 113, 113, 0.2);
+  color: rgba(254, 226, 226, 0.95);
+}
 .projectMoveToTop {
   width: 18px;
   height: 18px;

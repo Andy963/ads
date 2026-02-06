@@ -18,6 +18,9 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     activeProjectId,
     activeProject,
     activeRuntime,
+    getRuntime,
+    normalizeProjectId,
+    runtimeProjectInProgress,
     busy,
     queuedPrompts,
     pendingImages,
@@ -194,6 +197,57 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       const msg = error instanceof Error ? error.message : String(error);
       apiError.value = msg;
       projects.value = prev;
+      persistProjects();
+    }
+  };
+
+  const removeProject = async (projectId: string): Promise<void> => {
+    apiError.value = null;
+    const targetId = String(projectId ?? "").trim();
+    if (!targetId) return;
+    if (targetId === "default") return;
+
+    const pid = normalizeProjectId(targetId);
+    const rt = getRuntime(pid);
+    if (runtimeProjectInProgress(rt)) {
+      apiError.value = "Project is busy; cannot remove right now.";
+      return;
+    }
+
+    const prevProjects = projects.value.slice();
+    const prevActiveId = activeProjectId.value;
+
+    const nextProjects = prevProjects.filter((p) => p.id !== targetId);
+    if (nextProjects.length === prevProjects.length) {
+      return;
+    }
+
+    const fallbackActive = nextProjects.find((p) => p.id !== "default")?.id ?? "default";
+    const nextActiveId = prevActiveId === targetId ? fallbackActive : prevActiveId;
+
+    activeProjectId.value = nextActiveId;
+    projects.value = nextProjects.map((p) => ({ ...p, expanded: p.id === nextActiveId }));
+    persistProjects();
+
+    if (!loggedIn.value) {
+      return;
+    }
+
+    try {
+      const result = await api.delete<{ success: boolean; activeProjectId?: string }>(
+        `/api/projects/${encodeURIComponent(targetId)}`,
+      );
+      if (!result?.success) {
+        throw new Error("Failed to remove project");
+      }
+
+      await loadProjectsFromServer();
+      await deps.activateProject(activeProjectId.value);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      apiError.value = msg;
+      projects.value = prevProjects;
+      activeProjectId.value = prevActiveId;
       persistProjects();
     }
   };
@@ -510,6 +564,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     persistProjects,
     initializeProjects,
     reorderProjects,
+    removeProject,
     updateProject,
     setExpandedExclusive,
     collapseAllProjects,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
@@ -23,6 +23,7 @@ const {
   activeProjectId,
   requestProjectSwitch,
   reorderProjects,
+  removeProject,
   getRuntime,
   connectWs,
   runtimeProjectInProgress,
@@ -107,6 +108,14 @@ const draggingProjectId = ref<string | null>(null);
 const dropTargetProjectId = ref<string | null>(null);
 const dropTargetPosition = ref<"before" | "after">("before");
 
+const projectRemoveConfirmOpen = ref(false);
+const pendingRemoveProjectId = ref<string | null>(null);
+const pendingRemoveProject = computed(() => {
+  const pid = String(pendingRemoveProjectId.value ?? "").trim();
+  if (!pid) return null;
+  return projects.value.find((p) => p.id === pid) ?? null;
+});
+
 let suppressProjectRowClick = false;
 
 function openTaskCreateDialogWithPrompts(): void {
@@ -131,6 +140,33 @@ function scheduleSuppressProjectRowClick(): void {
 function onProjectRowClick(projectId: string): void {
   if (suppressProjectRowClick) return;
   requestProjectSwitch(projectId);
+}
+
+function canRemoveProject(id: string): boolean {
+  const pid = String(id ?? "").trim();
+  if (!pid) return false;
+  if (pid === "default") return false;
+  return !runtimeProjectInProgress(getRuntime(pid));
+}
+
+function requestRemoveProject(id: string): void {
+  const pid = String(id ?? "").trim();
+  if (!canRemoveProject(pid)) return;
+  pendingRemoveProjectId.value = pid;
+  projectRemoveConfirmOpen.value = true;
+}
+
+function cancelRemoveProject(): void {
+  projectRemoveConfirmOpen.value = false;
+  pendingRemoveProjectId.value = null;
+}
+
+async function confirmRemoveProject(): Promise<void> {
+  const pid = String(pendingRemoveProjectId.value ?? "").trim();
+  projectRemoveConfirmOpen.value = false;
+  pendingRemoveProjectId.value = null;
+  if (!pid) return;
+  await removeProject(pid);
 }
 
 function onProjectDragStart(ev: DragEvent, projectId: string): void {
@@ -329,6 +365,19 @@ onBeforeUnmount(() => {
               </span>
               <span class="projectRowActions">
                 <span
+                  v-if="p.id !== 'default'"
+                  class="projectRemove"
+                  :class="{ disabled: !canRemoveProject(p.id) }"
+                  title="Remove project"
+                  aria-label="Remove project"
+                  data-testid="project-remove"
+                  @click.stop.prevent="requestRemoveProject(p.id)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path d="M6 6h8v10H6V6zm2-3h4l1 1h4v2H3V4h4l1-1z" />
+                  </svg>
+                </span>
+                <span
                   class="projectMoveToTop"
                   :class="{ disabled: !canMoveProjectToTop(p.id) }"
                   title="Move to top"
@@ -507,6 +556,25 @@ onBeforeUnmount(() => {
         <div class="modalActions">
           <button type="button" class="btnSecondary" @click="cancelProjectSwitch">取消</button>
           <button type="button" class="btnDanger" @click="confirmProjectSwitch">切换</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="projectRemoveConfirmOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelRemoveProject">
+      <div class="modalCard">
+        <div class="modalTitle">Remove project?</div>
+        <div class="modalDesc">
+          This removes the project from the Web UI list only. It does not delete any files or workspace data.
+        </div>
+        <div v-if="pendingRemoveProject" class="modalPreview">
+          <div class="modalPreviewTitle">{{ pendingRemoveProject.name || pendingRemoveProject.id }}</div>
+          <div v-if="pendingRemoveProject.path && pendingRemoveProject.path.trim()" class="modalPreviewPrompt">
+            {{ pendingRemoveProject.path }}
+          </div>
+        </div>
+        <div class="modalActions">
+          <button type="button" class="btnSecondary" @click="cancelRemoveProject">Cancel</button>
+          <button type="button" class="btnDanger" @click="confirmRemoveProject">Remove</button>
         </div>
       </div>
     </div>
