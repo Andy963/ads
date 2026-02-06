@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { executeToolBlocks } from "../../src/agents/tools.js";
 
-describe("agents/tools", () => {
+describe("agents/tools", { concurrency: 1 }, () => {
   const originalEnv: Record<string, string | undefined> = {};
   let tmpDir: string | null = null;
 

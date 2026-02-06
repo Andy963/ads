@@ -10,6 +10,16 @@ import type { Task } from "../../src/tasks/types.js";
 import { OrchestratorTaskExecutor } from "../../src/tasks/executor.js";
 import { AsyncLock } from "../../src/utils/asyncLock.js";
 
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("tasks/executor lock", () => {
   let tmpDir: string;
   const originalEnv = { ...process.env };
@@ -34,7 +44,7 @@ describe("tasks/executor lock", () => {
     const store = new TaskStore();
     const lock = new AsyncLock();
 
-    const runGate = Promise.withResolvers<void>();
+    const runGate = createDeferred<void>();
     const called: string[] = [];
 
     const orchestrator = {

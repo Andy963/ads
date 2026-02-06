@@ -528,9 +528,17 @@
 .projectRowActions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
   margin-left: auto;
   flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.projectNode:hover .projectRowActions,
+.projectNode:focus-within .projectRowActions {
+  opacity: 1;
+  pointer-events: auto;
 }
 .projectRemove {
   width: 18px;
@@ -553,27 +561,7 @@
   background: rgba(248, 113, 113, 0.2);
   color: rgba(254, 226, 226, 0.95);
 }
-.projectMoveToTop {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  background: rgba(226, 232, 240, 0.8);
-  color: rgba(100, 116, 139, 0.95);
-  cursor: pointer;
-  user-select: none;
-}
-.projectMoveToTop.disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-.projectNode.active .projectMoveToTop {
-  background: rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.9);
-}
+
 .projectName {
   font-size: 14px;
   font-weight: 700;
