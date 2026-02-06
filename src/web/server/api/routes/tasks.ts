@@ -98,7 +98,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           createdBy: "web",
         },
         now,
-        undefined,
+        { status: "queued" },
       );
 
       if (attachmentIds.length > 0) {
@@ -130,9 +130,6 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     }));
 
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: task.id });
-    if (taskCtx.queueRunning) {
-      taskCtx.taskQueue.notifyNewTask();
-    }
     deps.broadcastToSession(taskCtx.sessionId, {
       type: "task:event",
       event: "task:updated",
@@ -201,7 +198,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           createdBy: "web",
         },
         now,
-        undefined,
+        { status: "queued" },
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -224,9 +221,6 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     }
 
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: `rerun_from:${source.id}` });
-    if (taskCtx.queueRunning) {
-      taskCtx.taskQueue.notifyNewTask();
-    }
 
     deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
     sendJson(res, 201, { success: true, sourceTaskId: source.id, task: created });
