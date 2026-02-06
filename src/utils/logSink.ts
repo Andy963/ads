@@ -1,9 +1,9 @@
-import fs from "node:fs";
 import path from "node:path";
 import util from "node:util";
 
 import { withStatusLineSuppressed } from "./statusLineManager.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { RotatingLogFile } from "./rotatingLogFile.js";
 
 type ConsoleMethod = (...args: unknown[]) => void;
 
@@ -12,6 +12,7 @@ let initialized = false;
 interface GlobalConsoleLoggerOptions {
   logFileName?: string;
   mirrorToStdout?: boolean;
+  maxBytes?: number;
 }
 
 function resolveLogFilePath(fileName?: string): string {
@@ -35,17 +36,6 @@ function formatArg(arg: unknown): string {
   return util.inspect(arg, { depth: 6, colors: false, breakLength: 120 });
 }
 
-function createWriter(stream: fs.WriteStream, mirror: boolean, original: ConsoleMethod, level: string) {
-  return (...args: unknown[]): void => {
-    const timestamp = new Date().toISOString();
-    const message = args.map(formatArg).join(" ");
-    stream.write(`${timestamp} ${level.padEnd(5)} ${message}\n`);
-    if (mirror) {
-      withStatusLineSuppressed(() => original(...args));
-    }
-  };
-}
-
 export function initGlobalConsoleLogger(options?: GlobalConsoleLoggerOptions): void {
   if (initialized) {
     return;
@@ -64,35 +54,43 @@ export function initGlobalConsoleLogger(options?: GlobalConsoleLoggerOptions): v
     options?.mirrorToStdout ??
     (mirrorToStdoutEnv === undefined ? Boolean(process.stdout.isTTY) : mirrorToStdoutEnv !== "0");
 
-  let stream: fs.WriteStream | null = null;
+  const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
+  const maxBytes = options?.maxBytes ?? DEFAULT_MAX_BYTES;
+
+  let sink: RotatingLogFile | null = null;
   try {
     const logFilePath = resolveLogFilePath(options?.logFileName);
-    fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
-    try {
-      fs.chmodSync(logFilePath, 0o600);
-    } catch {
-      // ignore
-    }
-    stream = fs.createWriteStream(logFilePath, { flags: "a", mode: 0o600 });
+    sink = new RotatingLogFile(logFilePath, { maxBytes, mode: 0o600 });
   } catch (error) {
     original.error("[LogSink] Failed to initialize file logger:", error);
     return;
   }
 
-  if (!stream) {
+  if (!sink) {
     return;
   }
 
-  console.log = createWriter(stream, mirrorToStdout, original.log, "INFO");
-  console.info = createWriter(stream, mirrorToStdout, original.info, "INFO");
-  console.warn = createWriter(stream, mirrorToStdout, original.warn, "WARN");
-  console.error = createWriter(stream, mirrorToStdout, original.error, "ERROR");
-  console.debug = createWriter(stream, mirrorToStdout, original.debug, "DEBUG");
+  const createRotatingWriter = (mirror: boolean, originalMethod: ConsoleMethod, level: string) => {
+    return (...args: unknown[]): void => {
+      const timestamp = new Date().toISOString();
+      const message = args.map(formatArg).join(" ");
+      sink!.write(`${timestamp} ${level.padEnd(5)} ${message}\n`);
+      if (mirror) {
+        withStatusLineSuppressed(() => originalMethod(...args));
+      }
+    };
+  };
+
+  console.log = createRotatingWriter(mirrorToStdout, original.log, "INFO");
+  console.info = createRotatingWriter(mirrorToStdout, original.info, "INFO");
+  console.warn = createRotatingWriter(mirrorToStdout, original.warn, "WARN");
+  console.error = createRotatingWriter(mirrorToStdout, original.error, "ERROR");
+  console.debug = createRotatingWriter(mirrorToStdout, original.debug, "DEBUG");
 
   const close = (): void => {
-    if (stream) {
-      stream.end();
-      stream = null;
+    if (sink) {
+      sink.close();
+      sink = null;
     }
   };
 
