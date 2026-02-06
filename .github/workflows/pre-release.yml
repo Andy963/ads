@@ -25,8 +25,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm test && npm run test:web
+      - name: Verify dev toolchain
+        run: |
+          set -euo pipefail
+          node -v
+          npm -v
+          npx --no tsx --version
+          npx --no vitest --version
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Run web tests
+        run: npm run test:web
 
       - name: Build
         run: npm run build
