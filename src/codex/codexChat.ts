@@ -23,6 +23,21 @@ import { createLogger } from "../utils/logger.js";
 const logger = createLogger("CodexSession");
 const ABORT_ERROR_MESSAGE = "用户中断了请求";
 
+function normalizeSpawnEnv(
+  env: NodeJS.ProcessEnv | undefined,
+): Record<string, string> | undefined {
+  if (!env) {
+    return undefined;
+  }
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string") {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
@@ -45,6 +60,7 @@ export interface CodexSessionOptions {
   systemPromptManager?: SystemPromptManager;
   networkAccessEnabled?: boolean;
   webSearchEnabled?: boolean;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface CodexSendOptions {
@@ -87,10 +103,11 @@ export class CodexSession {
     }
 
     try {
-      const config = resolveCodexConfig(this.options.overrides ?? {});
+      const config = resolveCodexConfig(this.options.overrides ?? {}, this.options.env);
       this.codex = new Codex({
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
+        env: normalizeSpawnEnv(this.options.env),
       });
       this.resolvedConfig = config;
       this.ready = true;

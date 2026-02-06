@@ -46,8 +46,10 @@ const webThreadStorage = new ThreadStorage({
   namespace: "web",
   storagePath: path.join(adsStateDir, "web-threads.json"),
 });
+const PLANNER_CODEX_HOME = process.env.ADS_PLANNER_CODEX_HOME || "/home/andy/.codex-planner";
+const plannerCodexEnv: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: PLANNER_CODEX_HOME };
 const sessionManager = new SessionManager(0, 0, "workspace-write", "gpt-5.2", webThreadStorage);
-const plannerSessionManager = new SessionManager(0, 0, "read-only", "gpt-5.2", webThreadStorage);
+const plannerSessionManager = new SessionManager(0, 0, "read-only", "gpt-5.2", webThreadStorage, plannerCodexEnv);
 const historyStore = new HistoryStore({
   storagePath: stateDbPath,
   namespace: "web",

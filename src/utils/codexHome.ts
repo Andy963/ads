@@ -1,8 +1,8 @@
 import os from "node:os";
 import path from "node:path";
 
-export function resolveCodexHomeDir(): string {
-  const raw = String(process.env.CODEX_HOME ?? "").trim();
+export function resolveCodexHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = String(env.CODEX_HOME ?? "").trim();
   if (raw) {
     // Expand "~" to the user's home directory for convenience (`CODEX_HOME=~/.codex`).
     if (raw === "~") {

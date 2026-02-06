@@ -52,6 +52,7 @@ export class SessionManager {
   private defaultModel?: string;
   private userModels = new Map<number, string>();
   private threadStorage?: ThreadStorage;
+  private codexEnv?: NodeJS.ProcessEnv;
   private readonly logger = createLogger("SessionManager");
 
   constructor(
@@ -60,10 +61,12 @@ export class SessionManager {
     sandboxMode: SandboxMode = 'workspace-write',
     defaultModel?: string,
     threadStorage?: ThreadStorage,
+    codexEnv?: NodeJS.ProcessEnv,
   ) {
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
     this.threadStorage = threadStorage;
+    this.codexEnv = codexEnv;
     if (this.sessionTimeoutMs > 0 && this.cleanupIntervalMs > 0) {
       this.cleanupInterval = setInterval(() => {
         this.cleanup();
@@ -101,6 +104,7 @@ export class SessionManager {
       workingDirectory: effectiveCwd,
       networkAccessEnabled: true,
       resumeThreadId,
+      env: this.codexEnv,
     });
 
     const session = new HybridOrchestrator({

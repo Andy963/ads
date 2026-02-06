@@ -25,23 +25,24 @@ export interface CodexResolvedConfig {
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
 export function resolveCodexConfig(
-  overrides: CodexOverrides = {}
+  overrides: CodexOverrides = {},
+  env: NodeJS.ProcessEnv = process.env,
 ): CodexResolvedConfig {
   const envBaseUrl =
-    process.env.CODEX_BASE_URL ||
-    process.env.OPENAI_BASE_URL ||
-    process.env.OPENAI_API_BASE;
+    env.CODEX_BASE_URL ||
+    env.OPENAI_BASE_URL ||
+    env.OPENAI_API_BASE;
   const envApiKey =
-    process.env.CODEX_API_KEY ||
-    process.env.OPENAI_API_KEY ||
-    process.env.CCHAT_OPENAI_API_KEY;
+    env.CODEX_API_KEY ||
+    env.OPENAI_API_KEY ||
+    env.CCHAT_OPENAI_API_KEY;
 
   const {
     baseUrl: configBaseUrl,
     apiKey: configApiKey,
     hasDeviceAuthTokens,
     modelReasoningEffort: configReasoningEffort,
-  } = loadCodexFiles();
+  } = loadCodexFiles(env);
 
   const apiKey = overrides.apiKey || envApiKey || configApiKey;
   const apiKeySource = overrides.apiKey
@@ -69,7 +70,7 @@ export function resolveCodexConfig(
       : undefined;
 
   if (!authMode) {
-    const codexHome = resolveCodexHomeDir();
+    const codexHome = resolveCodexHomeDir(env);
     throw new Error(
       `Codex credentials not found. Provide --api-key (or CODEX_API_KEY), or sign in with \`codex login\` to use saved access/refresh tokens in ${codexHome}/auth.json.`
     );
@@ -127,8 +128,8 @@ function parseReasoningEffort(value: unknown): ModelReasoningEffort | undefined 
   return raw as ModelReasoningEffort;
 }
 
-function loadCodexFiles(): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens: boolean } {
-  const codexDir = resolveCodexHomeDir();
+function loadCodexFiles(env: NodeJS.ProcessEnv): Partial<CodexResolvedConfig> & { hasDeviceAuthTokens: boolean } {
+  const codexDir = resolveCodexHomeDir(env);
   const configPath = join(codexDir, "config.toml");
   const authPath = join(codexDir, "auth.json");
 
