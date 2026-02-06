@@ -32,11 +32,9 @@ export function createExecuteActions(params: {
     setMessages,
     pushRecentCommand,
     dropEmptyAssistantPlaceholder,
-    randomId,
     maxExecutePreviewLines,
     maxTurnCommands,
     isLiveMessageId,
-    findFirstLiveIndex,
     findLastLiveIndex,
   } = params;
 
@@ -165,21 +163,14 @@ export function createExecuteActions(params: {
   const finalizeCommandBlock = (rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
     const existing = state.messages.value.slice();
-    let insertAt = -1;
     const withoutExecute: ChatItem[] = [];
     for (let i = 0; i < existing.length; i++) {
       const m = existing[i]!;
       if (m.kind === "execute") {
-        if (insertAt < 0) insertAt = withoutExecute.length;
         continue;
       }
       withoutExecute.push(m);
     }
-
-    const commands = state.turnCommands.slice();
-    const shownCount = commands.length;
-    const totalCount = Math.max(state.turnCommandCount, shownCount);
-    const content = commands.map((c) => `$ ${c}`).join("\n").trim();
 
     state.recentCommands.value = [];
     state.turnCommands = [];
@@ -188,35 +179,7 @@ export function createExecuteActions(params: {
     state.executeOrder = [];
     state.seenCommandIds.clear();
 
-    if (!content) {
-      if (withoutExecute.length !== existing.length) setMessages(withoutExecute, state);
-      return;
-    }
-
-    if (insertAt < 0) {
-      const liveIndex = findFirstLiveIndex(withoutExecute);
-      insertAt = liveIndex < 0 ? withoutExecute.length : liveIndex;
-      for (let i = withoutExecute.length - 1; i >= 0; i--) {
-        const m = withoutExecute[i]!;
-        if (isLiveMessageId(m.id)) continue;
-        if (m.role === "assistant" && m.streaming) {
-          insertAt = Math.min(insertAt, i);
-          break;
-        }
-      }
-    }
-
-    const item: ChatItem = {
-      id: randomId("cmd"),
-      role: "system",
-      kind: "command",
-      content,
-      commandsTotal: totalCount,
-      commandsShown: shownCount,
-      commandsLimit: maxTurnCommands,
-      streaming: false,
-    };
-    setMessages([...withoutExecute.slice(0, insertAt), item, ...withoutExecute.slice(insertAt)], state);
+    if (withoutExecute.length !== existing.length) setMessages(withoutExecute, state);
   };
 
   return { ingestCommand, commandKeyForWsEvent, upsertExecuteBlock, finalizeCommandBlock };

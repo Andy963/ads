@@ -431,7 +431,7 @@ onBeforeUnmount(() => {
         </div>
         <MainChatView
           :key="activeProjectId"
-          class="chatHost"
+          class="chatHost chatHost--planner"
           :messages="plannerMessages"
           :queued-prompts="plannerQueuedPrompts"
           :pending-images="plannerPendingImages"

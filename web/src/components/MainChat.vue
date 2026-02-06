@@ -48,6 +48,9 @@ const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
 let liveStepScrollFrame: number | null = null;
 
+const liveStepExpanded = ref(false);
+const liveStepHasOverflow = ref(false);
+
 let chatResizeObserver: ResizeObserver | null = null;
 let chatScrollQueued = false;
 
@@ -129,6 +132,7 @@ function ensureLiveStepScrollEl(): HTMLElement | null {
 }
 
 function scheduleLiveStepScrollToBottom(): void {
+  if (liveStepExpanded.value) return;
   if (!liveStepPinnedToBottom.value) return;
 
   const el = ensureLiveStepScrollEl();
@@ -142,6 +146,46 @@ function scheduleLiveStepScrollToBottom(): void {
     if (!target) return;
     target.scrollTop = target.scrollHeight;
   });
+}
+
+function clampLiveStepHeightPx(el: HTMLElement): number {
+  const style = window.getComputedStyle(el);
+  const lineHeightStr = style.lineHeight || "";
+  const fontSizeStr = style.fontSize || "";
+
+  const lineHeight = Number.parseFloat(lineHeightStr);
+  if (Number.isFinite(lineHeight) && lineHeight > 0) return lineHeight * 3;
+
+  const fontSize = Number.parseFloat(fontSizeStr);
+  if (Number.isFinite(fontSize) && fontSize > 0) return fontSize * 1.6 * 3;
+
+  return 0;
+}
+
+async function updateLiveStepOverflow(): Promise<void> {
+  if (typeof window === "undefined") return;
+  await nextTick();
+  const el = ensureLiveStepScrollEl();
+  if (!el) {
+    liveStepHasOverflow.value = false;
+    return;
+  }
+
+  const clampPx = clampLiveStepHeightPx(el);
+  if (clampPx <= 0) {
+    liveStepHasOverflow.value = el.scrollHeight > el.clientHeight + 1;
+    return;
+  }
+
+  // Compare the full content height against the 3-line clamp height so this
+  // stays accurate even while expanded.
+  liveStepHasOverflow.value = el.scrollHeight > clampPx + 1;
+}
+
+function toggleLiveStepExpanded(): void {
+  liveStepExpanded.value = !liveStepExpanded.value;
+  if (!liveStepExpanded.value) scheduleLiveStepScrollToBottom();
+  void updateLiveStepOverflow();
 }
 
 function isCommandTreeOpen(id: string, commandsCount: number): boolean {
@@ -165,6 +209,10 @@ const liveStepMessage = computed(
     props.messages.find((m) => m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text") ?? null,
 );
 
+function isLiveStepRenderMessage(m: RenderMessage): boolean {
+  return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
+}
+
 const renderMessages = computed<RenderMessage[]>(() => {
   let latestExecuteId: string | null = null;
   for (let i = props.messages.length - 1; i >= 0; i--) {
@@ -175,7 +223,9 @@ const renderMessages = computed<RenderMessage[]>(() => {
     }
   }
 
-  return props.messages.filter((m) => m.kind !== "execute" || m.id === latestExecuteId);
+  // Execute previews are only meaningful while the agent is running; finalized command
+  // trees are no longer shown, so we also suppress command summary items here.
+  return props.messages.filter((m) => m.kind !== "command" && (m.kind !== "execute" || m.id === latestExecuteId));
 });
 
 const canInterrupt = computed(() => props.busy);
@@ -378,9 +428,11 @@ watch(
     if (streaming && !prevStreaming) {
       // New streaming session: follow the newest content until the user scrolls away.
       liveStepPinnedToBottom.value = true;
+      liveStepExpanded.value = false;
     }
 
     scheduleLiveStepScrollToBottom();
+    void updateLiveStepOverflow();
   },
   { flush: "post", immediate: true },
 );
@@ -476,6 +528,18 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
           <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0"
             class="typing" aria-label="AI is thinking">
             <span class="thinkingText">thinking</span>
+          </div>
+          <div v-else-if="isLiveStepRenderMessage(m)" class="liveStep">
+            <div class="liveStepBody" :data-expanded="String(liveStepExpanded)"
+              :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded }">
+              <MarkdownContent :content="m.content" />
+            </div>
+            <div v-if="liveStepHasOverflow || liveStepExpanded" class="liveStepToggleRow">
+              <button class="liveStepToggleBtn" type="button" :aria-expanded="liveStepExpanded"
+                @click.stop="toggleLiveStepExpanded">
+                {{ liveStepExpanded ? "Collapse" : "Expand" }}
+              </button>
+            </div>
           </div>
           <MarkdownContent v-else :content="m.content" />
           <div v-if="shouldShowMsgActions(m)" class="msgActions">

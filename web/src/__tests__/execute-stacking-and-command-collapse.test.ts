@@ -191,7 +191,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("collapses command trees by default and toggles via header and caret", async () => {
+  it("does not render finalized command trees in the chat UI", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -217,35 +217,8 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.find(".command-tree").exists()).toBe(false);
-    const header = wrapper.find(".command-tree-header");
-    expect(header.exists()).toBe(true);
-    expect(header.attributes("aria-expanded")).toBe("false");
-
-    const caret = wrapper.find(".command-caret");
-    expect(caret.exists()).toBe(true);
-
-    // Clicking the caret should toggle exactly once via bubbling to the header button.
-    await caret.trigger("click");
-    await settleUi(wrapper);
-
-    expect(wrapper.find(".command-tree").exists()).toBe(true);
-    expect(wrapper.findAll(".command-tree-item")).toHaveLength(4);
-    expect(wrapper.find(".command-tree-header").attributes("aria-expanded")).toBe("true");
-
-    await wrapper.find(".command-caret").trigger("click");
-    await settleUi(wrapper);
-
-    expect(wrapper.find(".command-tree").exists()).toBe(false);
-    expect(wrapper.find(".command-tree-header").attributes("aria-expanded")).toBe("false");
-
-    // Clicking anywhere on the header row should behave the same.
-    await header.trigger("click");
-    await settleUi(wrapper);
-    expect(wrapper.find(".command-tree").exists()).toBe(true);
-
-    await header.trigger("click");
-    await settleUi(wrapper);
+    expect(wrapper.find(".command-block").exists()).toBe(false);
+    expect(wrapper.find(".command-tree-header").exists()).toBe(false);
     expect(wrapper.find(".command-tree").exists()).toBe(false);
 
     wrapper.unmount();

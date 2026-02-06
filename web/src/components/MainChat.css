@@ -25,6 +25,26 @@
   position: relative;
 }
 
+.chatHost--planner .chat {
+  /* The planner pane sits in the middle column; keep its scrollbar visually light. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.75) transparent;
+}
+
+.chatHost--planner .chat::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chatHost--planner .chat::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.7);
+  border-radius: 999px;
+}
+
+.chatHost--planner .chat::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .chat-empty {
   padding: 18px;
   text-align: center;
@@ -315,28 +335,62 @@
   border-color: rgba(148, 163, 184, 0.35);
 }
 
-.msg[data-id="live-step"] .bubble :deep(.md) {
-  /* Keep the reasoning/step trace from taking over the layout; let it scroll in-place. */
+.msg[data-id="live-step"] .liveStepBody {
+  position: relative;
+}
+
+.msg[data-id="live-step"] .liveStepBody :deep(.md) {
+  /*
+    Keep the reasoning/step trace from taking over the layout.
+    Default: show exactly 3 lines, fold the rest (no scrollbar).
+  */
+  font-style: italic;
   max-height: 4.8em;
   max-height: 3lh;
-  overflow-y: auto;
+  min-height: 4.8em;
+  min-height: 3lh;
+  overflow: hidden;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.75) transparent;
 }
 
-.msg[data-id="live-step"] .bubble :deep(.md)::-webkit-scrollbar {
-  width: 6px;
+.msg[data-id="live-step"] .liveStepBody[data-expanded="true"] :deep(.md) {
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
 }
 
-.msg[data-id="live-step"] .bubble :deep(.md)::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.7);
+.msg[data-id="live-step"] .liveStepBody.liveStepBody--clamped::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.6em;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0), var(--surface));
+  pointer-events: none;
+}
+
+.msg[data-id="live-step"] .liveStepToggleRow {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.msg[data-id="live-step"] .liveStepToggleBtn {
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.03);
+  color: rgba(15, 23, 42, 0.82);
   border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.msg[data-id="live-step"] .bubble :deep(.md)::-webkit-scrollbar-track {
-  background: transparent;
+.msg[data-id="live-step"] .liveStepToggleBtn:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: rgba(15, 23, 42, 0.92);
 }
 
 .msg[data-kind="command"] .bubble {
@@ -409,6 +463,10 @@
   font-size: 13px;
   line-height: 1;
   color: #94a3b8;
+}
+
+.thinkingText {
+  font-style: italic;
 }
 
 .thinkingText::after {

@@ -116,7 +116,7 @@ describe("command UI lifecycle", () => {
     vi.clearAllMocks();
   });
 
-  it("shows per-command execute previews during turn and collapses to a tree on completion", async () => {
+  it("shows per-command execute previews during turn and removes them on completion", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -151,9 +151,7 @@ describe("command UI lifecycle", () => {
 
     const after = (wrapper.vm as any).messages as Array<any>;
     expect(after.some((m) => m.kind === "execute")).toBe(false);
-    const tree = after.find((m) => m.kind === "command");
-    expect(tree).toBeTruthy();
-    expect(String(tree.content)).toContain("$ git status --porcelain");
+    expect(after.some((m) => m.kind === "command")).toBe(false);
     expect(after.some((m) => m.role === "assistant" && m.kind === "text" && m.content.includes("Summary"))).toBe(true);
 
     wrapper.unmount();

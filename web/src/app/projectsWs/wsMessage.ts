@@ -38,7 +38,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     pid,
     rt,
     wsInstance,
-    maxTurnCommands,
     randomId,
     updateProject,
     applyMergedHistory,
@@ -116,10 +115,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const type = typeValue;
 
     if (type === "agent") {
+      const rec = msg as Record<string, unknown>;
       const event = String((msg as { event?: unknown }).event ?? "").trim();
-      const agentId = String((msg as { agentId?: unknown; agent_id?: unknown; agent?: unknown }).agentId ?? (msg as any).agent_id ?? (msg as any).agent ?? "").trim();
-      const agentName = String((msg as { agentName?: unknown; agent_name?: unknown }).agentName ?? (msg as any).agent_name ?? agentId).trim() || agentId || "agent";
-      const delegationId = String((msg as { delegationId?: unknown; delegation_id?: unknown; id?: unknown }).delegationId ?? (msg as any).delegation_id ?? (msg as any).id ?? "").trim();
+      const agentId = String((msg as { agentId?: unknown }).agentId ?? rec["agent_id"] ?? rec["agent"] ?? "").trim();
+      const agentName = String((msg as { agentName?: unknown }).agentName ?? rec["agent_name"] ?? agentId).trim() || agentId || "agent";
+      const delegationId = String((msg as { delegationId?: unknown; id?: unknown }).delegationId ?? rec["delegation_id"] ?? rec["id"] ?? "").trim();
       const prompt = String((msg as { prompt?: unknown }).prompt ?? "").trim();
 
       const existing = Array.isArray(rt.delegationsInFlight.value) ? rt.delegationsInFlight.value : [];
@@ -293,20 +293,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.recentCommands.value = [];
       rt.seenCommandIds.clear();
       const next: ChatItem[] = [];
-      let cmdGroup: string[] = [];
-      let cmdGroupTs: number | null = null;
-      const flushCommands = () => {
-        if (cmdGroup.length === 0) return;
-        next.push({
-          id: randomId("h-cmd"),
-          role: "system",
-          kind: "command",
-          content: cmdGroup.join("\n"),
-          ts: cmdGroupTs ?? undefined,
-        });
-        cmdGroup = [];
-        cmdGroupTs = null;
-      };
       for (let idx = 0; idx < items.length; idx++) {
         const entry = items[idx] as { role?: unknown; text?: unknown; kind?: unknown; ts?: unknown };
         const role = String(entry.role ?? "");
@@ -318,16 +304,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!trimmed) continue;
         const isCommand = kind === "command" || (role === "status" && trimmed.startsWith("$ "));
         if (isCommand) {
-          cmdGroup = [...cmdGroup, trimmed].slice(-maxTurnCommands);
-          if (ts) cmdGroupTs = ts;
           continue;
         }
-        flushCommands();
         if (role === "user") next.push({ id: `h-u-${idx}`, role: "user", kind: "text", content: trimmed, ts: ts ?? undefined });
         else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed, ts: ts ?? undefined });
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }
-      flushCommands();
       applyMergedHistory(next, rt);
       return;
     }

@@ -22,7 +22,7 @@ function readUtf8(relFromThisFile: string): string {
 }
 
 describe("live-step reasoning scroll style", () => {
-  it("renders a stable hook and keeps the scroll constraint in CSS", () => {
+  it("renders a stable hook and keeps the clamp constraint in CSS", () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -45,12 +45,16 @@ describe("live-step reasoning scroll style", () => {
     const live = wrapper.find('.msg[data-id="live-step"]');
     expect(live.exists()).toBe(true);
     expect(live.find(".bubble").exists()).toBe(true);
+    expect(live.find(".liveStepBody").exists()).toBe(true);
     expect(live.find(".md").exists()).toBe(true);
 
     const css = readUtf8("../components/MainChat.css");
-    expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.bubble\s+:deep\(\.md\)\s*\{[\s\S]*?\}/);
+    expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.liveStepBody\s+:deep\(\.md\)\s*\{[\s\S]*?\}/);
+    expect(css).toMatch(
+      /\.msg\[data-id="live-step"\]\s+\.liveStepBody\s+:deep\(\.md\)\s*\{[\s\S]*?font-style:\s*italic\s*;[\s\S]*?\}/,
+    );
     expect(css).toMatch(/max-height:\s*3lh\s*;/);
-    expect(css).toMatch(/overflow-y:\s*auto\s*;/);
+    expect(css).toMatch(/overflow:\s*hidden\s*;/);
 
     wrapper.unmount();
   });
