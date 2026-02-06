@@ -5,7 +5,15 @@ import { createLogger, type Logger } from "../../utils/logger.js";
 
 import { TaskSpecSchema, TaskResultSchema, SupervisorVerdictSchema, extractJsonPayload, type TaskResult, type TaskSpec } from "./schemas.js";
 import { TaskStore, type TaskStatus } from "./taskStore.js";
-import { runVerification } from "./verificationRunner.js";
+import { runVerification, type VerificationReport } from "./verificationRunner.js";
+
+const GIT_ONLY_PATTERN = /\b(git\s+)?(commit|push|pull|fetch|tag|stash|log|merge|rebase|cherry-pick|checkout|branch|reset|revert|remote|clone|init|diff|show|bisect|archive|bundle|gc|reflog|shortlog|describe|am|format-patch|send-email)\b/i;
+
+export function isGitOnlyTask(spec: TaskSpec): boolean {
+  const goal = spec.goal.trim();
+  const sentences = goal.split(/[.;!\n]+/).map((s) => s.trim()).filter(Boolean);
+  return sentences.length > 0 && sentences.every((s) => GIT_ONLY_PATTERN.test(s));
+}
 
 const logger = createLogger("TaskCoordinator");
 
@@ -207,10 +215,15 @@ export class TaskCoordinator {
           allDelegations.push(summary);
           await this.options.hooks?.onDelegationResult?.(summary);
 
-          const verificationReport = await runVerification(spec.verification, {
-            cwd: this.options.verificationCwd,
-            signal: this.options.signal,
-          });
+          let verificationReport: VerificationReport;
+          if (isGitOnlyTask(spec)) {
+            verificationReport = { enabled: false, results: [] };
+          } else {
+            verificationReport = await runVerification(spec.verification, {
+              cwd: this.options.verificationCwd,
+              signal: this.options.signal,
+            });
+          }
           this.store.setVerification(spec.taskId, verificationReport, Date.now());
           this.store.appendMessage(spec.taskId, { role: "system", kind: "verification", payload: verificationReport });
           const verificationText = formatVerification(verificationReport);
