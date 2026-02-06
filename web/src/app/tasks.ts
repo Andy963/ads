@@ -30,6 +30,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     normalizeProjectId,
     getRuntime,
     activeRuntime,
+    activePlannerRuntime,
     apiError,
     models,
     withWorkspaceQueryFor,
@@ -46,7 +47,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     runtimeTasksBusy,
   } = ctx;
 
-  const { threadReset, clearConversationForResume, enqueueMainPrompt } = ctx;
+  const { threadReset, clearConversationForResume, enqueueMainPrompt, enqueuePrompt, removeQueuedPrompt } = ctx;
 
   const { setNotice, clearNotice } = createNoticeActions({ activeProjectId, normalizeProjectId, getRuntime });
 
@@ -368,8 +369,21 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     enqueueMainPrompt(text, images);
   };
 
+  const sendPlannerPrompt = (content: string): void => {
+    apiError.value = null;
+    const text = String(content ?? "");
+    const planner = activePlannerRuntime.value;
+    const images = planner.pendingImages.value.slice();
+    planner.pendingImages.value = [];
+    enqueuePrompt(text, images, planner);
+  };
+
   const interruptActive = (): void => {
     activeRuntime.value.ws?.interrupt();
+  };
+
+  const interruptPlanner = (): void => {
+    activePlannerRuntime.value.ws?.interrupt();
   };
 
   const clearActiveChat = (): void => {
@@ -418,6 +432,19 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     activeRuntime.value.pendingImages.value = [];
   };
 
+  const addPlannerPendingImages = (imgs: IncomingImage[]): void => {
+    const rt = activePlannerRuntime.value;
+    rt.pendingImages.value = [...rt.pendingImages.value, ...(Array.isArray(imgs) ? imgs : [])];
+  };
+
+  const clearPlannerPendingImages = (): void => {
+    activePlannerRuntime.value.pendingImages.value = [];
+  };
+
+  const removePlannerQueuedPrompt = (id: string): void => {
+    removeQueuedPrompt(id, activePlannerRuntime.value);
+  };
+
   const openTaskCreateDialog = (): void => {
     apiError.value = null;
     taskCreateDialogOpen.value = true;
@@ -457,13 +484,18 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     cancelDeleteTask,
     confirmDeleteTask,
     sendMainPrompt,
+    sendPlannerPrompt,
     interruptActive,
+    interruptPlanner,
     clearActiveChat,
     resumeTaskThread,
     addPendingImages,
     clearPendingImages,
+    addPlannerPendingImages,
+    clearPlannerPendingImages,
     openTaskCreateDialog,
     closeTaskCreateDialog,
     select,
+    removePlannerQueuedPrompt,
   };
 }

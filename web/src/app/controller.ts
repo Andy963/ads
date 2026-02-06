@@ -81,6 +81,7 @@ export function createAppContext() {
   const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
 
   const runtimeByProjectId = new Map<string, ProjectRuntime>();
+  const plannerRuntimeByProjectId = new Map<string, ProjectRuntime>();
 
   const normalizeProjectId = (id: string | null | undefined): string => {
     const trimmed = String(id ?? "").trim();
@@ -96,7 +97,18 @@ export function createAppContext() {
     return created;
   };
 
+  const getPlannerRuntime = (projectId: string | null | undefined): ProjectRuntime => {
+    const id = normalizeProjectId(projectId);
+    const existing = plannerRuntimeByProjectId.get(id);
+    if (existing) return existing;
+    const created = createProjectRuntime({ maxLiveActivitySteps });
+    created.chatSessionId = "planner";
+    plannerRuntimeByProjectId.set(id, created);
+    return created;
+  };
+
   const activeRuntime = computed(() => getRuntime(activeProjectId.value));
+  const activePlannerRuntime = computed(() => getPlannerRuntime(activeProjectId.value));
 
   const connected = computed({
     get: () => activeRuntime.value.connected.value,
@@ -304,9 +316,12 @@ export function createAppContext() {
     mobilePane,
     activeProject,
     runtimeByProjectId,
+    plannerRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
+    getPlannerRuntime,
     activeRuntime,
+    activePlannerRuntime,
     connected,
     apiError,
     apiNotice,
@@ -375,13 +390,16 @@ export function createAppController() {
   const activateProject = async (projectId: string): Promise<void> => {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
+    const plannerRt = ctx.getPlannerRuntime(pid);
     if (!ctx.loggedIn.value) return;
     rt.apiError.value = null;
     rt.wsError.value = null;
+    plannerRt.wsError.value = null;
     try {
       await Promise.all([
         tasks.loadQueueStatus(pid),
         (!rt.ws || !rt.connected.value) ? ws.connectWs(pid) : Promise.resolve(),
+        (!plannerRt.ws || !plannerRt.connected.value) ? ws.connectPlannerWs(pid) : Promise.resolve(),
         tasks.loadTasks(pid),
       ]);
     } catch (error) {
@@ -447,7 +465,7 @@ export function createAppController() {
 
   onBeforeUnmount(() => {
     window.removeEventListener("resize", ctx.updateIsMobile);
-    for (const rt of ctx.runtimeByProjectId.values()) {
+    for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.plannerRuntimeByProjectId.values()]) {
       if (rt.liveActivityTtlTimer === null) continue;
       window.clearTimeout(rt.liveActivityTtlTimer);
       rt.liveActivityTtlTimer = null;

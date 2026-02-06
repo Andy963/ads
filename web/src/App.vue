@@ -54,6 +54,7 @@ const {
   clearActiveChat,
   startNewChatSession,
   messages,
+  activePlannerRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
@@ -69,10 +70,15 @@ const {
   deletePrompt,
   agentDelegations,
   sendMainPrompt,
+  sendPlannerPrompt,
   interruptActive,
+  interruptPlanner,
   addPendingImages,
   clearPendingImages,
+  addPlannerPendingImages,
+  clearPlannerPendingImages,
   removeQueuedPrompt,
+  removePlannerQueuedPrompt,
   apiNotice,
   taskCreateDialogOpen,
   closeTaskCreateDialog,
@@ -107,6 +113,17 @@ const {
 const draggingProjectId = ref<string | null>(null);
 const dropTargetProjectId = ref<string | null>(null);
 const dropTargetPosition = ref<"before" | "after">("before");
+
+const workerDrawerOpen = ref(false);
+
+const plannerMessages = computed(() => activePlannerRuntime.value.messages.value);
+const plannerQueuedPrompts = computed(() =>
+  activePlannerRuntime.value.queuedPrompts.value.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length })),
+);
+const plannerPendingImages = computed(() => activePlannerRuntime.value.pendingImages.value);
+const plannerConnected = computed(() => activePlannerRuntime.value.connected.value);
+const plannerBusy = computed(() => activePlannerRuntime.value.busy.value);
+const plannerAgentDelegations = computed(() => activePlannerRuntime.value.delegationsInFlight.value);
 
 const projectRemoveConfirmOpen = ref(false);
 const pendingRemoveProjectId = ref<string | null>(null);
@@ -294,6 +311,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="right">
+        <button v-if="isMobile" type="button" class="topbarWorker" title="Worker" @click="workerDrawerOpen = true">
+          Worker
+        </button>
         <button
           type="button"
           class="topbarGear"
@@ -405,7 +425,31 @@ onBeforeUnmount(() => {
         </div>
       </aside>
 
-      <section class="rightPane">
+      <section class="plannerPane">
+        <div class="chatPaneHeader">
+          <div class="chatPaneTitle">Planner</div>
+        </div>
+        <MainChatView
+          :key="activeProjectId"
+          class="chatHost"
+          :messages="plannerMessages"
+          :queued-prompts="plannerQueuedPrompts"
+          :pending-images="plannerPendingImages"
+          :connected="plannerConnected"
+          :busy="plannerBusy"
+          :agent-delegations="plannerAgentDelegations"
+          @send="sendPlannerPrompt"
+          @interrupt="interruptPlanner"
+          @addImages="addPlannerPendingImages"
+          @clearImages="clearPlannerPendingImages"
+          @removeQueued="removePlannerQueuedPrompt"
+        />
+      </section>
+
+      <section v-if="!isMobile" class="workerPane">
+        <div class="chatPaneHeader">
+          <div class="chatPaneTitle">Worker</div>
+        </div>
         <MainChatView
           :key="activeProjectId"
           class="chatHost"
@@ -424,6 +468,37 @@ onBeforeUnmount(() => {
         />
       </section>
     </main>
+
+    <div
+      v-if="isMobile && workerDrawerOpen"
+      class="workerDrawerOverlay"
+      role="dialog"
+      aria-modal="true"
+      @click.self="workerDrawerOpen = false"
+    >
+      <div class="workerDrawer">
+        <div class="workerDrawerHeader">
+          <div class="workerDrawerTitle">Worker</div>
+          <button type="button" class="workerDrawerClose" @click="workerDrawerOpen = false">Close</button>
+        </div>
+        <MainChatView
+          :key="activeProjectId"
+          class="chatHost"
+          :messages="messages"
+          :queued-prompts="queuedPrompts.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length }))"
+          :pending-images="pendingImages"
+          :connected="connected"
+          :busy="agentBusy"
+          :agent-delegations="agentDelegations"
+          @send="sendMainPrompt"
+          @interrupt="interruptActive"
+          @clear="clearActiveChat"
+          @addImages="addPendingImages"
+          @clearImages="clearPendingImages"
+          @removeQueued="removeQueuedPrompt"
+        />
+      </div>
+    </div>
 
     <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
       <span class="noticeToastText">{{ apiNotice }}</span>

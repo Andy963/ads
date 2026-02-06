@@ -7,8 +7,19 @@ import type { WsDeps } from "./types";
 import { createWsMessageHandler } from "./wsMessage";
 
 export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDeps) {
-  const { api, loggedIn, projects, activeProjectId, pendingSwitchProjectId, runtimeByProjectId, normalizeProjectId, getRuntime, maxTurnCommands } =
-    ctx;
+  const {
+    api,
+    loggedIn,
+    projects,
+    activeProjectId,
+    pendingSwitchProjectId,
+    runtimeByProjectId,
+    plannerRuntimeByProjectId,
+    normalizeProjectId,
+    getRuntime,
+    getPlannerRuntime,
+    maxTurnCommands,
+  } = ctx;
 
   const {
     clearStepLive,
@@ -58,6 +69,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     for (const rt of runtimeByProjectId.values()) {
       closeRuntimeConnection(rt);
     }
+    for (const rt of plannerRuntimeByProjectId.values()) {
+      closeRuntimeConnection(rt);
+    }
   };
 
   const mergeProjectsInto = (target: ProjectTab, candidate: ProjectTab): ProjectTab => {
@@ -101,6 +115,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
         runtimeByProjectId.delete(oldKey);
       }
+      const plannerRt = plannerRuntimeByProjectId.get(oldKey);
+      if (plannerRt) {
+        if (!plannerRuntimeByProjectId.has(nextKey)) {
+          plannerRuntimeByProjectId.set(nextKey, plannerRt);
+        }
+        plannerRuntimeByProjectId.delete(oldKey);
+      }
     }
     deps.persistProjects();
   };
@@ -128,7 +149,21 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  const scheduleReconnect = (projectId: string, rt: { reconnectTimer: number | null; reconnectAttempts: number }, reason: string): void => {
+  type WsMode = "worker" | "planner";
+
+  const resolveChatSessionId = (project: ProjectTab, mode: WsMode): string => {
+    if (mode === "planner") {
+      return "planner";
+    }
+    return String(project.chatSessionId ?? "").trim() || "main";
+  };
+
+  const scheduleReconnect = (
+    mode: WsMode,
+    projectId: string,
+    rt: { reconnectTimer: number | null; reconnectAttempts: number },
+    reason: string,
+  ): void => {
     void reason;
     if (!loggedIn.value) return;
     if (rt.reconnectTimer !== null) return;
@@ -138,21 +173,23 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.reconnectAttempts += 1;
     rt.reconnectTimer = window.setTimeout(() => {
       rt.reconnectTimer = null;
-      void connectWs(projectId).catch(() => {
-        scheduleReconnect(projectId, rt, "connect failed");
+      const connectFn = mode === "planner" ? connectPlannerWs : connectWs;
+      void connectFn(projectId).catch(() => {
+        scheduleReconnect(mode, projectId, rt, "connect failed");
       });
     }, delayMs);
   };
 
-  const connectWs = async (projectId: string = activeProjectId.value): Promise<void> => {
+  const connectWsInternal = async (mode: WsMode, projectId: string = activeProjectId.value): Promise<void> => {
     if (!loggedIn.value) return;
     let pid = normalizeProjectId(projectId);
     let project = projects.value.find((p) => p.id === pid) ?? null;
     if (!project) return;
 
-    let rt = getRuntime(pid);
+    const chatSessionId = resolveChatSessionId(project, mode);
+    let rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
     rt.projectSessionId = String(project.sessionId ?? "").trim();
-    rt.chatSessionId = String(project.chatSessionId ?? "").trim() || "main";
+    rt.chatSessionId = chatSessionId;
 
     const identity = await resolveProjectIdentity(project);
     if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
@@ -166,9 +203,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       replaceProjectId(project.id, nextProject);
       pid = nextProject.id;
       project = nextProject;
-      rt = getRuntime(pid);
+      rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
       rt.projectSessionId = String(project.sessionId ?? "").trim();
-      rt.chatSessionId = String(project.chatSessionId ?? "").trim() || "main";
+      rt.chatSessionId = resolveChatSessionId(project, mode);
     }
 
     clearReconnectTimer(rt);
@@ -181,10 +218,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       // ignore
     }
 
-    const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: project.chatSessionId });
+    const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId });
     rt.ws = wsInstance;
     let disconnectCleanupDone = false;
     let disconnectWasBusy = false;
+    const shouldSyncTasks = mode === "worker";
 
     const cleanupDisconnectState = () => {
       if (disconnectCleanupDone) return;
@@ -215,7 +253,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       clearReconnectTimer(rt);
       restorePendingPrompt(rt);
       flushQueuedPrompts(rt);
-      if (rt.needsTaskResync) {
+      if (shouldSyncTasks && rt.needsTaskResync) {
         rt.needsTaskResync = false;
         void deps.syncProjectState?.(pid).catch(() => {
           // Best-effort: if sync fails we still keep the connection; next reconnect will retry.
@@ -241,20 +279,22 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
       const reason = String((ev as CloseEvent).reason ?? "").trim();
       rt.wsError.value = `WebSocket closed (${ev.code || "unknown"})${reason ? `: ${reason}` : ""}`;
-      scheduleReconnect(pid, rt, "close");
+      scheduleReconnect(mode, pid, rt, "close");
     };
 
     wsInstance.onError = () => {
       if (rt.ws !== wsInstance) return;
       cleanupDisconnectState();
       rt.wsError.value = "WebSocket error";
-      scheduleReconnect(pid, rt, "error");
+      scheduleReconnect(mode, pid, rt, "error");
     };
 
-    wsInstance.onTaskEvent = (payload) => {
-      if (rt.ws !== wsInstance) return;
-      deps.onTaskEvent(payload, rt);
-    };
+    if (mode === "worker") {
+      wsInstance.onTaskEvent = (payload) => {
+        if (rt.ws !== wsInstance) return;
+        deps.onTaskEvent(payload, rt);
+      };
+    }
 
     const handleMessage = createWsMessageHandler({
       projects,
@@ -291,10 +331,17 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     wsInstance.connect();
   };
 
+  const connectWs = async (projectId: string = activeProjectId.value): Promise<void> =>
+    connectWsInternal("worker", projectId);
+
+  const connectPlannerWs = async (projectId: string = activeProjectId.value): Promise<void> =>
+    connectWsInternal("planner", projectId);
+
   return {
     clearReconnectTimer,
     closeRuntimeConnection,
     closeAllConnections,
     connectWs,
+    connectPlannerWs,
   };
 }

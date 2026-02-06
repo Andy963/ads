@@ -7,18 +7,13 @@ import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
 type GetImpl = (url: string) => Promise<unknown>;
 
 let getImpl: GetImpl | null = null;
-let getCalls: string[] = [];
-let lastWs: {
-  onOpen?: () => void;
-  connect: () => void;
-} | null = null;
+const wsConnections: Array<{ sessionId: string; chatSessionId: string }> = [];
 
 vi.mock("../api/client", () => {
   class ApiClient {
     constructor(_: { baseUrl: string }) {}
 
     async get<T>(url: string): Promise<T> {
-      getCalls.push(url);
       if (!getImpl) throw new Error("getImpl not set");
       return (await getImpl(url)) as T;
     }
@@ -42,23 +37,23 @@ vi.mock("../api/client", () => {
 vi.mock("../api/ws", () => {
   class AdsWebSocket {
     onOpen?: () => void;
+    onClose?: (ev: { code: number; reason?: string }) => void;
+    onError?: () => void;
+    onTaskEvent?: (payload: unknown) => void;
+    onMessage?: (msg: unknown) => void;
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
-      const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "planner") return;
-      lastWs = this as unknown as typeof lastWs;
+      wsConnections.push({
+        sessionId: String(options.sessionId ?? ""),
+        chatSessionId: String(options.chatSessionId ?? "main"),
+      });
     }
 
     connect(): void {
-      // noop
+      queueMicrotask(() => this.onOpen?.());
     }
 
     close(): void {}
-
-    send(): void {}
-    sendPrompt(): void {}
-    interrupt(): void {}
-    clearHistory(): void {}
   }
 
   return { AdsWebSocket };
@@ -83,46 +78,39 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
   await wrapper.vm.$nextTick();
 }
 
-describe("Prompt Library modal entry", () => {
+describe("Planner/Worker websocket sessions", () => {
   beforeEach(() => {
-    getCalls = [];
-    lastWs = null;
+    localStorage.clear();
+    wsConnections.length = 0;
+
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
-      if (url.includes("/api/task-queue/status"))
+      if (url.includes("/api/task-queue/status")) {
         return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
+      }
       if (url.startsWith("/api/tasks")) return [] satisfies Task[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };
-      if (url === "/api/prompts") return { prompts: [] };
       return {};
     };
   });
 
   afterEach(() => {
     getImpl = null;
-    lastWs = null;
-    vi.clearAllMocks();
+    localStorage.clear();
   });
 
-  it("opens a modal and fetches prompts when clicking the gear button", async () => {
-    const App = (await import("../App.vue")).default;
+  it("opens a worker chat session and a planner chat session for the default project", async () => {
+    const { default: App } = await import("../App.vue");
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
+    await settleUi(wrapper as any);
 
-    if (!lastWs) {
-      await (wrapper.vm as any).connectWs?.();
-      await settleUi(wrapper);
-    }
+    const chats = wsConnections
+      .filter((c) => c.sessionId === "default")
+      .map((c) => c.chatSessionId)
+      .sort();
 
-    const btn = wrapper.find('[data-testid="prompts-button"]');
-    expect(btn.exists()).toBe(true);
-
-    await btn.trigger("click");
-    await settleUi(wrapper);
-
-    expect(getCalls.some((u) => u === "/api/prompts")).toBe(true);
-    expect(wrapper.find('[data-testid="prompts-modal"]').exists()).toBe(true);
-
-    wrapper.unmount();
+    expect(chats).toContain("main");
+    expect(chats).toContain("planner");
   });
 });
+

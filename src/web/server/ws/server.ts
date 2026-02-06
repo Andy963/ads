@@ -43,9 +43,11 @@ export function attachWebSocketServer(deps: {
   cwdStorePath: string;
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
   sessionManager: SessionManager;
+  plannerSessionManager: SessionManager;
   historyStore: HistoryStore;
   ensureTaskContext: (workspaceRoot: string) => TaskQueueContext;
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
+  getPlannerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
   syncWorkspaceTemplates: () => void;
@@ -121,6 +123,9 @@ export function attachWebSocketServer(deps: {
 
     const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: deps.workspaceRoot });
     const chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
+    const isPlannerChat = chatSessionId === "planner";
+    const sessionManager = isPlannerChat ? deps.plannerSessionManager : deps.sessionManager;
+    const getWorkspaceLock = isPlannerChat ? deps.getPlannerWorkspaceLock : deps.getWorkspaceLock;
 
     if (deps.clients.size >= deps.maxClients) {
       ws.close(4409, `max clients reached (${deps.maxClients})`);
@@ -145,7 +150,7 @@ export function attachWebSocketServer(deps: {
 
     const cacheKey = `${clientKey}::${sessionId}`;
     const cachedWorkspace = deps.workspaceCache.get(cacheKey);
-    const savedState = deps.sessionManager.getSavedState(userId);
+    const savedState = sessionManager.getSavedState(userId);
     const storedCwd = deps.cwdStore.get(String(userId));
     let currentCwd = directoryManager.getUserCwd(userId);
     const preferredProjectCwd = (() => {
@@ -171,12 +176,12 @@ export function attachWebSocketServer(deps: {
       }
     }
     deps.workspaceCache.set(cacheKey, currentCwd);
-    deps.sessionManager.setUserCwd(userId, currentCwd);
+    sessionManager.setUserCwd(userId, currentCwd);
     deps.cwdStore.set(String(userId), currentCwd);
     deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
 
-    const resumeThread = !deps.sessionManager.hasSession(userId);
-    let orchestrator = deps.sessionManager.getOrCreate(userId, currentCwd, resumeThread);
+    const resumeThread = !sessionManager.hasSession(userId);
+    let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
 
     deps.logger.info(
       `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}`,
@@ -189,7 +194,7 @@ export function attachWebSocketServer(deps: {
       sessionId,
       chatSessionId,
       inFlight,
-      threadId: deps.sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
+      threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
     });
 
     const cachedHistory = deps.historyStore.get(historyKey);
@@ -260,7 +265,7 @@ export function attachWebSocketServer(deps: {
 
         let sessionLogger: NonNullable<ReturnType<SessionManager["ensureLogger"]>> | null = null;
         try {
-          sessionLogger = deps.sessionManager.ensureLogger(userId) ?? null;
+          sessionLogger = sessionManager.ensureLogger(userId) ?? null;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           deps.logger.warn(`[WebSocket] Failed to initialize session logger: ${message}`);
@@ -281,7 +286,7 @@ export function attachWebSocketServer(deps: {
 
         if (parsed.type === "clear_history") {
           deps.historyStore.clear(historyKey);
-          deps.sessionManager.reset(userId);
+          sessionManager.reset(userId);
           safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
           return;
         }
@@ -295,10 +300,10 @@ export function attachWebSocketServer(deps: {
             currentCwd,
             ensureTaskContext: deps.ensureTaskContext,
             historyStore: deps.historyStore,
-            sessionManager: deps.sessionManager,
+            sessionManager,
             safeJsonSend,
             logger: deps.logger,
-            getWorkspaceLock: deps.getWorkspaceLock,
+            getWorkspaceLock,
             orchestrator,
           });
           if (resume.orchestrator) {
@@ -321,10 +326,10 @@ export function attachWebSocketServer(deps: {
           historyKey,
           currentCwd,
           allowedDirs: deps.allowedDirs,
-          getWorkspaceLock: deps.getWorkspaceLock,
+          getWorkspaceLock,
           interruptControllers: deps.interruptControllers,
           historyStore: deps.historyStore,
-          sessionManager: deps.sessionManager,
+          sessionManager,
           orchestrator,
           sendWorkspaceState,
         });
@@ -351,7 +356,7 @@ export function attachWebSocketServer(deps: {
           cwdStore: deps.cwdStore,
           cwdStorePath: deps.cwdStorePath,
           persistCwdStore: deps.persistCwdStore,
-          sessionManager: deps.sessionManager,
+          sessionManager,
           historyStore: deps.historyStore,
           interruptControllers: deps.interruptControllers,
           runAdsCommandLine: deps.runAdsCommandLine,
@@ -360,7 +365,7 @@ export function attachWebSocketServer(deps: {
           sanitizeInput: deps.sanitizeInput,
           currentCwd,
           orchestrator,
-          getWorkspaceLock: deps.getWorkspaceLock,
+          getWorkspaceLock,
         });
         if (commandResult.handled) {
           orchestrator = commandResult.orchestrator;

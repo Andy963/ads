@@ -47,6 +47,7 @@ const webThreadStorage = new ThreadStorage({
   storagePath: path.join(adsStateDir, "web-threads.json"),
 });
 const sessionManager = new SessionManager(0, 0, "workspace-write", "gpt-5.2", webThreadStorage);
+const plannerSessionManager = new SessionManager(0, 0, "read-only", "gpt-5.2", webThreadStorage);
 const historyStore = new HistoryStore({
   storagePath: stateDbPath,
   namespace: "web",
@@ -152,7 +153,9 @@ export async function startWebServer(): Promise<void> {
   const workspaceRoot = detectWorkspace();
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
   const workspaceLocks = new WorkspaceLockPool();
+  const plannerWorkspaceLocks = new WorkspaceLockPool();
   const getWorkspaceLock = (workspaceRootForLock: string) => workspaceLocks.get(workspaceRootForLock);
+  const getPlannerWorkspaceLock = (workspaceRootForLock: string) => plannerWorkspaceLocks.get(workspaceRootForLock);
   const taskQueueAvailable = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
   const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
 
@@ -168,6 +171,9 @@ export async function startWebServer(): Promise<void> {
       if (meta.sessionId !== sessionId) {
         continue;
       }
+      if (meta.chatSessionId === "planner") {
+        continue;
+      }
       try {
         ws.send(JSON.stringify(payload));
       } catch {
@@ -180,7 +186,7 @@ export async function startWebServer(): Promise<void> {
     sessionId: string,
     entry: { role: string; text: string; ts: number; kind?: string },
   ): void => {
-    const metas = Array.from(clientMetaByWs.values()).filter((meta) => meta.sessionId === sessionId);
+    const metas = Array.from(clientMetaByWs.values()).filter((meta) => meta.sessionId === sessionId && meta.chatSessionId !== "planner");
     const written = new Set<string>();
     for (const meta of metas) {
       if (written.has(meta.historyKey)) {
@@ -243,9 +249,11 @@ export async function startWebServer(): Promise<void> {
     cwdStorePath,
     persistCwdStore,
     sessionManager,
+    plannerSessionManager,
     historyStore,
     ensureTaskContext: taskQueueManager.ensureTaskContext,
     getWorkspaceLock,
+    getPlannerWorkspaceLock,
     runAdsCommandLine,
     sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
     syncWorkspaceTemplates,

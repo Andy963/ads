@@ -14,7 +14,6 @@ type PersistedPrompt = { clientMessageId: string; text: string; createdAt: numbe
 
 export function createChatActions(ctx: AppContext) {
   const {
-    queuedPrompts,
     runtimeOrActive,
     runtimeAgentBusy,
     safeJsonParse,
@@ -25,15 +24,16 @@ export function createChatActions(ctx: AppContext) {
   } = ctx;
   const { randomId, randomUuid } = ctx;
 
-  const pendingPromptStorageKey = (sessionId: string): string => {
-    const normalized = String(sessionId ?? "").trim();
-    return normalized ? `ads.pendingPrompt.${normalized}` : "ads.pendingPrompt.unknown";
+  const pendingPromptStorageKey = (sessionId: string, chatSessionId: string): string => {
+    const normalizedSession = String(sessionId ?? "").trim();
+    const normalizedChat = String(chatSessionId ?? "").trim() || "main";
+    return normalizedSession ? `ads.pendingPrompt.${normalizedSession}.${normalizedChat}` : `ads.pendingPrompt.unknown.${normalizedChat}`;
   };
 
   const savePendingPrompt = (rt: ProjectRuntime, prompt: QueuedPrompt): void => {
     if (!rt.projectSessionId) return;
     if (prompt.images.length > 0) return;
-    const key = pendingPromptStorageKey(rt.projectSessionId);
+    const key = pendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId);
     const payload: PersistedPrompt = {
       clientMessageId: prompt.clientMessageId,
       text: prompt.text,
@@ -48,7 +48,7 @@ export function createChatActions(ctx: AppContext) {
 
   const clearPendingPrompt = (rt: ProjectRuntime): void => {
     if (!rt.projectSessionId) return;
-    const key = pendingPromptStorageKey(rt.projectSessionId);
+    const key = pendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId);
     try {
       sessionStorage.removeItem(key);
     } catch {
@@ -58,7 +58,7 @@ export function createChatActions(ctx: AppContext) {
 
   const restorePendingPrompt = (rt: ProjectRuntime): void => {
     if (!rt.projectSessionId) return;
-    const key = pendingPromptStorageKey(rt.projectSessionId);
+    const key = pendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId);
     const stored = safeJsonParse<PersistedPrompt>(sessionStorage.getItem(key));
     if (!stored) return;
     const clientMessageId = String(stored.clientMessageId ?? "").trim();
@@ -278,22 +278,26 @@ export function createChatActions(ctx: AppContext) {
     randomId,
   });
 
-  const removeQueuedPrompt = (id: string): void => {
+  const removeQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
     const target = String(id ?? "").trim();
     if (!target) return;
-    queuedPrompts.value = queuedPrompts.value.filter((q) => q.id !== target);
+    const state = runtimeOrActive(rt);
+    state.queuedPrompts.value = state.queuedPrompts.value.filter((q) => q.id !== target);
   };
 
-  const enqueueMainPrompt = (text: string, images: IncomingImage[]): void => {
+  const enqueuePrompt = (text: string, images: IncomingImage[], rt?: ProjectRuntime): void => {
+    const state = runtimeOrActive(rt);
     const content = String(text ?? "").trim();
     const imgs = Array.isArray(images) ? images : [];
     if (!content && imgs.length === 0) return;
-    queuedPrompts.value = [
-      ...queuedPrompts.value,
+    state.queuedPrompts.value = [
+      ...state.queuedPrompts.value,
       { id: randomId("q"), clientMessageId: randomUuid(), text: content, images: imgs, createdAt: Date.now() },
     ];
-    flushQueuedPrompts();
+    flushQueuedPrompts(state);
   };
+
+  const enqueueMainPrompt = (text: string, images: IncomingImage[]): void => enqueuePrompt(text, images);
 
   const flushQueuedPrompts = (rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
@@ -467,6 +471,7 @@ export function createChatActions(ctx: AppContext) {
     upsertExecuteBlock,
     finalizeCommandBlock,
     removeQueuedPrompt,
+    enqueuePrompt,
     enqueueMainPrompt,
     flushQueuedPrompts,
     upsertStreamingDelta,
