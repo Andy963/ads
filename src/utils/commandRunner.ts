@@ -80,6 +80,10 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     throw new Error(`command not allowed: ${executable}`);
   }
 
+  if (executable === "git" && args.length > 0 && args[0].toLowerCase() === "push") {
+    throw new Error("git push is blocked; push manually if needed");
+  }
+
   const commandLine = [cmd, ...args].join(" ").trim();
   const startedAt = Date.now();
 
