@@ -70,10 +70,6 @@ export function injectToolGuide(
   if (usesToolBlocks && activeAgentId !== "codex" && isFileToolsEnabled()) {
     guideLines.push(
       [
-        "read - 读取本地文件（默认启用；可用 ENABLE_AGENT_FILE_TOOLS=0 禁用；受目录白名单限制），格式：",
-        "<<<tool.read",
-        '{"path":"src/index.ts","startLine":1,"endLine":120}',
-        ">>>",
         "write - 写入本地文件（默认启用；可用 ENABLE_AGENT_FILE_TOOLS=0 禁用；受目录白名单限制），格式：",
         "<<<tool.write",
         '{"path":"src/example.txt","content":"hello"}',
@@ -119,4 +115,3 @@ export function injectToolGuide(
   }
   return `${input}\n\n${guide}`;
 }
-

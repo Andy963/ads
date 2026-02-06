@@ -40,7 +40,7 @@ describe("agents/toolGuide", () => {
   it("includes tool block guide for non-codex agents", () => {
     const base = "please do something";
     const other = injectToolGuide(base, { activeAgentId: "other" });
-    assert.match(other, /<<<tool\.read/);
+    assert.ok(!other.includes("<<<tool.read"), "non-codex should not have tool.read blocks");
     assert.match(other, /<<<tool\.write/);
     assert.match(other, /<<<tool\.apply_patch/);
     assert.match(other, /<<<tool\.exec/);
