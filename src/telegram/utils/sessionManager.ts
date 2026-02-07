@@ -2,7 +2,7 @@ import type { SandboxMode } from '../config.js';
 import { createLogger } from '../../utils/logger.js';
 import type { AgentEvent } from '../../codex/events.js';
 import type { Input } from '@openai/codex-sdk';
-import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
+import { CodexCliAdapter } from '../../agents/adapters/codexCliAdapter.js';
 import { AmpCliAdapter } from '../../agents/adapters/ampCliAdapter.js';
 import type { AgentAdapter } from '../../agents/types.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
@@ -99,12 +99,10 @@ export class SessionManager {
       `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
     );
 
-    const adapter = new CodexAgentAdapter({
-      streamingEnabled: true,
+    const adapter = new CodexCliAdapter({
       sandboxMode: this.sandboxMode,
       model: userModel,
       workingDirectory: effectiveCwd,
-      networkAccessEnabled: true,
       resumeThreadId,
       env: this.codexEnv,
     });
