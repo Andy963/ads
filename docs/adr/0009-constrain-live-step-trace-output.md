@@ -1,7 +1,8 @@
 # ADR-0009: Constrain Live Step Trace Output
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-02-01
+- Superseded by: ADR-0015
 
 ## Context
 
@@ -38,4 +39,3 @@
 - 负向/限制：
   - 引入嵌套滚动容器（对少部分用户可能不如单一页面滚动直观）。
   - “贴底阈值”是启发式参数，极端布局/字体情况下可能需要调整。
-

@@ -36,5 +36,4 @@ Task chat 的目标是让用户在 Web 端看到“任务正在发生什么”�
 ## Implementation Notes
 
 - 后端：`src/web/taskStartBroadcast.ts`
-- 前端：`web/src/App.vue` (`onTaskEvent`)
-
+- 前端：`web/src/app/tasks/events.ts` (`onTaskEvent`), `web/src/app/chat.ts` (`pushMessageBeforeLive`, placeholder/dedupe helpers)

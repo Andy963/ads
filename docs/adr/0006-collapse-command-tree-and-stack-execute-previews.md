@@ -1,7 +1,8 @@
 # ADR-0006: Collapse Command Trees and Stack Execute Previews
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-01-30
+- Superseded by: ADR-0015
 
 ## Context
 

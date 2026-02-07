@@ -16,12 +16,14 @@ ADS Web 目前的执行路径在 `startWebServer` 中创建了单个全局 `Asyn
 
 ## Decision
 
-引入按项目（`workspaceRoot`）分片的 keyed lock，并让 WebSocket 与 Task Queue 共享同一把项目锁：
+引入按项目（`workspaceRoot`）分片的 keyed lock，让 Worker Chat(WebSocket) 与 Task Queue 共享同一把项目锁；
+Planner Chat（read-only）使用独立 lock pool 以避免被执行阻塞（见 ADR-0016）：
 
 1. 新增 `WorkspaceLockPool`，按 `workspaceRoot`（realpath 归一化）返回对应的 `AsyncLock`
 2. WebSocket `prompt` / `command` / `task_resume` 使用 `detectWorkspaceFrom(currentCwd)` 获取 `workspaceRoot`，再通过 `WorkspaceLockPool` 执行 `runExclusive`
 3. Task Queue 在 `ensureTaskContext(workspaceRoot)` 时绑定该 `workspaceRoot` 的锁，并在 planner / executor 中使用该锁
 4. API 路由不再使用全局锁，而是使用 `taskCtx.lock`（按 workspace 分片），从而实现跨项目并行、同项目串行
+5. Planner Chat 使用独立 `WorkspaceLockPool`（仍按 `workspaceRoot` 分片），与 Worker/Task Queue 的锁隔离；因为 Planner 只读，不与写入路径共享互斥
 
 ## Consequences
 
@@ -29,6 +31,7 @@ ADS Web 目前的执行路径在 `startWebServer` 中创建了单个全局 `Asyn
   - 不同项目之间可以真正并行执行（并发的 agent turn / task queue run 不再互相阻塞）
   - 同一项目内仍然保持串行，减少并发写导致的仓库状态冲突
   - Task Queue 与交互式会话共享项目锁，避免两条路径同时操作同一 workspace
+  - Worker 执行中 Planner 仍可交互，避免“执行把讨论也卡死”的体验
 
 - 取舍：
   - 并发度上升后，CPU / 网络 / 模型配额消耗会更快，需要用户自行控制并行项目数量
@@ -38,6 +41,7 @@ ADS Web 目前的执行路径在 `startWebServer` 中创建了单个全局 `Asyn
 
 - Lock pool：`src/web/server/workspaceLockPool.ts`
 - WebSocket keyed lock：`src/web/server/ws/handlePrompt.ts`, `src/web/server/ws/handleCommand.ts`, `src/web/server/ws/handleTaskResume.ts`, `src/web/server/ws/server.ts`
+- Planner lock pool wiring: `src/web/server/startWebServer.ts`, `src/web/server/ws/server.ts`
 - Task Queue keyed lock：`src/web/server/taskQueue/manager.ts`
 - API keyed lock：`src/web/server/api/routes/taskQueue.ts`, `src/web/server/api/routes/tasks.ts`, `src/web/server/api/routes/tasks/chat.ts`, `src/web/server/api/handler.ts`, `src/web/server/api/types.ts`
 - WebSocket 连接数：前端为每个项目会话建立独立 WS；需保证 `ADS_WEB_MAX_CLIENTS` 足够大（默认 32）以支持多项目同时在线

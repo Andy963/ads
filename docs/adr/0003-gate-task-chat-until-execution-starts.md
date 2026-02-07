@@ -44,6 +44,5 @@ Web UI 里，“右侧对话框（MainChat）”承载的是 agent/任务执行�
 
 ## Implementation Notes
 
-- 位置：`web/src/App.vue`
-- 机制：为每个 project runtime 维护 `startedTaskIds` 与 `taskChatBufferByTaskId`，并在 `onTaskEvent` 中对 `message(user)` 做门禁与缓冲回放。
-
+- 位置：`web/src/app/tasks/events.ts`（`onTaskEvent`）
+- 机制：`web/src/app/chat.ts` 为每个 project runtime 维护 `startedTaskIds` 与 `taskChatBufferByTaskId`，并在 `bufferTaskChatEvent` / `markTaskChatStarted` 中做门禁、缓冲与回放。

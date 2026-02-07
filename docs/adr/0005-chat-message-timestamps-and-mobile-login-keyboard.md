@@ -33,7 +33,6 @@ Web UI 的聊天区在调试与协作场景下，经常需要快速判断每条�
 
 ## Implementation Notes
 
-- `ts` 透传与缺省写入：`web/src/App.vue`
+- `ts` 透传与缺省写入：`web/src/app/projectsWs/wsMessage.ts`, `web/src/app/chat.ts`, `web/src/app/chatStreaming.ts`
 - 消息时间渲染：`web/src/components/MainChat.vue`, `web/src/components/TaskDetail.vue`
 - 登录页布局：`web/src/components/LoginGate.vue`
-
