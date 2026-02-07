@@ -137,8 +137,27 @@ export class CodexCliAdapter implements AgentAdapter {
   }
 
   setModel(model?: string): void {
-    if (this.model === model) return;
-    this.model = model;
+    const normalized = String(model ?? "").trim();
+    if (!normalized) {
+      if (!this.model) return;
+      this.model = undefined;
+      this.reset();
+      return;
+    }
+    const lower = normalized.toLowerCase();
+    if (
+      lower.startsWith("gemini") ||
+      lower.startsWith("auto-gemini") ||
+      lower.includes("gemini") ||
+      lower.startsWith("claude") ||
+      lower === "sonnet" ||
+      lower === "opus" ||
+      lower === "haiku"
+    ) {
+      return;
+    }
+    if (this.model === normalized) return;
+    this.model = normalized;
     this.reset();
   }
 
