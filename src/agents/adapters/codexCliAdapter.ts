@@ -216,7 +216,7 @@ export class CodexCliAdapter implements AgentAdapter {
           }
         }
 
-        if (event.type === "item.updated") {
+        if (event.type === "item.updated" || event.type === "item.completed") {
           const item = (event as { item?: { type?: unknown; text?: unknown } }).item;
           if (item && item.type === "agent_message" && typeof item.text === "string") {
             responseText = item.text;
