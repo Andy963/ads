@@ -347,7 +347,7 @@ function shouldUseCompactBubble(m: RenderMessage): boolean {
   return !shouldShowMsgActions(m);
 }
 
-const { input, inputEl, send, onInputKeydown, onPaste, recording, transcribing, voiceStatusKind, voiceStatusMessage, toggleRecording } =
+const { input, inputEl, fileInputEl, send, onInputKeydown, onPaste, recording, transcribing, voiceStatusKind, voiceStatusMessage, toggleRecording, triggerFileInput, onFileInputChange } =
   useMainChatComposer({
     pendingImages: props.pendingImages,
     isBusy: () => props.busy,
@@ -616,39 +616,56 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       </div>
 
       <div class="inputWrap">
+        <input
+          ref="fileInputEl"
+          type="file"
+          accept="image/*"
+          multiple
+          class="hiddenFileInput"
+          @change="onFileInputChange"
+        />
         <textarea v-model="input" ref="inputEl" rows="5" class="composer-input"
           placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）" @keydown="onInputKeydown" @paste="onPaste" />
-        <div class="inputActions">
-          <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
-            <div class="voiceBars">
-              <span class="bar" />
-              <span class="bar" />
-              <span class="bar" />
+        <div class="inputToolbar">
+          <div class="inputToolbarLeft">
+            <button class="attachIcon" type="button" title="添加图片附件" @click="triggerFileInput">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M15.621 4.379a3.5 3.5 0 0 0-4.95 0l-7.07 7.07a5 5 0 0 0 7.07 7.072l4.95-4.95a.75.75 0 0 0-1.06-1.061l-4.95 4.95a3.5 3.5 0 1 1-4.95-4.95l7.07-7.07a2 2 0 1 1 2.83 2.828l-7.07 7.071a.5.5 0 0 1-.707-.707l4.95-4.95a.75.75 0 1 0-1.06-1.06l-4.95 4.95a2 2 0 0 0 2.828 2.828l7.07-7.071a3.5 3.5 0 0 0 0-4.95Z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+          <div class="inputToolbarRight">
+            <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
+              <div class="voiceBars">
+                <span class="bar" />
+                <span class="bar" />
+                <span class="bar" />
+              </div>
             </div>
+            <div v-else-if="transcribing" class="voiceIndicator transcribing" aria-hidden="true">
+              <span class="voiceSpinner" />
+            </div>
+            <button class="micIcon" :class="{ recording, transcribing }" :disabled="canInterrupt || transcribing"
+              type="button" :title="recording ? '停止录音' : '语音输入（追加到输入框）'" @click="toggleRecording">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M10 13.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v4.5a3 3 0 0 0 3 3Z" />
+                <path
+                  d="M5.5 10.5a.75.75 0 0 1 .75.75 3.75 3.75 0 1 0 7.5 0 .75.75 0 0 1 1.5 0 5.25 5.25 0 0 1-4.5 5.19V18a.75.75 0 0 1-1.5 0v-1.56a5.25 5.25 0 0 1-4.5-5.19.75.75 0 0 1 .75-.75Z" />
+              </svg>
+            </button>
+            <button v-if="canInterrupt" class="stopIcon" type="button" title="中断" @click="emit('interrupt')">
+              <span class="interruptSpinner" aria-hidden="true" />
+            </button>
+            <button v-else class="sendIcon"
+              :disabled="(!input.trim() && pendingImages.length === 0) || recording || transcribing" type="button"
+              title="发送" @click="send">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd"
+                  d="M10 3a.75.75 0 0 1 .53.22l4.5 4.5a.75.75 0 1 1-1.06 1.06l-3.22-3.22V16a.75.75 0 0 1-1.5 0V5.56L6.03 8.78A.75.75 0 1 1 4.97 7.72l4.5-4.5A.75.75 0 0 1 10 3Z"
+                  clip-rule="evenodd" />
+              </svg>
+            </button>
           </div>
-          <div v-else-if="transcribing" class="voiceIndicator transcribing" aria-hidden="true">
-            <span class="voiceSpinner" />
-          </div>
-          <button class="micIcon" :class="{ recording, transcribing }" :disabled="canInterrupt || transcribing"
-            type="button" :title="recording ? '停止录音' : '语音输入（追加到输入框）'" @click="toggleRecording">
-            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path d="M10 13.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v4.5a3 3 0 0 0 3 3Z" />
-              <path
-                d="M5.5 10.5a.75.75 0 0 1 .75.75 3.75 3.75 0 1 0 7.5 0 .75.75 0 0 1 1.5 0 5.25 5.25 0 0 1-4.5 5.19V18a.75.75 0 0 1-1.5 0v-1.56a5.25 5.25 0 0 1-4.5-5.19.75.75 0 0 1 .75-.75Z" />
-            </svg>
-          </button>
-          <button v-if="canInterrupt" class="stopIcon" type="button" title="中断" @click="emit('interrupt')">
-            <span class="interruptSpinner" aria-hidden="true" />
-          </button>
-          <button v-else class="sendIcon"
-            :disabled="(!input.trim() && pendingImages.length === 0) || recording || transcribing" type="button"
-            title="发送" @click="send">
-            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd"
-                d="M10 3a.75.75 0 0 1 .53.22l4.5 4.5a.75.75 0 1 1-1.06 1.06l-3.22-3.22V16a.75.75 0 0 1-1.5 0V5.56L6.03 8.78A.75.75 0 1 1 4.97 7.72l4.5-4.5A.75.75 0 0 1 10 3Z"
-                clip-rule="evenodd" />
-            </svg>
-          </button>
         </div>
         <div v-if="(voiceStatusKind === 'ok' || voiceStatusKind === 'error') && voiceStatusMessage" class="voiceToast"
           :class="voiceStatusKind" role="status" aria-live="polite">

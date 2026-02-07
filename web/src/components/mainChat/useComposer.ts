@@ -497,6 +497,30 @@ export function useMainChatComposer(params: {
     }
   };
 
+  const fileInputEl = ref<HTMLInputElement | null>(null);
+
+  const triggerFileInput = (): void => {
+    fileInputEl.value?.click();
+  };
+
+  const onFileInputChange = async (ev: Event): Promise<void> => {
+    const target = ev.target as HTMLInputElement | null;
+    if (!target?.files) return;
+    const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+    const images: IncomingImage[] = [];
+    for (const file of Array.from(target.files)) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) continue;
+      const dataUrl = await fileToDataUrl(file);
+      if (!dataUrl) continue;
+      images.push({ name: file.name, mime: file.type, data: dataUrl });
+    }
+    if (images.length) {
+      params.onAddImages(images);
+    }
+    target.value = "";
+  };
+
   onBeforeUnmount(() => {
     clearVoiceToast();
     try {
@@ -510,6 +534,7 @@ export function useMainChatComposer(params: {
   return {
     input,
     inputEl,
+    fileInputEl,
     send,
     onInputKeydown,
     onPaste,
@@ -518,5 +543,7 @@ export function useMainChatComposer(params: {
     voiceStatusKind,
     voiceStatusMessage,
     toggleRecording,
+    triggerFileInput,
+    onFileInputChange,
   };
 }
