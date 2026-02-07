@@ -50,6 +50,7 @@ export class AmpCliAdapter implements AgentAdapter {
   private permissions: AmpPermissions;
   private workingDirectory?: string;
   private threadId: string | null = null;
+  private warnedRushStreamJsonFallback = false;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
 
   constructor(options: AmpCliAdapterOptions = {}) {
@@ -111,6 +112,7 @@ export class AmpCliAdapter implements AgentAdapter {
 
     const args = this.buildArgs(prompt);
     const parser = new AmpStreamParser();
+    let sawTurnFailed = false;
 
     logger.info(`发送 Amp 请求 thread=${this.threadId} mode=${this.mode}`);
 
@@ -124,6 +126,9 @@ export class AmpCliAdapter implements AgentAdapter {
       },
       (parsed) => {
         for (const event of parser.parseLine(parsed)) {
+          if (event.raw?.type === "turn.failed") {
+            sawTurnFailed = true;
+          }
           this.emitEvent(event);
         }
       },
@@ -135,8 +140,11 @@ export class AmpCliAdapter implements AgentAdapter {
       throw err;
     }
 
-    if (result.exitCode !== 0) {
-      const message = parser.getLastError() ?? (result.stderr.trim() || `amp exited with code ${result.exitCode}`);
+    if (result.exitCode !== 0 || sawTurnFailed) {
+      const message =
+        parser.getLastError() ??
+        (result.stderr.trim() ||
+          (sawTurnFailed ? "amp reported failure" : `amp exited with code ${result.exitCode}`));
       logger.warn(`Amp 执行失败: ${message}`);
       throw new Error(message);
     }
@@ -153,7 +161,9 @@ export class AmpCliAdapter implements AgentAdapter {
   }
 
   private buildArgs(prompt: string): string[] {
-    const effectiveMode = this.mode.trim().toLowerCase() === "rush" ? "smart" : this.mode;
+    const requestedMode = this.mode.trim();
+    const requestedModeLower = requestedMode.toLowerCase();
+    const effectiveMode = requestedModeLower === "rush" ? "smart" : requestedMode;
     const args = [
       "--no-notifications",
       "--no-ide",
@@ -163,6 +173,10 @@ export class AmpCliAdapter implements AgentAdapter {
       args.push("--dangerously-allow-all");
     }
     if (effectiveMode) {
+      if (requestedModeLower === "rush" && !this.warnedRushStreamJsonFallback) {
+        this.warnedRushStreamJsonFallback = true;
+        logger.warn("Amp stream-json is not permitted with 'rush' mode; falling back to 'smart'.");
+      }
       args.push("--mode", effectiveMode);
     }
     args.push(
@@ -179,8 +193,11 @@ export class AmpCliAdapter implements AgentAdapter {
       "--no-ide",
       "--no-jetbrains",
     ];
-    if (this.mode) {
-      args.push("--mode", this.mode);
+    const requestedMode = this.mode.trim();
+    const requestedModeLower = requestedMode.toLowerCase();
+    const effectiveMode = requestedModeLower === "rush" ? "smart" : requestedMode;
+    if (effectiveMode) {
+      args.push("--mode", effectiveMode);
     }
     args.push("threads", "new");
 
