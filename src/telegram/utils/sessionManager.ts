@@ -3,6 +3,8 @@ import { createLogger } from '../../utils/logger.js';
 import type { AgentEvent } from '../../codex/events.js';
 import type { Input } from '@openai/codex-sdk';
 import { CodexAgentAdapter } from '../../agents/adapters/codexAdapter.js';
+import { AmpCliAdapter } from '../../agents/adapters/ampCliAdapter.js';
+import type { AgentAdapter } from '../../agents/types.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import type { AgentRunResult, AgentSendOptions } from '../../agents/types.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
@@ -107,8 +109,18 @@ export class SessionManager {
       env: this.codexEnv,
     });
 
+    const adapters: AgentAdapter[] = [adapter];
+
+    if (process.env.ADS_AMP_ENABLED !== "0") {
+      const ampPermissions = this.sandboxMode === "read-only" ? "read-only" as const : "full-access" as const;
+      adapters.push(new AmpCliAdapter({
+        permissions: ampPermissions,
+        workingDirectory: effectiveCwd,
+      }));
+    }
+
     const session = new HybridOrchestrator({
-      adapters: [adapter],
+      adapters,
       defaultAgentId: "codex",
       initialWorkingDirectory: effectiveCwd,
       initialModel: userModel,
