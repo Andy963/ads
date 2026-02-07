@@ -56,6 +56,12 @@ export function attachWebSocketServer(deps: {
 }): WebSocketServer {
   const wss = new WebSocketServer({ server: deps.server });
   const safeJsonSend = createSafeJsonSend(deps.logger);
+
+  wss.on("error", (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    deps.logger.warn(`[WebSocket] server error: ${message}`);
+  });
+
   const sendWorkspaceState = (ws: WebSocket, workspaceRoot: string): void => {
     try {
       const state = getWorkspaceState(workspaceRoot);
@@ -148,6 +154,13 @@ export function attachWebSocketServer(deps: {
     deps.clientMetaByWs.set(ws, { historyKey, sessionId, chatSessionId, connectionId, userId });
     const directoryManager = new DirectoryManager(deps.allowedDirs);
 
+    ws.on("error", (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.logger.warn(
+        `[WebSocket] socket error conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId}: ${message}`,
+      );
+    });
+
     const cacheKey = `${clientKey}::${sessionId}`;
     const cachedWorkspace = deps.workspaceCache.get(cacheKey);
     const savedState = sessionManager.getSavedState(userId);
@@ -228,8 +241,6 @@ export function attachWebSocketServer(deps: {
 
     ws.on("message", async (data: RawData) => {
       try {
-        aliveWs.isAlive = true;
-        aliveWs.missedPongs = 0;
         let parsed: import("./schema.js").WsMessage;
         try {
           const raw = JSON.parse(String(data)) as unknown;
