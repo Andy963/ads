@@ -105,6 +105,37 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   margin-top: 8px;
 }
 
+.md :deep(h1),
+.md :deep(h2),
+.md :deep(h3),
+.md :deep(h4),
+.md :deep(h5),
+.md :deep(h6) {
+  margin: 10px 0 6px 0;
+  font-weight: 800;
+  line-height: 1.35;
+  color: inherit;
+}
+
+/*
+  Markdown headings default to very large browser styles (e.g. h1 ~2em).
+  Clamp them to chat-friendly typography so pasted prompts don't blow up the layout.
+*/
+.md :deep(h1) {
+  font-size: 15px;
+}
+
+.md :deep(h2) {
+  font-size: 14px;
+}
+
+.md :deep(h3),
+.md :deep(h4),
+.md :deep(h5),
+.md :deep(h6) {
+  font-size: 13px;
+}
+
 .md :deep(ul),
 .md :deep(ol) {
   margin: 6px 0 6px 18px;
