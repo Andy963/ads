@@ -14,6 +14,23 @@
   border-top-color: #22c55e;
 }
 
+.paneHeader {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.paneTitle {
+  font-size: 12px;
+  font-weight: 900;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+}
+
 .chat {
   flex: 1 1 auto;
   overflow-y: auto;

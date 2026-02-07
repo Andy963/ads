@@ -426,12 +426,10 @@ onBeforeUnmount(() => {
       </aside>
 
       <section class="plannerPane">
-        <div class="chatPaneHeader">
-          <div class="chatPaneTitle">Planner</div>
-        </div>
         <MainChatView
           :key="activeProjectId"
           class="chatHost chatHost--planner"
+          title="Planner"
           :messages="plannerMessages"
           :queued-prompts="plannerQueuedPrompts"
           :pending-images="plannerPendingImages"
@@ -447,12 +445,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-if="!isMobile" class="workerPane">
-        <div class="chatPaneHeader">
-          <div class="chatPaneTitle">Worker</div>
-        </div>
         <MainChatView
           :key="activeProjectId"
           class="chatHost"
+          title="Worker"
           :messages="messages"
           :queued-prompts="queuedPrompts.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length }))"
           :pending-images="pendingImages"

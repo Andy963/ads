@@ -9,6 +9,7 @@ import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { isPatchMessageMarkdown } from "../lib/patch_message";
 
 const props = defineProps<{
+  title?: string;
   messages: ChatMessage[];
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
@@ -482,6 +483,9 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
 
 <template>
   <div class="detail" :class="{ 'detail--active': showActiveBorder }">
+    <div v-if="title" class="paneHeader">
+      <div class="paneTitle">{{ title }}</div>
+    </div>
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
         <span>直接开始对话…</span>
