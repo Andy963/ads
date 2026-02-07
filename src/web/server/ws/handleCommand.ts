@@ -192,8 +192,26 @@ export async function handleCommandMessage(deps: {
 
     if (slash?.command === "agent") {
       orchestrator = deps.sessionManager.getOrCreate(deps.userId, currentCwd);
+      const sendAgentsSnapshot = () => {
+        const activeAgentId = orchestrator.getActiveAgentId();
+        deps.safeJsonSend(deps.ws, {
+          type: "agents",
+          activeAgentId,
+          agents: orchestrator.listAgents().map((entry) => ({
+            id: entry.metadata.id,
+            name: entry.metadata.name,
+            ready: entry.status.ready,
+            error: entry.status.error,
+          })),
+          threadId: deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId) ?? orchestrator.getThreadId(),
+        });
+      };
       let agentArg = slash.body.trim();
       if (!agentArg) {
+        if (isSilentCommandPayload) {
+          sendAgentsSnapshot();
+          return;
+        }
         const agents = orchestrator.listAgents();
         if (agents.length === 0) {
           const output = "暂无可用代理";
@@ -218,6 +236,7 @@ export async function handleCommandMessage(deps: {
         ].join("\n");
         deps.safeJsonSend(deps.ws, { type: "result", ok: true, output: message });
         deps.sessionLogger?.logOutput(message);
+        sendAgentsSnapshot();
         return;
       }
       const normalized = agentArg.toLowerCase();
@@ -225,8 +244,20 @@ export async function handleCommandMessage(deps: {
         agentArg = "codex";
       }
       const switchResult = deps.sessionManager.switchAgent(deps.userId, agentArg);
+      if (isSilentCommandPayload) {
+        if (switchResult.success) {
+          sendAgentsSnapshot();
+        } else {
+          deps.safeJsonSend(deps.ws, { type: "error", message: switchResult.message });
+          deps.sessionLogger?.logError(switchResult.message);
+        }
+        return;
+      }
       deps.safeJsonSend(deps.ws, { type: "result", ok: switchResult.success, output: switchResult.message });
       deps.sessionLogger?.logOutput(switchResult.message);
+      if (switchResult.success) {
+        sendAgentsSnapshot();
+      }
       return;
     }
 

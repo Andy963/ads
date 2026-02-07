@@ -15,6 +15,8 @@ const props = defineProps<{
   pendingImages: IncomingImage[];
   connected: boolean;
   busy: boolean;
+  agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
+  activeAgentId?: string;
   agentDelegations?: Array<{
     id: string;
     agentId: string;
@@ -32,6 +34,7 @@ const emit = defineEmits<{
   (e: "addImages", images: IncomingImage[]): void;
   (e: "clearImages"): void;
   (e: "removeQueued", id: string): void;
+  (e: "switchAgent", agentId: string): void;
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
@@ -231,6 +234,32 @@ const renderMessages = computed<RenderMessage[]>(() => {
 
 const canInterrupt = computed(() => props.busy);
 const showActiveBorder = computed(() => props.busy);
+
+const agentOptions = computed(() => (Array.isArray(props.agents) ? props.agents : []));
+
+const selectedAgentId = computed(() => {
+  const active = String(props.activeAgentId ?? "").trim();
+  if (active) return active;
+  const fallback = agentOptions.value[0]?.id ?? "";
+  return String(fallback ?? "").trim();
+});
+
+function formatAgentLabel(agent: { id: string; name: string; ready: boolean; error?: string }): string {
+  const id = String(agent.id ?? "").trim();
+  const name = String(agent.name ?? "").trim() || id;
+  if (!id) return name || "agent";
+  const base = `${name} (${id})`;
+  if (agent.ready) return base;
+  const suffix = String(agent.error ?? "").trim() || "unavailable";
+  return `${base} - ${suffix}`;
+}
+
+function onAgentChange(ev: Event): void {
+  const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
+  const next = String(value ?? "").trim();
+  if (!next) return;
+  emit("switchAgent", next);
+}
 
 const agentDelegationLabel = computed(() => {
   const entries = Array.isArray(props.agentDelegations) ? props.agentDelegations : [];
@@ -633,6 +662,19 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
                 <path fill-rule="evenodd" d="M15.621 4.379a3.5 3.5 0 0 0-4.95 0l-7.07 7.07a5 5 0 0 0 7.07 7.072l4.95-4.95a.75.75 0 0 0-1.06-1.061l-4.95 4.95a3.5 3.5 0 1 1-4.95-4.95l7.07-7.07a2 2 0 1 1 2.83 2.828l-7.07 7.071a.5.5 0 0 1-.707-.707l4.95-4.95a.75.75 0 1 0-1.06-1.06l-4.95 4.95a2 2 0 0 0 2.828 2.828l7.07-7.071a3.5 3.5 0 0 0 0-4.95Z" clip-rule="evenodd" />
               </svg>
             </button>
+            <div v-if="agentOptions.length" class="agentSelect">
+              <select
+                class="agentSelectInput"
+                :value="selectedAgentId"
+                :disabled="!connected || busy"
+                aria-label="Select agent"
+                @change="onAgentChange"
+              >
+                <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.ready">
+                  {{ formatAgentLabel(a) }}
+                </option>
+              </select>
+            </div>
           </div>
           <div class="inputToolbarRight">
             <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">

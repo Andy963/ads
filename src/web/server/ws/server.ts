@@ -209,6 +209,17 @@ export function attachWebSocketServer(deps: {
       inFlight,
       threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
     });
+    safeJsonSend(ws, {
+      type: "agents",
+      activeAgentId: orchestrator.getActiveAgentId(),
+      agents: orchestrator.listAgents().map((entry) => ({
+        id: entry.metadata.id,
+        name: entry.metadata.name,
+        ready: entry.status.ready,
+        error: entry.status.error,
+      })),
+      threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()) ?? orchestrator.getThreadId(),
+    });
 
     const cachedHistory = deps.historyStore.get(historyKey);
     if (cachedHistory.length > 0) {

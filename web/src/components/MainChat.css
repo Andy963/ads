@@ -667,6 +667,35 @@
   color: #0f172a;
 }
 
+.agentSelect {
+  display: flex;
+  align-items: center;
+}
+
+.agentSelectInput {
+  height: 28px;
+  max-width: 240px;
+  border-radius: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: white;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.agentSelectInput:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.agentSelectInput:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.65);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
 .voiceIndicator {
   width: 22px;
   height: 18px;

@@ -54,6 +54,7 @@ const {
   clearActiveChat,
   startNewChatSession,
   messages,
+  activeRuntime,
   activePlannerRuntime,
   queuedPrompts,
   pendingImages,
@@ -71,6 +72,8 @@ const {
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
+  switchMainAgent,
+  switchPlannerAgent,
   interruptActive,
   interruptPlanner,
   addPendingImages,
@@ -124,6 +127,10 @@ const plannerPendingImages = computed(() => activePlannerRuntime.value.pendingIm
 const plannerConnected = computed(() => activePlannerRuntime.value.connected.value);
 const plannerBusy = computed(() => activePlannerRuntime.value.busy.value);
 const plannerAgentDelegations = computed(() => activePlannerRuntime.value.delegationsInFlight.value);
+const workerAgents = computed(() => activeRuntime.value.availableAgents.value);
+const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.value);
+const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
+const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
 
 const projectRemoveConfirmOpen = ref(false);
 const pendingRemoveProjectId = ref<string | null>(null);
@@ -435,8 +442,11 @@ onBeforeUnmount(() => {
           :pending-images="plannerPendingImages"
           :connected="plannerConnected"
           :busy="plannerBusy"
+          :agents="plannerAgents"
+          :active-agent-id="plannerActiveAgentId"
           :agent-delegations="plannerAgentDelegations"
           @send="sendPlannerPrompt"
+          @switchAgent="switchPlannerAgent"
           @interrupt="interruptPlanner"
           @addImages="addPlannerPendingImages"
           @clearImages="clearPlannerPendingImages"
@@ -454,8 +464,11 @@ onBeforeUnmount(() => {
           :pending-images="pendingImages"
           :connected="connected"
           :busy="agentBusy"
+          :agents="workerAgents"
+          :active-agent-id="workerActiveAgentId"
           :agent-delegations="agentDelegations"
           @send="sendMainPrompt"
+          @switchAgent="switchMainAgent"
           @interrupt="interruptActive"
           @clear="clearActiveChat"
           @addImages="addPendingImages"
@@ -485,8 +498,11 @@ onBeforeUnmount(() => {
           :pending-images="pendingImages"
           :connected="connected"
           :busy="agentBusy"
+          :agents="workerAgents"
+          :active-agent-id="workerActiveAgentId"
           :agent-delegations="agentDelegations"
           @send="sendMainPrompt"
+          @switchAgent="switchMainAgent"
           @interrupt="interruptActive"
           @clear="clearActiveChat"
           @addImages="addPendingImages"

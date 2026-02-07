@@ -36,6 +36,13 @@ export type AgentDelegationInFlight = {
   startedAt: number;
 };
 
+export type AgentDescriptor = {
+  id: string;
+  name: string;
+  ready: boolean;
+  error?: string;
+};
+
 export type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -70,6 +77,8 @@ export type ProjectRuntime = {
   apiNotice: Ref<string | null>;
   wsError: Ref<string | null>;
   threadWarning: Ref<string | null>;
+  availableAgents: Ref<AgentDescriptor[]>;
+  activeAgentId: Ref<string>;
   activeThreadId: Ref<string | null>;
   queueStatus: Ref<TaskQueueStatus | null>;
   workspacePath: Ref<string>;

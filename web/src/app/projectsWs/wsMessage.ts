@@ -114,6 +114,37 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (typeof typeValue !== "string") return;
     const type = typeValue;
 
+    if (type === "agents") {
+      const rec = msg as Record<string, unknown>;
+      const activeAgentId = String((msg as { activeAgentId?: unknown }).activeAgentId ?? rec["active_agent_id"] ?? "").trim();
+      const agentsRaw = (msg as { agents?: unknown }).agents ?? rec["agents"];
+      const agents = (Array.isArray(agentsRaw) ? agentsRaw : [])
+        .map((entry) => {
+          const obj = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
+          if (!obj) return null;
+          const id = String(obj.id ?? obj.agentId ?? obj.agent_id ?? "").trim();
+          if (!id) return null;
+          const name = String(obj.name ?? obj.agentName ?? obj.agent_name ?? id).trim() || id;
+          const ready = Boolean(obj.ready);
+          const error = typeof obj.error === "string" && obj.error.trim() ? obj.error.trim() : undefined;
+          return { id, name, ready, error };
+        })
+        .filter(Boolean) as Array<{ id: string; name: string; ready: boolean; error?: string }>;
+
+      rt.availableAgents.value = agents;
+      if (activeAgentId) {
+        rt.activeAgentId.value = activeAgentId;
+      } else if (!rt.activeAgentId.value && agents.length > 0) {
+        rt.activeAgentId.value = agents[0]!.id;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(rec, "threadId")) {
+        const threadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
+        rt.activeThreadId.value = threadId || null;
+      }
+      return;
+    }
+
     if (type === "agent") {
       const rec = msg as Record<string, unknown>;
       const event = String((msg as { event?: unknown }).event ?? "").trim();

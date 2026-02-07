@@ -378,6 +378,22 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     enqueuePrompt(text, images, planner);
   };
 
+  const switchMainAgent = (agentId: string): void => {
+    apiError.value = null;
+    const next = String(agentId ?? "").trim();
+    if (!next) return;
+    const rt = activeRuntime.value;
+    rt.ws?.send?.("command", { command: `/agent ${next}`, silent: true });
+  };
+
+  const switchPlannerAgent = (agentId: string): void => {
+    apiError.value = null;
+    const next = String(agentId ?? "").trim();
+    if (!next) return;
+    const rt = activePlannerRuntime.value;
+    rt.ws?.send?.("command", { command: `/agent ${next}`, silent: true });
+  };
+
   const interruptActive = (): void => {
     activeRuntime.value.ws?.interrupt();
   };
@@ -485,6 +501,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     confirmDeleteTask,
     sendMainPrompt,
     sendPlannerPrompt,
+    switchMainAgent,
+    switchPlannerAgent,
     interruptActive,
     interruptPlanner,
     clearActiveChat,

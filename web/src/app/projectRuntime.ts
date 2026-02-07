@@ -13,6 +13,8 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     apiNotice: ref<string | null>(null),
     wsError: ref<string | null>(null),
     threadWarning: ref<string | null>(null),
+    availableAgents: ref([]),
+    activeAgentId: ref(""),
     activeThreadId: ref<string | null>(null),
     queueStatus: ref(null),
     workspacePath: ref(""),

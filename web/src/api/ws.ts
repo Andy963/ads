@@ -39,6 +39,12 @@ type WsMessage =
   | { type: "command"; detail?: string; command?: WsCommandPayload | null }
   | { type: "patch"; patch?: WsPatchPayload | null }
   | {
+      type: "agents";
+      activeAgentId?: string;
+      agents?: Array<{ id?: string; name?: string; ready?: boolean; error?: string }>;
+      threadId?: string | null;
+    }
+  | {
       type: "agent";
       event: "delegation:start" | "delegation:result";
       delegationId?: string;
