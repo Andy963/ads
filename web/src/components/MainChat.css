@@ -356,6 +356,51 @@
   position: relative;
 }
 
+.msg[data-id="live-step"] .liveStepBody[data-outline-only="true"] :deep(.md) {
+  visibility: hidden;
+}
+
+.msg[data-id="live-step"] .liveStepOutline {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  font-style: italic;
+  pointer-events: none;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineItem {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineBullet {
+  color: rgba(15, 23, 42, 0.55);
+  flex: 0 0 auto;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(15, 23, 42, 0.82);
+  font-weight: 700;
+  min-width: 0;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineMore {
+  color: rgba(15, 23, 42, 0.6);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .msg[data-id="live-step"] .liveStepBody :deep(.md) {
   /*
     Keep the reasoning/step trace from taking over the layout.

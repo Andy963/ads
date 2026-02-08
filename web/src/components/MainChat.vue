@@ -7,6 +7,7 @@ import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { isPatchMessageMarkdown } from "../lib/patch_message";
+import { extractMarkdownOutlineTitles } from "../lib/markdown";
 
 const props = defineProps<{
   title?: string;
@@ -212,6 +213,15 @@ const liveStepMessage = computed(
   () =>
     props.messages.find((m) => m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text") ?? null,
 );
+
+const liveStepOutlineTitles = computed(() => extractMarkdownOutlineTitles(liveStepMessage.value?.content ?? ""));
+const liveStepOutlineItems = computed(() => {
+  const titles = liveStepOutlineTitles.value;
+  if (titles.length <= 3) return titles;
+  // Keep the collapsed outline within the 3-line clamp: 2 titles + a "+N more" line.
+  return titles.slice(0, 2);
+});
+const liveStepOutlineHiddenCount = computed(() => Math.max(0, liveStepOutlineTitles.value.length - liveStepOutlineItems.value.length));
 
 function isLiveStepRenderMessage(m: RenderMessage): boolean {
   return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
@@ -564,8 +574,18 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
           </div>
           <div v-else-if="isLiveStepRenderMessage(m)" class="liveStep">
             <div class="liveStepBody" :data-expanded="String(liveStepExpanded)"
+              :data-outline-only="String(!liveStepExpanded && liveStepOutlineItems.length > 0)"
               :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded }">
               <MarkdownContent :content="m.content" />
+              <div v-if="!liveStepExpanded && liveStepOutlineItems.length > 0" class="liveStepOutline" aria-hidden="true">
+                <div v-for="(title, idx) in liveStepOutlineItems" :key="idx" class="liveStepOutlineItem" :title="title">
+                  <span class="liveStepOutlineBullet" aria-hidden="true">•</span>
+                  <span class="liveStepOutlineText">{{ title }}</span>
+                </div>
+                <div v-if="liveStepOutlineHiddenCount > 0" class="liveStepOutlineMore">
+                  +{{ liveStepOutlineHiddenCount }} more
+                </div>
+              </div>
             </div>
             <div v-if="liveStepHasOverflow || liveStepExpanded" class="liveStepToggleRow">
               <button class="liveStepToggleBtn" type="button" :aria-expanded="liveStepExpanded"

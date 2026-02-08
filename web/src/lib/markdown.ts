@@ -163,6 +163,70 @@ const md = new MarkdownIt({
 
 md.validateLink = (url) => isSafeUrl(url);
 
+type MarkdownOutlineToken = {
+  type: string;
+  content?: string;
+  children?: MarkdownOutlineToken[];
+};
+
+function normalizeOutlineTitle(title: string, maxLen: number): string {
+  const normalized = String(title ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (normalized.length <= maxLen) return normalized;
+  return normalized.slice(0, Math.max(0, maxLen - 1)).trimEnd() + "…";
+}
+
+function extractStrongOnlyParagraphTitle(inline: MarkdownOutlineToken): string {
+  const children = Array.isArray(inline.children) ? inline.children : [];
+  if (children.length === 0) return "";
+
+  let i = 0;
+  while (i < children.length) {
+    const token = children[i]!;
+    if (token.type !== "text") break;
+    const content = String(token.content ?? "");
+    if (!content.trim()) {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+
+  if (i >= children.length || children[i]!.type !== "strong_open") return "";
+  i += 1;
+
+  const parts: string[] = [];
+  let closed = false;
+  for (; i < children.length; i++) {
+    const token = children[i]!;
+    if (token.type === "strong_close") {
+      closed = true;
+      i += 1;
+      break;
+    }
+    if (token.type === "text" || token.type === "code_inline") {
+      parts.push(String(token.content ?? ""));
+      continue;
+    }
+    if (token.type === "softbreak" || token.type === "hardbreak") {
+      parts.push(" ");
+      continue;
+    }
+    return "";
+  }
+
+  if (!closed) return "";
+
+  for (; i < children.length; i++) {
+    const token = children[i]!;
+    if (token.type !== "text") return "";
+    const content = String(token.content ?? "");
+    if (content.trim()) return "";
+  }
+
+  return parts.join("");
+}
+
 md.inline.ruler.before("text", "diffstat", (state, silent) => {
   const pos = state.pos;
   const src = state.src;
@@ -249,4 +313,57 @@ md.renderer.rules.fence = (tokens, idx, options, _env, _self) => {
 
 export function renderMarkdownToHtml(markdown: string): string {
   return md.render(String(markdown ?? ""));
+}
+
+export function extractMarkdownOutlineTitles(
+  markdown: string,
+  opts?: {
+    maxTitleLength?: number;
+  },
+): string[] {
+  const raw = String(markdown ?? "");
+  if (!raw.trim()) return [];
+
+  const maxTitleLength = Math.max(8, Math.min(200, Number(opts?.maxTitleLength ?? 80)));
+
+  let tokens: MarkdownOutlineToken[] = [];
+  try {
+    tokens = md.parse(raw, {}) as unknown as MarkdownOutlineToken[];
+  } catch {
+    return [];
+  }
+
+  const titles: string[] = [];
+  const seen = new Set<string>();
+
+  function pushTitle(candidate: string): void {
+    const normalized = normalizeOutlineTitle(candidate, maxTitleLength);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    titles.push(normalized);
+  }
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+
+    if (token.type === "heading_open") {
+      const inline = tokens[i + 1];
+      if (inline?.type === "inline") pushTitle(String(inline.content ?? ""));
+      continue;
+    }
+
+    if (token.type === "paragraph_open") {
+      const inline = tokens[i + 1];
+      const close = tokens[i + 2];
+      if (inline?.type !== "inline" || close?.type !== "paragraph_close") continue;
+
+      const strongTitle = extractStrongOnlyParagraphTitle(inline);
+      if (strongTitle) pushTitle(strongTitle);
+      continue;
+    }
+  }
+
+  return titles;
 }
