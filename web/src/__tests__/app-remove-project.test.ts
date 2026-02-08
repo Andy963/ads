@@ -169,6 +169,32 @@ describe("App.removeProject", () => {
     wrapper.unmount();
   });
 
+  it("clears stale local projects when the server returns an empty list", async () => {
+    localStorage.setItem(
+      "ADS_WEB_PROJECTS",
+      JSON.stringify([
+        { sessionId: "default", path: "", name: "Default", initialized: true, chatSessionId: "main" },
+        { sessionId: "stale-1", path: "/w/stale", name: "Stale", initialized: true, chatSessionId: "main" },
+      ]),
+    );
+    localStorage.setItem("ADS_WEB_ACTIVE_PROJECT", "stale-1");
+
+    projectsFromApi = [];
+    activeProjectIdFromApi = null;
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    expect(idsFromVm(wrapper as any)).toEqual(["default"]);
+    expect((wrapper.vm as any).activeProjectId).toBe("default");
+
+    const persisted = JSON.parse(localStorage.getItem("ADS_WEB_PROJECTS") ?? "[]") as Array<{ id?: string; sessionId?: string }>;
+    expect(persisted.some((p) => p.id === "stale-1" || p.sessionId === "stale-1")).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("rolls back on API failure", async () => {
     projectsFromApi = [
       { id: "p1", workspaceRoot: "/w/p1", name: "P1", chatSessionId: "main", createdAt: 1, updatedAt: 1 },
@@ -193,4 +219,3 @@ describe("App.removeProject", () => {
     wrapper.unmount();
   });
 });
-

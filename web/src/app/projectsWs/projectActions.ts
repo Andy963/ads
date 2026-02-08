@@ -111,9 +111,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
         "/api/projects",
       );
       const remote = Array.isArray(result.projects) ? result.projects : [];
-      if (remote.length === 0) {
-        return;
-      }
 
       // Server is the source of truth. Rebuild the list to avoid localStorage duplicates.
       const now = Date.now();
