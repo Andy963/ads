@@ -285,6 +285,22 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   max-height: min(40vh, 360px);
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+.md :deep(.md-codeblock pre)::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.md :deep(.md-codeblock pre)::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+}
+
+.md :deep(.md-codeblock pre)::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .md :deep(details.md-codeblock[data-kind="patch"] .md-codeblock-body pre) {

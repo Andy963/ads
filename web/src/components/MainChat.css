@@ -40,6 +40,21 @@
   background: var(--surface-2);
   min-height: 0;
   position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
+}
+
+.chat::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.5);
+  border-radius: 999px;
+}
+
+.chat::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .chatHost--planner .chat {
