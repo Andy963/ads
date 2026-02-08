@@ -52,3 +52,19 @@ export function resolveWebSocketChatSessionId(args: { protocols: string[] }): st
   const normalized = String(requested ?? "").trim();
   return normalized || "main";
 }
+
+export function matchesBroadcastSessionId(args: {
+  broadcastSessionId: string;
+  connectionSessionId: string;
+  connectionWorkspaceRoot?: string | null;
+}): boolean {
+  const broadcastSessionId = String(args.broadcastSessionId ?? "").trim();
+  if (!broadcastSessionId) return false;
+
+  const connectionSessionId = String(args.connectionSessionId ?? "").trim();
+  if (connectionSessionId === broadcastSessionId) return true;
+
+  const workspaceRoot = String(args.connectionWorkspaceRoot ?? "").trim();
+  if (!workspaceRoot) return false;
+  return deriveProjectSessionId(workspaceRoot) === broadcastSessionId;
+}

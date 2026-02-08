@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 import { WebSocketServer } from "ws";
 import type { RawData, WebSocket } from "ws";
@@ -7,6 +9,7 @@ import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
+import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 
 import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
@@ -37,7 +40,7 @@ export function attachWebSocketServer(deps: {
   allowedDirs: string[];
   workspaceCache: Map<string, string>;
   interruptControllers: Map<number, AbortController>;
-  clientMetaByWs: Map<WebSocket, { historyKey: string; sessionId: string; chatSessionId: string; connectionId: string; userId: number }>;
+  clientMetaByWs: Map<WebSocket, { historyKey: string; sessionId: string; chatSessionId: string; connectionId: string; userId: number; workspaceRoot?: string }>;
   clients: Set<WebSocket>;
   cwdStore: Map<string, string>;
   cwdStorePath: string;
@@ -56,6 +59,24 @@ export function attachWebSocketServer(deps: {
 }): WebSocketServer {
   const wss = new WebSocketServer({ server: deps.server });
   const safeJsonSend = createSafeJsonSend(deps.logger);
+
+  const normalizeWorkspaceRootForMeta = (cwd: string): string => {
+    const absolute = path.resolve(String(cwd ?? ""));
+    let resolved = absolute;
+    try {
+      resolved = fs.realpathSync(absolute);
+    } catch {
+      resolved = absolute;
+    }
+    const workspaceRootCandidate = detectWorkspaceFrom(resolved);
+    let normalized = workspaceRootCandidate;
+    try {
+      normalized = fs.realpathSync(workspaceRootCandidate);
+    } catch {
+      normalized = workspaceRootCandidate;
+    }
+    return normalized;
+  };
 
   wss.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -192,6 +213,15 @@ export function attachWebSocketServer(deps: {
     sessionManager.setUserCwd(userId, currentCwd);
     deps.cwdStore.set(String(userId), currentCwd);
     deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
+
+    try {
+      const meta = deps.clientMetaByWs.get(ws);
+      if (meta) {
+        meta.workspaceRoot = normalizeWorkspaceRootForMeta(currentCwd);
+      }
+    } catch {
+      // ignore
+    }
 
     const resumeThread = !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
@@ -392,6 +422,14 @@ export function attachWebSocketServer(deps: {
         if (commandResult.handled) {
           orchestrator = commandResult.orchestrator;
           currentCwd = commandResult.currentCwd;
+          try {
+            const meta = deps.clientMetaByWs.get(ws);
+            if (meta) {
+              meta.workspaceRoot = normalizeWorkspaceRootForMeta(currentCwd);
+            }
+          } catch {
+            // ignore
+          }
           return;
         }
 

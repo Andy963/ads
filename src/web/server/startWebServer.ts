@@ -6,6 +6,7 @@ import { createHttpServer } from "./httpServer.js";
 import { createApiRequestHandler } from "./api/handler.js";
 import { authenticateRequest as authenticateWebRequest } from "./auth.js";
 import { attachWebSocketServer } from "./ws/server.js";
+import { matchesBroadcastSessionId } from "./ws/session.js";
 
 import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
@@ -170,7 +171,11 @@ export async function startWebServer(): Promise<void> {
 
   const broadcastToSession = (sessionId: string, payload: unknown): void => {
     for (const [ws, meta] of clientMetaByWs.entries()) {
-      if (meta.sessionId !== sessionId) {
+      if (!matchesBroadcastSessionId({
+        broadcastSessionId: sessionId,
+        connectionSessionId: meta.sessionId,
+        connectionWorkspaceRoot: (meta as { workspaceRoot?: unknown }).workspaceRoot as string | undefined,
+      })) {
         continue;
       }
       if (meta.chatSessionId === "planner") {
