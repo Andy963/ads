@@ -6,6 +6,7 @@ import { CodexCliAdapter } from '../../agents/adapters/codexCliAdapter.js';
 import { AmpCliAdapter } from '../../agents/adapters/ampCliAdapter.js';
 import { ClaudeCliAdapter } from '../../agents/adapters/claudeCliAdapter.js';
 import { GeminiCliAdapter } from '../../agents/adapters/geminiCliAdapter.js';
+import { DroidCliAdapter } from '../../agents/adapters/droidCliAdapter.js';
 import type { AgentAdapter } from '../../agents/types.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import type { AgentRunResult, AgentSendOptions } from '../../agents/types.js';
@@ -128,6 +129,13 @@ export class SessionManager {
 
     if (process.env.ADS_GEMINI_ENABLED !== "0") {
       adapters.push(new GeminiCliAdapter({
+        sandboxMode: this.sandboxMode,
+        workingDirectory: effectiveCwd,
+      }));
+    }
+
+    if (process.env.ADS_DROID_ENABLED !== "0") {
+      adapters.push(new DroidCliAdapter({
         sandboxMode: this.sandboxMode,
         workingDirectory: effectiveCwd,
       }));

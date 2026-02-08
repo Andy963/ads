@@ -166,6 +166,18 @@ Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK
 
 配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini 可用凭据（环境变量或主目录配置文件）则默认启用对应适配器；CLI/Web/Telegram 均支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
 
+### Droid Agent（实验性）
+
+Droid 集成通过 `droid` CLI 落地（JSONL stream），不依赖 SDK；工具调用由 CLI 自身处理。
+
+环境变量：
+
+- `ADS_DROID_ENABLED=0`：禁用 Droid CLI 适配器（默认启用）
+- `ADS_DROID_BIN`：Droid CLI binary（默认 `droid`）
+- `ADS_DROID_MODEL`：Droid 模型名称（透传给 CLI）
+
+鉴权/配置由 Droid CLI 自身负责（例如 `FACTORY_API_KEY`）。
+
 ### 协作代理（主代理自动调度/委派）
 
 - 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。
