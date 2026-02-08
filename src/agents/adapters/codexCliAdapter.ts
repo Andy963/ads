@@ -179,6 +179,7 @@ export class CodexCliAdapter implements AgentAdapter {
     let responseText = "";
     let usage: Usage | null = null;
     let streamError: string | null = null;
+    let sawTurnFailed = false;
 
     const result = await runCli(
       {
@@ -202,7 +203,15 @@ export class CodexCliAdapter implements AgentAdapter {
           }
         }
 
+        if (event.type === "error") {
+          const msg = (event as { message?: unknown }).message;
+          if (typeof msg === "string" && msg.trim()) {
+            streamError = msg.trim();
+          }
+        }
+
         if (event.type === "turn.failed") {
+          sawTurnFailed = true;
           const msg = (event as { error?: { message?: unknown } }).error?.message;
           if (typeof msg === "string" && msg.trim()) {
             streamError = msg.trim();
@@ -236,15 +245,16 @@ export class CodexCliAdapter implements AgentAdapter {
       throw err;
     }
 
-    if (result.exitCode !== 0) {
-      const message = streamError ?? (result.stderr.trim() || `codex exited with code ${result.exitCode}`);
+    if (result.exitCode !== 0 || sawTurnFailed) {
+      const message =
+        streamError ??
+        (result.stderr.trim() ||
+          (sawTurnFailed ? "codex reported failure" : `codex exited with code ${result.exitCode}`));
       throw new Error(message);
     }
 
-    if (!useResume) {
-      if (!this.threadId && nextThreadId) {
-        this.threadId = nextThreadId;
-      }
+    if (nextThreadId && nextThreadId !== this.threadId) {
+      this.threadId = nextThreadId;
     }
 
     return {
