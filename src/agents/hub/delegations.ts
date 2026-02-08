@@ -1,5 +1,3 @@
-import { injectToolGuide } from "../tools.js";
-import type { ToolExecutionContext, ToolHooks } from "../tools.js";
 import type { AgentIdentifier } from "../types.js";
 import type { HybridOrchestrator } from "../orchestrator.js";
 
@@ -8,7 +6,6 @@ import { createLogger } from "../../utils/logger.js";
 import { SupervisorVerdictSchema, extractJsonPayload } from "../tasks/schemas.js";
 
 import type { CollaborationHooks, DelegationDirective, DelegationSummary } from "./types.js";
-import { runAgentTurnWithTools } from "./toolLoop.js";
 
 const logger = createLogger("AgentHub");
 
@@ -70,9 +67,6 @@ export async function runDelegationQueue(
     maxDelegations: number;
     hooks?: CollaborationHooks;
     supervisorAgentId: AgentIdentifier;
-    maxToolRounds: number;
-    toolContext: ToolExecutionContext;
-    toolHooks?: ToolHooks;
     signal?: AbortSignal;
   },
 ): Promise<DelegationSummary[]> {
@@ -116,18 +110,10 @@ export async function runDelegationQueue(
     const agentName = resolveAgentName(orchestrator, next.agentId);
     await options.hooks?.onDelegationStart?.({ agentId: next.agentId, agentName, prompt: next.prompt });
     try {
-      const delegateInput = injectToolGuide(next.prompt, { activeAgentId: next.agentId });
-      const agentResult = await runAgentTurnWithTools(
-        orchestrator,
-        next.agentId,
-        delegateInput,
-        { streaming: false, signal: options.signal },
-        {
-          maxToolRounds: options.maxToolRounds,
-          toolContext: options.toolContext,
-          toolHooks: options.toolHooks,
-        },
-      );
+      const agentResult = await orchestrator.invokeAgent(next.agentId, next.prompt, {
+        streaming: false,
+        signal: options.signal,
+      });
       const summary: DelegationSummary = {
         agentId: next.agentId,
         agentName,
@@ -160,4 +146,3 @@ export async function runDelegationQueue(
 
   return results;
 }
-

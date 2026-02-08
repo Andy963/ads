@@ -92,37 +92,6 @@ describe("agents/hub", () => {
     }
   });
 
-  it("runs tool loop for non-codex main agent", async () => {
-    assert.ok(tmpDir);
-    const adapter = new QueueAgentAdapter({
-      id: "gemini",
-      name: "Gemini",
-      queue: [
-        [
-          "I will write a file.",
-          "<<<tool.write",
-          '{"path":"hello.txt","content":"hi"}',
-          ">>>",
-        ].join("\n"),
-        "done",
-      ],
-    });
-    const orchestrator = new HybridOrchestrator({
-      adapters: [adapter],
-      defaultAgentId: "gemini",
-      initialWorkingDirectory: tmpDir,
-    });
-
-    const result = await runCollaborativeTurn(orchestrator, "test", {
-      maxSupervisorRounds: 0,
-      maxToolRounds: 2,
-      toolContext: { cwd: tmpDir, allowedDirs: [tmpDir] },
-    });
-
-    assert.equal(result.response, "done");
-    assert.equal(fs.readFileSync(path.join(tmpDir, "hello.txt"), "utf8"), "hi");
-  });
-
   it("supports delegation when main agent is not codex", async () => {
     assert.ok(tmpDir);
     const supervisor = new QueueAgentAdapter({
@@ -152,45 +121,13 @@ describe("agents/hub", () => {
     const result = await runCollaborativeTurn(orchestrator, "test", {
       maxSupervisorRounds: 1,
       maxDelegations: 2,
-      maxToolRounds: 0,
-      toolContext: { cwd: tmpDir, allowedDirs: [tmpDir] },
+      cwd: tmpDir,
     });
 
     assert.equal(result.response, "supervisor done");
     assert.equal(result.delegations.length, 1);
     assert.equal(result.delegations[0]?.agentId, "codex");
     assert.equal(result.delegations[0]?.response, "hello from codex");
-  });
-
-  it("runs tool loop for Claude", async () => {
-    assert.ok(tmpDir);
-    const adapter = new QueueAgentAdapter({
-      id: "claude",
-      name: "Claude",
-      queue: [
-        [
-          "Attempt tool call.",
-          "<<<tool.write",
-          '{"path":"ignored.txt","content":"nope"}',
-          ">>>",
-        ].join("\n"),
-        "done",
-      ],
-    });
-    const orchestrator = new HybridOrchestrator({
-      adapters: [adapter],
-      defaultAgentId: "claude",
-      initialWorkingDirectory: tmpDir,
-    });
-
-    const result = await runCollaborativeTurn(orchestrator, "test", {
-      maxSupervisorRounds: 0,
-      maxToolRounds: 2,
-      toolContext: { cwd: tmpDir, allowedDirs: [tmpDir] },
-    });
-
-    assert.equal(result.response, "done");
-    assert.equal(fs.existsSync(path.join(tmpDir, "ignored.txt")), true);
   });
 
   it("retries coordinator final prompt if supervisor returns verdict JSON", async () => {
@@ -221,8 +158,9 @@ describe("agents/hub", () => {
 
     const result = await runCollaborativeTurn(orchestrator, "test", {
       maxSupervisorRounds: 0,
-      maxToolRounds: 0,
-      toolContext: { cwd: tmpDir, allowedDirs: [tmpDir], historyNamespace: "test", historySessionId: "hub" },
+      cwd: tmpDir,
+      historyNamespace: "test",
+      historySessionId: "hub",
     });
 
     assert.equal(result.response, "final answer");
@@ -295,8 +233,9 @@ describe("agents/hub", () => {
       const explored: Array<{ category: string; summary: string }> = [];
       const result = await runCollaborativeTurn(orchestrator, "hello", {
         maxSupervisorRounds: 0,
-        maxToolRounds: 1,
-        toolContext: { cwd: tmpDir, allowedDirs: [tmpDir], historyNamespace: "web", historySessionId: "s-1" },
+        cwd: tmpDir,
+        historyNamespace: "web",
+        historySessionId: "s-1",
         onExploredEntry: (entry) => explored.push({ category: entry.category, summary: entry.summary }),
       });
 
@@ -390,8 +329,9 @@ describe("agents/hub", () => {
       const explored: Array<{ category: string; summary: string }> = [];
       const result = await runCollaborativeTurn(orchestrator, "hello", {
         maxSupervisorRounds: 0,
-        maxToolRounds: 1,
-        toolContext: { cwd: tmpDir, allowedDirs: [tmpDir], historyNamespace: "web", historySessionId: "s-1" },
+        cwd: tmpDir,
+        historyNamespace: "web",
+        historySessionId: "s-1",
         onExploredEntry: (entry) => explored.push({ category: entry.category, summary: entry.summary }),
       });
 

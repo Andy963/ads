@@ -8,7 +8,7 @@ export function buildDelegatePrompt(spec: TaskSpec, revisionNote?: string | null
 
   return [
     "你是协作代理。请严格按要求输出结果：",
-    "- 你可以使用 <<<tool.*>>> 指令块来读写文件/执行命令（系统会执行并把结果回灌给你）。",
+    "- 你可以使用你所在 CLI 的内置工具来读写文件/执行命令（由 CLI 自行完成）。",
     "- 不要输出 <<<agent.*>>> 指令块（禁止再委派给其它 agent）。",
     "- 当你认为任务已完成时，你的最后一条回复必须包含且只包含一个 TaskResult JSON（放在 ```json 代码块中）。",
     "- 如果信息不足，请返回 status=\"needs_clarification\" 并在 questions 中列出需要澄清的问题。",

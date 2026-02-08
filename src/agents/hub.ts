@@ -1,10 +1,5 @@
 import type { Input } from "@openai/codex-sdk";
 
-import {
-  injectToolGuide,
-  type ToolCallSummary,
-  type ToolExecutionContext,
-} from "./tools.js";
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
@@ -26,10 +21,32 @@ import {
   stripDelegationBlocks,
 } from "./hub/delegations.js";
 import { extractVectorQuery, formatVectorAutoContextSummary, injectVectorContext } from "./hub/vectorContext.js";
-import { parsePositiveInt, resolveDefaultMaxToolRounds, runAgentTurnWithTools, throwIfAborted } from "./hub/toolLoop.js";
 
 const logger = createLogger("AgentHub");
 const supervisorPromptLoader = new SupervisorPromptLoader({ logger });
+
+function createAbortError(message = "用户中断了请求"): Error {
+  const abortError = new Error(message);
+  abortError.name = "AbortError";
+  return abortError;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
+function parsePositiveInt(value: string | undefined, defaultValue: number): number {
+  if (!value) {
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultValue;
+  }
+  return parsed;
+}
 
 export async function runCollaborativeTurn(
   orchestrator: HybridOrchestrator,
@@ -38,24 +55,6 @@ export async function runCollaborativeTurn(
 ): Promise<CollaborativeTurnResult> {
   const exploredConfig = resolveExploredConfig();
   const exploredTracker = exploredConfig.enabled ? new ActivityTracker(options.onExploredEntry) : null;
-  const toolHooks = (() => {
-    if (!exploredTracker) {
-      return options.toolHooks;
-    }
-    return {
-      onInvoke: async (tool: string, payload: string) => {
-        try {
-          exploredTracker.ingestToolInvoke(tool, payload);
-        } catch {
-          // ignore
-        }
-        await options.toolHooks?.onInvoke?.(tool, payload);
-      },
-      onResult: async (summary: ToolCallSummary) => {
-        await options.toolHooks?.onResult?.(summary);
-      },
-    };
-  })();
 
   const unsubscribeExplored = exploredTracker
     ? orchestrator.onEvent((event) => {
@@ -69,7 +68,6 @@ export async function runCollaborativeTurn(
 
   const maxSupervisorRounds = options.maxSupervisorRounds ?? 2;
   const maxDelegations = options.maxDelegations ?? 6;
-  const maxToolRounds = options.maxToolRounds ?? resolveDefaultMaxToolRounds();
   const activeAgentId = orchestrator.getActiveAgentId();
   const supervisorName = resolveAgentName(orchestrator, activeAgentId);
 
@@ -79,27 +77,10 @@ export async function runCollaborativeTurn(
     outputSchema: supportsStructuredOutput ? options.outputSchema : undefined,
     signal: options.signal,
   };
-  const toolContext: ToolExecutionContext = options.toolContext ?? { cwd: process.cwd() };
-
-  // 提供 invokeAgent 能力，允许 Agent 通过工具调用其他 Agent
-  if (!toolContext.invokeAgent) {
-    toolContext.invokeAgent = async (agentId: string, prompt: string) => {
-      const agentResult = await runAgentTurnWithTools(
-        orchestrator,
-        agentId as AgentIdentifier,
-        injectToolGuide(prompt, { activeAgentId: agentId }),
-        { streaming: false, signal: options.signal },
-        {
-          maxToolRounds: maxToolRounds,
-          toolContext,
-          toolHooks,
-        },
-      );
-      return agentResult.response;
-    };
-  }
-
-  const workspaceRoot = detectWorkspaceFrom(toolContext.cwd ?? process.cwd());
+  const cwd = options.cwd ?? process.cwd();
+  const historyNamespace = options.historyNamespace;
+  const historySessionId = options.historySessionId;
+  const workspaceRoot = detectWorkspaceFrom(cwd);
   const supervisorGuide =
     activeAgentId === "codex" && orchestrator.listAgents().length > 1
       ? supervisorPromptLoader.load(workspaceRoot).text
@@ -111,8 +92,8 @@ export async function runCollaborativeTurn(
     vectorContext = await maybeBuildVectorAutoContext({
       workspaceRoot,
       query: vectorQuery,
-      historyNamespace: toolContext.historyNamespace,
-      historySessionId: toolContext.historySessionId,
+      historyNamespace,
+      historySessionId,
       onReport: (report) => {
         vectorReports.push(report);
       },
@@ -150,14 +131,10 @@ export async function runCollaborativeTurn(
     ),
     orchestrator,
     activeAgentId,
-    !!toolContext.invokeAgent,
+    false,
   );
   try {
-    let result: AgentRunResult = await runAgentTurnWithTools(orchestrator, activeAgentId, prompt, sendOptions, {
-      maxToolRounds,
-      toolContext,
-      toolHooks,
-    });
+    let result: AgentRunResult = await orchestrator.invokeAgent(activeAgentId, prompt, sendOptions);
 
     let rounds = 0;
     const allDelegations: DelegationSummary[] = [];
@@ -175,16 +152,10 @@ export async function runCollaborativeTurn(
 
       const coordinator = new TaskCoordinator(orchestrator, {
         workspaceRoot,
-        namespace: toolContext.historyNamespace ?? "agent",
-        sessionId: toolContext.historySessionId ?? "default",
+        namespace: historyNamespace ?? "agent",
+        sessionId: historySessionId ?? "default",
         invokeAgent: async (agentId, inputText, invokeOptions) =>
-          await runAgentTurnWithTools(
-            orchestrator,
-            agentId,
-            injectToolGuide(inputText, { activeAgentId: agentId }),
-            { streaming: false, signal: invokeOptions?.signal },
-            { maxToolRounds, toolContext, toolHooks },
-          ),
+          await orchestrator.invokeAgent(agentId, inputText, { streaming: false, signal: invokeOptions?.signal }),
         supervisorAgentId: activeAgentId,
         supervisorName,
         maxSupervisorRounds,
@@ -193,7 +164,7 @@ export async function runCollaborativeTurn(
         taskTimeoutMs,
         maxTaskAttempts,
         retryBackoffMs,
-        verificationCwd: toolContext.cwd ?? process.cwd(),
+        verificationCwd: cwd,
         signal: options.signal,
         hooks: options.hooks,
         logger,
@@ -220,11 +191,7 @@ export async function runCollaborativeTurn(
           rounds,
           supervisorGuide,
         });
-        result = await runAgentTurnWithTools(orchestrator, activeAgentId, finalPrompt, sendOptions, {
-          maxToolRounds,
-          toolContext,
-          toolHooks,
-        });
+        result = await orchestrator.invokeAgent(activeAgentId, finalPrompt, sendOptions);
 
         if (looksLikeSupervisorVerdict(result.response)) {
           const retryPrompt = [
@@ -232,11 +199,7 @@ export async function runCollaborativeTurn(
             "",
             "⚠️ 注意：不要输出任何 JSON（包括 SupervisorVerdict）。请只用自然语言给用户最终答复。",
           ].join("\n");
-          result = await runAgentTurnWithTools(orchestrator, activeAgentId, retryPrompt, sendOptions, {
-            maxToolRounds,
-            toolContext,
-            toolHooks,
-          });
+          result = await orchestrator.invokeAgent(activeAgentId, retryPrompt, sendOptions);
         }
       }
     } else {
@@ -253,9 +216,6 @@ export async function runCollaborativeTurn(
           maxDelegations,
           hooks: options.hooks,
           supervisorAgentId: activeAgentId,
-          maxToolRounds,
-          toolContext,
-          toolHooks,
           signal: options.signal,
         });
         allDelegations.push(...delegations);
@@ -265,11 +225,7 @@ export async function runCollaborativeTurn(
           break;
         }
 
-        result = await runAgentTurnWithTools(orchestrator, activeAgentId, supervisorPrompt, sendOptions, {
-          maxToolRounds,
-          toolContext,
-          toolHooks,
-        });
+        result = await orchestrator.invokeAgent(activeAgentId, supervisorPrompt, sendOptions);
       }
     }
 

@@ -1,6 +1,5 @@
 import type { ExploredEntry, ExploredEntryCallback } from "../../utils/activityTracker.js";
 
-import type { ToolExecutionContext, ToolHooks } from "../tools.js";
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "../types.js";
 
 export interface DelegationDirective {
@@ -25,9 +24,9 @@ export interface CollaborationHooks {
 export interface CollaborativeTurnOptions extends AgentSendOptions {
   maxSupervisorRounds?: number;
   maxDelegations?: number;
-  maxToolRounds?: number;
-  toolContext?: ToolExecutionContext;
-  toolHooks?: ToolHooks;
+  cwd?: string;
+  historyNamespace?: string;
+  historySessionId?: string;
   hooks?: CollaborationHooks;
   onExploredEntry?: ExploredEntryCallback;
 }

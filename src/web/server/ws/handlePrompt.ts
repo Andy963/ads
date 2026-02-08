@@ -435,12 +435,9 @@ export async function handlePromptMessage(deps: {
             } as ExploredEntry);
           },
         },
-        toolHooks: {
-          onInvoke: (tool, payload) => deps.logger.info(`[Tool] ${tool}: ${truncateForLog(payload)}`),
-          onResult: (summary) =>
-            deps.logger.info(`[Tool] ${summary.tool} ${summary.ok ? "ok" : "fail"}: ${truncateForLog(summary.outputPreview)}`),
-        },
-        toolContext: { cwd: turnCwd, allowedDirs: deps.allowedDirs, historyNamespace: "web", historySessionId: deps.historyKey },
+        cwd: turnCwd,
+        historyNamespace: "web",
+        historySessionId: deps.historyKey,
       });
 
       const rawResponse = typeof result.response === "string" ? result.response : String(result.response ?? "");

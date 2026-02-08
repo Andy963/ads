@@ -1,7 +1,6 @@
 import type { Input } from "@openai/codex-sdk";
 
 import { injectDelegationGuide } from "../delegation.js";
-import { injectToolGuide } from "../tools.js";
 import type { AgentIdentifier } from "../types.js";
 import type { HybridOrchestrator } from "../orchestrator.js";
 
@@ -22,15 +21,14 @@ export function injectSupervisorPrompt(input: Input, guide: string): Input {
 }
 
 export function applyGuides(input: Input, orchestrator: HybridOrchestrator, agentId: AgentIdentifier, invokeAgentEnabled?: boolean): Input {
+  void agentId;
+  void invokeAgentEnabled;
   if (typeof input === "string") {
-    const withTools = injectToolGuide(input, { activeAgentId: agentId, invokeAgentEnabled });
-    return injectDelegationGuide(withTools, orchestrator);
+    return injectDelegationGuide(input, orchestrator);
   }
 
   if (Array.isArray(input)) {
-    const toolGuide = injectToolGuide("", { activeAgentId: agentId, invokeAgentEnabled }).trim();
-    const delegationGuide = injectDelegationGuide("", orchestrator).trim();
-    const guide = [toolGuide, delegationGuide].filter(Boolean).join("\n\n").trim();
+    const guide = injectDelegationGuide("", orchestrator).trim();
     if (!guide) {
       return input;
     }
@@ -84,4 +82,3 @@ export function buildCoordinatorFinalPrompt(options: { supervisorName: string; r
   const guide = String(options.supervisorGuide ?? "").trim();
   return [header, guide].filter(Boolean).join("\n\n").trim();
 }
-
