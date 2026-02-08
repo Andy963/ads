@@ -134,55 +134,35 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
 
 ### Claude Agent（实验性）
 
-Claude 集成正在逐步落地，可通过以下环境变量启用实验特性：
+Claude 集成通过 `claude` CLI（Claude Code）落地，可通过以下环境变量启用实验特性：
 
-- `ENABLE_CLAUDE_AGENT=1`：显式打开 Claude 适配器（默认关闭，可在 `.claude/config.json` 里设置 `enabled: true`）
-- `CLAUDE_API_KEY`：Anthropic API Key（若未设置，依次回退查找 `ANTHROPIC_API_KEY` 或 `~/.claude/auth.json`）
-- `CLAUDE_MODEL`：Claude 模型名称，默认 `claude-sonnet-4.5`
-- `CLAUDE_WORKDIR`：Claude Agent Runner 的工作目录，默认 `/tmp/ads-claude-agent`
-- `CLAUDE_TOOL_ALLOWLIST`：逗号分隔的工具白名单（默认 `*`=不限制；需要限制时再显式配置）
-- `CLAUDE_BASE_URL` / `ANTHROPIC_BASE_URL`：如采用自托管 Claude Code endpoint，可在此指定 API 基础地址
+- `ADS_CLAUDE_ENABLED=0`：禁用 Claude CLI 适配器（默认启用）
+- `ADS_CLAUDE_BIN`：Claude CLI binary（默认 `claude`）
+- `ADS_CLAUDE_MODEL`：Claude 模型名称（透传给 CLI）
 
-也支持从主目录读取配置（用于避免把密钥写进仓库）：
+鉴权/配置由 Claude CLI 自身负责（例如 `claude login` / 主目录配置），ADS 不再通过 SDK 直接读取/管理密钥。
 
-`~/.claude/config.json`（或 `settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN`）：
+`~/.claude/config.json` 示例（具体字段以 CLI 为准）：
 ```json
 {
   "enabled": true,
-  "api_key": "your_anthropic_api_key",
   "model": "claude-sonnet-4.5",
   "workdir": "/tmp/ads-claude-agent",
   "tool_allowlist": ["bash", "file.edit"]
 }
 ```
 
-（可选）在 `~/.claude/auth.json` 中保存 `{"ANTHROPIC_API_KEY": "..."}` 以与 `config.json` 分离密钥。
-
 ### Gemini Agent（实验性）
 
-Gemini 适配器基于官方 SDK `@google/genai`，并使用 Gemini 的 Function Calling 调用 ADS 内置工具（`exec` / `read` / `write` / `apply_patch` / `search`）。因此当 Gemini 作为主代理时，不需要、也不应输出 `<<<tool.*>>>` 文本工具块。
+Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK；工具调用由 CLI 自身处理。
 
 环境变量（优先级最高）：
 
-- `ENABLE_GEMINI_AGENT=1`：显式打开 Gemini 适配器（默认关闭；若检测到可用凭据也会自动启用）
-- `GEMINI_API_KEY`：Google AI Studio API Key（也支持 `GOOGLE_API_KEY`）
-- `GEMINI_MODEL`：Gemini 模型名称，默认 `gemini-2.0-flash`
-- （可选）`GEMINI_BASE_URL`：自定义 API Base URL（如代理/自托管）
-- （可选）`GEMINI_API_VERSION`：如 `v1beta` / `v1`
-- （可选）`GEMINI_ACCESS_TOKEN`：OAuth Access Token（通常用于 Vertex AI 或受控环境）
+- `ADS_GEMINI_ENABLED=0`：禁用 Gemini CLI 适配器（默认启用）
+- `ADS_GEMINI_BIN`：Gemini CLI binary（默认 `gemini`）
+- `ADS_GEMINI_MODEL`：Gemini 模型名称（透传给 CLI）
 
-主目录配置（默认 `~/.gemini`，也可用 `GEMINI_CONFIG_DIR` 覆盖目录）：
-
-- `.env` / `.env.local`（也兼容旧文件名 `.ven` / `.ven.local`）
-- `config.json`（结构化配置）
-- `auth.json`（密钥/凭据，优先级最低；若为 `authorized_user` JSON 会作为 `GOOGLE_APPLICATION_CREDENTIALS` 使用）
-
-Vertex AI（可选）：
-
-- `GOOGLE_GENAI_USE_VERTEXAI=true`
-- `GOOGLE_CLOUD_PROJECT=your-project-id`
-- `GOOGLE_CLOUD_LOCATION=us-central1`
-- （可选）`GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json`
+鉴权/配置由 Gemini CLI 自身负责（例如 `gemini auth` / 主目录配置），ADS 不再通过 SDK 直接读取/管理密钥。
 
 配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini 可用凭据（环境变量或主目录配置文件）则默认启用对应适配器；CLI/Web/Telegram 均支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
 
@@ -191,13 +171,7 @@ Vertex AI（可选）：
 - 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。
 - 你无需手写 `<<<agent.*>>>` 指令块；直接用自然语言描述需求即可。若想强制让 Codex 调用某个协作代理，可在需求里明确写“请让 Claude/Gemini 帮我做 X，并给出补丁/差异说明”。
 - 当前主代理为任意 Agent 时，只要输出包含 `<<<agent.<id>>>` 指令块，就会触发协作调度；系统会执行并把协作结果回注给主代理继续整合。
-- 工具默认开启：Gemini 会通过 Function Calling 自动调用工具；`<<<tool.*>>>` 文本工具块主要用于自定义/调试代理。工具输出会自动回注给当前主代理继续，多轮直到无新工具块或达到上限；如需禁用可设置：
-  - `ENABLE_AGENT_EXEC_TOOL=0`：禁用 `<<<tool.exec ...>>>` 执行本机命令（可选用 `AGENT_EXEC_TOOL_ALLOWLIST` 限制命令；`*` 表示不限制）
-  - `ENABLE_AGENT_FILE_TOOLS=0`：禁用 `<<<tool.read ...>>>` / `<<<tool.write ...>>>` 读写文件（受 `ALLOWED_DIRS` 目录白名单限制）
-  - `ENABLE_AGENT_APPLY_PATCH=0`：禁用 `<<<tool.apply_patch ...>>>` 应用 unified diff（需要 `git`；受 `ALLOWED_DIRS` 限制）
-  - `ADS_AGENT_MAX_TOOL_ROUNDS=0`：工具闭环的最大回合数（0=不限制）
-  ```
-  <<<tool.exec
+- ADS 不再解析/执行 `<<<tool.*>>>` 文本工具块；工具能力由各 CLI 自身提供（例如 `codex exec`、`claude --permission-mode ...`、`gemini --approval-mode ...`）。
   npm test
   >>>
   ```

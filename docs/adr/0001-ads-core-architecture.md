@@ -24,7 +24,7 @@ ADS 的目标是把“规格驱动开发”（需求 → 设计 → 实施/验�
 
 **动机（从代码组织推断）：**
 - 单一语言覆盖 WebSocket/HTTP 服务、Telegram Bot 等多入口。
-- 与上游 SDK（如 `@openai/codex-sdk`、Telegram `grammy` 等）天然贴合。
+- 与上游 CLI（如 `codex`/`claude`/`gemini`、Telegram `grammy` 等）天然贴合。
 
 ### 2) 持久化：使用 SQLite（better-sqlite3），并区分“工作流图数据库”和“运行态状态库”
 
