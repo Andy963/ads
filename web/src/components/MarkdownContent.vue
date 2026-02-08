@@ -284,7 +284,6 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   overflow-y: auto;
   max-height: min(40vh, 360px);
   scrollbar-gutter: stable;
-  overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
 }
