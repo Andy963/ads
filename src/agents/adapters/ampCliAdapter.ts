@@ -1,4 +1,4 @@
-import type { Input } from "../protocol/types.js";
+import type { Input, ThreadEvent } from "../protocol/types.js";
 import type {
   AgentAdapter,
   AgentMetadata,
@@ -176,6 +176,17 @@ export class AmpCliAdapter implements AgentAdapter {
       if (requestedModeLower === "rush" && !this.warnedRushStreamJsonFallback) {
         this.warnedRushStreamJsonFallback = true;
         logger.warn("Amp stream-json is not permitted with 'rush' mode; falling back to 'smart'.");
+        const raw: ThreadEvent = {
+          type: "error",
+          message: "Amp mode downgraded from rush to smart (stream-json requires smart mode)",
+        };
+        this.emitEvent({
+          phase: "context",
+          title: "Amp 模式已降级",
+          detail: "已从 rush 降级为 smart（stream-json 不支持 rush）",
+          timestamp: Date.now(),
+          raw,
+        });
       }
       args.push("--mode", effectiveMode);
     }
