@@ -58,6 +58,7 @@ export function initGlobalConsoleLogger(options?: GlobalConsoleLoggerOptions): v
   const maxBytes = options?.maxBytes ?? DEFAULT_MAX_BYTES;
 
   let sink: RotatingLogFile | null = null;
+  let closed = false;
   try {
     const logFilePath = resolveLogFilePath(options?.logFileName);
     sink = new RotatingLogFile(logFilePath, { maxBytes, mode: 0o600 });
@@ -70,14 +71,31 @@ export function initGlobalConsoleLogger(options?: GlobalConsoleLoggerOptions): v
     return;
   }
 
+  const restoreConsole = (): void => {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+    console.error = original.error;
+    console.debug = original.debug;
+  };
+
   const createRotatingWriter = (mirror: boolean, originalMethod: ConsoleMethod, level: string) => {
     return (...args: unknown[]): void => {
       const timestamp = new Date().toISOString();
       const message = args.map(formatArg).join(" ");
-      sink!.write(`${timestamp} ${level.padEnd(5)} ${message}\n`);
-      if (mirror) {
-        withStatusLineSuppressed(() => originalMethod(...args));
+      const currentSink = sink;
+      if (currentSink) {
+        try {
+          currentSink.write(`${timestamp} ${level.padEnd(5)} ${message}\n`);
+        } catch {
+          // Ignore log sink failures; fall back to the original console method.
+        }
+        if (mirror) {
+          withStatusLineSuppressed(() => originalMethod(...args));
+        }
+        return;
       }
+      withStatusLineSuppressed(() => originalMethod(...args));
     };
   };
 
@@ -88,10 +106,20 @@ export function initGlobalConsoleLogger(options?: GlobalConsoleLoggerOptions): v
   console.debug = createRotatingWriter(mirrorToStdout, original.debug, "DEBUG");
 
   const close = (): void => {
-    if (sink) {
-      sink.close();
-      sink = null;
+    if (closed) {
+      return;
     }
+    closed = true;
+    restoreConsole();
+    if (!sink) {
+      return;
+    }
+    try {
+      sink.close();
+    } catch {
+      // ignore
+    }
+    sink = null;
   };
 
   process.once("exit", close);

@@ -4,7 +4,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const PROJECT_ROOT = (() => {
+  const candidate = path.resolve(__dirname, "..", "..");
+  if (path.basename(candidate) !== "dist") {
+    return candidate;
+  }
+  const parent = path.resolve(candidate, "..");
+  if (fs.existsSync(path.join(parent, ".git"))) {
+    return parent;
+  }
+  return candidate;
+})();
 
 function sanitizeSegment(value: string, maxLen = 48): string {
   const normalized = String(value ?? "").trim() || "workspace";
