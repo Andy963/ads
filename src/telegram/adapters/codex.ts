@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Context } from 'grammy';
-import type { Input } from '@openai/codex-sdk';
+import type { Input } from '../../agents/protocol/types.js';
 import type { SessionManager } from '../utils/sessionManager.js';
 import type { AgentEvent } from '../../codex/events.js';
 import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';

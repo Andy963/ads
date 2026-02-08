@@ -1,4 +1,4 @@
-import type { Input, ThreadEvent, Usage } from "@openai/codex-sdk";
+import type { Input, ThreadEvent, Usage } from "../protocol/types.js";
 
 import type {
   AgentAdapter,

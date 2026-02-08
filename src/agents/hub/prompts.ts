@@ -1,4 +1,4 @@
-import type { Input } from "@openai/codex-sdk";
+import type { Input } from "../protocol/types.js";
 
 import { injectDelegationGuide } from "../delegation.js";
 import type { AgentIdentifier } from "../types.js";

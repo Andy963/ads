@@ -1,4 +1,4 @@
-import type { Input, ThreadEvent } from "@openai/codex-sdk";
+import type { Input, ThreadEvent } from "../../../agents/protocol/types.js";
 
 import type { AgentEvent } from "../../../codex/events.js";
 import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";

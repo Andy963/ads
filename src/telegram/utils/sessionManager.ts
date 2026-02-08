@@ -1,7 +1,7 @@
 import type { SandboxMode } from '../config.js';
 import { createLogger } from '../../utils/logger.js';
 import type { AgentEvent } from '../../codex/events.js';
-import type { Input } from '@openai/codex-sdk';
+import type { Input } from '../../agents/protocol/types.js';
 import { CodexCliAdapter } from '../../agents/adapters/codexCliAdapter.js';
 import { AmpCliAdapter } from '../../agents/adapters/ampCliAdapter.js';
 import { ClaudeCliAdapter } from '../../agents/adapters/claudeCliAdapter.js';

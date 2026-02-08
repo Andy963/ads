@@ -1,4 +1,4 @@
-import type { Input, Usage } from "@openai/codex-sdk";
+import type { Input, Usage } from "./protocol/types.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { IntakeClassification } from "../intake/types.js";
 

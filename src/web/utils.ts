@@ -3,7 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import childProcess from "node:child_process";
 
-import type { Input } from "@openai/codex-sdk";
+import type { Input } from "../agents/protocol/types.js";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import type { ImagePersistOutcome, IncomingImage, PromptInputOutcome, PromptPayload, WorkspaceState } from "./types.js";

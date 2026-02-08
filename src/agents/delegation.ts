@@ -1,4 +1,4 @@
-import type { Usage } from "@openai/codex-sdk";
+import type { Usage } from "./protocol/types.js";
 import type { AgentIdentifier } from "./types.js";
 import type { AgentRunResult } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";

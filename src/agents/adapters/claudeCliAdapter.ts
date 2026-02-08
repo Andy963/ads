@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import type { Input } from "@openai/codex-sdk";
+import type { Input } from "../protocol/types.js";
 
 import type {
   AgentAdapter,

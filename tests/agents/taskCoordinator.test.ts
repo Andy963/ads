@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import type { Input } from "@openai/codex-sdk";
+import type { Input } from "../../src/agents/protocol/types.js";
 
 import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../../src/agents/types.js";
 import { HybridOrchestrator } from "../../src/agents/orchestrator.js";
@@ -294,4 +294,3 @@ describe("agents/tasks/taskCoordinator", () => {
     assert.ok(task.attempts >= 2);
   });
 });
-

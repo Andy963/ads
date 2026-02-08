@@ -1,4 +1,4 @@
-import type { Input } from "@openai/codex-sdk";
+import type { Input } from "../agents/protocol/types.js";
 
 export function extractTextFromInput(input: Input): string {
   if (typeof input === "string") {
@@ -11,4 +11,3 @@ export function extractTextFromInput(input: Input): string {
     .join("\n")
     .trim();
 }
-

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseToml } from "toml";
-import type { ModelReasoningEffort } from "@openai/codex-sdk";
+import type { ModelReasoningEffort } from "./agents/protocol/types.js";
 import { createLogger } from "./utils/logger.js";
 import { resolveCodexHomeDir } from "./utils/codexHome.js";
 

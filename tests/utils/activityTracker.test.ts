@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import type { ThreadEvent } from "@openai/codex-sdk";
+import type { ThreadEvent } from "../../src/agents/protocol/types.js";
 
 import { ActivityTracker, formatExploredTree } from "../../src/utils/activityTracker.js";
 

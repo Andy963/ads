@@ -4,7 +4,7 @@ import type {
   McpToolCallItem,
   ThreadEvent,
   WebSearchItem,
-} from "@openai/codex-sdk";
+} from "../agents/protocol/types.js";
 
 import { compactExploredEntries } from "./activityTracker/compact.js";
 import { extractDiffPaths } from "./activityTracker/patch.js";

@@ -1,4 +1,4 @@
-import type { Input } from "@openai/codex-sdk";
+import type { Input } from "./protocol/types.js";
 
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";

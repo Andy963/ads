@@ -1,6 +1,6 @@
 import type { WebSocket } from "ws";
 
-import type { CommandExecutionItem } from "@openai/codex-sdk";
+import type { CommandExecutionItem } from "../../../agents/protocol/types.js";
 
 import type { AgentEvent } from "../../../codex/events.js";
 import { truncateForLog } from "../../utils.js";

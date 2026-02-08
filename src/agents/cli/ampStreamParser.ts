@@ -1,4 +1,4 @@
-import type { ThreadEvent } from "@openai/codex-sdk";
+import type { ThreadEvent } from "../protocol/types.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../../codex/events.js";
 
 type ToolKind = "command" | "file_change" | "web_search" | "mcp_tool_call";

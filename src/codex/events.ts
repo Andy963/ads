@@ -11,7 +11,7 @@ import type {
   TurnStartedEvent,
   WebSearchItem,
   TodoListItem,
-} from "@openai/codex-sdk";
+} from "../agents/protocol/types.js";
 
 // SDK 中 agent_message 类型的 item 结构
 interface AgentMessageItem {

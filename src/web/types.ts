@@ -44,7 +44,7 @@ export type ImagePersistOutcome = ImagePersistResult | ImagePersistError;
 
 export interface PromptInputResult {
   ok: true;
-  input: import("@openai/codex-sdk").Input;
+  input: import("../agents/protocol/types.js").Input;
   attachments: string[];
 }
 

@@ -1,4 +1,4 @@
-import type { ThreadEvent } from "@openai/codex-sdk";
+import type { ThreadEvent } from "../../../agents/protocol/types.js";
 import { GrammyError, type Context } from "grammy";
 
 import type { AgentEvent } from "../../../codex/events.js";
