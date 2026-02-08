@@ -295,7 +295,7 @@ function canRerunTask(task: Task): boolean {
 
 function canEditTask(task: Task): boolean {
   if (canRerunTask(task)) return true;
-  return task.status === "pending" || task.status === "cancelled";
+  return task.status === "pending" || task.status === "queued" || task.status === "cancelled";
 }
 
 const editPrimaryLabel = computed(() => {
