@@ -74,6 +74,7 @@ export async function handlePromptMessage(deps: {
   parsed: WsMessage;
   ws: import("ws").WebSocket;
   safeJsonSend: (ws: import("ws").WebSocket, payload: unknown) => void;
+  broadcastJson: (payload: unknown) => void;
   logger: { info: (msg: string) => void; warn: (msg: string) => void; debug: (msg: string) => void };
   sessionLogger: {
     logInput: (text: string) => void;
@@ -91,7 +92,7 @@ export async function handlePromptMessage(deps: {
   currentCwd: string;
   allowedDirs: string[];
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  interruptControllers: Map<number, AbortController>;
+  interruptControllers: Map<import("ws").WebSocket, AbortController>;
   historyStore: HistoryStore;
   sessionManager: SessionManager;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
@@ -104,6 +105,9 @@ export async function handlePromptMessage(deps: {
     return { handled: false, orchestrator: deps.orchestrator };
   }
 
+  const sendToClient = (payload: unknown): void => deps.safeJsonSend(deps.ws, payload);
+  const sendToChat = (payload: unknown): void => deps.broadcastJson(payload);
+
   let orchestrator = deps.orchestrator;
 
   const workspaceRoot = detectWorkspaceFrom(deps.currentCwd);
@@ -114,7 +118,7 @@ export async function handlePromptMessage(deps: {
     const promptInput = buildPromptInput(deps.parsed.payload, imageDir);
     if (!promptInput.ok) {
       deps.sessionLogger?.logError(promptInput.message);
-      deps.safeJsonSend(deps.ws, { type: "error", message: promptInput.message });
+      sendToClient({ type: "error", message: promptInput.message });
       return;
     }
     const tempAttachments = promptInput.attachments || [];
@@ -129,7 +133,7 @@ export async function handlePromptMessage(deps: {
       kind: entryKind,
     });
     if (deps.clientMessageId) {
-      deps.safeJsonSend(deps.ws, { type: "ack", client_message_id: deps.clientMessageId, duplicate: !inserted });
+      sendToClient({ type: "ack", client_message_id: deps.clientMessageId, duplicate: !inserted });
       if (!inserted) {
         if (deps.traceWsDuplication) {
           deps.logger.warn(
@@ -147,7 +151,7 @@ export async function handlePromptMessage(deps: {
       const query = promptSlash.body.trim();
       if (!query) {
         const output = "用法: /search <query>";
-        deps.safeJsonSend(deps.ws, { type: "result", ok: false, output });
+        sendToChat({ type: "result", ok: false, output });
         deps.sessionLogger?.logError(output);
         deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
         cleanupAttachments();
@@ -157,7 +161,7 @@ export async function handlePromptMessage(deps: {
       const missingKeys = ensureApiKeys(config);
       if (missingKeys) {
         const output = `/search 未启用: ${missingKeys.message}`;
-        deps.safeJsonSend(deps.ws, { type: "result", ok: false, output });
+        sendToChat({ type: "result", ok: false, output });
         deps.sessionLogger?.logError(output);
         deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
         cleanupAttachments();
@@ -166,13 +170,13 @@ export async function handlePromptMessage(deps: {
       try {
         const result = await SearchTool.search({ query } satisfies SearchParams, { config });
         const output = formatSearchResults(query, result);
-        deps.safeJsonSend(deps.ws, { type: "result", ok: true, output });
+        sendToChat({ type: "result", ok: true, output });
         deps.sessionLogger?.logOutput(output);
         deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const output = `/search 失败: ${message}`;
-        deps.safeJsonSend(deps.ws, { type: "result", ok: false, output });
+        sendToChat({ type: "result", ok: false, output });
         deps.sessionLogger?.logError(output);
         deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
       }
@@ -185,13 +189,13 @@ export async function handlePromptMessage(deps: {
     const turnCwd = deps.currentCwd;
 
     const controller = new AbortController();
-    deps.interruptControllers.set(deps.userId, controller);
+    deps.interruptControllers.set(deps.ws, controller);
     orchestrator = deps.sessionManager.getOrCreate(deps.userId, turnCwd);
     const status = orchestrator.status();
     if (!status.ready) {
       deps.sessionLogger?.logError(status.error ?? "代理未启用");
-      deps.safeJsonSend(deps.ws, { type: "error", message: status.error ?? "代理未启用，请配置凭证" });
-      deps.interruptControllers.delete(deps.userId);
+      sendToClient({ type: "error", message: status.error ?? "代理未启用，请配置凭证" });
+      deps.interruptControllers.delete(deps.ws);
       cleanupAfter();
       return;
     }
@@ -225,7 +229,7 @@ export async function handlePromptMessage(deps: {
           lastRespondingText = next;
         }
         if (delta) {
-          deps.safeJsonSend(deps.ws, { type: "delta", delta });
+          sendToChat({ type: "delta", delta });
         }
         return;
       }
@@ -238,7 +242,7 @@ export async function handlePromptMessage(deps: {
         const patch = buildWorkspacePatch(turnCwd, paths);
         const summary = formatWriteExploredSummary(changes, patch?.files);
         if (summary) {
-          deps.safeJsonSend(deps.ws, {
+          sendToChat({
             type: "explored",
             header: false,
             entry: { category: "Write", summary },
@@ -246,7 +250,7 @@ export async function handlePromptMessage(deps: {
         }
 
         if (patch) {
-          deps.safeJsonSend(deps.ws, { type: "patch", patch });
+          sendToChat({ type: "patch", patch });
         }
       }
       if (rawItemType === "reasoning" && typeof event.delta === "string" && event.delta) {
@@ -259,7 +263,7 @@ export async function handlePromptMessage(deps: {
         lastReasoningText = next;
         if (delta) {
           const payload = prev ? delta : `[analysis] ${delta}`;
-          deps.safeJsonSend(deps.ws, { type: "delta", delta: payload, source: "step" });
+          sendToChat({ type: "delta", delta: payload, source: "step" });
         }
         return;
       }
@@ -273,7 +277,7 @@ export async function handlePromptMessage(deps: {
       ) {
         const line = formatStepTraceLine(event);
         if (line) {
-          deps.safeJsonSend(deps.ws, { type: "delta", delta: line, source: "step" });
+          sendToChat({ type: "delta", delta: line, source: "step" });
         }
       }
       if (event.phase === "command") {
@@ -325,7 +329,7 @@ export async function handlePromptMessage(deps: {
           return;
         }
 
-        deps.safeJsonSend(deps.ws, {
+        sendToChat({
           type: "command",
           detail: event.detail ?? event.title,
           command: {
@@ -348,13 +352,13 @@ export async function handlePromptMessage(deps: {
         return;
       }
       if (event.phase === "error") {
-        deps.safeJsonSend(deps.ws, { type: "error", message: event.detail ?? event.title });
+        sendToChat({ type: "error", message: event.detail ?? event.title });
       }
     });
 
     let exploredHeaderSent = false;
     const handleExploredEntry = (entry: ExploredEntry) => {
-      deps.safeJsonSend(deps.ws, {
+      sendToChat({
         type: "explored",
         header: !exploredHeaderSent,
         entry: { category: entry.category, summary: entry.summary },
@@ -399,7 +403,7 @@ export async function handlePromptMessage(deps: {
             // The LiveActivity UI is intentionally short-lived (TTL). Emit a structured message so
             // the frontend can keep a persistent "agents in progress" indicator while delegations run.
             const delegationId = stashDelegationId(agentId, prompt);
-            deps.safeJsonSend(deps.ws, {
+            sendToChat({
               type: "agent",
               event: "delegation:start",
               delegationId,
@@ -418,7 +422,7 @@ export async function handlePromptMessage(deps: {
           onDelegationResult: (summary) => {
             deps.logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`);
             const delegationId = popDelegationId(summary.agentId, summary.prompt);
-            deps.safeJsonSend(deps.ws, {
+            sendToChat({
               type: "agent",
               event: "delegation:result",
               delegationId,
@@ -453,7 +457,7 @@ export async function handlePromptMessage(deps: {
       }
       const threadId = orchestrator.getThreadId();
       const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
-      deps.safeJsonSend(deps.ws, { type: "result", ok: true, output: outputToSend, threadId, expectedThreadId, threadReset });
+      sendToChat({ type: "result", ok: true, output: outputToSend, threadId, expectedThreadId, threadReset });
       if (deps.sessionLogger) {
         deps.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.sessionLogger.logOutput(outputToSend);
@@ -466,7 +470,7 @@ export async function handlePromptMessage(deps: {
     } catch (error) {
       const aborted = controller.signal.aborted;
       if (aborted) {
-        deps.safeJsonSend(deps.ws, { type: "error", message: "已中断，输出可能不完整" });
+        sendToChat({ type: "error", message: "已中断，输出可能不完整" });
       } else {
         const errorInfo: CodexErrorInfo =
           error instanceof CodexClassifiedError
@@ -485,7 +489,7 @@ export async function handlePromptMessage(deps: {
           kind: "error",
         });
 
-        deps.safeJsonSend(deps.ws, {
+        sendToChat({
           type: "error",
           message: errorInfo.userHint,
           errorInfo: {
@@ -498,7 +502,7 @@ export async function handlePromptMessage(deps: {
       }
     } finally {
       unsubscribe();
-      deps.interruptControllers.delete(deps.userId);
+      deps.interruptControllers.delete(deps.ws);
       cleanupAfter();
     }
   });

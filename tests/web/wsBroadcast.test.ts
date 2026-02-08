@@ -5,7 +5,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import WebSocket from "ws";
+import WebSocket, { type RawData } from "ws";
 
 import { resetStateDatabaseForTests } from "../../src/state/database.js";
 import { AsyncLock } from "../../src/utils/asyncLock.js";
@@ -13,19 +13,64 @@ import { HistoryStore } from "../../src/utils/historyStore.js";
 import { SessionManager } from "../../src/telegram/utils/sessionManager.js";
 import { attachWebSocketServer } from "../../src/web/server/ws/server.js";
 
-describe("web/server/ws/stability", () => {
+type WsJson = { type?: unknown; [k: string]: unknown };
+
+function waitForWsOpen(client: WebSocket, timeoutMs = 1500): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Timed out waiting for ws open")), timeoutMs);
+    client.once("open", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    client.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean, timeoutMs = 1500): Promise<WsJson> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Timed out waiting for ws message")), timeoutMs);
+    const handler = (raw: RawData) => {
+      let parsed: WsJson | null = null;
+      try {
+        parsed = JSON.parse(raw.toString("utf8")) as WsJson;
+      } catch {
+        return;
+      }
+      if (!predicate(parsed)) {
+        return;
+      }
+      clearTimeout(timer);
+      client.off("message", handler);
+      resolve(parsed);
+    };
+    client.on("message", handler);
+    client.once("error", (err) => {
+      clearTimeout(timer);
+      client.off("message", handler);
+      reject(err);
+    });
+  });
+}
+
+describe("web/server/ws/broadcast", () => {
   let tmpDir: string;
   let workspaceRoot: string;
   let server: http.Server;
   let port: number;
   let wss: import("ws").WebSocketServer;
+  let runAdsCommandLineImpl: (command: string) => Promise<{ ok: boolean; output: string }>;
   const originalEnv = { ...process.env };
 
   beforeEach(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-stability-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-broadcast-"));
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-workspace-"));
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     resetStateDatabaseForTests();
+
+    runAdsCommandLineImpl = async () => ({ ok: true, output: "" });
 
     server = http.createServer();
     const clients = new Set<import("ws").WebSocket>();
@@ -51,8 +96,8 @@ describe("web/server/ws/stability", () => {
       workspaceRoot,
       allowedOrigins: new Set(),
       maxClients: 10,
-      pingIntervalMs: 30,
-      maxMissedPongs: 1,
+      pingIntervalMs: 0,
+      maxMissedPongs: 0,
       logger: { info: () => {}, warn: () => {}, debug: () => {} },
       traceWsDuplication: false,
       allowedDirs: [workspaceRoot],
@@ -69,7 +114,7 @@ describe("web/server/ws/stability", () => {
       ensureTaskContext: () => ({} as unknown as any),
       getWorkspaceLock: () => lock,
       getPlannerWorkspaceLock: () => lock,
-      runAdsCommandLine: async () => ({ ok: true, output: "" }),
+      runAdsCommandLine: async (command) => await runAdsCommandLineImpl(command),
       sanitizeInput: (payload) => String(payload ?? ""),
       syncWorkspaceTemplates: () => {},
       isOriginAllowed: () => true,
@@ -111,51 +156,50 @@ describe("web/server/ws/stability", () => {
     }
   });
 
-  it("terminates stale connections even if app-level messages are received", async () => {
+  it("broadcasts command results to new connections after refresh", async () => {
     const url = `ws://127.0.0.1:${port}`;
-    const client = new WebSocket(url, ["ads-v1", "ads-session.test", "ads-chat.main"], {
-      origin: "http://localhost",
-      autoPong: false,
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+
+    let resolveRun: ((value: { ok: boolean; output: string }) => void) | null = null;
+    let runStarted: (() => void) | null = null;
+    const runStartedPromise = new Promise<void>((resolve) => {
+      runStarted = resolve;
+    });
+    const runPromise = new Promise<{ ok: boolean; output: string }>((resolve) => {
+      resolveRun = resolve;
     });
 
-    let keepAlive: ReturnType<typeof setInterval> | null = null;
+    runAdsCommandLineImpl = async () => {
+      runStarted?.();
+      return await runPromise;
+    };
+
+    const clientA = new WebSocket(url, protocols, { origin: "http://localhost" });
+    await waitForWsOpen(clientA);
+
+    clientA.send(JSON.stringify({ type: "command", payload: "echo hello" }));
+    await runStartedPromise;
+
     try {
-      await new Promise<void>((resolve, reject) => {
-        client.once("open", () => resolve());
-        client.once("error", (err) => reject(err));
-      });
+      clientA.terminate();
+    } catch {
+      // ignore
+    }
 
-      keepAlive = setInterval(() => {
-        if (client.readyState !== WebSocket.OPEN) return;
-        try {
-          client.send(JSON.stringify({ type: "ping", payload: { ts: Date.now() } }));
-        } catch {
-          // ignore
-        }
-      }, 5);
+    const clientB = new WebSocket(url, protocols, { origin: "http://localhost" });
+    await waitForWsOpen(clientB);
 
-      const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("Timed out waiting for stale WS termination")), 1500);
-        client.once("close", (code, reason) => {
-          clearTimeout(timer);
-          resolve({ code, reason: reason.toString() });
-        });
-        client.once("error", (err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
-      });
+    const resultPromise = waitForWsMessage(clientB, (msg) => msg.type === "result" && msg.output === "done");
+    resolveRun?.({ ok: true, output: "done" });
 
-      assert.equal(closed.code, 1006);
-    } finally {
-      if (keepAlive) {
-        clearInterval(keepAlive);
-      }
-      try {
-        client.terminate();
-      } catch {
-        // ignore
-      }
+    const result = await resultPromise;
+    assert.equal(result.type, "result");
+
+    try {
+      clientB.terminate();
+    } catch {
+      // ignore
     }
   });
 });
+

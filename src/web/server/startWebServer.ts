@@ -40,7 +40,7 @@ const sessionTtlSeconds = resolveSessionTtlSeconds();
 const sessionPepper = resolveSessionPepper();
 
 const workspaceCache = new Map<string, string>();
-const interruptControllers = new Map<number, AbortController>();
+const interruptControllers = new Map<import("ws").WebSocket, AbortController>();
 const adsStateDir = resolveAdsStateDir();
 const stateDbPath = resolveStateDbPath();
 const webThreadStorage = new ThreadStorage({
@@ -166,7 +166,15 @@ export async function startWebServer(): Promise<void> {
   const traceWsDuplication = parseBooleanFlag(process.env.ADS_TRACE_WS_DUPLICATION, false);
   const clientMetaByWs = new Map<
     import("ws").WebSocket,
-    { historyKey: string; sessionId: string; chatSessionId: string; connectionId: string; userId: number }
+    {
+      historyKey: string;
+      sessionId: string;
+      chatSessionId: string;
+      connectionId: string;
+      authUserId: string;
+      sessionUserId: number;
+      workspaceRoot?: string;
+    }
   >();
 
   const broadcastToSession = (sessionId: string, payload: unknown): void => {
@@ -174,7 +182,7 @@ export async function startWebServer(): Promise<void> {
       if (!matchesBroadcastSessionId({
         broadcastSessionId: sessionId,
         connectionSessionId: meta.sessionId,
-        connectionWorkspaceRoot: (meta as { workspaceRoot?: unknown }).workspaceRoot as string | undefined,
+        connectionWorkspaceRoot: meta.workspaceRoot,
       })) {
         continue;
       }

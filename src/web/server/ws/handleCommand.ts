@@ -6,6 +6,7 @@ import { formatSearchResults } from "../../../tools/search/format.js";
 import { formatLocalSearchOutput, searchWorkspaceFiles } from "../../../utils/localSearch.js";
 import { parseSlashCommand } from "../../../codexConfig.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
+import { withWorkspaceContext } from "../../../workspace/asyncWorkspaceContext.js";
 import { runVectorSearch } from "../../../vectorSearch/run.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
@@ -17,6 +18,7 @@ export async function handleCommandMessage(deps: {
   parsed: WsMessage;
   ws: WebSocket;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
+  broadcastJson: (payload: unknown) => void;
   logger: { info: (msg: string) => void; warn: (msg: string) => void; debug: (msg: string) => void };
   sessionLogger: { logInput: (text: string) => void; logOutput: (text: string) => void; logError: (text: string) => void } | null;
   requestId: string;
@@ -33,7 +35,7 @@ export async function handleCommandMessage(deps: {
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
   sessionManager: SessionManager;
   historyStore: HistoryStore;
-  interruptControllers: Map<number, AbortController>;
+  interruptControllers: Map<WebSocket, AbortController>;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sendWorkspaceState: (ws: WebSocket, workspaceRoot: string) => void;
   syncWorkspaceTemplates: () => void;
@@ -54,6 +56,9 @@ export async function handleCommandMessage(deps: {
     };
   }
 
+  const sendToClient = (payload: unknown): void => deps.safeJsonSend(deps.ws, payload);
+  const sendToChat = (payload: unknown): void => deps.broadcastJson(payload);
+
   let orchestrator = deps.orchestrator;
   let currentCwd = deps.currentCwd;
 
@@ -61,7 +66,7 @@ export async function handleCommandMessage(deps: {
   await lock.runExclusive(async () => {
     const commandRaw = deps.sanitizeInput(deps.parsed.payload);
     if (!commandRaw) {
-      deps.safeJsonSend(deps.ws, { type: "error", message: "Payload must be a command string" });
+      sendToClient({ type: "error", message: "Payload must be a command string" });
       return;
     }
     const command = commandRaw.trim();
@@ -74,6 +79,8 @@ export async function handleCommandMessage(deps: {
     const slash = parseSlashCommand(command);
     const normalizedSlash = slash?.command?.toLowerCase();
     const isCdCommand = normalizedSlash === "cd";
+    const shouldBroadcast = !isSilentCommandPayload && !isCdCommand;
+    const sendToCommandScope = (payload: unknown): void => (shouldBroadcast ? sendToChat(payload) : sendToClient(payload));
     if (!isSilentCommandPayload && !isCdCommand) {
       deps.sessionLogger?.logInput(command);
       const entryKind = deps.clientMessageId ? `client_message_id:${deps.clientMessageId}` : undefined;
@@ -84,7 +91,7 @@ export async function handleCommandMessage(deps: {
         kind: entryKind,
       });
       if (deps.clientMessageId) {
-        deps.safeJsonSend(deps.ws, { type: "ack", client_message_id: deps.clientMessageId, duplicate: !inserted });
+        sendToClient({ type: "ack", client_message_id: deps.clientMessageId, duplicate: !inserted });
         if (!inserted) {
           if (deps.traceWsDuplication) {
             deps.logger.warn(
@@ -102,7 +109,7 @@ export async function handleCommandMessage(deps: {
       const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "web" });
       const note = "提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
       const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
-      deps.safeJsonSend(deps.ws, { type: "result", ok: true, output: decorated });
+      sendToCommandScope({ type: "result", ok: true, output: decorated });
       deps.sessionLogger?.logOutput(decorated);
       deps.historyStore.add(deps.historyKey, { role: "ai", text: decorated, ts: Date.now() });
       return;
@@ -111,7 +118,7 @@ export async function handleCommandMessage(deps: {
       const query = slash.body.trim();
       if (!query) {
         const output = "用法: /search <query>";
-        deps.safeJsonSend(deps.ws, { type: "result", ok: false, output });
+        sendToCommandScope({ type: "result", ok: false, output });
         deps.sessionLogger?.logError(output);
         deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
         return;
@@ -122,7 +129,7 @@ export async function handleCommandMessage(deps: {
         const workspaceRoot = detectWorkspaceFrom(currentCwd);
         const local = searchWorkspaceFiles({ workspaceRoot, query });
         const output = formatLocalSearchOutput({ query, ...local });
-        deps.safeJsonSend(deps.ws, { type: "result", ok: true, output });
+        sendToCommandScope({ type: "result", ok: true, output });
         deps.sessionLogger?.logOutput(output);
         deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });
         return;
@@ -130,13 +137,13 @@ export async function handleCommandMessage(deps: {
       try {
         const result = await SearchTool.search({ query }, { config });
         const output = formatSearchResults(query, result);
-        deps.safeJsonSend(deps.ws, { type: "result", ok: true, output });
+        sendToCommandScope({ type: "result", ok: true, output });
         deps.sessionLogger?.logOutput(output);
         deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const output = `/search 失败: ${message}`;
-        deps.safeJsonSend(deps.ws, { type: "result", ok: false, output });
+        sendToCommandScope({ type: "result", ok: false, output });
         deps.sessionLogger?.logError(output);
         deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
       }
@@ -144,7 +151,7 @@ export async function handleCommandMessage(deps: {
     }
     if (slash?.command === "pwd") {
       const output = `当前工作目录: ${currentCwd}`;
-      deps.safeJsonSend(deps.ws, { type: "result", ok: true, output });
+      sendToCommandScope({ type: "result", ok: true, output });
       deps.sessionLogger?.logOutput(output);
       deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
       return;
@@ -152,7 +159,7 @@ export async function handleCommandMessage(deps: {
 
     if (slash?.command === "cd") {
       if (!slash.body) {
-        deps.safeJsonSend(deps.ws, { type: "result", ok: false, output: "用法: /cd <path>" });
+        sendToCommandScope({ type: "result", ok: false, output: "用法: /cd <path>" });
         return;
       }
       const targetPath = slash.body;
@@ -160,7 +167,7 @@ export async function handleCommandMessage(deps: {
       const result = deps.directoryManager.setUserCwd(deps.userId, targetPath);
       if (!result.success) {
         const output = `错误: ${result.error}`;
-        deps.safeJsonSend(deps.ws, { type: "result", ok: false, output });
+        sendToCommandScope({ type: "result", ok: false, output });
         deps.sessionLogger?.logError(output);
         return;
       }
@@ -183,7 +190,7 @@ export async function handleCommandMessage(deps: {
         message += "\n提示: 已在相同目录，无需重置会话";
       }
       if (!isSilentCommandPayload) {
-        deps.safeJsonSend(deps.ws, { type: "result", ok: true, output: message });
+        sendToCommandScope({ type: "result", ok: true, output: message });
         deps.sessionLogger?.logOutput(message);
       }
       deps.sendWorkspaceState(deps.ws, currentCwd);
@@ -194,7 +201,7 @@ export async function handleCommandMessage(deps: {
       orchestrator = deps.sessionManager.getOrCreate(deps.userId, currentCwd);
       const sendAgentsSnapshot = () => {
         const activeAgentId = orchestrator.getActiveAgentId();
-        deps.safeJsonSend(deps.ws, {
+        sendToCommandScope({
           type: "agents",
           activeAgentId,
           agents: orchestrator.listAgents().map((entry) => ({
@@ -215,7 +222,7 @@ export async function handleCommandMessage(deps: {
         const agents = orchestrator.listAgents();
         if (agents.length === 0) {
           const output = "暂无可用代理";
-          deps.safeJsonSend(deps.ws, { type: "result", ok: false, output });
+          sendToCommandScope({ type: "result", ok: false, output });
           deps.sessionLogger?.logOutput(output);
           return;
         }
@@ -234,7 +241,7 @@ export async function handleCommandMessage(deps: {
           "使用 /agent <id> 切换代理，如 /agent gemini。",
           "提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。",
         ].join("\n");
-        deps.safeJsonSend(deps.ws, { type: "result", ok: true, output: message });
+        sendToCommandScope({ type: "result", ok: true, output: message });
         deps.sessionLogger?.logOutput(message);
         sendAgentsSnapshot();
         return;
@@ -248,12 +255,12 @@ export async function handleCommandMessage(deps: {
         if (switchResult.success) {
           sendAgentsSnapshot();
         } else {
-          deps.safeJsonSend(deps.ws, { type: "error", message: switchResult.message });
+          sendToCommandScope({ type: "error", message: switchResult.message });
           deps.sessionLogger?.logError(switchResult.message);
         }
         return;
       }
-      deps.safeJsonSend(deps.ws, { type: "result", ok: switchResult.success, output: switchResult.message });
+      sendToCommandScope({ type: "result", ok: switchResult.success, output: switchResult.message });
       deps.sessionLogger?.logOutput(switchResult.message);
       if (switchResult.success) {
         sendAgentsSnapshot();
@@ -267,14 +274,11 @@ export async function handleCommandMessage(deps: {
     }
 
     const controller = new AbortController();
-    deps.interruptControllers.set(deps.userId, controller);
+    deps.interruptControllers.set(deps.ws, controller);
 
-    let previousWorkspaceEnv: string | undefined;
     let runPromise: Promise<{ ok: boolean; output: string }> | undefined;
     try {
-      previousWorkspaceEnv = process.env.AD_WORKSPACE;
-      process.env.AD_WORKSPACE = currentCwd;
-      runPromise = deps.runAdsCommandLine(commandToExecute);
+      runPromise = withWorkspaceContext(currentCwd, () => deps.runAdsCommandLine(commandToExecute));
       const abortPromise = new Promise<never>((_, reject) => {
         controller.signal.addEventListener(
           "abort",
@@ -285,7 +289,7 @@ export async function handleCommandMessage(deps: {
         );
       });
       const result = await Promise.race([runPromise, abortPromise]);
-      deps.safeJsonSend(deps.ws, { type: "result", ok: result.ok, output: result.output });
+      sendToCommandScope({ type: "result", ok: result.ok, output: result.output });
       deps.sessionLogger?.logOutput(result.output);
       deps.historyStore.add(deps.historyKey, {
         role: result.ok ? "ai" : "status",
@@ -304,19 +308,14 @@ export async function handleCommandMessage(deps: {
             deps.logger.debug(`[Web] runAdsCommandLine settled after abort: ${detail}`);
           });
         }
-        deps.safeJsonSend(deps.ws, { type: "error", message: "已中断，输出可能不完整" });
+        sendToCommandScope({ type: "error", message: "已中断，输出可能不完整" });
         deps.sessionLogger?.logError("已中断，输出可能不完整");
       } else {
-        deps.safeJsonSend(deps.ws, { type: "error", message });
+        sendToCommandScope({ type: "error", message });
         deps.sessionLogger?.logError(message);
       }
     } finally {
-      if (previousWorkspaceEnv === undefined) {
-        delete process.env.AD_WORKSPACE;
-      } else {
-        process.env.AD_WORKSPACE = previousWorkspaceEnv;
-      }
-      deps.interruptControllers.delete(deps.userId);
+      deps.interruptControllers.delete(deps.ws);
     }
   });
 

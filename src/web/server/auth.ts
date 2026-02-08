@@ -94,7 +94,7 @@ export function authenticateRequest(
   const agentValue = Array.isArray(rawAgent) ? rawAgent[0] : rawAgent;
   const agent = String(agentValue ?? "").trim() || null;
 
-  const refreshed = refreshSessionIfNeeded({
+  refreshSessionIfNeeded({
     tokenHash: lookup.session.token_hash,
     nowSeconds,
     ttlSeconds: options.sessionTtlSeconds,
@@ -102,7 +102,6 @@ export function authenticateRequest(
     userAgent: agent,
     refresh: lookup.shouldRefresh,
   });
-  void refreshed;
 
   const setCookie = lookup.shouldRefresh ? buildSessionCookie(req, token, options.sessionTtlSeconds) : undefined;
   return {
@@ -113,4 +112,3 @@ export function authenticateRequest(
     setCookie,
   };
 }
-

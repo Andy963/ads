@@ -39,8 +39,19 @@ export function attachWebSocketServer(deps: {
   traceWsDuplication: boolean;
   allowedDirs: string[];
   workspaceCache: Map<string, string>;
-  interruptControllers: Map<number, AbortController>;
-  clientMetaByWs: Map<WebSocket, { historyKey: string; sessionId: string; chatSessionId: string; connectionId: string; userId: number; workspaceRoot?: string }>;
+  interruptControllers: Map<WebSocket, AbortController>;
+  clientMetaByWs: Map<
+    WebSocket,
+    {
+      historyKey: string;
+      sessionId: string;
+      chatSessionId: string;
+      connectionId: string;
+      authUserId: string;
+      sessionUserId: number;
+      workspaceRoot?: string;
+    }
+  >;
   clients: Set<WebSocket>;
   cwdStore: Map<string, string>;
   cwdStorePath: string;
@@ -127,6 +138,11 @@ export function attachWebSocketServer(deps: {
       : null;
 
   pingTimer?.unref?.();
+  wss.on("close", () => {
+    if (pingTimer) {
+      clearInterval(pingTimer);
+    }
+  });
 
   wss.on("connection", (ws: WebSocket, req) => {
     const protocolHeader = req.headers["sec-websocket-protocol"];
@@ -167,12 +183,19 @@ export function attachWebSocketServer(deps: {
       aliveWs.missedPongs = 0;
     });
 
-    const clientKey = String(auth.userId ?? "").trim();
+    const authUserId = String(auth.userId ?? "").trim();
     const chatKey = `${sessionId}:${chatSessionId}`;
-    const userId = deriveWebUserId(clientKey, chatKey);
-    const historyKey = `${clientKey}::${sessionId}::${chatSessionId}`;
+    const userId = deriveWebUserId(authUserId, chatKey);
+    const historyKey = `${authUserId}::${sessionId}::${chatSessionId}`;
     const connectionId = crypto.randomBytes(3).toString("hex");
-    deps.clientMetaByWs.set(ws, { historyKey, sessionId, chatSessionId, connectionId, userId });
+    deps.clientMetaByWs.set(ws, {
+      historyKey,
+      sessionId,
+      chatSessionId,
+      connectionId,
+      authUserId,
+      sessionUserId: userId,
+    });
     const directoryManager = new DirectoryManager(deps.allowedDirs);
 
     ws.on("error", (error) => {
@@ -182,7 +205,7 @@ export function attachWebSocketServer(deps: {
       );
     });
 
-    const cacheKey = `${clientKey}::${sessionId}`;
+    const cacheKey = `${authUserId}::${sessionId}`;
     const cachedWorkspace = deps.workspaceCache.get(cacheKey);
     const savedState = sessionManager.getSavedState(userId);
     const storedCwd = deps.cwdStore.get(String(userId));
@@ -192,7 +215,7 @@ export function attachWebSocketServer(deps: {
         const db = getStateDatabase();
         ensureWebAuthTables(db);
         ensureWebProjectTables(db);
-        return getWebProjectWorkspaceRoot(db, clientKey, sessionId);
+        return getWebProjectWorkspaceRoot(db, authUserId, sessionId);
       } catch {
         return null;
       }
@@ -229,7 +252,17 @@ export function attachWebSocketServer(deps: {
     deps.logger.info(
       `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}`,
     );
-    const inFlight = deps.interruptControllers.has(userId);
+    const inFlight = deps.interruptControllers.has(ws);
+
+    const broadcastJson = (payload: unknown): void => {
+      for (const [candidate, meta] of deps.clientMetaByWs.entries()) {
+        if (meta.historyKey !== historyKey) {
+          continue;
+        }
+        safeJsonSend(candidate, payload);
+      }
+    };
+
     safeJsonSend(ws, {
       type: "welcome",
       message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
@@ -280,7 +313,8 @@ export function attachWebSocketServer(deps: {
       safeJsonSend(ws, { type: "history", items: filteredHistory });
     }
 
-    ws.on("message", async (data: RawData) => {
+    let messageChain = Promise.resolve();
+    const handleOneMessage = async (data: RawData): Promise<void> => {
       try {
         let parsed: import("./schema.js").WsMessage;
         try {
@@ -325,10 +359,10 @@ export function attachWebSocketServer(deps: {
         }
 
         if (parsed.type === "interrupt") {
-          const controller = deps.interruptControllers.get(userId);
+          const controller = deps.interruptControllers.get(ws);
           if (controller) {
             controller.abort();
-            deps.interruptControllers.delete(userId);
+            deps.interruptControllers.delete(ws);
             safeJsonSend(ws, { type: "result", ok: false, output: "⛔ 已中断，输出可能不完整" });
           } else {
             safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
@@ -368,6 +402,7 @@ export function attachWebSocketServer(deps: {
           parsed,
           ws,
           safeJsonSend,
+          broadcastJson,
           logger: deps.logger,
           sessionLogger,
           requestId,
@@ -394,6 +429,7 @@ export function attachWebSocketServer(deps: {
           parsed,
           ws,
           safeJsonSend,
+          broadcastJson,
           logger: deps.logger,
           sessionLogger,
           requestId,
@@ -439,10 +475,19 @@ export function attachWebSocketServer(deps: {
         deps.logger.warn(`[WebSocket] Message handler error: ${message}`);
         safeJsonSend(ws, { type: "error", message: "Internal server error" });
       }
+    };
+
+    ws.on("message", (data: RawData) => {
+      messageChain = messageChain.then(() => handleOneMessage(data)).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger.warn(`[WebSocket] Message chain error: ${message}`);
+        safeJsonSend(ws, { type: "error", message: "Internal server error" });
+      });
     });
 
     ws.on("close", (code, reason) => {
       deps.clients.delete(ws);
+      deps.interruptControllers.delete(ws);
       const meta = deps.clientMetaByWs.get(ws);
       deps.clientMetaByWs.delete(ws);
       const reasonText = formatCloseReason(reason);
