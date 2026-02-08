@@ -9,7 +9,7 @@
 ADS 的目标是把“规格驱动开发”（需求 → 设计 → 实施/验证）的流程固化为可执行的工作流，并让同一套工作流可以通过多个入口（Web Console、Telegram Bot）触达。同时需要：
 
 - 将工作流与上下文持久化（跨进程/跨会话可恢复）。
-- 支持多模型/多代理（Codex/Claude/Gemini）与工具调用闭环。
+- 支持多模型/多代理（Codex/Claude/Gemini/Amp），并通过各自 CLI 的内置工具能力完成“读写文件/执行命令/搜索”等闭环。
 - 在“能跑起来”的同时，尽量减少对用户项目的侵入，并提供目录白名单等安全护栏。
 
 本文从当前代码实现中提炼“已经做出的架构决策”，用于团队沟通与后续演进参考。
@@ -81,17 +81,29 @@ ADS 的目标是把“规格驱动开发”（需求 → 设计 → 实施/验�
   - 目录白名单（`DirectoryManager`：`src/telegram/utils/directoryManager.ts`）
   - workspace 初始化提示与“回复肯定词自动初始化”（`checkWorkspaceInit` + `AFFIRMATIVE_RESPONSES` + `initializeWorkspaceForUser`）
 
-### 5) 多代理编排：Hybrid Orchestrator + delegation blocks + tool loop
+### 5) 多代理编排：Hybrid Orchestrator + delegation blocks + CLI adapters
 
 - Orchestrator：`src/agents/orchestrator.ts`（可注册多个 Adapter、切换 active agent、广播 cwd/model、合并 system prompt）
+- Adapter 统一走 CLI：`src/agents/adapters/*CliAdapter.ts`
+  - 通过 spawn 运行 CLI binary（`codex`/`claude`/`gemini`/`amp`），读取 JSONL stream。
+  - JSONL → `ThreadEvent` → `AgentEvent`：解析器位于 `src/agents/cli/*StreamParser.ts`，事件映射位于 `src/codex/events.ts`。
 - 协作/委派：`src/agents/hub.ts`
-  - 解析 `<<<agent.xxx ... >>>` 委派块
-  - 对支持的 agent 运行工具回合（`executeToolBlocks`），并把工具结果反馈给 agent 继续完成任务
+  - 解析 `<<<agent.<id> ... >>>` 委派块，并把块内 prompt 作为输入调用目标 agent（`orchestrator.invokeAgent(agentId, prompt)`）。
+  - 上下文传递策略：默认不自动同步主管的全量对话历史；主管需要在委派块内显式携带必要上下文（文件路径、约束、期望输出等）。
+- 工具闭环策略：ADS 不再解析/执行 `<<<tool.*>>>` 文本工具块；读写文件/执行命令等能力由各 CLI 自行提供与执行，ADS 仅消费事件流以驱动 UI 与日志。
+- 类型解耦：内部以本地协议类型描述输入与事件（`src/agents/protocol/types.ts`），避免对上游 SDK 的类型/运行时依赖。
 - 系统提示注入：`src/systemPrompt/manager.ts`
   - 读取 workspace 的 `.ads/templates/instructions.md` 与 `.ads/rules.md`
   - 支持按 turn 周期 reinjection（默认指令每 6 轮、规则每 1 轮）
 
-### 6) 安全与流程护栏（工程化约束）
+### 6) Planner/Worker 隔离（Web Console）
+
+- Web Console 在同一进程内维护两套会话：Worker（可写）与 Planner（只读）。
+  - Worker：`sandboxMode="workspace-write"`（默认可写）。
+  - Planner：`sandboxMode="read-only"`，并使用独立 `CODEX_HOME`（默认 `/home/andy/.codex-planner`）以隔离登录态/配置（避免与 Worker 互相污染）。
+- 并发语义：Planner 与 Worker 使用不同的 workspace lock pool，允许在同一 workspace 下并行（分别串行化各自请求）。
+
+### 7) 安全与流程护栏（工程化约束）
 
 - 目录白名单：Telegram/Web 侧都通过白名单限制可操作目录（`DirectoryManager`、`resolveAllowedDirs`）
 - Workspace 初始化检测：`src/telegram/utils/workspaceInitChecker.ts`（检查 `.ads/workspace.json` 与 `.ads/templates/instructions.md`）
@@ -103,7 +115,7 @@ ADS 的目标是把“规格驱动开发”（需求 → 设计 → 实施/验�
 - **统一的工作流内核，多入口复用**：Web/Telegram 共享同一套 workflow/service、graph/storage。
 - **本地可持久化、易分发**：SQLite + 文件模板使得 workspace “带走即用”，无需额外服务依赖。
 - **规格与实现强绑定**：图模型 + `workflow_commits` 让“定稿/推进”可追溯，并能把 spec 文件与 review bundle 关联（`src/review/service.ts` 会打包 spec + git diff）。
-- **可扩展的多代理策略**：Hybrid Orchestrator 允许新增 Adapter，并支持委派与工具闭环。
+- **可扩展的多代理策略**：Hybrid Orchestrator 允许新增 CLI Adapter，并支持委派；工具能力由各 CLI 自行提供，ADS 只负责事件消费与 UI 适配。
 
 ### 代价 / 风险
 
@@ -124,6 +136,8 @@ ADS 的目标是把“规格驱动开发”（需求 → 设计 → 实施/验�
 - Review 打包与报告：`src/review/service.ts`
 - System prompt 注入：`src/systemPrompt/manager.ts`
 - Agent 编排：`src/agents/orchestrator.ts`、`src/agents/hub.ts`
+- CLI adapters 与事件解析：`src/agents/adapters/*CliAdapter.ts`、`src/agents/cli/*StreamParser.ts`、`src/codex/events.ts`
+- 协议类型：`src/agents/protocol/types.ts`
 
 ## 可替代方案（对比项，仅供未来演进评估）
 
