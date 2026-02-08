@@ -484,6 +484,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       clearPendingPrompt(rt);
       clearStepLive(rt);
       finalizeCommandBlock(rt);
+      // Ensure the assistant placeholder created when the prompt was sent does not
+      // linger across turns (which can make the next user prompt appear below an
+      // unrelated assistant block).
+      finalizeAssistant("", rt);
 
       const errorInfo = msg.errorInfo && typeof msg.errorInfo === "object"
         ? (msg.errorInfo as { code?: string; retryable?: boolean; needsReset?: boolean; originalError?: string })
