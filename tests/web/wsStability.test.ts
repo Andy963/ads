@@ -11,6 +11,7 @@ import { resetStateDatabaseForTests } from "../../src/state/database.js";
 import { AsyncLock } from "../../src/utils/asyncLock.js";
 import { HistoryStore } from "../../src/utils/historyStore.js";
 import { SessionManager } from "../../src/telegram/utils/sessionManager.js";
+import { NoopAgentAvailability } from "../../src/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../src/web/server/ws/server.js";
 
 describe("web/server/ws/stability", () => {
@@ -45,11 +46,13 @@ describe("web/server/ws/stability", () => {
     const plannerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
     const historyStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test" });
     const lock = new AsyncLock();
+    const agentAvailability = new NoopAgentAvailability();
 
     wss = attachWebSocketServer({
       server,
       workspaceRoot,
       allowedOrigins: new Set(),
+      agentAvailability,
       maxClients: 10,
       pingIntervalMs: 30,
       maxMissedPongs: 1,

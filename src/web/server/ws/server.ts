@@ -10,6 +10,7 @@ import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
+import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 
 import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
@@ -32,6 +33,7 @@ export function attachWebSocketServer(deps: {
   server: import("node:http").Server;
   workspaceRoot: string;
   allowedOrigins: Set<string>;
+  agentAvailability: AgentAvailability;
   maxClients: number;
   pingIntervalMs: number;
   maxMissedPongs: number;
@@ -275,12 +277,15 @@ export function attachWebSocketServer(deps: {
     safeJsonSend(ws, {
       type: "agents",
       activeAgentId: orchestrator.getActiveAgentId(),
-      agents: orchestrator.listAgents().map((entry) => ({
-        id: entry.metadata.id,
-        name: entry.metadata.name,
-        ready: entry.status.ready,
-        error: entry.status.error,
-      })),
+      agents: orchestrator.listAgents().map((entry) => {
+        const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+        return {
+          id: entry.metadata.id,
+          name: entry.metadata.name,
+          ready: merged.ready,
+          error: merged.error,
+        };
+      }),
       threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()) ?? orchestrator.getThreadId(),
     });
 
@@ -438,6 +443,7 @@ export function attachWebSocketServer(deps: {
           historyKey,
           clientMessageId,
           traceWsDuplication: deps.traceWsDuplication,
+          agentAvailability: deps.agentAvailability,
           directoryManager,
           cacheKey,
           workspaceCache: deps.workspaceCache,

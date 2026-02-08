@@ -12,6 +12,7 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
+import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 import type { WsMessage } from "./schema.js";
 
 export async function handleCommandMessage(deps: {
@@ -34,6 +35,7 @@ export async function handleCommandMessage(deps: {
   cwdStorePath: string;
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
   sessionManager: SessionManager;
+  agentAvailability: AgentAvailability;
   historyStore: HistoryStore;
   interruptControllers: Map<WebSocket, AbortController>;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
@@ -204,12 +206,15 @@ export async function handleCommandMessage(deps: {
         sendToCommandScope({
           type: "agents",
           activeAgentId,
-          agents: orchestrator.listAgents().map((entry) => ({
-            id: entry.metadata.id,
-            name: entry.metadata.name,
-            ready: entry.status.ready,
-            error: entry.status.error,
-          })),
+          agents: orchestrator.listAgents().map((entry) => {
+            const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+            return {
+              id: entry.metadata.id,
+              name: entry.metadata.name,
+              ready: merged.ready,
+              error: merged.error,
+            };
+          }),
           threadId: deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId) ?? orchestrator.getThreadId(),
         });
       };
@@ -228,9 +233,10 @@ export async function handleCommandMessage(deps: {
         }
         const activeId = orchestrator.getActiveAgentId();
         const lines = agents
-          .map((entry: { metadata: { id: string; name: string }; status: { ready: boolean; error?: string } }) => {
+          .map((entry) => {
             const marker = entry.metadata.id === activeId ? "•" : "○";
-            const state = entry.status.ready ? "可用" : entry.status.error ?? "未配置";
+            const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+            const state = merged.ready ? "可用" : merged.error ?? "未配置";
             return `${marker} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`;
           })
           .join("\n");

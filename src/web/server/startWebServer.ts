@@ -17,6 +17,7 @@ import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
 import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
 import { SessionManager } from "../../telegram/utils/sessionManager.js";
+import { CliAgentAvailability } from "../../agents/health/agentAvailability.js";
 import { createTaskQueueManager } from "./taskQueue/manager.js";
 import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
 import { WorkspaceLockPool } from "./workspaceLockPool.js";
@@ -230,6 +231,13 @@ export async function startWebServer(): Promise<void> {
 
   const purgeScheduler = new WorkspacePurgeScheduler({ logger });
 
+  const agentAvailability = new CliAgentAvailability();
+  try {
+    await agentAvailability.probeAll();
+  } catch (error) {
+    logger.warn(`[Web] Failed to probe agent availability: ${(error as Error).message}`);
+  }
+
   const apiHandler = createApiRequestHandler({
     logger,
     allowedOrigins,
@@ -250,6 +258,7 @@ export async function startWebServer(): Promise<void> {
     server,
     workspaceRoot,
     allowedOrigins,
+    agentAvailability,
     maxClients: MAX_CLIENTS,
     pingIntervalMs: WS_PING_INTERVAL_MS,
     maxMissedPongs: WS_MAX_MISSED_PONGS,
