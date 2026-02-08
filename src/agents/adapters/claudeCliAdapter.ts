@@ -135,6 +135,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     args.push(prompt);
 
     const parser = new ClaudeStreamParser();
+    let sawTurnFailed = false;
     logger.info(`sending Claude request session=${this.sessionId} mode=${permissionMode}`);
 
     const result = await runCli(
@@ -147,6 +148,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
       },
       (parsed) => {
         for (const event of parser.parseLine(parsed)) {
+          const rawType = (event.raw as { type?: unknown } | undefined)?.type;
+          if (rawType === "turn.failed") {
+            sawTurnFailed = true;
+          }
           this.emitEvent(event);
         }
       },
@@ -158,7 +163,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       throw err;
     }
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 || sawTurnFailed) {
       const message = parser.getLastError() ?? (result.stderr.trim() || `claude exited with code ${result.exitCode}`);
       throw new Error(message);
     }

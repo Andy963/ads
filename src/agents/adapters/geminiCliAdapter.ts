@@ -143,6 +143,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     }
 
     const parser = new GeminiStreamParser();
+    let sawTurnFailed = false;
     logger.info(`sending Gemini request session=${this.sessionId ?? "(new)"} approval=${approvalMode} resume=${resumeIndex ?? "(none)"}`);
 
     const result = await runCli(
@@ -155,6 +156,10 @@ export class GeminiCliAdapter implements AgentAdapter {
       },
       (parsed) => {
         for (const event of parser.parseLine(parsed)) {
+          const rawType = (event.raw as { type?: unknown } | undefined)?.type;
+          if (rawType === "turn.failed") {
+            sawTurnFailed = true;
+          }
           this.emitEvent(event);
         }
       },
@@ -166,7 +171,7 @@ export class GeminiCliAdapter implements AgentAdapter {
       throw err;
     }
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 || sawTurnFailed) {
       const message = parser.getLastError() ?? (result.stderr.trim() || `gemini exited with code ${result.exitCode}`);
       throw new Error(message);
     }
