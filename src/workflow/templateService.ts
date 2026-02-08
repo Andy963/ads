@@ -11,6 +11,7 @@ import { createWorkflowFromConfig, type WorkflowNodeConfig } from "../graph/auto
 import { updateNode } from "../graph/crud.js";
 import { detectWorkspace, getWorkspaceSpecsDir } from "../workspace/detector.js";
 import { WorkflowContext } from "../workspace/context.js";
+import { withWorkspaceContext } from "../workspace/asyncWorkspaceContext.js";
 import { listRules } from "../workspace/rulesService.js";
 import { safeStringify } from "../utils/json.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -27,17 +28,7 @@ const TASK_TEMPLATE = path.join(TEMPLATE_ROOT, "task.md");
 const logger = createLogger("WorkflowTemplateService");
 
 async function withWorkspaceEnv<T>(workspace: string, fn: () => Promise<T> | T): Promise<T> {
-  const previous = process.env.AD_WORKSPACE;
-  process.env.AD_WORKSPACE = workspace;
-  try {
-    return await fn();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.AD_WORKSPACE;
-    } else {
-      process.env.AD_WORKSPACE = previous;
-    }
-  }
+  return await withWorkspaceContext(workspace, fn);
 }
 
 export async function listWorkflowTemplates(): Promise<string> {

@@ -19,23 +19,11 @@ import { safeStringify } from "../utils/json.js";
 import { getErrorMessage } from "../utils/error.js";
 import type { GraphNode } from "./types.js";
 import { detectWorkspace } from "../workspace/detector.js";
+import { withWorkspaceContext } from "../workspace/asyncWorkspaceContext.js";
 import { finalizeNode as finalizeGraphNodeHelper } from "./finalizeHelper.js";
 
 async function withWorkspaceEnv<T>(workspacePath: string | undefined, fn: () => Promise<T> | T): Promise<T> {
-  if (!workspacePath) {
-    return await fn();
-  }
-  const previous = process.env.AD_WORKSPACE;
-  process.env.AD_WORKSPACE = workspacePath;
-  try {
-    return await fn();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.AD_WORKSPACE;
-    } else {
-      process.env.AD_WORKSPACE = previous;
-    }
-  }
+  return await withWorkspaceContext(workspacePath, fn);
 }
 
 export async function getWorkspaceInfo(params: { workspace_path?: string }): Promise<string> {

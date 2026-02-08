@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
 import { detectWorkspace, getWorkspaceDbPath } from "../workspace/detector.js";
+import { getWorkspaceContextRoot } from "../workspace/asyncWorkspaceContext.js";
 import { migrations } from "./migrations.js";
 
 let cachedDbs: Map<string, DatabaseType> = new Map();
@@ -50,6 +51,11 @@ function resolveDatabasePath(workspacePath?: string): string {
   // If explicit workspace path provided, use it
   if (workspacePath) {
     return getWorkspaceDbPath(path.resolve(workspacePath));
+  }
+
+  const contextWorkspace = getWorkspaceContextRoot();
+  if (contextWorkspace && fs.existsSync(contextWorkspace)) {
+    return getWorkspaceDbPath(path.resolve(contextWorkspace));
   }
 
   // If AD_WORKSPACE env is set, use that workspace's database

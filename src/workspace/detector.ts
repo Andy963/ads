@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { createLogger } from "../utils/logger.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveLegacyWorkspaceAdsPath, resolveWorkspaceStatePath } from "./adsPaths.js";
+import { getWorkspaceContextRoot } from "./asyncWorkspaceContext.js";
 
 const GIT_MARKER = ".git";
 const WORKSPACE_CONFIG_FILE = "workspace.json";
@@ -151,6 +152,11 @@ export function detectWorkspaceFrom(startDir: string): string {
 }
 
 export function detectWorkspace(): string {
+  const contextWorkspace = getWorkspaceContextRoot();
+  if (contextWorkspace && existsSync(contextWorkspace)) {
+    return resolveAbsolute(contextWorkspace);
+  }
+
   const envWorkspace = process.env.AD_WORKSPACE;
   if (envWorkspace && existsSync(envWorkspace)) {
     return resolveAbsolute(envWorkspace);
