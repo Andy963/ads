@@ -275,6 +275,14 @@ export class SessionManager {
     return this.defaultModel || 'default';
   }
 
+  getSandboxMode(): SandboxMode {
+    return this.sandboxMode;
+  }
+
+  getCodexEnv(): NodeJS.ProcessEnv | undefined {
+    return this.codexEnv;
+  }
+
   reset(userId: number, options?: { preserveThreadForResume?: boolean }): void {
     const record = this.sessions.get(userId);
     const storage = this.threadStorage;
