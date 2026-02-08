@@ -14,6 +14,16 @@ import { runCli } from "../cli/cliRunner.js";
 import { createLogger } from "../../utils/logger.js";
 
 const logger = createLogger("CodexCliAdapter");
+const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "thread.started",
+  "turn.started",
+  "turn.completed",
+  "turn.failed",
+  "item.started",
+  "item.updated",
+  "item.completed",
+  "error",
+]);
 
 export interface CodexCliAdapterOptions {
   binary?: string;
@@ -80,7 +90,21 @@ function isThreadEvent(payload: unknown): payload is ThreadEvent {
     return false;
   }
   const typeValue = (payload as { type?: unknown }).type;
-  return typeof typeValue === "string" && typeValue.length > 0;
+  if (typeof typeValue !== "string" || typeValue.length === 0) {
+    return false;
+  }
+  if (!KNOWN_EVENT_TYPES.has(typeValue)) {
+    return false;
+  }
+  if (typeValue.startsWith("item.")) {
+    const itemValue = (payload as { item?: unknown }).item;
+    if (!itemValue || typeof itemValue !== "object" || Array.isArray(itemValue)) {
+      return false;
+    }
+    const itemType = (itemValue as { type?: unknown }).type;
+    return typeof itemType === "string" && itemType.length > 0;
+  }
+  return true;
 }
 
 export class CodexCliAdapter implements AgentAdapter {

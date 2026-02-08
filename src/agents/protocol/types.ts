@@ -20,12 +20,14 @@ export interface CommandExecutionItem {
   aggregated_output?: string;
   stdout?: string;
   stderr?: string;
+  [key: string]: unknown;
 }
 
 export interface FileChangeItem {
   type: "file_change";
   id?: string;
   changes: Array<{ kind: string; path: string }>;
+  [key: string]: unknown;
 }
 
 export interface McpToolCallItem {
@@ -34,6 +36,7 @@ export interface McpToolCallItem {
   status?: string;
   server?: string;
   tool?: string;
+  [key: string]: unknown;
 }
 
 export interface WebSearchItem {
@@ -41,30 +44,35 @@ export interface WebSearchItem {
   id?: string;
   status?: string;
   query: string;
+  [key: string]: unknown;
 }
 
 export interface TodoListItem {
   type: "todo_list";
   id?: string;
   items?: Array<{ text?: string; completed?: boolean }>;
+  [key: string]: unknown;
 }
 
 export interface AgentMessageItem {
   type: "agent_message";
   id?: string;
   text?: string;
+  [key: string]: unknown;
 }
 
 export interface ReasoningItem {
   type: "reasoning";
   id?: string;
   text?: string;
+  [key: string]: unknown;
 }
 
 export interface ErrorItem {
   type: "error";
   id?: string;
   message: string;
+  [key: string]: unknown;
 }
 
 export type ThreadItem =
@@ -75,12 +83,22 @@ export type ThreadItem =
   | TodoListItem
   | AgentMessageItem
   | ReasoningItem
-  | ErrorItem
-  | { type: string; [key: string]: unknown };
+  | ErrorItem;
+
+export type ThreadEventType =
+  | "thread.started"
+  | "turn.started"
+  | "turn.completed"
+  | "turn.failed"
+  | "error"
+  | "item.started"
+  | "item.updated"
+  | "item.completed";
 
 export interface ThreadStartedEvent {
   type: "thread.started";
   thread_id: string;
+  [key: string]: unknown;
 }
 
 export interface TurnStartedEvent {
@@ -132,6 +150,4 @@ export type ThreadEvent =
   | ThreadErrorEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
-  | ItemCompletedEvent
-  | { type: string; [key: string]: unknown };
-
+  | ItemCompletedEvent;
