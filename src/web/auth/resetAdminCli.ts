@@ -1,4 +1,5 @@
 import { resetAdmin } from "./resetAdmin.js";
+import { pathToFileURL } from "node:url";
 
 function printUsage(): void {
   console.error("Usage: npm run web:reset-admin -- --username <u> --password-stdin");
@@ -74,4 +75,25 @@ export async function runResetAdminFromCli(args: string[]): Promise<number> {
   }
   console.log(`OK (updated user=${outcome.username} id=${outcome.userId} prev=${outcome.previousUsername})`);
   return 0;
+}
+
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(entry).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  try {
+    const exitCode = await runResetAdminFromCli(process.argv.slice(2));
+    process.exitCode = exitCode;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
+    process.exitCode = 1;
+  }
 }

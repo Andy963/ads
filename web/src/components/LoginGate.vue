@@ -104,7 +104,7 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <p v-if="initialized === false" class="desc">
-          Admin is not initialized. Run <code>ads web init-admin --username &lt;username&gt; --password-stdin</code> on the server.
+          Admin is not initialized. Run <code>npm run web:init-admin -- --username &lt;username&gt; --password-stdin</code> on the server.
         </p>
 
         <template v-else-if="initialized === true">
