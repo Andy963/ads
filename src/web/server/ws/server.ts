@@ -250,9 +250,11 @@ export function attachWebSocketServer(deps: {
 
     const resumeThread = !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
+    const contextRestored = resumeThread && !sessionManager.needsHistoryInjection(userId);
+    const pendingInjection = sessionManager.needsHistoryInjection(userId);
 
     deps.logger.info(
-      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}`,
+      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}${pendingInjection ? " (pending history injection)" : ""}${contextRestored ? " (thread resumed)" : ""}`,
     );
     const inFlight = deps.interruptControllers.has(ws);
 
@@ -273,6 +275,7 @@ export function attachWebSocketServer(deps: {
       chatSessionId,
       inFlight,
       threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
+      contextMode: pendingInjection ? "history_injection" : contextRestored ? "thread_resumed" : "fresh",
     });
     safeJsonSend(ws, {
       type: "agents",

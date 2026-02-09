@@ -30,6 +30,7 @@ interface ThreadState {
   threadId?: string;
   cwd?: string;
   agentThreads?: Record<string, string>;
+  updatedAt?: number;
 }
 
 const logger = createLogger('ThreadStorage');
@@ -65,7 +66,7 @@ export class ThreadStorage {
     this.db = getStateDatabase(this.stateDbPath);
 
     this.getStmt = this.db.prepare(
-      `SELECT thread_id as threadId, cwd
+      `SELECT thread_id as threadId, cwd, updated_at as updatedAt
        FROM thread_state
        WHERE namespace = ? AND user_hash = ?`,
     );
@@ -283,14 +284,17 @@ export class ThreadStorage {
     const userHash = this.hashUserId(userId);
     try {
       const row = this.getStmt.get(this.namespace, userHash) as
-        | { threadId: string; cwd: string | null }
+        | { threadId: string; cwd: string | null; updatedAt: number | null }
         | undefined;
       if (!row || !row.threadId) {
         return undefined;
       }
       const parsed = this.parseThreadIdValue(row.threadId);
       const cwd = row.cwd && typeof row.cwd === 'string' ? row.cwd : undefined;
-      return { threadId: parsed.codex, cwd, agentThreads: parsed.agentThreads };
+      const updatedAt = typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) && row.updatedAt > 0
+        ? row.updatedAt
+        : undefined;
+      return { threadId: parsed.codex, cwd, agentThreads: parsed.agentThreads, updatedAt };
     } catch (error) {
       logger.warn(`[ThreadStorage] Failed to read thread record (ns=${this.namespace})`, error);
       return undefined;

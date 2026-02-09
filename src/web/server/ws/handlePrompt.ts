@@ -1,4 +1,4 @@
-import type { Input, ThreadEvent } from "../../../agents/protocol/types.js";
+import type { Input, InputTextPart, ThreadEvent } from "../../../agents/protocol/types.js";
 
 import fs from "node:fs";
 
@@ -31,6 +31,52 @@ import { resolveMcpPepper } from "../mcp/secret.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
 type PatchFileStatLike = { added: number | null; removed: number | null };
+
+const HISTORY_INJECTION_MAX_ENTRIES = 20;
+const HISTORY_INJECTION_MAX_CHARS = 8_000;
+
+export function buildHistoryInjectionContext(entries: Array<{ role: string; text: string }>): string | null {
+  const relevant = entries.filter((e) => e.role === "user" || e.role === "ai");
+  if (relevant.length === 0) {
+    return null;
+  }
+  const recent = relevant.slice(-HISTORY_INJECTION_MAX_ENTRIES);
+  const lines: string[] = [];
+  for (const entry of recent) {
+    const role = entry.role === "user" ? "User" : "Assistant";
+    const text = String(entry.text ?? "").trim();
+    if (!text) continue;
+    const maxPerEntry = 800;
+    const truncated = text.length <= maxPerEntry ? text : `${text.slice(0, maxPerEntry)}…`;
+    lines.push(`${role}: ${truncated}`);
+  }
+  if (lines.length === 0) {
+    return null;
+  }
+  let transcript = lines.join("\n");
+  if (transcript.length > HISTORY_INJECTION_MAX_CHARS) {
+    transcript = transcript.slice(transcript.length - HISTORY_INJECTION_MAX_CHARS);
+  }
+  return [
+    "[Context restore] Recent chat history (for reference only). Do not repeat it; answer the user's next request directly:",
+    "",
+    transcript,
+    "",
+    "---",
+    "",
+  ].join("\n");
+}
+
+export function prependContextToInput(context: string, input: Input): Input {
+  if (typeof input === "string") {
+    return `${context}${input}`;
+  }
+  if (Array.isArray(input)) {
+    const prefix: InputTextPart = { type: "text", text: context };
+    return [prefix, ...input];
+  }
+  return `${context}${String(input ?? "")}`;
+}
 
 export function formatWriteExploredSummary(
   changes: FileChangeLike[],
@@ -423,7 +469,20 @@ export async function handlePromptMessage(deps: {
         return { ADS_MCP_BEARER_TOKEN: token };
       })();
 
-      const result = await runCollaborativeTurn(orchestrator, inputToSend, {
+      let effectiveInput: Input = inputToSend;
+      if (deps.sessionManager.needsHistoryInjection(deps.userId)) {
+        const historyEntries = deps.historyStore.get(deps.historyKey);
+        const injectionContext = buildHistoryInjectionContext(historyEntries);
+        if (injectionContext) {
+          effectiveInput = prependContextToInput(injectionContext, inputToSend);
+          deps.logger.info(
+            `[ContextRestore] Injected ${historyEntries.length} history entries for user=${deps.userId} session=${deps.sessionId}`,
+          );
+        }
+        deps.sessionManager.clearHistoryInjection(deps.userId);
+      }
+
+      const result = await runCollaborativeTurn(orchestrator, effectiveInput, {
         streaming: true,
         env: mcpEnv,
         signal: controller.signal,

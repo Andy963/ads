@@ -50,6 +50,17 @@ export interface SessionWrapper {
   }>;
 }
 
+function resolveResumeTtlMs(): number {
+  const raw = process.env.ADS_THREAD_RESUME_TTL_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 2 * 60 * 60 * 1000; // 2 hours
+}
+
 export class SessionManager {
   private sessions = new Map<number, SessionRecord>();
   private cleanupInterval?: NodeJS.Timeout;
@@ -59,6 +70,8 @@ export class SessionManager {
   private threadStorage?: ThreadStorage;
   private codexEnv?: NodeJS.ProcessEnv;
   private readonly logger = createLogger("SessionManager");
+  private readonly resumeTtlMs = resolveResumeTtlMs();
+  private readonly pendingHistoryInjections = new Set<number>();
 
   constructor(
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000,
@@ -96,10 +109,38 @@ export class SessionManager {
     const userModel = this.userModels.get(userId) || this.defaultModel;
     const savedState = resumeThread ? this.getSavedState(userId) : undefined;
     const effectiveCwd = cwd || savedState?.cwd || process.cwd();
-    const resumeThreadId = resumeThread ? this.getSavedThreadId(userId) : undefined;
+
+    let resumeThreadId: string | undefined;
+    if (resumeThread) {
+      const record = this.threadStorage?.getRecord(userId);
+      const candidateThreadId = record?.agentThreads?.codex ?? record?.threadId;
+      const updatedAt = record?.updatedAt;
+
+      if (candidateThreadId && updatedAt && this.resumeTtlMs > 0) {
+        const age = Date.now() - updatedAt;
+        if (age > this.resumeTtlMs) {
+          this.logger.info(
+            `Thread too stale for auto-resume (age=${Math.round(age / 60_000)}min ttl=${Math.round(this.resumeTtlMs / 60_000)}min), will inject history instead`,
+          );
+          this.threadStorage?.setRecord(userId, {
+            threadId: undefined,
+            cwd: record?.cwd,
+            agentThreads: { resume: candidateThreadId },
+          });
+          this.pendingHistoryInjections.add(userId);
+        } else {
+          resumeThreadId = candidateThreadId;
+        }
+      } else if (candidateThreadId && !updatedAt) {
+        this.logger.info("Thread has no updatedAt, treating as stale — will inject history instead");
+        this.pendingHistoryInjections.add(userId);
+      } else if (candidateThreadId) {
+        resumeThreadId = candidateThreadId;
+      }
+    }
 
     this.logger.info(
-      `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''} at cwd: ${effectiveCwd}`,
+      `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''}${resumeThreadId ? ` resume=${resumeThreadId}` : ' (fresh)'} at cwd: ${effectiveCwd}`,
     );
 
     const adapter = new CodexCliAdapter({
@@ -159,6 +200,14 @@ export class SessionManager {
 
   hasSession(userId: number): boolean {
     return this.sessions.has(userId);
+  }
+
+  needsHistoryInjection(userId: number): boolean {
+    return this.pendingHistoryInjections.has(userId);
+  }
+
+  clearHistoryInjection(userId: number): void {
+    this.pendingHistoryInjections.delete(userId);
   }
 
   getActiveAgentLabel(userId: number): string {
