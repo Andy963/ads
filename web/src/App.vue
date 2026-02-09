@@ -8,8 +8,10 @@ import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import PromptsModal from "./components/PromptsModal.vue";
+import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 
 import { createAppController } from "./app/controller";
+import type { TaskBundle } from "./api/types";
 import { CirclePlus, Setting } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
@@ -69,6 +71,10 @@ const {
   createPrompt,
   updatePrompt,
   deletePrompt,
+  loadTaskBundleDrafts,
+  updateTaskBundleDraft,
+  deleteTaskBundleDraft,
+  approveTaskBundleDraft,
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
@@ -127,10 +133,29 @@ const plannerPendingImages = computed(() => activePlannerRuntime.value.pendingIm
 const plannerConnected = computed(() => activePlannerRuntime.value.connected.value);
 const plannerBusy = computed(() => activePlannerRuntime.value.busy.value);
 const plannerAgentDelegations = computed(() => activePlannerRuntime.value.delegationsInFlight.value);
+const plannerDrafts = computed(() => activePlannerRuntime.value.taskBundleDrafts.value);
+const plannerDraftsBusy = computed(() => activePlannerRuntime.value.taskBundleDraftsBusy.value);
+const plannerDraftsError = computed(() => activePlannerRuntime.value.taskBundleDraftsError.value);
 const workerAgents = computed(() => activeRuntime.value.availableAgents.value);
 const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.value);
 const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
 const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
+
+function refreshPlannerDrafts(): void {
+  void loadTaskBundleDrafts(activeProjectId.value);
+}
+
+function onApproveDraft(payload: { id: string; runQueue: boolean }): void {
+  void approveTaskBundleDraft(payload.id, { runQueue: payload.runQueue, projectId: activeProjectId.value });
+}
+
+function onUpdateDraft(payload: { id: string; bundle: TaskBundle }): void {
+  void updateTaskBundleDraft(payload.id, payload.bundle, activeProjectId.value);
+}
+
+function onDeleteDraft(id: string): void {
+  void deleteTaskBundleDraft(id, activeProjectId.value);
+}
 
 const projectRemoveConfirmOpen = ref(false);
 const pendingRemoveProjectId = ref<string | null>(null);
@@ -433,6 +458,15 @@ onBeforeUnmount(() => {
       </aside>
 
       <section class="plannerPane">
+        <TaskBundleDraftPanel
+          :drafts="plannerDrafts"
+          :busy="plannerDraftsBusy"
+          :error="plannerDraftsError"
+          @refresh="refreshPlannerDrafts"
+          @approve="onApproveDraft"
+          @update="onUpdateDraft"
+          @delete="onDeleteDraft"
+        />
         <MainChatView
           :key="activeProjectId"
           class="chatHost chatHost--planner"

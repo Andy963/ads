@@ -7,6 +7,7 @@ import { isProjectInProgress } from "../lib/project_status";
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
 import { createPromptActions } from "./prompts";
+import { createTaskBundleDraftActions } from "./taskBundleDrafts";
 import { createProjectRuntime } from "./projectRuntime";
 import type {
   ChatItem,
@@ -364,6 +365,14 @@ export function createAppController() {
   const ctx = createAppContext();
   const chat = createChatActions(ctx as AppContext);
   const prompts = createPromptActions({ api: ctx.api, loggedIn: ctx.loggedIn });
+  const drafts = createTaskBundleDraftActions({
+    api: ctx.api,
+    loggedIn: ctx.loggedIn,
+    activeProjectId: ctx.activeProjectId,
+    normalizeProjectId: ctx.normalizeProjectId,
+    getPlannerRuntime: ctx.getPlannerRuntime,
+    withWorkspaceQueryFor: ctx.withWorkspaceQueryFor,
+  });
 
   const taskDeps: TaskDeps = {
     connectWs: async () => {},
@@ -400,6 +409,7 @@ export function createAppController() {
         tasks.loadQueueStatus(pid),
         (!rt.ws || !rt.connected.value) ? ws.connectWs(pid) : Promise.resolve(),
         (!plannerRt.ws || !plannerRt.connected.value) ? ws.connectPlannerWs(pid) : Promise.resolve(),
+        drafts.loadTaskBundleDrafts(pid),
         tasks.loadTasks(pid),
       ]);
     } catch (error) {
@@ -477,6 +487,7 @@ export function createAppController() {
     ...ctx,
     ...chat,
     ...prompts,
+    ...drafts,
     ...tasks,
     ...projects,
     ...ws,

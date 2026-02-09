@@ -1,5 +1,6 @@
 import type { ChatActions } from "../chat";
 import type { ChatItem, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
+import type { TaskBundleDraft } from "../../api/types";
 
 type Ref<T> = { value: T };
 
@@ -192,6 +193,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (id && rt.pendingAckClientMessageId === id) {
         rt.pendingAckClientMessageId = null;
         clearPendingPrompt(rt);
+      }
+      return;
+    }
+
+    if (type === "task_bundle_draft") {
+      const action = String((msg as { action?: unknown }).action ?? "upsert").trim().toLowerCase();
+      const rawDraft = (msg as { draft?: unknown }).draft;
+      const draft = isRecord(rawDraft) ? (rawDraft as TaskBundleDraft) : null;
+      const draftId = String(draft?.id ?? "").trim();
+      if (!draft || !draftId) {
+        return;
+      }
+
+      const existing = Array.isArray(rt.taskBundleDrafts.value) ? rt.taskBundleDrafts.value : [];
+      if (action === "delete") {
+        rt.taskBundleDrafts.value = existing.filter((d) => d.id !== draftId);
+        return;
+      }
+
+      const idx = existing.findIndex((d) => d.id === draftId);
+      if (idx >= 0) {
+        rt.taskBundleDrafts.value = existing.map((d, i) => (i === idx ? { ...d, ...draft } : d));
+      } else {
+        rt.taskBundleDrafts.value = [draft, ...existing];
       }
       return;
     }

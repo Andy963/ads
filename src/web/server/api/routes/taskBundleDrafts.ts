@@ -8,6 +8,7 @@ import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 
 import { taskBundleSchema, type TaskBundle, type TaskBundleTask } from "../../planner/taskBundle.js";
+import type { CreateTaskInput } from "../../../../tasks/types.js";
 import {
   approveTaskBundleDraft,
   deleteTaskBundleDraft,
@@ -56,7 +57,7 @@ function normalizeCreateTaskInput(draftId: string, task: TaskBundleTask, index: 
   maxRetries?: number;
   createdBy: string;
   attachments?: string[];
-} {
+} & CreateTaskInput {
   const prompt = String(task.prompt ?? "");
   const id = deriveStableTaskId(draftId, task, index);
   const title = normalizeTaskTitle(task);
@@ -252,11 +253,11 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
           const specTask = bundle.tasks[i]!;
           const input = normalizeCreateTaskInput(draftId, specTask, i);
           const attachmentIds = (input.attachments ?? []).slice();
-          delete (input as { attachments?: unknown }).attachments;
+          const { attachments: _attachments, ...createInput } = input;
 
           let created;
           try {
-            created = taskCtx.taskStore.createTask(input as any, now, { status: "queued" });
+            created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             const existingTask = taskCtx.taskStore.getTask(input.id);
