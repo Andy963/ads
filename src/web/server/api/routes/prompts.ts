@@ -9,7 +9,7 @@ import { readJsonBody, sendJson } from "../../http.js";
 import { ensureWebPromptTables } from "../../../prompts/schema.js";
 import { createWebPrompt, deleteWebPrompt, listWebPrompts, updateWebPrompt } from "../../../prompts/store.js";
 
-export async function handlePromptRoutes(ctx: ApiRouteContext, _deps: {}): Promise<boolean> {
+export async function handlePromptRoutes(ctx: ApiRouteContext, _deps: unknown): Promise<boolean> {
   const { req, res, pathname, auth } = ctx;
 
   if (req.method === "GET" && pathname === "/api/prompts") {
@@ -105,4 +105,3 @@ export async function handlePromptRoutes(ctx: ApiRouteContext, _deps: {}): Promi
 
   return false;
 }
-

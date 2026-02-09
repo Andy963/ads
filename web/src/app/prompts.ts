@@ -88,7 +88,7 @@ export function createPromptActions(deps: { api: ApiClient; loggedIn: { value: b
     promptsBusy.value = true;
     try {
       const res = await deps.api.delete<{ success: boolean }>(`/api/prompts/${encodeURIComponent(pid)}`);
-      const ok = Boolean(res && (res as any).success === true);
+      const ok = Boolean(res?.success);
       if (ok) {
         prompts.value = prompts.value.filter((p) => p.id !== pid);
       } else {
@@ -117,4 +117,3 @@ export function createPromptActions(deps: { api: ApiClient; loggedIn: { value: b
     deletePrompt,
   };
 }
-

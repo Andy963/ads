@@ -20,9 +20,9 @@ describe("DroidCliAdapter", () => {
       "#!/usr/bin/env bash",
       "set -euo pipefail",
       "cat >/dev/null || true",
-      'echo \'{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sid\"}\'',
-      'echo \'{\"type\":\"message\",\"role\":\"assistant\",\"id\":\"m1\",\"text\":\"ok\"}\'',
-      'echo \'{\"type\":\"completion\",\"finalText\":\"ok\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\'',
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"message","role":"assistant","id":"m1","text":"ok"}\'',
+      'echo \'{"type":"completion","finalText":"ok","usage":{"input_tokens":1,"output_tokens":1}}\'',
       "exit 0",
       "",
     ].join("\n"));
