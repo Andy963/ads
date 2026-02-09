@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawn } from "node:child_process";
 
 import { parseAllowedOrigins, isOriginAllowed } from "../auth/origin.js";
 import { createHttpServer } from "./httpServer.js";
@@ -24,6 +25,9 @@ import { WorkspaceLockPool } from "./workspaceLockPool.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, resolveAllowedDirs, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
 import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions.js";
+import { createMcpRequestHandler } from "./mcp/handler.js";
+import { resolveMcpPepper } from "./mcp/secret.js";
+import { taskBundleDraftUpsertTool } from "./mcp/tools/taskBundleDraftTool.js";
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
@@ -74,6 +78,49 @@ function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boo
     return false;
   }
   return defaultValue;
+}
+
+async function ensurePlannerCodexMcpServer(options: { codexHome: string; url: string }): Promise<void> {
+  const codexBin = process.env.ADS_CODEX_BIN ?? "codex";
+  const args = ["mcp", "add", "ads", "--url", options.url, "--bearer-token-env-var", "ADS_MCP_BEARER_TOKEN"];
+
+  try {
+    fs.mkdirSync(options.codexHome, { recursive: true });
+  } catch {
+    // ignore
+  }
+
+  const exitCode = await new Promise<number | null>((resolve) => {
+    const child = spawn(codexBin, args, {
+      stdio: ["ignore", "ignore", "ignore"],
+      shell: false,
+      env: { ...process.env, CODEX_HOME: options.codexHome },
+    });
+    const timeout = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      resolve(null);
+    }, 5000);
+    timeout.unref?.();
+
+    child.on("error", () => {
+      clearTimeout(timeout);
+      resolve(null);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      resolve(code);
+    });
+  });
+
+  if (exitCode !== 0) {
+    logger.warn(
+      `[Web][MCP] Failed to configure Codex MCP server (exit=${exitCode ?? "null"}): ${codexBin} ${args.join(" ")}`,
+    );
+  }
 }
 
 async function ensureWebPidFile(): Promise<string> {
@@ -226,6 +273,32 @@ export async function startWebServer(): Promise<void> {
     }
   };
 
+  const mcpUrl = `http://127.0.0.1:${PORT}/mcp`;
+  await ensurePlannerCodexMcpServer({ codexHome: PLANNER_CODEX_HOME, url: mcpUrl });
+
+  const broadcastMcp = (
+    auth: { authUserId: string; sessionId: string; chatSessionId: string; historyKey: string; workspaceRoot: string },
+    payload: unknown,
+  ): void => {
+    for (const [ws, meta] of clientMetaByWs.entries()) {
+      if (meta.authUserId !== auth.authUserId) continue;
+      if (meta.sessionId !== auth.sessionId) continue;
+      if (meta.chatSessionId !== auth.chatSessionId) continue;
+      if ((ws as { readyState?: number }).readyState !== 1) continue;
+      try {
+        ws.send(JSON.stringify(payload));
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const mcpHandler = createMcpRequestHandler({
+    pepper: resolveMcpPepper(),
+    tools: [taskBundleDraftUpsertTool],
+    broadcastPlanner: broadcastMcp,
+  });
+
   const taskQueueManager = createTaskQueueManager({
     workspaceRoot,
     allowedDirs,
@@ -293,7 +366,7 @@ export async function startWebServer(): Promise<void> {
     scheduleWorkspacePurge: (ctx) => purgeScheduler.schedule(ctx),
   });
 
-  const server = createHttpServer({ handleApiRequest: apiHandler });
+  const server = createHttpServer({ handleApiRequest: apiHandler, handleMcpRequest: mcpHandler });
 
   attachWebSocketServer({
     server,

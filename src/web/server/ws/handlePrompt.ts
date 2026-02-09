@@ -26,6 +26,8 @@ import { extractCommandPayload } from "./utils.js";
 import type { WsMessage } from "./schema.js";
 import { extractTaskBundleJsonBlocks, parseTaskBundle } from "../planner/taskBundle.js";
 import { upsertTaskBundleDraft } from "../planner/taskBundleDraftStore.js";
+import { createMcpBearerToken } from "../mcp/auth.js";
+import { resolveMcpPepper } from "../mcp/secret.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
 type PatchFileStatLike = { added: number | null; removed: number | null };
@@ -398,8 +400,32 @@ export async function handlePromptMessage(deps: {
         return head!;
       };
 
+      const mcpEnv = (() => {
+        if (deps.chatSessionId !== "planner") {
+          return undefined;
+        }
+        let workspaceRootForMcp = detectWorkspaceFrom(turnCwd);
+        try {
+          workspaceRootForMcp = fs.realpathSync(workspaceRootForMcp);
+        } catch {
+          // ignore
+        }
+        const token = createMcpBearerToken({
+          pepper: resolveMcpPepper(),
+          context: {
+            authUserId: deps.authUserId,
+            sessionId: deps.sessionId,
+            chatSessionId: deps.chatSessionId,
+            historyKey: deps.historyKey,
+            workspaceRoot: workspaceRootForMcp,
+          },
+        });
+        return { ADS_MCP_BEARER_TOKEN: token };
+      })();
+
       const result = await runCollaborativeTurn(orchestrator, inputToSend, {
         streaming: true,
+        env: mcpEnv,
         signal: controller.signal,
         onExploredEntry: handleExploredEntry,
         hooks: {

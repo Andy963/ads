@@ -25,6 +25,7 @@ export interface AgentSendOptions {
   streaming?: boolean;
   outputSchema?: unknown;
   signal?: AbortSignal;
+  env?: Record<string, string>;
 }
 
 export interface AgentRunResult {

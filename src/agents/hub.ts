@@ -76,6 +76,7 @@ export async function runCollaborativeTurn(
     streaming: options.streaming,
     outputSchema: supportsStructuredOutput ? options.outputSchema : undefined,
     signal: options.signal,
+    env: options.env,
   };
   const cwd = options.cwd ?? process.cwd();
   const historyNamespace = options.historyNamespace;

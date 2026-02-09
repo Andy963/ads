@@ -197,7 +197,14 @@ export class CodexCliAdapter implements AgentAdapter {
 
     const useResume = Boolean(this.threadId) && options?.outputSchema === undefined;
     const args = this.buildArgs({ images, useResume });
-    const spawnEnv = normalizeSpawnEnv(this.spawnEnv);
+    const mergedEnv: NodeJS.ProcessEnv | undefined = (() => {
+      const extra = options?.env;
+      if (!extra || Object.keys(extra).length === 0) {
+        return this.spawnEnv;
+      }
+      return { ...(this.spawnEnv ?? {}), ...extra };
+    })();
+    const spawnEnv = normalizeSpawnEnv(mergedEnv);
 
     let nextThreadId: string | null = null;
     let responseText = "";
