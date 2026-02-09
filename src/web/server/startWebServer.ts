@@ -202,7 +202,16 @@ export async function startWebServer(): Promise<void> {
     sessionId: string,
     entry: { role: string; text: string; ts: number; kind?: string },
   ): void => {
-    const metas = Array.from(clientMetaByWs.values()).filter((meta) => meta.sessionId === sessionId && meta.chatSessionId !== "planner");
+    const metas = Array.from(clientMetaByWs.values()).filter((meta) => {
+      if (meta.chatSessionId === "planner") {
+        return false;
+      }
+      return matchesBroadcastSessionId({
+        broadcastSessionId: sessionId,
+        connectionSessionId: meta.sessionId,
+        connectionWorkspaceRoot: meta.workspaceRoot,
+      });
+    });
     const written = new Set<string>();
     for (const meta of metas) {
       if (written.has(meta.historyKey)) {
