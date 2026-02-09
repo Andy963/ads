@@ -121,7 +121,13 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       return true;
     }
 
-    const body = await readJsonBody(req);
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
     const schema = z.object({ bundle: z.unknown() }).passthrough();
     const parsed = schema.safeParse(body ?? {});
     if (!parsed.success) {
@@ -207,7 +213,13 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       return true;
     }
 
-    const body = await readJsonBody(req);
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
     const schema = z.object({ runQueue: z.boolean().optional() }).passthrough();
     const parsed = schema.safeParse(body ?? {});
     if (!parsed.success) {

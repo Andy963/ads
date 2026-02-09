@@ -190,6 +190,63 @@ describe("web/api/task-bundle-drafts", () => {
     assert.deepEqual(parseJson<{ drafts: unknown[] }>(listAfterRes.body).drafts, []);
   });
 
+  it("returns 400 for invalid JSON body", async () => {
+    const auth = { userId: "u-1", username: "u" };
+    const workspaceRoot = "/tmp/ws-invalid-json";
+
+    const deps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} },
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext(url: URL) {
+        const w = url.searchParams.get("workspace") || "";
+        return {
+          workspaceRoot: w,
+          sessionId: "default",
+          lock: { runExclusive: async (fn: () => Promise<void>) => fn() },
+          taskStore: {} as any,
+          attachmentStore: {} as any,
+          taskQueue: {} as any,
+          queueRunning: false,
+          dequeueInProgress: false,
+          metrics: createMetrics(),
+          runController: {} as any,
+          getStatusOrchestrator() {
+            return {} as any;
+          },
+          getTaskQueueOrchestrator() {
+            return {} as any;
+          },
+        };
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const req: FakeReq = {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from("{", "utf8");
+      },
+    };
+    const res = createRes();
+    const url = new URL(`http://localhost/api/task-bundle-drafts/d-1?workspace=${encodeURIComponent(workspaceRoot)}`);
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: req as any, res: res as any, url, pathname: "/api/task-bundle-drafts/d-1", auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(res.statusCode, 400);
+    assert.deepEqual(parseJson<{ error: string }>(res.body), { error: "Invalid JSON body" });
+  });
+
   it("approves drafts idempotently and can run the queue", async () => {
     const auth = { userId: "u-1", username: "u" };
     const workspaceRoot = "/tmp/ws-2";
