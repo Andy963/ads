@@ -134,7 +134,14 @@ export class RotatingLogFile {
 
   private rotate(): void {
     const previous = this.stream;
-    this.pendingCloses.push(this.endStream(previous));
+    const closing = this.endStream(previous);
+    this.pendingCloses.push(closing);
+    void closing.finally(() => {
+      const idx = this.pendingCloses.indexOf(closing);
+      if (idx >= 0) {
+        this.pendingCloses.splice(idx, 1);
+      }
+    });
 
     this.rotationIndex += 1;
     this.currentPath = buildRotatedPath(this.basePath, this.rotationIndex);
