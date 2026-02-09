@@ -55,15 +55,6 @@ export function createMcpRequestHandler(deps: {
       return true;
     }
 
-    let payload: unknown;
-    try {
-      payload = await readJsonBody(req);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
-
     const token = extractBearerToken(req);
     if (!token) {
       const err = { jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized" } };
@@ -83,6 +74,15 @@ export function createMcpRequestHandler(deps: {
       } else {
         sendJson(res, 401, err);
       }
+      return true;
+    }
+
+    let payload: unknown;
+    try {
+      payload = await readJsonBody(req);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 400, { error: message });
       return true;
     }
 
@@ -111,4 +111,3 @@ export function createMcpRequestHandler(deps: {
     return true;
   };
 }
-
