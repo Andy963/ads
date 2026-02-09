@@ -35,7 +35,8 @@ const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
 // The web UI opens one WebSocket per project/session. Default to a value that enables
 // cross-project parallelism out of the box while still being bounded.
-const MAX_CLIENTS = Math.max(1, Number(process.env.ADS_WEB_MAX_CLIENTS ?? 32));
+const maxClientsRaw = Number(process.env.ADS_WEB_MAX_CLIENTS ?? 32);
+const MAX_CLIENTS = Number.isFinite(maxClientsRaw) ? Math.max(1, Math.floor(maxClientsRaw)) : 32;
 const pingIntervalMsRaw = Number(process.env.ADS_WEB_WS_PING_INTERVAL_MS ?? 15_000);
 const WS_PING_INTERVAL_MS = Number.isFinite(pingIntervalMsRaw) ? Math.max(0, pingIntervalMsRaw) : 15_000;
 const maxMissedPongsRaw = Number(process.env.ADS_WEB_WS_MAX_MISSED_PONGS ?? 3);

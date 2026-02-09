@@ -171,7 +171,7 @@ export function attachWebSocketServer(deps: {
     const sessionManager = isPlannerChat ? deps.plannerSessionManager : deps.sessionManager;
     const getWorkspaceLock = isPlannerChat ? deps.getPlannerWorkspaceLock : deps.getWorkspaceLock;
 
-    if (deps.clients.size >= deps.maxClients) {
+    if (Number.isFinite(deps.maxClients) && deps.maxClients > 0 && deps.clients.size >= deps.maxClients) {
       ws.close(4409, `max clients reached (${deps.maxClients})`);
       return;
     }
