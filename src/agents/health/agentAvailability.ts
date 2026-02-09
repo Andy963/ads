@@ -38,6 +38,20 @@ export type ProbeRunner = (input: {
   timeoutMs: number;
 }) => Promise<ProbeRunResult>;
 
+const DEFAULT_PROBE_TIMEOUT_MS = 3000;
+const MIN_PROBE_TIMEOUT_MS = 3000;
+const TIMEOUT_RETRY_MS = 7000;
+
+function clampProbeTimeoutMs(raw: number): number {
+  const normalized = Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_PROBE_TIMEOUT_MS;
+  return Math.max(MIN_PROBE_TIMEOUT_MS, normalized);
+}
+
+function isProbeTimeoutError(error: string | undefined): boolean {
+  const normalized = String(error ?? "").toLowerCase();
+  return normalized.includes("timed out");
+}
+
 function defaultBinaryForAgent(agentId: AgentIdentifier): string | null {
   switch (agentId) {
     case "codex":
@@ -64,7 +78,7 @@ async function runProbeCommandWithTimeout(options: {
   args: string[];
   timeoutMs: number;
 }): Promise<ProbeRunResult> {
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : 500;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.floor(options.timeoutMs)) : DEFAULT_PROBE_TIMEOUT_MS;
 
   const child = spawn(options.binary, options.args, {
     stdio: ["ignore", "ignore", "pipe"],
@@ -114,7 +128,7 @@ async function runProbeCommandWithTimeout(options: {
   stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
 
   if (timedOut) {
-    return { ok: false, error: `Probe timed out: ${options.binary} ${options.args.join(" ")}` };
+    return { ok: false, error: `Probe timed out after ${timeoutMs}ms: ${options.binary} ${options.args.join(" ")}` };
   }
 
   if (exitCode === 0) {
@@ -131,8 +145,8 @@ export class CliAgentAvailability implements AgentAvailability {
   private readonly records = new Map<AgentIdentifier, AvailabilityRecord>();
 
   constructor(options?: { timeoutMs?: number; runner?: ProbeRunner }) {
-    const timeoutMsRaw = Number(options?.timeoutMs ?? process.env.ADS_AGENT_PROBE_TIMEOUT_MS ?? 3000);
-    this.timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(50, Math.floor(timeoutMsRaw)) : 3000;
+    const timeoutMsRaw = Number(options?.timeoutMs ?? process.env.ADS_AGENT_PROBE_TIMEOUT_MS ?? DEFAULT_PROBE_TIMEOUT_MS);
+    this.timeoutMs = clampProbeTimeoutMs(timeoutMsRaw);
     this.runner = options?.runner ?? runProbeCommandWithTimeout;
   }
 
@@ -173,12 +187,19 @@ export class CliAgentAvailability implements AgentAvailability {
       let lastError: string | undefined;
 
       for (const args of argsCandidates) {
-        const result = await this.runner({ binary, args, timeoutMs: this.timeoutMs });
+        const first = await this.runner({ binary, args, timeoutMs: this.timeoutMs });
+        let result: ProbeRunResult = first;
+        if (!first.ok && isProbeTimeoutError(first.error) && this.timeoutMs < TIMEOUT_RETRY_MS) {
+          result = await this.runner({ binary, args, timeoutMs: TIMEOUT_RETRY_MS });
+        }
         if (result.ok) {
           this.records.set(agentId, { ready: true, checkedAt });
           return;
         }
         lastError = result.error;
+        if (isProbeTimeoutError(result.error)) {
+          break;
+        }
       }
 
       this.records.set(agentId, { ready: false, error: lastError ?? "unavailable", checkedAt });

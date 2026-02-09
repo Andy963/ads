@@ -46,7 +46,13 @@ async function assertCodexThreadResumable(args: {
   }
 
   const binary = process.env.ADS_CODEX_BIN ?? "codex";
-  const cliArgs: string[] = ["exec", "resume"];
+  const cliArgs: string[] = ["exec"];
+
+  if (args.sandboxMode === "read-only") {
+    cliArgs.push("--sandbox", "read-only");
+  }
+
+  cliArgs.push("resume");
 
   if (args.sandboxMode === "danger-full-access") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");

@@ -297,27 +297,23 @@ export class CodexCliAdapter implements AgentAdapter {
 
   private buildArgs(options: { images: string[]; useResume: boolean }): string[] {
     const args: string[] = ["exec"];
+
+    if (!options.useResume && this.workingDirectory) {
+      args.push("--cd", this.workingDirectory);
+    }
+
+    if (this.sandboxMode === "read-only") {
+      args.push("--sandbox", "read-only");
+    }
+
     if (options.useResume) {
       args.push("resume");
     }
 
-    if (!options.useResume) {
-      if (this.workingDirectory) {
-        args.push("--cd", this.workingDirectory);
-      }
-      if (this.sandboxMode === "read-only") {
-        args.push("--sandbox", "read-only");
-      } else if (this.sandboxMode === "danger-full-access") {
-        args.push("--dangerously-bypass-approvals-and-sandbox");
-      } else {
-        args.push("--full-auto");
-      }
-    } else {
-      if (this.sandboxMode === "danger-full-access") {
-        args.push("--dangerously-bypass-approvals-and-sandbox");
-      } else if (this.sandboxMode !== "read-only") {
-        args.push("--full-auto");
-      }
+    if (this.sandboxMode === "danger-full-access") {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    } else if (this.sandboxMode !== "read-only") {
+      args.push("--full-auto");
     }
 
     args.push("--json", "--skip-git-repo-check");
