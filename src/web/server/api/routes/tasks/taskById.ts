@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
 import { readJsonBody, sendJson } from "../../../http.js";
+import { notifyTaskTerminalViaTelegram } from "../../../../taskNotifications/telegramNotifier.js";
 
 export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -82,6 +83,12 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         const task = taskCtx.taskStore.getTask(taskId);
         if (task) {
           deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:cancelled", data: task, ts: Date.now() });
+          try {
+            notifyTaskTerminalViaTelegram({ logger: deps.logger, workspaceRoot: taskCtx.workspaceRoot, task, terminalStatus: "cancelled" });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            deps.logger.warn(`[Web][TaskNotifications] terminal notify hook failed taskId=${task.id} err=${message}`);
+          }
         }
         sendJson(res, 200, { success: true, task });
         return true;

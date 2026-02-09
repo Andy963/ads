@@ -18,6 +18,7 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { buildWorkspacePatch, type WorkspacePatchPayload } from "../../gitPatch.js";
 import { createMcpBearerToken } from "../mcp/auth.js";
 import { resolveMcpPepper } from "../mcp/secret.js";
+import { notifyTaskTerminalViaTelegram } from "../../taskNotifications/telegramNotifier.js";
 
 export type TaskQueueMetricName =
   | "TASK_ADDED"
@@ -342,6 +343,12 @@ export function createTaskQueueManager(deps: {
       if (task.result && task.result.trim()) {
         deps.recordToSessionHistories(sessionId, { role: "ai", text: task.result.trim(), ts: Date.now() });
       }
+      try {
+        notifyTaskTerminalViaTelegram({ logger: deps.logger, workspaceRoot: ctx.workspaceRoot, task, terminalStatus: "completed" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger.warn(`[Web][TaskNotifications] terminal notify hook failed taskId=${task.id} err=${message}`);
+      }
       if (ctx.runController.onTaskTerminal(ctx, task.id)) {
         return;
       }
@@ -353,6 +360,12 @@ export function createTaskQueueManager(deps: {
       if (task.status === "failed") {
         recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
         recordTaskWorkspacePatchArtifact(ctx, task.id);
+        try {
+          notifyTaskTerminalViaTelegram({ logger: deps.logger, workspaceRoot: ctx.workspaceRoot, task, terminalStatus: "failed" });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          deps.logger.warn(`[Web][TaskNotifications] terminal notify hook failed taskId=${task.id} err=${message}`);
+        }
         if (ctx.runController.onTaskTerminal(ctx, task.id)) {
           return;
         }
@@ -364,6 +377,12 @@ export function createTaskQueueManager(deps: {
       deps.recordToSessionHistories(sessionId, { role: "status", text: "[Cancelled]", ts: Date.now(), kind: "status" });
       recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
       recordTaskWorkspacePatchArtifact(ctx, task.id);
+      try {
+        notifyTaskTerminalViaTelegram({ logger: deps.logger, workspaceRoot: ctx.workspaceRoot, task, terminalStatus: "cancelled" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger.warn(`[Web][TaskNotifications] terminal notify hook failed taskId=${task.id} err=${message}`);
+      }
       if (ctx.runController.onTaskTerminal(ctx, task.id)) {
         return;
       }

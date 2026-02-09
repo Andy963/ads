@@ -17,6 +17,7 @@ import {
   setTaskBundleDraftError,
   updateTaskBundleDraft,
 } from "../../planner/taskBundleDraftStore.js";
+import { upsertTaskNotificationBinding } from "../../../taskNotifications/store.js";
 
 function deriveStableUuid(input: string): string {
   const hash = crypto.createHash("sha256").update(input).digest();
@@ -296,6 +297,20 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
           recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "planner_draft" });
           deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: { ...created, attachments }, ts: now });
           createdTaskIds.push(created.id);
+
+          try {
+            upsertTaskNotificationBinding({
+              authUserId,
+              workspaceRoot: taskCtx.workspaceRoot,
+              taskId: created.id,
+              taskTitle: created.title,
+              now,
+              logger: deps.logger,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${created.id} err=${message}`);
+          }
         }
 
         const approved = approveTaskBundleDraft({ authUserId, draftId, approvedTaskIds: createdTaskIds, now });

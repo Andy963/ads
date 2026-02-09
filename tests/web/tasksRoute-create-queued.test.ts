@@ -1,8 +1,12 @@
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { handleTaskRoutes } from "../../src/web/server/api/routes/tasks.js";
 import type { ApiRouteContext, ApiSharedDeps } from "../../src/web/server/api/types.js";
+import { resetStateDatabaseForTests } from "../../src/state/database.js";
 
 type FakeReq = {
   method: string;
@@ -49,6 +53,25 @@ function createRes(): FakeRes {
 }
 
 describe("web/api/tasks create", () => {
+  let tmpDir: string;
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-tasks-route-test-"));
+    process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
+    resetStateDatabaseForTests();
+  });
+
+  afterEach(() => {
+    resetStateDatabaseForTests();
+    process.env = { ...originalEnv };
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
   it("creates tasks as queued and does not notify the executor on save", async () => {
     const req = createReq("POST", { prompt: "Hello" });
     const res = createRes();
@@ -111,4 +134,3 @@ describe("web/api/tasks create", () => {
     assert.equal(notifyCalls, 0);
   });
 });
-

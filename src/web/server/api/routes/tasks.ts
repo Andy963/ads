@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { TaskStore as QueueTaskStore } from "../../../../tasks/store.js";
 import { handleSingleTaskRun, matchSingleTaskRunPath } from "../../../api/taskRun.js";
 import { recordTaskQueueMetric } from "../../taskQueue/manager.js";
+import { upsertTaskNotificationBinding } from "../../../taskNotifications/store.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
@@ -14,7 +15,7 @@ import { handleTaskByIdRoute } from "./tasks/taskById.js";
 import { parseTaskStatus } from "./tasks/shared.js";
 
 export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
-  const { req, res, pathname, url } = ctx;
+  const { req, res, pathname, url, auth } = ctx;
 
   if (req.method === "GET" && pathname === "/api/tasks") {
     let taskCtx;
@@ -136,6 +137,21 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       data: { ...task, attachments },
       ts: now,
     });
+
+    try {
+      upsertTaskNotificationBinding({
+        authUserId: auth.userId,
+        workspaceRoot: taskCtx.workspaceRoot,
+        taskId: task.id,
+        taskTitle: task.title,
+        now,
+        logger: deps.logger,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${task.id} err=${message}`);
+    }
+
     sendJson(res, 201, { ...task, attachments });
     return true;
   }
@@ -223,6 +239,21 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: `rerun_from:${source.id}` });
 
     deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
+
+    try {
+      upsertTaskNotificationBinding({
+        authUserId: auth.userId,
+        workspaceRoot: taskCtx.workspaceRoot,
+        taskId: created.id,
+        taskTitle: created.title,
+        now,
+        logger: deps.logger,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${created.id} err=${message}`);
+    }
+
     sendJson(res, 201, { success: true, sourceTaskId: source.id, task: created });
     return true;
   }

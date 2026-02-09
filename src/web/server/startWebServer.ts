@@ -29,6 +29,7 @@ import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions
 import { createMcpRequestHandler } from "./mcp/handler.js";
 import { resolveMcpPepper } from "./mcp/secret.js";
 import { taskBundleDraftUpsertTool } from "./mcp/tools/taskBundleDraftTool.js";
+import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegramNotifier.js";
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
@@ -452,6 +453,8 @@ export async function startWebServer(): Promise<void> {
     broadcastToSession,
     recordToSessionHistories,
   });
+
+  startTaskTerminalTelegramRetryLoop({ logger });
 
   const purgeScheduler = new WorkspacePurgeScheduler({ logger });
 
