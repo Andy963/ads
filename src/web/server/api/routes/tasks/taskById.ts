@@ -112,7 +112,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       sendJson(res, 404, { error: "Not Found" });
       return true;
     }
-    if (existing.status !== "pending" && existing.status !== "cancelled") {
+    if (existing.status !== "pending" && existing.status !== "queued" && existing.status !== "cancelled") {
       sendJson(res, 409, { error: `Task not editable in status: ${existing.status}` });
       return true;
     }
