@@ -567,7 +567,6 @@ onBeforeUnmount(() => {
     <DraggableModal v-if="taskCreateDialogOpen" card-variant="wide" @close="closeTaskCreateDialog">
       <TaskCreateForm
         class="taskCreateModal"
-        :models="models"
         :prompts="prompts"
         :prompts-busy="promptsBusy"
         :workspace-root="resolveActiveWorkspaceRoot() || ''"

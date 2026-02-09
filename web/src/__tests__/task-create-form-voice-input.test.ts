@@ -3,7 +3,6 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 
 import TaskCreateForm from "../components/TaskCreateForm.vue";
-import type { ModelConfig } from "../api/types";
 
 class FakeMediaRecorder {
   static isTypeSupported(): boolean {
@@ -35,8 +34,6 @@ function flush(): Promise<void> {
 }
 
 describe("TaskCreateForm voice input", () => {
-  const models: ModelConfig[] = [{ id: "auto", displayName: "Auto", provider: "", isEnabled: true, isDefault: true }];
-
   const originalMediaRecorder = (globalThis as any).MediaRecorder;
   const originalMediaDevices = (navigator as any).mediaDevices;
   const originalFetch = globalThis.fetch;
@@ -61,7 +58,7 @@ describe("TaskCreateForm voice input", () => {
   });
 
   it("renders voice UI by default", () => {
-    const wrapper = mount(TaskCreateForm, { props: { models, workspaceRoot: "" } });
+    const wrapper = mount(TaskCreateForm, { props: { workspaceRoot: "" } });
     expect(wrapper.find("button.micIcon").exists()).toBe(true);
     wrapper.unmount();
   });
@@ -75,7 +72,7 @@ describe("TaskCreateForm voice input", () => {
     });
     globalThis.fetch = fetchMock as any;
 
-    const wrapper = mount(TaskCreateForm, { props: { models, workspaceRoot: "" } });
+    const wrapper = mount(TaskCreateForm, { props: { workspaceRoot: "" } });
     const mic = wrapper.find("button.micIcon");
     expect(mic.exists()).toBe(true);
 
@@ -98,7 +95,7 @@ describe("TaskCreateForm voice input", () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock as any;
 
-    const wrapper = mount(TaskCreateForm, { props: { models, workspaceRoot: "" } });
+    const wrapper = mount(TaskCreateForm, { props: { workspaceRoot: "" } });
     const mic = wrapper.find("button.micIcon");
     await mic.trigger("click");
     await nextTick();
@@ -127,10 +124,10 @@ describe("TaskCreateForm voice input", () => {
         ok: true,
         status: 200,
         json: async () => ({ ok: true, text: "Retry success" }),
-      });
+    });
     globalThis.fetch = fetchMock as any;
 
-    const wrapper = mount(TaskCreateForm, { props: { models, workspaceRoot: "" } });
+    const wrapper = mount(TaskCreateForm, { props: { workspaceRoot: "" } });
     const mic = wrapper.find("button.micIcon");
     await mic.trigger("click");
     await nextTick();

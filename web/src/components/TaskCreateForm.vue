@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import type { CreateTaskInput, ModelConfig, Prompt } from "../api/types";
+import type { CreateTaskInput, Prompt } from "../api/types";
 
 import { useImageAttachments } from "./taskCreateForm/useImageAttachments";
 import { useVoiceInput } from "./taskCreateForm/useVoiceInput";
 
 const props = defineProps<{
-  models: ModelConfig[];
   prompts?: Prompt[];
   promptsBusy?: boolean;
   apiToken?: string;
@@ -22,7 +21,7 @@ const emit = defineEmits<{
 const title = ref("");
 const prompt = ref("");
 const promptEl = ref<HTMLTextAreaElement | null>(null);
-const model = ref("auto");
+const agentId = ref("codex");
 const priority = ref(0);
 const maxRetries = ref(3);
 
@@ -201,7 +200,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   emit(event, {
     title: titleTrimmed.length ? titleTrimmed : pinnedPrompt.value ? pinnedDerivedTitle || undefined : undefined,
     prompt: mergedPrompt,
-    model: model.value,
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
     attachments: uploadedIds.length ? uploadedIds : undefined,
@@ -212,11 +210,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   pinnedPromptId.value = "";
   clearAllAttachments();
 }
-
-const modelOptions = computed(() => {
-  const enabled = props.models.filter((m) => m.isEnabled);
-  return [{ id: "auto", displayName: "Auto", provider: "" }, ...enabled];
-});
 
 watch(
   () => props.prompts,
@@ -245,12 +238,8 @@ watch(
 
       <div class="form-row form-row-3">
         <label class="form-field">
-          <span class="label-text">模型</span>
-          <select v-model="model">
-            <option v-for="m in modelOptions" :key="m.id" :value="m.id">
-              {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
-            </option>
-          </select>
+          <span class="label-text">agent</span>
+          <input :value="agentId" readonly data-testid="task-create-agent" />
         </label>
         <label class="form-field">
           <span class="label-text">优先级</span>
