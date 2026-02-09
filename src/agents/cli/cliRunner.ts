@@ -87,7 +87,11 @@ export async function runCli(
 
   const rl = createInterface({ input: child.stdout! });
   for await (const rawLine of rl) {
-    if (cancelled) break;
+    if (cancelled) {
+      rl.close();
+      child.stdout?.resume();
+      break;
+    }
     const stripped = stripAnsi(rawLine).trim();
     if (!stripped || !stripped.startsWith("{")) continue;
     try {

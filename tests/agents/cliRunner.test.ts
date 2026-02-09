@@ -26,5 +26,23 @@ describe("cliRunner", () => {
     assert.equal(result.stdout.trim(), "hello\nworld");
     assert.equal(result.stderr, "err");
   });
-});
 
+  it("cancels without hanging when stdout is noisy", async () => {
+    const node = process.execPath;
+    const controller = new AbortController();
+    const lines: unknown[] = [];
+    const script = [
+      "const timer = setInterval(() => console.log('{\"type\":\"tick\"}'), 1);",
+      "process.on('SIGTERM', () => { clearInterval(timer); process.exit(0); });",
+    ].join("");
+
+    const timeout = setTimeout(() => controller.abort(), 25);
+    const result = await Promise.race([
+      runCli({ binary: node, args: ["-e", script], signal: controller.signal }, (parsed) => lines.push(parsed)),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("timeout")), 2000)),
+    ]).finally(() => clearTimeout(timeout));
+
+    assert.equal(result.cancelled, true);
+    assert.ok(lines.length >= 0);
+  });
+});
