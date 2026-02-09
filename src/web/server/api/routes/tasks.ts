@@ -69,7 +69,13 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       sendJson(res, 400, { error: message });
       return true;
     }
-    const body = await readJsonBody(req);
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
     const schema = z
       .object({
         title: z.string().min(1).optional(),
@@ -81,7 +87,12 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         attachments: z.array(z.string().min(1)).optional(),
       })
       .passthrough();
-    const parsed = schema.parse(body ?? {});
+    const result = schema.safeParse(body ?? {});
+    if (!result.success) {
+      sendJson(res, 400, { error: "Invalid payload" });
+      return true;
+    }
+    const parsed = result.data;
     const now = Date.now();
     const attachmentIds = (parsed.attachments ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
     const taskId = crypto.randomUUID();
@@ -177,7 +188,13 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
 
-    const body = await readJsonBody(req);
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
     const schema = z
       .object({
         title: z.string().min(1).optional(),
@@ -188,7 +205,12 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         maxRetries: z.number().int().min(0).optional(),
       })
       .passthrough();
-    const parsed = schema.parse(body ?? {});
+    const result = schema.safeParse(body ?? {});
+    if (!result.success) {
+      sendJson(res, 400, { error: "Invalid payload" });
+      return true;
+    }
+    const parsed = result.data;
 
     const now = Date.now();
     const newId = crypto.randomUUID();
@@ -328,9 +350,20 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       sendJson(res, 400, { error: message });
       return true;
     }
-    const body = await readJsonBody(req);
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
     const schema = z.object({ ids: z.array(z.string().min(1)).min(1) }).passthrough();
-    const parsed = schema.parse(body ?? {});
+    const result = schema.safeParse(body ?? {});
+    if (!result.success) {
+      sendJson(res, 400, { error: "Invalid payload" });
+      return true;
+    }
+    const parsed = result.data;
     const ids = parsed.ids.map((id) => String(id ?? "").trim()).filter(Boolean);
     let updated: ReturnType<QueueTaskStore["reorderPendingTasks"]>;
     try {
@@ -376,9 +409,20 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
     const taskId = moveMatch[1] ?? "";
-    const body = await readJsonBody(req);
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
     const schema = z.object({ direction: z.enum(["up", "down"]) }).passthrough();
-    const parsed = schema.parse(body ?? {});
+    const result = schema.safeParse(body ?? {});
+    if (!result.success) {
+      sendJson(res, 400, { error: "Invalid payload" });
+      return true;
+    }
+    const parsed = result.data;
     const updated = taskCtx.taskStore.movePendingTask(taskId, parsed.direction);
     if (!updated) {
       sendJson(res, 200, { success: true, tasks: [] });

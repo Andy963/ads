@@ -133,4 +133,178 @@ describe("web/api/tasks create", () => {
     assert.equal(createStatus, "queued");
     assert.equal(notifyCalls, 0);
   });
+
+  it("returns 400 for invalid JSON body", async () => {
+    let createCalls = 0;
+    const req: FakeReq = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from("{", "utf8");
+      },
+    };
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks?workspace=/tmp/ws");
+
+    const taskCtx = {
+      sessionId: "s-1",
+      queueRunning: true,
+      metrics: { counts: {}, events: [] },
+      taskQueue: {
+        notifyNewTask() {},
+      },
+      taskStore: {
+        createTask() {
+          createCalls += 1;
+          return { id: "t-1" } as any;
+        },
+        deleteTask() {},
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
+        },
+        assignAttachmentsToTask() {},
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as any,
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as any;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as any,
+      res: res as any,
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskRoutes(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 400);
+    assert.deepEqual(JSON.parse(res.body), { error: "Invalid JSON body" });
+    assert.equal(createCalls, 0);
+  });
+
+  it("returns 400 for invalid create payload", async () => {
+    let createCalls = 0;
+    const req = createReq("POST", { prompt: 123 });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks?workspace=/tmp/ws");
+
+    const taskCtx = {
+      sessionId: "s-1",
+      queueRunning: true,
+      metrics: { counts: {}, events: [] },
+      taskQueue: {
+        notifyNewTask() {},
+      },
+      taskStore: {
+        createTask() {
+          createCalls += 1;
+          return { id: "t-1" } as any;
+        },
+        deleteTask() {},
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
+        },
+        assignAttachmentsToTask() {},
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as any,
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as any;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as any,
+      res: res as any,
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskRoutes(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 400);
+    assert.deepEqual(JSON.parse(res.body), { error: "Invalid payload" });
+    assert.equal(createCalls, 0);
+  });
+
+  it("returns 400 for invalid reorder payload", async () => {
+    let reorderCalls = 0;
+    const req = createReq("POST", { ids: [] });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/reorder?workspace=/tmp/ws");
+
+    const taskCtx = {
+      sessionId: "s-1",
+      queueRunning: false,
+      taskStore: {
+        reorderPendingTasks() {
+          reorderCalls += 1;
+          return [];
+        },
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
+        },
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as any,
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as any;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as any,
+      res: res as any,
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskRoutes(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 400);
+    assert.deepEqual(JSON.parse(res.body), { error: "Invalid payload" });
+    assert.equal(reorderCalls, 0);
+  });
 });
