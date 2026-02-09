@@ -95,7 +95,9 @@ export function createMcpBearerToken(options: {
   }
 
   const nowMs = typeof options.nowMs === "number" && Number.isFinite(options.nowMs) ? Math.floor(options.nowMs) : Date.now();
-  const ttlMs = typeof options.ttlMs === "number" && Number.isFinite(options.ttlMs) ? Math.max(1000, Math.floor(options.ttlMs)) : 5 * 60 * 1000;
+  const ttlMs = typeof options.ttlMs === "number" && Number.isFinite(options.ttlMs)
+    ? Math.max(1000, Math.floor(options.ttlMs))
+    : 30 * 60 * 1000;
 
   const ctx: McpAuthContext = {
     version: 1,
