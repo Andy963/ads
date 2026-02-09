@@ -131,8 +131,8 @@ export class CliAgentAvailability implements AgentAvailability {
   private readonly records = new Map<AgentIdentifier, AvailabilityRecord>();
 
   constructor(options?: { timeoutMs?: number; runner?: ProbeRunner }) {
-    const timeoutMsRaw = Number(options?.timeoutMs ?? process.env.ADS_AGENT_PROBE_TIMEOUT_MS ?? 600);
-    this.timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(50, Math.floor(timeoutMsRaw)) : 600;
+    const timeoutMsRaw = Number(options?.timeoutMs ?? process.env.ADS_AGENT_PROBE_TIMEOUT_MS ?? 3000);
+    this.timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(50, Math.floor(timeoutMsRaw)) : 3000;
     this.runner = options?.runner ?? runProbeCommandWithTimeout;
   }
 
@@ -170,6 +170,7 @@ export class CliAgentAvailability implements AgentAvailability {
       }
       const argsCandidates = defaultArgsCandidatesForAgent(agentId);
       const checkedAt = Date.now();
+      let lastError: string | undefined;
 
       for (const args of argsCandidates) {
         const result = await this.runner({ binary, args, timeoutMs: this.timeoutMs });
@@ -177,15 +178,10 @@ export class CliAgentAvailability implements AgentAvailability {
           this.records.set(agentId, { ready: true, checkedAt });
           return;
         }
+        lastError = result.error;
       }
 
-      const final = await this.runner({ binary, args: ["--help"], timeoutMs: Math.max(50, Math.floor(this.timeoutMs / 2)) });
-      if (final.ok) {
-        this.records.set(agentId, { ready: true, checkedAt });
-        return;
-      }
-      this.records.set(agentId, { ready: false, error: final.error, checkedAt });
+      this.records.set(agentId, { ready: false, error: lastError ?? "unavailable", checkedAt });
     }));
   }
 }
-

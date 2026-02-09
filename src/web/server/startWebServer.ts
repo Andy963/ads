@@ -241,11 +241,43 @@ export async function startWebServer(): Promise<void> {
   const purgeScheduler = new WorkspacePurgeScheduler({ logger });
 
   const agentAvailability = new CliAgentAvailability();
-  try {
-    await agentAvailability.probeAll();
-  } catch (error) {
-    logger.warn(`[Web] Failed to probe agent availability: ${(error as Error).message}`);
-  }
+  const broadcastAgentsSnapshot = (): void => {
+    for (const [ws, meta] of clientMetaByWs.entries()) {
+      if ((ws as { readyState?: number }).readyState !== 1) {
+        continue;
+      }
+      const manager = meta.chatSessionId === "planner" ? plannerSessionManager : sessionManager;
+      const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
+      const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
+      const activeAgentId = orchestrator.getActiveAgentId();
+      try {
+        ws.send(JSON.stringify({
+          type: "agents",
+          activeAgentId,
+          agents: orchestrator.listAgents().map((entry) => {
+            const merged = agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+            return {
+              id: entry.metadata.id,
+              name: entry.metadata.name,
+              ready: merged.ready,
+              error: merged.error,
+            };
+          }),
+          threadId: manager.getSavedThreadId(meta.sessionUserId, activeAgentId) ?? orchestrator.getThreadId(),
+        }));
+      } catch {
+        // ignore
+      }
+    }
+  };
+  const startAgentAvailabilityProbe = (): void => {
+    void agentAvailability
+      .probeAll()
+      .then(() => broadcastAgentsSnapshot())
+      .catch((error) => {
+        logger.warn(`[Web] Failed to probe agent availability: ${(error as Error).message}`);
+      });
+  };
 
   const apiHandler = createApiRequestHandler({
     logger,
@@ -314,4 +346,6 @@ export async function startWebServer(): Promise<void> {
     logger.info(`WebSocket server listening on ws://${HOST}:${PORT}`);
     logger.info(`Workspace: ${workspaceRoot}`);
   });
+
+  startAgentAvailabilityProbe();
 }
