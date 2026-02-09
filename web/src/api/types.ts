@@ -103,3 +103,37 @@ export type TaskEventPayload =
   | { event: "message"; data: { taskId: string; role: string; content: string } }
   | { event: "message:delta"; data: { taskId: string; role: string; delta: string; modelUsed?: string | null; source?: "chat" | "step" } }
   | { event: "command"; data: { taskId: string; command: string } };
+
+export type TaskBundleTask = {
+  externalId?: string;
+  title?: string;
+  prompt: string;
+  model?: string;
+  priority?: number;
+  inheritContext?: boolean;
+  maxRetries?: number;
+  attachments?: string[];
+};
+
+export type TaskBundle = {
+  version: 1;
+  requestId?: string;
+  runQueue?: boolean;
+  insertPosition?: "front" | "back";
+  tasks: TaskBundleTask[];
+};
+
+export type TaskBundleDraftStatus = "draft" | "approved" | "deleted";
+
+export type TaskBundleDraft = {
+  id: string;
+  workspaceRoot: string;
+  requestId: string | null;
+  status: TaskBundleDraftStatus;
+  bundle: TaskBundle | null;
+  createdAt: number;
+  updatedAt: number;
+  approvedAt: number | null;
+  approvedTaskIds: string[];
+  lastError: string | null;
+};

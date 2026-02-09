@@ -104,6 +104,30 @@ function initializeStateDatabase(db: DatabaseType): void {
 
     CREATE INDEX IF NOT EXISTS idx_task_messages_task
       ON task_messages(namespace, session_id, task_id, id);
+
+    CREATE TABLE IF NOT EXISTS web_task_bundle_drafts (
+      draft_id TEXT NOT NULL PRIMARY KEY,
+      namespace TEXT NOT NULL,
+      auth_user_id TEXT NOT NULL,
+      workspace_root TEXT NOT NULL,
+      request_id TEXT,
+      source_chat_session_id TEXT NOT NULL,
+      source_history_key TEXT,
+      bundle_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      approved_at INTEGER,
+      approved_task_ids_json TEXT,
+      last_error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_web_task_bundle_drafts_active
+      ON web_task_bundle_drafts(namespace, auth_user_id, workspace_root, status, updated_at);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_web_task_bundle_drafts_request
+      ON web_task_bundle_drafts(namespace, auth_user_id, workspace_root, request_id)
+      WHERE request_id IS NOT NULL AND request_id != '';
   `);
 }
 

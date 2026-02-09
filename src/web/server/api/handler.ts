@@ -16,6 +16,7 @@ import { handleModelRoutes } from "./routes/models.js";
 import { handleTaskQueueRoutes } from "./routes/taskQueue.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
 import { handleTaskRoutes } from "./routes/tasks.js";
+import { handleTaskBundleDraftRoutes } from "./routes/taskBundleDrafts.js";
 
 export function createApiRequestHandler(deps: {
   logger: Logger;
@@ -78,6 +79,7 @@ export function createApiRequestHandler(deps: {
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handlePromptRoutes(routeCtx, {})) return true;
+    if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;
     if (await handleModelRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
     if (
       await handleTaskQueueRoutes(routeCtx, {

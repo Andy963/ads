@@ -1,4 +1,4 @@
-import type { TaskEventPayload } from "./types";
+import type { TaskBundleDraft, TaskEventPayload } from "./types";
 
 type WsCommandPayload = {
   id?: string;
@@ -54,6 +54,7 @@ type WsMessage =
       ts?: number;
     }
   | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number }
+  | { type: "task_bundle_draft"; action?: "upsert" | "delete"; draft?: TaskBundleDraft | null }
   | { type: string; [k: string]: unknown };
 
 export class AdsWebSocket {

@@ -1,5 +1,7 @@
 import type { Input, ThreadEvent } from "../../../agents/protocol/types.js";
 
+import fs from "node:fs";
+
 import type { AgentEvent } from "../../../codex/events.js";
 import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";
 import { parseSlashCommand } from "../../../codexConfig.js";
@@ -22,6 +24,8 @@ import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../uti
 import { runCollaborativeTurn } from "../../../agents/hub.js";
 import { extractCommandPayload } from "./utils.js";
 import type { WsMessage } from "./schema.js";
+import { extractTaskBundleJsonBlocks, parseTaskBundle } from "../planner/taskBundle.js";
+import { upsertTaskBundleDraft } from "../planner/taskBundleDraftStore.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
 type PatchFileStatLike = { added: number | null; removed: number | null };
@@ -86,7 +90,9 @@ export async function handlePromptMessage(deps: {
   requestId: string;
   clientMessageId: string | null;
   traceWsDuplication: boolean;
+  authUserId: string;
   sessionId: string;
+  chatSessionId: string;
   userId: number;
   historyKey: string;
   currentCwd: string;
@@ -463,6 +469,38 @@ export async function handlePromptMessage(deps: {
         deps.sessionLogger.logOutput(outputToSend);
       }
       deps.historyStore.add(deps.historyKey, { role: "ai", text: outputToSend, ts: Date.now() });
+
+      if (deps.chatSessionId === "planner") {
+        let workspaceRootForDraft = workspaceRootForAdr;
+        try {
+          workspaceRootForDraft = fs.realpathSync(workspaceRootForDraft);
+        } catch {
+          // ignore
+        }
+
+        const blocks = extractTaskBundleJsonBlocks(outputToSend);
+        for (const block of blocks) {
+          const parsedBundle = parseTaskBundle(block);
+          if (!parsedBundle.ok) {
+            deps.logger.warn(`[PlannerDraft] invalid bundle: ${parsedBundle.error}`);
+            continue;
+          }
+          try {
+            const draft = upsertTaskBundleDraft({
+              authUserId: deps.authUserId,
+              workspaceRoot: workspaceRootForDraft,
+              sourceChatSessionId: deps.chatSessionId,
+              sourceHistoryKey: deps.historyKey,
+              bundle: parsedBundle.bundle,
+            });
+            sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            deps.logger.warn(`[PlannerDraft] Failed to persist bundle: ${message}`);
+          }
+        }
+      }
+
       if (threadId) {
         deps.sessionManager.saveThreadId(deps.userId, threadId, orchestrator.getActiveAgentId());
       }
