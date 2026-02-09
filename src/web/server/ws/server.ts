@@ -148,12 +148,11 @@ export function attachWebSocketServer(deps: {
 
   wss.on("connection", (ws: WebSocket, req) => {
     const protocolHeader = req.headers["sec-websocket-protocol"];
-    const parsedProtocols =
-      Array.isArray(protocolHeader) && protocolHeader.length > 0
-        ? protocolHeader
-        : typeof protocolHeader === "string"
-          ? protocolHeader.split(",").map((p) => p.trim())
-          : [];
+    const parsedProtocols = Array.isArray(protocolHeader)
+      ? protocolHeader.flatMap((value) => String(value).split(",").map((p) => p.trim()).filter(Boolean))
+      : typeof protocolHeader === "string"
+        ? protocolHeader.split(",").map((p) => p.trim()).filter(Boolean)
+        : [];
 
     if (!deps.isOriginAllowed(req.headers["origin"], deps.allowedOrigins)) {
       ws.close(4403, "forbidden");
