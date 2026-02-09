@@ -377,14 +377,14 @@ onBeforeUnmount(() => {
                 dropBefore: dropTargetProjectId === p.id && dropTargetPosition === 'before',
                 dropAfter: dropTargetProjectId === p.id && dropTargetPosition === 'after',
               }"
-              :title="p.path || p.name"
+              :title="p.name"
               @click="onProjectRowClick(p.id)"
               @dragover="(ev) => onProjectDragOver(ev, p.id)"
               @drop="(ev) => onProjectDrop(ev, p.id)"
             >
               <span class="projectStatus" :class="{ spinning: runtimeProjectInProgress(getRuntime(p.id)) }" />
               <span class="projectText">
-                <span class="projectName">{{ p.path || p.name }}</span>
+                <span class="projectName">{{ p.name }}</span>
                 <span class="projectBranch">{{ formatProjectBranch(p.branch) }}</span>
               </span>
               <span class="projectRowActions">

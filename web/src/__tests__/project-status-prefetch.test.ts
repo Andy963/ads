@@ -171,8 +171,8 @@ describe("project status spinner prefetch", () => {
     const rows = wrapper.findAll(".projectRow");
     expect(rows.length).toBeGreaterThanOrEqual(2);
 
-    const rowA = rows.find((r) => r.text().includes("/tmp/work-a")) ?? null;
-    const rowB = rows.find((r) => r.text().includes("/tmp/work-b")) ?? null;
+    const rowA = rows.find((r) => r.text().includes("Default")) ?? null;
+    const rowB = rows.find((r) => r.text().includes("B")) ?? null;
 
     expect(rowA).toBeTruthy();
     expect(rowB).toBeTruthy();
