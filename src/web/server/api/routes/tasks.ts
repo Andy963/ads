@@ -331,7 +331,10 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     };
 
     if (taskCtx.lock.isBusy()) {
-      void taskCtx.lock.runExclusive(run);
+      void taskCtx.lock.runExclusive(run).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger.warn(`[Web][Tasks] background single-task run failed taskId=${runSingleTaskId} err=${message}`);
+      });
       sendJson(res, 202, { success: true, queued: true, mode: "single", taskId: runSingleTaskId, state: "queued" });
       return true;
     }
