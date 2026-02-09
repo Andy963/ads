@@ -18,8 +18,11 @@ export interface TaskExecutor {
 
 function selectAgentForModel(model: string): AgentIdentifier {
   const normalized = String(model ?? "").trim().toLowerCase();
-  if (normalized.startsWith("gemini")) {
+  if (normalized.startsWith("gemini") || normalized.startsWith("auto-gemini") || normalized.includes("gemini")) {
     return "gemini";
+  }
+  if (normalized.startsWith("claude") || normalized === "sonnet" || normalized === "opus" || normalized === "haiku") {
+    return "claude";
   }
   return "codex";
 }
@@ -85,12 +88,20 @@ function formatWorkspacePatchArtifactForPrompt(context: TaskContext | null): str
 
 export class OrchestratorTaskExecutor implements TaskExecutor {
   private readonly getOrchestrator: (task: Task) => HybridOrchestrator;
+  private readonly getAgentEnv?: (task: Task, agentId: AgentIdentifier) => Record<string, string> | undefined;
   private readonly store: TaskStore;
   private readonly defaultModel: string;
   private readonly lock?: AsyncLock;
 
-  constructor(options: { getOrchestrator: (task: Task) => HybridOrchestrator; store: TaskStore; defaultModel: string; lock?: AsyncLock }) {
+  constructor(options: {
+    getOrchestrator: (task: Task) => HybridOrchestrator;
+    getAgentEnv?: (task: Task, agentId: AgentIdentifier) => Record<string, string> | undefined;
+    store: TaskStore;
+    defaultModel: string;
+    lock?: AsyncLock;
+  }) {
     this.getOrchestrator = options.getOrchestrator;
+    this.getAgentEnv = options.getAgentEnv;
     this.store = options.store;
     this.defaultModel = String(options.defaultModel ?? "").trim() || "gpt-5.2";
     this.lock = options.lock;
@@ -234,9 +245,11 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
 
         let result;
         try {
+          const env = this.getAgentEnv?.(task, agentId);
           result = await orchestrator.invokeAgent(agentId, prompt, {
             signal: options?.signal,
             streaming: true,
+            env,
           });
         } finally {
           try {

@@ -156,7 +156,7 @@ export async function runCollaborativeTurn(
         namespace: historyNamespace ?? "agent",
         sessionId: historySessionId ?? "default",
         invokeAgent: async (agentId, inputText, invokeOptions) =>
-          await orchestrator.invokeAgent(agentId, inputText, { streaming: false, signal: invokeOptions?.signal }),
+          await orchestrator.invokeAgent(agentId, inputText, { streaming: false, signal: invokeOptions?.signal, env: options.env }),
         supervisorAgentId: activeAgentId,
         supervisorName,
         maxSupervisorRounds,
@@ -178,6 +178,7 @@ export async function runCollaborativeTurn(
           await orchestrator.invokeAgent(activeAgentId, inputText, {
             streaming: false,
             signal: options.signal,
+            env: options.env,
           }),
       });
 
@@ -218,6 +219,7 @@ export async function runCollaborativeTurn(
           hooks: options.hooks,
           supervisorAgentId: activeAgentId,
           signal: options.signal,
+          env: options.env,
         });
         allDelegations.push(...delegations);
 

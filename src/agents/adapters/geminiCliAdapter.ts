@@ -151,6 +151,7 @@ export class GeminiCliAdapter implements AgentAdapter {
         binary: this.binary,
         args,
         cwd: this.workingDirectory,
+        env: options?.env,
         stdinData: "\n",
         signal: options?.signal,
       },

@@ -68,6 +68,7 @@ export async function runDelegationQueue(
     hooks?: CollaborationHooks;
     supervisorAgentId: AgentIdentifier;
     signal?: AbortSignal;
+    env?: Record<string, string>;
   },
 ): Promise<DelegationSummary[]> {
   const queue: DelegationDirective[] = extractDelegationDirectives(initialText, options.supervisorAgentId);
@@ -113,6 +114,7 @@ export async function runDelegationQueue(
       const agentResult = await orchestrator.invokeAgent(next.agentId, next.prompt, {
         streaming: false,
         signal: options.signal,
+        env: options.env,
       });
       const summary: DelegationSummary = {
         agentId: next.agentId,
