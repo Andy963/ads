@@ -109,7 +109,7 @@ function prepareStatements(db: DatabaseType) {
   const updateByRequestIdStmt: SqliteStatement = db.prepare(
     `UPDATE web_task_bundle_drafts
      SET bundle_json = ?, status = 'draft', updated_at = ?, source_history_key = ?, last_error = NULL
-     WHERE namespace = ? AND auth_user_id = ? AND workspace_root = ? AND request_id = ?`,
+     WHERE namespace = ? AND auth_user_id = ? AND workspace_root = ? AND request_id = ? AND status = 'draft'`,
   );
 
   const selectByRequestIdStmt: SqliteStatement = db.prepare(
@@ -361,4 +361,3 @@ export function setTaskBundleDraftError(args: {
   const stmts = prepareStatements(db);
   stmts.setErrorStmt.run(String(args.error ?? "").trim(), now, namespace, authUserId, draftId);
 }
-

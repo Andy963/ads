@@ -7,7 +7,7 @@ import path from "node:path";
 import { resetStateDatabaseForTests } from "../../src/state/database.js";
 import type { TaskQueueMetrics } from "../../src/web/server/taskQueue/manager.js";
 import { handleTaskBundleDraftRoutes } from "../../src/web/server/api/routes/taskBundleDrafts.js";
-import { upsertTaskBundleDraft } from "../../src/web/server/planner/taskBundleDraftStore.js";
+import { approveTaskBundleDraft, upsertTaskBundleDraft } from "../../src/web/server/planner/taskBundleDraftStore.js";
 
 type FakeReq = {
   method: string;
@@ -347,5 +347,35 @@ describe("web/api/task-bundle-drafts", () => {
     assert.equal(resumeCalled, 0, "already approved drafts should not re-run queue side effects");
     assert.equal(promoteCalled, 0, "already approved drafts should not re-run queue side effects");
   });
-});
 
+  it("does not downgrade approved drafts on upsert by requestId", () => {
+    const authUserId = "u-1";
+    const workspaceRoot = "/tmp/ws-3";
+
+    const inserted = upsertTaskBundleDraft({
+      authUserId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk",
+      bundle: { version: 1, requestId: "r3", tasks: [{ prompt: "p1" }] },
+      now: 10,
+    });
+
+    const approved = approveTaskBundleDraft({ authUserId, draftId: inserted.id, approvedTaskIds: ["t-1"], now: 20 });
+    assert.ok(approved);
+    assert.equal(approved.status, "approved");
+
+    const upserted = upsertTaskBundleDraft({
+      authUserId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk2",
+      bundle: { version: 1, requestId: "r3", tasks: [{ prompt: "changed" }] },
+      now: 30,
+    });
+
+    assert.equal(upserted.id, inserted.id);
+    assert.equal(upserted.status, "approved");
+    assert.equal(upserted.bundle?.tasks[0]?.prompt, "p1");
+  });
+});
