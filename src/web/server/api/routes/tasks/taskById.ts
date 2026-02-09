@@ -64,12 +64,23 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
   }
 
   if (req.method === "PATCH") {
-    const body = await readJsonBody(req);
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
     const action =
       typeof (body as { action?: unknown } | null)?.action === "string" ? String((body as { action: string }).action) : "";
     if (action) {
       const schema = z.object({ action: z.enum(["pause", "resume", "cancel"]) }).passthrough();
-      const parsed = schema.parse(body ?? {});
+      const result = schema.safeParse(body ?? {});
+      if (!result.success) {
+        sendJson(res, 400, { error: "Invalid payload" });
+        return true;
+      }
+      const parsed = result.data;
       if (parsed.action === "pause") {
         taskCtx.taskQueue.pause("api");
         taskCtx.queueRunning = false;
@@ -107,7 +118,12 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         maxRetries: z.number().int().min(0).optional(),
       })
       .passthrough();
-    const parsed = updateSchema.parse(body ?? {});
+    const updateResult = updateSchema.safeParse(body ?? {});
+    if (!updateResult.success) {
+      sendJson(res, 400, { error: "Invalid payload" });
+      return true;
+    }
+    const parsed = updateResult.data;
     const keys = Object.keys(parsed).filter((k) => ["title", "prompt", "model", "priority", "inheritContext", "maxRetries"].includes(k));
     if (keys.length === 0) {
       sendJson(res, 400, { error: "No updates provided" });

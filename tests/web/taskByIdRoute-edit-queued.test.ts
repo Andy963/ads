@@ -117,5 +117,107 @@ describe("web/api/tasks/:id PATCH", () => {
     assert.equal(payload.success, true);
     assert.equal((payload.task as Task).title, "Updated title");
   });
-});
 
+  it("returns 400 for invalid JSON body", async () => {
+    const req: FakeReq = {
+      method: "PATCH",
+      headers: {},
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from("{", "utf8");
+      },
+    };
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/t-queued");
+
+    const taskCtx = {
+      sessionId: "s",
+      queueRunning: false,
+      taskStore: {
+        getTask() {
+          return null;
+        },
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as unknown as ApiSharedDeps["logger"],
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as unknown as ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as unknown as ApiRouteContext["req"],
+      res: res as unknown as ApiRouteContext["res"],
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskByIdRoute(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 400);
+    assert.deepEqual(parseJson(res.body), { error: "Invalid JSON body" });
+  });
+
+  it("returns 400 for invalid action payload", async () => {
+    const req = createReq("PATCH", { action: "nope" });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/t-queued");
+
+    const taskCtx = {
+      sessionId: "s",
+      queueRunning: false,
+      taskStore: {
+        getTask() {
+          return null;
+        },
+      },
+      taskQueue: {
+        pause() {},
+        resume() {},
+        cancel() {},
+      },
+      runController: {
+        setModeManual() {},
+        setModeAll() {},
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as unknown as ApiSharedDeps["logger"],
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as unknown as ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as unknown as ApiRouteContext["req"],
+      res: res as unknown as ApiRouteContext["res"],
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskByIdRoute(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 400);
+    assert.deepEqual(parseJson(res.body), { error: "Invalid payload" });
+  });
+});
