@@ -430,6 +430,17 @@ onBeforeUnmount(() => {
               <div v-if="wsError" class="error">WS: {{ wsError }}</div>
               <div v-if="threadWarning" class="warning">{{ threadWarning }}</div>
 
+              <TaskBundleDraftPanel
+                v-if="plannerDrafts.length > 0 || plannerDraftsError"
+                :drafts="plannerDrafts"
+                :busy="plannerDraftsBusy"
+                :error="plannerDraftsError"
+                @refresh="refreshPlannerDrafts"
+                @approve="onApproveDraft"
+                @update="onUpdateDraft"
+                @delete="onDeleteDraft"
+              />
+
               <TaskBoard
                 class="taskBoard"
                 :tasks="tasks"
@@ -458,15 +469,6 @@ onBeforeUnmount(() => {
       </aside>
 
       <section class="plannerPane">
-        <TaskBundleDraftPanel
-          :drafts="plannerDrafts"
-          :busy="plannerDraftsBusy"
-          :error="plannerDraftsError"
-          @refresh="refreshPlannerDrafts"
-          @approve="onApproveDraft"
-          @update="onUpdateDraft"
-          @delete="onDeleteDraft"
-        />
         <MainChatView
           :key="activeProjectId"
           class="chatHost chatHost--planner"
