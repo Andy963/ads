@@ -36,7 +36,6 @@ const {
   wsError,
   threadWarning,
   tasks,
-  models,
   selectedId,
   apiAuthorized,
   runBusyIds,
@@ -446,7 +445,8 @@ onBeforeUnmount(() => {
               <TaskBoard
                 class="taskBoard"
                 :tasks="tasks"
-                :models="models"
+                :agents="workerAgents"
+                :active-agent-id="workerActiveAgentId"
                 :selected-id="selectedId"
                 :queue-status="queueStatus"
                 :can-run-single="apiAuthorized"
@@ -572,6 +572,8 @@ onBeforeUnmount(() => {
         :prompts="prompts"
         :prompts-busy="promptsBusy"
         :workspace-root="resolveActiveWorkspaceRoot() || ''"
+        :agents="workerAgents"
+        :active-agent-id="workerActiveAgentId"
         @submit="submitTaskCreate"
         @submit-and-run="submitTaskCreateAndRun"
         @reset-thread="clearActiveChat"

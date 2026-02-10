@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import TaskBoard from "../components/TaskBoard.vue";
-import type { ModelConfig, Task } from "../api/types";
+import type { Task } from "../api/types";
 
 function makeTask(overrides: Partial<Task>): Task {
   const now = Date.now();
@@ -15,6 +15,7 @@ function makeTask(overrides: Partial<Task>): Task {
     priority: overrides.priority ?? 0,
     queueOrder: overrides.queueOrder ?? 0,
     inheritContext: overrides.inheritContext ?? true,
+    agentId: overrides.agentId ?? null,
     retryCount: overrides.retryCount ?? 0,
     maxRetries: overrides.maxRetries ?? 3,
     createdAt: overrides.createdAt ?? now,
@@ -29,7 +30,7 @@ function makeTask(overrides: Partial<Task>): Task {
 }
 
 describe("TaskBoard edit modal", () => {
-  const models: ModelConfig[] = [{ id: "auto", displayName: "Auto", provider: "", isEnabled: true, isDefault: true }];
+  const agents = [{ id: "codex", name: "Codex", ready: true }];
 
   it("opens a modal editor and emits updates on save", async () => {
     const longPrompt = `Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6`;
@@ -38,7 +39,8 @@ describe("TaskBoard edit modal", () => {
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
-        models,
+        agents,
+        activeAgentId: "codex",
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,
@@ -68,7 +70,7 @@ describe("TaskBoard edit modal", () => {
       updates: {
         title: "My title",
         prompt: nextPrompt,
-        model: "auto",
+        agentId: "codex",
         priority: 0,
         maxRetries: 3,
         inheritContext: true,
@@ -86,7 +88,8 @@ describe("TaskBoard edit modal", () => {
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
-        models,
+        agents,
+        activeAgentId: "codex",
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,
@@ -115,7 +118,8 @@ describe("TaskBoard edit modal", () => {
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
-        models,
+        agents,
+        activeAgentId: "codex",
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,
@@ -139,7 +143,7 @@ describe("TaskBoard edit modal", () => {
       updates: {
         title: "My title",
         prompt: "Hello",
-        model: "auto",
+        agentId: "codex",
         priority: 0,
         maxRetries: 3,
         inheritContext: true,
@@ -155,7 +159,8 @@ describe("TaskBoard edit modal", () => {
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
-        models,
+        agents,
+        activeAgentId: "codex",
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,
@@ -177,7 +182,8 @@ describe("TaskBoard edit modal", () => {
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
-        models,
+        agents,
+        activeAgentId: "codex",
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,

@@ -1,10 +1,10 @@
 import { z } from "zod";
 
 import type { AgentEvent } from "../../../../../codex/events.js";
+import { selectAgentForTask } from "../../../../../tasks/agentSelection.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
 import { readJsonBody, sendJson } from "../../../http.js";
-import { selectAgentForModel } from "./shared.js";
 
 export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -78,7 +78,7 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
     const modelToUse = desiredModel === "auto" ? (process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2") : desiredModel;
     const orchestrator = taskCtx.getTaskQueueOrchestrator(latest);
     orchestrator.setModel(modelToUse);
-    const agentId = selectAgentForModel(modelToUse);
+    const agentId = selectAgentForTask({ agentId: latest.agentId, modelToUse });
 
     let lastRespondingText = "";
     const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {

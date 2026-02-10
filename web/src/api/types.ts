@@ -19,6 +19,7 @@ export interface Task {
   queuedAt?: number | null;
   promptInjectedAt?: number | null;
   inheritContext: boolean;
+  agentId: string | null;
   result?: string | null;
   error?: string | null;
   retryCount: number;
@@ -76,6 +77,7 @@ export interface BootstrapConfig {
 export interface CreateTaskInput {
   title?: string;
   prompt: string;
+  agentId?: string | null;
   model?: string;
   priority?: number;
   inheritContext?: boolean;
@@ -116,6 +118,7 @@ export type TaskBundleTask = {
   externalId?: string;
   title?: string;
   prompt: string;
+  agentId?: string | null;
   model?: string;
   priority?: number;
   inheritContext?: boolean;

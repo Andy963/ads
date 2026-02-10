@@ -5,11 +5,15 @@ import type { CreateTaskInput, Prompt } from "../api/types";
 import { useImageAttachments } from "./taskCreateForm/useImageAttachments";
 import { useVoiceInput } from "./taskCreateForm/useVoiceInput";
 
+type AgentOption = { id: string; name: string; ready: boolean; error?: string };
+
 const props = defineProps<{
   prompts?: Prompt[];
   promptsBusy?: boolean;
   apiToken?: string;
   workspaceRoot?: string;
+  agents?: AgentOption[];
+  activeAgentId?: string;
 }>();
 const emit = defineEmits<{
   (e: "submit", v: CreateTaskInput): void;
@@ -21,7 +25,7 @@ const emit = defineEmits<{
 const title = ref("");
 const prompt = ref("");
 const promptEl = ref<HTMLTextAreaElement | null>(null);
-const agentId = ref("codex");
+const agentId = ref("");
 const priority = ref(0);
 const maxRetries = ref(3);
 
@@ -38,10 +42,58 @@ const pinnedPrompt = computed(() => {
 });
 
 const pinnedPromptPlaceholder = computed(() => {
-  if (props.promptsBusy) return "Loading prompts...";
+  if (props.promptsBusy) return "正在加载提示词…";
   const entries = Array.isArray(props.prompts) ? props.prompts : [];
-  return entries.length ? "None" : "No prompts available";
+  return entries.length ? "不使用" : "暂无提示词";
 });
+
+const agentOptions = computed(() => {
+  const raw = Array.isArray(props.agents) ? props.agents : [];
+  return raw
+    .map((a) => {
+      const id = String(a?.id ?? "").trim();
+      if (!id) return null;
+      const name = String(a?.name ?? "").trim() || id;
+      const ready = Boolean(a?.ready);
+      const error = typeof a?.error === "string" && a.error.trim() ? a.error.trim() : undefined;
+      return { id, name, ready, error } satisfies AgentOption;
+    })
+    .filter(Boolean) as AgentOption[];
+});
+
+const normalizedActiveAgentId = computed(() => String(props.activeAgentId ?? "").trim());
+
+watch([agentOptions, normalizedActiveAgentId], () => {
+  const options = agentOptions.value;
+  const current = String(agentId.value ?? "").trim();
+  if (current && options.some((a) => a.id === current)) {
+    return;
+  }
+
+  const preferred = normalizedActiveAgentId.value;
+  if (preferred && options.some((a) => a.id === preferred)) {
+    agentId.value = preferred;
+    return;
+  }
+
+  const ready = options.find((a) => a.ready)?.id;
+  if (ready) {
+    agentId.value = ready;
+    return;
+  }
+
+  agentId.value = options[0]?.id ?? "";
+}, { immediate: true });
+
+function formatAgentLabel(agent: AgentOption): string {
+  const id = String(agent.id ?? "").trim();
+  const name = String(agent.name ?? "").trim() || id;
+  if (!id) return name || "agent";
+  const base = name === id ? id : `${name} (${id})`;
+  if (agent.ready) return base;
+  const suffix = String(agent.error ?? "").trim() || "不可用";
+  return `${base}（不可用：${suffix}）`;
+}
 
 async function insertIntoPrompt(text: string): Promise<void> {
   const normalized = String(text ?? "").trim();
@@ -215,6 +267,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   emit(event, {
     title: titleTrimmed.length ? titleTrimmed : pinnedPrompt.value ? pinnedDerivedTitle || undefined : undefined,
     prompt: mergedPrompt,
+    ...(agentId.value ? { agentId: agentId.value } : {}),
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
     attachments: uploadedIds.length ? uploadedIds : undefined,
@@ -257,8 +310,13 @@ watch(
 
       <div class="form-row form-row-3">
         <label class="form-field">
-          <span class="label-text">agent</span>
-          <input :value="agentId" readonly data-testid="task-create-agent" />
+          <span class="label-text">执行器</span>
+          <select v-model="agentId" data-testid="task-create-agent">
+            <option value="">自动</option>
+            <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.ready">
+              {{ formatAgentLabel(a) }}
+            </option>
+          </select>
         </label>
         <label class="form-field">
           <span class="label-text">优先级</span>
@@ -290,7 +348,7 @@ watch(
 
       <div class="form-row">
         <label class="form-field">
-          <span class="label-text">Pinned prompt (optional)</span>
+          <span class="label-text">固定提示词（可选）</span>
           <select
             v-model="pinnedPromptId"
             data-testid="task-create-pinned-prompt-select"
@@ -303,15 +361,15 @@ watch(
           </select>
         </label>
 
-        <div v-if="pinnedPrompt" class="pinnedPromptCard" aria-label="Pinned prompt preview">
+        <div v-if="pinnedPrompt" class="pinnedPromptCard" aria-label="固定提示词预览">
           <div class="pinnedPromptHeader">
             <div class="pinnedPromptTitle">
-              <span class="pinnedPromptBadge">Pinned</span>
+              <span class="pinnedPromptBadge">已固定</span>
               <span class="pinnedPromptName" :title="pinnedPrompt.name">{{ pinnedPrompt.name }}</span>
             </div>
-            <button type="button" class="pinnedPromptUnpin" @click="pinnedPromptId = ''">Unpin</button>
+            <button type="button" class="pinnedPromptUnpin" @click="pinnedPromptId = ''">取消固定</button>
           </div>
-          <div class="pinnedPromptHint">This template will be prepended to the task prompt on submit.</div>
+          <div class="pinnedPromptHint">提交时会把该模板拼接到任务提示词前面。</div>
           <pre class="pinnedPromptContent">{{ pinnedPrompt.content }}</pre>
         </div>
       </div>

@@ -23,6 +23,7 @@ export function toTask(row: Record<string, unknown>): Task {
         ? null
         : (typeof row.prompt_injected_at === "number" ? row.prompt_injected_at : Number(row.prompt_injected_at)),
     inheritContext: Boolean(row.inherit_context),
+    agentId: row.agent_id == null ? null : (String(row.agent_id ?? "").trim() || null),
     parentTaskId: row.parent_task_id == null ? null : String(row.parent_task_id),
     threadId: row.thread_id == null ? null : String(row.thread_id),
     result: row.result == null ? null : String(row.result),

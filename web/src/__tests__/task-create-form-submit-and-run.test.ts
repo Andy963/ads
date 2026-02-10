@@ -65,6 +65,28 @@ describe("TaskCreateForm submit-and-run", () => {
     wrapper.unmount();
   });
 
+  it("includes agentId when an active agent is provided", async () => {
+    const wrapper = mount(TaskCreateForm, {
+      props: {
+        workspaceRoot: "",
+        agents: [
+          { id: "codex", name: "Codex", ready: true },
+          { id: "claude", name: "Claude", ready: true },
+        ],
+        activeAgentId: "claude",
+      },
+    });
+
+    await wrapper.find("textarea").setValue("Do something");
+    await wrapper.find('[data-testid="task-create-submit-and-run"]').trigger("click");
+
+    const emitted = wrapper.emitted("submit-and-run");
+    expect(emitted).toBeTruthy();
+    expect(emitted?.[0]?.[0]).toMatchObject({ agentId: "claude" });
+
+    wrapper.unmount();
+  });
+
   it("merges a pinned prompt template into the submitted prompt", async () => {
     const wrapper = mount(TaskCreateForm, {
       props: {

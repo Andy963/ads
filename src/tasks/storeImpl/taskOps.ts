@@ -45,6 +45,10 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       })();
 
     const inheritContext = Boolean(input.inheritContext);
+    const agentId = (() => {
+      const raw = input.agentId == null ? "" : String(input.agentId).trim();
+      return raw || null;
+    })();
 
     const queueOrderRow = stmts.selectNextQueueOrderStmt.get() as { next?: number } | undefined;
     const nextQueueOrder =
@@ -70,6 +74,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       queuedAt,
       promptInjectedAt: null,
       inheritContext,
+      agentId,
       parentTaskId: input.parentTaskId ?? null,
       threadId: (() => {
         const provided = input.threadId == null ? "" : String(input.threadId).trim();
@@ -107,6 +112,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.queueOrder,
       task.queuedAt ?? null,
       task.inheritContext ? 1 : 0,
+      task.agentId,
       task.parentTaskId ?? null,
       task.threadId ?? null,
       task.result ?? null,
@@ -172,6 +178,10 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
 
     merged.status = normalizeTaskStatus(merged.status);
     merged.inheritContext = Boolean(merged.inheritContext);
+    merged.agentId = (() => {
+      const raw = merged.agentId == null ? "" : String(merged.agentId).trim();
+      return raw || null;
+    })();
     // promptInjectedAt is a write-once field controlled by markPromptInjected().
     merged.promptInjectedAt = existing.promptInjectedAt ?? null;
     merged.priority = Number.isFinite(merged.priority) ? merged.priority : existing.priority;
@@ -206,6 +216,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.queueOrder,
       merged.queuedAt ?? null,
       merged.inheritContext ? 1 : 0,
+      merged.agentId,
       merged.parentTaskId ?? null,
       merged.threadId ?? null,
       merged.result ?? null,

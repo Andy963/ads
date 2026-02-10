@@ -60,6 +60,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         queue_order,
         queued_at,
         inherit_context,
+        agent_id,
         parent_task_id,
         thread_id,
         result,
@@ -71,7 +72,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         completed_at,
         archived_at,
         created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
 
     getTaskStmt: db.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`),
@@ -122,6 +123,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         queue_order = ?,
         queued_at = ?,
         inherit_context = ?,
+        agent_id = ?,
         parent_task_id = ?,
         thread_id = ?,
         result = ?,

@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import MainChat from "../components/MainChat.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import TaskDetail from "../components/TaskDetail.vue";
-import type { Attachment, ModelConfig, Task, TaskDetail as TaskDetailType } from "../api/types";
+import type { Attachment, Task, TaskDetail as TaskDetailType } from "../api/types";
 import { readSfc } from "./readSfc";
 
 async function readText(relativeToThisTest: string): Promise<string> {
@@ -38,6 +38,7 @@ function makeTask(overrides: Partial<Task>): Task {
     priority: overrides.priority ?? 0,
     queueOrder: overrides.queueOrder ?? 0,
     inheritContext: overrides.inheritContext ?? true,
+    agentId: overrides.agentId ?? null,
     retryCount: overrides.retryCount ?? 0,
     maxRetries: overrides.maxRetries ?? 0,
     createdAt: overrides.createdAt ?? now,
@@ -150,12 +151,11 @@ describe("compact attachment UI", () => {
       status: "completed",
       attachments: [makeAttachment("a-1"), makeAttachment("a-2"), makeAttachment("a-3"), makeAttachment("a-4"), makeAttachment("a-5")],
     });
-    const models: ModelConfig[] = [{ id: "auto", displayName: "Auto", provider: "", isEnabled: true, isDefault: true }];
 
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
-        models,
+        agents: [],
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,

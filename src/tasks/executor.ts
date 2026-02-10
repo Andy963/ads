@@ -10,6 +10,7 @@ import type { BootstrapProjectRef } from "../bootstrap/types.js";
 
 import type { TaskStore } from "./store.js";
 import type { Task, TaskContext } from "./types.js";
+import { selectAgentForTask } from "./agentSelection.js";
 
 export interface TaskExecutorHooks {
   onMessage?: (message: { role: string; content: string; modelUsed?: string | null }) => void;
@@ -19,17 +20,6 @@ export interface TaskExecutorHooks {
 
 export interface TaskExecutor {
   execute(task: Task, options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks }): Promise<{ resultSummary?: string }>;
-}
-
-function selectAgentForModel(model: string): AgentIdentifier {
-  const normalized = String(model ?? "").trim().toLowerCase();
-  if (normalized.startsWith("gemini") || normalized.startsWith("auto-gemini") || normalized.includes("gemini")) {
-    return "gemini";
-  }
-  if (normalized.startsWith("claude") || normalized === "sonnet" || normalized === "opus" || normalized === "haiku") {
-    return "claude";
-  }
-  return "codex";
 }
 
 function truncate(text: string, limit = 4000): string {
@@ -217,7 +207,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       const orchestrator = this.getOrchestrator(task);
       const desiredModel = String(task.model ?? "").trim() || "auto";
       const modelToUse = desiredModel === "auto" ? this.defaultModel : desiredModel;
-      const agentId = selectAgentForModel(modelToUse);
+      const agentId = selectAgentForTask({ agentId: task.agentId, modelToUse });
       orchestrator.setModel(modelToUse);
 
       const conversationId = String(task.threadId ?? "").trim() || `conv-${task.id}`;

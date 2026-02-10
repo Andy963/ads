@@ -94,6 +94,7 @@ function makeTask(overrides: Partial<Task>): Task {
     priority: overrides.priority ?? 0,
     queueOrder: overrides.queueOrder ?? 0,
     inheritContext: overrides.inheritContext ?? true,
+    agentId: overrides.agentId ?? null,
     retryCount: overrides.retryCount ?? 0,
     maxRetries: overrides.maxRetries ?? 0,
     createdAt: overrides.createdAt ?? now,

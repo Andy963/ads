@@ -86,6 +86,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       .object({
         title: z.string().min(1).optional(),
         prompt: z.string().min(1),
+        agentId: z.string().min(1).nullable().optional(),
         model: z.string().optional(),
         priority: z.number().optional(),
         inheritContext: z.boolean().optional(),
@@ -114,6 +115,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           id: taskId,
           title: parsed.title,
           prompt: parsed.prompt,
+          agentId: parsed.agentId == null ? null : parsed.agentId.trim(),
           model: parsed.model,
           modelParams,
           priority: parsed.priority,

@@ -56,6 +56,7 @@ export interface Task {
   queuedAt?: number | null;
   promptInjectedAt?: number | null;
   inheritContext: boolean;
+  agentId: string | null;
   parentTaskId?: string | null;
   threadId?: string | null;
   result?: string | null;
@@ -77,6 +78,7 @@ export interface CreateTaskInput {
   modelParams?: Record<string, unknown> | null;
   priority?: number;
   inheritContext?: boolean;
+  agentId?: string | null;
   parentTaskId?: string | null;
   threadId?: string | null;
   maxRetries?: number;

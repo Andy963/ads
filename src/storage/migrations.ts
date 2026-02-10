@@ -375,6 +375,17 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 11,
+    description: "Tasks - add agent_id for explicit CLI agent selection",
+    up: (db) => {
+      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
+      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      if (!names.has("agent_id")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN agent_id TEXT`);
+      }
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 2,

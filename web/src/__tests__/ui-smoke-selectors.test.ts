@@ -44,7 +44,7 @@ describe("UI smoke selectors", () => {
     const wrapper = shallowMount(TaskBoard, {
       props: {
         tasks: [],
-        models: [],
+        agents: [],
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,
@@ -80,4 +80,3 @@ describe("UI smoke selectors", () => {
     }
   });
 });
-

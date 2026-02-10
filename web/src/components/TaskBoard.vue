@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import { ChatDotRound, Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
-import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import type { Task, TaskQueueStatus } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
 
-type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "model" | "priority" | "inheritContext" | "maxRetries">>;
+type AgentOption = { id: string; name: string; ready: boolean; error?: string };
+
+type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "inheritContext" | "maxRetries">>;
 
 const TASK_CARD_PALETTE = [
   "#dbeafe",
@@ -25,7 +27,8 @@ const TASK_CARD_PALETTE = [
 
 const props = defineProps<{
   tasks: Task[];
-  models: ModelConfig[];
+  agents?: AgentOption[];
+  activeAgentId?: string;
   selectedId?: string | null;
   queueStatus?: TaskQueueStatus | null;
   canRunSingle?: boolean;
@@ -47,12 +50,48 @@ const emit = defineEmits<{
   (e: "delete", id: string): void;
 }>();
 
-const modelOptions = computed(() => {
-  const enabled = props.models.filter((m) => m.isEnabled);
-  return [{ id: "auto", displayName: "Auto", provider: "" }, ...enabled];
+const agentOptions = computed(() => {
+  const raw = Array.isArray(props.agents) ? props.agents : [];
+  return raw
+    .map((a) => {
+      const id = String(a?.id ?? "").trim();
+      if (!id) return null;
+      const name = String(a?.name ?? "").trim() || id;
+      const ready = Boolean(a?.ready);
+      const error = typeof a?.error === "string" && a.error.trim() ? a.error.trim() : undefined;
+      return { id, name, ready, error } satisfies AgentOption;
+    })
+    .filter(Boolean) as AgentOption[];
 });
 
-const modelLabelById = computed(() => new Map(modelOptions.value.map((m) => [m.id, m.displayName])));
+const normalizedActiveAgentId = computed(() => String(props.activeAgentId ?? "").trim());
+
+function formatAgentLabel(agent: AgentOption): string {
+  const id = String(agent.id ?? "").trim();
+  const name = String(agent.name ?? "").trim() || id;
+  if (!id) return name || "agent";
+  const base = name === id ? id : `${name} (${id})`;
+  if (agent.ready) return base;
+  const suffix = String(agent.error ?? "").trim() || "不可用";
+  return `${base}（不可用：${suffix}）`;
+}
+
+function pickDefaultAgentId(preferred?: string | null): string {
+  const options = agentOptions.value;
+  const preferredId = String(preferred ?? "").trim();
+  if (preferredId) {
+    return preferredId;
+  }
+
+  const active = normalizedActiveAgentId.value;
+  if (active && options.some((a) => a.id === active)) {
+    return active;
+  }
+
+  const ready = options.find((a) => a.ready)?.id;
+  return ready ?? options[0]?.id ?? "";
+}
+
 
 function hashStringFNV1a(input: string): number {
   let h = 0x811c9dc5;
@@ -138,12 +177,6 @@ function taskColorVars(task: Task): Record<string, string> {
   };
 }
 
-function formatModel(id: string | null | undefined): string {
-  const raw = String(id ?? "").trim();
-  if (!raw) return "Auto";
-  return modelLabelById.value.get(raw) ?? raw;
-}
-
 function statusLabel(status: string): string {
   switch (status) {
     case "pending":
@@ -196,7 +229,7 @@ const sorted = computed(() => {
 const editingId = ref<string | null>(null);
 const editTitle = ref("");
 const editPrompt = ref("");
-const editModel = ref("auto");
+const editAgentId = ref("");
 const editPriority = ref(0);
 const editMaxRetries = ref(3);
 const editInheritContext = ref(true);
@@ -205,6 +238,18 @@ const editBootstrapProject = ref("");
 const editBootstrapMaxIterations = ref(10);
 const error = ref<string | null>(null);
 const editTitleEl = ref<HTMLInputElement | null>(null);
+
+const editAgentOptions = computed(() => {
+  const base = agentOptions.value;
+  const current = String(editAgentId.value ?? "").trim();
+  if (!current || base.some((a) => a.id === current)) {
+    return base;
+  }
+  return [
+    { id: current, name: current, ready: false, error: "不可用" },
+    ...base,
+  ] satisfies AgentOption[];
+});
 
 const editingTask = computed(() => {
   const id = String(editingId.value ?? "").trim();
@@ -217,7 +262,7 @@ function startEdit(task: Task): void {
   editingId.value = task.id;
   editTitle.value = task.title ?? "";
   editPrompt.value = task.prompt ?? "";
-  editModel.value = task.model ?? "auto";
+  editAgentId.value = pickDefaultAgentId(task.agentId);
   editPriority.value = task.priority ?? 0;
   editMaxRetries.value = task.maxRetries ?? 3;
   editInheritContext.value = task.inheritContext ?? true;
@@ -260,7 +305,7 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
     updates: {
       title,
       prompt,
-      model: editModel.value,
+      agentId: editAgentId.value.trim() ? editAgentId.value.trim() : null,
       priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
       maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
       inheritContext: Boolean(editInheritContext.value),
@@ -468,10 +513,11 @@ function toggleQueue(): void {
 
         <div class="configRow">
           <label class="field">
-            <span class="label">模型</span>
-            <select v-model="editModel">
-              <option v-for="m in modelOptions" :key="m.id" :value="m.id">
-                {{ m.displayName }}{{ m.provider ? ` (${m.provider})` : "" }}
+            <span class="label">执行器</span>
+            <select v-model="editAgentId" data-testid="task-edit-agent">
+              <option value="">自动</option>
+              <option v-for="a in editAgentOptions" :key="a.id" :value="a.id" :disabled="!a.ready">
+                {{ formatAgentLabel(a) }}
               </option>
             </select>
           </label>
@@ -486,8 +532,8 @@ function toggleQueue(): void {
           <label class="field">
             <span class="label">继承上下文</span>
             <select v-model="editInheritContext">
-              <option :value="true">True</option>
-              <option :value="false">False</option>
+              <option :value="true">是</option>
+              <option :value="false">否</option>
             </select>
           </label>
         </div>

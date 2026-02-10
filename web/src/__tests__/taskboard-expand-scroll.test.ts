@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import TaskBoard from "../components/TaskBoard.vue";
-import type { ModelConfig, Task } from "../api/types";
+import type { Task } from "../api/types";
 import { readSfc } from "./readSfc";
 
 function makeTask(overrides: Partial<Task>): Task {
@@ -16,6 +16,7 @@ function makeTask(overrides: Partial<Task>): Task {
     priority: overrides.priority ?? 0,
     queueOrder: overrides.queueOrder ?? 0,
     inheritContext: overrides.inheritContext ?? true,
+    agentId: overrides.agentId ?? null,
     retryCount: overrides.retryCount ?? 0,
     maxRetries: overrides.maxRetries ?? 0,
     createdAt: overrides.createdAt ?? now,
@@ -32,12 +33,11 @@ function makeTask(overrides: Partial<Task>): Task {
 describe("TaskBoard plan removal", () => {
   it("does not render any plan panel/toggle DOM", async () => {
     const task = makeTask({ id: "t-1", title: "A", status: "completed" });
-    const models: ModelConfig[] = [{ id: "auto", displayName: "Auto", provider: "", isEnabled: true, isDefault: true }];
 
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
-        models,
+        agents: [],
         selectedId: null,
         queueStatus: null,
         canRunSingle: true,

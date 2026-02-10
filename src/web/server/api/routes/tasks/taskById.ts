@@ -112,6 +112,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       .object({
         title: z.string().min(1).optional(),
         prompt: z.string().min(1).optional(),
+        agentId: z.string().min(1).nullable().optional(),
         model: z.string().min(1).optional(),
         priority: z.number().finite().optional(),
         inheritContext: z.boolean().optional(),
@@ -124,7 +125,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       return true;
     }
     const parsed = updateResult.data;
-    const keys = Object.keys(parsed).filter((k) => ["title", "prompt", "model", "priority", "inheritContext", "maxRetries"].includes(k));
+    const keys = Object.keys(parsed).filter((k) => ["title", "prompt", "agentId", "model", "priority", "inheritContext", "maxRetries"].includes(k));
     if (keys.length === 0) {
       sendJson(res, 400, { error: "No updates provided" });
       return true;
@@ -143,6 +144,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     const updates: Record<string, unknown> = {};
     if (parsed.title !== undefined) updates.title = parsed.title;
     if (parsed.prompt !== undefined) updates.prompt = parsed.prompt;
+    if (parsed.agentId !== undefined) updates.agentId = parsed.agentId == null ? null : parsed.agentId.trim();
     if (parsed.model !== undefined) updates.model = parsed.model;
     if (parsed.priority !== undefined) updates.priority = parsed.priority;
     if (parsed.inheritContext !== undefined) updates.inheritContext = parsed.inheritContext;
