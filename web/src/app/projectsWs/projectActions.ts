@@ -118,7 +118,18 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       const next: ProjectTab[] = [];
 
       // Keep a single explicit default entry for UI affordances.
-      next.push(createProjectTab({ path: "", name: "默认", sessionId: "default", initialized: true }));
+      const prevDefault = projects.value.find((p) => p.id === "default") ?? null;
+      const defaultBase = createProjectTab({ path: "", name: "默认", sessionId: "default", initialized: true });
+      const defaultChatSessionId = String(prevDefault?.chatSessionId ?? "").trim() || defaultBase.chatSessionId;
+      next.push({
+        ...defaultBase,
+        path: prevDefault ? String(prevDefault.path ?? "").trim() : defaultBase.path,
+        chatSessionId: defaultChatSessionId,
+        initialized: prevDefault ? Boolean(prevDefault.initialized) : defaultBase.initialized,
+        createdAt: prevDefault ? prevDefault.createdAt : defaultBase.createdAt,
+        updatedAt: prevDefault ? prevDefault.updatedAt : defaultBase.updatedAt,
+        branch: prevDefault?.branch,
+      });
 
       for (const entry of remote) {
         const id = String(entry.id ?? "").trim();
