@@ -58,7 +58,7 @@ describe("web/taskStartBroadcast", () => {
     const ts = Date.parse("2026-01-01T00:00:00.000Z");
 
     broadcastTaskStart({
-      task: { id: "t-1", prompt: "   " },
+      task: { id: "t-1", title: "My task", prompt: "   " },
       ts,
       markPromptInjected: () => true,
       recordHistory: (entry) => history.push(entry),
@@ -66,7 +66,7 @@ describe("web/taskStartBroadcast", () => {
       broadcast: (payload) => events.push(payload as { event?: string; data?: unknown }),
     });
 
-    const placeholder = "Task t-1 started at 2026-01-01T00:00:00.000Z (no prompt)";
+    const placeholder = "Task My task (t-1) started at 2026-01-01T00:00:00.000Z (no prompt)";
     assert.equal(events[0]?.event, "task:started");
     assert.equal(events[1]?.event, "message");
     assert.deepEqual(events[1]?.data, { taskId: "t-1", role: "user", content: placeholder });

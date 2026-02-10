@@ -6,7 +6,7 @@ export type TaskStartMetricEvent = { ts?: number; taskId?: string; reason?: stri
 
 export type TaskStartBroadcaster = (payload: unknown) => void;
 
-type TaskStartTaskLike = { id: string; prompt?: string | null };
+type TaskStartTaskLike = { id: string; title?: string | null; prompt?: string | null };
 
 export function broadcastTaskStart<TTask extends TaskStartTaskLike>(options: {
   task: TTask;
@@ -23,7 +23,11 @@ export function broadcastTaskStart<TTask extends TaskStartTaskLike>(options: {
   }
 
   const prompt = String(options.task?.prompt ?? "").trim();
-  const content = prompt || `Task ${taskId} started at ${new Date(options.ts).toISOString()} (no prompt)`;
+  const title = String(options.task?.title ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+  const label = title && title !== taskId ? `${title} (${taskId})` : taskId;
+  const content = prompt || `Task ${label} started at ${new Date(options.ts).toISOString()} (no prompt)`;
 
   let markResult: "marked" | "already_marked" | "failed" = "already_marked";
   try {
