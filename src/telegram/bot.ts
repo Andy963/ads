@@ -2,6 +2,7 @@ import '../utils/logSink.js';
 import '../utils/env.js';
 
 import { Bot, type Context } from 'grammy';
+import path from 'node:path';
 import { loadTelegramConfig, validateConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
@@ -14,6 +15,7 @@ import { createLogger } from '../utils/logger.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
 import { getDailyNoteFilePath } from './utils/noteLogger.js';
 import { detectWorkspaceFrom } from '../workspace/detector.js';
+import { resolveAdsStateDir } from '../workspace/adsPaths.js';
 import { SearchTool } from '../tools/index.js';
 import { ensureApiKeys, resolveSearchConfig } from '../tools/search/config.js';
 import { formatSearchResults } from '../tools/search/format.js';
@@ -22,9 +24,14 @@ import { runVectorSearch, syncVectorSearch } from '../vectorSearch/run.js';
 import { closeAllStateDatabases } from '../state/database.js';
 import { closeAllWorkspaceDatabases } from '../storage/database.js';
 import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag } from './botSetup.js';
+import { runBootstrapLoop } from '../bootstrap/bootstrapLoop.js';
+import { CodexBootstrapAgentRunner } from '../bootstrap/agentRunner.js';
+import { BwrapSandbox, NoopSandbox } from '../bootstrap/sandbox.js';
+import { normalizeBootstrapProjectRef } from '../bootstrap/projectId.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
+const bootstrapAbortControllers = new Map<number, AbortController>();
 
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled promise rejection', reason);
@@ -55,6 +62,16 @@ async function requireUserId(ctx: Context, action: string): Promise<number | nul
     await ctx.reply('❌ 无法识别用户信息（可能是匿名/频道消息），请用普通用户身份发送消息后重试。');
   }
   return null;
+}
+
+function looksLikeGitUrl(value: string): boolean {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return true;
+  if (trimmed.startsWith('git@')) return true;
+  if (/^[a-zA-Z0-9._-]+@[^:]+:.+/.test(trimmed)) return true;
+  if (trimmed.startsWith('ssh://')) return true;
+  return false;
 }
 
 async function main() {
@@ -138,6 +155,7 @@ async function main() {
       { command: 'mark', description: '记录对话到笔记' },
       { command: 'pwd', description: '当前目录' },
       { command: 'cd', description: '切换目录' },
+      { command: 'bootstrap', description: '自举运行（bootstrap loop）' },
       { command: 'search', description: '网络搜索（Tavily）' },
       { command: 'vsearch', description: '语义搜索' },
       { command: 'vsearch_sync', description: '手动同步向量索引' },
@@ -160,7 +178,8 @@ async function main() {
       '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
       '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
       '/pwd - 查看当前目录\n' +
-      '/cd <path> - 切换目录\n\n' +
+      '/cd <path> - 切换目录\n' +
+      '/bootstrap [--soft] <repoPath|gitUrl> <goal...> - 自举闭环\n\n' +
       '直接发送文本与 Codex 对话'
     );
   });
@@ -175,6 +194,7 @@ async function main() {
       '/reset - 重置会话（开始新对话）\n' +
       '/resume - 恢复之前的对话\n' +
       '/mark - 切换对话标记（记录每日 note）\n' +
+      '/bootstrap [--soft] <repoPath|gitUrl> <goal...> - 自举闭环\n' +
       '/search <query> - 网络搜索（Tavily）\n' +
       '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
       '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
@@ -265,8 +285,17 @@ async function main() {
     const userId = await requireUserId(ctx, '/esc');
     if (userId === null) return;
     const interrupted = interruptExecution(userId);
+    const bootstrapController = bootstrapAbortControllers.get(userId);
+    if (bootstrapController) {
+      try {
+        bootstrapController.abort();
+      } catch {
+        // ignore
+      }
+      bootstrapAbortControllers.delete(userId);
+    }
 
-    if (interrupted) {
+    if (interrupted || bootstrapController) {
       await ctx.reply('⛔️ 已中断当前任务\n✅ Agent 仍在运行，可以发送新指令');
     } else {
       await ctx.reply('ℹ️ 当前没有正在执行的任务');
@@ -353,9 +382,9 @@ async function main() {
       return;
     }
 
-    const path = args.join(' ');
+    const targetPath = args.join(' ');
     const prevCwd = directoryManager.getUserCwd(userId);
-    const result = directoryManager.setUserCwd(userId, path);
+    const result = directoryManager.setUserCwd(userId, targetPath);
 
     if (result.success) {
       const newCwd = directoryManager.getUserCwd(userId);
@@ -370,6 +399,152 @@ async function main() {
       await ctx.reply(replyMessage);
     } else {
       await ctx.reply(`❌ ${result.error}`);
+    }
+  });
+
+  bot.command('bootstrap', async (ctx) => {
+    const userId = await requireUserId(ctx, '/bootstrap');
+    if (userId === null) return;
+    if (bootstrapAbortControllers.has(userId)) {
+      await ctx.reply('⚠️ 已有 bootstrap 正在执行，请等待完成或使用 /esc 中断', { disable_notification: silentNotifications });
+      return;
+    }
+    const rawArgs = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
+    if (rawArgs.length === 0) {
+      await ctx.reply('用法: /bootstrap [--soft] [--no-install] [--no-network] [--max-iterations=N] [--model=MODEL] <repoPath|gitUrl> <goal...>');
+      return;
+    }
+
+    const params: Record<string, string> = {};
+    const positional: string[] = [];
+    let softSandbox = false;
+    let allowInstallDeps = true;
+    let allowNetwork = true;
+    for (const token of rawArgs) {
+      if (token === '--soft') {
+        softSandbox = true;
+        continue;
+      }
+      if (token === '--no-install') {
+        allowInstallDeps = false;
+        continue;
+      }
+      if (token === '--no-network') {
+        allowNetwork = false;
+        continue;
+      }
+      if (token.startsWith('--')) {
+        const eqIndex = token.indexOf('=');
+        if (eqIndex > -1) {
+          const key = token.slice(2, eqIndex);
+          const value = token.slice(eqIndex + 1);
+          params[key] = value;
+        } else {
+          params[token.slice(2)] = 'true';
+        }
+        continue;
+      }
+      positional.push(token.replace(/^['"]|['"]$/g, ''));
+    }
+
+    const projectRef = (params.repo ?? params.project ?? positional.shift() ?? '').trim();
+    const goal = (params.goal ?? positional.join(' ')).trim();
+    if (!projectRef) {
+      await ctx.reply('❌ 缺少 repoPath/gitUrl。用法: /bootstrap <repoPath|gitUrl> <goal...>', { disable_notification: silentNotifications });
+      return;
+    }
+    if (!goal) {
+      await ctx.reply('❌ 缺少 goal。用法: /bootstrap <repoPath|gitUrl> <goal...>', { disable_notification: silentNotifications });
+      return;
+    }
+
+    const maxIterationsRaw = params['max-iterations'] ?? params.max_iterations ?? params.maxIterations;
+    const maxIterationsParsed = maxIterationsRaw ? Number.parseInt(maxIterationsRaw, 10) : 10;
+    const maxIterations = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.min(10, maxIterationsParsed)) : 10;
+    const model = params.model ? String(params.model).trim() : undefined;
+
+    const cwd = directoryManager.getUserCwd(userId);
+    const project = looksLikeGitUrl(projectRef)
+      ? ({ kind: 'git_url', value: projectRef } as const)
+      : (() => {
+          const resolved = path.resolve(cwd, projectRef);
+          if (!directoryManager.validatePath(resolved)) {
+            const allowed = directoryManager.getAllowedDirs().join('\n');
+            throw new Error(`目录不在白名单内。允许的目录：\n${allowed}`);
+          }
+          return { kind: 'local_path', value: resolved } as const;
+        })();
+
+    const normalizedProject = normalizeBootstrapProjectRef(project);
+    const stateDir = resolveAdsStateDir();
+    const bootstrapRoot = path.join(stateDir, 'bootstraps', normalizedProject.projectId);
+    const hardSandbox = !softSandbox;
+    const sandbox = hardSandbox
+      ? new BwrapSandbox({ rootDir: bootstrapRoot, allowNetwork })
+      : new NoopSandbox();
+    const agentRunner = new CodexBootstrapAgentRunner({ sandbox, model: model && model.length > 0 ? model : undefined });
+
+    const controller = new AbortController();
+    bootstrapAbortControllers.set(userId, controller);
+
+    await ctx.reply(`⏳ bootstrap started (sandbox=${hardSandbox ? 'hard' : 'soft'})`, { disable_notification: silentNotifications });
+
+    try {
+      const result = await runBootstrapLoop(
+        {
+          project: normalizedProject.project,
+          goal,
+          maxIterations,
+          allowNetwork,
+          allowInstallDeps,
+          requireHardSandbox: hardSandbox,
+          sandbox: { backend: hardSandbox ? 'bwrap' : 'none' },
+        },
+        {
+          agentRunner,
+          signal: controller.signal,
+          hooks: {
+            async onStarted(bootstrapCtx) {
+              const lines = [
+                `bootstrap worktree ready runId=${bootstrapCtx.runId}`,
+                `worktree: ${bootstrapCtx.worktreeDir}`,
+                `artifacts: ${bootstrapCtx.artifactsDir}`,
+                `branch: ${bootstrapCtx.branchName}`,
+              ];
+              await ctx.reply(lines.join('\n'), { disable_notification: silentNotifications });
+            },
+            async onIteration(progress) {
+              const testState = progress.test.summary === '(skipped)' ? 'skipped' : progress.test.ok ? 'ok' : 'fail';
+              const line = `iter=${progress.iteration} ok=${progress.ok} lint=${progress.lint.ok ? 'ok' : 'fail'} test=${testState} strategy=${progress.strategy}`;
+              await ctx.reply(line, { disable_notification: silentNotifications });
+            },
+          },
+        },
+      );
+
+      const artifactsDir = path.dirname(result.lastReportPath);
+      const derivedRunId = path.basename(artifactsDir);
+      const derivedBootstrapRoot = path.resolve(artifactsDir, '..', '..');
+      const worktreeDir = path.join(derivedBootstrapRoot, 'worktrees', derivedRunId);
+
+      const lines: string[] = [];
+      lines.push(`✅ bootstrap finished ok=${result.ok} iterations=${result.iterations} strategyChanges=${result.strategyChanges}`);
+      lines.push(`runId: ${derivedRunId}`);
+      lines.push(`worktree: ${worktreeDir}`);
+      lines.push(`artifacts: ${artifactsDir}`);
+      if (result.finalBranch) {
+        lines.push(`branch: ${result.finalBranch}`);
+      }
+      if (result.finalCommit) {
+        lines.push(`commit: ${result.finalCommit}`);
+      }
+      lines.push(`report: ${result.lastReportPath}`);
+      await ctx.reply(lines.join('\n'), { disable_notification: silentNotifications });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await ctx.reply(`❌ bootstrap failed: ${message}`, { disable_notification: silentNotifications });
+    } finally {
+      bootstrapAbortControllers.delete(userId);
     }
   });
 
