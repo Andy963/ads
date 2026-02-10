@@ -1,26 +1,12 @@
 import path from "node:path";
 
-import type { Input, ThreadEvent } from "../agents/protocol/types.js";
-import type { Usage } from "../agents/protocol/types.js";
-import { getExecAllowlistFromEnv } from "../utils/commandRunner.js";
-import { runCli } from "../agents/cli/cliRunner.js";
-import type { BootstrapSandbox } from "./sandbox.js";
+import type { ThreadEvent, Usage } from "../../agents/protocol/types.js";
+import { runCli } from "../../agents/cli/cliRunner.js";
+import { getExecAllowlistFromEnv } from "../../utils/commandRunner.js";
+import type { BootstrapSandbox } from "../sandbox.js";
 
-export type BootstrapAgentFeedback = {
-  iteration: number;
-  lintSummary: string;
-  testSummary: string;
-  diffSummary: string;
-  reviewSummary?: string;
-  reviewVerdictJson?: string;
-};
-
-export interface BootstrapAgentRunner {
-  reset(): void | Promise<void>;
-  runIteration(args: { iteration: number; goal: string; cwd: string; feedback: BootstrapAgentFeedback | null; instructions?: string; signal?: AbortSignal }): Promise<{
-    response: string;
-    usage: Usage | null;
-  }>;
+export interface BootstrapReviewerRunner {
+  runReview(args: { prompt: string; cwd: string; signal?: AbortSignal }): Promise<{ response: string; usage: Usage | null }>;
 }
 
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -56,71 +42,6 @@ function isThreadEvent(payload: unknown): payload is ThreadEvent {
   return true;
 }
 
-function inputToPrompt(input: Input): string {
-  if (typeof input === "string") {
-    return input;
-  }
-  if (!Array.isArray(input)) {
-    return String(input ?? "");
-  }
-  return input
-    .map((part) => {
-      const current = part as { type?: string; text?: string };
-      if (current.type === "text" && typeof current.text === "string") {
-        return current.text;
-      }
-      return "";
-    })
-    .join("\n")
-    .trim();
-}
-
-function buildBootstrapPrompt(args: { goal: string; feedback: BootstrapAgentFeedback | null; instructions?: string }): string {
-  const parts: string[] = [];
-  const instructions = String(args.instructions ?? "").trim();
-  if (instructions) {
-    parts.push(instructions);
-    parts.push("");
-  }
-  parts.push("You are running in a sandboxed git worktree.");
-  parts.push("Definition of Done: lint and test must pass.");
-  parts.push("");
-  parts.push("Goal:");
-  parts.push(args.goal.trim());
-  if (args.feedback) {
-    parts.push("");
-    parts.push(`Previous iteration feedback (iteration ${args.feedback.iteration}):`);
-    if (args.feedback.reviewSummary?.trim()) {
-      parts.push("");
-      parts.push("Review summary:");
-      parts.push(args.feedback.reviewSummary.trim());
-    }
-    if (args.feedback.reviewVerdictJson?.trim()) {
-      parts.push("");
-      parts.push("ReviewVerdict (JSON):");
-      parts.push(args.feedback.reviewVerdictJson.trim());
-    }
-    if (args.feedback.diffSummary.trim()) {
-      parts.push("");
-      parts.push("Diff summary:");
-      parts.push(args.feedback.diffSummary.trim());
-    }
-    if (args.feedback.lintSummary.trim()) {
-      parts.push("");
-      parts.push("Lint summary:");
-      parts.push(args.feedback.lintSummary.trim());
-    }
-    if (args.feedback.testSummary.trim()) {
-      parts.push("");
-      parts.push("Test summary:");
-      parts.push(args.feedback.testSummary.trim());
-    }
-  }
-  parts.push("");
-  parts.push("Please fix the issues and update the code. Do not run git push.");
-  return parts.join("\n").trim() + "\n";
-}
-
 function hasPathSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
 }
@@ -138,7 +59,7 @@ function assertAllowlisted(cmd: string, allowlist: string[] | null): void {
   }
 }
 
-export class CodexBootstrapAgentRunner implements BootstrapAgentRunner {
+export class CodexBootstrapReviewerRunner implements BootstrapReviewerRunner {
   private readonly sandbox: BootstrapSandbox;
   private readonly binary: string;
   private readonly model?: string;
@@ -152,12 +73,7 @@ export class CodexBootstrapAgentRunner implements BootstrapAgentRunner {
     this.env = options.env;
   }
 
-  reset(): void {
-    this.threadId = null;
-  }
-
-  async runIteration(args: { iteration: number; goal: string; cwd: string; feedback: BootstrapAgentFeedback | null; instructions?: string; signal?: AbortSignal }): Promise<{ response: string; usage: Usage | null }> {
-    const prompt = buildBootstrapPrompt({ goal: args.goal, feedback: args.feedback, instructions: args.instructions });
+  async runReview(args: { prompt: string; cwd: string; signal?: AbortSignal }): Promise<{ response: string; usage: Usage | null }> {
     const allowlist = getExecAllowlistFromEnv(this.env ?? process.env);
     assertAllowlisted(this.binary, allowlist);
 
@@ -166,7 +82,7 @@ export class CodexBootstrapAgentRunner implements BootstrapAgentRunner {
     if (useResume) {
       codexArgs.push("resume");
     }
-    codexArgs.push("--full-auto", "--json", "--skip-git-repo-check");
+    codexArgs.push("--json", "--skip-git-repo-check", "--sandbox", "read-only");
     if (this.model) {
       codexArgs.push("--model", this.model);
     }
@@ -190,7 +106,7 @@ export class CodexBootstrapAgentRunner implements BootstrapAgentRunner {
         args: spawn.args,
         cwd: spawn.cwd,
         env: spawn.env ? Object.fromEntries(Object.entries(spawn.env).filter(([, v]) => typeof v === "string")) as Record<string, string> : undefined,
-        stdinData: `${inputToPrompt(prompt)}\n`,
+        stdinData: `${String(args.prompt ?? "").trim()}\n`,
         signal: args.signal,
       },
       (parsed) => {
@@ -255,3 +171,4 @@ export class CodexBootstrapAgentRunner implements BootstrapAgentRunner {
     return { response: responseText.trim(), usage };
   }
 }
+

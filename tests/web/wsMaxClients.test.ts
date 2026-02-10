@@ -22,7 +22,7 @@ describe("web/server/ws/maxClients", () => {
   let wss: import("ws").WebSocketServer;
   const originalEnv = { ...process.env };
 
-  beforeEach(async () => {
+  beforeEach(async (t) => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-maxclients-"));
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-workspace-"));
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
@@ -79,9 +79,19 @@ describe("web/server/ws/maxClients", () => {
       authenticateRequest: () => ({ ok: true, userId: "test" }),
     });
 
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", () => resolve());
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.listen(0, "127.0.0.1", () => resolve());
+        server.once("error", reject);
+      });
+    } catch (error) {
+      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (code === "EPERM" || code === "EACCES") {
+        t.skip(`listen not permitted (${code})`);
+        return;
+      }
+      throw error;
+    }
     const addr = server.address();
     assert.ok(addr && typeof addr === "object");
     port = addr.port;
@@ -131,4 +141,3 @@ describe("web/server/ws/maxClients", () => {
     await new Promise<void>((resolve) => client.once("close", () => resolve()));
   });
 });
-

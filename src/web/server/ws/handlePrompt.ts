@@ -48,7 +48,10 @@ type ParsedBootstrapArgs = {
   allowNetwork: boolean;
   allowInstallDeps: boolean;
   maxIterations: number;
+  enableReview: boolean;
+  reviewRounds: number;
   model?: string;
+  reviewModel?: string;
 };
 
 function looksLikeGitUrl(value: string): boolean {
@@ -69,7 +72,7 @@ function parseBootstrapArgs(body: string): { ok: true; args: ParsedBootstrapArgs
   if (tokens.length === 0) {
     return {
       ok: false,
-      error: "用法: /bootstrap [--soft] [--no-install] [--no-network] [--max-iterations=N] [--model=MODEL] <repoPath|gitUrl> <goal...>",
+      error: "用法: /bootstrap [--soft] [--no-install] [--no-network] [--no-review] [--review-rounds=N] [--max-iterations=N] [--model=MODEL] [--review-model=MODEL] <repoPath|gitUrl> <goal...>",
     };
   }
 
@@ -78,6 +81,8 @@ function parseBootstrapArgs(body: string): { ok: true; args: ParsedBootstrapArgs
   let softSandbox = false;
   let allowInstallDeps = true;
   let allowNetwork = true;
+  let enableReview = true;
+  let reviewSpecified = false;
 
   for (const token of tokens) {
     if (token === "--soft") {
@@ -90,6 +95,16 @@ function parseBootstrapArgs(body: string): { ok: true; args: ParsedBootstrapArgs
     }
     if (token === "--no-network") {
       allowNetwork = false;
+      continue;
+    }
+    if (token === "--no-review") {
+      enableReview = false;
+      reviewSpecified = true;
+      continue;
+    }
+    if (token === "--review") {
+      enableReview = true;
+      reviewSpecified = true;
       continue;
     }
     if (token.startsWith("--")) {
@@ -120,6 +135,15 @@ function parseBootstrapArgs(body: string): { ok: true; args: ParsedBootstrapArgs
   const maxIterations = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.min(10, maxIterationsParsed)) : 10;
   const model = params.model ? String(params.model).trim() : undefined;
 
+  const reviewRoundsRaw = params["review-rounds"] ?? params.review_rounds ?? params.reviewRounds;
+  const reviewRoundsParsed = reviewRoundsRaw ? Number.parseInt(reviewRoundsRaw, 10) : 2;
+  const reviewRounds = Number.isFinite(reviewRoundsParsed) ? Math.max(1, Math.min(2, reviewRoundsParsed)) : 2;
+  const reviewModel = params["review-model"] ? String(params["review-model"]).trim() : undefined;
+
+  if (softSandbox && !reviewSpecified) {
+    enableReview = false;
+  }
+
   return {
     ok: true,
     args: {
@@ -130,6 +154,9 @@ function parseBootstrapArgs(body: string): { ok: true; args: ParsedBootstrapArgs
       allowInstallDeps,
       maxIterations,
       model: model && model.length > 0 ? model : undefined,
+      enableReview,
+      reviewRounds,
+      reviewModel: reviewModel && reviewModel.length > 0 ? reviewModel : undefined,
     },
   };
 }
@@ -387,6 +414,7 @@ export async function handlePromptMessage(deps: {
             allowInstallDeps: parsedArgs.args.allowInstallDeps,
             requireHardSandbox: hardSandbox,
             sandbox: { backend: hardSandbox ? "bwrap" : "none" },
+            review: { enabled: parsedArgs.args.enableReview, maxRounds: parsedArgs.args.reviewRounds, model: parsedArgs.args.reviewModel },
           },
           {
             agentRunner,

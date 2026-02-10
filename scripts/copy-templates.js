@@ -79,12 +79,13 @@ const requiredFiles = new Set([
   "task.md",
   "workflow.yaml",
 ]);
-const unexpectedDirs = entries.filter((entry) => entry.isDirectory());
+const allowedDirs = new Set(["skills"]);
+const unexpectedDirs = entries.filter((entry) => entry.isDirectory() && !allowedDirs.has(entry.name));
 if (unexpectedDirs.length > 0) {
   console.warn(
     `[copy-templates] Unexpected subdirectories in templates/: ${unexpectedDirs
       .map((entry) => entry.name)
-      .join(", ")}. Only files will be copied.`,
+      .join(", ")}.`,
   );
 }
 
@@ -106,6 +107,15 @@ for (const entry of entries) {
   const srcPath = path.join(SRC_DIR, entry.name);
   const destPath = path.join(DEST_DIR, entry.name);
   fs.copyFileSync(srcPath, destPath);
+}
+
+for (const entry of entries) {
+  if (!entry.isDirectory() || !allowedDirs.has(entry.name)) {
+    continue;
+  }
+  const srcPath = path.join(SRC_DIR, entry.name);
+  const destPath = path.join(DEST_DIR, entry.name);
+  fs.cpSync(srcPath, destPath, { recursive: true });
 }
 
 console.log(`[copy-templates] Templates copied to ${DEST_DIR}`);

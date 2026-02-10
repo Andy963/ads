@@ -63,13 +63,15 @@ export class BwrapSandbox implements BootstrapSandbox {
   private readonly sandboxHomeHost: string;
   private readonly sandboxTmpHost: string;
   private readonly allowNetwork: boolean;
+  private readonly worktreeWritable: boolean;
 
-  constructor(options: { rootDir: string; worktreeDir?: string; allowNetwork?: boolean }) {
+  constructor(options: { rootDir: string; worktreeDir?: string; allowNetwork?: boolean; worktreeWritable?: boolean }) {
     this.rootDir = safeRealpath(options.rootDir);
     this.worktreeDir = safeRealpath(options.worktreeDir ?? options.rootDir);
     this.sandboxHomeHost = path.join(this.rootDir, "sandbox", "home");
     this.sandboxTmpHost = path.join(this.rootDir, "sandbox", "tmp");
     this.allowNetwork = options.allowNetwork !== false;
+    this.worktreeWritable = options.worktreeWritable !== false;
     fs.mkdirSync(this.sandboxHomeHost, { recursive: true });
     fs.mkdirSync(this.sandboxTmpHost, { recursive: true });
   }
@@ -116,7 +118,11 @@ export class BwrapSandbox implements BootstrapSandbox {
 
     args.push("--proc", "/proc", "--dev", "/dev");
 
-    args.push("--bind", this.worktreeDir, "/workspace");
+    if (this.worktreeWritable) {
+      args.push("--bind", this.worktreeDir, "/workspace");
+    } else {
+      args.push("--ro-bind", this.worktreeDir, "/workspace");
+    }
 
     args.push("--dir", "/etc");
     if (fs.existsSync("/etc/resolv.conf")) {
@@ -128,12 +134,15 @@ export class BwrapSandbox implements BootstrapSandbox {
 
     args.push("--bind", this.sandboxTmpHost, "/tmp");
 
+    args.push("--dir", "/home");
+    args.push("--bind", this.sandboxHomeHost, "/home");
+
     args.push("--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-    args.push("--setenv", "HOME", "/workspace/sandbox/home");
+    args.push("--setenv", "HOME", "/home");
     args.push("--setenv", "TMPDIR", "/tmp");
-    args.push("--setenv", "XDG_CACHE_HOME", "/workspace/sandbox/home/.cache");
-    args.push("--setenv", "XDG_CONFIG_HOME", "/workspace/sandbox/home/.config");
-    args.push("--setenv", "XDG_DATA_HOME", "/workspace/sandbox/home/.local/share");
+    args.push("--setenv", "XDG_CACHE_HOME", "/home/.cache");
+    args.push("--setenv", "XDG_CONFIG_HOME", "/home/.config");
+    args.push("--setenv", "XDG_DATA_HOME", "/home/.local/share");
 
     if (request.env) {
       for (const [key, value] of Object.entries(request.env)) {

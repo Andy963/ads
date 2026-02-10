@@ -420,6 +420,8 @@ async function main() {
     let softSandbox = false;
     let allowInstallDeps = true;
     let allowNetwork = true;
+    let enableReview = true;
+    let reviewSpecified = false;
     for (const token of rawArgs) {
       if (token === '--soft') {
         softSandbox = true;
@@ -431,6 +433,16 @@ async function main() {
       }
       if (token === '--no-network') {
         allowNetwork = false;
+        continue;
+      }
+      if (token === '--no-review') {
+        enableReview = false;
+        reviewSpecified = true;
+        continue;
+      }
+      if (token === '--review') {
+        enableReview = true;
+        reviewSpecified = true;
         continue;
       }
       if (token.startsWith('--')) {
@@ -462,6 +474,14 @@ async function main() {
     const maxIterationsParsed = maxIterationsRaw ? Number.parseInt(maxIterationsRaw, 10) : 10;
     const maxIterations = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.min(10, maxIterationsParsed)) : 10;
     const model = params.model ? String(params.model).trim() : undefined;
+    const reviewRoundsRaw = params['review-rounds'] ?? params.review_rounds ?? params.reviewRounds;
+    const reviewRoundsParsed = reviewRoundsRaw ? Number.parseInt(reviewRoundsRaw, 10) : 2;
+    const reviewRounds = Number.isFinite(reviewRoundsParsed) ? Math.max(1, Math.min(2, reviewRoundsParsed)) : 2;
+    const reviewModel = params['review-model'] ? String(params['review-model']).trim() : undefined;
+
+    if (softSandbox && !reviewSpecified) {
+      enableReview = false;
+    }
 
     const cwd = directoryManager.getUserCwd(userId);
     const project = looksLikeGitUrl(projectRef)
@@ -499,6 +519,7 @@ async function main() {
           allowInstallDeps,
           requireHardSandbox: hardSandbox,
           sandbox: { backend: hardSandbox ? 'bwrap' : 'none' },
+          review: { enabled: enableReview, maxRounds: reviewRounds, model: reviewModel && reviewModel.length > 0 ? reviewModel : undefined },
         },
         {
           agentRunner,

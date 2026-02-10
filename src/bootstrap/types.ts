@@ -26,6 +26,18 @@ export type BootstrapCommitSpec = {
   messageTemplate: string;
 };
 
+export type BootstrapReviewSpec = {
+  enabled: boolean;
+  maxRounds: number;
+  model?: string;
+};
+
+export type BootstrapSkillsSpec = {
+  enabled: boolean;
+  executor: string;
+  reviewer: string;
+};
+
 export type BootstrapRunSpec = {
   project: BootstrapProjectRef;
   goal: string;
@@ -36,6 +48,8 @@ export type BootstrapRunSpec = {
   sandbox: BootstrapSandboxSpec;
   worktree: BootstrapWorktreeSpec;
   commit: BootstrapCommitSpec;
+  review: BootstrapReviewSpec;
+  skills: BootstrapSkillsSpec;
   recipe?: BootstrapRecipe;
 };
 
@@ -47,6 +61,15 @@ export type BootstrapIterationOutcome = {
   testReport: VerificationReport | null;
   ok: boolean;
   strategy: "normal_fix" | "clean_deps" | "restart_agent";
+  review?: {
+    enabled: boolean;
+    ok: boolean;
+    summary: string;
+    round: number;
+    verdictPath: string | null;
+    rawResponsePath: string | null;
+    attempts: number;
+  } | null;
 };
 
 export type BootstrapRunContext = {
@@ -67,6 +90,7 @@ export type BootstrapIterationProgress = {
   diffPatchPath: string | null;
   lint: { ok: boolean; summary: string };
   test: { ok: boolean; summary: string };
+  review?: { ok: boolean; summary: string } | null;
 };
 
 export type BootstrapRunResult = {
@@ -103,6 +127,18 @@ export function normalizeBootstrapRunSpec(spec: Partial<BootstrapRunSpec> & Pick
   const messageTemplate = spec.commit?.messageTemplate?.trim() || "bootstrap: ${goal}";
   const commit: BootstrapCommitSpec = { enabled: commitEnabled, messageTemplate };
 
+  const reviewEnabled = spec.review?.enabled === true;
+  const maxRoundsRaw =
+    typeof spec.review?.maxRounds === "number" && Number.isFinite(spec.review.maxRounds) ? Math.floor(spec.review.maxRounds) : 2;
+  const maxRounds = Math.max(1, Math.min(2, maxRoundsRaw));
+  const reviewModel = spec.review?.model ? String(spec.review.model).trim() : undefined;
+  const review: BootstrapReviewSpec = { enabled: reviewEnabled, maxRounds, model: reviewModel && reviewModel.length > 0 ? reviewModel : undefined };
+
+  const skillsEnabled = spec.skills?.enabled !== false;
+  const executorSkill = spec.skills?.executor?.trim() || "bootstrap-executor";
+  const reviewerSkill = spec.skills?.reviewer?.trim() || "bootstrap-reviewer";
+  const skills: BootstrapSkillsSpec = { enabled: skillsEnabled, executor: executorSkill, reviewer: reviewerSkill };
+
   const goal = String(spec.goal ?? "").trim();
   if (!goal) {
     throw new Error("goal is required");
@@ -118,6 +154,8 @@ export function normalizeBootstrapRunSpec(spec: Partial<BootstrapRunSpec> & Pick
     sandbox,
     worktree,
     commit,
+    review,
+    skills,
     recipe: spec.recipe,
   };
 }

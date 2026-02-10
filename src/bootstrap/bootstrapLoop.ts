@@ -11,6 +11,10 @@ import type { BootstrapAgentRunner, BootstrapAgentFeedback } from "./agentRunner
 import { BwrapSandbox, NoopSandbox, type BootstrapSandbox } from "./sandbox.js";
 import { stageSafeBootstrapChanges, commitBootstrapChanges } from "./gitCommitter.js";
 import { resolveBootstrapRecipe } from "./recipeResolver.js";
+import { SkillLoader } from "./skills/skillLoader.js";
+import { ReviewGate } from "./review/reviewGate.js";
+import { parseReviewResponse, type ReviewResponse, type ReviewVerdict } from "./review/schemas.js";
+import { CodexBootstrapReviewerRunner, type BootstrapReviewerRunner } from "./review/reviewerRunner.js";
 import {
   normalizeBootstrapRunSpec,
   type BootstrapIterationOutcome,
@@ -131,6 +135,7 @@ export async function runBootstrapLoop(
   rawSpec: Partial<BootstrapRunSpec> & Pick<BootstrapRunSpec, "project" | "goal">,
   deps: {
     agentRunner: BootstrapAgentRunner;
+    reviewerRunner?: BootstrapReviewerRunner;
     logger?: Logger;
     signal?: AbortSignal;
     stateDir?: string;
@@ -193,6 +198,33 @@ export async function runBootstrapLoop(
   const runner = createBootstrapRunCommand({ sandbox, env, maxOutputBytes: 1024 * 1024 });
   const artifacts = new BootstrapArtifactStore(worktree.artifactsDir);
 
+  const workspaceRoot = spec.project.kind === "local_path" ? spec.project.value : null;
+  const skillLoader = new SkillLoader({ logger });
+  const executorSkill = spec.skills.enabled ? skillLoader.load(spec.skills.executor, { workspaceRoot }).text : "";
+  const reviewerSkill = spec.skills.enabled ? skillLoader.load(spec.skills.reviewer, { workspaceRoot }).text : "";
+
+  const reviewerRunner: BootstrapReviewerRunner | null = (() => {
+    if (!spec.review.enabled) {
+      return null;
+    }
+    if (deps.reviewerRunner) {
+      return deps.reviewerRunner;
+    }
+    if (sandbox.backend !== "bwrap") {
+      throw new Error("review gate requires hard sandbox (sandbox.backend=bwrap) unless reviewerRunner is injected");
+    }
+    const reviewSandbox = new BwrapSandbox({
+      rootDir: worktree.bootstrapRoot,
+      worktreeDir: worktree.worktreeDir,
+      allowNetwork: spec.allowNetwork,
+      worktreeWritable: false,
+    });
+    reviewSandbox.ensureAvailable();
+    return new CodexBootstrapReviewerRunner({ sandbox: reviewSandbox, model: spec.review.model, env });
+  })();
+
+  const reviewGate: ReviewGate | null = reviewerRunner ? new ReviewGate({ runner: reviewerRunner, skillText: reviewerSkill, logger }) : null;
+
   const strategyLog: string[] = [];
   const outcomes: BootstrapIterationOutcome[] = [];
 
@@ -200,6 +232,8 @@ export async function runBootstrapLoop(
   let strategyChanges = 0;
   let sameFailureStreak = 0;
   let lastSignature = "";
+  let reviewRoundsUsed = 0;
+  let pendingReview: { verdict: ReviewVerdict; rawResponse: string; response: ReviewResponse | null; responseRaw: string } | null = null;
 
   const installOnce = async (): Promise<VerificationReport | null> => {
     if (!spec.allowInstallDeps) {
@@ -233,11 +267,19 @@ export async function runBootstrapLoop(
               }
             })()
           : "";
+        const reviewSummary = pendingReview
+          ? `rejected (risk=${pendingReview.verdict.riskLevel} blockingIssues=${pendingReview.verdict.blockingIssues.length})`
+          : last.review?.enabled
+            ? last.review.summary
+            : "";
+        const reviewVerdictJson = pendingReview ? JSON.stringify(pendingReview.verdict, null, 2) : "";
         return {
           iteration: last.iteration,
           lintSummary: lint.summary,
           testSummary: test.summary,
           diffSummary,
+          reviewSummary,
+          reviewVerdictJson: reviewVerdictJson ? `\`\`\`json\n${reviewVerdictJson}\n\`\`\`` : "",
         };
       })();
 
@@ -245,8 +287,18 @@ export async function runBootstrapLoop(
         feedback.diffSummary += `\n\n[Strategy: ${strategy}${strategy === "clean_deps" ? " — dependencies were cleaned and reinstalled" : " — agent context was reset"}]`;
       }
 
+      let agentResponseText = "";
       try {
-        await deps.agentRunner.runIteration({ iteration, goal: spec.goal, cwd: worktree.worktreeDir, feedback, signal: deps.signal });
+        const result = await deps.agentRunner.runIteration({
+          iteration,
+          goal: spec.goal,
+          cwd: worktree.worktreeDir,
+          feedback,
+          instructions: executorSkill,
+          signal: deps.signal,
+        });
+        agentResponseText = result.response ?? "";
+        artifacts.writeAgentResponse(iteration, agentResponseText);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.warn(`[Bootstrap] agent iteration failed iter=${iteration} err=${message}`);
@@ -256,6 +308,15 @@ export async function runBootstrapLoop(
           fs.writeFileSync(errPath, message, "utf8");
         } catch {
           // ignore
+        }
+      }
+
+      if (pendingReview) {
+        pendingReview.responseRaw = agentResponseText;
+        const parsed = parseReviewResponse(agentResponseText);
+        if (parsed.ok) {
+          pendingReview.response = parsed.response;
+          artifacts.writeReviewResponse(iteration, parsed.response);
         }
       }
 
@@ -300,8 +361,7 @@ export async function runBootstrapLoop(
         testSummary = summarizeReport(testReport);
       }
 
-      const ok = lintSummary.ok && testSummary.ok;
-
+      const verificationOk = lintSummary.ok && testSummary.ok;
       const signature = `${lintSummary.signature}::${testSummary.signature}`;
       if (signature === lastSignature) {
         sameFailureStreak += 1;
@@ -312,7 +372,7 @@ export async function runBootstrapLoop(
 
       const diffSummary = buildDiffSummary(changedFiles, patch);
 
-      if (!ok) {
+      if (!verificationOk) {
         if (patch.trim().length === 0) {
           sameFailureStreak = Math.max(sameFailureStreak, 2);
         }
@@ -331,6 +391,56 @@ export async function runBootstrapLoop(
         }
       }
 
+      let reviewOutcome: BootstrapIterationOutcome["review"] = null;
+      let reviewOk = true;
+      if (verificationOk && spec.review.enabled && reviewGate) {
+        const round = reviewRoundsUsed + 1;
+        const diffLimit = 200_000;
+        const diffTruncated = patch.length > diffLimit;
+        const input = {
+          goal: spec.goal,
+          changedFiles,
+          diffPatch: patch,
+          diffPatchTruncated: diffTruncated,
+          lintSummary: lintSummary.summary,
+          testSummary: testSummary.summary,
+          previousVerdict: pendingReview?.verdict ?? null,
+          previousResponse: pendingReview?.response ?? null,
+          previousResponseRaw: pendingReview?.responseRaw ?? "",
+          round,
+          maxRounds: spec.review.maxRounds,
+        } as const;
+
+        const reviewResult = await reviewGate.run(input, { cwd: worktree.worktreeDir, signal: deps.signal });
+        reviewRoundsUsed = round;
+
+        const verdictPath = artifacts.writeReviewVerdict(iteration, reviewResult.verdict);
+        const rawResponsePath = artifacts.writeReviewRawResponse(iteration, reviewResult.rawResponse);
+
+        const summary = `approve=${reviewResult.verdict.approve} risk=${reviewResult.verdict.riskLevel} blocking=${reviewResult.verdict.blockingIssues.length} nonBlocking=${reviewResult.verdict.nonBlockingSuggestions.length}`;
+        reviewOk = reviewResult.verdict.approve;
+        reviewOutcome = {
+          enabled: true,
+          ok: reviewOk,
+          summary,
+          round,
+          verdictPath,
+          rawResponsePath,
+          attempts: reviewResult.attempts,
+        };
+
+        if (reviewOk) {
+          pendingReview = null;
+        } else {
+          pendingReview = { verdict: reviewResult.verdict, rawResponse: reviewResult.rawResponse, response: null, responseRaw: "" };
+          if (round >= spec.review.maxRounds) {
+            throw new Error(`review rejected after maxRounds=${spec.review.maxRounds}`);
+          }
+        }
+      }
+
+      const ok = verificationOk && reviewOk;
+
       const outcome: BootstrapIterationOutcome = {
         iteration,
         diffPatchPath,
@@ -339,6 +449,7 @@ export async function runBootstrapLoop(
         testReport,
         ok,
         strategy,
+        review: reviewOutcome,
       };
       outcomes.push(outcome);
       artifacts.writeIteration(outcome);
@@ -352,6 +463,7 @@ export async function runBootstrapLoop(
           diffPatchPath,
           lint: { ok: lintSummary.ok, summary: lintSummary.summary },
           test: { ok: testSummary.ok, summary: testSummary.summary },
+          review: reviewOutcome ? { ok: reviewOutcome.ok, summary: reviewOutcome.summary } : null,
         };
         try {
           await deps.hooks.onIteration(progress, runCtx);
@@ -360,7 +472,7 @@ export async function runBootstrapLoop(
         }
       }
 
-      logger.info(`[Bootstrap] iter=${iteration} ok=${ok} changedFiles=${changedFiles.length} lint=${lintSummary.ok} test=${testSummary.ok}`);
+      logger.info(`[Bootstrap] iter=${iteration} ok=${ok} changedFiles=${changedFiles.length} lint=${lintSummary.ok} test=${testSummary.ok}${reviewOutcome ? ` review=${reviewOutcome.ok}` : ""}`);
       logger.debug(`[Bootstrap] iter=${iteration} diffSummary:\n${diffSummary}`);
 
       if (ok) {

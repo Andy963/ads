@@ -57,6 +57,30 @@ export class BootstrapArtifactStore {
     return filePath;
   }
 
+  writeAgentResponse(iteration: number, response: string): string {
+    const filePath = path.join(this.iterationDir(iteration), "agent_response.txt");
+    writeUtf8(filePath, String(response ?? "").trimEnd() + "\n");
+    return filePath;
+  }
+
+  writeReviewVerdict(iteration: number, verdict: unknown): string {
+    const filePath = path.join(this.iterationDir(iteration), "review_verdict.json");
+    writeUtf8(filePath, safeStringify(verdict));
+    return filePath;
+  }
+
+  writeReviewRawResponse(iteration: number, raw: string): string {
+    const filePath = path.join(this.iterationDir(iteration), "review_raw.txt");
+    writeUtf8(filePath, String(raw ?? "").trimEnd() + "\n");
+    return filePath;
+  }
+
+  writeReviewResponse(iteration: number, response: unknown): string {
+    const filePath = path.join(this.iterationDir(iteration), "review_response.json");
+    writeUtf8(filePath, safeStringify(response));
+    return filePath;
+  }
+
   writeStrategyLog(lines: string[]): void {
     const filePath = path.join(this.rootDir, "strategy.log");
     const content = lines.map((l) => l.trimEnd()).join("\n").trimEnd() + "\n";
@@ -69,4 +93,3 @@ export class BootstrapArtifactStore {
     return filePath;
   }
 }
-

@@ -3,7 +3,7 @@ import { nextTick } from "vue";
 import type { AppContext, PathValidateResponse, ProjectTab } from "../controller";
 import type { ChatActions } from "../chat";
 
-import { deriveProjectNameFromPath, resolveDefaultProjectName } from "./projectName";
+import { deriveProjectNameFromPath } from "./projectName";
 import type { ProjectDeps } from "./types";
 
 const PROJECTS_KEY = "ADS_WEB_PROJECTS";
@@ -76,7 +76,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
             const path = String(raw.path ?? "").trim();
             const rawName = String(raw.name ?? "").trim();
             const derivedName = deriveProjectNameFromPath(path);
-            const name = sessionId === "default" ? resolveDefaultProjectName({ name: rawName, path }) : rawName || derivedName;
+            const name = sessionId === "default" ? derivedName : rawName || derivedName;
             const chatSessionId = String(raw.chatSessionId ?? "").trim() || "main";
             if (!sessionId) return null;
             const base = createProjectTab({ path, name, sessionId, initialized: Boolean(raw.initialized) || !path });
@@ -85,12 +85,15 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
           .filter((p): p is ProjectTab => Boolean(p))
       : [];
 
-    if (normalized.length === 0) {
-      normalized.push(createProjectTab({ path: "", initialized: true }));
+    if (!normalized.some((p) => p.id === "default")) {
+      normalized.unshift(createProjectTab({ path: "", initialized: true }));
     }
 
     const storedActive = String(localStorage.getItem(ACTIVE_PROJECT_KEY) ?? "").trim();
-    const initialActive = normalized.some((p) => p.id === storedActive) ? storedActive : normalized[0]!.id;
+    const initialActive =
+      normalized.some((p) => p.id === storedActive)
+        ? storedActive
+        : normalized.find((p) => p.id !== "default")?.id ?? "default";
     activeProjectId.value = initialActive;
     projects.value = normalized.map((p) => ({ ...p, expanded: p.id === initialActive }));
     persistProjects();
@@ -114,10 +117,15 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
       // Keep a single explicit default entry for UI affordances.
       const prevDefault = projects.value.find((p) => p.id === "default") ?? null;
-      const defaultPath = prevDefault ? String(prevDefault.path ?? "").trim() : "";
+      const defaultPath =
+        (prevDefault ? String(prevDefault.path ?? "").trim() : "") ||
+        (activeProjectId.value === "default" ? String(workspacePath.value ?? "").trim() : "");
       const defaultBase = createProjectTab({ path: defaultPath, sessionId: "default", initialized: true });
-      const defaultChatSessionId = String(prevDefault?.chatSessionId ?? "").trim() || defaultBase.chatSessionId;
-      const defaultName = resolveDefaultProjectName({ name: prevDefault?.name, path: defaultPath });
+      const defaultChatSessionId =
+        String(prevDefault?.chatSessionId ?? "").trim() ||
+        (activeProjectId.value === "default" ? String(activeRuntime.value.chatSessionId ?? "").trim() : "") ||
+        defaultBase.chatSessionId;
+      const defaultName = deriveProjectNameFromPath(defaultPath);
       next.push({
         ...defaultBase,
         name: defaultName,

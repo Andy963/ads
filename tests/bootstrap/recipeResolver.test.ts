@@ -47,7 +47,6 @@ test("resolves a Python recipe from uv.lock + ruff config", () => {
   assert.equal(resolved.detected.kind, "python");
   assert.equal(resolved.detected.installer, "uv");
   assert.deepEqual(resolved.recipe.install.map((c) => [c.cmd, c.args]), [["uv", ["sync", "--frozen"]]]);
-  assert.deepEqual(resolved.recipe.lint.map((c) => [c.cmd, c.args]), [["ruff", ["check", "."]]]);
-  assert.deepEqual(resolved.recipe.test.map((c) => [c.cmd, c.args]), [["pytest", []]]);
+  assert.deepEqual(resolved.recipe.lint.map((c) => [c.cmd, c.args]), [["uv", ["run", "ruff", "check", "."]]]);
+  assert.deepEqual(resolved.recipe.test.map((c) => [c.cmd, c.args]), [["uv", ["run", "pytest"]]]);
 });
-

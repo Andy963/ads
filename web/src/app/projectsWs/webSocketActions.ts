@@ -127,6 +127,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   };
 
   const resolveProjectIdentity = async (project: ProjectTab): Promise<{ sessionId: string; path: string } | null> => {
+    if (String(project.id ?? "").trim() === "default") {
+      return null;
+    }
     const rawPath = String(project.path ?? "").trim();
     if (!rawPath) {
       return null;

@@ -31,7 +31,7 @@
     "postbuild": "node scripts/chmod-bins.js",
     "start": "node dist/src/web/server.js",
     "dev": "tsx watch src/web/server.ts",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test tests/**/*.test.ts",
     "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
     "web": "node dist/src/web/server.js",
     "web:init-admin": "tsx src/web/auth/initAdminCli.ts",

@@ -119,7 +119,9 @@ describe("Project switch clears chat composer draft", () => {
 
     const projectRows = wrapper.findAll("button.projectRow");
     expect(projectRows.length).toBeGreaterThanOrEqual(2);
-    await projectRows[1]!.trigger("click");
+    const rowB = projectRows.find((row) => row.text().includes("B")) ?? null;
+    expect(rowB).toBeTruthy();
+    await rowB!.trigger("click");
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
