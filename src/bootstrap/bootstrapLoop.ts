@@ -145,6 +145,7 @@ export async function runBootstrapLoop(
     project: spec.project,
     branchPrefix: spec.worktree.branchPrefix,
     stateDir: deps.stateDir,
+    signal: deps.signal,
   });
 
   const runCtx: BootstrapRunContext = {
