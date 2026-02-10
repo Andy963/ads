@@ -124,7 +124,11 @@ export async function stageSafeBootstrapChanges(
       continue;
     }
 
-    const stat = fs.statSync(abs);
+    const stat = fs.lstatSync(abs);
+    if (stat.isSymbolicLink()) {
+      skipped.push({ path: normalized, reason: "symlink" });
+      continue;
+    }
     if (!stat.isFile()) {
       skipped.push({ path: normalized, reason: "not_a_file" });
       continue;

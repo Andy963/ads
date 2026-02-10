@@ -43,10 +43,30 @@ export type BootstrapIterationOutcome = {
   iteration: number;
   diffPatchPath: string | null;
   installReport: VerificationReport | null;
-  lintReport: VerificationReport;
+  lintReport: VerificationReport | null;
   testReport: VerificationReport | null;
   ok: boolean;
   strategy: "normal_fix" | "clean_deps" | "restart_agent";
+};
+
+export type BootstrapRunContext = {
+  projectId: string;
+  runId: string;
+  bootstrapRoot: string;
+  repoDir: string;
+  worktreeDir: string;
+  artifactsDir: string;
+  branchName: string;
+};
+
+export type BootstrapIterationProgress = {
+  iteration: number;
+  ok: boolean;
+  strategy: BootstrapIterationOutcome["strategy"];
+  changedFiles: string[];
+  diffPatchPath: string | null;
+  lint: { ok: boolean; summary: string };
+  test: { ok: boolean; summary: string };
 };
 
 export type BootstrapRunResult = {
@@ -57,6 +77,12 @@ export type BootstrapRunResult = {
   finalBranch?: string;
   lastReportPath: string;
   error?: string;
+};
+
+export type BootstrapLoopHooks = {
+  onStarted?: (ctx: BootstrapRunContext, detail: { spec: BootstrapRunSpec; recipe: BootstrapRecipe }) => void | Promise<void>;
+  onIteration?: (progress: BootstrapIterationProgress, ctx: BootstrapRunContext) => void | Promise<void>;
+  onFinished?: (result: BootstrapRunResult, ctx: BootstrapRunContext) => void | Promise<void>;
 };
 
 export function normalizeBootstrapRunSpec(spec: Partial<BootstrapRunSpec> & Pick<BootstrapRunSpec, "project" | "goal">): BootstrapRunSpec {

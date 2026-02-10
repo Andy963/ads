@@ -44,20 +44,6 @@ function safeRealpath(targetPath: string): string {
   }
 }
 
-function toSandboxPath(rootDir: string, hostPath: string): string {
-  const root = safeRealpath(rootDir);
-  const candidate = safeRealpath(hostPath);
-  const rel = path.relative(root, candidate);
-  if (!rel || rel === ".") {
-    return "/workspace";
-  }
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`path escapes sandbox root: ${candidate}`);
-  }
-  const parts = rel.split(path.sep).filter(Boolean);
-  return path.posix.join("/workspace", ...parts);
-}
-
 export class NoopSandbox implements BootstrapSandbox {
   readonly backend: SandboxBackend = "none";
 
@@ -73,12 +59,14 @@ export class NoopSandbox implements BootstrapSandbox {
 export class BwrapSandbox implements BootstrapSandbox {
   readonly backend: SandboxBackend = "bwrap";
   private readonly rootDir: string;
+  private readonly worktreeDir: string;
   private readonly sandboxHomeHost: string;
   private readonly sandboxTmpHost: string;
   private readonly allowNetwork: boolean;
 
-  constructor(options: { rootDir: string; allowNetwork?: boolean }) {
+  constructor(options: { rootDir: string; worktreeDir?: string; allowNetwork?: boolean }) {
     this.rootDir = safeRealpath(options.rootDir);
+    this.worktreeDir = safeRealpath(options.worktreeDir ?? options.rootDir);
     this.sandboxHomeHost = path.join(this.rootDir, "sandbox", "home");
     this.sandboxTmpHost = path.join(this.rootDir, "sandbox", "tmp");
     this.allowNetwork = options.allowNetwork !== false;
@@ -93,10 +81,24 @@ export class BwrapSandbox implements BootstrapSandbox {
     }
   }
 
-  wrapSpawn(request: SandboxSpawnRequest): SandboxSpawnSpec {
-    const sandboxCwd = toSandboxPath(this.rootDir, request.cwd);
+  private toSandboxPath(hostPath: string): string {
+    const candidate = safeRealpath(hostPath);
+    const rel = path.relative(this.worktreeDir, candidate);
+    if (!rel || rel === ".") {
+      return "/workspace";
+    }
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new Error(`path escapes sandbox root: ${candidate}`);
+    }
+    const parts = rel.split(path.sep).filter(Boolean);
+    return path.posix.join("/workspace", ...parts);
+  }
 
-    const args: string[] = ["--die-with-parent"];
+  wrapSpawn(request: SandboxSpawnRequest): SandboxSpawnSpec {
+    const sandboxCwd = this.toSandboxPath(request.cwd);
+
+    const args: string[] = ["--die-with-parent", "--clearenv", "--unshare-pid", "--unshare-ipc", "--unshare-uts"];
+
     if (!this.allowNetwork) {
       args.push("--unshare-net");
     }
@@ -114,10 +116,8 @@ export class BwrapSandbox implements BootstrapSandbox {
 
     args.push("--proc", "/proc", "--dev", "/dev");
 
-    // Project boundary: only the bootstrap root is writable.
-    args.push("--bind", this.rootDir, "/workspace");
+    args.push("--bind", this.worktreeDir, "/workspace");
 
-    // Minimal /etc to enable networking + TLS without exposing all host config files.
     args.push("--dir", "/etc");
     if (fs.existsSync("/etc/resolv.conf")) {
       args.push("--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf");
@@ -126,15 +126,23 @@ export class BwrapSandbox implements BootstrapSandbox {
       args.push("--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs");
     }
 
-    // Keep temp + home inside the project boundary.
     args.push("--bind", this.sandboxTmpHost, "/tmp");
+
+    args.push("--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     args.push("--setenv", "HOME", "/workspace/sandbox/home");
     args.push("--setenv", "TMPDIR", "/tmp");
     args.push("--setenv", "XDG_CACHE_HOME", "/workspace/sandbox/home/.cache");
     args.push("--setenv", "XDG_CONFIG_HOME", "/workspace/sandbox/home/.config");
     args.push("--setenv", "XDG_DATA_HOME", "/workspace/sandbox/home/.local/share");
 
-    // Run inside the worktree path within the sandbox.
+    if (request.env) {
+      for (const [key, value] of Object.entries(request.env)) {
+        if (typeof value === "string") {
+          args.push("--setenv", key, value);
+        }
+      }
+    }
+
     args.push("--chdir", sandboxCwd);
 
     args.push("--", request.cmd, ...request.args);
@@ -143,7 +151,6 @@ export class BwrapSandbox implements BootstrapSandbox {
       cmd: "bwrap",
       args,
       cwd: this.rootDir,
-      env: request.env,
     };
   }
 }

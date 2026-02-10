@@ -2,10 +2,19 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import type { BootstrapProjectRef } from "./types.js";
+
 function sanitizeSegment(value: string, maxLen = 48): string {
   const normalized = String(value ?? "").trim() || "project";
   const sanitized = normalized.replace(/[^a-zA-Z0-9._-]+/g, "_");
   return sanitized.length > maxLen ? sanitized.slice(0, maxLen) : sanitized;
+}
+
+function slugFromGitUrl(url: string): string {
+  const normalized = String(url ?? "").trim().replace(/[#?].*$/, "");
+  const base = normalized.split("/").filter(Boolean).slice(-1)[0] ?? "project";
+  const withoutGit = base.toLowerCase().endsWith(".git") ? base.slice(0, -4) : base;
+  return sanitizeSegment(withoutGit || base || "project");
 }
 
 function safeRealpath(targetPath: string): string {
@@ -66,3 +75,28 @@ export function deriveBootstrapProjectId(projectPath: string): { projectId: stri
   return { projectId: `${slug}-${hash}`, identity, originUrl, resolvedPath };
 }
 
+export function deriveBootstrapProjectIdForGitUrl(url: string): { projectId: string; identity: string } {
+  const identity = String(url ?? "").trim();
+  if (!identity) {
+    throw new Error("git url is required");
+  }
+  const hash = crypto.createHash("sha256").update(identity).digest("hex").slice(0, 12);
+  const slug = slugFromGitUrl(identity);
+  return { projectId: `${slug}-${hash}`, identity };
+}
+
+export function normalizeBootstrapProjectRef(project: BootstrapProjectRef): { project: BootstrapProjectRef; projectId: string; identity: string } {
+  if (project.kind === "git_url") {
+    const url = String(project.value ?? "").trim();
+    const derived = deriveBootstrapProjectIdForGitUrl(url);
+    return { project: { kind: "git_url", value: url }, projectId: derived.projectId, identity: derived.identity };
+  }
+
+  const rawPath = String(project.value ?? "").trim();
+  const derived = deriveBootstrapProjectId(rawPath);
+  return {
+    project: { kind: "local_path", value: derived.resolvedPath },
+    projectId: derived.projectId,
+    identity: derived.identity,
+  };
+}

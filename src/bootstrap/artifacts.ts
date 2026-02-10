@@ -42,7 +42,9 @@ export class BootstrapArtifactStore {
       writeUtf8(path.join(dir, "install.json"), safeStringify(outcome.installReport));
     }
 
-    writeUtf8(path.join(dir, "lint.json"), safeStringify(outcome.lintReport));
+    if (outcome.lintReport) {
+      writeUtf8(path.join(dir, "lint.json"), safeStringify(outcome.lintReport));
+    }
 
     if (outcome.testReport) {
       writeUtf8(path.join(dir, "test.json"), safeStringify(outcome.testReport));

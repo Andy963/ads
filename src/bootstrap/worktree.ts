@@ -5,7 +5,7 @@ import path from "node:path";
 import { getExecAllowlistFromEnv, runCommand } from "../utils/commandRunner.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import type { BootstrapProjectRef } from "./types.js";
-import { deriveBootstrapProjectId } from "./projectId.js";
+import { normalizeBootstrapProjectRef } from "./projectId.js";
 
 export type BootstrapWorktree = {
   projectId: string;
@@ -22,20 +22,6 @@ function sanitizeSegment(value: string, maxLen = 48): string {
   const normalized = String(value ?? "").trim() || "bootstrap";
   const sanitized = normalized.replace(/[^a-zA-Z0-9._-]+/g, "_");
   return sanitized.length > maxLen ? sanitized.slice(0, maxLen) : sanitized;
-}
-
-function slugFromGitUrl(url: string): string {
-  const normalized = String(url ?? "").trim().replace(/[#?].*$/, "");
-  const base = normalized.split("/").filter(Boolean).slice(-1)[0] ?? "repo";
-  const withoutGit = base.toLowerCase().endsWith(".git") ? base.slice(0, -4) : base;
-  return sanitizeSegment(withoutGit || base || "repo");
-}
-
-function deriveProjectIdFromGitUrl(url: string): { projectId: string; identity: string } {
-  const identity = String(url ?? "").trim();
-  const hash = crypto.createHash("sha256").update(identity).digest("hex").slice(0, 12);
-  const slug = slugFromGitUrl(identity);
-  return { projectId: `${slug}-${hash}`, identity };
 }
 
 function buildRunId(nowMs: number): string {
@@ -77,22 +63,13 @@ export async function prepareBootstrapWorktree(options: {
   const nowMs = typeof options.nowMs === "number" && Number.isFinite(options.nowMs) ? Math.floor(options.nowMs) : Date.now();
   const runId = buildRunId(nowMs);
 
-  const source = (() => {
-    if (options.project.kind === "git_url") {
-      const url = String(options.project.value ?? "").trim();
-      if (!url) {
-        throw new Error("project.value is required for git_url");
-      }
-      const derived = deriveProjectIdFromGitUrl(url);
-      return { kind: "git_url" as const, value: url, projectId: derived.projectId, identity: derived.identity };
-    }
-    const rawPath = String(options.project.value ?? "").trim();
-    if (!rawPath) {
-      throw new Error("project.value is required for local_path");
-    }
-    const derived = deriveBootstrapProjectId(rawPath);
-    return { kind: "local_path" as const, value: derived.resolvedPath, projectId: derived.projectId, identity: derived.identity };
-  })();
+  const derivedSource = normalizeBootstrapProjectRef(options.project);
+  const source = {
+    kind: derivedSource.project.kind as BootstrapProjectRef["kind"],
+    value: derivedSource.project.value,
+    projectId: derivedSource.projectId,
+    identity: derivedSource.identity,
+  };
 
   const stateDir = path.resolve(options.stateDir ?? resolveAdsStateDir());
   const bootstrapRoot = path.join(stateDir, "bootstraps", source.projectId);
@@ -159,4 +136,3 @@ export async function prepareBootstrapWorktree(options: {
     source: { kind: source.kind, value: source.value, identity: source.identity },
   };
 }
-

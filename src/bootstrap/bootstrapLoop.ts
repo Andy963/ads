@@ -11,7 +11,15 @@ import type { BootstrapAgentRunner, BootstrapAgentFeedback } from "./agentRunner
 import { BwrapSandbox, NoopSandbox, type BootstrapSandbox } from "./sandbox.js";
 import { stageSafeBootstrapChanges, commitBootstrapChanges } from "./gitCommitter.js";
 import { resolveBootstrapRecipe } from "./recipeResolver.js";
-import { normalizeBootstrapRunSpec, type BootstrapIterationOutcome, type BootstrapRunResult, type BootstrapRunSpec } from "./types.js";
+import {
+  normalizeBootstrapRunSpec,
+  type BootstrapIterationOutcome,
+  type BootstrapIterationProgress,
+  type BootstrapLoopHooks,
+  type BootstrapRunContext,
+  type BootstrapRunResult,
+  type BootstrapRunSpec,
+} from "./types.js";
 import { prepareBootstrapWorktree } from "./worktree.js";
 
 const DEFAULT_LOGGER = createLogger("BootstrapLoop");
@@ -62,6 +70,11 @@ function shouldReinstall(changedFiles: string[]): boolean {
     "requirements.txt",
   ]);
   return changedFiles.some((p) => markers.has(path.posix.basename(String(p ?? "").replace(/\\/g, "/"))));
+}
+
+function isInstallFailed(report: VerificationReport | null): boolean {
+  if (!report || !report.enabled) return false;
+  return (report.results ?? []).some((r) => !r.ok);
 }
 
 function cleanDeps(worktreeDir: string): void {
@@ -121,6 +134,7 @@ export async function runBootstrapLoop(
     logger?: Logger;
     signal?: AbortSignal;
     stateDir?: string;
+    hooks?: BootstrapLoopHooks;
   },
 ): Promise<BootstrapRunResult> {
   const logger = deps.logger ?? DEFAULT_LOGGER;
@@ -133,6 +147,16 @@ export async function runBootstrapLoop(
     stateDir: deps.stateDir,
   });
 
+  const runCtx: BootstrapRunContext = {
+    projectId: worktree.projectId,
+    runId: worktree.runId,
+    bootstrapRoot: worktree.bootstrapRoot,
+    repoDir: worktree.repoDir,
+    worktreeDir: worktree.worktreeDir,
+    artifactsDir: worktree.artifactsDir,
+    branchName: worktree.branchName,
+  };
+
   const sandbox: BootstrapSandbox = (() => {
     if (spec.sandbox.backend === "none") {
       if (spec.requireHardSandbox) {
@@ -140,7 +164,11 @@ export async function runBootstrapLoop(
       }
       return new NoopSandbox();
     }
-    return new BwrapSandbox({ rootDir: worktree.bootstrapRoot, allowNetwork: spec.allowNetwork });
+    return new BwrapSandbox({
+      rootDir: worktree.bootstrapRoot,
+      worktreeDir: worktree.worktreeDir,
+      allowNetwork: spec.allowNetwork,
+    });
   })();
   sandbox.ensureAvailable();
 
@@ -151,6 +179,14 @@ export async function runBootstrapLoop(
     }
     return resolved.recipe;
   })();
+
+  if (deps.hooks?.onStarted) {
+    try {
+      await deps.hooks.onStarted(runCtx, { spec, recipe });
+    } catch {
+      // ignore hook failures
+    }
+  }
 
   const env: NodeJS.ProcessEnv = { ...process.env, ...(recipe.env ?? {}) };
   const runner = createBootstrapRunCommand({ sandbox, env, maxOutputBytes: 1024 * 1024 });
@@ -176,151 +212,254 @@ export async function runBootstrapLoop(
 
   let lastInstallReport: VerificationReport | null = await installOnce();
 
-  for (let iteration = 1; iteration <= spec.maxIterations; iteration += 1) {
-    if (deps.signal?.aborted) {
-      throw new Error("AbortError");
-    }
+  try {
+    for (let iteration = 1; iteration <= spec.maxIterations; iteration += 1) {
+      if (deps.signal?.aborted) {
+        throw new Error("AbortError");
+      }
 
-    const feedback: BootstrapAgentFeedback | null = (() => {
-      const last = outcomes[outcomes.length - 1];
-      if (!last) return null;
-      const lint = summarizeReport(last.lintReport);
-      const test = summarizeReport(last.testReport);
-      const diffSummary = last.diffPatchPath ? (() => {
+      const feedback: BootstrapAgentFeedback | null = (() => {
+        const last = outcomes[outcomes.length - 1];
+        if (!last) return null;
+        const lint = summarizeReport(last.lintReport);
+        const test = summarizeReport(last.testReport);
+        const diffSummary = last.diffPatchPath
+          ? (() => {
+              try {
+                return fs.readFileSync(last.diffPatchPath, "utf8").trim();
+              } catch {
+                return "";
+              }
+            })()
+          : "";
+        return {
+          iteration: last.iteration,
+          lintSummary: lint.summary,
+          testSummary: test.summary,
+          diffSummary,
+        };
+      })();
+
+      if (feedback && strategy !== "normal_fix") {
+        feedback.diffSummary += `\n\n[Strategy: ${strategy}${strategy === "clean_deps" ? " — dependencies were cleaned and reinstalled" : " — agent context was reset"}]`;
+      }
+
+      try {
+        await deps.agentRunner.runIteration({ iteration, goal: spec.goal, cwd: worktree.worktreeDir, feedback, signal: deps.signal });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`[Bootstrap] agent iteration failed iter=${iteration} err=${message}`);
         try {
-          return fs.readFileSync(last.diffPatchPath, "utf8").trim();
+          const errPath = path.join(artifacts.iterationDir(iteration), "agent_error.txt");
+          fs.mkdirSync(path.dirname(errPath), { recursive: true });
+          fs.writeFileSync(errPath, message, "utf8");
         } catch {
-          return "";
+          // ignore
         }
-      })() : "";
-      return {
-        iteration: last.iteration,
-        lintSummary: lint.summary,
-        testSummary: test.summary,
-        diffSummary,
-      };
-    })();
-
-    try {
-      await deps.agentRunner.runIteration({ iteration, goal: spec.goal, cwd: worktree.worktreeDir, feedback, signal: deps.signal });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`[Bootstrap] agent iteration failed iter=${iteration} err=${message}`);
-    }
-
-    const patch = await gitDiffPatch(worktree.worktreeDir, runner.runCommand);
-    const diffPatchPath = patch.trim() ? artifacts.writeDiffPatch(iteration, patch) : null;
-    const changedFiles = await gitChangedFiles(worktree.worktreeDir, runner.runCommand);
-
-    if (spec.allowInstallDeps && shouldReinstall(changedFiles)) {
-      logger.info(`[Bootstrap] dependency markers changed; reinstalling (iter=${iteration})`);
-      lastInstallReport = await installOnce();
-    }
-
-    const lintReport = await runStep("lint", recipe.lint, { worktreeDir: worktree.worktreeDir, signal: deps.signal, runCommand: runner.runCommand, getExecAllowlistFromEnv: runner.getExecAllowlistFromEnv });
-    const lintSummary = summarizeReport(lintReport);
-
-    const testReport = lintSummary.ok
-      ? await runStep("test", recipe.test, { worktreeDir: worktree.worktreeDir, signal: deps.signal, runCommand: runner.runCommand, getExecAllowlistFromEnv: runner.getExecAllowlistFromEnv })
-      : null;
-    const testSummary = summarizeReport(testReport);
-
-    const ok = lintSummary.ok && testSummary.ok;
-
-    const signature = `${lintSummary.signature}::${testSummary.signature}`;
-    if (signature === lastSignature) {
-      sameFailureStreak += 1;
-    } else {
-      lastSignature = signature;
-      sameFailureStreak = 1;
-    }
-
-    const diffSummary = buildDiffSummary(changedFiles, patch);
-
-    if (!ok) {
-      if (patch.trim().length === 0) {
-        sameFailureStreak = Math.max(sameFailureStreak, 2);
       }
 
-      if (sameFailureStreak >= 2 && strategy === "normal_fix") {
-        strategy = "clean_deps";
-        strategyChanges += 1;
-        strategyLog.push(`iter=${iteration} strategy=clean_deps reason=same_failure_streak:${sameFailureStreak}`);
-        cleanDeps(worktree.worktreeDir);
+      const changedFilesQuick = await gitChangedFiles(worktree.worktreeDir, runner.runCommand);
+
+      if (spec.allowInstallDeps && shouldReinstall(changedFilesQuick)) {
+        logger.info(`[Bootstrap] dependency markers changed; reinstalling (iter=${iteration})`);
         lastInstallReport = await installOnce();
-      } else if (sameFailureStreak >= 3 && strategy !== "restart_agent") {
-        strategy = "restart_agent";
-        strategyChanges += 1;
-        strategyLog.push(`iter=${iteration} strategy=restart_agent reason=same_failure_streak:${sameFailureStreak}`);
-        await deps.agentRunner.reset();
-      } else {
-        strategy = "normal_fix";
       }
-    }
 
-    const outcome: BootstrapIterationOutcome = {
-      iteration,
-      diffPatchPath,
-      installReport: lastInstallReport,
-      lintReport,
-      testReport,
-      ok,
-      strategy,
-    };
-    outcomes.push(outcome);
-    artifacts.writeIteration(outcome);
+      const patch = await gitDiffPatch(worktree.worktreeDir, runner.runCommand);
+      const diffPatchPath = patch.trim() ? artifacts.writeDiffPatch(iteration, patch) : null;
+      const changedFiles = await gitChangedFiles(worktree.worktreeDir, runner.runCommand);
 
-    logger.info(`[Bootstrap] iter=${iteration} ok=${ok} changedFiles=${changedFiles.length} lint=${lintSummary.ok} test=${testSummary.ok}`);
-    logger.debug(`[Bootstrap] iter=${iteration} diffSummary:\n${diffSummary}`);
+      let lintReport: VerificationReport | null = null;
+      let lintSummary: { ok: boolean; summary: string; signature: string };
+      let testReport: VerificationReport | null = null;
+      let testSummary: { ok: boolean; summary: string; signature: string };
 
-    if (ok) {
-      if (spec.commit.enabled) {
-        const stageOutcome = await stageSafeBootstrapChanges(worktree.worktreeDir, { runCommand: runner.runCommand });
-        if (stageOutcome.staged.length === 0) {
-          throw new Error("bootstrap passed verification but no safe changes were staged for commit");
+      if (isInstallFailed(lastInstallReport)) {
+        lintReport = null;
+        lintSummary = { ok: false, summary: "skipped (install failed)", signature: "install_failed" };
+        testReport = null;
+        testSummary = { ok: false, summary: "skipped (install failed)", signature: "install_failed" };
+      } else {
+        lintReport = await runStep("lint", recipe.lint, {
+          worktreeDir: worktree.worktreeDir,
+          signal: deps.signal,
+          runCommand: runner.runCommand,
+          getExecAllowlistFromEnv: runner.getExecAllowlistFromEnv,
+        });
+        lintSummary = summarizeReport(lintReport);
+
+        testReport = lintSummary.ok
+          ? await runStep("test", recipe.test, {
+              worktreeDir: worktree.worktreeDir,
+              signal: deps.signal,
+              runCommand: runner.runCommand,
+              getExecAllowlistFromEnv: runner.getExecAllowlistFromEnv,
+            })
+          : null;
+        testSummary = summarizeReport(testReport);
+      }
+
+      const ok = lintSummary.ok && testSummary.ok;
+
+      const signature = `${lintSummary.signature}::${testSummary.signature}`;
+      if (signature === lastSignature) {
+        sameFailureStreak += 1;
+      } else {
+        lastSignature = signature;
+        sameFailureStreak = 1;
+      }
+
+      const diffSummary = buildDiffSummary(changedFiles, patch);
+
+      if (!ok) {
+        if (patch.trim().length === 0) {
+          sameFailureStreak = Math.max(sameFailureStreak, 2);
         }
-        const commit = await commitBootstrapChanges(worktree.worktreeDir, { runCommand: runner.runCommand }, { goal: spec.goal, messageTemplate: spec.commit.messageTemplate });
-        if (!commit.commit) {
-          throw new Error("bootstrap passed verification but failed to create commit");
+
+        if (sameFailureStreak >= 2 && strategy === "normal_fix") {
+          strategy = "clean_deps";
+          strategyChanges += 1;
+          strategyLog.push(`iter=${iteration} strategy=clean_deps reason=same_failure_streak:${sameFailureStreak}`);
+          cleanDeps(worktree.worktreeDir);
+          lastInstallReport = await installOnce();
+        } else if (sameFailureStreak >= 3 && strategy !== "restart_agent") {
+          strategy = "restart_agent";
+          strategyChanges += 1;
+          strategyLog.push(`iter=${iteration} strategy=restart_agent reason=same_failure_streak:${sameFailureStreak}`);
+          await deps.agentRunner.reset();
         }
+      }
+
+      const outcome: BootstrapIterationOutcome = {
+        iteration,
+        diffPatchPath,
+        installReport: lastInstallReport,
+        lintReport,
+        testReport,
+        ok,
+        strategy,
+      };
+      outcomes.push(outcome);
+      artifacts.writeIteration(outcome);
+
+      if (deps.hooks?.onIteration) {
+        const progress: BootstrapIterationProgress = {
+          iteration,
+          ok,
+          strategy,
+          changedFiles,
+          diffPatchPath,
+          lint: { ok: lintSummary.ok, summary: lintSummary.summary },
+          test: { ok: testSummary.ok, summary: testSummary.summary },
+        };
+        try {
+          await deps.hooks.onIteration(progress, runCtx);
+        } catch {
+          // ignore hook failures
+        }
+      }
+
+      logger.info(`[Bootstrap] iter=${iteration} ok=${ok} changedFiles=${changedFiles.length} lint=${lintSummary.ok} test=${testSummary.ok}`);
+      logger.debug(`[Bootstrap] iter=${iteration} diffSummary:\n${diffSummary}`);
+
+      if (ok) {
+        if (spec.commit.enabled) {
+          const stageOutcome = await stageSafeBootstrapChanges(worktree.worktreeDir, { runCommand: runner.runCommand });
+          if (stageOutcome.staged.length === 0) {
+            throw new Error("bootstrap passed verification but no safe changes were staged for commit");
+          }
+          const commit = await commitBootstrapChanges(worktree.worktreeDir, { runCommand: runner.runCommand }, { goal: spec.goal, messageTemplate: spec.commit.messageTemplate });
+          if (!commit.commit) {
+            throw new Error("bootstrap passed verification but failed to create commit");
+          }
+          const finishedAt = new Date().toISOString();
+          artifacts.writeStrategyLog(strategyLog);
+          const result: BootstrapRunResult = {
+            ok: true,
+            iterations: iteration,
+            strategyChanges,
+            finalCommit: commit.commit,
+            finalBranch: worktree.branchName,
+            lastReportPath: "",
+          };
+          const reportPath = artifacts.writeFinalReport({ spec, result, outcomes, startedAt, finishedAt });
+          const finalResult = { ...result, lastReportPath: reportPath };
+          if (deps.hooks?.onFinished) {
+            try {
+              await deps.hooks.onFinished(finalResult, runCtx);
+            } catch {
+              // ignore hook failures
+            }
+          }
+          return finalResult;
+        }
+
         const finishedAt = new Date().toISOString();
         artifacts.writeStrategyLog(strategyLog);
         const result: BootstrapRunResult = {
           ok: true,
           iterations: iteration,
           strategyChanges,
-          finalCommit: commit.commit,
           finalBranch: worktree.branchName,
           lastReportPath: "",
         };
         const reportPath = artifacts.writeFinalReport({ spec, result, outcomes, startedAt, finishedAt });
-        return { ...result, lastReportPath: reportPath };
+        const finalResult = { ...result, lastReportPath: reportPath };
+        if (deps.hooks?.onFinished) {
+          try {
+            await deps.hooks.onFinished(finalResult, runCtx);
+          } catch {
+            // ignore hook failures
+          }
+        }
+        return finalResult;
       }
-
-      const finishedAt = new Date().toISOString();
-      artifacts.writeStrategyLog(strategyLog);
-      const result: BootstrapRunResult = {
-        ok: true,
-        iterations: iteration,
-        strategyChanges,
-        finalBranch: worktree.branchName,
-        lastReportPath: "",
-      };
-      const reportPath = artifacts.writeFinalReport({ spec, result, outcomes, startedAt, finishedAt });
-      return { ...result, lastReportPath: reportPath };
     }
-  }
 
-  const finishedAt = new Date().toISOString();
-  artifacts.writeStrategyLog(strategyLog);
-  const result: BootstrapRunResult = {
-    ok: false,
-    iterations: spec.maxIterations,
-    strategyChanges,
-    finalBranch: worktree.branchName,
-    lastReportPath: "",
-    error: "max iterations exceeded",
-  };
-  const reportPath = artifacts.writeFinalReport({ spec, result, outcomes, startedAt, finishedAt });
-  return { ...result, lastReportPath: reportPath };
+    const finishedAt = new Date().toISOString();
+    artifacts.writeStrategyLog(strategyLog);
+    const result: BootstrapRunResult = {
+      ok: false,
+      iterations: spec.maxIterations,
+      strategyChanges,
+      finalBranch: worktree.branchName,
+      lastReportPath: "",
+      error: "max iterations exceeded",
+    };
+    const reportPath = artifacts.writeFinalReport({ spec, result, outcomes, startedAt, finishedAt });
+    const finalResult = { ...result, lastReportPath: reportPath };
+    if (deps.hooks?.onFinished) {
+      try {
+        await deps.hooks.onFinished(finalResult, runCtx);
+      } catch {
+        // ignore hook failures
+      }
+    }
+    return finalResult;
+  } catch (loopError) {
+    const finishedAt = new Date().toISOString();
+    artifacts.writeStrategyLog(strategyLog);
+    const errorMessage = loopError instanceof Error ? loopError.message : String(loopError);
+    const result: BootstrapRunResult = {
+      ok: false,
+      iterations: outcomes.length,
+      strategyChanges,
+      finalBranch: worktree.branchName,
+      lastReportPath: "",
+      error: errorMessage,
+    };
+    const reportPath = artifacts.writeFinalReport({ spec, result, outcomes, startedAt, finishedAt });
+    const finalResult = { ...result, lastReportPath: reportPath };
+    if (deps.hooks?.onFinished) {
+      try {
+        await deps.hooks.onFinished(finalResult, runCtx);
+      } catch {
+        // ignore hook failures
+      }
+    }
+    if (loopError instanceof Error && loopError.message === "AbortError") {
+      throw loopError;
+    }
+    return finalResult;
+  }
 }

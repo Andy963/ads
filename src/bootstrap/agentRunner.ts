@@ -160,7 +160,6 @@ export class CodexBootstrapAgentRunner implements BootstrapAgentRunner {
     }
 
     const spawn = this.sandbox.wrapSpawn({ cmd: this.binary, args: codexArgs, cwd: args.cwd, env: this.env });
-    assertAllowlisted(spawn.cmd, allowlist);
 
     let nextThreadId: string | null = null;
     let responseText = "";

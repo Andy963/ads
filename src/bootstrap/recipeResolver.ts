@@ -121,8 +121,17 @@ function resolvePythonRecipe(projectDir: string): RecipeResolution | null {
     return { ok: false, reason: "needs_config", message: "python project detected but ruff is not configured in pyproject.toml" };
   }
 
-  const lint: VerificationCommand[] = [cmd("ruff", ["check", "."], 10 * 60 * 1000)];
-  const test: VerificationCommand[] = [cmd("pytest", [], 20 * 60 * 1000)];
+  const lint: VerificationCommand[] = (() => {
+    if (installer === "uv") return [cmd("uv", ["run", "ruff", "check", "."], 10 * 60 * 1000)];
+    if (installer === "poetry") return [cmd("poetry", ["run", "ruff", "check", "."], 10 * 60 * 1000)];
+    return [cmd(path.join(".venv", "bin", "ruff"), ["check", "."], 10 * 60 * 1000)];
+  })();
+
+  const test: VerificationCommand[] = (() => {
+    if (installer === "uv") return [cmd("uv", ["run", "pytest"], 20 * 60 * 1000)];
+    if (installer === "poetry") return [cmd("poetry", ["run", "pytest"], 20 * 60 * 1000)];
+    return [cmd(path.join(".venv", "bin", "pytest"), [], 20 * 60 * 1000)];
+  })();
 
   return {
     ok: true,

@@ -63,7 +63,7 @@ export function createBootstrapRunCommand(options: { sandbox: BootstrapSandbox; 
       timeoutMs: request.timeoutMs,
       signal: request.signal,
       maxOutputBytes: request.maxOutputBytes ?? maxOutputBytes,
-      allowlist,
+      allowlist: null,
     });
   };
 
