@@ -107,6 +107,19 @@ function isThreadEvent(payload: unknown): payload is ThreadEvent {
   return true;
 }
 
+function isResumeModelMismatchError(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized.includes("resume")) return false;
+  if (!normalized.includes("model")) return false;
+  return (
+    normalized.includes("mismatch") ||
+    normalized.includes("different") ||
+    normalized.includes("does not match") ||
+    normalized.includes("doesn't match") ||
+    normalized.includes("not match")
+  );
+}
+
 export class CodexCliAdapter implements AgentAdapter {
   readonly id: string;
   readonly metadata: AgentMetadata;
@@ -195,8 +208,7 @@ export class CodexCliAdapter implements AgentAdapter {
       throw new Error("Prompt 不能为空");
     }
 
-    const useResume = Boolean(this.threadId) && options?.outputSchema === undefined;
-    const args = this.buildArgs({ images, useResume });
+    const shouldResume = Boolean(this.threadId) && options?.outputSchema === undefined;
     const mergedEnv: NodeJS.ProcessEnv | undefined = (() => {
       const extra = options?.env;
       if (!extra || Object.keys(extra).length === 0) {
@@ -206,93 +218,117 @@ export class CodexCliAdapter implements AgentAdapter {
     })();
     const spawnEnv = normalizeSpawnEnv(mergedEnv);
 
-    let nextThreadId: string | null = null;
-    let responseText = "";
-    let usage: Usage | null = null;
-    let streamError: string | null = null;
-    let sawTurnFailed = false;
+    const runAttempt = async (useResume: boolean): Promise<AgentRunResult> => {
+      const args = this.buildArgs({ images, useResume });
 
-    const result = await runCli(
-      {
-        binary: this.binary,
-        args: useResume ? [...args, this.threadId!, "-"] : [...args, "-"],
-        cwd: this.workingDirectory,
-        env: spawnEnv,
-        stdinData: `${prompt}\n`,
-        signal: options?.signal,
-      },
-      (parsed) => {
-        if (!isThreadEvent(parsed)) {
-          return;
-        }
-        const event = parsed;
+      let nextThreadId: string | null = null;
+      let responseText = "";
+      let usage: Usage | null = null;
+      let streamError: string | null = null;
+      let sawTurnFailed = false;
 
-        if (event.type === "thread.started") {
-          const id = (event as { thread_id?: unknown }).thread_id;
-          if (typeof id === "string" && id.trim()) {
-            nextThreadId = id.trim();
+      const result = await runCli(
+        {
+          binary: this.binary,
+          args: useResume ? [...args, this.threadId!, "-"] : [...args, "-"],
+          cwd: this.workingDirectory,
+          env: spawnEnv,
+          stdinData: `${prompt}\n`,
+          signal: options?.signal,
+        },
+        (parsed) => {
+          if (!isThreadEvent(parsed)) {
+            return;
           }
-        }
+          const event = parsed;
 
-        if (event.type === "error") {
-          const msg = (event as { message?: unknown }).message;
-          if (typeof msg === "string" && msg.trim()) {
-            streamError = msg.trim();
+          if (event.type === "thread.started") {
+            const id = (event as { thread_id?: unknown }).thread_id;
+            if (typeof id === "string" && id.trim()) {
+              nextThreadId = id.trim();
+            }
           }
-        }
 
-        if (event.type === "turn.failed") {
-          sawTurnFailed = true;
-          const msg = (event as { error?: { message?: unknown } }).error?.message;
-          if (typeof msg === "string" && msg.trim()) {
-            streamError = msg.trim();
+          if (event.type === "error") {
+            const msg = (event as { message?: unknown }).message;
+            if (typeof msg === "string" && msg.trim()) {
+              streamError = msg.trim();
+            }
           }
-        }
 
-        if (event.type === "turn.completed") {
-          const maybeUsage = (event as { usage?: unknown }).usage;
-          if (maybeUsage && typeof maybeUsage === "object") {
-            usage = maybeUsage as Usage;
+          if (event.type === "turn.failed") {
+            sawTurnFailed = true;
+            const msg = (event as { error?: { message?: unknown } }).error?.message;
+            if (typeof msg === "string" && msg.trim()) {
+              streamError = msg.trim();
+            }
           }
-        }
 
-        if (event.type === "item.updated" || event.type === "item.completed") {
-          const item = (event as { item?: { type?: unknown; text?: unknown } }).item;
-          if (item && item.type === "agent_message" && typeof item.text === "string") {
-            responseText = item.text;
+          if (event.type === "turn.completed") {
+            const maybeUsage = (event as { usage?: unknown }).usage;
+            if (maybeUsage && typeof maybeUsage === "object") {
+              usage = maybeUsage as Usage;
+            }
           }
-        }
 
-        const mapped = mapThreadEventToAgentEvent(event, Date.now());
-        if (mapped) {
-          this.emitEvent(mapped);
-        }
-      },
-    );
+          if (event.type === "item.updated" || event.type === "item.completed") {
+            const item = (event as { item?: { type?: unknown; text?: unknown } }).item;
+            if (item && item.type === "agent_message" && typeof item.text === "string") {
+              responseText = item.text;
+            }
+          }
 
-    if (result.cancelled) {
-      const err = new Error("用户中断了请求");
-      err.name = "AbortError";
-      throw err;
-    }
+          const mapped = mapThreadEventToAgentEvent(event, Date.now());
+          if (mapped) {
+            this.emitEvent(mapped);
+          }
+        },
+      );
 
-    if (result.exitCode !== 0 || sawTurnFailed) {
-      const message =
-        streamError ??
-        (result.stderr.trim() ||
-          (sawTurnFailed ? "codex reported failure" : `codex exited with code ${result.exitCode}`));
-      throw new Error(message);
-    }
+      if (result.cancelled) {
+        const err = new Error("用户中断了请求");
+        err.name = "AbortError";
+        throw err;
+      }
 
-    if (nextThreadId && nextThreadId !== this.threadId) {
-      this.threadId = nextThreadId;
-    }
+      if (result.exitCode !== 0 || sawTurnFailed) {
+        const message =
+          streamError ??
+          (result.stderr.trim() ||
+            (sawTurnFailed ? "codex reported failure" : `codex exited with code ${result.exitCode}`));
+        throw new Error(message);
+      }
 
-    return {
-      response: responseText.trim(),
-      usage,
-      agentId: this.id,
+      if (nextThreadId && nextThreadId !== this.threadId) {
+        this.threadId = nextThreadId;
+      }
+
+      return {
+        response: responseText.trim(),
+        usage,
+        agentId: this.id,
+      };
     };
+
+    try {
+      return await runAttempt(shouldResume);
+    } catch (error) {
+      if (!shouldResume) {
+        throw error;
+      }
+      if (error instanceof Error && error.name === "AbortError") {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isResumeModelMismatchError(message)) {
+        throw error;
+      }
+
+      const previousThreadId = this.threadId;
+      logger.info(`Resume failed due to model mismatch (thread=${previousThreadId ?? "null"}), retrying fresh.`);
+      this.threadId = null;
+      return await runAttempt(false);
+    }
   }
 
   private buildArgs(options: { images: string[]; useResume: boolean }): string[] {
