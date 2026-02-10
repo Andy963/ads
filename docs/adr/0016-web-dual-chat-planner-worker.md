@@ -36,7 +36,7 @@
 
 4. **Codex CLI 状态隔离：Planner 使用独立 CODEX_HOME**
    - 为避免 Codex CLI/SDK 在同一 `CODEX_HOME` 下发生隐式互斥或状态冲突，
-     Planner 注入独立 `CODEX_HOME`（默认 `/home/andy/.codex-planner`，可用 `ADS_PLANNER_CODEX_HOME` 覆盖）。
+     Planner 注入独立 `CODEX_HOME`（默认 `~/.codex-planner`，可用 `ADS_PLANNER_CODEX_HOME` 覆盖）。
    - 这也允许 Planner 读取一套独立的 Codex 配置文件（例如 MCP/Search 配置）。
 
 ## Consequences
@@ -66,4 +66,3 @@
 - Reference commits:
   - `835acdd` `feat(web): add planner/worker dual chat sessions`
   - `ef4b818` `fix(web): isolate planner Codex env via CODEX_HOME`
-

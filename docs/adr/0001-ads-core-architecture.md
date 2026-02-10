@@ -100,7 +100,7 @@ ADS 的目标是把“规格驱动开发”（需求 → 设计 → 实施/验�
 
 - Web Console 在同一进程内维护两套会话：Worker（可写）与 Planner（只读）。
   - Worker：`sandboxMode="workspace-write"`（默认可写）。
-  - Planner：`sandboxMode="read-only"`，并使用独立 `CODEX_HOME`（默认 `/home/andy/.codex-planner`）以隔离登录态/配置（避免与 Worker 互相污染）。
+  - Planner：`sandboxMode="read-only"`，并使用独立 `CODEX_HOME`（默认 `~/.codex-planner`）以隔离登录态/配置（避免与 Worker 互相污染）。
 - 并发语义：Planner 与 Worker 使用不同的 workspace lock pool，允许在同一 workspace 下并行（分别串行化各自请求）。
 
 ### 7) 安全与流程护栏（工程化约束）

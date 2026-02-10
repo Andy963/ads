@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -55,7 +56,8 @@ const webThreadStorage = new ThreadStorage({
   namespace: "web",
   storagePath: path.join(adsStateDir, "web-threads.json"),
 });
-const PLANNER_CODEX_HOME = process.env.ADS_PLANNER_CODEX_HOME || "/home/andy/.codex-planner";
+const PLANNER_CODEX_HOME =
+  process.env.ADS_PLANNER_CODEX_HOME?.trim() || path.join(os.homedir(), ".codex-planner");
 const PLANNER_CODEX_MODEL = process.env.ADS_PLANNER_CODEX_MODEL?.trim() || undefined;
 const plannerCodexEnv: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: PLANNER_CODEX_HOME };
 const sessionManager = new SessionManager(0, 0, "workspace-write", "gpt-5.2", webThreadStorage);
