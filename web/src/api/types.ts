@@ -13,6 +13,7 @@ export interface Task {
   title: string;
   prompt: string;
   model: string;
+  modelParams?: Record<string, unknown> | null;
   status: TaskStatus;
   priority: number;
   queueOrder: number;

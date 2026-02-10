@@ -6,7 +6,16 @@ import DraggableModal from "./DraggableModal.vue";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
-type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "inheritContext" | "maxRetries">>;
+type BootstrapConfig = {
+  enabled: true;
+  projectRef: string;
+  maxIterations?: number;
+  softSandbox?: boolean;
+};
+
+type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "inheritContext" | "maxRetries">> & {
+  bootstrap?: BootstrapConfig | null;
+};
 
 const TASK_CARD_PALETTE = [
   "#dbeafe",
@@ -90,6 +99,34 @@ function pickDefaultAgentId(preferred?: string | null): string {
 
   const ready = options.find((a) => a.ready)?.id;
   return ready ?? options[0]?.id ?? "";
+}
+
+type BootstrapTaskConfig = { projectRef: string; maxIterations: number };
+
+function clampBootstrapIterations(raw: unknown): number {
+  const parsed = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : 10;
+  return Math.max(1, Math.min(10, parsed));
+}
+
+function readBootstrapConfig(task: Task): BootstrapTaskConfig | null {
+  const params = task.modelParams;
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return null;
+  }
+  const bootstrap = (params as { bootstrap?: unknown }).bootstrap;
+  if (!bootstrap || typeof bootstrap !== "object" || Array.isArray(bootstrap)) {
+    return null;
+  }
+  const enabled = (bootstrap as { enabled?: unknown }).enabled;
+  if (enabled !== true) {
+    return null;
+  }
+  const projectRef = String((bootstrap as { projectRef?: unknown }).projectRef ?? "").trim();
+  if (!projectRef) {
+    return null;
+  }
+  const maxIterations = clampBootstrapIterations((bootstrap as { maxIterations?: unknown }).maxIterations);
+  return { projectRef, maxIterations };
 }
 
 
@@ -266,9 +303,10 @@ function startEdit(task: Task): void {
   editPriority.value = task.priority ?? 0;
   editMaxRetries.value = task.maxRetries ?? 3;
   editInheritContext.value = task.inheritContext ?? true;
-  editBootstrapEnabled.value = false;
-  editBootstrapProject.value = "";
-  editBootstrapMaxIterations.value = 10;
+  const bootstrap = readBootstrapConfig(task);
+  editBootstrapEnabled.value = Boolean(bootstrap);
+  editBootstrapProject.value = bootstrap?.projectRef ?? "";
+  editBootstrapMaxIterations.value = bootstrap?.maxIterations ?? 10;
   error.value = null;
   void nextTick(() => {
     editTitleEl.value?.focus();
@@ -299,6 +337,13 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
     error.value = "任务描述不能为空";
     return;
   }
+  const projectRef = editBootstrapProject.value.trim();
+  if (editBootstrapEnabled.value && !projectRef) {
+    error.value = "项目路径不能为空";
+    return;
+  }
+  const maxIterations = clampBootstrapIterations(editBootstrapMaxIterations.value);
+  const priorBootstrap = readBootstrapConfig(task);
 
   emit(event, {
     id: task.id,
@@ -309,9 +354,11 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
       priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
       maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
       inheritContext: Boolean(editInheritContext.value),
-      ...(editBootstrapEnabled.value && editBootstrapProject.value.trim()
-        ? { bootstrap: { enabled: true, projectRef: editBootstrapProject.value.trim(), maxIterations: editBootstrapMaxIterations.value } }
-        : {}),
+      ...(editBootstrapEnabled.value
+        ? { bootstrap: { enabled: true, projectRef, maxIterations } }
+        : priorBootstrap
+          ? { bootstrap: null }
+          : {}),
     },
   });
   stopEdit();

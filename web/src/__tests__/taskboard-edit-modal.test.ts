@@ -11,6 +11,7 @@ function makeTask(overrides: Partial<Task>): Task {
     title: overrides.title ?? "Test Task",
     prompt: overrides.prompt ?? "Do something",
     model: overrides.model ?? "auto",
+    modelParams: overrides.modelParams ?? null,
     status: overrides.status ?? "pending",
     priority: overrides.priority ?? 0,
     queueOrder: overrides.queueOrder ?? 0,
@@ -198,6 +199,110 @@ describe("TaskBoard edit modal", () => {
     expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="task-edit-modal-save"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="task-edit-modal-save-and-run"]').text()).toContain("重新执行");
+
+    wrapper.unmount();
+  });
+
+  it("backfills bootstrap config in the editor and emits it on save", async () => {
+    const task = makeTask({
+      id: "t-1",
+      title: "My title",
+      prompt: "Hello",
+      status: "pending",
+      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 } },
+    });
+
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task],
+        agents,
+        activeAgentId: "codex",
+        selectedId: null,
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set<string>(),
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const toggle = wrapper.find('[data-testid="task-edit-bootstrap-toggle"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(true);
+
+    const project = wrapper.find('[data-testid="task-edit-bootstrap-project"]');
+    expect((project.element as HTMLInputElement).value).toBe("/tmp/project");
+
+    const iterations = wrapper.find('[data-testid="task-edit-bootstrap-max-iterations"]');
+    expect((iterations.element as HTMLInputElement).value).toBe("7");
+
+    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const updates = wrapper.emitted("update");
+    expect(updates).toBeTruthy();
+    expect(updates?.[0]?.[0]).toEqual({
+      id: "t-1",
+      updates: {
+        title: "My title",
+        prompt: "Hello",
+        agentId: "codex",
+        priority: 0,
+        maxRetries: 3,
+        inheritContext: true,
+        bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 },
+      },
+    });
+
+    wrapper.unmount();
+  });
+
+  it("allows clearing bootstrap config via the editor toggle", async () => {
+    const task = makeTask({
+      id: "t-1",
+      title: "My title",
+      prompt: "Hello",
+      status: "pending",
+      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 } },
+    });
+
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task],
+        agents,
+        activeAgentId: "codex",
+        selectedId: null,
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set<string>(),
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const toggle = wrapper.find('[data-testid="task-edit-bootstrap-toggle"]');
+    await toggle.setValue(false);
+
+    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const updates = wrapper.emitted("update");
+    expect(updates).toBeTruthy();
+    expect(updates?.[0]?.[0]).toEqual({
+      id: "t-1",
+      updates: {
+        title: "My title",
+        prompt: "Hello",
+        agentId: "codex",
+        priority: 0,
+        maxRetries: 3,
+        inheritContext: true,
+        bootstrap: null,
+      },
+    });
 
     wrapper.unmount();
   });

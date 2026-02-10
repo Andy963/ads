@@ -209,6 +209,15 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       sendJson(res, 400, { error: "Invalid JSON body" });
       return true;
     }
+    const bootstrapSchema = z
+      .object({
+        enabled: z.literal(true),
+        projectRef: z.string().trim().min(1),
+        maxIterations: z.number().int().min(1).max(10).optional(),
+        softSandbox: z.boolean().optional(),
+      })
+      .nullable()
+      .optional();
     const schema = z
       .object({
         title: z.string().min(1).optional(),
@@ -217,6 +226,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         priority: z.number().finite().optional(),
         inheritContext: z.boolean().optional(),
         maxRetries: z.number().int().min(0).optional(),
+        bootstrap: bootstrapSchema,
       })
       .passthrough();
     const result = schema.safeParse(body ?? {});
@@ -234,6 +244,24 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const priority = parsed.priority ?? source.priority;
     const inheritContext = parsed.inheritContext ?? source.inheritContext;
     const maxRetries = parsed.maxRetries ?? source.maxRetries;
+    const modelParams = (() => {
+      const base = (() => {
+        const raw = source.modelParams;
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+          return null;
+        }
+        return { ...(raw as Record<string, unknown>) };
+      })();
+      if (parsed.bootstrap === undefined) {
+        return base;
+      }
+      const next = { ...(base ?? {}) };
+      if (parsed.bootstrap === null) {
+        delete next.bootstrap;
+        return Object.keys(next).length > 0 ? next : null;
+      }
+      return { ...next, bootstrap: parsed.bootstrap };
+    })();
 
     let created: ReturnType<QueueTaskStore["createTask"]>;
     try {
@@ -243,6 +271,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           title,
           prompt,
           model,
+          modelParams,
           priority,
           inheritContext,
           parentTaskId: source.id,
