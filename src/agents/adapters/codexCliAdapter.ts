@@ -109,11 +109,17 @@ function isThreadEvent(payload: unknown): payload is ThreadEvent {
 
 function isResumeModelMismatchError(message: string): boolean {
   const normalized = message.trim().toLowerCase();
-  if (!normalized.includes("resume")) return false;
   if (!normalized.includes("model")) return false;
+  if (!(normalized.includes("thread") || normalized.includes("resume") || normalized.includes("session"))) {
+    return false;
+  }
   return (
     normalized.includes("mismatch") ||
     normalized.includes("different") ||
+    normalized.includes("must match") ||
+    normalized.includes("same model") ||
+    normalized.includes("created with") ||
+    normalized.includes("requested") ||
     normalized.includes("does not match") ||
     normalized.includes("doesn't match") ||
     normalized.includes("not match")
