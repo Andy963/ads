@@ -110,10 +110,9 @@ describe("project status spinner prefetch", () => {
       "ADS_WEB_PROJECTS",
       JSON.stringify([
         {
-          id: "default",
-          name: "Default",
-          path: "/tmp/work-a",
           sessionId: "default",
+          name: "Default",
+          path: "",
           chatSessionId: "main",
           initialized: true,
           createdAt: now,
@@ -121,10 +120,19 @@ describe("project status spinner prefetch", () => {
           expanded: true,
         },
         {
-          id: "sess-b",
+          sessionId: "sess-b",
           name: "B",
           path: "/tmp/work-b",
-          sessionId: "sess-b",
+          chatSessionId: "main",
+          initialized: true,
+          createdAt: now,
+          updatedAt: now,
+          expanded: false,
+        },
+        {
+          sessionId: "sess-a",
+          name: "A",
+          path: "/tmp/work-a",
           chatSessionId: "main",
           initialized: true,
           createdAt: now,
@@ -133,7 +141,7 @@ describe("project status spinner prefetch", () => {
         },
       ]),
     );
-    localStorage.setItem("ADS_WEB_ACTIVE_PROJECT", "default");
+    localStorage.setItem("ADS_WEB_ACTIVE_PROJECT", "sess-a");
 
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
@@ -145,9 +153,17 @@ describe("project status spinner prefetch", () => {
         if (url.includes("workspace=%2Ftmp%2Fwork-b")) return [makeTask({ id: "t-b", status: "running" })] satisfies Task[];
         return [] satisfies Task[];
       }
-      if (url.startsWith("/api/projects")) return { projects: [], activeProjectId: null };
+      if (url.startsWith("/api/projects")) {
+        return {
+          projects: [
+            { id: "sess-a", workspaceRoot: "/tmp/work-a", name: "A", chatSessionId: "main", createdAt: now, updatedAt: now },
+            { id: "sess-b", workspaceRoot: "/tmp/work-b", name: "B", chatSessionId: "main", createdAt: now, updatedAt: now },
+          ],
+          activeProjectId: "sess-a",
+        };
+      }
       if (url.startsWith("/api/paths/validate")) {
-        if (url.includes("work-a")) return { ok: true, projectSessionId: "default", workspaceRoot: "/tmp/work-a", resolvedPath: "/tmp/work-a" };
+        if (url.includes("work-a")) return { ok: true, projectSessionId: "sess-a", workspaceRoot: "/tmp/work-a", resolvedPath: "/tmp/work-a" };
         if (url.includes("work-b")) return { ok: true, projectSessionId: "sess-b", workspaceRoot: "/tmp/work-b", resolvedPath: "/tmp/work-b" };
         return { ok: false };
       }
@@ -164,18 +180,25 @@ describe("project status spinner prefetch", () => {
   it("shows spinners for projects that have running tasks after a page reload", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < 40; i += 1) {
       await settleUi(wrapper);
+      const rows = wrapper.findAll(".projectRow");
+      if (rows.length < 2) continue;
+      const vm = wrapper.vm as any;
+      const bTasks = vm.getRuntime("sess-b").tasks.value;
+      if (Array.isArray(bTasks) && bTasks.length > 0) break;
     }
 
     const rows = wrapper.findAll(".projectRow");
     expect(rows.length).toBeGreaterThanOrEqual(2);
 
-    const rowA = rows.find((r) => r.text().includes("Default")) ?? null;
+    const rowA = rows.find((r) => r.text().includes("A")) ?? null;
     const rowB = rows.find((r) => r.text().includes("B")) ?? null;
+    const rowWorkspace = rows.find((r) => r.text().includes("Workspace")) ?? null;
 
     expect(rowA).toBeTruthy();
     expect(rowB).toBeTruthy();
+    expect(rowWorkspace).toBeTruthy();
 
     expect(rowA!.find(".projectStatus").classes("spinning")).toBe(true);
     expect(rowB!.find(".projectStatus").classes("spinning")).toBe(true);

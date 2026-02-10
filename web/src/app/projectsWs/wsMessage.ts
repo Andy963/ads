@@ -2,6 +2,8 @@ import type { ChatActions } from "../chat";
 import type { ChatItem, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
 import type { TaskBundleDraft } from "../../api/types";
 
+import { deriveProjectNameFromPath } from "./projectName";
+
 type Ref<T> = { value: T };
 
 export type WsMessageHandlerArgs = {
@@ -280,6 +282,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (current) {
         const updates: Partial<ProjectTab> = { initialized: true };
         if (nextPath && (current.id === "default" || !current.path.trim())) updates.path = nextPath;
+        if (current.id === "default" && nextPath) updates.name = deriveProjectNameFromPath(nextPath);
         if (wsState && Object.prototype.hasOwnProperty.call(wsState, "branch")) {
           updates.branch = String(wsState.branch ?? "");
         }
@@ -309,6 +312,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             if (nextPath && (current.id === "default" || !current.path.trim())) {
               updates.path = nextPath;
             }
+            if (current.id === "default" && nextPath) updates.name = deriveProjectNameFromPath(nextPath);
             updateProject(current.id, updates);
           }
           rt.pendingCdRequestedPath = null;
@@ -318,6 +322,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (current) {
           const updates: Partial<ProjectTab> = { initialized: true };
           if (nextPath && (current.id === "default" || !current.path.trim())) updates.path = nextPath;
+          if (current.id === "default" && nextPath) updates.name = deriveProjectNameFromPath(nextPath);
           if (Object.prototype.hasOwnProperty.call(wsState, "branch")) {
             updates.branch = String(wsState.branch ?? "");
           }

@@ -23,6 +23,7 @@ const {
   openProjectDialog,
   projects,
   activeProjectId,
+  activeProject,
   requestProjectSwitch,
   reorderProjects,
   removeProject,
@@ -140,6 +141,7 @@ const workerAgents = computed(() => activeRuntime.value.availableAgents.value);
 const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.value);
 const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
 const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
+const workerChatKey = computed(() => `${activeProjectId.value}:${activeProject.value?.chatSessionId ?? "main"}`);
 
 function refreshPlannerDrafts(): void {
   void loadTaskBundleDrafts(activeProjectId.value);
@@ -492,7 +494,7 @@ onBeforeUnmount(() => {
 
       <section v-if="!isMobile" class="workerPane">
         <MainChatView
-          :key="activeProjectId"
+          :key="workerChatKey"
           class="chatHost"
           title="Worker"
           :messages="messages"
@@ -527,7 +529,7 @@ onBeforeUnmount(() => {
           <button type="button" class="workerDrawerClose" @click="workerDrawerOpen = false">Close</button>
         </div>
         <MainChatView
-          :key="activeProjectId"
+          :key="workerChatKey"
           class="chatHost"
           :messages="messages"
           :queued-prompts="queuedPrompts.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length }))"

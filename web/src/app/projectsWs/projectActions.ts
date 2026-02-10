@@ -3,11 +3,11 @@ import { nextTick } from "vue";
 import type { AppContext, PathValidateResponse, ProjectTab } from "../controller";
 import type { ChatActions } from "../chat";
 
+import { deriveProjectNameFromPath, resolveDefaultProjectName } from "./projectName";
 import type { ProjectDeps } from "./types";
 
 const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
-const LEGACY_WS_SESSION_KEY = "ADS_WEB_SESSION";
 
 export function createProjectActions(ctx: AppContext & ChatActions, deps: ProjectDeps) {
   const {
@@ -45,20 +45,14 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
   let projectPathValidationSeq = 0;
 
-  const deriveProjectName = (value: string): string => {
-    const normalized = String(value ?? "").trim();
-    if (!normalized) return "Project";
-    const cleaned = normalized.replace(/[\\/]+$/g, "");
-    const parts = cleaned.split(/[\\/]+/g).filter(Boolean);
-    return parts[parts.length - 1] ?? "Project";
-  };
+  const deriveProjectName = (value: string): string => deriveProjectNameFromPath(value);
 
   const createProjectTab = (params: { path: string; name?: string; sessionId?: string; initialized?: boolean }): ProjectTab => {
     const now = Date.now();
     const path = String(params.path ?? "").trim();
     const sessionId = path ? (params.sessionId?.trim() || (crypto.randomUUID?.() ?? randomId("sess"))) : "default";
     const id = sessionId;
-    const name = String(params.name ?? "").trim() || deriveProjectName(path);
+    const name = String(params.name ?? "").trim() || deriveProjectNameFromPath(path);
     const initialized = params.initialized ?? !path;
     return { id, name, path, sessionId, chatSessionId: "main", initialized, createdAt: now, updatedAt: now, expanded: false };
   };
@@ -80,7 +74,9 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
             const raw = p as Partial<ProjectTab> & { chatSessionId?: unknown };
             const sessionId = String(raw.sessionId ?? "").trim();
             const path = String(raw.path ?? "").trim();
-            const name = String(raw.name ?? "").trim() || deriveProjectName(path);
+            const rawName = String(raw.name ?? "").trim();
+            const derivedName = deriveProjectNameFromPath(path);
+            const name = sessionId === "default" ? resolveDefaultProjectName({ name: rawName, path }) : rawName || derivedName;
             const chatSessionId = String(raw.chatSessionId ?? "").trim() || "main";
             if (!sessionId) return null;
             const base = createProjectTab({ path, name, sessionId, initialized: Boolean(raw.initialized) || !path });
@@ -90,8 +86,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       : [];
 
     if (normalized.length === 0) {
-      const legacySession = String(localStorage.getItem(LEGACY_WS_SESSION_KEY) ?? "").trim();
-      normalized.push(createProjectTab({ path: "", name: "默认", sessionId: legacySession || undefined, initialized: true }));
+      normalized.push(createProjectTab({ path: "", initialized: true }));
     }
 
     const storedActive = String(localStorage.getItem(ACTIVE_PROJECT_KEY) ?? "").trim();
@@ -119,11 +114,13 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
       // Keep a single explicit default entry for UI affordances.
       const prevDefault = projects.value.find((p) => p.id === "default") ?? null;
-      const defaultBase = createProjectTab({ path: "", name: "默认", sessionId: "default", initialized: true });
+      const defaultPath = prevDefault ? String(prevDefault.path ?? "").trim() : "";
+      const defaultBase = createProjectTab({ path: defaultPath, sessionId: "default", initialized: true });
       const defaultChatSessionId = String(prevDefault?.chatSessionId ?? "").trim() || defaultBase.chatSessionId;
+      const defaultName = resolveDefaultProjectName({ name: prevDefault?.name, path: defaultPath });
       next.push({
         ...defaultBase,
-        path: prevDefault ? String(prevDefault.path ?? "").trim() : defaultBase.path,
+        name: defaultName,
         chatSessionId: defaultChatSessionId,
         initialized: prevDefault ? Boolean(prevDefault.initialized) : defaultBase.initialized,
         createdAt: prevDefault ? prevDefault.createdAt : defaultBase.createdAt,
@@ -345,7 +342,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     const newChatSessionId = crypto.randomUUID?.() ?? randomId("chat");
     updateProject(pid, { chatSessionId: newChatSessionId });
     activeRuntime.value.chatSessionId = newChatSessionId;
-    activeRuntime.value.ignoreNextHistory = false;
+    activeRuntime.value.ignoreNextHistory = true;
     activeRuntime.value.suppressNextClearHistoryResult = false;
 
     clearChatState();
