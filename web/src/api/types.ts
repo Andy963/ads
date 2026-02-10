@@ -66,6 +66,13 @@ export interface Prompt {
   updatedAt: number;
 }
 
+export interface BootstrapConfig {
+  enabled: boolean;
+  projectRef: string;
+  maxIterations?: number;
+  softSandbox?: boolean;
+}
+
 export interface CreateTaskInput {
   title?: string;
   prompt: string;
@@ -74,6 +81,7 @@ export interface CreateTaskInput {
   inheritContext?: boolean;
   maxRetries?: number;
   attachments?: string[];
+  bootstrap?: BootstrapConfig;
 }
 
 export interface ModelConfig {

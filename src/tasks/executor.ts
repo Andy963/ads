@@ -3,6 +3,11 @@ import type { HybridOrchestrator } from "../agents/orchestrator.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { AsyncLock } from "../utils/asyncLock.js";
 
+import { runBootstrapLoop } from "../bootstrap/bootstrapLoop.js";
+import { CodexBootstrapAgentRunner } from "../bootstrap/agentRunner.js";
+import { NoopSandbox } from "../bootstrap/sandbox.js";
+import type { BootstrapProjectRef } from "../bootstrap/types.js";
+
 import type { TaskStore } from "./store.js";
 import type { Task, TaskContext } from "./types.js";
 
@@ -86,6 +91,31 @@ function formatWorkspacePatchArtifactForPrompt(context: TaskContext | null): str
   return lines.join("\n");
 }
 
+type BootstrapModelParams = {
+  bootstrap?: {
+    enabled?: boolean;
+    projectRef?: string;
+    maxIterations?: number;
+    softSandbox?: boolean;
+  };
+};
+
+function extractBootstrapConfig(task: Task): BootstrapModelParams["bootstrap"] | null {
+  const params = task.modelParams as BootstrapModelParams | null | undefined;
+  if (!params?.bootstrap?.enabled) return null;
+  const ref = String(params.bootstrap.projectRef ?? "").trim();
+  if (!ref) return null;
+  return params.bootstrap;
+}
+
+function looksLikeGitUrl(value: string): boolean {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return true;
+  if (trimmed.startsWith("git@") || trimmed.startsWith("ssh://")) return true;
+  return false;
+}
+
 export class OrchestratorTaskExecutor implements TaskExecutor {
   private readonly getOrchestrator: (task: Task) => HybridOrchestrator;
   private readonly getAgentEnv?: (task: Task, agentId: AgentIdentifier) => Record<string, string> | undefined;
@@ -107,11 +137,83 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     this.lock = options.lock;
   }
 
+  private async executeBootstrap(
+    task: Task,
+    config: NonNullable<BootstrapModelParams["bootstrap"]>,
+    options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks },
+  ): Promise<{ resultSummary?: string }> {
+    const ref = String(config.projectRef ?? "").trim();
+    const project: BootstrapProjectRef = looksLikeGitUrl(ref)
+      ? { kind: "git_url", value: ref }
+      : { kind: "local_path", value: ref };
+
+    const desiredModel = String(task.model ?? "").trim() || "auto";
+    const modelToUse = desiredModel === "auto" ? this.defaultModel : desiredModel;
+    const sandbox = new NoopSandbox();
+    const agentRunner = new CodexBootstrapAgentRunner({ sandbox, model: modelToUse });
+
+    const maxIterations = typeof config.maxIterations === "number" && Number.isFinite(config.maxIterations)
+      ? Math.max(1, Math.min(10, config.maxIterations))
+      : 10;
+
+    const result = await runBootstrapLoop(
+      {
+        project,
+        goal: task.prompt,
+        maxIterations,
+        allowNetwork: true,
+        allowInstallDeps: true,
+        requireHardSandbox: false,
+        sandbox: { backend: "none" },
+      },
+      {
+        agentRunner,
+        signal: options?.signal,
+        hooks: {
+          onIteration(progress) {
+            const line = `bootstrap iter=${progress.iteration} ok=${progress.ok} lint=${progress.lint.ok ? "ok" : "fail"} test=${progress.test.ok ? "ok" : "fail"} strategy=${progress.strategy}`;
+            options?.hooks?.onMessage?.({ role: "assistant", content: line, modelUsed: modelToUse });
+          },
+        },
+      },
+    );
+
+    const lines: string[] = [];
+    lines.push(`bootstrap ${result.ok ? "成功" : "失败"} iterations=${result.iterations} strategyChanges=${result.strategyChanges}`);
+    if (result.finalBranch) lines.push(`branch: ${result.finalBranch}`);
+    if (result.finalCommit) lines.push(`commit: ${result.finalCommit}`);
+    if (result.error) lines.push(`error: ${result.error}`);
+    const summary = lines.join("\n");
+
+    try {
+      this.store.addMessage({
+        taskId: task.id,
+        planStepId: null,
+        role: "assistant",
+        content: summary,
+        messageType: "text",
+        modelUsed: modelToUse,
+        tokenCount: null,
+        createdAt: Date.now(),
+      });
+    } catch {
+      // ignore
+    }
+
+    options?.hooks?.onMessage?.({ role: "assistant", content: summary, modelUsed: modelToUse });
+    return { resultSummary: summary };
+  }
+
   async execute(
     task: Task,
     options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks },
   ): Promise<{ resultSummary?: string }> {
     const run = async (): Promise<{ resultSummary?: string }> => {
+      const bootstrapConfig = extractBootstrapConfig(task);
+      if (bootstrapConfig) {
+        return this.executeBootstrap(task, bootstrapConfig, options);
+      }
+
       const orchestrator = this.getOrchestrator(task);
       const desiredModel = String(task.model ?? "").trim() || "auto";
       const modelToUse = desiredModel === "auto" ? this.defaultModel : desiredModel;

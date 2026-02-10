@@ -76,6 +76,12 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       sendJson(res, 400, { error: "Invalid JSON body" });
       return true;
     }
+    const bootstrapSchema = z.object({
+      enabled: z.boolean(),
+      projectRef: z.string().min(1),
+      maxIterations: z.number().min(1).max(10).optional(),
+      softSandbox: z.boolean().optional(),
+    }).optional();
     const schema = z
       .object({
         title: z.string().min(1).optional(),
@@ -85,6 +91,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         inheritContext: z.boolean().optional(),
         maxRetries: z.number().optional(),
         attachments: z.array(z.string().min(1)).optional(),
+        bootstrap: bootstrapSchema,
       })
       .passthrough();
     const result = schema.safeParse(body ?? {});
@@ -96,6 +103,10 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const now = Date.now();
     const attachmentIds = (parsed.attachments ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
     const taskId = crypto.randomUUID();
+
+    const modelParams: Record<string, unknown> | null =
+      parsed.bootstrap?.enabled ? { bootstrap: parsed.bootstrap } : null;
+
     let task: ReturnType<QueueTaskStore["createTask"]>;
     try {
       task = taskCtx.taskStore.createTask(
@@ -104,6 +115,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           title: parsed.title,
           prompt: parsed.prompt,
           model: parsed.model,
+          modelParams,
           priority: parsed.priority,
           inheritContext: parsed.inheritContext,
           maxRetries: parsed.maxRetries,

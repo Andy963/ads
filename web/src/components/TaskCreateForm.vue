@@ -25,6 +25,10 @@ const agentId = ref("codex");
 const priority = ref(0);
 const maxRetries = ref(3);
 
+const bootstrapEnabled = ref(false);
+const bootstrapProject = ref("");
+const bootstrapMaxIterations = ref(10);
+
 const pinnedPromptId = ref("");
 const pinnedPrompt = computed(() => {
   const pid = String(pinnedPromptId.value ?? "").trim();
@@ -143,6 +147,7 @@ const canSubmit = computed(() => {
   if (recording.value || transcribing.value) return false;
   if (uploadingCount.value > 0) return false;
   if (failedCount.value > 0) return false;
+  if (bootstrapEnabled.value && !bootstrapProject.value.trim()) return false;
   return true;
 });
 
@@ -197,17 +202,31 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   const mergedPrompt = mergePinnedPrompt(prompt.value, pinnedPrompt.value).trim();
   const pinnedDerivedTitle = titleTrimmed ? "" : derivePinnedTitle(prompt.value, pinnedPrompt.value);
 
+  const bootstrapConfig = bootstrapEnabled.value && bootstrapProject.value.trim()
+    ? {
+        enabled: true as const,
+        projectRef: bootstrapProject.value.trim(),
+        maxIterations: Number.isFinite(bootstrapMaxIterations.value)
+          ? Math.max(1, Math.min(10, bootstrapMaxIterations.value))
+          : 10,
+      }
+    : undefined;
+
   emit(event, {
     title: titleTrimmed.length ? titleTrimmed : pinnedPrompt.value ? pinnedDerivedTitle || undefined : undefined,
     prompt: mergedPrompt,
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
     attachments: uploadedIds.length ? uploadedIds : undefined,
+    bootstrap: bootstrapConfig,
   });
 
   title.value = "";
   prompt.value = "";
   pinnedPromptId.value = "";
+  bootstrapEnabled.value = false;
+  bootstrapProject.value = "";
+  bootstrapMaxIterations.value = 10;
   clearAllAttachments();
 }
 
@@ -248,6 +267,24 @@ watch(
         <label class="form-field">
           <span class="label-text">最大重试</span>
           <input v-model.number="maxRetries" type="number" min="0" />
+        </label>
+      </div>
+
+      <div class="form-row">
+        <label class="bootstrapToggle">
+          <input type="checkbox" v-model="bootstrapEnabled" data-testid="task-create-bootstrap-toggle" />
+          <span class="toggleLabel">自举模式（自动验证循环）</span>
+        </label>
+      </div>
+
+      <div v-if="bootstrapEnabled" class="form-row form-row-bootstrap">
+        <label class="form-field" style="flex:1;">
+          <span class="label-text">项目路径 / Git URL</span>
+          <input v-model="bootstrapProject" placeholder="/path/to/project 或 https://..." data-testid="task-create-bootstrap-project" />
+        </label>
+        <label class="form-field" style="width:100px;">
+          <span class="label-text">最大迭代</span>
+          <input v-model.number="bootstrapMaxIterations" type="number" min="1" max="10" data-testid="task-create-bootstrap-max-iterations" />
         </label>
       </div>
 

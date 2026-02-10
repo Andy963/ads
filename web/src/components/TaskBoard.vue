@@ -200,6 +200,9 @@ const editModel = ref("auto");
 const editPriority = ref(0);
 const editMaxRetries = ref(3);
 const editInheritContext = ref(true);
+const editBootstrapEnabled = ref(false);
+const editBootstrapProject = ref("");
+const editBootstrapMaxIterations = ref(10);
 const error = ref<string | null>(null);
 const editTitleEl = ref<HTMLInputElement | null>(null);
 
@@ -218,6 +221,9 @@ function startEdit(task: Task): void {
   editPriority.value = task.priority ?? 0;
   editMaxRetries.value = task.maxRetries ?? 3;
   editInheritContext.value = task.inheritContext ?? true;
+  editBootstrapEnabled.value = false;
+  editBootstrapProject.value = "";
+  editBootstrapMaxIterations.value = 10;
   error.value = null;
   void nextTick(() => {
     editTitleEl.value?.focus();
@@ -258,6 +264,9 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
       priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
       maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
       inheritContext: Boolean(editInheritContext.value),
+      ...(editBootstrapEnabled.value && editBootstrapProject.value.trim()
+        ? { bootstrap: { enabled: true, projectRef: editBootstrapProject.value.trim(), maxIterations: editBootstrapMaxIterations.value } }
+        : {}),
     },
   });
   stopEdit();
@@ -480,6 +489,24 @@ function toggleQueue(): void {
               <option :value="true">True</option>
               <option :value="false">False</option>
             </select>
+          </label>
+        </div>
+
+        <div class="configRow">
+          <label class="field bootstrapToggle">
+            <input type="checkbox" v-model="editBootstrapEnabled" data-testid="task-edit-bootstrap-toggle" />
+            <span class="label" style="display:inline;margin:0 0 0 6px;">自举模式</span>
+          </label>
+        </div>
+
+        <div v-if="editBootstrapEnabled" class="configRow">
+          <label class="field" style="flex:1;">
+            <span class="label">项目路径 / Git URL</span>
+            <input v-model="editBootstrapProject" placeholder="/path/to/project 或 https://..." data-testid="task-edit-bootstrap-project" />
+          </label>
+          <label class="field" style="width:100px;">
+            <span class="label">最大迭代</span>
+            <input v-model.number="editBootstrapMaxIterations" type="number" min="1" max="10" data-testid="task-edit-bootstrap-max-iterations" />
           </label>
         </div>
 

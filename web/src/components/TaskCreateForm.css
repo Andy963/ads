@@ -102,6 +102,30 @@
   line-height: 1.45;
   color: #0f172a;
 }
+.bootstrapToggle {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+.bootstrapToggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+.toggleLabel {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-left: 8px;
+}
+.form-row-bootstrap {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
 .fields {
   flex: 1 1 auto;
   min-height: 0;
