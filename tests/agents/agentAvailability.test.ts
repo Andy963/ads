@@ -52,7 +52,7 @@ describe("CliAgentAvailability", () => {
     assert.ok(seen.includes("--help"));
   });
 
-  it("clamps probe timeout to at least 3000ms", async () => {
+  it("clamps probe timeout to at least 5000ms", async () => {
     const seenTimeouts: number[] = [];
     const availability = new CliAgentAvailability({
       timeoutMs: 600,
@@ -64,14 +64,14 @@ describe("CliAgentAvailability", () => {
 
     await availability.probeAll(["amp"]);
     assert.ok(seenTimeouts.length > 0);
-    assert.ok(seenTimeouts.every((t) => t >= 3000));
+    assert.ok(seenTimeouts.every((t) => t >= 5000));
   });
 
   it("retries timed-out probes with a longer timeout", async () => {
     const seen: Array<{ timeoutMs: number; args: string[] }> = [];
     let calls = 0;
     const availability = new CliAgentAvailability({
-      timeoutMs: 3000,
+      timeoutMs: 5000,
       runner: async (input) => {
         seen.push({ timeoutMs: input.timeoutMs, args: input.args });
         calls += 1;
@@ -86,8 +86,8 @@ describe("CliAgentAvailability", () => {
     const record = availability.get("codex");
     assert.ok(record);
     assert.equal(record.ready, true);
-    assert.equal(seen[0]?.timeoutMs, 3000);
-    assert.equal(seen[1]?.timeoutMs, 7000);
+    assert.equal(seen[0]?.timeoutMs, 5000);
+    assert.equal(seen[1]?.timeoutMs, 10000);
     assert.deepEqual(seen[0]?.args, seen[1]?.args);
   });
 });

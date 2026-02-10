@@ -38,9 +38,9 @@ export type ProbeRunner = (input: {
   timeoutMs: number;
 }) => Promise<ProbeRunResult>;
 
-const DEFAULT_PROBE_TIMEOUT_MS = 3000;
-const MIN_PROBE_TIMEOUT_MS = 3000;
-const TIMEOUT_RETRY_MS = 7000;
+const DEFAULT_PROBE_TIMEOUT_MS = 5000;
+const MIN_PROBE_TIMEOUT_MS = 5000;
+const TIMEOUT_RETRY_MS = 10000;
 
 function clampProbeTimeoutMs(raw: number): number {
   const normalized = Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_PROBE_TIMEOUT_MS;
