@@ -139,7 +139,6 @@ export class DroidCliAdapter implements AgentAdapter {
     if (this.workingDirectory) {
       args.push("--cwd", this.workingDirectory);
     }
-    args.push("-");
 
     const parser = new DroidStreamParser();
     logger.info(`sending Droid request resume=${this.sessionId ?? "(new)"} auto=${resolveAutonomyFlag(this.sandboxMode).join(" ") || "(default)"}`);

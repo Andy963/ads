@@ -19,6 +19,10 @@ describe("DroidCliAdapter", () => {
     const binary = await createExecutableScript([
       "#!/usr/bin/env bash",
       "set -euo pipefail",
+      "if [[ \"${@: -1}\" == \"-\" ]]; then",
+      "  echo 'stdin placeholder \"-\" is not supported' 1>&2",
+      "  exit 64",
+      "fi",
       "cat >/dev/null || true",
       'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
       'echo \'{"type":"message","role":"assistant","id":"m1","text":"ok"}\'',
