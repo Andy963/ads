@@ -378,9 +378,10 @@ async function main() {
     const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
     const sub = args[0]?.toLowerCase();
     const cwd = directoryManager.getUserCwd(userId);
+    const workspaceRoot = detectWorkspaceFrom(cwd);
 
     if (!sub || sub === 'list') {
-      const prefs = listPreferences(cwd);
+      const prefs = listPreferences(workspaceRoot);
       if (prefs.length === 0) {
         await ctx.reply('📋 暂无偏好设置\n\n用法: /pref add <key> <value>');
         return;
@@ -397,7 +398,7 @@ async function main() {
         await ctx.reply('用法: /pref add <key> <value>');
         return;
       }
-      setPreference(cwd, key, value);
+      setPreference(workspaceRoot, key, value);
       await ctx.reply(`✅ 偏好已保存: **${key}** = ${value}`);
       return;
     }
@@ -408,7 +409,7 @@ async function main() {
         await ctx.reply('用法: /pref del <key>');
         return;
       }
-      const deleted = deletePreference(cwd, key);
+      const deleted = deletePreference(workspaceRoot, key);
       if (deleted) {
         await ctx.reply(`✅ 已删除偏好: ${key}`);
       } else {

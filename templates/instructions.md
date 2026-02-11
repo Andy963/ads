@@ -5,6 +5,13 @@
 - 先澄清必要信息，再开始实现。
 - 修改代码后运行项目校验（lint / typecheck / tests），除非用户明确要求跳过。
 
+## Soul（长期记忆：偏好）
+- 当用户在对话中**显式**输入一行偏好写入指令时，系统会将其写入当前 workspace 的 `soul.md`（无需模型推断）。
+- 指令格式（建议单独成行）：
+  - `记住偏好: <key>=<value>`
+  - `保存偏好: <key>: <value>`
+  - `记住喜好 <key> <value>`
+
 ## Skills（自动加载/自动沉淀）
 - 系统会从当前 workspace 的 `.agent/skills/` 发现 skills，并在需要时自动加载 SKILL.md 内容作为上下文。
 - 当用户要求“沉淀/固化/记住”为技能时，你可以在回复末尾输出一个 `<skill_save>` 块，系统会自动写入/更新对应的 `.agent/skills/<name>/SKILL.md`，后续请求会自动加载使用。

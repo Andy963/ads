@@ -11,6 +11,8 @@ import type { SystemPromptManager } from "../systemPrompt/manager.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills } from "../skills/loader.js";
 import { saveSkillDraftFromBlock, type SavedSkillDraft } from "../skills/creator.js";
+import { setPreference } from "../memory/soul.js";
+import { extractPreferenceDirectives, type PreferenceDirective } from "../memory/preferenceDirectives.js";
 
 interface AgentEntry {
   adapter: AgentAdapter;
@@ -38,6 +40,7 @@ export class HybridOrchestrator {
   private readonly systemPromptManager?: SystemPromptManager;
   private readonly skillAutoloadEnabled: boolean;
   private readonly skillAutosaveEnabled: boolean;
+  private readonly preferenceDirectiveEnabled: boolean;
 
   constructor(options: HybridOrchestratorOptions) {
     if (!options.adapters.length) {
@@ -46,6 +49,7 @@ export class HybridOrchestrator {
     this.systemPromptManager = options.systemPromptManager;
     this.skillAutoloadEnabled = parseEnvBoolean(process.env.ADS_SKILLS_AUTOLOAD, true);
     this.skillAutosaveEnabled = parseEnvBoolean(process.env.ADS_SKILLS_AUTOSAVE, true);
+    this.preferenceDirectiveEnabled = parseEnvBoolean(process.env.ADS_PREFERENCE_DIRECTIVES, true);
 
     for (const adapter of options.adapters) {
       this.registerAdapter(adapter);
@@ -233,6 +237,30 @@ export class HybridOrchestrator {
     return { cleaned, saved };
   }
 
+  private persistPreferencesFromInput(input: Input): { cleanedInput: Input; saved: PreferenceDirective[] } {
+    if (!this.preferenceDirectiveEnabled) {
+      return { cleanedInput: input, saved: [] };
+    }
+
+    const text = extractInputText(input);
+    if (!text.trim()) {
+      return { cleanedInput: input, saved: [] };
+    }
+
+    const extracted = extractPreferenceDirectives(text);
+    if (extracted.directives.length === 0) {
+      return { cleanedInput: input, saved: [] };
+    }
+
+    const workspaceRoot = detectWorkspaceFrom(this.workingDirectory ?? process.cwd());
+    for (const directive of extracted.directives) {
+      setPreference(workspaceRoot, directive.key, directive.value);
+    }
+
+    const cleanedInput = replaceInputText(input, extracted.cleanedText);
+    return { cleanedInput, saved: extracted.directives };
+  }
+
   private applySystemPrompt(agentId: AgentIdentifier, input: Input): Input {
     if (!this.systemPromptManager) {
       return input;
@@ -287,14 +315,28 @@ export class HybridOrchestrator {
     if (!entry) {
       throw new Error(`Active agent "${agentId}" not found`);
     }
-    const prompt = this.applySystemPrompt(agentId, input);
+    const preferences = this.persistPreferencesFromInput(input);
+    const cleanedInput = preferences.cleanedInput;
+    if (preferences.saved.length > 0 && isEmptyInput(cleanedInput)) {
+      return {
+        response: formatSavedPreferencesSuffix(preferences.saved),
+        usage: null,
+        agentId,
+      };
+    }
+
+    const prompt = this.applySystemPrompt(agentId, cleanedInput);
     try {
       const result = await entry.adapter.send(prompt, options);
       const persisted = this.persistSkillsFromResponse(result.response);
-      const suffix =
-        persisted.saved.length > 0
-          ? `\n\n（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`
-          : "";
+      const suffixes: string[] = [];
+      if (persisted.saved.length > 0) {
+        suffixes.push(`（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`);
+      }
+      if (preferences.saved.length > 0) {
+        suffixes.push(formatSavedPreferencesSuffix(preferences.saved));
+      }
+      const suffix = suffixes.length > 0 ? `\n\n${suffixes.join("\n")}` : "";
       return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
     } finally {
       this.completeTurn(agentId);
@@ -306,14 +348,28 @@ export class HybridOrchestrator {
     if (!entry) {
       throw new Error(`Agent "${agentId}" is not registered`);
     }
-    const prompt = this.applySystemPrompt(agentId, input);
+    const preferences = this.persistPreferencesFromInput(input);
+    const cleanedInput = preferences.cleanedInput;
+    if (preferences.saved.length > 0 && isEmptyInput(cleanedInput)) {
+      return {
+        response: formatSavedPreferencesSuffix(preferences.saved),
+        usage: null,
+        agentId,
+      };
+    }
+
+    const prompt = this.applySystemPrompt(agentId, cleanedInput);
     try {
       const result = await entry.adapter.send(prompt, options);
       const persisted = this.persistSkillsFromResponse(result.response);
-      const suffix =
-        persisted.saved.length > 0
-          ? `\n\n（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`
-          : "";
+      const suffixes: string[] = [];
+      if (persisted.saved.length > 0) {
+        suffixes.push(`（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`);
+      }
+      if (preferences.saved.length > 0) {
+        suffixes.push(formatSavedPreferencesSuffix(preferences.saved));
+      }
+      const suffix = suffixes.length > 0 ? `\n\n${suffixes.join("\n")}` : "";
       return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
     } finally {
       this.completeTurn(agentId);
@@ -418,4 +474,55 @@ function extractSkillSaveBlocks(text: string): SkillSaveBlock[] {
 
 function stripSkillSaveBlocks(text: string): string {
   return text.replace(/<skill_save\s+name="[^"]+"(?:\s+description="[^"]*")?\s*>[\s\S]*?<\/skill_save>/gi, "");
+}
+
+function replaceInputText(input: Input, nextText: string): Input {
+  if (typeof input === "string") {
+    return nextText;
+  }
+  if (!Array.isArray(input)) {
+    return String(nextText ?? "");
+  }
+
+  const trimmed = String(nextText ?? "").trim();
+  const out: Input = [];
+  let replaced = false;
+  for (const part of input) {
+    if (part.type === "text") {
+      if (replaced) {
+        continue;
+      }
+      replaced = true;
+      if (trimmed) {
+        out.push({ ...part, text: nextText });
+      }
+      continue;
+    }
+    out.push(part);
+  }
+
+  if (!replaced && trimmed) {
+    out.unshift({ type: "text", text: nextText });
+  }
+
+  return out;
+}
+
+function isEmptyInput(input: Input): boolean {
+  if (typeof input === "string") return input.trim().length === 0;
+  if (!Array.isArray(input)) return String(input ?? "").trim().length === 0;
+  for (const part of input) {
+    if (part.type === "text" && part.text.trim()) {
+      return false;
+    }
+    if (part.type !== "text") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function formatSavedPreferencesSuffix(saved: PreferenceDirective[]): string {
+  const formatted = saved.map((p) => `${p.key}=${p.value}`).join(", ");
+  return `（已保存偏好: ${formatted}）`;
 }
