@@ -4,7 +4,7 @@ import { mount } from "@vue/test-utils";
 import type { TaskBundleDraft } from "../api/types";
 
 describe("TaskBundleDraftPanel", () => {
-  it("renders drafts and emits actions", async () => {
+  it("opens modal and emits actions", async () => {
     const { default: TaskBundleDraftPanel } = await import("../components/TaskBundleDraftPanel.vue");
 
     const draft: TaskBundleDraft = {
@@ -26,21 +26,25 @@ describe("TaskBundleDraftPanel", () => {
     expect(wrapper.text()).toContain("任务草稿");
     expect(wrapper.text()).toContain("1");
 
+    await wrapper.get('[data-testid="task-bundle-draft-d-1"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
     await wrapper.get('[data-testid="task-bundle-draft-approve"]').trigger("click");
     expect(wrapper.emitted("approve")?.[0]).toEqual([{ id: "d-1", runQueue: false }]);
 
-    await wrapper.get('[data-testid="task-bundle-draft-edit"]').trigger("click");
+    await wrapper.get('[data-testid="task-bundle-draft-d-1"]').trigger("click");
     await wrapper.vm.$nextTick();
 
-    const textarea = wrapper.get('[data-testid="task-bundle-draft-editor-textarea"]');
-    await textarea.setValue("{");
-    await wrapper.get('[data-testid="task-bundle-draft-editor-save"]').trigger("click");
-    expect(wrapper.get('[data-testid="task-bundle-draft-editor-error"]').text()).toContain("JSON");
+    const promptField = wrapper.get('[data-testid="task-bundle-draft-task-prompt-0"]');
+    await promptField.setValue("");
+    await wrapper.get('[data-testid="task-bundle-draft-save"]').trigger("click");
+    expect(wrapper.get('[data-testid="task-bundle-draft-error"]').text()).toContain("不能为空");
 
-    await textarea.setValue(JSON.stringify({ version: 1, tasks: [{ prompt: "p2" }] }));
-    await wrapper.get('[data-testid="task-bundle-draft-editor-save"]').trigger("click");
-    expect(wrapper.emitted("update")?.length).toBe(1);
+    await promptField.setValue("p2");
+    await wrapper.get('[data-testid="task-bundle-draft-save"]').trigger("click");
+    expect(wrapper.emitted("update")?.[0]?.[0]?.id).toEqual("d-1");
 
+    await wrapper.get('[data-testid="task-bundle-draft-cancel"]').trigger("click");
     await wrapper.get('[data-testid="task-bundle-draft-delete"]').trigger("click");
     expect(wrapper.emitted("delete")?.[0]).toEqual(["d-1"]);
   });

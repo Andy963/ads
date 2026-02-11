@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { CircleCheck, Delete, Edit, Refresh } from "@element-plus/icons-vue";
+import { Delete, Refresh } from "@element-plus/icons-vue";
+
+import DraggableModal from "./DraggableModal.vue";
 
 import type { TaskBundle, TaskBundleDraft } from "../api/types";
+
+type EditingTask = { title: string; prompt: string };
 
 const props = defineProps<{
   drafts: TaskBundleDraft[];
@@ -18,8 +22,8 @@ const emit = defineEmits<{
 }>();
 
 const expanded = ref(false);
-const editingDraftId = ref<string | null>(null);
-const editingJson = ref("");
+const selectedDraft = ref<TaskBundleDraft | null>(null);
+const editingTasks = ref<EditingTask[]>([]);
 const editingError = ref<string | null>(null);
 
 const draftCount = computed(() => (Array.isArray(props.drafts) ? props.drafts.length : 0));
@@ -51,72 +55,75 @@ function formatTime(ts: number): string {
   }
 }
 
-function openEditor(draft: TaskBundleDraft): void {
+function openDraft(draft: TaskBundleDraft): void {
+  selectedDraft.value = draft;
   editingError.value = null;
-  editingDraftId.value = draft.id;
-  editingJson.value = JSON.stringify(draft.bundle ?? { version: 1, tasks: [] }, null, 2);
-  if (!expanded.value) expanded.value = true;
+  const tasks = draft.bundle?.tasks ?? [];
+  editingTasks.value = tasks.map((t) => ({
+    title: t.title ?? "",
+    prompt: t.prompt ?? "",
+  }));
 }
 
-function closeEditor(): void {
-  editingDraftId.value = null;
-  editingJson.value = "";
+function closeDraft(): void {
+  selectedDraft.value = null;
+  editingTasks.value = [];
   editingError.value = null;
 }
 
-function parseBundleJson(raw: string): { ok: true; bundle: TaskBundle } | { ok: false; error: string } {
-  const text = String(raw ?? "").trim();
-  if (!text) return { ok: false, error: "JSON 不能为空" };
+function buildBundle(): { ok: true; bundle: TaskBundle } | { ok: false; error: string } {
+  const draft = selectedDraft.value;
+  if (!draft) return { ok: false, error: "未选择草稿" };
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    return { ok: false, error: "JSON 解析失败" };
-  }
-
-  if (!parsed || typeof parsed !== "object") {
-    return { ok: false, error: "JSON 顶层必须是对象" };
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (obj.version !== 1) {
-    return { ok: false, error: "bundle.version 必须是 1" };
-  }
-  if (!Array.isArray(obj.tasks) || obj.tasks.length === 0) {
-    return { ok: false, error: "bundle.tasks 不能为空" };
-  }
-  for (let i = 0; i < obj.tasks.length; i += 1) {
-    const rawTask = obj.tasks[i];
-    if (!rawTask || typeof rawTask !== "object") {
-      return { ok: false, error: `tasks[${i}] 必须是对象` };
-    }
-    const task = rawTask as Record<string, unknown>;
-    const prompt = String(task.prompt ?? "").trim();
+  const tasks = editingTasks.value;
+  for (let i = 0; i < tasks.length; i++) {
+    const prompt = tasks[i].prompt.trim();
     if (!prompt) {
-      return { ok: false, error: `tasks[${i}].prompt 不能为空` };
+      return { ok: false, error: `任务 ${i + 1} 的描述不能为空` };
     }
   }
-  return { ok: true, bundle: parsed as TaskBundle };
+
+  const originalBundle = draft.bundle ?? { version: 1 as const, tasks: [] };
+  const originalTasks = originalBundle.tasks ?? [];
+
+  const mergedTasks = tasks.map((t, i) => {
+    const orig = originalTasks[i] ?? {};
+    return {
+      ...orig,
+      title: t.title.trim() || orig.title || `Task ${i + 1}`,
+      prompt: t.prompt.trim(),
+    };
+  });
+
+  return {
+    ok: true,
+    bundle: {
+      ...originalBundle,
+      version: 1 as const,
+      tasks: mergedTasks,
+    } as TaskBundle,
+  };
 }
 
 function saveEditor(): void {
-  const id = String(editingDraftId.value ?? "").trim();
-  if (!id) return;
-  const parsed = parseBundleJson(editingJson.value);
-  if (!parsed.ok) {
-    editingError.value = parsed.error;
+  const draft = selectedDraft.value;
+  if (!draft) return;
+  const result = buildBundle();
+  if (!result.ok) {
+    editingError.value = result.error;
     return;
   }
   editingError.value = null;
-  emit("update", { id, bundle: parsed.bundle });
-}
-
-function toggleExpanded(): void {
-  expanded.value = !expanded.value;
+  emit("update", { id: draft.id, bundle: result.bundle });
 }
 
 function approve(id: string, runQueue: boolean): void {
   emit("approve", { id, runQueue });
+  closeDraft();
+}
+
+function toggleExpanded(): void {
+  expanded.value = !expanded.value;
 }
 </script>
 
@@ -150,121 +157,116 @@ function approve(id: string, runQueue: boolean): void {
 
     <div v-if="expanded" class="draftBody">
       <div v-if="error" class="draftError" data-testid="task-bundle-drafts-error">{{ error }}</div>
-      <div v-else-if="!hasDrafts" class="draftEmpty">
-        <div>暂无草稿</div>
-        <div style="margin-top: 6px; font-size: 11px; line-height: 1.4; color: #64748b">
-          要生成草稿，请让 Planner 在最终回复中输出一个 fenced code block（language:
-          <code>ads-task-bundle</code> 或 <code>ads-tasks</code>），内容为 TaskBundle JSON。
-        </div>
-      </div>
+      <div v-else-if="!hasDrafts" class="draftEmpty">暂无草稿</div>
 
       <div v-else class="draftList">
-        <article
+        <div
           v-for="draft in drafts"
           :key="draft.id"
-          class="draftCard"
+          class="draftRow"
           :data-testid="`task-bundle-draft-${draft.id}`"
+          @click="openDraft(draft)"
         >
-          <div class="draftCardHeader">
-            <div class="draftMeta">
-              <div class="draftStatus">{{ statusLabel(draft.status) }}</div>
-              <div class="draftTime">{{ formatTime(draft.updatedAt) }}</div>
-            </div>
-            <div class="draftCardActions">
-              <button
-                type="button"
-                class="draftAction"
-                :disabled="Boolean(busy) || draft.status !== 'draft' || !draft.bundle"
-                data-testid="task-bundle-draft-approve"
-                @click="approve(draft.id, false)"
-              >
-                <CircleCheck />
-                批准
-              </button>
-              <button
-                type="button"
-                class="draftAction"
-                :disabled="Boolean(busy) || draft.status !== 'draft' || !draft.bundle"
-                data-testid="task-bundle-draft-approve-run"
-                @click="approve(draft.id, true)"
-              >
-                <CircleCheck />
-                批准并运行
-              </button>
-              <button
-                type="button"
-                class="draftAction draftAction--ghost"
-                :disabled="Boolean(busy)"
-                data-testid="task-bundle-draft-edit"
-                @click="openEditor(draft)"
-              >
-                <Edit />
-                编辑
-              </button>
-              <button
-                type="button"
-                class="draftAction draftAction--danger"
-                :disabled="Boolean(busy)"
-                data-testid="task-bundle-draft-delete"
-                @click="emit('delete', draft.id)"
-              >
-                <Delete />
-                删除
-              </button>
-            </div>
+          <div class="draftRowLeft">
+            <span class="draftRowBadge" :class="{ 'draftRowBadge--approved': draft.status === 'approved' }">
+              {{ statusLabel(draft.status) }}
+            </span>
+            <span class="draftRowInfo">
+              {{ draft.bundle?.tasks?.length ?? 0 }} 个任务 · {{ formatTime(draft.updatedAt) }}
+            </span>
           </div>
-
-          <div v-if="draft.lastError" class="draftLastError" data-testid="task-bundle-draft-last-error">
-            {{ draft.lastError }}
+          <div class="draftRowRight">
+            <button
+              type="button"
+              class="draftRowDelete"
+              :disabled="Boolean(busy)"
+              title="删除"
+              data-testid="task-bundle-draft-delete"
+              @click.stop="emit('delete', draft.id)"
+            >
+              <Delete />
+            </button>
           </div>
-
-          <details class="draftPreview" :open="editingDraftId !== draft.id">
-            <summary class="draftPreviewSummary">预览（{{ draft.bundle?.tasks?.length ?? 0 }}）</summary>
-            <ol class="draftTasks">
-              <li v-for="(t, idx) in draft.bundle?.tasks ?? []" :key="t.externalId ?? `${draft.id}:${idx}`" class="draftTask">
-                <div class="draftTaskTitle">{{ t.title || `Task ${idx + 1}` }}</div>
-                <pre class="draftTaskPrompt">{{ t.prompt }}</pre>
-              </li>
-            </ol>
-          </details>
-
-          <div v-if="editingDraftId === draft.id" class="draftEditor" data-testid="task-bundle-draft-editor">
-            <div class="draftEditorHeader">编辑 TaskBundle JSON</div>
-            <textarea
-              v-model="editingJson"
-              class="draftEditorTextarea"
-              rows="10"
-              spellcheck="false"
-              data-testid="task-bundle-draft-editor-textarea"
-            />
-            <div v-if="editingError" class="draftEditorError" data-testid="task-bundle-draft-editor-error">
-              {{ editingError }}
-            </div>
-            <div class="draftEditorActions">
-              <button
-                type="button"
-                class="draftAction"
-                :disabled="Boolean(busy)"
-                data-testid="task-bundle-draft-editor-save"
-                @click="saveEditor"
-              >
-                保存
-              </button>
-              <button
-                type="button"
-                class="draftAction draftAction--ghost"
-                :disabled="Boolean(busy)"
-                data-testid="task-bundle-draft-editor-cancel"
-                @click="closeEditor"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </article>
+        </div>
       </div>
     </div>
   </section>
+
+  <DraggableModal
+    v-if="selectedDraft"
+    card-variant="large"
+    data-testid="task-bundle-draft-edit-modal"
+    @close="closeDraft"
+  >
+    <div class="modalHeader" data-drag-handle>
+      <div class="modalTitle">草稿详情</div>
+      <button
+        type="button"
+        class="iconBtn"
+        :disabled="Boolean(busy)"
+        aria-label="关闭"
+        title="关闭"
+        @click="closeDraft"
+      >
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path
+            fill-rule="evenodd"
+            d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+            clip-rule="evenodd"
+          />
+        </svg>
+      </button>
+    </div>
+
+    <div class="modalBody">
+      <div v-if="editingError" class="modalError" data-testid="task-bundle-draft-error">{{ editingError }}</div>
+
+      <div class="taskFormList">
+        <div v-for="(task, idx) in editingTasks" :key="idx" class="taskFormCard">
+          <div class="taskFormIndex">任务 {{ idx + 1 }}</div>
+          <label class="field">
+            <span class="fieldLabel">标题</span>
+            <input v-model="task.title" class="fieldInput" :data-testid="`task-bundle-draft-task-title-${idx}`" />
+          </label>
+          <label class="field">
+            <span class="fieldLabel">任务描述</span>
+            <textarea v-model="task.prompt" class="fieldTextarea" rows="10" :data-testid="`task-bundle-draft-task-prompt-${idx}`" />
+          </label>
+        </div>
+      </div>
+
+      <div class="modalActions">
+        <button type="button" class="btnSecondary" data-testid="task-bundle-draft-cancel" @click="closeDraft">取消</button>
+        <button
+          type="button"
+          class="btnSecondary"
+          :disabled="Boolean(busy) || selectedDraft.status !== 'draft'"
+          data-testid="task-bundle-draft-save"
+          @click="saveEditor"
+        >
+          保存
+        </button>
+        <button
+          type="button"
+          class="btnPrimary"
+          :disabled="Boolean(busy) || selectedDraft.status !== 'draft' || !selectedDraft.bundle"
+          data-testid="task-bundle-draft-approve"
+          @click="approve(selectedDraft.id, false)"
+        >
+          批准
+        </button>
+        <button
+          type="button"
+          class="btnPrimary"
+          :disabled="Boolean(busy) || selectedDraft.status !== 'draft' || !selectedDraft.bundle"
+          data-testid="task-bundle-draft-approve-run"
+          @click="approve(selectedDraft.id, true)"
+        >
+          批准并运行
+        </button>
+      </div>
+    </div>
+  </DraggableModal>
 </template>
 
 <style src="./TaskBundleDraftPanel.css" scoped></style>

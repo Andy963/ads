@@ -119,11 +119,7 @@ export function createTaskBundleDraftActions(deps: {
         { runQueue: Boolean(options?.runQueue) },
       );
       const updated = res?.draft ?? null;
-      if (updated && updated.id) {
-        upsertDraftLocal(rt, updated);
-      } else {
-        await loadTaskBundleDrafts(pid);
-      }
+      deleteDraftLocal(rt, id);
       return { ok: Boolean(res?.success), createdTaskIds: Array.isArray(res?.createdTaskIds) ? res.createdTaskIds : [], draft: updated };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
