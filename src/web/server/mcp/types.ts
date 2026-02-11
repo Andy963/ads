@@ -38,6 +38,7 @@ export type McpToolCallResult = {
 
 export type McpToolContext = {
   auth: McpAuthContext;
+  rpcId?: JsonRpcId;
   req: http.IncomingMessage;
   broadcastPlanner: (payload: unknown) => void;
 };
@@ -46,4 +47,3 @@ export interface McpTool {
   descriptor: McpToolDescriptor;
   call: (args: unknown, ctx: McpToolContext) => Promise<McpToolCallResult>;
 }
-

@@ -67,6 +67,8 @@ describe("web/server/mcp task bundle draft tool", () => {
         chatSessionId: "planner",
         historyKey: "h1",
         workspaceRoot: "/tmp/ws",
+        requestId: "req-1",
+        clientMessageId: "cmid-1",
       },
     });
     const verified = verifyMcpBearerToken({ token, pepper, nowMs: 1700000001000 });
@@ -107,8 +109,48 @@ describe("web/server/mcp task bundle draft tool", () => {
     assert.ok(broadcasted >= 1);
 
     const db = getStateDatabase(process.env.ADS_STATE_DB_PATH);
-    const row = db.prepare("SELECT COUNT(*) AS c FROM web_task_bundle_drafts").get() as { c: number };
-    assert.equal(row.c, 1);
+    const row = db.prepare("SELECT draft_id, request_id, bundle_json FROM web_task_bundle_drafts").get() as {
+      draft_id: string;
+      request_id: string;
+      bundle_json: string;
+    };
+    assert.ok(row.draft_id);
+    assert.equal(row.request_id, "cmid:cmid-1");
+    const firstBundle = JSON.parse(row.bundle_json) as { requestId?: string; tasks?: Array<{ externalId?: string; prompt?: string }> };
+    assert.equal(firstBundle.requestId, "cmid:cmid-1");
+    assert.equal(firstBundle.tasks?.[0]?.externalId, "tb:cmid:cmid-1:t:1");
+    assert.equal(firstBundle.tasks?.[0]?.prompt, "do something");
+
+    const retryResponse = await router.handle(
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "ads_task_bundle_draft_upsert",
+          arguments: {
+            bundle: {
+              version: 1,
+              tasks: [{ prompt: "do something again" }],
+            },
+          },
+        },
+      },
+      ctx,
+    );
+    assert.ok(retryResponse);
+
+    const count = db.prepare("SELECT COUNT(*) AS c FROM web_task_bundle_drafts").get() as { c: number };
+    assert.equal(count.c, 1);
+
+    const reread = db.prepare("SELECT draft_id, request_id, bundle_json FROM web_task_bundle_drafts").get() as {
+      draft_id: string;
+      request_id: string;
+      bundle_json: string;
+    };
+    assert.equal(reread.draft_id, row.draft_id);
+    assert.equal(reread.request_id, "cmid:cmid-1");
+    const secondBundle = JSON.parse(reread.bundle_json) as { tasks?: Array<{ prompt?: string }> };
+    assert.equal(secondBundle.tasks?.[0]?.prompt, "do something again");
   });
 });
-

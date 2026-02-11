@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { taskBundleSchema } from "../../planner/taskBundle.js";
+import { ensureTaskBundleIdempotency, taskBundleSchema } from "../../planner/taskBundle.js";
 import { upsertTaskBundleDraft, type TaskBundleDraft } from "../../planner/taskBundleDraftStore.js";
 
 import type { McpTool } from "../types.js";
@@ -66,6 +66,18 @@ export const taskBundleDraftUpsertTool: McpTool = {
       };
     }
 
+    const defaultRequestId = (() => {
+      const clientMessageId = String(ctx.auth.clientMessageId ?? "").trim();
+      if (clientMessageId) return `cmid:${clientMessageId}`;
+      const requestId = String(ctx.auth.requestId ?? "").trim();
+      if (requestId) return `req:${requestId}`;
+      const rpcId = ctx.rpcId;
+      if (rpcId != null) return `rpc:${String(rpcId)}`;
+      return null;
+    })();
+
+    const bundle = ensureTaskBundleIdempotency(bundleParsed.data, { defaultRequestId });
+
     let draft: TaskBundleDraft;
     try {
       draft = upsertTaskBundleDraft({
@@ -73,7 +85,7 @@ export const taskBundleDraftUpsertTool: McpTool = {
         workspaceRoot: ctx.auth.workspaceRoot,
         sourceChatSessionId: ctx.auth.chatSessionId,
         sourceHistoryKey: ctx.auth.historyKey,
-        bundle: bundleParsed.data,
+        bundle,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -97,4 +109,3 @@ export const taskBundleDraftUpsertTool: McpTool = {
     };
   },
 };
-

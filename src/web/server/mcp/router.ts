@@ -83,6 +83,7 @@ export function createMcpRouter(tools: McpTool[]) {
 
   const handleOne = async (req: JsonRpcRequest, ctx: McpToolContext): Promise<JsonRpcResponse | null> => {
     const id = req.id === undefined ? null : toId(req.id);
+    const ctxWithRpcId: McpToolContext = { ...ctx, rpcId: id };
     const method = req.method.trim();
     const params = coerceParams(req.params);
 
@@ -99,7 +100,7 @@ export function createMcpRouter(tools: McpTool[]) {
         return makeResult(id, listTools());
       }
       if (method === "tools/call") {
-        const result = await callTool(params, ctx);
+        const result = await callTool(params, ctxWithRpcId);
         return makeResult(id, result);
       }
       if (method === "ping") {
@@ -137,4 +138,3 @@ export function createMcpRouter(tools: McpTool[]) {
 
   return { handle };
 }
-

@@ -7,6 +7,8 @@ export type McpAuthContext = {
   chatSessionId: string;
   historyKey: string;
   workspaceRoot: string;
+  requestId?: string;
+  clientMessageId?: string;
   issuedAtMs: number;
   expiresAtMs: number;
 };
@@ -61,6 +63,14 @@ function normalizeContext(input: unknown): McpAuthContext | null {
   const chatSessionId = String(obj.chatSessionId ?? "").trim();
   const historyKey = String(obj.historyKey ?? "").trim();
   const workspaceRoot = String(obj.workspaceRoot ?? "").trim();
+  const requestId = (() => {
+    const raw = String(obj.requestId ?? "").trim();
+    return raw ? raw : undefined;
+  })();
+  const clientMessageId = (() => {
+    const raw = String(obj.clientMessageId ?? "").trim();
+    return raw ? raw : undefined;
+  })();
   const issuedAtMs = typeof obj.issuedAtMs === "number" && Number.isFinite(obj.issuedAtMs) ? Math.floor(obj.issuedAtMs) : 0;
   const expiresAtMs = typeof obj.expiresAtMs === "number" && Number.isFinite(obj.expiresAtMs) ? Math.floor(obj.expiresAtMs) : 0;
 
@@ -78,6 +88,8 @@ function normalizeContext(input: unknown): McpAuthContext | null {
     chatSessionId,
     historyKey,
     workspaceRoot,
+    requestId,
+    clientMessageId,
     issuedAtMs,
     expiresAtMs,
   };
@@ -106,6 +118,14 @@ export function createMcpBearerToken(options: {
     chatSessionId: String(options.context.chatSessionId ?? "").trim(),
     historyKey: String(options.context.historyKey ?? "").trim(),
     workspaceRoot: String(options.context.workspaceRoot ?? "").trim(),
+    requestId: (() => {
+      const raw = String(options.context.requestId ?? "").trim();
+      return raw ? raw : undefined;
+    })(),
+    clientMessageId: (() => {
+      const raw = String(options.context.clientMessageId ?? "").trim();
+      return raw ? raw : undefined;
+    })(),
     issuedAtMs: nowMs,
     expiresAtMs: nowMs + ttlMs,
   };

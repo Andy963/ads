@@ -88,6 +88,16 @@ function mapRow(row: Record<string, unknown>): TaskBundleDraft {
   };
 }
 
+function isSqliteUniqueConstraintError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "SQLITE_CONSTRAINT_UNIQUE" || code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
+    return true;
+  }
+  const message = String((error as { message?: unknown }).message ?? "").toLowerCase();
+  return message.includes("unique constraint failed") || message.includes("constraint failed");
+}
+
 function prepareStatements(db: DatabaseType) {
   const insertStmt: SqliteStatement = db.prepare(
     `INSERT INTO web_task_bundle_drafts (
@@ -129,7 +139,7 @@ function prepareStatements(db: DatabaseType) {
   const listStmt: SqliteStatement = db.prepare(
     `SELECT *
      FROM web_task_bundle_drafts
-     WHERE namespace = ? AND auth_user_id = ? AND workspace_root = ? AND status != 'deleted'
+     WHERE namespace = ? AND auth_user_id = ? AND workspace_root = ? AND status = 'draft'
      ORDER BY updated_at DESC, created_at DESC
      LIMIT ?`,
   );
@@ -215,25 +225,64 @@ export function upsertTaskBundleDraft(args: {
   }
 
   const draftId = crypto.randomUUID();
-  stmts.insertStmt.run(
-    draftId,
-    namespace,
-    authUserId,
-    workspaceRoot,
-    requestId || null,
-    sourceChatSessionId,
-    sourceHistoryKey,
-    bundleJson,
-    "draft",
-    now,
-    now,
-  );
+  try {
+    stmts.insertStmt.run(
+      draftId,
+      namespace,
+      authUserId,
+      workspaceRoot,
+      requestId || null,
+      sourceChatSessionId,
+      sourceHistoryKey,
+      bundleJson,
+      "draft",
+      now,
+      now,
+    );
+  } catch (error) {
+    if (!requestId || !isSqliteUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const existing = stmts.selectByRequestIdStmt.get(namespace, authUserId, workspaceRoot, requestId) as Record<string, unknown> | undefined;
+    if (!existing) {
+      throw error;
+    }
+
+    try {
+      stmts.updateByRequestIdStmt.run(bundleJson, now, sourceHistoryKey, namespace, authUserId, workspaceRoot, requestId);
+    } catch {
+      // ignore
+    }
+
+    const reread = stmts.selectByRequestIdStmt.get(namespace, authUserId, workspaceRoot, requestId) as Record<string, unknown> | undefined;
+    return mapRow(reread ?? existing);
+  }
 
   const row = stmts.selectByIdStmt.get(namespace, authUserId, draftId) as Record<string, unknown> | undefined;
   if (!row) {
     throw new Error("Failed to read inserted draft");
   }
   return mapRow(row);
+}
+
+export function getTaskBundleDraftByRequestId(args: {
+  db?: DatabaseType;
+  namespace?: string;
+  authUserId: string;
+  workspaceRoot: string;
+  requestId: string;
+}): TaskBundleDraft | null {
+  const db = args.db ?? getStateDatabase();
+  const namespace = String(args.namespace ?? "web").trim() || "web";
+  const authUserId = String(args.authUserId ?? "").trim();
+  const workspaceRoot = String(args.workspaceRoot ?? "").trim();
+  const requestId = String(args.requestId ?? "").trim();
+  if (!authUserId || !workspaceRoot || !requestId) return null;
+
+  const stmts = prepareStatements(db);
+  const row = stmts.selectByRequestIdStmt.get(namespace, authUserId, workspaceRoot, requestId) as Record<string, unknown> | undefined;
+  return row ? mapRow(row) : null;
 }
 
 export function listTaskBundleDrafts(args: {

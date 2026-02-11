@@ -25,8 +25,14 @@ import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../uti
 import { runCollaborativeTurn } from "../../../agents/hub.js";
 import { extractCommandPayload } from "./utils.js";
 import type { WsMessage } from "./schema.js";
-import { extractTaskBundleJsonBlocks, parseTaskBundle } from "../planner/taskBundle.js";
-import { upsertTaskBundleDraft } from "../planner/taskBundleDraftStore.js";
+import {
+  ensureTaskBundleIdempotency,
+  extractTaskBundleJsonBlocks,
+  formatTaskBundleSummaryMarkdown,
+  parseTaskBundle,
+  stripTaskBundleCodeBlocks,
+} from "../planner/taskBundle.js";
+import { getTaskBundleDraftByRequestId, upsertTaskBundleDraft } from "../planner/taskBundleDraftStore.js";
 import { createMcpBearerToken } from "../mcp/auth.js";
 import { resolveMcpPepper } from "../mcp/secret.js";
 import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
@@ -700,6 +706,8 @@ export async function handlePromptMessage(deps: {
             chatSessionId: deps.chatSessionId,
             historyKey: deps.historyKey,
             workspaceRoot: workspaceRootForMcp,
+            requestId: deps.requestId,
+            clientMessageId: deps.clientMessageId ?? undefined,
           },
         });
         return { ADS_MCP_BEARER_TOKEN: token };
@@ -784,12 +792,7 @@ export async function handlePromptMessage(deps: {
       }
       const threadId = orchestrator.getThreadId();
       const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
-      sendToChat({ type: "result", ok: true, output: outputToSend, threadId, expectedThreadId, threadReset });
-      if (deps.sessionLogger) {
-        deps.sessionLogger.attachThreadId(threadId ?? undefined);
-        deps.sessionLogger.logOutput(outputToSend);
-      }
-      deps.historyStore.add(deps.historyKey, { role: "ai", text: outputToSend, ts: Date.now() });
+      let outputForChat = outputToSend;
 
       if (deps.chatSessionId === "planner") {
         let workspaceRootForDraft = workspaceRootForAdr;
@@ -800,6 +803,15 @@ export async function handlePromptMessage(deps: {
         }
 
         const blocks = extractTaskBundleJsonBlocks(outputToSend);
+        const stripCandidates = new Set<string>();
+        const summaryTasks: Array<{ title: string; prompt: string }> = [];
+        const defaultRequestId = (() => {
+          const clientMessageId = String(deps.clientMessageId ?? "").trim();
+          if (clientMessageId) return `cmid:${clientMessageId}`;
+          const requestId = String(deps.requestId ?? "").trim();
+          return requestId ? `req:${requestId}` : null;
+        })();
+
         for (const block of blocks) {
           const parsedBundle = parseTaskBundle(block);
           if (!parsedBundle.ok) {
@@ -807,20 +819,60 @@ export async function handlePromptMessage(deps: {
             continue;
           }
           try {
+            const originalRequestId = String(parsedBundle.bundle.requestId ?? "").trim();
+            const normalized = ensureTaskBundleIdempotency(parsedBundle.bundle, { defaultRequestId });
+            const requestId = String(normalized.requestId ?? "").trim();
+
+            if (!originalRequestId && requestId) {
+              const existing = getTaskBundleDraftByRequestId({
+                authUserId: deps.authUserId,
+                workspaceRoot: workspaceRootForDraft,
+                requestId,
+              });
+              if (existing) {
+                sendToChat({ type: "task_bundle_draft", action: "upsert", draft: existing });
+                stripCandidates.add(block);
+                for (const task of normalized.tasks ?? []) {
+                  summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
+                }
+                continue;
+              }
+            }
+
             const draft = upsertTaskBundleDraft({
               authUserId: deps.authUserId,
               workspaceRoot: workspaceRootForDraft,
               sourceChatSessionId: deps.chatSessionId,
               sourceHistoryKey: deps.historyKey,
-              bundle: parsedBundle.bundle,
+              bundle: normalized,
             });
             sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
+
+            stripCandidates.add(block);
+            for (const task of normalized.tasks ?? []) {
+              summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
+            }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             deps.logger.warn(`[PlannerDraft] Failed to persist bundle: ${message}`);
           }
         }
+
+        if (stripCandidates.size > 0) {
+          const stripped = stripTaskBundleCodeBlocks(outputToSend, { shouldStrip: (rawJson) => stripCandidates.has(rawJson) });
+          const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
+
+          const summary = formatTaskBundleSummaryMarkdown(summaryTasks);
+          outputForChat = base ? `${base}\n\n---\n${summary}` : summary;
+        }
       }
+
+      sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });
+      if (deps.sessionLogger) {
+        deps.sessionLogger.attachThreadId(threadId ?? undefined);
+        deps.sessionLogger.logOutput(outputForChat);
+      }
+      deps.historyStore.add(deps.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
 
       if (threadId) {
         deps.sessionManager.saveThreadId(deps.userId, threadId, orchestrator.getActiveAgentId());
