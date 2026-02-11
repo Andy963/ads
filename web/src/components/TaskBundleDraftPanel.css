@@ -162,29 +162,14 @@
   min-width: 0;
 }
 
-.draftRowBadge {
-  flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 800;
-  padding: 2px 8px;
-  border-radius: 999px;
-  color: #0f172a;
-  background: rgba(34, 197, 94, 0.14);
-  border: 1px solid rgba(34, 197, 94, 0.22);
-}
-
-.draftRowBadge--approved {
-  background: rgba(148, 163, 184, 0.14);
-  border-color: rgba(148, 163, 184, 0.22);
-  color: #64748b;
-}
-
-.draftRowInfo {
+.draftRowTitle {
   font-size: 12px;
-  color: #64748b;
+  font-weight: 700;
+  color: #0f172a;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .draftRowRight {
@@ -220,19 +205,36 @@
 
 /* --- Modal --- */
 
-.modalHeader {
+.taskFormHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  margin-bottom: 10px;
   cursor: grab;
 }
 
-.modalTitle {
-  font-size: 16px;
+.taskFormTitleInput {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  font-size: 15px;
   font-weight: 800;
   color: #0f172a;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.taskFormTitleInput:focus {
+  border-bottom-color: rgba(37, 99, 235, 0.5);
+}
+
+.taskFormTitleInput::placeholder {
+  color: #94a3b8;
+  font-weight: 600;
 }
 
 .iconBtn {
@@ -255,7 +257,7 @@
 }
 
 .modalBody {
-  padding: 20px;
+  padding: 14px 16px;
   overflow-y: auto;
   max-height: 70vh;
   scrollbar-width: thin;
@@ -279,18 +281,13 @@
 }
 
 .taskFormCard {
-  padding: 16px;
+  padding: 12px 14px;
   background: rgba(241, 245, 249, 0.6);
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
 }
 
-.taskFormIndex {
-  font-size: 12px;
-  font-weight: 800;
-  color: #64748b;
-  margin-bottom: 12px;
-}
+
 
 .field {
   display: block;

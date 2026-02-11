@@ -39,20 +39,17 @@ watch(
   { immediate: true },
 );
 
-function statusLabel(status: string): string {
-  const s = String(status ?? "").trim().toLowerCase();
-  if (s === "approved") return "已批准";
-  if (s === "deleted") return "已删除";
-  return "草稿";
-}
-
-function formatTime(ts: number): string {
-  if (!Number.isFinite(ts) || ts <= 0) return "";
-  try {
-    return new Date(ts).toLocaleString();
-  } catch {
-    return String(ts);
+function draftTitle(draft: TaskBundleDraft): string {
+  const tasks = draft.bundle?.tasks ?? [];
+  const first = tasks[0];
+  const title = String(first?.title ?? "").trim();
+  if (title) return title;
+  const prompt = String(first?.prompt ?? "").trim();
+  if (prompt) {
+    const firstLine = prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+    return firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;
   }
+  return `草稿 ${draft.id.slice(0, 8)}`;
 }
 
 function openDraft(draft: TaskBundleDraft): void {
@@ -168,12 +165,7 @@ function toggleExpanded(): void {
           @click="openDraft(draft)"
         >
           <div class="draftRowLeft">
-            <span class="draftRowBadge" :class="{ 'draftRowBadge--approved': draft.status === 'approved' }">
-              {{ statusLabel(draft.status) }}
-            </span>
-            <span class="draftRowInfo">
-              {{ draft.bundle?.tasks?.length ?? 0 }} 个任务 · {{ formatTime(draft.updatedAt) }}
-            </span>
+            <span class="draftRowTitle">{{ draftTitle(draft) }}</span>
           </div>
           <div class="draftRowRight">
             <button
@@ -198,36 +190,30 @@ function toggleExpanded(): void {
     data-testid="task-bundle-draft-edit-modal"
     @close="closeDraft"
   >
-    <div class="modalHeader" data-drag-handle>
-      <div class="modalTitle">草稿详情</div>
-      <button
-        type="button"
-        class="iconBtn"
-        :disabled="Boolean(busy)"
-        aria-label="关闭"
-        title="关闭"
-        @click="closeDraft"
-      >
-        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path
-            fill-rule="evenodd"
-            d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-            clip-rule="evenodd"
-          />
-        </svg>
-      </button>
-    </div>
-
     <div class="modalBody">
       <div v-if="editingError" class="modalError" data-testid="task-bundle-draft-error">{{ editingError }}</div>
 
       <div class="taskFormList">
         <div v-for="(task, idx) in editingTasks" :key="idx" class="taskFormCard">
-          <div class="taskFormIndex">任务 {{ idx + 1 }}</div>
-          <label class="field">
-            <span class="fieldLabel">标题</span>
-            <input v-model="task.title" class="fieldInput" :data-testid="`task-bundle-draft-task-title-${idx}`" />
-          </label>
+          <div class="taskFormHeader" data-drag-handle>
+            <input v-model="task.title" class="taskFormTitleInput" placeholder="任务标题" :data-testid="`task-bundle-draft-task-title-${idx}`" />
+            <button
+              type="button"
+              class="iconBtn"
+              :disabled="Boolean(busy)"
+              aria-label="关闭"
+              title="关闭"
+              @click="closeDraft"
+            >
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path
+                  fill-rule="evenodd"
+                  d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                  clip-rule="evenodd"
+                />
+              </svg>
+            </button>
+          </div>
           <label class="field">
             <span class="fieldLabel">任务描述</span>
             <textarea v-model="task.prompt" class="fieldTextarea" rows="10" :data-testid="`task-bundle-draft-task-prompt-${idx}`" />
