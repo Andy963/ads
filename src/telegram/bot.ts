@@ -22,6 +22,7 @@ import { formatSearchResults } from '../tools/search/format.js';
 import { formatLocalSearchOutput, searchWorkspaceFiles } from '../utils/localSearch.js';
 import { runVectorSearch, syncVectorSearch } from '../vectorSearch/run.js';
 import { closeAllStateDatabases } from '../state/database.js';
+import { listPreferences, setPreference, deletePreference } from '../memory/soul.js';
 import { closeAllWorkspaceDatabases } from '../storage/database.js';
 import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag } from './botSetup.js';
 import { runBootstrapLoop } from '../bootstrap/bootstrapLoop.js';
@@ -159,6 +160,7 @@ async function main() {
       { command: 'search', description: '网络搜索（Tavily）' },
       { command: 'vsearch', description: '语义搜索' },
       { command: 'vsearch_sync', description: '手动同步向量索引' },
+      { command: 'pref', description: '管理偏好设置' },
     ]);
     logger.info('Telegram commands registered');
   } catch (error) {
@@ -177,6 +179,7 @@ async function main() {
       '/search <query> - 网络搜索（Tavily）\n' +
       '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
       '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
+      '/pref - 管理偏好设置（长期记忆）\n' +
       '/pwd - 查看当前目录\n' +
       '/cd <path> - 切换目录\n' +
       '/bootstrap [--soft] <repoPath|gitUrl> <goal...> - 自举闭环\n\n' +
@@ -198,6 +201,7 @@ async function main() {
       '/search <query> - 网络搜索（Tavily）\n' +
       '/vsearch <query> - 语义向量搜索（需要配置向量服务）\n' +
       '/vsearch_sync - 手动同步向量索引（Spec, ADR, 历史记录）\n' +
+      '/pref [list|add|del] - 管理偏好设置（长期记忆）\n' +
       '/esc - 中断当前任务（Agent 保持运行）\n\n' +
       '📁 目录管理：\n' +
       '/pwd - 当前工作目录\n' +
@@ -370,6 +374,59 @@ async function main() {
     } else {
       await ctx.reply(`❌ ${result.message}`, { disable_notification: silentNotifications });
     }
+  });
+
+  bot.command('pref', async (ctx) => {
+    const userId = await requireUserId(ctx, '/pref');
+    if (userId === null) return;
+    const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
+    const sub = args[0]?.toLowerCase();
+    const cwd = directoryManager.getUserCwd(userId);
+
+    if (!sub || sub === 'list') {
+      const prefs = listPreferences(cwd);
+      if (prefs.length === 0) {
+        await ctx.reply('📋 暂无偏好设置\n\n用法: /pref add <key> <value>');
+        return;
+      }
+      const lines = prefs.map((p) => `• **${p.key}**: ${p.value}`);
+      await ctx.reply(`📋 偏好设置 (${prefs.length})\n\n${lines.join('\n')}`);
+      return;
+    }
+
+    if (sub === 'add' || sub === 'set') {
+      const key = args[1];
+      const value = args.slice(2).join(' ').trim();
+      if (!key || !value) {
+        await ctx.reply('用法: /pref add <key> <value>');
+        return;
+      }
+      setPreference(cwd, key, value);
+      await ctx.reply(`✅ 偏好已保存: **${key}** = ${value}`);
+      return;
+    }
+
+    if (sub === 'del' || sub === 'delete' || sub === 'rm') {
+      const key = args[1];
+      if (!key) {
+        await ctx.reply('用法: /pref del <key>');
+        return;
+      }
+      const deleted = deletePreference(cwd, key);
+      if (deleted) {
+        await ctx.reply(`✅ 已删除偏好: ${key}`);
+      } else {
+        await ctx.reply(`❌ 未找到偏好: ${key}`);
+      }
+      return;
+    }
+
+    await ctx.reply(
+      '📖 偏好设置命令\n\n' +
+      '/pref list — 列出所有偏好\n' +
+      '/pref add <key> <value> — 添加/更新偏好\n' +
+      '/pref del <key> — 删除偏好'
+    );
   });
 
   bot.command('cd', async (ctx) => {

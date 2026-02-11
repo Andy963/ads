@@ -36,7 +36,8 @@ export async function handleCodexMessage(
   cwd?: string,
   options?: { markNoteEnabled?: boolean; silentNotifications?: boolean }
 ) {
-  const workspaceRoot = cwd ? path.resolve(cwd) : process.cwd();
+  const workingDirectory = cwd ? path.resolve(cwd) : process.cwd();
+  const workspaceRoot = detectWorkspaceFrom(workingDirectory);
   migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
   const adapterLogDir = resolveWorkspaceStatePath(workspaceRoot, 'logs');
   const adapterLogFile = path.join(adapterLogDir, 'telegram-bot.log');
@@ -187,18 +188,18 @@ export async function handleCodexMessage(
     return names.join(', ');
   }
 
-function buildUserLogEntry(rawText: string | undefined, images: string[], files: string[]): string {
-  const lines: string[] = [];
-  const trimmed = rawText?.trim();
-  lines.push(trimmed ? trimmed : '(no text)');
-  if (images.length) {
-    lines.push(`Images: ${formatAttachmentList(images)}`);
+  function buildUserLogEntry(rawText: string | undefined, images: string[], files: string[]): string {
+    const lines: string[] = [];
+    const trimmed = rawText?.trim();
+    lines.push(trimmed ? trimmed : '(no text)');
+    if (images.length) {
+      lines.push(`Images: ${formatAttachmentList(images)}`);
+    }
+    if (files.length) {
+      lines.push(`Files: ${formatAttachmentList(files)}`);
+    }
+    return lines.join('\n');
   }
-  if (files.length) {
-    lines.push(`Files: ${formatAttachmentList(files)}`);
-  }
-  return lines.join('\n');
-}
 
   function queueEvent(event: AgentEvent): void {
     statusUpdater.queueEvent(event);
