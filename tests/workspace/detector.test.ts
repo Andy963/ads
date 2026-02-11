@@ -13,6 +13,7 @@ import {
   isWorkspaceInitialized,
   ensureDefaultTemplates,
 } from "../../src/workspace/detector.js";
+import { withWorkspaceContext } from "../../src/workspace/asyncWorkspaceContext.js";
 import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
@@ -77,5 +78,25 @@ describe("workspace/detector", () => {
 
     const detected = detectWorkspaceFrom(nested);
     assert.equal(detected, path.resolve(workspace));
+  });
+
+  it("normalizes async workspace context to git root", async () => {
+    initializeWorkspace(workspace, "Context Detector Test");
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    const nested = path.join(workspace, "nested", "context");
+    fs.mkdirSync(nested, { recursive: true });
+
+    const prev = process.env.AD_WORKSPACE;
+    delete process.env.AD_WORKSPACE;
+    try {
+      const detected = await withWorkspaceContext(nested, () => detectWorkspace());
+      assert.equal(detected, path.resolve(workspace));
+    } finally {
+      if (prev === undefined) {
+        delete process.env.AD_WORKSPACE;
+      } else {
+        process.env.AD_WORKSPACE = prev;
+      }
+    }
   });
 });
