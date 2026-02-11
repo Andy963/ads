@@ -9,10 +9,7 @@ import { parseSlashCommand } from "../../../codexConfig.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import { extractTextFromInput } from "../../../utils/inputText.js";
 import { processAdrBlocks } from "../../../utils/adrRecording.js";
-import type { SearchParams } from "../../../tools/search/types.js";
-import { SearchTool } from "../../../tools/index.js";
-import { ensureApiKeys, resolveSearchConfig } from "../../../tools/search/config.js";
-import { formatSearchResults } from "../../../tools/search/format.js";
+import { formatTavilySearchResults, hasTavilyApiKey, runTavilyCli } from "../../../utils/tavilySkillCli.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { truncateForLog } from "../../utils.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
@@ -343,10 +340,8 @@ export async function handlePromptMessage(deps: {
         cleanupAttachments();
         return;
       }
-      const config = resolveSearchConfig();
-      const missingKeys = ensureApiKeys(config);
-      if (missingKeys) {
-        const output = `/search 未启用: ${missingKeys.message}`;
+      if (!hasTavilyApiKey()) {
+        const output = "/search 未启用: Missing TAVILY_API_KEY";
         sendToChat({ type: "result", ok: false, output });
         deps.sessionLogger?.logError(output);
         deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
@@ -354,8 +349,8 @@ export async function handlePromptMessage(deps: {
         return;
       }
       try {
-        const result = await SearchTool.search({ query } satisfies SearchParams, { config });
-        const output = formatSearchResults(query, result);
+        const result = await runTavilyCli({ cmd: "search", query, maxResults: 5 });
+        const output = formatTavilySearchResults(query, result.json);
         sendToChat({ type: "result", ok: true, output });
         deps.sessionLogger?.logOutput(output);
         deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });

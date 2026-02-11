@@ -16,10 +16,8 @@ import { HttpsProxyAgent } from './utils/proxyAgent.js';
 import { getDailyNoteFilePath } from './utils/noteLogger.js';
 import { detectWorkspaceFrom } from '../workspace/detector.js';
 import { resolveAdsStateDir } from '../workspace/adsPaths.js';
-import { SearchTool } from '../tools/index.js';
-import { ensureApiKeys, resolveSearchConfig } from '../tools/search/config.js';
-import { formatSearchResults } from '../tools/search/format.js';
 import { formatLocalSearchOutput, searchWorkspaceFiles } from '../utils/localSearch.js';
+import { formatTavilySearchResults, hasTavilyApiKey, runTavilyCli } from '../utils/tavilySkillCli.js';
 import { runVectorSearch, syncVectorSearch } from '../vectorSearch/run.js';
 import { closeAllStateDatabases } from '../state/database.js';
 import { listPreferences, setPreference, deletePreference } from '../memory/soul.js';
@@ -322,9 +320,7 @@ async function main() {
       return;
     }
     const query = args.join(' ').trim();
-    const config = resolveSearchConfig();
-    const missingKeys = ensureApiKeys(config);
-    if (missingKeys) {
+    if (!hasTavilyApiKey()) {
       const cwd = directoryManager.getUserCwd(userId);
       const workspaceRoot = detectWorkspaceFrom(cwd);
       const local = searchWorkspaceFiles({ workspaceRoot, query });
@@ -333,8 +329,8 @@ async function main() {
       return;
     }
     try {
-      const result = await SearchTool.search({ query }, { config });
-      const output = formatSearchResults(query, result);
+      const result = await runTavilyCli({ cmd: 'search', query, maxResults: 5 });
+      const output = formatTavilySearchResults(query, result.json);
       await ctx.reply(output, { disable_notification: silentNotifications });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

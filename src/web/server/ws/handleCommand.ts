@@ -1,9 +1,7 @@
 import type { WebSocket } from "ws";
 
-import { SearchTool } from "../../../tools/index.js";
-import { ensureApiKeys, resolveSearchConfig } from "../../../tools/search/config.js";
-import { formatSearchResults } from "../../../tools/search/format.js";
 import { formatLocalSearchOutput, searchWorkspaceFiles } from "../../../utils/localSearch.js";
+import { formatTavilySearchResults, hasTavilyApiKey, runTavilyCli } from "../../../utils/tavilySkillCli.js";
 import { parseSlashCommand } from "../../../codexConfig.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { withWorkspaceContext } from "../../../workspace/asyncWorkspaceContext.js";
@@ -125,9 +123,7 @@ export async function handleCommandMessage(deps: {
         deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
         return;
       }
-      const config = resolveSearchConfig();
-      const missingKeys = ensureApiKeys(config);
-      if (missingKeys) {
+      if (!hasTavilyApiKey()) {
         const workspaceRoot = detectWorkspaceFrom(currentCwd);
         const local = searchWorkspaceFiles({ workspaceRoot, query });
         const output = formatLocalSearchOutput({ query, ...local });
@@ -137,8 +133,8 @@ export async function handleCommandMessage(deps: {
         return;
       }
       try {
-        const result = await SearchTool.search({ query }, { config });
-        const output = formatSearchResults(query, result);
+        const result = await runTavilyCli({ cmd: "search", query, maxResults: 5 });
+        const output = formatTavilySearchResults(query, result.json);
         sendToCommandScope({ type: "result", ok: true, output });
         deps.sessionLogger?.logOutput(output);
         deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });
