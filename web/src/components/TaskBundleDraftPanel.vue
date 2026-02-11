@@ -216,7 +216,7 @@ function toggleExpanded(): void {
           </div>
           <label class="field">
             <span class="fieldLabel">任务描述</span>
-            <textarea v-model="task.prompt" class="fieldTextarea" rows="10" :data-testid="`task-bundle-draft-task-prompt-${idx}`" />
+            <textarea v-model="task.prompt" class="fieldTextarea" rows="16" :data-testid="`task-bundle-draft-task-prompt-${idx}`" />
           </label>
         </div>
       </div>
