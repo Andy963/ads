@@ -8,6 +8,7 @@ import { ensureWebProjectTables } from "../projects/schema.js";
 import { deriveProjectSessionId } from "../server/projectSessionId.js";
 
 import { ensureTaskNotificationTables } from "./schema.js";
+import { resolveTaskNotificationTelegramConfigFromEnv } from "./telegramConfig.js";
 
 export type TaskTerminalStatus = "completed" | "failed" | "cancelled";
 
@@ -33,15 +34,6 @@ function normalizePathBasename(workspaceRoot: string): string {
   const withoutTrailing = trimmed.replace(/[\\/]+$/, "");
   const base = path.basename(withoutTrailing);
   return base || "Workspace";
-}
-
-function resolveTelegramConfigFromEnv(): { ok: true; chatId: string } | { ok: false; chatId: string } {
-  const token = String(process.env.ADS_TELEGRAM_BOT_TOKEN ?? "").trim();
-  const chatId = String(process.env.ADS_TELEGRAM_NOTIFY_CHAT_ID ?? "").trim();
-  if (!token || !chatId) {
-    return { ok: false, chatId };
-  }
-  return { ok: true, chatId };
 }
 
 function resolveProjectNameAtCreate(db: DatabaseType, authUserId: string, workspaceRoot: string): string {
@@ -126,7 +118,7 @@ export function upsertTaskNotificationBinding(args: {
   const taskTitle = String(args.taskTitle ?? "").trim();
   const projectId = deriveProjectSessionId(workspaceRoot);
   const projectName = resolveProjectNameAtCreate(db, args.authUserId, workspaceRoot);
-  const telegram = resolveTelegramConfigFromEnv();
+  const telegram = resolveTaskNotificationTelegramConfigFromEnv();
 
   if (!taskId || !workspaceRoot) {
     return;
@@ -134,7 +126,7 @@ export function upsertTaskNotificationBinding(args: {
 
   if (!telegram.ok) {
     args.logger?.warn?.(
-      `[Web][TaskNotifications] Telegram config missing; will not send notifications until configured taskId=${taskId}`,
+      `[Web][TaskNotifications] Telegram config missing; set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS (single user) to enable notifications taskId=${taskId}`,
     );
   }
 
@@ -200,7 +192,7 @@ export function recordTaskTerminalStatus(args: {
   const startedAt =
     typeof args.startedAt === "number" && Number.isFinite(args.startedAt) ? Math.floor(args.startedAt) : completedAt;
   const projectId = deriveProjectSessionId(workspaceRoot);
-  const telegram = resolveTelegramConfigFromEnv();
+  const telegram = resolveTaskNotificationTelegramConfigFromEnv();
 
   if (!taskId || !workspaceRoot) {
     return;
@@ -208,7 +200,7 @@ export function recordTaskTerminalStatus(args: {
 
   if (!telegram.ok) {
     args.logger?.warn?.(
-      `[Web][TaskNotifications] Telegram config missing; cannot notify terminal status taskId=${taskId} status=${status}`,
+      `[Web][TaskNotifications] Telegram config missing; cannot notify terminal status (set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS with exactly one user ID) taskId=${taskId} status=${status}`,
     );
   }
 

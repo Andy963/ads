@@ -32,8 +32,8 @@ describe("web/taskNotifications telegram", () => {
   });
 
   it("records binding with fallback project name and missing config error", () => {
-    delete process.env.ADS_TELEGRAM_BOT_TOKEN;
-    delete process.env.ADS_TELEGRAM_NOTIFY_CHAT_ID;
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_ALLOWED_USERS;
 
     const db = getStateDatabase();
     upsertTaskNotificationBinding({
@@ -53,8 +53,8 @@ describe("web/taskNotifications telegram", () => {
   });
 
   it("prefers web_projects display_name at create time", () => {
-    process.env.ADS_TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.ADS_TELEGRAM_NOTIFY_CHAT_ID = "123";
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USERS = "123";
 
     const db = getStateDatabase();
     ensureWebAuthTables(db);
@@ -88,8 +88,8 @@ describe("web/taskNotifications telegram", () => {
   });
 
   it("sends at most once and marks notified", async () => {
-    process.env.ADS_TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.ADS_TELEGRAM_NOTIFY_CHAT_ID = "123";
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USERS = "123";
 
     const db = getStateDatabase();
     upsertTaskNotificationBinding({
@@ -132,8 +132,8 @@ describe("web/taskNotifications telegram", () => {
   });
 
   it("records failures with retry_count and next_retry_at", async () => {
-    process.env.ADS_TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.ADS_TELEGRAM_NOTIFY_CHAT_ID = "123";
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USERS = "123";
 
     const db = getStateDatabase();
     recordTaskTerminalStatus({
@@ -163,5 +163,35 @@ describe("web/taskNotifications telegram", () => {
     assert.ok(row.nextRetryAt! >= before + 900);
     assert.ok(row.nextRetryAt! <= after + 5_000);
   });
-});
 
+  it("uses TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS for notifications", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USERS = "123";
+
+    const db = getStateDatabase();
+    recordTaskTerminalStatus({
+      db,
+      workspaceRoot: "/tmp/ws",
+      taskId: "t5",
+      taskTitle: "Task 5",
+      status: "completed",
+      startedAt: 1_000,
+      completedAt: 2_000,
+      now: 2_000,
+    });
+
+    let calls = 0;
+    const sender = async (args: { botToken: string; chatId: string; text: string }) => {
+      calls += 1;
+      assert.equal(args.botToken, "test-token");
+      assert.equal(args.chatId, "123");
+      assert.ok(args.text.includes("Task terminal"));
+      return { ok: true as const };
+    };
+
+    const logger = { info() {}, warn() {}, debug() {}, error() {} } as any;
+    const outcome = await attemptSendTaskTerminalTelegramNotification({ logger, taskId: "t5", sender });
+    assert.equal(outcome, "sent");
+    assert.equal(calls, 1);
+  });
+});

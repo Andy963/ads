@@ -8,21 +8,13 @@ import {
   recordTaskNotificationFailure,
   recordTaskTerminalStatus,
 } from "./store.js";
+import { resolveTaskNotificationTelegramConfigFromEnv } from "./telegramConfig.js";
 
 type TelegramSendError = { ok: false; error: string; retryAfterSeconds?: number };
 type TelegramSendOk = { ok: true };
 export type TelegramSendResult = TelegramSendOk | TelegramSendError;
 
 export type TelegramSender = (args: { botToken: string; chatId: string; text: string }) => Promise<TelegramSendResult>;
-
-function resolveTelegramConfig(): { ok: true; botToken: string; chatId: string } | { ok: false } {
-  const botToken = String(process.env.ADS_TELEGRAM_BOT_TOKEN ?? "").trim();
-  const chatId = String(process.env.ADS_TELEGRAM_NOTIFY_CHAT_ID ?? "").trim();
-  if (!botToken || !chatId) {
-    return { ok: false };
-  }
-  return { ok: true, botToken, chatId };
-}
 
 function formatIso(ts: number | null): string {
   if (ts == null || !Number.isFinite(ts) || ts <= 0) return "N/A";
@@ -138,7 +130,7 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
     return "skipped";
   }
 
-  const telegram = resolveTelegramConfig();
+  const telegram = resolveTaskNotificationTelegramConfigFromEnv();
   if (!telegram.ok) {
     return "skipped";
   }
@@ -244,7 +236,7 @@ export function startTaskTerminalTelegramRetryLoop(args: {
   let inProgress = false;
   const tick = async () => {
     if (inProgress) return;
-    const telegram = resolveTelegramConfig();
+    const telegram = resolveTaskNotificationTelegramConfigFromEnv();
     if (!telegram.ok) {
       return;
     }
