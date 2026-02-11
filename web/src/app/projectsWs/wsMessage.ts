@@ -223,6 +223,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "task_bundle_auto_approved") {
+      const draftId = String((msg as { draftId?: unknown }).draftId ?? "").trim();
+      if (draftId) {
+        const existing = Array.isArray(rt.taskBundleDrafts.value) ? rt.taskBundleDrafts.value : [];
+        rt.taskBundleDrafts.value = existing.filter((d) => d.id !== draftId);
+      }
+      return;
+    }
+
     if (type === "welcome") {
       let nextPath = "";
       let wsState: WorkspaceState | null = null;

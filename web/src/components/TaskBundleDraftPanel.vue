@@ -166,6 +166,7 @@ function toggleExpanded(): void {
         >
           <div class="draftRowLeft">
             <span class="draftRowTitle">{{ draftTitle(draft) }}</span>
+            <span v-if="draft.degradeReason" class="draftRowDegraded" :title="draft.degradeReason">⚠️ 已降级</span>
           </div>
           <div class="draftRowRight">
             <button
@@ -192,6 +193,9 @@ function toggleExpanded(): void {
   >
     <div class="modalBody">
       <div v-if="editingError" class="modalError" data-testid="task-bundle-draft-error">{{ editingError }}</div>
+      <div v-if="selectedDraft?.degradeReason" class="modalWarning" data-testid="task-bundle-draft-degrade-reason">
+        ⚠️ 此草稿已从自动入队降级：{{ selectedDraft.degradeReason }}
+      </div>
 
       <div class="taskFormList">
         <div v-for="(task, idx) in editingTasks" :key="idx" class="taskFormCard">

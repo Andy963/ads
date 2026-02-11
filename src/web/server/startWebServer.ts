@@ -324,6 +324,8 @@ export async function startWebServer(): Promise<void> {
     plannerSessionManager,
     historyStore,
     ensureTaskContext: taskQueueManager.ensureTaskContext,
+    promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
+    broadcastToSession,
     getWorkspaceLock,
     getPlannerWorkspaceLock,
     runAdsCommandLine,

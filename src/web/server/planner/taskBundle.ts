@@ -19,6 +19,8 @@ export const taskBundleSchema = z
     requestId: z.string().min(1).optional(),
     runQueue: z.boolean().optional(),
     insertPosition: z.enum(["front", "back"]).optional(),
+    autoApprove: z.boolean().optional(),
+    specRef: z.string().optional(),
     tasks: z.array(taskBundleTaskSchema).min(1),
   })
   .passthrough();

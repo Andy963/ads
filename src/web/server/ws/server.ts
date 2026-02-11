@@ -62,6 +62,8 @@ export function attachWebSocketServer(deps: {
   plannerSessionManager: SessionManager;
   historyStore: HistoryStore;
   ensureTaskContext: (workspaceRoot: string) => TaskQueueContext;
+  promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
+  broadcastToSession: (sessionId: string, payload: unknown) => void;
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   getPlannerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
@@ -428,6 +430,9 @@ export function attachWebSocketServer(deps: {
           sessionManager,
           orchestrator,
           sendWorkspaceState,
+          ensureTaskContext: deps.ensureTaskContext,
+          promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
+          broadcastToSession: deps.broadcastToSession,
         });
         if (promptResult.handled) {
           orchestrator = promptResult.orchestrator;

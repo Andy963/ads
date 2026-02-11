@@ -29,7 +29,16 @@ import {
   parseTaskBundle,
   stripTaskBundleCodeBlocks,
 } from "../planner/taskBundle.js";
-import { getTaskBundleDraftByRequestId, upsertTaskBundleDraft } from "../planner/taskBundleDraftStore.js";
+import {
+  approveTaskBundleDraft,
+  getTaskBundleDraftByRequestId,
+  setTaskBundleDraftError,
+  upsertTaskBundleDraft,
+} from "../planner/taskBundleDraftStore.js";
+import { normalizeCreateTaskInput } from "../planner/taskBundleApprover.js";
+import { detectBundleRisk } from "../planner/riskDetector.js";
+import { recordTaskQueueMetric, type TaskQueueContext } from "../taskQueue/manager.js";
+import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
 import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import { runBootstrapLoop } from "../../../bootstrap/bootstrapLoop.js";
 import { CodexBootstrapAgentRunner } from "../../../bootstrap/agentRunner.js";
@@ -278,6 +287,9 @@ export async function handlePromptMessage(deps: {
   sessionManager: SessionManager;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   sendWorkspaceState: (ws: import("ws").WebSocket, workspaceRoot: string) => void;
+  ensureTaskContext?: (workspaceRoot: string) => TaskQueueContext;
+  promoteQueuedTasksToPending?: (ctx: TaskQueueContext) => void;
+  broadcastToSession?: (sessionId: string, payload: unknown) => void;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
@@ -813,7 +825,95 @@ export async function handlePromptMessage(deps: {
               sourceHistoryKey: deps.historyKey,
               bundle: normalized,
             });
-            sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
+
+            const riskResult = normalized.autoApprove ? detectBundleRisk(normalized) : null;
+            const shouldAutoApprove = normalized.autoApprove && !riskResult?.isHighRisk && deps.ensureTaskContext && deps.promoteQueuedTasksToPending && deps.broadcastToSession;
+
+            if (riskResult?.isHighRisk) {
+              const degradeReason = riskResult.reasons.join("；");
+              deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${degradeReason}`);
+              try {
+                setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: `降级为草稿：${degradeReason}` });
+              } catch {
+                // ignore
+              }
+              sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: `降级为草稿：${degradeReason}`, degradeReason } });
+            } else if (shouldAutoApprove) {
+              const ensureCtx = deps.ensureTaskContext!;
+              const promote = deps.promoteQueuedTasksToPending!;
+              const broadcast = deps.broadcastToSession!;
+              try {
+                const taskCtx = ensureCtx(workspaceRootForDraft);
+                const now = Date.now();
+                const createdTaskIds: string[] = [];
+                const taskTitles: string[] = [];
+
+                await taskCtx.lock.runExclusive(async () => {
+                  for (let i = 0; i < normalized.tasks.length; i++) {
+                    const specTask = normalized.tasks[i]!;
+                    const input = normalizeCreateTaskInput(draft.id, specTask, i);
+                    const { attachments: _attachments, ...createInput } = input;
+
+                    let created;
+                    try {
+                      created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
+                    } catch {
+                      const existingTask = taskCtx.taskStore.getTask(input.id);
+                      if (existingTask) {
+                        created = existingTask;
+                      } else {
+                        throw new Error(`Auto-approve: create task failed (idx=${i + 1})`);
+                      }
+                    }
+
+                    recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "auto_approve" });
+                    broadcast(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
+                    createdTaskIds.push(created.id);
+                    taskTitles.push(created.title ?? "");
+
+                    try {
+                      upsertTaskNotificationBinding({
+                        authUserId: deps.authUserId,
+                        workspaceRoot: workspaceRootForDraft,
+                        taskId: created.id,
+                        taskTitle: created.title,
+                        now,
+                        logger: deps.logger,
+                      });
+                    } catch {
+                      // ignore
+                    }
+                  }
+
+                  approveTaskBundleDraft({ authUserId: deps.authUserId, draftId: draft.id, approvedTaskIds: createdTaskIds, now });
+
+                  taskCtx.runController.setModeAll();
+                  taskCtx.taskQueue.resume();
+                  taskCtx.queueRunning = true;
+                  promote(taskCtx);
+                });
+
+                sendToChat({
+                  type: "task_bundle_auto_approved",
+                  draftId: draft.id,
+                  createdTaskIds,
+                  taskTitles,
+                  specRef: String(normalized.specRef ?? "").trim() || null,
+                });
+                deps.logger.info(`[PlannerDraft] Auto-approved draft=${draft.id} tasks=${createdTaskIds.length}`);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                deps.logger.warn(`[PlannerDraft] Auto-approve failed draft=${draft.id}: ${message}`);
+                try {
+                  setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: message });
+                } catch {
+                  // ignore
+                }
+                sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
+              }
+            } else {
+              sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
+            }
 
             stripCandidates.add(block);
             for (const task of normalized.tasks ?? []) {

@@ -123,6 +123,8 @@ export type TaskBundle = {
   version: 1;
   requestId?: string;
   runQueue?: boolean;
+  autoApprove?: boolean;
+  specRef?: string;
   insertPosition?: "front" | "back";
   tasks: TaskBundleTask[];
 };
@@ -140,4 +142,5 @@ export type TaskBundleDraft = {
   approvedAt: number | null;
   approvedTaskIds: string[];
   lastError: string | null;
+  degradeReason?: string | null;
 };
