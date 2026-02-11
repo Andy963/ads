@@ -1,7 +1,7 @@
 import type { ThreadEvent } from "../protocol/types.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../../codex/events.js";
 
-type ToolKind = "command" | "file_change" | "web_search" | "mcp_tool_call";
+type ToolKind = "command" | "file_change" | "web_search" | "tool_call";
 
 interface TrackedTool {
   name: string;
@@ -15,7 +15,7 @@ function classifyToolName(name: string): ToolKind {
   if (key === "bash" || key === "bashoutput" || key === "killshell") return "command";
   if (key === "edit" || key === "write" || key === "notebookedit") return "file_change";
   if (key === "websearch" || key === "web_search") return "web_search";
-  return "mcp_tool_call";
+  return "tool_call";
 }
 
 function extractStringField(obj: Record<string, unknown>, keys: string[]): string | undefined {
@@ -189,7 +189,7 @@ export class ClaudeStreamParser {
     return attachCliPayload(
       {
         type: "item.started",
-        item: { type: "mcp_tool_call", id, server: "claude", tool: name, status: "in_progress", input },
+        item: { type: "tool_call", id, server: "claude", tool: name, status: "in_progress", input },
       } as unknown as ThreadEvent,
       payload,
     );
@@ -269,7 +269,7 @@ export class ClaudeStreamParser {
       const ev = attachCliPayload(
         {
           type: "item.completed",
-          item: { type: "mcp_tool_call", id: toolUseId, server: "claude", tool: tool.name, status: isError ? "failed" : "completed", input: tool.input },
+          item: { type: "tool_call", id: toolUseId, server: "claude", tool: tool.name, status: isError ? "failed" : "completed", input: tool.input },
         } as unknown as ThreadEvent,
         payload,
       );

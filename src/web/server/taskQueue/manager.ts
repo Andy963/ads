@@ -16,8 +16,6 @@ import { TaskRunController } from "../../taskRunController.js";
 import { broadcastTaskStart } from "../../taskStartBroadcast.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { buildWorkspacePatch, type WorkspacePatchPayload } from "../../gitPatch.js";
-import { createMcpBearerToken } from "../mcp/auth.js";
-import { resolveMcpPepper } from "../mcp/secret.js";
 import { notifyTaskTerminalViaTelegram } from "../../taskNotifications/telegramNotifier.js";
 
 export type TaskQueueMetricName =
@@ -248,30 +246,8 @@ export function createTaskQueueManager(deps: {
       return taskQueueSessionManager.getOrCreate(userId, key, true);
     };
 
-    const getAgentEnv = (() => {
-      const pepper = resolveMcpPepper();
-      const authUserId = "task_queue";
-      const chatSessionId = "task_queue";
-      const historyKey = `task_queue::${sessionId}`;
-
-      return () => {
-        const token = createMcpBearerToken({
-          pepper,
-          context: {
-            authUserId,
-            sessionId,
-            chatSessionId,
-            historyKey,
-            workspaceRoot: key,
-          },
-        });
-        return { ADS_MCP_BEARER_TOKEN: token };
-      };
-    })();
-
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: getTaskQueueOrchestrator,
-      getAgentEnv: () => getAgentEnv(),
       store: taskStore,
       defaultModel: process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2",
       lock,

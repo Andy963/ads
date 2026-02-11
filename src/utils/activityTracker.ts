@@ -1,7 +1,7 @@
 import type {
   CommandExecutionItem,
   FileChangeItem,
-  McpToolCallItem,
+  ToolCallItem,
   ThreadEvent,
   WebSearchItem,
 } from "../agents/protocol/types.js";
@@ -109,8 +109,8 @@ export class ActivityTracker {
       case "file_change":
         this.ingestFileChange(item as FileChangeItem);
         break;
-      case "mcp_tool_call":
-        this.ingestMcpToolCall(item as McpToolCallItem);
+      case "tool_call":
+        this.ingestToolCall(item as ToolCallItem);
         break;
       case "web_search":
         this.ingestWebSearch(item as WebSearchItem);
@@ -356,8 +356,8 @@ export class ActivityTracker {
     });
   }
 
-  private ingestMcpToolCall(item: McpToolCallItem): void {
-    const seenKey = `codex:mcp:${item.id}`;
+  private ingestToolCall(item: ToolCallItem): void {
+    const seenKey = `codex:tool:${item.id}`;
     if (this.seen.has(seenKey)) {
       return;
     }
@@ -366,7 +366,7 @@ export class ActivityTracker {
     const summary = [item.server, item.tool].filter(Boolean).join(".");
     this.add({
       category: "Tool",
-      summary: summary || "mcp",
+      summary: summary || "tool",
       source: "codex_event",
     });
   }

@@ -30,8 +30,8 @@ export interface FileChangeItem {
   [key: string]: unknown;
 }
 
-export interface McpToolCallItem {
-  type: "mcp_tool_call";
+export interface ToolCallItem {
+  type: "tool_call";
   id?: string;
   status?: string;
   server?: string;
@@ -78,7 +78,7 @@ export interface ErrorItem {
 export type ThreadItem =
   | CommandExecutionItem
   | FileChangeItem
-  | McpToolCallItem
+  | ToolCallItem
   | WebSearchItem
   | TodoListItem
   | AgentMessageItem

@@ -30,8 +30,6 @@ import {
   stripTaskBundleCodeBlocks,
 } from "../planner/taskBundle.js";
 import { getTaskBundleDraftByRequestId, upsertTaskBundleDraft } from "../planner/taskBundleDraftStore.js";
-import { createMcpBearerToken } from "../mcp/auth.js";
-import { resolveMcpPepper } from "../mcp/secret.js";
 import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import { runBootstrapLoop } from "../../../bootstrap/bootstrapLoop.js";
 import { CodexBootstrapAgentRunner } from "../../../bootstrap/agentRunner.js";
@@ -683,31 +681,6 @@ export async function handlePromptMessage(deps: {
         return head!;
       };
 
-      const mcpEnv = (() => {
-        if (deps.chatSessionId !== "planner") {
-          return undefined;
-        }
-        let workspaceRootForMcp = detectWorkspaceFrom(turnCwd);
-        try {
-          workspaceRootForMcp = fs.realpathSync(workspaceRootForMcp);
-        } catch {
-          // ignore
-        }
-        const token = createMcpBearerToken({
-          pepper: resolveMcpPepper(),
-          context: {
-            authUserId: deps.authUserId,
-            sessionId: deps.sessionId,
-            chatSessionId: deps.chatSessionId,
-            historyKey: deps.historyKey,
-            workspaceRoot: workspaceRootForMcp,
-            requestId: deps.requestId,
-            clientMessageId: deps.clientMessageId ?? undefined,
-          },
-        });
-        return { ADS_MCP_BEARER_TOKEN: token };
-      })();
-
       let effectiveInput: Input = inputToSend;
       if (deps.sessionManager.needsHistoryInjection(deps.userId)) {
         const historyEntries = deps.historyStore.get(deps.historyKey);
@@ -723,7 +696,6 @@ export async function handlePromptMessage(deps: {
 
       const result = await runCollaborativeTurn(orchestrator, effectiveInput, {
         streaming: true,
-        env: mcpEnv,
         signal: controller.signal,
         onExploredEntry: handleExploredEntry,
         hooks: {

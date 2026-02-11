@@ -31,7 +31,7 @@ describe("GeminiStreamParser", () => {
     assert.equal(parser.getFinalMessage(), "Hello world");
   });
 
-  it("maps tool_use + tool_result into MCP tool call events", () => {
+  it("maps tool_use + tool_result into tool call events", () => {
     const parser = new GeminiStreamParser();
     parser.parseLine({ type: "init", session_id: "sid" });
 
@@ -57,4 +57,3 @@ describe("GeminiStreamParser", () => {
     assert.equal(events[0]?.phase, "completed");
   });
 });
-

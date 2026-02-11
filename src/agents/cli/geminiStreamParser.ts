@@ -1,7 +1,7 @@
 import type { ThreadEvent } from "../protocol/types.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../../codex/events.js";
 
-type ToolKind = "command" | "file_change" | "web_search" | "mcp_tool_call";
+type ToolKind = "command" | "file_change" | "web_search" | "tool_call";
 
 interface TrackedTool {
   name: string;
@@ -15,7 +15,7 @@ function classifyToolName(name: string): ToolKind {
   if (key.includes("shell") || key.includes("bash") || key.includes("command")) return "command";
   if (key.includes("write") || key.includes("edit") || key.includes("patch")) return "file_change";
   if (key.includes("search")) return "web_search";
-  return "mcp_tool_call";
+  return "tool_call";
 }
 
 function extractStringField(obj: Record<string, unknown>, keys: string[]): string | undefined {
@@ -149,7 +149,7 @@ export class GeminiStreamParser {
     }
 
     const ev = attachCliPayload(
-      { type: "item.started", item: { type: "mcp_tool_call", id: toolId, server: "gemini", tool: toolName, status: "in_progress", input: parameters } } as unknown as ThreadEvent,
+      { type: "item.started", item: { type: "tool_call", id: toolId, server: "gemini", tool: toolName, status: "in_progress", input: parameters } } as unknown as ThreadEvent,
       payload,
     );
     return mapEvent(ev);
@@ -222,7 +222,7 @@ export class GeminiStreamParser {
     const ev = attachCliPayload(
       {
         type: "item.completed",
-        item: { type: "mcp_tool_call", id: toolId, server: "gemini", tool: tool.name, status: ok ? "completed" : "failed", input: tool.input },
+        item: { type: "tool_call", id: toolId, server: "gemini", tool: tool.name, status: ok ? "completed" : "failed", input: tool.input },
       } as unknown as ThreadEvent,
       payload,
     );

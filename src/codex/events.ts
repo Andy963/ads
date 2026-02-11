@@ -4,7 +4,7 @@ import type {
   ItemCompletedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
-  McpToolCallItem,
+  ToolCallItem,
   ThreadErrorEvent,
   ThreadEvent,
   TurnFailedEvent,
@@ -151,7 +151,7 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
       return mapCommandExecution(event, item, timestamp);
     case "file_change":
       return mapFileChange(event, item, timestamp);
-    case "mcp_tool_call":
+    case "tool_call":
       return mapToolCall(event, item, timestamp);
     case "agent_message": {
       const msgItem = item as AgentMessageItem;
@@ -288,7 +288,7 @@ function mapFileChange(event: ItemEvent, item: FileChangeItem, timestamp: number
   };
 }
 
-function mapToolCall(event: ItemEvent, item: McpToolCallItem, timestamp: number): AgentEvent {
+function mapToolCall(event: ItemEvent, item: ToolCallItem, timestamp: number): AgentEvent {
   const title =
     item.status === "completed"
       ? "工具调用完成"

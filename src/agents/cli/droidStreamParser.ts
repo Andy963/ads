@@ -1,7 +1,7 @@
 import type { ThreadEvent } from "../protocol/types.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../../codex/events.js";
 
-type ToolKind = "command" | "file_change" | "web_search" | "mcp_tool_call";
+type ToolKind = "command" | "file_change" | "web_search" | "tool_call";
 
 interface TrackedTool {
   toolId: string;
@@ -49,7 +49,7 @@ function classifyTool(toolId: string, toolName: string): ToolKind {
   if (key === "execute" || key === "bash" || key === "shell") return "command";
   if (key === "applypatch" || key === "edit" || key === "create") return "file_change";
   if (key === "websearch" || key === "web_search") return "web_search";
-  return "mcp_tool_call";
+  return "tool_call";
 }
 
 function guessFilePath(params: Record<string, unknown>): string {
@@ -184,7 +184,7 @@ export class DroidStreamParser {
       }
       return {
         type: "item.started",
-        item: { type: "mcp_tool_call", id: callId, server: "droid", tool: toolName, status: "in_progress", parameters },
+        item: { type: "tool_call", id: callId, server: "droid", tool: toolName, status: "in_progress", parameters },
       } as ThreadEvent;
     })();
 
@@ -261,7 +261,7 @@ export class DroidStreamParser {
       return {
         type: "item.completed",
         item: {
-          type: "mcp_tool_call",
+          type: "tool_call",
           id: callId,
           status: isError ? "failed" : "completed",
           server: "droid",
@@ -310,4 +310,3 @@ export class DroidStreamParser {
     return parts.join("\n\n").trim();
   }
 }
-

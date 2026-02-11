@@ -52,7 +52,6 @@ function serveFile(res: http.ServerResponse, filePath: string): boolean {
 
 export function createHttpServer(options: {
   handleApiRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
-  handleMcpRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
 }): http.Server {
   const distWebDir = path.join(process.cwd(), "dist", "web");
 
@@ -91,26 +90,6 @@ export function createHttpServer(options: {
 
   const server = http.createServer((req, res) => {
     const url = req.url ?? "";
-    if (url === "/mcp" || url.startsWith("/mcp/")) {
-      const handler = options.handleMcpRequest;
-      if (!handler) {
-        sendJson(res, 404, { error: "Not Found" });
-        return;
-      }
-      void handler(req, res).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!res.headersSent) {
-          sendJson(res, 500, { error: message });
-        } else {
-          try {
-            res.end();
-          } catch {
-            // ignore
-          }
-        }
-      });
-      return;
-    }
     if (url.startsWith("/api/")) {
       const handler = options.handleApiRequest;
       if (!handler) {

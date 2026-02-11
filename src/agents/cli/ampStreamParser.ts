@@ -1,7 +1,7 @@
 import type { ThreadEvent } from "../protocol/types.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../../codex/events.js";
 
-type ToolKind = "command" | "file_change" | "web_search" | "mcp_tool_call";
+type ToolKind = "command" | "file_change" | "web_search" | "tool_call";
 
 interface TrackedTool {
   name: string;
@@ -15,7 +15,7 @@ function classifyToolName(name: string): ToolKind {
   if (key === "bash") return "command";
   if (key === "edit_file" || key === "create_file" || key === "undo_edit") return "file_change";
   if (key === "web_search") return "web_search";
-  return "mcp_tool_call";
+  return "tool_call";
 }
 
 function extractStringField(obj: Record<string, unknown>, keys: string[]): string | undefined {
@@ -191,11 +191,11 @@ export class AmpStreamParser {
           payload,
         );
       }
-      case "mcp_tool_call":
+      case "tool_call":
         return attachCliPayload(
           {
             type: "item.started",
-            item: { type: "mcp_tool_call", id, server: "amp", tool: name, status: "in_progress", input },
+            item: { type: "tool_call", id, server: "amp", tool: name, status: "in_progress", input },
           } as unknown as ThreadEvent,
           payload,
         );
@@ -289,7 +289,7 @@ export class AmpStreamParser {
       const ev = attachCliPayload(
         {
           type: "item.completed",
-          item: { type: "mcp_tool_call", id: toolUseId, server: "amp", tool: tool.name, status: isError ? "failed" : "completed", input: tool.input },
+          item: { type: "tool_call", id: toolUseId, server: "amp", tool: tool.name, status: isError ? "failed" : "completed", input: tool.input },
         } as unknown as ThreadEvent,
         payload,
       );
