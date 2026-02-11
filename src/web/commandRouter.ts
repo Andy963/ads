@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { parseSlashCommand } from "../codexConfig.js";
 import { createWorkflowFromTemplate } from "../workflow/templateService.js";
 import {
@@ -9,9 +11,11 @@ import {
 } from "../workflow/service.js";
 import { buildAdsHelpMessage } from "../workflow/commands.js";
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
+import { detectWorkspace } from "../workspace/detector.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
 import { normalizeOutput } from "../utils/text.js";
+import { initSkill, normalizeSkillName, parseResourceList, validateSkillDirectory } from "../skills/creator.js";
 
 export interface CommandResult {
   ok: boolean;
@@ -195,6 +199,56 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
     case "ads.sync": {
       const response = await syncAllNodesToFiles({});
       return { ok: true, output: formatResponse(response) };
+    }
+
+    case "ads.skill.init": {
+      const name = (params.name ?? positional.join(" ")).trim();
+      if (!name) {
+        return {
+          ok: false,
+          output: "❌ 用法: /ads.skill.init <skill-name> [--resources=scripts,references,assets] [--examples]",
+        };
+      }
+
+      const workspaceRoot = detectWorkspace();
+      const includeExamples =
+        params.examples === "true" || params.examples === "1" || params.examples === "yes" || params.examples === "on";
+      const resources = parseResourceList(params.resources);
+      try {
+        const created = initSkill({ workspaceRoot, rawName: name, resources, includeExamples });
+        const relDir = path.relative(workspaceRoot, created.skillDir) || created.skillDir;
+        const relFiles = created.createdFiles.map((p) => path.relative(workspaceRoot, p) || p);
+        const output = [
+          `✅ Skill 已创建: ${created.skillName}`,
+          `目录: ${relDir}`,
+          relFiles.length ? `文件:\n${relFiles.map((p) => `- ${p}`).join("\n")}` : "",
+          "",
+          "提示：编辑 SKILL.md 完成 TODO，然后在对话中使用该 skill。",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return { ok: true, output };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { ok: false, output: `❌ 创建 skill 失败: ${message}` };
+      }
+    }
+
+    case "ads.skill.validate": {
+      const workspaceRoot = detectWorkspace();
+      const arg = (params.path ?? positional.join(" ")).trim();
+      if (!arg) {
+        return { ok: false, output: "❌ 用法: /ads.skill.validate <skill-name|skill-dir> [--path=<dir>]" };
+      }
+
+      const looksLikePath = arg.includes("/") || arg.includes("\\") || arg.startsWith(".") || arg.startsWith("~");
+      const skillDir = looksLikePath
+        ? arg
+        : path.join(workspaceRoot, ".agent", "skills", normalizeSkillName(arg));
+      const result = validateSkillDirectory(skillDir);
+      const relDir = path.relative(workspaceRoot, result.skillDir) || result.skillDir;
+      const output = `${result.valid ? "✅" : "❌"} ${result.message}\n目录: ${relDir}`;
+      return { ok: result.valid, output };
     }
 
 

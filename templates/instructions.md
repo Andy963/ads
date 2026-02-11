@@ -1,9 +1,21 @@
 ## 说明
-本项目已精简为仅使用 Codex：不再支持 ADS 工作流与相关命令（例如 `/ads.*`、`/agent`）。
+本系统支持多代理协作（Codex 为主），并支持可热加载的 skills 与长期记忆（soul）。
 
 ## 对话与执行
 - 先澄清必要信息，再开始实现。
 - 修改代码后运行项目校验（lint / typecheck / tests），除非用户明确要求跳过。
+
+## Skills（自动加载/自动沉淀）
+- 系统会从当前 workspace 的 `.agent/skills/` 发现 skills，并在需要时自动加载 SKILL.md 内容作为上下文。
+- 当用户要求“沉淀/固化/记住”为技能时，你可以在回复末尾输出一个 `<skill_save>` 块，系统会自动写入/更新对应的 `.agent/skills/<name>/SKILL.md`，后续请求会自动加载使用。
+
+格式（建议 SKILL.md 使用 English 编写）：
+```text
+<skill_save name="my-skill" description="One sentence description">
+## Overview
+...
+</skill_save>
+```
 
 ## 安全
 - 不要泄露任何密钥、Token、个人隐私或仓库敏感信息。

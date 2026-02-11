@@ -52,6 +52,14 @@ const ADS_COMMAND_HELP: AdsCommandHelpItem[] = [
     description: "将节点内容同步写入文件系统",
   },
   {
+    usage: "/ads.skill.init <skill-name> [--resources=scripts,references,assets] [--examples]",
+    description: "初始化一个 skill 目录（默认创建到当前 workspace 的 .agent/skills/）",
+  },
+  {
+    usage: "/ads.skill.validate <skill-name|skill-dir> [--path=<dir>]",
+    description: "校验 SKILL.md frontmatter 与基本结构是否正确",
+  },
+  {
     usage: "/ads.tasks [active] [--limit=<n>]",
     description: "查看协作任务状态（active 仅显示未完成任务）",
   },

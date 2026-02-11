@@ -12,6 +12,8 @@ import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import type { AgentRunResult, AgentSendOptions } from '../../agents/types.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
 import { ThreadStorage } from './threadStorage.js';
+import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
+import { detectWorkspaceFrom } from '../../workspace/detector.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -109,6 +111,7 @@ export class SessionManager {
     const userModel = this.userModels.get(userId) || this.defaultModel;
     const savedState = resumeThread ? this.getSavedState(userId) : undefined;
     const effectiveCwd = cwd || savedState?.cwd || process.cwd();
+    const workspaceRoot = detectWorkspaceFrom(effectiveCwd);
 
     let resumeThreadId: string | undefined;
     if (resumeThread) {
@@ -182,11 +185,17 @@ export class SessionManager {
       }));
     }
 
+    const systemPromptManager = new SystemPromptManager({
+      workspaceRoot,
+      reinjection: resolveReinjectionConfig(),
+    });
+
     const session = new HybridOrchestrator({
       adapters,
       defaultAgentId: "codex",
       initialWorkingDirectory: effectiveCwd,
       initialModel: userModel,
+      systemPromptManager,
     });
 
     this.sessions.set(userId, {

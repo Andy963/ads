@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../utils/logger.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { discoverSkills, loadSkillBody, renderCompactSkills } from "../skills/loader.js";
+import { readSoul } from "../memory/soul.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
@@ -95,6 +98,9 @@ export class SystemPromptManager {
   private readonly rulesReinjectionTurns: number;
   private instructionsCache: FileCache | null = null;
   private rulesCache: FileCache | null = null;
+  private lastSoulHash: string | null = null;
+  private lastSkillsHash: string | null = null;
+  private requestedSkillNames: string[] = [];
   private hasInjected = false;
   private turnCount = 0;
   private lastInjectionTurn = -1;
@@ -107,7 +113,7 @@ export class SystemPromptManager {
   private rulesWarningLogged = false;
 
   constructor(options: SystemPromptManagerOptions) {
-    this.workspaceRoot = path.resolve(options.workspaceRoot);
+    this.workspaceRoot = detectWorkspaceFrom(options.workspaceRoot);
     this.workspaceInitialized = this.checkWorkspaceInitialized(this.workspaceRoot);
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
@@ -125,7 +131,7 @@ export class SystemPromptManager {
   }
 
   setWorkspaceRoot(nextRoot: string): void {
-    const normalized = path.resolve(nextRoot);
+    const normalized = detectWorkspaceFrom(nextRoot);
     if (normalized === this.workspaceRoot) {
       return;
     }
@@ -133,6 +139,9 @@ export class SystemPromptManager {
     this.workspaceInitialized = this.checkWorkspaceInitialized(normalized);
     this.instructionsCache = null;
     this.rulesCache = null;
+    this.lastSoulHash = null;
+    this.lastSkillsHash = null;
+    this.requestedSkillNames = [];
     this.instructionsWarningLogged = false;
     this.workspaceWarningLogged = false;
     this.rulesWarningLogged = false;
@@ -140,10 +149,40 @@ export class SystemPromptManager {
     this.logger.debug(`Workspace switched to ${normalized}`);
   }
 
+  setRequestedSkills(skillNames: string[]): void {
+    const cleaned = skillNames
+      .map((name) => String(name ?? "").trim())
+      .filter(Boolean)
+      .map((name) => name.toLowerCase());
+    if (cleaned.length === 0) {
+      return;
+    }
+    const seen = new Set<string>();
+    const uniq: string[] = [];
+    for (const name of cleaned) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      uniq.push(name);
+    }
+    this.requestedSkillNames = uniq.slice(0, 6);
+    this.pendingReason = this.pendingReason ?? "skills-requested";
+  }
+
   maybeInject(): PromptInjection | null {
     // 先刷新缓存以捕获指令/规则变更，确保 pendingReason 在本次判断前就绪
     const instructionsCache = this.readInstructions();
     const rulesCache = this.readRules();
+    const soulHash = this.computeSoulHash();
+    const skillsHash = this.computeSkillsHash();
+
+    if (this.hasInjected) {
+      if (this.lastSoulHash && soulHash !== this.lastSoulHash) {
+        this.pendingReason = this.pendingReason ?? "soul-updated";
+      }
+      if (this.lastSkillsHash && skillsHash !== this.lastSkillsHash) {
+        this.pendingReason = this.pendingReason ?? "skills-updated";
+      }
+    }
 
     const reason = this.computeInjectionReason();
     if (!reason) {
@@ -165,6 +204,18 @@ export class SystemPromptManager {
     if (rules.content.trim()) {
       textParts.push(rules.content.trim());
     }
+    const skillsBlock = this.renderSkillsBlock();
+    if (skillsBlock) {
+      textParts.push(skillsBlock);
+    }
+    const requestedSkillsBlock = this.renderRequestedSkillsBlock();
+    if (requestedSkillsBlock) {
+      textParts.push(requestedSkillsBlock);
+    }
+    const soulBlock = this.renderSoulBlock();
+    if (soulBlock) {
+      textParts.push(soulBlock);
+    }
     if (textParts.length === 0) {
       return null;
     }
@@ -176,10 +227,13 @@ export class SystemPromptManager {
       this.lastInjectionTurn = this.turnCount;
     }
     this.lastRulesInjectionTurn = this.turnCount;
+    this.lastSoulHash = soulHash;
+    this.lastSkillsHash = skillsHash;
     if (!rulesOnly && instructions) {
       this.lastInstructionsHash = instructions.hash;
     }
     this.lastRulesHash = rules.hash;
+    this.requestedSkillNames = [];
     this.logger.debug(
       `Injected (${reason}) instructions=${rulesOnly || !instructions ? "skip" : shortHash(instructions.hash)} rules=${shortHash(rules.hash)}`,
     );
@@ -194,6 +248,69 @@ export class SystemPromptManager {
 
   completeTurn(): void {
     this.turnCount += 1;
+  }
+
+  private renderSkillsBlock(): string | null {
+    try {
+      const skills = discoverSkills(this.workspaceRoot);
+      if (skills.length === 0) {
+        return null;
+      }
+      return renderCompactSkills(skills);
+    } catch {
+      return null;
+    }
+  }
+
+  private renderSoulBlock(): string | null {
+    try {
+      const content = readSoul(this.workspaceRoot);
+      const trimmed = content.trim();
+      if (!trimmed) {
+        return null;
+      }
+      return `<soul>\n${trimmed}\n</soul>`;
+    } catch {
+      return null;
+    }
+  }
+
+  private renderRequestedSkillsBlock(): string | null {
+    if (this.requestedSkillNames.length === 0) {
+      return null;
+    }
+    const parts = ["<requested_skills>"];
+    for (const name of this.requestedSkillNames) {
+      const body = loadSkillBody(name, this.workspaceRoot);
+      if (!body) {
+        parts.push(`  <skill name="${name}" missing="true" />`);
+        continue;
+      }
+      parts.push(`  <skill name="${name}">`);
+      parts.push(body.trim());
+      parts.push("  </skill>");
+    }
+    parts.push("</requested_skills>");
+    return parts.join("\n");
+  }
+
+  private computeSoulHash(): string {
+    try {
+      const content = readSoul(this.workspaceRoot);
+      return crypto.createHash("sha1").update(content ?? "").digest("hex");
+    } catch {
+      return crypto.createHash("sha1").update("").digest("hex");
+    }
+  }
+
+  private computeSkillsHash(): string {
+    try {
+      const skills = discoverSkills(this.workspaceRoot);
+      const payload = skills.map((s) => ({ name: s.name, description: s.description, source: s.source }));
+      return crypto.createHash("sha1").update(JSON.stringify(payload)).digest("hex");
+    } catch {
+      return crypto.createHash("sha1").update("[]").digest("hex");
+    }
   }
 
   private computeInjectionReason(): string | null {
@@ -220,6 +337,9 @@ export class SystemPromptManager {
       this.turnCount - this.lastRulesInjectionTurn >= this.rulesReinjectionTurns
     ) {
       return `rules-only-${this.turnCount}`;
+    }
+    if (this.requestedSkillNames.length > 0) {
+      return `skills-requested-${this.turnCount}`;
     }
     return null;
   }

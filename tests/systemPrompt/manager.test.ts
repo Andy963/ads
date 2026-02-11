@@ -7,6 +7,7 @@ import path from "node:path";
 import { SystemPromptManager } from "../../src/systemPrompt/manager.js";
 import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
+import { setPreference } from "../../src/memory/soul.js";
 
 describe("SystemPromptManager rule reinjection", () => {
   let workspace: string;
@@ -104,6 +105,32 @@ describe("SystemPromptManager rule reinjection", () => {
     assert.equal(switched.reason, "workspace-changed");
 
     fs.rmSync(nextWorkspace, { recursive: true, force: true });
+  });
+
+  it("injects soul content into prompt", () => {
+    setPreference(workspace, "language", "中文");
+    setPreference(workspace, "tone", "casual");
+
+    const manager = new SystemPromptManager({ workspaceRoot: workspace });
+    const injection = manager.maybeInject();
+    assert(injection);
+    assert.match(injection.text, /<soul>/);
+    assert.match(injection.text, /language/);
+    assert.match(injection.text, /中文/);
+    assert.match(injection.text, /tone/);
+    assert.match(injection.text, /casual/);
+  });
+
+  it("does not inject soul block when soul file is empty", () => {
+    const emptyWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-nosoul-"));
+    try {
+      const manager = new SystemPromptManager({ workspaceRoot: emptyWorkspace });
+      const injection = manager.maybeInject();
+      assert(injection);
+      assert.doesNotMatch(injection.text, /<soul>/);
+    } finally {
+      fs.rmSync(emptyWorkspace, { recursive: true, force: true });
+    }
   });
 
   it("does not require explicit init for initial injection", () => {

@@ -8,6 +8,9 @@ import type {
   AgentStatus,
 } from "./types.js";
 import type { SystemPromptManager } from "../systemPrompt/manager.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { discoverSkills } from "../skills/loader.js";
+import { saveSkillDraftFromBlock, type SavedSkillDraft } from "../skills/creator.js";
 
 interface AgentEntry {
   adapter: AgentAdapter;
@@ -33,12 +36,16 @@ export class HybridOrchestrator {
   private workingDirectory?: string;
   private model?: string;
   private readonly systemPromptManager?: SystemPromptManager;
+  private readonly skillAutoloadEnabled: boolean;
+  private readonly skillAutosaveEnabled: boolean;
 
   constructor(options: HybridOrchestratorOptions) {
     if (!options.adapters.length) {
       throw new Error("HybridOrchestrator requires at least one agent adapter");
     }
     this.systemPromptManager = options.systemPromptManager;
+    this.skillAutoloadEnabled = parseEnvBoolean(process.env.ADS_SKILLS_AUTOLOAD, true);
+    this.skillAutosaveEnabled = parseEnvBoolean(process.env.ADS_SKILLS_AUTOSAVE, true);
 
     for (const adapter of options.adapters) {
       this.registerAdapter(adapter);
@@ -128,13 +135,111 @@ export class HybridOrchestrator {
     return `${systemText}${separator}${String(input ?? "")}`;
   }
 
+  private extractRequestedSkills(input: Input): string[] {
+    const chunks: string[] = [];
+    if (typeof input === "string") {
+      chunks.push(input);
+    } else if (Array.isArray(input)) {
+      for (const part of input) {
+        if (part.type === "text") {
+          chunks.push(part.text);
+        }
+      }
+    }
+    const text = chunks.join("\n");
+    if (!text.includes("$")) {
+      return [];
+    }
+    const names = new Set<string>();
+    for (const match of text.matchAll(/\$([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})/g)) {
+      const name = match[1]?.trim();
+      if (name) {
+        names.add(name);
+      }
+    }
+    return Array.from(names);
+  }
+
+  private inferRequestedSkills(input: Input): string[] {
+    if (!this.skillAutoloadEnabled) {
+      return [];
+    }
+    const workspaceRoot = detectWorkspaceFrom(this.workingDirectory ?? process.cwd());
+    const skills = discoverSkills(workspaceRoot);
+    if (skills.length === 0) {
+      return [];
+    }
+
+    const text = extractInputText(input);
+    const lowered = text.trim().toLowerCase();
+    if (!lowered) {
+      return [];
+    }
+
+    const tokens = tokenize(lowered);
+    if (tokens.length === 0) {
+      return [];
+    }
+    const tokenSet = new Set(tokens);
+
+    const scored: Array<{ name: string; score: number }> = [];
+    for (const skill of skills) {
+      const skillName = skill.name.toLowerCase();
+      if (lowered.includes(skillName)) {
+        scored.push({ name: skill.name, score: 1_000 });
+        continue;
+      }
+      const haystack = `${skill.name} ${skill.description ?? ""}`.toLowerCase();
+      const skillTokens = tokenize(haystack);
+      let score = 0;
+      for (const tok of skillTokens) {
+        if (tokenSet.has(tok)) {
+          score += 1;
+        }
+      }
+      if (score > 0) {
+        scored.push({ name: skill.name, score });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    return scored.filter((entry) => entry.score >= 2 || entry.score >= 1_000).slice(0, 2).map((s) => s.name);
+  }
+
+  private persistSkillsFromResponse(raw: string): { cleaned: string; saved: SavedSkillDraft[] } {
+    if (!this.skillAutosaveEnabled) {
+      return { cleaned: raw, saved: [] };
+    }
+    const blocks = extractSkillSaveBlocks(raw);
+    if (blocks.length === 0) {
+      return { cleaned: raw, saved: [] };
+    }
+    const workspaceRoot = detectWorkspaceFrom(this.workingDirectory ?? process.cwd());
+    const saved: SavedSkillDraft[] = [];
+    for (const block of blocks) {
+      try {
+        const result = saveSkillDraftFromBlock({
+          workspaceRoot,
+          name: block.name,
+          description: block.description,
+          body: block.body,
+        });
+        saved.push(result);
+      } catch {
+        // ignore autosave failures to avoid breaking the user-visible response
+      }
+    }
+    const cleaned = stripSkillSaveBlocks(raw).trim();
+    return { cleaned, saved };
+  }
+
   private applySystemPrompt(agentId: AgentIdentifier, input: Input): Input {
     if (!this.systemPromptManager) {
       return input;
     }
-    // Codex already handles system prompt injection itself
-    if (agentId === "codex") {
-      return input;
+    const requestedSkills = uniqStrings([...this.extractRequestedSkills(input), ...this.inferRequestedSkills(input)]);
+    if (requestedSkills.length > 0) {
+      this.systemPromptManager.setRequestedSkills(requestedSkills);
     }
     const injection = this.systemPromptManager.maybeInject();
     if (!injection) {
@@ -153,10 +258,7 @@ export class HybridOrchestrator {
     if (!this.systemPromptManager) {
       return;
     }
-    if (agentId === "codex") {
-      // Codex session manages turn completion internally
-      return;
-    }
+    void agentId;
     this.systemPromptManager.completeTurn();
   }
 
@@ -187,7 +289,13 @@ export class HybridOrchestrator {
     }
     const prompt = this.applySystemPrompt(agentId, input);
     try {
-      return await entry.adapter.send(prompt, options);
+      const result = await entry.adapter.send(prompt, options);
+      const persisted = this.persistSkillsFromResponse(result.response);
+      const suffix =
+        persisted.saved.length > 0
+          ? `\n\n（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`
+          : "";
+      return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
     } finally {
       this.completeTurn(agentId);
     }
@@ -200,7 +308,13 @@ export class HybridOrchestrator {
     }
     const prompt = this.applySystemPrompt(agentId, input);
     try {
-      return await entry.adapter.send(prompt, options);
+      const result = await entry.adapter.send(prompt, options);
+      const persisted = this.persistSkillsFromResponse(result.response);
+      const suffix =
+        persisted.saved.length > 0
+          ? `\n\n（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`
+          : "";
+      return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
     } finally {
       this.completeTurn(agentId);
     }
@@ -208,7 +322,8 @@ export class HybridOrchestrator {
 
   setWorkingDirectory(workingDirectory?: string): void {
     this.workingDirectory = workingDirectory;
-    this.systemPromptManager?.setWorkspaceRoot(workingDirectory ?? process.cwd());
+    const workspaceRoot = detectWorkspaceFrom(workingDirectory ?? process.cwd());
+    this.systemPromptManager?.setWorkspaceRoot(workspaceRoot);
     this.broadcastWorkingDirectory(workingDirectory);
   }
 
@@ -244,4 +359,63 @@ export class HybridOrchestrator {
 
     return adapter.classifyInput(input);
   }
+}
+
+type SkillSaveBlock = { name: string; description: string | null; body: string };
+
+function parseEnvBoolean(raw: string | undefined, defaultValue: boolean): boolean {
+  if (raw === undefined) {
+    return defaultValue;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function extractInputText(input: Input): string {
+  if (typeof input === "string") return input;
+  if (!Array.isArray(input)) return String(input ?? "");
+  return input
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function tokenize(text: string): string[] {
+  return text
+    .split(/[^a-z0-9]+/gi)
+    .map((token) => token.trim().toLowerCase())
+    .filter((token) => token.length >= 3);
+}
+
+function uniqStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = String(value ?? "").trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function extractSkillSaveBlocks(text: string): SkillSaveBlock[] {
+  const blocks: SkillSaveBlock[] = [];
+  const re = /<skill_save\s+name="([^"]+)"(?:\s+description="([^"]*)")?\s*>([\s\S]*?)<\/skill_save>/gi;
+  for (const match of text.matchAll(re)) {
+    const name = String(match[1] ?? "").trim();
+    if (!name) continue;
+    const description = match[2] !== undefined ? String(match[2]).trim() : null;
+    const body = String(match[3] ?? "").trim();
+    blocks.push({ name, description, body });
+  }
+  return blocks;
+}
+
+function stripSkillSaveBlocks(text: string): string {
+  return text.replace(/<skill_save\s+name="[^"]+"(?:\s+description="[^"]*")?\s*>[\s\S]*?<\/skill_save>/gi, "");
 }

@@ -32,6 +32,20 @@ class FakeSystemPromptManager {
   }
 }
 
+class InjectingSystemPromptManager {
+  setWorkspaceRoot(): void {
+    // no-op
+  }
+
+  maybeInject(): { text: string; reason: string; instructionsHash: string; rulesHash: string } {
+    return { text: "INJECTED_SYSTEM", reason: "test", instructionsHash: "x", rulesHash: "y" };
+  }
+
+  completeTurn(): void {
+    // no-op
+  }
+}
+
 class DeferredAgentAdapter implements AgentAdapter {
   readonly id: string;
   readonly metadata: AgentMetadata;
@@ -73,7 +87,61 @@ class DeferredAgentAdapter implements AgentAdapter {
   }
 }
 
+class CaptureAgentAdapter implements AgentAdapter {
+  readonly id: string;
+  readonly metadata: AgentMetadata;
+  lastInput: Input | null = null;
+
+  constructor(options: { id: string; name: string }) {
+    this.id = options.id;
+    this.metadata = {
+      id: options.id,
+      name: options.name,
+      vendor: "test",
+      capabilities: ["text"],
+    };
+  }
+
+  getStreamingConfig(): { enabled: boolean; throttleMs: number } {
+    return { enabled: false, throttleMs: 0 };
+  }
+
+  status() {
+    return { ready: true, streaming: false };
+  }
+
+  onEvent(handler: Parameters<AgentAdapter["onEvent"]>[0]): () => void {
+    void handler;
+    return () => undefined;
+  }
+
+  reset(): void {
+    this.lastInput = null;
+  }
+
+  async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    void options;
+    this.lastInput = input;
+    return { response: "ok", usage: null, agentId: this.id };
+  }
+}
+
 describe("agents/orchestrator", () => {
+  it("injects system prompt into codex inputs", async () => {
+    const manager = new InjectingSystemPromptManager();
+    const codex = new CaptureAgentAdapter({ id: "codex", name: "Codex" });
+    const orchestrator = new HybridOrchestrator({
+      adapters: [codex],
+      defaultAgentId: "codex",
+      systemPromptManager: manager,
+    });
+
+    await orchestrator.send("hi");
+    assert.equal(typeof codex.lastInput, "string");
+    assert.ok(String(codex.lastInput).includes("INJECTED_SYSTEM"));
+    assert.ok(String(codex.lastInput).includes("用户请求"));
+  });
+
   it("does not lose non-codex completeTurn when switching active agent mid-send", async () => {
     const manager = new FakeSystemPromptManager();
     const gate = createDeferred<void>();
@@ -93,7 +161,7 @@ describe("agents/orchestrator", () => {
     assert.equal(manager.turns, 1);
   });
 
-  it("does not call completeTurn for codex sends even when switching to non-codex mid-send", async () => {
+  it("calls completeTurn for codex sends even when switching to non-codex mid-send", async () => {
     const manager = new FakeSystemPromptManager();
     const gate = createDeferred<void>();
     const codex = new DeferredAgentAdapter({ id: "codex", name: "Codex", deferred: gate });
@@ -109,6 +177,6 @@ describe("agents/orchestrator", () => {
     gate.resolve();
     await pending;
 
-    assert.equal(manager.turns, 0);
+    assert.equal(manager.turns, 1);
   });
 });
