@@ -471,7 +471,7 @@ function toggleQueue(): void {
     </div>
 
     <div v-else class="list">
-      <div class="mindmap">
+      <TransitionGroup name="task-list" tag="div" class="mindmap">
         <div v-for="t in sorted" :key="t.id" class="item" :data-status="t.status" :data-task-id="t.id"
           :class="{ active: t.id === selectedId }" :style="taskColorVars(t)">
           <div class="row">
@@ -533,7 +533,7 @@ function toggleQueue(): void {
             </div>
           </div>
         </div>
-      </div>
+      </TransitionGroup>
     </div>
 
     <DraggableModal v-if="editingTask" card-variant="large" data-testid="task-edit-modal" @close="stopEdit">

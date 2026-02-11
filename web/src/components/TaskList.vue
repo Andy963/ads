@@ -5,14 +5,21 @@ import type { Task } from "../api/types";
 const props = defineProps<{ tasks: Task[]; selectedId?: string | null }>();
 const emit = defineEmits<{ (e: "select", id: string): void }>();
 
+const statusWeight = (s: string) => {
+  if (s === "running") return 0;
+  if (s === "planning") return 1;
+  if (s === "pending" || s === "queued") return 2;
+  if (s === "completed") return 9;
+  return 5;
+};
+
 const sorted = computed(() => {
   return [...props.tasks].sort((a, b) => {
-    if (a.status !== b.status) {
-      return a.status.localeCompare(b.status);
-    }
-    if (a.priority !== b.priority) {
-      return b.priority - a.priority;
-    }
+    const wa = statusWeight(a.status);
+    const wb = statusWeight(b.status);
+    if (wa !== wb) return wa - wb;
+    if (a.status !== b.status) return a.status.localeCompare(b.status);
+    if (a.priority !== b.priority) return b.priority - a.priority;
     return b.createdAt - a.createdAt;
   });
 });

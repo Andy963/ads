@@ -529,6 +529,27 @@ textarea {
   background: rgba(79, 142, 247, 0.22);
 }
 
+.task-list-move,
+.task-list-enter-active,
+.task-list-leave-active {
+  transition: all 0.4s ease;
+}
+
+.task-list-enter-from {
+  opacity: 0;
+  transform: translateX(-30px);
+}
+
+.task-list-leave-to {
+  opacity: 0;
+  transform: translateX(30px);
+}
+
+.task-list-leave-active {
+  position: absolute;
+  width: calc(100% - 34px);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
