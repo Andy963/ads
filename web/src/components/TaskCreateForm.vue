@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import type { CreateTaskInput, Prompt } from "../api/types";
+import type { CreateTaskInput } from "../api/types";
 
 import { useImageAttachments } from "./taskCreateForm/useImageAttachments";
 import { useVoiceInput } from "./taskCreateForm/useVoiceInput";
@@ -8,8 +8,6 @@ import { useVoiceInput } from "./taskCreateForm/useVoiceInput";
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
 const props = defineProps<{
-  prompts?: Prompt[];
-  promptsBusy?: boolean;
   apiToken?: string;
   workspaceRoot?: string;
   agents?: AgentOption[];
@@ -32,20 +30,6 @@ const maxRetries = ref(3);
 const bootstrapEnabled = ref(false);
 const bootstrapProject = ref("");
 const bootstrapMaxIterations = ref(10);
-
-const pinnedPromptId = ref("");
-const pinnedPrompt = computed(() => {
-  const pid = String(pinnedPromptId.value ?? "").trim();
-  if (!pid) return null;
-  const entries = Array.isArray(props.prompts) ? props.prompts : [];
-  return entries.find((p) => p.id === pid) ?? null;
-});
-
-const pinnedPromptPlaceholder = computed(() => {
-  if (props.promptsBusy) return "正在加载提示词…";
-  const entries = Array.isArray(props.prompts) ? props.prompts : [];
-  return entries.length ? "不使用" : "暂无提示词";
-});
 
 const agentOptions = computed(() => {
   const raw = Array.isArray(props.agents) ? props.agents : [];
@@ -193,47 +177,13 @@ const {
 } = imageAttachments;
 
 const canSubmit = computed(() => {
-  const userTextOk = prompt.value.trim().length > 0;
-  const pinnedOk = Boolean(String(pinnedPrompt.value?.content ?? "").trim());
-  if (!userTextOk && !pinnedOk) return false;
+  if (!prompt.value.trim().length) return false;
   if (recording.value || transcribing.value) return false;
   if (uploadingCount.value > 0) return false;
   if (failedCount.value > 0) return false;
   if (bootstrapEnabled.value && !bootstrapProject.value.trim()) return false;
   return true;
 });
-
-function mergePinnedPrompt(userText: string, pinned: Prompt | null): string {
-  const user = String(userText ?? "").trim();
-  const template = String(pinned?.content ?? "").trim();
-  if (!template) return user;
-
-  const name = String(pinned?.name ?? "").trim();
-  const id = String(pinned?.id ?? "").trim();
-  const label = name ? `${name}${id ? ` (${id})` : ""}` : id || "template";
-  const header = `# Template: ${label}`;
-
-  if (!user) {
-    return `${header}\n\n${template}`.trim();
-  }
-
-  return `${header}\n\n${template}\n\n---\n\n# Task\n\n${user}`.trim();
-}
-
-function derivePinnedTitle(userText: string, pinned: Prompt | null): string {
-  const userFirstLine = String(userText ?? "")
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  if (userFirstLine) {
-    return userFirstLine.length > 80 ? userFirstLine.slice(0, 80) : userFirstLine;
-  }
-
-  const name = String(pinned?.name ?? "").trim();
-  if (name) return name.length > 80 ? name.slice(0, 80) : name;
-
-  return "";
-}
 
 function submit(): void {
   emitSubmit("submit");
@@ -251,8 +201,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     .map((a) => String(a.uploaded!.id))
     .filter(Boolean);
 
-  const mergedPrompt = mergePinnedPrompt(prompt.value, pinnedPrompt.value).trim();
-  const pinnedDerivedTitle = titleTrimmed ? "" : derivePinnedTitle(prompt.value, pinnedPrompt.value);
+  const mergedPrompt = prompt.value.trim();
 
   const bootstrapConfig = bootstrapEnabled.value && bootstrapProject.value.trim()
     ? {
@@ -265,7 +214,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     : undefined;
 
   emit(event, {
-    title: titleTrimmed.length ? titleTrimmed : pinnedPrompt.value ? pinnedDerivedTitle || undefined : undefined,
+    title: titleTrimmed.length ? titleTrimmed : undefined,
     prompt: mergedPrompt,
     ...(agentId.value ? { agentId: agentId.value } : {}),
     priority: Number.isFinite(priority.value) ? priority.value : 0,
@@ -276,24 +225,12 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
   title.value = "";
   prompt.value = "";
-  pinnedPromptId.value = "";
   bootstrapEnabled.value = false;
   bootstrapProject.value = "";
   bootstrapMaxIterations.value = 10;
   clearAllAttachments();
 }
 
-watch(
-  () => props.prompts,
-  () => {
-    const pid = String(pinnedPromptId.value ?? "").trim();
-    if (!pid) return;
-    const entries = Array.isArray(props.prompts) ? props.prompts : [];
-    if (!entries.some((p) => p.id === pid)) {
-      pinnedPromptId.value = "";
-    }
-  },
-);
 </script>
 
 <template>
@@ -344,34 +281,6 @@ watch(
           <span class="label-text">最大迭代</span>
           <input v-model.number="bootstrapMaxIterations" type="number" min="1" max="10" data-testid="task-create-bootstrap-max-iterations" />
         </label>
-      </div>
-
-      <div class="form-row">
-        <label class="form-field">
-          <span class="label-text">固定提示词（可选）</span>
-          <select
-            v-model="pinnedPromptId"
-            data-testid="task-create-pinned-prompt-select"
-            :disabled="Boolean(props.promptsBusy) || recording || transcribing"
-          >
-            <option value="">{{ pinnedPromptPlaceholder }}</option>
-            <option v-for="p in props.prompts || []" :key="p.id" :value="p.id">
-              {{ p.name }}
-            </option>
-          </select>
-        </label>
-
-        <div v-if="pinnedPrompt" class="pinnedPromptCard" aria-label="固定提示词预览">
-          <div class="pinnedPromptHeader">
-            <div class="pinnedPromptTitle">
-              <span class="pinnedPromptBadge">已固定</span>
-              <span class="pinnedPromptName" :title="pinnedPrompt.name">{{ pinnedPrompt.name }}</span>
-            </div>
-            <button type="button" class="pinnedPromptUnpin" @click="pinnedPromptId = ''">取消固定</button>
-          </div>
-          <div class="pinnedPromptHint">提交时会把该模板拼接到任务提示词前面。</div>
-          <pre class="pinnedPromptContent">{{ pinnedPrompt.content }}</pre>
-        </div>
       </div>
 
       <div class="form-row prompt-row">

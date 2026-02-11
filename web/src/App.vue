@@ -7,12 +7,11 @@ import TaskCreateForm from "./components/TaskCreateForm.vue";
 import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
-import PromptsModal from "./components/PromptsModal.vue";
 import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 
 import { createAppController } from "./app/controller";
 import type { TaskBundle } from "./api/types";
-import { CirclePlus, Setting } from "@element-plus/icons-vue";
+import { CirclePlus } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -61,16 +60,6 @@ const {
   queuedPrompts,
   pendingImages,
   agentBusy,
-  promptsModalOpen,
-  prompts,
-  promptsBusy,
-  promptsError,
-  loadPrompts,
-  openPromptsModal,
-  closePromptsModal,
-  createPrompt,
-  updatePrompt,
-  deletePrompt,
   loadTaskBundleDrafts,
   updateTaskBundleDraft,
   deleteTaskBundleDraft,
@@ -168,11 +157,8 @@ const pendingRemoveProject = computed(() => {
 
 let suppressProjectRowClick = false;
 
-function openTaskCreateDialogWithPrompts(): void {
+function openTaskCreateDialogHandler(): void {
   openTaskCreateDialog();
-  // Best-effort: prompt list may still be loading when the dialog opens, but will
-  // populate reactively once fetched.
-  void loadPrompts();
 }
 
 function canDragProject(id: string): boolean {
@@ -347,16 +333,6 @@ onBeforeUnmount(() => {
         <button v-if="isMobile" type="button" class="topbarWorker" title="Worker" @click="workerDrawerOpen = true">
           Worker
         </button>
-        <button
-          type="button"
-          class="topbarGear"
-          title="Prompts"
-          aria-label="Prompts"
-          data-testid="prompts-button"
-          @click="openPromptsModal"
-        >
-          <el-icon :size="16" aria-hidden="true" class="icon"><Setting /></el-icon>
-        </button>
         <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
       </div>
     </header>
@@ -461,7 +437,7 @@ onBeforeUnmount(() => {
                 @cancel="cancelTask"
                 @retry="retryTask"
                 @delete="deleteTask"
-                @create="openTaskCreateDialogWithPrompts"
+                @create="openTaskCreateDialogHandler"
                 @resumeThread="resumeTaskThread"
                 @newSession="startNewChatSession"
               />
@@ -554,23 +530,9 @@ onBeforeUnmount(() => {
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
 
-    <PromptsModal
-      v-if="promptsModalOpen"
-      data-testid="prompts-modal"
-      :prompts="prompts"
-      :busy="promptsBusy"
-      :error="promptsError"
-      @close="closePromptsModal"
-      @create="(input) => createPrompt(input)"
-      @update="(id, input) => updatePrompt(id, input)"
-      @delete="(id) => deletePrompt(id)"
-    />
-
     <DraggableModal v-if="taskCreateDialogOpen" card-variant="wide" @close="closeTaskCreateDialog">
       <TaskCreateForm
         class="taskCreateModal"
-        :prompts="prompts"
-        :prompts-busy="promptsBusy"
         :workspace-root="resolveActiveWorkspaceRoot() || ''"
         :agents="workerAgents"
         :active-agent-id="workerActiveAgentId"

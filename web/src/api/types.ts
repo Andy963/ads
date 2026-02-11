@@ -60,14 +60,6 @@ export interface Attachment {
   filename?: string | null;
 }
 
-export interface Prompt {
-  id: string;
-  name: string;
-  content: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
 export interface BootstrapConfig {
   enabled: boolean;
   projectRef: string;

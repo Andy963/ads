@@ -30,29 +30,6 @@
   width: 100%;
   gap: 10px;
 }
-.topbarGear {
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #334155;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
-}
-.topbarGear:hover {
-  background: rgba(37, 99, 235, 0.06);
-  border-color: rgba(37, 99, 235, 0.18);
-  color: #1d4ed8;
-}
-.topbarGear:focus-visible {
-  outline: none;
-  border-color: rgba(37, 99, 235, 0.65);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
-}
 .topbarMain {
   display: flex;
   align-items: center;

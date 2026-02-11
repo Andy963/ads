@@ -18,7 +18,6 @@ vi.mock("../api/client", () => {
 });
 
 import LoginGate from "../components/LoginGate.vue";
-import PromptsModal from "../components/PromptsModal.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 
 function nextTickDelay(): Promise<void> {
@@ -53,18 +52,6 @@ describe("UI smoke selectors", () => {
     });
 
     expect(wrapper.find('[data-testid="task-board-create"]').exists()).toBe(true);
-    wrapper.unmount();
-  });
-
-  it("exposes stable selectors for prompts library actions", () => {
-    const wrapper = shallowMount(PromptsModal, { props: { prompts: [], busy: false, error: null } });
-
-    expect(wrapper.find('[data-testid="prompts-new"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="prompts-name"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="prompts-content"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="prompts-save"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="prompts-delete"]').exists()).toBe(true);
-
     wrapper.unmount();
   });
 

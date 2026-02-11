@@ -6,7 +6,6 @@ import { isProjectInProgress } from "../lib/project_status";
 
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
-import { createPromptActions } from "./prompts";
 import { createTaskBundleDraftActions } from "./taskBundleDrafts";
 import { createProjectRuntime } from "./projectRuntime";
 import type {
@@ -364,7 +363,6 @@ export type AppContext = ReturnType<typeof createAppContext>;
 export function createAppController() {
   const ctx = createAppContext();
   const chat = createChatActions(ctx as AppContext);
-  const prompts = createPromptActions({ api: ctx.api, loggedIn: ctx.loggedIn });
   const drafts = createTaskBundleDraftActions({
     api: ctx.api,
     loggedIn: ctx.loggedIn,
@@ -486,7 +484,6 @@ export function createAppController() {
   return {
     ...ctx,
     ...chat,
-    ...prompts,
     ...drafts,
     ...tasks,
     ...projects,
