@@ -16,10 +16,50 @@ export type TelegramSendResult = TelegramSendOk | TelegramSendError;
 
 export type TelegramSender = (args: { botToken: string; chatId: string; text: string }) => Promise<TelegramSendResult>;
 
-function formatIso(ts: number | null): string {
+const DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE = "Asia/Shanghai";
+
+function resolveTelegramNotifyTimeZoneFromEnv(): string {
+  const raw = String(process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE ?? "").trim();
+  if (!raw) return DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: raw }).format(0);
+    return raw;
+  } catch {
+    return DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE;
+  }
+}
+
+function createTelegramTimestampFormatter(timeZone: string): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+}
+
+function formatTelegramTimestamp(ts: number | null, formatter: Intl.DateTimeFormat): string {
   if (ts == null || !Number.isFinite(ts) || ts <= 0) return "N/A";
   try {
-    return new Date(ts).toISOString();
+    const parts = formatter.formatToParts(new Date(ts));
+    const valueByType: Record<string, string> = {};
+    for (const part of parts) {
+      if (part.type !== "literal") {
+        valueByType[part.type] = part.value;
+      }
+    }
+    const year = valueByType.year;
+    const month = valueByType.month;
+    const day = valueByType.day;
+    const hour = valueByType.hour;
+    const minute = valueByType.minute;
+    const second = valueByType.second;
+    if (!year || !month || !day || !hour || !minute || !second) return "N/A";
+    return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
   } catch {
     return "N/A";
   }
@@ -52,6 +92,8 @@ function buildTelegramText(row: {
   completedAt: number | null;
   taskId: string;
 }): string {
+  const timeZone = resolveTelegramNotifyTimeZoneFromEnv();
+  const formatter = createTelegramTimestampFormatter(timeZone);
   const started = row.startedAt ?? null;
   const completed = row.completedAt ?? null;
   const duration = started != null && completed != null ? completed - started : null;
@@ -61,10 +103,9 @@ function buildTelegramText(row: {
     `Task terminal: ${statusLabel}`,
     `Project: ${row.projectName || "Workspace"}`,
     `Task: ${row.taskTitle || row.taskId}`,
-    `Started: ${formatIso(started)}`,
-    `Completed: ${formatIso(completed)}`,
+    `Started: ${formatTelegramTimestamp(started, formatter)}`,
+    `Completed: ${formatTelegramTimestamp(completed, formatter)}`,
     `Duration: ${formatDuration(duration)}`,
-    `TaskId: ${row.taskId}`,
   ].join("\n");
 }
 

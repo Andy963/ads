@@ -194,4 +194,112 @@ describe("web/taskNotifications telegram", () => {
     assert.equal(outcome, "sent");
     assert.equal(calls, 1);
   });
+
+  it("formats timestamps in Asia/Shanghai and omits TaskId line", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    delete process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE;
+
+    const db = getStateDatabase();
+    const startedAt = Date.UTC(2026, 1, 11, 12, 34, 56);
+    const completedAt = startedAt + 1_000;
+    recordTaskTerminalStatus({
+      db,
+      workspaceRoot: "/tmp/ws",
+      taskId: "t6",
+      taskTitle: "Task 6",
+      status: "completed",
+      startedAt,
+      completedAt,
+      now: completedAt,
+    });
+
+    const sender = async (args: { botToken: string; chatId: string; text: string }) => {
+      assert.ok(args.text.includes("Started: 2026-02-11 20:34:56"));
+      assert.ok(args.text.includes("Completed: 2026-02-11 20:34:57"));
+      assert.ok(!args.text.includes("TaskId:"));
+      assert.ok(!/\d{4}-\d{2}-\d{2}T/.test(args.text));
+      assert.ok(!/Z\b/.test(args.text));
+
+      const lines = args.text.split("\n");
+      const startedLine = lines.find((line) => line.startsWith("Started: "));
+      const completedLine = lines.find((line) => line.startsWith("Completed: "));
+      assert.ok(startedLine);
+      assert.ok(completedLine);
+      assert.match(startedLine, /^Started: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+      assert.match(completedLine, /^Completed: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+
+      return { ok: true as const };
+    };
+
+    const logger = { info() {}, warn() {}, debug() {}, error() {} } as any;
+    const outcome = await attemptSendTaskTerminalTelegramNotification({ logger, taskId: "t6", sender });
+    assert.equal(outcome, "sent");
+  });
+
+  it("uses ADS_TELEGRAM_NOTIFY_TIMEZONE when valid", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE = "UTC";
+
+    const db = getStateDatabase();
+    const startedAt = Date.UTC(2026, 1, 11, 12, 34, 56);
+    const completedAt = startedAt + 1_000;
+    recordTaskTerminalStatus({
+      db,
+      workspaceRoot: "/tmp/ws",
+      taskId: "t7",
+      taskTitle: "Task 7",
+      status: "completed",
+      startedAt,
+      completedAt,
+      now: completedAt,
+    });
+
+    const sender = async (args: { botToken: string; chatId: string; text: string }) => {
+      assert.ok(args.text.includes("Started: 2026-02-11 12:34:56"));
+      assert.ok(args.text.includes("Completed: 2026-02-11 12:34:57"));
+      assert.ok(!args.text.includes("TaskId:"));
+      assert.ok(!/\d{4}-\d{2}-\d{2}T/.test(args.text));
+      assert.ok(!/Z\b/.test(args.text));
+      return { ok: true as const };
+    };
+
+    const logger = { info() {}, warn() {}, debug() {}, error() {} } as any;
+    const outcome = await attemptSendTaskTerminalTelegramNotification({ logger, taskId: "t7", sender });
+    assert.equal(outcome, "sent");
+  });
+
+  it("falls back to Asia/Shanghai on invalid ADS_TELEGRAM_NOTIFY_TIMEZONE", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE = "Invalid/Zone";
+
+    const db = getStateDatabase();
+    const startedAt = Date.UTC(2026, 1, 11, 12, 34, 56);
+    const completedAt = startedAt + 1_000;
+    recordTaskTerminalStatus({
+      db,
+      workspaceRoot: "/tmp/ws",
+      taskId: "t8",
+      taskTitle: "Task 8",
+      status: "completed",
+      startedAt,
+      completedAt,
+      now: completedAt,
+    });
+
+    const sender = async (args: { botToken: string; chatId: string; text: string }) => {
+      assert.ok(args.text.includes("Started: 2026-02-11 20:34:56"));
+      assert.ok(args.text.includes("Completed: 2026-02-11 20:34:57"));
+      assert.ok(!args.text.includes("TaskId:"));
+      assert.ok(!/\d{4}-\d{2}-\d{2}T/.test(args.text));
+      assert.ok(!/Z\b/.test(args.text));
+      return { ok: true as const };
+    };
+
+    const logger = { info() {}, warn() {}, debug() {}, error() {} } as any;
+    const outcome = await attemptSendTaskTerminalTelegramNotification({ logger, taskId: "t8", sender });
+    assert.equal(outcome, "sent");
+  });
 });
