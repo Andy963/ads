@@ -1,6 +1,6 @@
 ---
 name: planner-add-task
-description: "Planner helper: when user says 把这添加成一个任务, summarize recent chat into a single TaskBundle draft (prefer MCP tool; human-readable summary)."
+description: "Planner helper: summarize recent chat into one TaskBundle draft (human-readable summary + ads-tasks block)."
 ---
 
 # Planner Add Task
@@ -13,8 +13,7 @@ description: "Planner helper: when user says 把这添加成一个任务, summar
 
 把“近期对话的最新上下文”为主的关键信息整理成 **一个**可执行任务，写入 TaskBundle 草稿（TaskBundle draft），并向用户返回 **可读的格式化摘要**（而不是直接返回难读的 JSON）。
 
-- **优先**使用 MCP 工具：`ads_task_bundle_draft_upsert`
-- **仅当工具不可用**时，才退回输出 `ads-tasks` / `ads-task-bundle` fenced code block（TaskBundle JSON）
+- 通过输出 **一个且仅一个** `ads-tasks` fenced code block（TaskBundle JSON）来创建/更新草稿。
 
 ## 关键规则
 
@@ -23,9 +22,10 @@ description: "Planner helper: when user says 把这添加成一个任务, summar
    - 若新消息与旧消息冲突，**以最新约束为准**，不要沿用过时假设。
    - 不要做无依据的推断（例如回退/多用户/复杂系统设计），除非用户明确要求。
 
-2. **草稿写入方式**
-   - 若 MCP 工具可用：调用 `ads_task_bundle_draft_upsert`，传入 `bundle`（TaskBundle JSON，`version=1` 且 `tasks[]` 至少 1 个，每个 task 至少有 `prompt`）。
-   - 若 MCP 工具不可用：输出 **一个且仅一个** `ads-tasks` 或 `ads-task-bundle` code block（避免生成多个 draft），内容为 TaskBundle JSON。
+2. **草稿输出方式**
+   - 输出 **一个且仅一个** `ads-tasks` code block（TaskBundle JSON，`version=1` 且 `tasks[]` 至少 1 个，每个 task 至少有 `prompt`）。
+   - 放在回复末尾，避免被其它文本打断解析。
+   - 尽量为 bundle 填写稳定的 `requestId`（如果平台提供 request/client message id 优先复用；否则可省略）。
 
 3. **语言约束（很重要）**
    - TaskBundle 的 `title` / `prompt` 默认用 **English**（便于执行）。

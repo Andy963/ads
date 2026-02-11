@@ -294,7 +294,7 @@ function mapToolCall(event: ItemEvent, item: McpToolCallItem, timestamp: number)
       ? "工具调用完成"
       : item.status === "failed"
         ? "工具调用失败"
-        : "调用 MCP 工具";
+        : "调用工具";
   const serverTool = [item.server, item.tool].filter(Boolean).join(".");
   return {
     phase: "tool",

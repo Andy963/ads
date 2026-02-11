@@ -20,4 +20,5 @@ This file is maintained by ADS. Edit outside the marked block if needed.
 - 0014 - [Per-Project Keyed Locks for Cross-Project Parallelism](0014-per-project-keyed-locks-for-parallelism.md)
 - 0015 - [Web Chat - Simplify Command UI and Fold Live-Step Trace](0015-web-chat-simplify-command-ui-and-fold-live-step.md)
 - 0016 - [Web - Dual Chat Sessions (Planner + Worker)](0016-web-dual-chat-planner-worker.md)
+- 0017 - [Delegate Tavily Web Search to Skill Scripts](0017-delegate-tavily-web-search-to-skill-scripts.md)
 <!-- ADS:ADR_INDEX_END -->

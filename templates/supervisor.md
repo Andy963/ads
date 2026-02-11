@@ -86,7 +86,5 @@ TaskSpec 约束：
 ## 4) 任务草稿（Planner → TaskBundleDraft）
 当你需要把需求拆解成可执行的任务列表，并交由人类审核后再加入任务队列时：
 
-- **优先使用 MCP 工具**：`ads_task_bundle_draft_upsert`
-  - 传入 `bundle`（TaskBundle JSON，`version=1`，包含 `tasks[]`，每个 task 至少有 `prompt`）。
-  - 工具会把草稿落库，并通过 WebSocket 推送到 Web UI 的「任务草稿」面板，供人工编辑 / 批准 / 删除。
-- **仅当 MCP 工具不可用** 时，再退回到输出 fenced code block（language 为 `ads-task-bundle` 或 `ads-tasks`）的方式。
+- 输出 **一个且仅一个** `ads-tasks` fenced code block（TaskBundle JSON，`version=1`，包含 `tasks[]`，每个 task 至少有 `prompt`）。
+- 为避免重复草稿，优先在 bundle 顶层填写稳定的 `requestId`（例如 request/client message id）。

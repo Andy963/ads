@@ -1,11 +1,11 @@
 ---
 name: tavily-research
-description: "Run Tavily search and URL fetch via skill scripts (no MCP), and use the results in answers."
+description: "Run Tavily search and URL fetch via skill scripts, and use the results in answers."
 ---
 
 # Tavily Research
 ## Overview
-This skill provides a Tavily-backed research workflow without MCP by running local scripts.
+This skill provides a Tavily-backed research workflow by running local scripts.
 It supports:
 - `search`: query web sources
 - `fetch`: extract readable page content from URLs (Tavily extract)
