@@ -11,6 +11,11 @@ It is designed to avoid common LLM formatting failures:
 - Invalid JSON caused by raw newlines or control characters inside JSON strings
 - Unreadable prompts caused by double-escaped `\\\\n` sequences
 
+## Single Task Rule
+Always produce exactly **one** task per bundle (`tasks` array length must be 1).
+If the implementation requires multiple steps, describe all steps inside that single task's `prompt` field using a numbered list or structured sections.
+Never split a requirement into multiple task objects.
+
 ## Script
 - `.agent/skills/planner-draft/scripts/render-ads-tasks.cjs`
 
