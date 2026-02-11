@@ -25,6 +25,9 @@ temp/
 .ads/*.db-*
 .ads/telegram-bot.pid
 
+# Agent skills
+.agent/skills/**/SKILL.md.bak.*
+
 # Environment & secrets
 .env
 .env.*
