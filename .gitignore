@@ -28,6 +28,9 @@ temp/
 # Agent skills
 .agent/skills/**/SKILL.md.bak.*
 
+# Soul (long-term memory)
+soul.md
+
 # Environment & secrets
 .env
 .env.*
