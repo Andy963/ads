@@ -107,7 +107,7 @@ export async function createTelegramCodexStatusUpdater(params: {
   replyToMessageId?: number;
 }): Promise<TelegramCodexStatusUpdater> {
   const STATUS_MESSAGE_LIMIT = 3600;
-  const COMMAND_HISTORY_LIMIT = 3;
+  const COMMAND_HISTORY_LIMIT = 1;
   const effectiveStreamUpdateIntervalMs =
     Number.isFinite(params.streamUpdateIntervalMs) && params.streamUpdateIntervalMs > 0 ? Math.floor(params.streamUpdateIntervalMs) : 0;
 
@@ -181,10 +181,8 @@ export async function createTelegramCodexStatusUpdater(params: {
     const lines: string[] = [];
     lines.push(options?.overrideHeader ?? formatHeaderLine(currentPhase));
     if (includeCommands && commandHistory.length > 0) {
-      lines.push(`🧾 最近命令（最新 ${COMMAND_HISTORY_LIMIT} 条）:`);
-      for (let i = 0; i < commandHistory.length; i++) {
-        lines.push(`${i + 1}. ${formatCommandLine(commandHistory[i])}`);
-      }
+      const latest = commandHistory[commandHistory.length - 1];
+      lines.push(formatCommandLine(latest));
     }
     const text = lines.join("\n").trimEnd();
     if (text.length <= STATUS_MESSAGE_LIMIT) {

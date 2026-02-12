@@ -35,7 +35,7 @@ async function flush(): Promise<void> {
 }
 
 describe("telegram statusUpdater", () => {
-  it("keeps only the last three commands in the status message", async () => {
+  it("shows only the latest command in the status message", async () => {
     const edits: Array<{ messageId: number; text: string }> = [];
     const deletes: Array<{ messageId: number }> = [];
 
@@ -77,17 +77,16 @@ describe("telegram statusUpdater", () => {
 
     assert.ok(edits.length > 0);
     const last = edits.at(-1)?.text ?? "";
-    assert.ok(last.includes("cmd2"));
-    assert.ok(last.includes("cmd3"));
-    assert.ok(last.includes("cmd4"));
-    assert.equal(last.includes("cmd1"), false);
+    assert.ok(last.includes("cmd4"), "should show the latest command");
+    assert.equal(last.includes("cmd1"), false, "should not show old commands");
+    assert.equal(last.includes("cmd2"), false, "should not show old commands");
+    assert.equal(last.includes("cmd3"), false, "should not show old commands");
 
     await updater.finalize();
     await flush();
 
     const finalized = edits.at(-1)?.text ?? "";
-    assert.equal(finalized.includes("最近命令"), false);
-    assert.equal(finalized.includes("cmd4"), false);
+    assert.equal(finalized.includes("cmd4"), false, "finalize should not show commands");
 
     await updater.cleanup();
     assert.deepEqual(deletes, [{ messageId: 1000 }]);
@@ -135,4 +134,3 @@ describe("telegram statusUpdater", () => {
     await updater.cleanup();
   });
 });
-

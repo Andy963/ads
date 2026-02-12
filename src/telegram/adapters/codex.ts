@@ -378,7 +378,7 @@ export async function handleCodexMessage(
     const notifyFallback = async () => {
       if (fallbackNotified) return;
       fallbackNotified = true;
-      await ctx.reply('⚠️ 本条消息的 Markdown 渲染发生降级，内容已记录便于排查。', {
+      await ctx.reply('⚠️ MarkdownV2 渲染失败，已降级为纯文本发送，详情已记录。', {
         disable_notification: silentNotifications,
         ...replyParameters,
       }).catch((error) => {
@@ -400,26 +400,16 @@ export async function handleCodexMessage(
       if (sentChunks.has(chunkText)) {
         continue;
       }
-      const collapseMinCharsRaw = process.env.ADS_TELEGRAM_COLLAPSE_MIN_CHARS;
-      const collapseMinChars = collapseMinCharsRaw ? Math.max(0, Number.parseInt(collapseMinCharsRaw, 10) || 0) : 600;
-      const outbound = renderTelegramOutbound(chunkText, { collapseMinChars });
-      const parseMode = outbound.parseMode;
+      const outbound = renderTelegramOutbound(chunkText);
       await ctx.reply(outbound.text, {
-        parse_mode: parseMode,
+        parse_mode: outbound.parseMode,
         disable_notification: silentNotifications,
         link_preview_options: { is_disabled: true },
         ...replyParameters,
       }).catch(async (error) => {
-        if (parseMode === 'MarkdownV2') {
-          recordFallback('chunk_markdownv2_failed', chunkText, outbound.text);
-          if (!fallbackNotified) {
-            logWarning('[Telegram] Failed to send MarkdownV2 chunk; falling back to plain text', error);
-          }
-        } else {
-          recordFallback('chunk_html_failed', chunkText, outbound.text);
-          if (!fallbackNotified) {
-            logWarning('[Telegram] Failed to send HTML chunk; falling back to plain text', error);
-          }
+        recordFallback('chunk_markdownv2_failed', chunkText, outbound.text);
+        if (!fallbackNotified) {
+          logWarning('[Telegram] Failed to send MarkdownV2 chunk; falling back to plain text', error);
         }
         await notifyFallback();
         await ctx
