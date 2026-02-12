@@ -422,6 +422,36 @@ async function main() {
     );
   });
 
+  // 处理语音消息
+  bot.on('message:voice', async (ctx) => {
+    const voice = ctx.message.voice;
+    const caption = ctx.message.caption || '';
+    const userId = await requireUserId(ctx, 'message:voice');
+    if (userId === null) return;
+    const cwd = directoryManager.getUserCwd(userId);
+
+    if (voice.file_size && voice.file_size > 20 * 1024 * 1024) {
+      await ctx.reply('❌ 文件过大，限制 20MB');
+      return;
+    }
+
+    await handleCodexMessage(
+      ctx,
+      caption,
+      sessionManager,
+      config.streamUpdateIntervalMs,
+      undefined,
+      undefined,
+      cwd,
+      {
+        markNoteEnabled: markStates.get(userId) ?? false,
+        silentNotifications,
+        replyToMessageId: ctx.message.message_id,
+      },
+      voice.file_id,
+    );
+  });
+
   // 处理普通文本消息 - Codex 对话
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;

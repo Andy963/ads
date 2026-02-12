@@ -24,6 +24,7 @@ import { createLogger } from '../../utils/logger.js';
 import { createTelegramCodexStatusUpdater } from './codex/statusUpdater.js';
 import { chunkMessage } from './codex/chunkMessage.js';
 import { renderTelegramOutbound } from './codex/renderOutbound.js';
+import { transcribeTelegramVoiceMessage } from '../utils/voiceTranscription.js';
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 const adapterLogger = createLogger('TelegramCodexAdapter');
@@ -35,7 +36,8 @@ export async function handleCodexMessage(
   imageFileIds?: string[],
   documentFileId?: string,
   cwd?: string,
-  options?: { markNoteEnabled?: boolean; silentNotifications?: boolean; replyToMessageId?: number }
+  options?: { markNoteEnabled?: boolean; silentNotifications?: boolean; replyToMessageId?: number },
+  voiceFileId?: string,
 ) {
   const workingDirectory = cwd ? path.resolve(cwd) : process.cwd();
   const workspaceRoot = detectWorkspaceFrom(workingDirectory);
@@ -219,13 +221,36 @@ export async function handleCodexMessage(
   let urlData: Awaited<ReturnType<typeof processUrls>> | null = null;
   let unsubscribe: (() => void) | null = null;
   let userLogEntry: string | null = null;
+  let effectiveText = text;
 
   try {
     statusUpdater.startTyping();
-    // 处理 URL（如果消息中有链接）
-    if (!imageFileIds && !documentFileId && text) {
+
+    if (voiceFileId) {
+      const voice = ctx.message?.voice;
+      const mimeType = typeof voice?.mime_type === 'string' ? voice.mime_type : 'audio/ogg';
       try {
-        urlData = await processUrls(text, signal);
+        effectiveText = await transcribeTelegramVoiceMessage({
+          api: ctx.api,
+          fileId: voiceFileId,
+          mimeType,
+          caption: effectiveText,
+          signal,
+          logger: { warn: (msg) => logWarning(msg) },
+        });
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`语音识别失败: ${message}`);
+      }
+    }
+
+    // 处理 URL（如果消息中有链接）
+    if (!imageFileIds && !documentFileId && effectiveText) {
+      try {
+        urlData = await processUrls(effectiveText, signal);
         if (urlData.imagePaths.length > 0 || urlData.filePaths.length > 0) {
           await ctx.reply(
             `🔗 检测到链接，正在下载...\n图片: ${urlData.imagePaths.length}\n文件: ${urlData.filePaths.length}`,
@@ -292,7 +317,7 @@ export async function handleCodexMessage(
     }
 
     // 记录用户输入
-    userLogEntry = buildUserLogEntry(text, imagePaths, filePaths);
+    userLogEntry = buildUserLogEntry(effectiveText, imagePaths, filePaths);
 
     // 监听事件
     unsubscribe = session.onEvent((event: AgentEvent) => {
@@ -304,7 +329,7 @@ export async function handleCodexMessage(
 
     // 构建输入
     let input: Input;
-    let enhancedText = urlData ? urlData.processedText : text;
+    let enhancedText = urlData ? urlData.processedText : effectiveText;
     const attachFiles = false;
 
     // 如果有文件，添加文件信息到提示
