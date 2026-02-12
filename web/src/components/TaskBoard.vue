@@ -216,12 +216,16 @@ function taskColorVars(task: Task): Record<string, string> {
 
 function statusLabel(status: string): string {
   switch (status) {
+    case "queued":
+      return "排队中";
     case "pending":
       return "待启动";
     case "planning":
       return "规划中";
     case "running":
       return "执行中";
+    case "paused":
+      return "已暂停";
     case "completed":
       return "已完成";
     case "failed":
@@ -240,6 +244,17 @@ function formatPromptPreview(prompt: string, maxChars = 90): string {
   if (!normalized) return "";
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function deriveTaskTitleFromPrompt(prompt: string): string {
+  const firstLine = String(prompt ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  const base = (firstLine ?? "新任务").replace(/\s+/g, " ");
+  const maxLen = 32;
+  if (base.length <= maxLen) return base;
+  return `${base.slice(0, maxLen)}…`;
 }
 
 const sorted = computed(() => {
@@ -327,15 +342,14 @@ function saveEditAndRun(task: Task): void {
 }
 
 function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void {
-  const title = editTitle.value.trim();
   const prompt = editPrompt.value.trim();
-  if (!title) {
-    error.value = "标题不能为空";
-    return;
-  }
   if (!prompt) {
     error.value = "任务描述不能为空";
     return;
+  }
+  const title = editTitle.value.trim() || deriveTaskTitleFromPrompt(prompt);
+  if (!editTitle.value.trim()) {
+    editTitle.value = title;
   }
   const projectRef = editBootstrapProject.value.trim();
   if (editBootstrapEnabled.value && !projectRef) {
@@ -555,7 +569,7 @@ function toggleQueue(): void {
 
         <label class="field">
           <span class="label">标题</span>
-          <input ref="editTitleEl" v-model="editTitle" />
+          <input ref="editTitleEl" v-model="editTitle" data-testid="task-edit-title" />
         </label>
 
         <div class="configRow">

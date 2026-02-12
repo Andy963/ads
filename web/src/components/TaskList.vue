@@ -34,6 +34,8 @@ function badge(status: string): string {
       return "PLANNING";
     case "running":
       return "RUNNING";
+    case "paused":
+      return "PAUSED";
     case "completed":
       return "DONE";
     case "failed":

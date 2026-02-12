@@ -154,6 +154,49 @@ describe("TaskBoard edit modal", () => {
     wrapper.unmount();
   });
 
+  it("derives a title from the prompt when the title is blank", async () => {
+    const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending" });
+
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task],
+        agents,
+        activeAgentId: "codex",
+        selectedId: null,
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set<string>(),
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    await wrapper.find('[data-testid="task-edit-title"]').setValue("   ");
+    const prompt = `\n  abcdefghijklmnopqrstuvwxyz0123456789 \nsecond line`;
+    await wrapper.find('[data-testid="task-edit-prompt"]').setValue(prompt);
+
+    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const updates = wrapper.emitted("update");
+    expect(updates).toBeTruthy();
+    expect(updates?.[0]?.[0]).toEqual({
+      id: "t-1",
+      updates: {
+        title: "abcdefghijklmnopqrstuvwxyz012345…",
+        prompt: prompt.trim(),
+        agentId: "codex",
+        priority: 0,
+        maxRetries: 3,
+        inheritContext: true,
+      },
+    });
+
+    wrapper.unmount();
+  });
+
   it("allows editing a cancelled task", async () => {
     const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "cancelled" });
 
