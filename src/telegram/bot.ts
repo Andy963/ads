@@ -645,6 +645,7 @@ async function main() {
       {
         markNoteEnabled: markStates.get(userId) ?? false,
         silentNotifications,
+        replyToMessageId: ctx.message.message_id,
       }
     );
   });
@@ -674,6 +675,7 @@ async function main() {
       {
         markNoteEnabled: markStates.get(userId) ?? false,
         silentNotifications,
+        replyToMessageId: ctx.message.message_id,
       }
     );
   });
@@ -702,6 +704,7 @@ async function main() {
       {
         markNoteEnabled: markStates.get(userId) ?? false,
         silentNotifications,
+        replyToMessageId: ctx.message.message_id,
       }
     );
   });

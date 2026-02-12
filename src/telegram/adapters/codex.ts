@@ -23,6 +23,7 @@ import {
 import { createLogger } from '../../utils/logger.js';
 import { createTelegramCodexStatusUpdater } from './codex/statusUpdater.js';
 import { chunkMessage } from './codex/chunkMessage.js';
+import { renderTelegramOutbound } from './codex/renderOutbound.js';
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 const adapterLogger = createLogger('TelegramCodexAdapter');
@@ -34,7 +35,7 @@ export async function handleCodexMessage(
   imageFileIds?: string[],
   documentFileId?: string,
   cwd?: string,
-  options?: { markNoteEnabled?: boolean; silentNotifications?: boolean }
+  options?: { markNoteEnabled?: boolean; silentNotifications?: boolean; replyToMessageId?: number }
 ) {
   const workingDirectory = cwd ? path.resolve(cwd) : process.cwd();
   const workspaceRoot = detectWorkspaceFrom(workingDirectory);
@@ -44,6 +45,9 @@ export async function handleCodexMessage(
   const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
   const markNoteEnabled = options?.markNoteEnabled ?? false;
   const silentNotifications = options?.silentNotifications ?? true;
+  const replyToMessageId = options?.replyToMessageId;
+  const replyParameters =
+    typeof replyToMessageId === 'number' ? { reply_parameters: { message_id: replyToMessageId } } : {};
   let logDirReady = false;
 
   const ensureLogDir = () => {
@@ -123,6 +127,7 @@ export async function handleCodexMessage(
       try {
         await ctx.reply('❌ 无法识别用户信息（可能是匿名/频道消息），请用普通用户身份发送消息后重试。', {
           disable_notification: silentNotifications,
+          ...replyParameters,
         });
       } catch (error) {
         logWarning('[Telegram] Failed to reply about missing user id', error);
@@ -144,6 +149,7 @@ export async function handleCodexMessage(
   if (interruptManager.hasActiveRequest(userId)) {
     await ctx.reply('⚠️ 已有请求正在执行，请等待完成或使用 /esc 中断', {
       disable_notification: silentNotifications,
+      ...replyParameters,
     });
     return;
   }
@@ -166,6 +172,7 @@ export async function handleCodexMessage(
     streamUpdateIntervalMs,
     isActiveRequest: () => interruptManager.hasActiveRequest(userId),
     logWarning,
+    replyToMessageId,
   });
 
   function formatCodeBlock(text: string): string {
@@ -222,7 +229,7 @@ export async function handleCodexMessage(
         if (urlData.imagePaths.length > 0 || urlData.filePaths.length > 0) {
           await ctx.reply(
             `🔗 检测到链接，正在下载...\n图片: ${urlData.imagePaths.length}\n文件: ${urlData.filePaths.length}`,
-            { disable_notification: silentNotifications },
+            { disable_notification: silentNotifications, ...replyParameters },
           );
         }
       } catch (error) {
@@ -268,6 +275,7 @@ export async function handleCodexMessage(
         filePaths.push(path);
         await ctx.reply(`📥 已接收文件: ${fileName}\n正在处理...`, {
           disable_notification: silentNotifications,
+          ...replyParameters,
         });
       } catch (error) {
         cleanupImages(imagePaths);
@@ -372,6 +380,7 @@ export async function handleCodexMessage(
       fallbackNotified = true;
       await ctx.reply('⚠️ 本条消息的 Markdown 渲染发生降级，内容已记录便于排查。', {
         disable_notification: silentNotifications,
+        ...replyParameters,
       }).catch((error) => {
         logWarning('[Telegram] Failed to send markdown fallback notice', error);
       });
@@ -391,23 +400,38 @@ export async function handleCodexMessage(
       if (sentChunks.has(chunkText)) {
         continue;
       }
-      const escapedV2 = escapeTelegramMarkdownV2(chunkText);
-      await ctx.reply(escapedV2, {
-        parse_mode: 'MarkdownV2',
+      const collapseMinCharsRaw = process.env.ADS_TELEGRAM_COLLAPSE_MIN_CHARS;
+      const collapseMinChars = collapseMinCharsRaw ? Math.max(0, Number.parseInt(collapseMinCharsRaw, 10) || 0) : 600;
+      const outbound = renderTelegramOutbound(chunkText, { collapseMinChars });
+      const parseMode = outbound.parseMode;
+      await ctx.reply(outbound.text, {
+        parse_mode: parseMode,
         disable_notification: silentNotifications,
+        link_preview_options: { is_disabled: true },
+        ...replyParameters,
       }).catch(async (error) => {
-        recordFallback('chunk_markdownv2_failed', chunkText, escapedV2);
-        if (!fallbackNotified) {
-          logWarning('[Telegram] Failed to send MarkdownV2 chunk; falling back to plain text', error);
+        if (parseMode === 'MarkdownV2') {
+          recordFallback('chunk_markdownv2_failed', chunkText, outbound.text);
+          if (!fallbackNotified) {
+            logWarning('[Telegram] Failed to send MarkdownV2 chunk; falling back to plain text', error);
+          }
+        } else {
+          recordFallback('chunk_html_failed', chunkText, outbound.text);
+          if (!fallbackNotified) {
+            logWarning('[Telegram] Failed to send HTML chunk; falling back to plain text', error);
+          }
         }
         await notifyFallback();
-        await ctx.reply(chunkText, { disable_notification: silentNotifications }).catch((error) => {
-          logWarning('[Telegram] Failed to send fallback chunk', error);
-        });
+        await ctx
+          .reply(outbound.plainTextFallback, { disable_notification: silentNotifications, ...replyParameters })
+          .catch((error) => {
+            logWarning('[Telegram] Failed to send fallback chunk', error);
+          });
       });
       sentChunks.add(chunkText);
     }
 
+    await statusUpdater.cleanup();
     statusUpdater.stopTyping();
   } catch (error) {
     statusUpdater.stopTyping();
@@ -437,19 +461,21 @@ export async function handleCodexMessage(
       sessionManager.reset(userId);
     }
 
-    await statusUpdater.finalize(replyText);
+    await statusUpdater.finalize(`❌ [${activeAgentLabel}] 出错`);
     interruptManager.complete(userId);
     const escapedV2 = escapeTelegramMarkdownV2(replyText);
     await ctx.reply(escapedV2, {
       parse_mode: 'MarkdownV2',
       disable_notification: silentNotifications,
+      ...replyParameters,
     }).catch(async (error) => {
       recordFallback('error_markdownv2_failed', replyText, escapedV2);
       logWarning('[Telegram] Failed to send MarkdownV2 error message; falling back to plain text', error);
-      await ctx.reply(replyText, { disable_notification: silentNotifications }).catch((error) => {
+      await ctx.reply(replyText, { disable_notification: silentNotifications, ...replyParameters }).catch((error) => {
         logWarning('[Telegram] Failed to send fallback error message', error);
       });
     });
+    await statusUpdater.cleanup();
   }
 }
 
