@@ -270,7 +270,7 @@ export function attachWebSocketServer(deps: {
 
     safeJsonSend(ws, {
       type: "welcome",
-      message: "ADS WebSocket bridge ready. Send {type:'command', payload:'/ads.status'}",
+      message: "ADS WebSocket bridge ready.",
       workspace: getWorkspaceState(currentCwd),
       sessionId,
       chatSessionId,

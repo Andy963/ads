@@ -51,7 +51,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
 
   const slash = parseSlashCommand(trimmed);
   if (!slash || !slash.command.startsWith("ads.")) {
-    return { ok: false, output: "❓ 仅支持 /ads.* 命令" };
+    return { ok: false, output: "❓ Unsupported command" };
   }
 
   // basic args parsing (similar to CLI)
@@ -159,7 +159,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
       const titleArg = (params.title ?? positional.join(" ")).trim();
       const templateArg = params.template_id?.trim();
       if (!titleArg) {
-        return { ok: false, output: "❌ 用法: /ads.new <标题>" };
+        return { ok: false, output: "❌ Missing title" };
       }
       const response = await createWorkflowFromTemplate({
         template_id: templateArg,
@@ -175,7 +175,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
         params.step_name = positional.shift()!;
       }
       if (!params.step_name) {
-        return { ok: false, output: "❌ 用法: /ads.commit <step>" };
+        return { ok: false, output: "❌ Missing step name" };
       }
       const response = await commitStep({ step_name: params.step_name, change_description: params.change_description, format: "cli" });
       return { ok: true, output: normalizeOutput(response) };
@@ -206,7 +206,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
       if (!name) {
         return {
           ok: false,
-          output: "❌ 用法: /ads.skill.init <skill-name> [--resources=scripts,references,assets] [--examples]",
+          output: "❌ Missing skill name",
         };
       }
 
@@ -238,7 +238,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
       const workspaceRoot = detectWorkspace();
       const arg = (params.path ?? positional.join(" ")).trim();
       if (!arg) {
-        return { ok: false, output: "❌ 用法: /ads.skill.validate <skill-name|skill-dir> [--path=<dir>]" };
+        return { ok: false, output: "❌ Missing skill name/path" };
       }
 
       const looksLikePath = arg.includes("/") || arg.includes("\\") || arg.startsWith(".") || arg.startsWith("~");
@@ -254,6 +254,6 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
 
 
     default:
-      return { ok: false, output: `❓ 未知命令: /${slash.command}` };
+      return { ok: false, output: `❓ Unknown command: ${slash.command}` };
   }
 }

@@ -155,7 +155,7 @@ export async function listWorkflowLog(params: {
     if (workflowId) {
       return `该工作流暂无提交记录 (${workflowId}).`;
     }
-    return "暂无任何提交记录。使用 /ads.commit 完成步骤时会生成日志。";
+    return "暂无任何提交记录。完成工作流步骤定稿后会生成日志。";
   }
 
   const entries = rows.map((row) => ({
@@ -180,4 +180,3 @@ export async function listWorkflowLog(params: {
     showWorkflowTitle: !workflowId,
   });
 }
-

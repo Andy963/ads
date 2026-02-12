@@ -4,7 +4,6 @@ import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
 import { ActivityTracker, resolveExploredConfig } from "../utils/activityTracker.js";
-import { maybeBuildVectorAutoContext, type VectorAutoContextReport } from "../vectorSearch/context.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
 import { isCoordinatorEnabled, TaskCoordinator } from "./tasks/taskCoordinator.js";
@@ -20,7 +19,6 @@ import {
   runDelegationQueue,
   stripDelegationBlocks,
 } from "./hub/delegations.js";
-import { extractVectorQuery, formatVectorAutoContextSummary, injectVectorContext } from "./hub/vectorContext.js";
 
 const logger = createLogger("AgentHub");
 const supervisorPromptLoader = new SupervisorPromptLoader({ logger });
@@ -86,50 +84,9 @@ export async function runCollaborativeTurn(
     activeAgentId === "codex" && orchestrator.listAgents().length > 1
       ? supervisorPromptLoader.load(workspaceRoot).text
       : "";
-  let vectorContext: string | null = null;
-  try {
-    const vectorQuery = extractVectorQuery(input);
-    const vectorReports: VectorAutoContextReport[] = [];
-    vectorContext = await maybeBuildVectorAutoContext({
-      workspaceRoot,
-      query: vectorQuery,
-      historyNamespace,
-      historySessionId,
-      onReport: (report) => {
-        vectorReports.push(report);
-      },
-    });
-
-    const lastReport = vectorReports[vectorReports.length - 1] ?? null;
-    // Vector auto-context is an internal optimization; only surface it in the web UI when it actually
-    // injected context. Emitting "no hit" / "disabled" / "skipped" lines is noisy for end users.
-    if (lastReport && lastReport.injected) {
-      const summary = formatVectorAutoContextSummary(lastReport);
-      options.onExploredEntry?.({
-        category: "Search",
-        summary,
-        ts: Date.now(),
-        source: "tool_hook",
-        meta: { tool: "vector_search" },
-      });
-    } else if (vectorContext && vectorContext.trim()) {
-      options.onExploredEntry?.({
-        category: "Search",
-        summary: `VectorSearch(auto) injected chars=${vectorContext.length}`,
-        ts: Date.now(),
-        source: "tool_hook",
-        meta: { tool: "vector_search" },
-      });
-    }
-  } catch (error) {
-    logger.warn("[AgentHub] Failed to build vector auto context", error);
-  }
 
   const prompt = applyGuides(
-    injectSupervisorPrompt(
-      injectVectorContext(input, vectorContext ?? ""),
-      supervisorGuide,
-    ),
+    injectSupervisorPrompt(input, supervisorGuide),
     orchestrator,
     activeAgentId,
     false,

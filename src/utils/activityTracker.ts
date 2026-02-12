@@ -175,16 +175,6 @@ export class ActivityTracker {
       return;
     }
 
-    if (normalizedTool === "vsearch") {
-      this.add({
-        category: "Search",
-        summary: truncate(trimmedPayload, 180),
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
-    }
-
     if (normalizedTool === "agent") {
       const parsed = safeJsonParse(trimmedPayload);
       const record =

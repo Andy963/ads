@@ -65,7 +65,7 @@ describe("utils/activityTracker", () => {
     );
   });
 
-  it("summarizes grep/find/vsearch/agent tool invokes", () => {
+  it("summarizes grep/find/unknown/agent tool invokes", () => {
     const tracker = new ActivityTracker();
 
     tracker.ingestToolInvoke("grep", JSON.stringify({ pattern: "foo", path: "src", glob: "*.ts" }));
@@ -79,7 +79,7 @@ describe("utils/activityTracker", () => {
       [
         "Search foo in src glob:*.ts",
         "List *.test.ts in tests",
-        "Search how to add tests",
+        "Tool vsearch",
         "Agent claude: Do something",
       ],
     );

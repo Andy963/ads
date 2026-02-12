@@ -27,40 +27,19 @@ cd ads
 # Install dependencies and build once
 npm install
 npm run build
-
-# (Optional) expose the CLI locally without publishing
-npm link
 ```
 ### Basic Usage
 
-1. **Initialize a workspace**:
+1. **Start the Web Console**:
    ```bash
-   /ads.init
-   ```
-   - 可选 `--name=<workspace>` 指定工作区名称（默认取当前目录名）。
-   - 工作区状态文件会写入 ADS 项目根目录的集中式存储（默认 `./.ads/workspaces/<workspaceId>/`，可用 `ADS_STATE_DIR` 覆盖），并确保 `docs/spec/` 目录存在。重复执行是幂等的。
-
-2. **Create a new workflow**:
-   ```bash
-   /ads.new "Implement user authentication"
+   npm run web
    ```
 
-3. **Check status**:
-   ```bash
-   /ads.status
-   ```
+2. **Describe your goal in chat** (slash commands are not supported).
 
-### Common ADS commands
-- `/ads.init [--name=<workspace>]` - 初始化当前目录工作区
-- `/ads.status` - 查看当前工作流状态
-- `/ads.new <title>` - 创建新工作流（默认 unified 模板）
-- `/ads.checkout <workflow>` - 切换工作流
-- `/ads.commit <step>` - 定稿步骤并推进到下一步
-- `/ads.branch [-d|--delete-context <id>] [--delete <id>]` - 列出或删除工作流（含上下文/数据）
-- `/ads.log [limit] [workflow]` - 查看最近的 workflow commit 日志
-- `/ads.rules [category]` - 查看项目规则
-- `/ads.workspace` / `/ads.sync` - 查看/同步工作区
-- `/ads.review [--skip=<reason>] [--show] [--spec] [--commit[=<ref>]]` - 触发/查看 Review，可指定最新提交或当前 diff，默认仅基于代码 diff
+3. **Review outputs**:
+   - Specs live under `docs/spec/`.
+   - Planner drafts and queued tasks are visible in the Web UI.
 
 ## 📚 Documentation
 
@@ -95,7 +74,7 @@ Missing guides referenced elsewhere will be restored once the documentation migr
 
 ### Environment loading
 
-- CLI、Web Console、Telegram Bot 会自动读取工作区根目录的 `.env`，并在存在时加载 `.env.local` 作为覆盖，无需手动 `source`。
+- Web Console、Telegram Bot 会自动读取工作区根目录的 `.env`，并在存在时加载 `.env.local` 作为覆盖，无需手动 `source`。
 - 建议将共享变量（如 `TELEGRAM_*`、`ADS_WEB_HOST`/`ADS_WEB_PORT`、`ALLOWED_DIRS`）写在 `.env`，机器专属配置放 `.env.local`。
 
 ### Runtime requirements
@@ -115,7 +94,7 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
 - `implementation.md` – 实施/验证模板
 - `workflow.yaml` – 工作流步骤定义
 
-每次运行 CLI 时，`templates/` 的内容都会同步到 `.ads/workspaces/<workspaceId>/templates/`，如需自定义模板只需编辑这些文件。
+ADS 会在工作区初始化与 Web Console 启动/切换目录时同步 `templates/` 到 `.ads/workspaces/<workspaceId>/templates/`，如需自定义模板只需编辑这些文件。
 
 ### System Prompt Reinjection
 
@@ -124,11 +103,10 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
   - `ADS_REINJECTION_ENABLED`（默认 `true`，设置为 `0`/`false` 禁用）
   - `ADS_REINJECTION_TURNS`（默认 `10`）
   - `ADS_RULES_REINJECTION_TURNS`（默认 `1`，即每轮重新注入 workspace 规则，可调大以降低频率）
-  - `CLI_REINJECTION_*` / `TELEGRAM_REINJECTION_*` 可覆盖对应入口。
 
 ### Codex 配置
 
-- 优先级：CLI 传参 `--base-url`/`--api-key` > 环境变量 `CODEX_BASE_URL`/`OPENAI_BASE_URL`、`CODEX_API_KEY`/`OPENAI_API_KEY` > `${CODEX_HOME:-~/.codex}/config.toml` 的 provider 配置 > `${CODEX_HOME:-~/.codex}/auth.json` 中的 API Key 或 `codex login` 生成的 `tokens`（access/refresh token）。
+- 优先级：环境变量 `CODEX_BASE_URL`/`OPENAI_BASE_URL`、`CODEX_API_KEY`/`OPENAI_API_KEY` > `${CODEX_HOME:-~/.codex}/config.toml` 的 provider 配置 > `${CODEX_HOME:-~/.codex}/auth.json` 中的 API Key 或 `codex login` 生成的 `tokens`（access/refresh token）。
 - 若只提供 API Key 而未指定 baseUrl，默认使用 `https://api.openai.com/v1`；仅使用 `codex login` 的设备令牌时可不填 baseUrl。
 - 建议：使用 `codex login` 或设置 `CODEX_API_KEY`，避免在仓库中保存明文密钥。
 
@@ -164,7 +142,7 @@ Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK
 
 鉴权/配置由 Gemini CLI 自身负责（例如 `gemini auth` / 主目录配置），ADS 不再通过 SDK 直接读取/管理密钥。
 
-配置解析逻辑位于 `src/agents/config.ts`，若检测到任一 Claude/Gemini 可用凭据（环境变量或主目录配置文件）则默认启用对应适配器；CLI/Web/Telegram 均支持 `/agent` 命令在 Codex/Claude/Gemini 之间切换。
+适配器启用/禁用开关由 `src/telegram/utils/sessionManager.ts` 读取环境变量（例如 `ADS_CLAUDE_ENABLED`/`ADS_GEMINI_ENABLED`）；Web Console 支持 `/agent` 命令切换激活的 Agent。
 
 ### Droid Agent（实验性）
 
@@ -206,7 +184,7 @@ Droid 集成通过 `droid` CLI 落地（JSONL stream），不依赖 SDK；工具
 - 浏览器访问对应地址即可与 Telegram 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
 - （可选）任务完成 Telegram 通知：复用 `TELEGRAM_BOT_TOKEN`，并使用唯一的 `TELEGRAM_ALLOWED_USERS` 作为通知 `chat_id`（单用户约束）；可用 `ADS_TELEGRAM_NOTIFY_TIMEZONE` 设置通知时间戳时区（默认 `Asia/Shanghai`）。
 - 聊天日志支持本地缓存（按 token 隔离，约 100 条/200KB，TTL 1 天），顶部“清空历史”按钮可同时清理日志与缓存；会话标签支持重命名并按 token 记住工作目录，重连/切换时自动恢复；流式回复的“正在输入”占位符按会话隔离。
-- Plan 以侧边栏面板呈现，不再作为聊天消息写入历史（避免刷屏）；同时会过滤掉类似 `Idiomatic English:` 的翻译前缀，保持历史与 `/search` 结果更干净。
+- Plan 以侧边栏面板呈现，不再作为聊天消息写入历史（避免刷屏）；同时会过滤掉类似 `Idiomatic English:` 的翻译前缀，保持历史与工具输出更干净。
 
 ### 📱 Telegram Bot 远程编程
 
@@ -234,22 +212,20 @@ npm run services -- status
 **常用命令**：
 | 命令 | 说明 |
 | ---- | ---- |
-| `/ads` | ADS 工作流命令入口 |
-| `/ads.new <title>` | 创建新工作流 |
-| `/ads.status` | 查看当前工作流状态 |
-| `/ads.commit <step>` | 定稿指定步骤 |
-| `/ads.review` | 触发代码审查 |
+| `/start` | 欢迎信息 |
+| `/help` | 命令帮助 |
+| `/status` | 系统状态 |
 | `/esc` | 中断当前任务（Agent 保持运行） |
 | `/reset` | 重置会话，开始新对话 |
 | `/mark [on\|off]` | 记录对话到 `YYYY-MM-DD-note.md`（可省略参数切换状态） |
-| `/agent [name]` | 查看或切换代理（Codex/Claude/Gemini） |
+| `/pref [list|add|del]` | 管理偏好设置（长期记忆） |
+| `/pwd` | 当前工作目录 |
 | `/cd <path>` | 切换工作目录 |
 
 **特性**：
 - 💬 直接发送消息与 AI 对话，支持多轮交互
 - 🖼️ 发送图片让 AI 分析（截图、设计稿等）
 - 📎 发送文件让 AI 处理
-- 🔄 会话持久化，断线后可 `/resume` 恢复
 - 📝 `/mark` 可将后续对话记录到当天 note，便于整理灵感
 - ⚡ `/esc` 可随时中断当前任务，立即执行新指令；Web 端提供停止按钮（执行中可用）
 
@@ -267,40 +243,9 @@ node .agent/skills/tavily-research/scripts/tavily-cli.cjs search --query "..." -
 node .agent/skills/tavily-research/scripts/tavily-cli.cjs fetch --url "https://..." --extractDepth advanced --format markdown
 ```
 
-同时 `/search <query>`（Telegram / Web Console）会在检测到 `TAVILY_API_KEY` 后委托该脚本执行；若未配置则回退为本地工作区搜索（`docs/spec` + `docs/adr`）。
+### 🔍 Review
 
-### 🔍 Review 工作流
-
-实施完成后，可触发自动化代码审查：
-
-```bash
-# 触发 Review（实施步骤定稿后）
-/ads.review
-
-# 查看 Review 报告
-/ads.review show
-
-# 跳过 Review（需提供原因）
-/ads.review skip 紧急上线，用户确认跳过
-```
-
-**Review 流程**：
-1. 自动收集 bundle（git diff、spec 文档、测试日志、依赖变更）
-2. 启动独立 Reviewer Agent 执行检查
-3. 生成结构化报告（verdict: approved/blocked + issues）
-4. Review 期间工作流锁定，禁止其他修改
-
-**Review 状态**：
-- `pending` - 等待执行
-- `running` - 正在审查
-- `approved` - 审查通过 ✅
-- `blocked` - 发现问题，需修复 ❌
-- `skipped` - 用户跳过（已记录原因）
-
-**规则**：
-- 实施完成后**必须**执行 `/ads.review`，除非用户明确要求跳过
-- Review 进行期间禁止执行写操作
-- 跳过 Review 需提供原因并记录
+ADS can run an automated code review step before delivery (no user-facing slash commands). See `docs/spec/**` and `docs/adr/**` for details.
 
 ## 🤝 Contributing
 

@@ -1,11 +1,8 @@
 import type { WebSocket } from "ws";
 
-import { formatLocalSearchOutput, searchWorkspaceFiles } from "../../../utils/localSearch.js";
-import { formatTavilySearchResults, hasTavilyApiKey, runTavilyCli } from "../../../utils/tavilySkillCli.js";
 import { parseSlashCommand } from "../../../codexConfig.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { withWorkspaceContext } from "../../../workspace/asyncWorkspaceContext.js";
-import { runVectorSearch } from "../../../vectorSearch/run.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
@@ -103,50 +100,6 @@ export async function handleCommandMessage(deps: {
       }
     }
 
-    if (slash?.command === "vsearch") {
-      const query = slash.body.trim();
-      const workspaceRoot = detectWorkspaceFrom(currentCwd);
-      const output = await runVectorSearch({ workspaceRoot, query, entryNamespace: "web" });
-      const note = "提示：系统会在后台自动用向量召回来补齐 agent 上下文；/vsearch 主要用于手动调试/查看原始召回结果。";
-      const decorated = output.startsWith("Vector search results for:") ? `${note}\n\n${output}` : output;
-      sendToCommandScope({ type: "result", ok: true, output: decorated });
-      deps.sessionLogger?.logOutput(decorated);
-      deps.historyStore.add(deps.historyKey, { role: "ai", text: decorated, ts: Date.now() });
-      return;
-    }
-    if (slash?.command === "search") {
-      const query = slash.body.trim();
-      if (!query) {
-        const output = "用法: /search <query>";
-        sendToCommandScope({ type: "result", ok: false, output });
-        deps.sessionLogger?.logError(output);
-        deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-        return;
-      }
-      if (!hasTavilyApiKey()) {
-        const workspaceRoot = detectWorkspaceFrom(currentCwd);
-        const local = searchWorkspaceFiles({ workspaceRoot, query });
-        const output = formatLocalSearchOutput({ query, ...local });
-        sendToCommandScope({ type: "result", ok: true, output });
-        deps.sessionLogger?.logOutput(output);
-        deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });
-        return;
-      }
-      try {
-        const result = await runTavilyCli({ cmd: "search", query, maxResults: 5 });
-        const output = formatTavilySearchResults(query, result.json);
-        sendToCommandScope({ type: "result", ok: true, output });
-        deps.sessionLogger?.logOutput(output);
-        deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const output = `/search 失败: ${message}`;
-        sendToCommandScope({ type: "result", ok: false, output });
-        deps.sessionLogger?.logError(output);
-        deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-      }
-      return;
-    }
     if (slash?.command === "pwd") {
       const output = `当前工作目录: ${currentCwd}`;
       sendToCommandScope({ type: "result", ok: true, output });
@@ -270,9 +223,16 @@ export async function handleCommandMessage(deps: {
       return;
     }
 
-    let commandToExecute = command;
-    if (slash?.command === "review") {
-      commandToExecute = `/ads.review${slash.body ? ` ${slash.body}` : ""}`;
+    const isBlockedUserSlashCommand =
+      typeof normalizedSlash === "string" &&
+      (normalizedSlash === "search" ||
+        normalizedSlash === "bootstrap" ||
+        normalizedSlash === "vsearch" ||
+        normalizedSlash === "review" ||
+        normalizedSlash === "ads" ||
+        normalizedSlash.startsWith("ads."));
+    if (isBlockedUserSlashCommand) {
+      return;
     }
 
     const controller = new AbortController();
@@ -280,7 +240,7 @@ export async function handleCommandMessage(deps: {
 
     let runPromise: Promise<{ ok: boolean; output: string }> | undefined;
     try {
-      runPromise = withWorkspaceContext(currentCwd, () => deps.runAdsCommandLine(commandToExecute));
+      runPromise = withWorkspaceContext(currentCwd, () => deps.runAdsCommandLine(command));
       const abortPromise = new Promise<never>((_, reject) => {
         controller.signal.addEventListener(
           "abort",

@@ -1,15 +1,12 @@
 import type { Input, InputTextPart, ThreadEvent } from "../../../agents/protocol/types.js";
 
 import fs from "node:fs";
-import path from "node:path";
 
 import type { AgentEvent } from "../../../codex/events.js";
 import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";
-import { parseSlashCommand } from "../../../codexConfig.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
-import { extractTextFromInput } from "../../../utils/inputText.js";
 import { processAdrBlocks } from "../../../utils/adrRecording.js";
-import { formatTavilySearchResults, hasTavilyApiKey, runTavilyCli } from "../../../utils/tavilySkillCli.js";
+import { processSpecBlocks } from "../../../utils/specRecording.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { truncateForLog } from "../../utils.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
@@ -17,7 +14,7 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
-import { resolveAdsStateDir, resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
+import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runCollaborativeTurn } from "../../../agents/hub.js";
 import { extractCommandPayload } from "./utils.js";
@@ -39,137 +36,12 @@ import { normalizeCreateTaskInput } from "../planner/taskBundleApprover.js";
 import { detectBundleRisk } from "../planner/riskDetector.js";
 import { recordTaskQueueMetric, type TaskQueueContext } from "../taskQueue/manager.js";
 import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
-import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
-import { runBootstrapLoop } from "../../../bootstrap/bootstrapLoop.js";
-import { CodexBootstrapAgentRunner } from "../../../bootstrap/agentRunner.js";
-import { BwrapSandbox, NoopSandbox } from "../../../bootstrap/sandbox.js";
-import { normalizeBootstrapProjectRef } from "../../../bootstrap/projectId.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
 type PatchFileStatLike = { added: number | null; removed: number | null };
 
 const HISTORY_INJECTION_MAX_ENTRIES = 20;
 const HISTORY_INJECTION_MAX_CHARS = 8_000;
-
-type ParsedBootstrapArgs = {
-  projectRef: string;
-  goal: string;
-  softSandbox: boolean;
-  allowNetwork: boolean;
-  allowInstallDeps: boolean;
-  maxIterations: number;
-  enableReview: boolean;
-  reviewRounds: number;
-  model?: string;
-  reviewModel?: string;
-};
-
-function looksLikeGitUrl(value: string): boolean {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed) return false;
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return true;
-  if (trimmed.startsWith("git@")) return true;
-  if (/^[a-zA-Z0-9._-]+@[^:]+:.+/.test(trimmed)) return true;
-  if (trimmed.startsWith("ssh://")) return true;
-  return false;
-}
-
-function parseBootstrapArgs(body: string): { ok: true; args: ParsedBootstrapArgs } | { ok: false; error: string } {
-  const tokens = body
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter(Boolean);
-  if (tokens.length === 0) {
-    return {
-      ok: false,
-      error: "用法: /bootstrap [--soft] [--no-install] [--no-network] [--no-review] [--review-rounds=N] [--max-iterations=N] [--model=MODEL] [--review-model=MODEL] <repoPath|gitUrl> <goal...>",
-    };
-  }
-
-  const params: Record<string, string> = {};
-  const positional: string[] = [];
-  let softSandbox = false;
-  let allowInstallDeps = true;
-  let allowNetwork = true;
-  let enableReview = true;
-  let reviewSpecified = false;
-
-  for (const token of tokens) {
-    if (token === "--soft") {
-      softSandbox = true;
-      continue;
-    }
-    if (token === "--no-install") {
-      allowInstallDeps = false;
-      continue;
-    }
-    if (token === "--no-network") {
-      allowNetwork = false;
-      continue;
-    }
-    if (token === "--no-review") {
-      enableReview = false;
-      reviewSpecified = true;
-      continue;
-    }
-    if (token === "--review") {
-      enableReview = true;
-      reviewSpecified = true;
-      continue;
-    }
-    if (token.startsWith("--")) {
-      const eqIndex = token.indexOf("=");
-      if (eqIndex > -1) {
-        const key = token.slice(2, eqIndex);
-        const value = token.slice(eqIndex + 1);
-        params[key] = value;
-      } else {
-        params[token.slice(2)] = "true";
-      }
-      continue;
-    }
-    positional.push(token.replace(/^['"]|['"]$/g, ""));
-  }
-
-  const projectRef = (params.repo ?? params.project ?? positional.shift() ?? "").trim();
-  const goal = (params.goal ?? positional.join(" ")).trim();
-  if (!projectRef) {
-    return { ok: false, error: "缺少 repoPath/gitUrl。用法: /bootstrap <repoPath|gitUrl> <goal...>" };
-  }
-  if (!goal) {
-    return { ok: false, error: "缺少 goal。用法: /bootstrap <repoPath|gitUrl> <goal...>" };
-  }
-
-  const maxIterationsRaw = params["max-iterations"] ?? params.max_iterations ?? params.maxIterations;
-  const maxIterationsParsed = maxIterationsRaw ? Number.parseInt(maxIterationsRaw, 10) : 10;
-  const maxIterations = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.min(10, maxIterationsParsed)) : 10;
-  const model = params.model ? String(params.model).trim() : undefined;
-
-  const reviewRoundsRaw = params["review-rounds"] ?? params.review_rounds ?? params.reviewRounds;
-  const reviewRoundsParsed = reviewRoundsRaw ? Number.parseInt(reviewRoundsRaw, 10) : 2;
-  const reviewRounds = Number.isFinite(reviewRoundsParsed) ? Math.max(1, Math.min(2, reviewRoundsParsed)) : 2;
-  const reviewModel = params["review-model"] ? String(params["review-model"]).trim() : undefined;
-
-  if (softSandbox && !reviewSpecified) {
-    enableReview = false;
-  }
-
-  return {
-    ok: true,
-    args: {
-      projectRef,
-      goal,
-      softSandbox,
-      allowNetwork,
-      allowInstallDeps,
-      maxIterations,
-      model: model && model.length > 0 ? model : undefined,
-      enableReview,
-      reviewRounds,
-      reviewModel: reviewModel && reviewModel.length > 0 ? reviewModel : undefined,
-    },
-  };
-}
 
 export function buildHistoryInjectionContext(entries: Array<{ role: string; text: string }>): string | null {
   const relevant = entries.filter((e) => e.role === "user" || e.role === "ai");
@@ -336,153 +208,6 @@ export async function handlePromptMessage(deps: {
         cleanupAttachments();
         return;
       }
-    }
-    const promptText = extractTextFromInput(promptInput.input).trim();
-
-    const promptSlash = parseSlashCommand(promptText);
-    if (promptSlash?.command === "search") {
-      const query = promptSlash.body.trim();
-      if (!query) {
-        const output = "用法: /search <query>";
-        sendToChat({ type: "result", ok: false, output });
-        deps.sessionLogger?.logError(output);
-        deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-        cleanupAttachments();
-        return;
-      }
-      if (!hasTavilyApiKey()) {
-        const output = "/search 未启用: Missing TAVILY_API_KEY";
-        sendToChat({ type: "result", ok: false, output });
-        deps.sessionLogger?.logError(output);
-        deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-        cleanupAttachments();
-        return;
-      }
-      try {
-        const result = await runTavilyCli({ cmd: "search", query, maxResults: 5 });
-        const output = formatTavilySearchResults(query, result.json);
-        sendToChat({ type: "result", ok: true, output });
-        deps.sessionLogger?.logOutput(output);
-        deps.historyStore.add(deps.historyKey, { role: "ai", text: output, ts: Date.now() });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const output = `/search 失败: ${message}`;
-        sendToChat({ type: "result", ok: false, output });
-        deps.sessionLogger?.logError(output);
-        deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
-      }
-      cleanupAttachments();
-      return;
-    }
-
-    if (promptSlash?.command === "bootstrap") {
-      const parsedArgs = parseBootstrapArgs(promptSlash.body);
-      if (!parsedArgs.ok) {
-        sendToChat({ type: "result", ok: false, output: parsedArgs.error, kind: "bootstrap" });
-        deps.sessionLogger?.logError(parsedArgs.error);
-        deps.historyStore.add(deps.historyKey, { role: "status", text: parsedArgs.error, ts: Date.now(), kind: "command" });
-        cleanupAttachments();
-        return;
-      }
-
-      const controller = new AbortController();
-      deps.interruptControllers.set(deps.ws, controller);
-      try {
-        const directoryManager = new DirectoryManager(deps.allowedDirs);
-        const inputRef = parsedArgs.args.projectRef;
-        const project = looksLikeGitUrl(inputRef)
-          ? ({ kind: "git_url", value: inputRef } as const)
-          : (() => {
-              const resolved = path.resolve(deps.currentCwd, inputRef);
-              if (!directoryManager.validatePath(resolved)) {
-                const allowed = deps.allowedDirs.join("\n");
-                throw new Error(`目录不在白名单内。允许的目录：\n${allowed}`);
-              }
-              return { kind: "local_path", value: resolved } as const;
-            })();
-
-        const normalizedProject = normalizeBootstrapProjectRef(project);
-        const bootstrapRoot = path.join(resolveAdsStateDir(), "bootstraps", normalizedProject.projectId);
-        const hardSandbox = !parsedArgs.args.softSandbox;
-        const sandbox = hardSandbox
-          ? new BwrapSandbox({ rootDir: bootstrapRoot, allowNetwork: parsedArgs.args.allowNetwork })
-          : new NoopSandbox();
-        const agentRunner = new CodexBootstrapAgentRunner({ sandbox, model: parsedArgs.args.model });
-
-        sendToChat({
-          type: "result",
-          ok: true,
-          output: `bootstrap started (sandbox=${hardSandbox ? "hard" : "soft"})`,
-          kind: "bootstrap",
-        });
-
-        const result = await runBootstrapLoop(
-          {
-            project: normalizedProject.project,
-            goal: parsedArgs.args.goal,
-            maxIterations: parsedArgs.args.maxIterations,
-            allowNetwork: parsedArgs.args.allowNetwork,
-            allowInstallDeps: parsedArgs.args.allowInstallDeps,
-            requireHardSandbox: hardSandbox,
-            sandbox: { backend: hardSandbox ? "bwrap" : "none" },
-            review: { enabled: parsedArgs.args.enableReview, maxRounds: parsedArgs.args.reviewRounds, model: parsedArgs.args.reviewModel },
-          },
-          {
-            agentRunner,
-            signal: controller.signal,
-            hooks: {
-              onStarted(ctx) {
-                sendToChat({
-                  type: "result",
-                  ok: true,
-                  output: `bootstrap worktree ready runId=${ctx.runId}\nworktree: ${ctx.worktreeDir}\nartifacts: ${ctx.artifactsDir}\nbranch: ${ctx.branchName}`,
-                  kind: "bootstrap",
-                });
-              },
-              onIteration(progress) {
-                const testState = progress.test.summary === "(skipped)" ? "skipped" : progress.test.ok ? "ok" : "fail";
-                const line = `bootstrap iter=${progress.iteration} ok=${progress.ok} lint=${progress.lint.ok ? "ok" : "fail"} test=${testState} strategy=${progress.strategy}`;
-                sendToChat({ type: "result", ok: true, output: line, kind: "bootstrap_progress" });
-              },
-            },
-          },
-        );
-
-        const artifactsDir = path.dirname(result.lastReportPath);
-        const derivedRunId = path.basename(artifactsDir);
-        const derivedBootstrapRoot = path.resolve(artifactsDir, "..", "..");
-        const worktreeDir = path.join(derivedBootstrapRoot, "worktrees", derivedRunId);
-
-        const outputLines: string[] = [];
-        outputLines.push(`bootstrap finished ok=${result.ok} iterations=${result.iterations} strategyChanges=${result.strategyChanges}`);
-        outputLines.push(`runId: ${derivedRunId}`);
-        outputLines.push(`worktree: ${worktreeDir}`);
-        outputLines.push(`artifacts: ${artifactsDir}`);
-        if (result.finalBranch) outputLines.push(`branch: ${result.finalBranch}`);
-        if (result.finalCommit) outputLines.push(`commit: ${result.finalCommit}`);
-        outputLines.push(`report: ${result.lastReportPath}`);
-
-        const output = outputLines.join("\n");
-        sendToChat({ type: "result", ok: result.ok, output, kind: "bootstrap" });
-        deps.sessionLogger?.logOutput(output);
-        deps.historyStore.add(deps.historyKey, {
-          role: result.ok ? "ai" : "status",
-          text: output,
-          ts: Date.now(),
-          kind: result.ok ? undefined : "command",
-        });
-      } catch (error) {
-        const aborted = controller.signal.aborted;
-        const message = error instanceof Error ? error.message : String(error);
-        const output = aborted ? "bootstrap 已中断" : `bootstrap failed: ${message}`;
-        sendToChat({ type: "result", ok: false, output, kind: "bootstrap" });
-        deps.sessionLogger?.logError(output);
-        deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "command" });
-      } finally {
-        deps.interruptControllers.delete(deps.ws);
-        cleanupAttachments();
-      }
-      return;
     }
 
     const inputToSend: Input = promptInput.input;
@@ -762,12 +487,21 @@ export async function handlePromptMessage(deps: {
       const finalOutput = stripLeadingTranslation(rawResponse);
       const workspaceRootForAdr = detectWorkspaceFrom(turnCwd);
       let outputToSend = finalOutput;
+      let createdSpecRefs: string[] = [];
       try {
-        const adrProcessed = processAdrBlocks(finalOutput, workspaceRootForAdr);
-        outputToSend = adrProcessed.finalText || finalOutput;
+        const adrProcessed = processAdrBlocks(outputToSend, workspaceRootForAdr);
+        outputToSend = adrProcessed.finalText || outputToSend;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        outputToSend = `${finalOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
+        outputToSend = `${outputToSend}\n\n---\nADR warning: failed to record ADR (${message})`;
+      }
+      try {
+        const specProcessed = await processSpecBlocks(outputToSend, workspaceRootForAdr);
+        outputToSend = specProcessed.finalText || outputToSend;
+        createdSpecRefs = specProcessed.results.map((r) => r.specRef);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        outputToSend = `${outputToSend}\n\n---\nSpec warning: failed to record spec (${message})`;
       }
       const threadId = orchestrator.getThreadId();
       const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
@@ -790,6 +524,18 @@ export async function handlePromptMessage(deps: {
           const requestId = String(deps.requestId ?? "").trim();
           return requestId ? `req:${requestId}` : null;
         })();
+        const defaultSpecRef = (() => {
+          const last = createdSpecRefs.length > 0 ? createdSpecRefs[createdSpecRefs.length - 1] : null;
+          return last ? String(last).trim() : null;
+        })();
+        const allowAutoApprove = (() => {
+          const lowered = String(userLogEntry ?? "").toLowerCase();
+          const passphrase = String(process.env.ADS_PLANNER_AUTO_APPROVE_PASSPHRASE ?? "ads:autoapprove").trim().toLowerCase();
+          if (!passphrase) {
+            return false;
+          }
+          return lowered.includes(passphrase);
+        })();
 
         for (const block of blocks) {
           const parsedBundle = parseTaskBundle(block);
@@ -799,7 +545,13 @@ export async function handlePromptMessage(deps: {
           }
           try {
             const originalRequestId = String(parsedBundle.bundle.requestId ?? "").trim();
-            const normalized = ensureTaskBundleIdempotency(parsedBundle.bundle, { defaultRequestId });
+            let normalized = ensureTaskBundleIdempotency(parsedBundle.bundle, { defaultRequestId });
+            if (defaultSpecRef && !String(normalized.specRef ?? "").trim()) {
+              normalized = { ...normalized, specRef: defaultSpecRef };
+            }
+            if (normalized.autoApprove && !allowAutoApprove) {
+              normalized = { ...normalized, autoApprove: undefined };
+            }
             const requestId = String(normalized.requestId ?? "").trim();
 
             if (!originalRequestId && requestId) {

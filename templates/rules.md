@@ -8,6 +8,6 @@
 6. 前端构建：凡修改到前端相关代码（包含 src/frontend、前端依赖或 UI 组件），必须在交付前运行一次 `npm run build`，确保能通过编译。
 7. 规划约束：多步骤任务必须先写出包含至少 2 步的计划，并在每个步骤完成后更新计划，禁止跳过或省略该流程。
 8. 文档同步：任何改动导致行为、接口或流程发生变化时，必须同步更新对应的 `docs/spec/*`、README 或相关文档，保持实现与文档一致。
-9. Spec 流程：除非用户明确要求跳过流程，否则新增或变更任何功能必须使用 `/ads.new` 创建工作流，并严格按 requirement → design → implementation 顺序定稿；禁止直接在 docs/spec 目录外手写文档或跳过步骤。
-10. Review 流程：除非用户明确要求跳过且记录原因，实施完成后必须执行 `/ads.review` 并等待通过；Review 进行期间禁止继续修改代码或提交。
+9. Spec 流程：除非用户明确要求跳过流程，否则新增或变更任何功能必须先产出 `docs/spec/` 下的 requirement/design/implementation（三件套可用 `spec-wizard` skill 自动生成），并严格按 requirement → design → implementation 顺序定稿；禁止直接在 docs/spec 目录外手写文档或跳过步骤。
+10. Review 流程：除非用户明确要求跳过且记录原因，实施完成后必须执行 Review（通过 review workflow/技能自动化）并等待通过；Review 进行期间禁止继续修改代码或提交。
 - 违反任一条即停止

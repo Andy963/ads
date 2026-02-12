@@ -84,9 +84,7 @@ function createFormatHelpers(format: WorkflowTextFormat): FormatHelpers {
 export function formatWorkflowList(entries: WorkflowListEntry[], options: { format: WorkflowTextFormat }): string {
   const { format } = options;
   if (entries.length === 0) {
-    return format === "cli"
-      ? "没有找到任何工作流。使用 /ads.new 创建一个新的工作流（可选 --template_id=adhoc 直通模式）。"
-      : "没有找到任何工作流。使用 `/ads.new` 创建一个新的工作流（可选 `--template_id=adhoc` 直通模式）。";
+    return "没有找到任何工作流。请通过 Web UI 或 skills 创建新的工作流。";
   }
 
   if (format === "cli") {
@@ -203,7 +201,12 @@ export function formatWorkflowStatusSummary(
     lines.push("");
     lines.push(helpers.section("💡 下一步"));
     for (const action of nextActions) {
-      lines.push(helpers.info(`${helpers.escape(action.label)}: ${helpers.code(action.command)}`));
+      const command = String(action.command ?? "").trim();
+      if (!command) {
+        lines.push(helpers.info(helpers.escape(action.label)));
+        continue;
+      }
+      lines.push(helpers.info(`${helpers.escape(action.label)}: ${helpers.code(command)}`));
     }
   }
 

@@ -156,7 +156,7 @@ export function formatLocalSearchOutput(params: {
   const maxChars = Math.max(400, Math.floor(params.maxChars ?? 6000));
   const hits = params.hits ?? [];
 
-  const header = `🔎 /search "${truncate(query, 64)}" (local)`;
+  const header = `🔎 Search "${truncate(query, 64)}" (local)`;
   if (hits.length === 0) {
     const out = `${header}\n(0 results; scanned ${params.scanned} files)`;
     return out.length > maxChars ? out.slice(0, maxChars - 1) + "…" : out;

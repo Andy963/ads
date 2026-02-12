@@ -269,6 +269,9 @@ export async function createWorkflowFromTemplate(params: {
           root_node_id: rootNode.id,
           nodes_created: result.nodes.length,
           edges_created: result.edges.length,
+          spec_folder: folderName,
+          spec_dir: path.join("docs", "spec", folderName),
+          template_id: normalizedId,
         },
         message: "工作流已创建，后续步骤将通过定稿自动流转",
       });

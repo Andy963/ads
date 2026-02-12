@@ -37,11 +37,10 @@ describe("utils/localSearch", () => {
     assert.ok(!hits.some((hit) => hit.file.endsWith("docs/adr/README.md")));
 
     const output = formatLocalSearchOutput({ query: "foobar", hits, scanned });
-    assert.ok(output.includes('/search "foobar"'));
+    assert.ok(output.includes('Search "foobar"'));
     assert.ok(output.includes("docs/spec/feature-a/requirements.md"));
     assert.ok(output.includes("docs/adr/0001-foobar.md"));
 
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 });
-

@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2025-12-23
 
+> 更新（2026-02-12）：ADS 不再支持用户侧 CLI 入口；下文“跨入口（CLI/Web/Telegram）”中的 CLI 仅指历史形态，目前仅 Web Console + Telegram Bot。
+
 ## Context
 
 ADS 的核心流程依赖规格文档（requirements/design/implementation），但在实际讨论中，很多“架构/接口/数据模型/流程约束”的关键决策会散落在聊天记录与设计讨论里，后续容易出现：
@@ -30,7 +32,7 @@ ADS 的核心流程依赖规格文档（requirements/design/implementation），
    - 优点：不依赖显式标记，理论上不漏
    - 缺点：误报与噪音风险高，且容易把“讨论中的想法”误写为“已决策”
 
-2. **在 `/ads.commit design` 时抽取（C）**：从设计稿或 commit 流程自动生成 ADR
+2. **在 design 步骤定稿时抽取（C）**：从设计稿或定稿流程自动生成 ADR
    - 优点：与规格流程绑定，似乎更“正式”
    - 缺点：耦合特定步骤，无法覆盖日常对话中的决策；实现复杂度与边界不清
 

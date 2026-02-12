@@ -17,7 +17,7 @@ ADS 需要在 Web/Telegram 等入口提供“联网搜索 + URL 抓取”的能�
 - Tavily SDK/联网依赖会放大 core 的维护面（错误分类、限流策略、日志/脱敏等），并影响测试与可移植性。
 - ADS 已引入 “skill” 作为可热加载的扩展机制（`.agent/skills/<name>/SKILL.md`），更适合承载“可选、外部依赖强、更新频繁”的能力。
 
-因此，需要把 Tavily 能力从 core runtime 中剥离，迁移到 skill 侧，并保持用户体验（仍可用 `/search <query>`）。
+因此，需要把 Tavily 能力从 core runtime 中剥离，迁移到 skill 侧，并避免在入口层暴露用户侧 slash 命令。
 
 ## Decision
 
@@ -26,9 +26,7 @@ ADS 需要在 Web/Telegram 等入口提供“联网搜索 + URL 抓取”的能�
    - skill：`.agent/skills/tavily-research/`
    - CLI 脚本：`.agent/skills/tavily-research/scripts/tavily-cli.cjs`
    - 脚本提供 `search` 与 `fetch` 子命令，输出 JSON（便于上层渲染/复用）。
-3. `/search <query>`（Telegram / Web Console）保留，但改为 **thin wrapper**：
-   - 若缺少 `TAVILY_API_KEY`：回退为本地工作区搜索（`docs/spec` + `docs/adr`）。
-   - 若已配置：通过 `src/utils/tavilySkillCli.ts` 调用 skill 脚本并格式化输出。
+3. 不在 Web/Telegram 入口提供用户侧的 slash 命令 wrapper。联网搜索与 URL 抓取仅通过 skill 脚本提供（由自动化/技能调用）。
 
 ## Alternatives Considered
 
@@ -38,20 +36,20 @@ ADS 需要在 Web/Telegram 等入口提供“联网搜索 + URL 抓取”的能�
 
 2. **仅通过远程工具/外部代理提供 Tavily**
    - 优点：core 无需直接集成 Tavily。
-   - 缺点：`/search` 在 Telegram/Web 等入口难以稳定复用；配置分散且对用户不透明。
+   - 缺点：在 Telegram/Web 等入口难以稳定复用；配置分散且对用户不透明。
 
-3. **把 Tavily 完全交给用户手动脚本，不提供 wrapper**
-   - 优点：core 更轻。
-   - 缺点：用户体验下降（入口不一致、输出不统一、难以 discover）。
+3. **在入口侧保留用户可见的 wrapper 命令**
+   - 优点：入口一致，用户可直接调用。
+   - 缺点：入口层需要维护命令解析、降级与输出格式，且会让“用户输入的 slash 文本”重新变成特殊处理路径。
 
 ## Consequences
 
 - 正向：
   - core runtime 更轻：移除 Tavily 相关策略代码，降低维护与测试复杂度。
   - 可选能力更可控：skill 可独立迭代，适配不同运行环境（代理、Key 轮换等）。
-  - 用户体验保持一致：仍支持 `/search`，且在未配置 Key 时有明确降级路径。
+  - 能力入口统一：联网搜索与 URL 抓取通过标准化 skill 脚本提供，便于在不同入口复用（由自动化/技能调用）。
 - 负向/风险：
-  - `/search` 运行时依赖 skill 脚本存在（路径约定），部署/打包需确保 `.agent/skills/` 同步。
+  - 如需联网能力，运行环境需确保 `.agent/skills/` 同步并配置必要的凭证。
   - 失去内置的“多 Key/限流/重试”策略（当前由脚本与调用方约束替代），如需恢复需在 skill 侧演进。
 
 ## References
@@ -60,4 +58,3 @@ ADS 需要在 Web/Telegram 等入口提供“联网搜索 + URL 抓取”的能�
 - Spec: `docs/spec/20251205-1615-tavily-search-tool/design.md`
 - Spec: `docs/spec/20251205-1615-tavily-search-tool/implementation.md`
 - Skill: `.agent/skills/tavily-research/SKILL.md`
-- Code: `src/utils/tavilySkillCli.ts`

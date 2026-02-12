@@ -2,15 +2,8 @@ import path from "node:path";
 
 import { WorkflowContext } from "../workspace/context.js";
 import { detectWorkspace } from "../workspace/detector.js";
-import { loadVectorSearchConfig } from "../vectorSearch/config.js";
 
 import { formatWorkflowStatusSummary, type WorkflowTextFormat } from "./formatter.js";
-
-const CMD_NEW = "/ads.new";
-const CMD_STATUS = "/ads.status";
-const CMD_BRANCH = "/ads.branch";
-const CMD_CHECKOUT = "/ads.checkout";
-const CMD_COMMIT = "/ads.commit";
 
 export async function getActiveWorkflowSummary(params: { workspace_path?: string }): Promise<string> {
   const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
@@ -20,8 +13,8 @@ export async function getActiveWorkflowSummary(params: { workspace_path?: string
       "❌ 没有活动的工作流",
       "",
       "💡 开始使用：",
-      `    - 创建新工作流: ${CMD_NEW} <title> [--template_id=<unified|adhoc>]`,
-      `    - 查看所有工作流: ${CMD_BRANCH}`,
+      "    - 在 Web UI 或通过 skills 创建新工作流",
+      "    - 在 Web UI 中查看所有工作流",
     ].join("\n");
   }
 
@@ -44,7 +37,7 @@ export async function getActiveWorkflowSummary(params: { workspace_path?: string
     }
   }
   lines.push("");
-  lines.push(`💡 查看详细状态请用: ${CMD_STATUS}`);
+  lines.push("💡 查看详细状态请在 Web UI 中打开工作流面板。");
   lines.push("```");
   return lines.join("\n");
 }
@@ -59,18 +52,16 @@ export async function getWorkflowStatusSummary(params: { workspace_path?: string
         "**❌ 没有活动的工作流**",
         "",
         "💡 开始使用：",
-        `- 使用 \`${CMD_BRANCH}\` 查看现有工作流`,
-        `- 使用 \`${CMD_NEW}\` 创建新工作流`,
-        `- 使用 \`${CMD_CHECKOUT} <workflow>\` 切换到指定工作流`,
+        "- 在 Web UI 或通过 skills 创建新工作流",
+        "- 在 Web UI 中查看/切换工作流",
       ].join("\n");
     }
     return [
       "❌ 没有活动的工作流",
       "",
       `💡 开始使用：`,
-      `    - 查看现有工作流: ${CMD_BRANCH}`,
-      `    - 创建新工作流: ${CMD_NEW} <title> [--template_id=<unified|adhoc>]`,
-      `    - 切换到工作流: ${CMD_CHECKOUT} <workflow>`,
+      "    - 在 Web UI 或通过 skills 创建新工作流",
+      "    - 在 Web UI 中查看/切换工作流",
     ].join("\n");
   }
 
@@ -80,7 +71,7 @@ export async function getWorkflowStatusSummary(params: { workspace_path?: string
   const allWorkflows = WorkflowContext.listAllWorkflows(workspace);
   const stepMapping = WorkflowContext.STEP_MAPPINGS[workflow.template ?? ""] ?? {};
   const stepOrder = Object.keys(stepMapping);
-  const nextActions: Array<{ label: string; command: string }> = [{ label: "完成步骤", command: `${CMD_COMMIT} <step>` }];
+  const nextActions: Array<{ label: string; command: string }> = [{ label: "完成步骤（通过 Web UI 或 skills）", command: "" }];
 
   return formatWorkflowStatusSummary(
     {
@@ -93,9 +84,3 @@ export async function getWorkflowStatusSummary(params: { workspace_path?: string
     { format },
   );
 }
-
-export function workflowSummaryWantsVectorSearchGuide(): boolean {
-  const { config } = loadVectorSearchConfig();
-  return !!config?.enabled;
-}
-

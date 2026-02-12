@@ -1,6 +1,6 @@
 ---
 name: spec-to-task
-description: "Convert a finalized spec into an executable task (auto-enqueue by default, draft on request or when risk is high). Use when user says 转换成任务/开始执行/enqueue."
+description: "Convert a finalized spec into a TaskBundle (转换成任务/入队/落草稿). Default: draft; autoApprove only when explicitly requested and safe."
 ---
 
 # Spec To Task
@@ -9,23 +9,24 @@ description: "Convert a finalized spec into an executable task (auto-enqueue by 
 
 Convert a finalized spec or discussion into a TaskBundle submission.
 
-- **Default**: auto-enqueue (`autoApprove: true`) — task goes directly to the queue, skipping the draft panel.
-- **Draft on request**: user explicitly asks for draft → `autoApprove` is omitted.
-- **Draft forced**: high-risk or high-uncertainty detected → `autoApprove` is omitted, agent warns the user.
+- **Default**: draft — `autoApprove` is omitted (task stays in the draft panel).
+- **Auto-enqueue on request**: user explicitly asks to enqueue/skip draft AND includes the explicit passphrase `ads:autoapprove` → set `autoApprove: true` if safe.
+- **Draft forced**: high-risk or high-uncertainty detected → force draft mode and warn the user.
 
 ## Trigger
 
 Use this skill when the user says:
 - "convert to task" / "转换成任务"
-- "start execution" / "开始执行"
-- "enqueue" / "加入队列" / "入队执行"
+- "start execution" / "开始执行" / "入队执行"
+- "enqueue" / "加入队列"
+- "draft" / "落草稿" / "先落草稿"
 
 ## Mode Selection
 
 | Condition | Mode | `autoApprove` |
 |-----------|------|---------------|
-| Normal conversion, no high-risk flags | Auto-enqueue | `true` |
-| User says 草稿/落草稿/先落草稿/draft | Draft | omitted |
+| Normal conversion (default) | Draft | omitted |
+| User asks for enqueue/skip draft + passphrase `ads:autoapprove` | Auto-enqueue | `true` |
 | High-risk or excessive uncertainty detected | Draft (forced) | omitted |
 
 When forcing draft mode, explain to the user **why** it was degraded (e.g., "检测到涉及数据库 migration，已降级为草稿，请确认后手动批准").
@@ -66,7 +67,6 @@ Produce exactly one fenced block:
 ```ads-tasks
 {
   "version": 1,
-  "autoApprove": true,
   "specRef": "docs/spec/yyyymmdd-slug/",
   "insertPosition": "back",
   "tasks": [
@@ -81,7 +81,9 @@ Produce exactly one fenced block:
 ````
 
 - For draft mode: omit `autoApprove` or set it to `false`
-- For auto-enqueue mode: set `autoApprove: true`
+- For auto-enqueue mode: set `autoApprove: true` (only when the user included passphrase `ads:autoapprove` in their message; otherwise the backend will strip it and keep a draft)
+
+If you just created a spec in the same response via a `<<<spec ... >>>` block and you do not know the final spec path yet, you may omit `specRef`; the backend will attach it when saving the draft.
 
 ## Prompt Structure (English-only)
 
