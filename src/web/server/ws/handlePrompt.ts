@@ -146,6 +146,7 @@ export async function handlePromptMessage(deps: {
   requestId: string;
   clientMessageId: string | null;
   traceWsDuplication: boolean;
+  receivedAt: number;
   authUserId: string;
   sessionId: string;
   chatSessionId: string;
@@ -190,24 +191,12 @@ export async function handlePromptMessage(deps: {
     const cleanupAttachments = () => cleanupTempFiles(tempAttachments);
     const userLogEntry = buildUserLogEntry(promptInput.input, deps.currentCwd);
     deps.sessionLogger?.logInput(userLogEntry);
-    const entryKind = deps.clientMessageId ? `client_message_id:${deps.clientMessageId}` : undefined;
-    const inserted = deps.historyStore.add(deps.historyKey, {
-      role: "user",
-      text: userLogEntry,
-      ts: Date.now(),
-      kind: entryKind,
-    });
-    if (deps.clientMessageId) {
-      sendToClient({ type: "ack", client_message_id: deps.clientMessageId, duplicate: !inserted });
-      if (!inserted) {
-        if (deps.traceWsDuplication) {
-          deps.logger.warn(
-            `[WebSocket][Dedupe] req=${deps.requestId} session=${deps.sessionId} user=${deps.userId} history=${deps.historyKey} client_message_id=${deps.clientMessageId}`,
-          );
-        }
-        cleanupAttachments();
-        return;
-      }
+    if (!deps.clientMessageId) {
+      deps.historyStore.add(deps.historyKey, {
+        role: "user",
+        text: userLogEntry,
+        ts: deps.receivedAt,
+      });
     }
 
     const inputToSend: Input = promptInput.input;
@@ -420,7 +409,7 @@ export async function handlePromptMessage(deps: {
 
       let effectiveInput: Input = inputToSend;
       if (deps.sessionManager.needsHistoryInjection(deps.userId)) {
-        const historyEntries = deps.historyStore.get(deps.historyKey);
+        const historyEntries = deps.historyStore.get(deps.historyKey).filter((entry) => entry.ts <= deps.receivedAt);
         const injectionContext = buildHistoryInjectionContext(historyEntries);
         if (injectionContext) {
           effectiveInput = prependContextToInput(injectionContext, inputToSend);

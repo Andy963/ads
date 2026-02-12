@@ -80,23 +80,12 @@ export async function handleCommandMessage(deps: {
     const sendToCommandScope = (payload: unknown): void => (shouldBroadcast ? sendToChat(payload) : sendToClient(payload));
     if (!isSilentCommandPayload && !isCdCommand) {
       deps.sessionLogger?.logInput(command);
-      const entryKind = deps.clientMessageId ? `client_message_id:${deps.clientMessageId}` : undefined;
-      const inserted = deps.historyStore.add(deps.historyKey, {
-        role: "user",
-        text: command,
-        ts: Date.now(),
-        kind: entryKind,
-      });
-      if (deps.clientMessageId) {
-        sendToClient({ type: "ack", client_message_id: deps.clientMessageId, duplicate: !inserted });
-        if (!inserted) {
-          if (deps.traceWsDuplication) {
-            deps.logger.warn(
-              `[WebSocket][Dedupe] req=${deps.requestId} session=${deps.sessionId} user=${deps.userId} history=${deps.historyKey} client_message_id=${deps.clientMessageId}`,
-            );
-          }
-          return;
-        }
+      if (!deps.clientMessageId) {
+        deps.historyStore.add(deps.historyKey, {
+          role: "user",
+          text: command,
+          ts: Date.now(),
+        });
       }
     }
 

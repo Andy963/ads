@@ -323,40 +323,118 @@ export function attachWebSocketServer(deps: {
     }
 
     let messageChain = Promise.resolve();
-    const handleOneMessage = async (data: RawData): Promise<void> => {
-      try {
-        let parsed: import("./schema.js").WsMessage;
-        try {
-          const raw = JSON.parse(String(data)) as unknown;
-          const result = wsMessageSchema.safeParse(raw);
-          if (!result.success) {
-            safeJsonSend(ws, { type: "error", message: "Invalid message payload" });
-            return;
+    let lastReceivedAt = 0;
+    type IncomingWsMessage = {
+      parsed: import("./schema.js").WsMessage;
+      requestId: string;
+      clientMessageId: string | null;
+      receivedAt: number;
+    };
+
+    const shouldPersistCommandMessage = (payload: unknown): { ok: boolean; command: string; shouldPersist: boolean } => {
+      const commandRaw = deps.sanitizeInput(payload);
+      if (!commandRaw) {
+        return { ok: false, command: "", shouldPersist: false };
+      }
+      const command = commandRaw.trim();
+      if (!command) {
+        return { ok: false, command: "", shouldPersist: false };
+      }
+      const isSilent =
+        payload !== null &&
+        typeof payload === "object" &&
+        !Array.isArray(payload) &&
+        (payload as Record<string, unknown>).silent === true;
+      const isCd = /^\/cd\b/i.test(command);
+      return { ok: true, command, shouldPersist: !isSilent && !isCd };
+    };
+
+    const buildPromptHistoryText = (payload: unknown): { ok: boolean; text: string } => {
+      if (typeof payload === "string") {
+        const text = deps.sanitizeInput(payload)?.trim() ?? "";
+        return text ? { ok: true, text } : { ok: false, text: "" };
+      }
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        const rec = payload as Record<string, unknown>;
+        const text = typeof rec.text === "string" ? (deps.sanitizeInput(rec.text)?.trim() ?? "") : "";
+        const imageCount = Array.isArray(rec.images) ? rec.images.length : 0;
+        const lines: string[] = [];
+        if (text) {
+          lines.push(text);
+        }
+        if (imageCount > 0) {
+          lines.push(`Images: ${imageCount}`);
+        }
+        const joined = lines.join("\n").trim();
+        return joined ? { ok: true, text: joined } : { ok: false, text: "" };
+      }
+      return { ok: false, text: "" };
+    };
+
+    const preflightPersistAndAck = (args: {
+      parsed: import("./schema.js").WsMessage;
+      requestId: string;
+      clientMessageId: string | null;
+      receivedAt: number;
+    }): { enqueue: boolean } => {
+      if (!args.clientMessageId) {
+        return { enqueue: true };
+      }
+      const entryKind = `client_message_id:${args.clientMessageId}`;
+      if (args.parsed.type === "prompt") {
+        const textResult = buildPromptHistoryText(args.parsed.payload);
+        if (!textResult.ok) {
+          return { enqueue: true };
+        }
+        const inserted = deps.historyStore.add(historyKey, {
+          role: "user",
+          text: textResult.text,
+          ts: args.receivedAt,
+          kind: entryKind,
+        });
+        safeJsonSend(ws, { type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
+        if (!inserted) {
+          if (deps.traceWsDuplication) {
+            deps.logger.warn(
+              `[WebSocket][Dedupe] req=${args.requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${args.clientMessageId}`,
+            );
           }
-          parsed = result.data;
-        } catch {
-          safeJsonSend(ws, { type: "error", message: "Invalid JSON message" });
-          return;
+          return { enqueue: false };
         }
+        return { enqueue: true };
+      }
 
-        if (parsed.type === "ping") {
-          safeJsonSend(ws, { type: "pong", ts: Date.now() });
-          return;
+      if (args.parsed.type === "command") {
+        const cmd = shouldPersistCommandMessage(args.parsed.payload);
+        if (!cmd.ok || !cmd.shouldPersist) {
+          return { enqueue: true };
         }
-        if (parsed.type === "pong") {
-          return;
+        const inserted = deps.historyStore.add(historyKey, {
+          role: "user",
+          text: cmd.command,
+          ts: args.receivedAt,
+          kind: entryKind,
+        });
+        safeJsonSend(ws, { type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
+        if (!inserted) {
+          if (deps.traceWsDuplication) {
+            deps.logger.warn(
+              `[WebSocket][Dedupe] req=${args.requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${args.clientMessageId}`,
+            );
+          }
+          return { enqueue: false };
         }
+        return { enqueue: true };
+      }
 
-        const requestId = crypto.randomBytes(4).toString("hex");
-        const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
-        const clientMessageId = clientMessageIdRaw || null;
-        if (deps.traceWsDuplication) {
-          const meta = deps.clientMetaByWs.get(ws);
-          const payloadPreview = summarizeWsPayloadForLog(parsed.payload);
-          deps.logger.info(
-            `[WebSocket][Recv] req=${requestId} conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} type=${parsed.type} client_message_id=${clientMessageId ?? ""} payload=${payloadPreview}`,
-          );
-        }
+      return { enqueue: true };
+    };
+
+    const handleOneMessage = async (msg: IncomingWsMessage): Promise<void> => {
+      try {
+        const parsed = msg.parsed;
+        const requestId = msg.requestId;
+        const clientMessageId = msg.clientMessageId;
 
         let sessionLogger: NonNullable<ReturnType<SessionManager["ensureLogger"]>> | null = null;
         try {
@@ -417,6 +495,7 @@ export function attachWebSocketServer(deps: {
           requestId,
           clientMessageId,
           traceWsDuplication: deps.traceWsDuplication,
+          receivedAt: msg.receivedAt,
           authUserId,
           sessionId,
           chatSessionId,
@@ -493,7 +572,50 @@ export function attachWebSocketServer(deps: {
     };
 
     ws.on("message", (data: RawData) => {
-      messageChain = messageChain.then(() => handleOneMessage(data)).catch((error) => {
+      const now = Date.now();
+      const receivedAt = now > lastReceivedAt ? now : lastReceivedAt + 1;
+      lastReceivedAt = receivedAt;
+
+      let parsed: import("./schema.js").WsMessage;
+      try {
+        const raw = JSON.parse(String(data)) as unknown;
+        const result = wsMessageSchema.safeParse(raw);
+        if (!result.success) {
+          safeJsonSend(ws, { type: "error", message: "Invalid message payload" });
+          return;
+        }
+        parsed = result.data;
+      } catch {
+        safeJsonSend(ws, { type: "error", message: "Invalid JSON message" });
+        return;
+      }
+
+      if (parsed.type === "ping") {
+        safeJsonSend(ws, { type: "pong", ts: receivedAt });
+        return;
+      }
+      if (parsed.type === "pong") {
+        return;
+      }
+
+      const requestId = crypto.randomBytes(4).toString("hex");
+      const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
+      const clientMessageId = clientMessageIdRaw || null;
+      if (deps.traceWsDuplication) {
+        const meta = deps.clientMetaByWs.get(ws);
+        const payloadPreview = summarizeWsPayloadForLog(parsed.payload);
+        deps.logger.info(
+          `[WebSocket][Recv] req=${requestId} conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} type=${parsed.type} client_message_id=${clientMessageId ?? ""} payload=${payloadPreview}`,
+        );
+      }
+
+      const preflight = preflightPersistAndAck({ parsed, requestId, clientMessageId, receivedAt });
+      if (!preflight.enqueue) {
+        return;
+      }
+
+      const msg: IncomingWsMessage = { parsed, requestId, clientMessageId, receivedAt };
+      messageChain = messageChain.then(() => handleOneMessage(msg)).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         deps.logger.warn(`[WebSocket] Message chain error: ${message}`);
         safeJsonSend(ws, { type: "error", message: "Internal server error" });
