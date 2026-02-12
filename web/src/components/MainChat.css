@@ -375,6 +375,11 @@
   visibility: hidden;
 }
 
+.msg[data-id="live-step"] .liveStepBody[data-trivial-outline="true"] :deep(.md) {
+  min-height: 0;
+  max-height: none;
+}
+
 .msg[data-id="live-step"] .liveStepOutline {
   position: absolute;
   inset: 0;

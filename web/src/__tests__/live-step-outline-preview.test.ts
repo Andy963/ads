@@ -64,5 +64,47 @@ describe("live-step outline preview", () => {
 
     wrapper.unmount();
   });
-});
 
+  it("hides expand toggle when there is only one title and no meaningful body", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [
+          { id: "live-step", role: "assistant", kind: "text", content: "**Title A**", streaming: true },
+          { id: "a-1", role: "assistant", kind: "text", content: "final answer" },
+        ],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.vm.$nextTick();
+
+    const md = wrapper.find('.msg[data-id="live-step"] .md').element as HTMLElement;
+    Object.defineProperty(md, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(md, "clientHeight", { configurable: true, get: () => 100 });
+
+    await wrapper.setProps({
+      messages: [
+        { id: "live-step", role: "assistant", kind: "text", content: "**Title A**\n", streaming: true },
+        { id: "a-1", role: "assistant", kind: "text", content: "final answer" },
+      ],
+    });
+
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".liveStepOutline").exists()).toBe(true);
+    expect(wrapper.findAll(".liveStepOutlineItem").map((n) => n.text())).toEqual(["•Title A"]);
+    expect(wrapper.find(".liveStepToggleBtn").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+});

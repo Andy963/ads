@@ -7,7 +7,7 @@ import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { isPatchMessageMarkdown } from "../lib/patch_message";
-import { extractMarkdownOutlineTitles } from "../lib/markdown";
+import { analyzeMarkdownOutline } from "../lib/markdown";
 
 const props = defineProps<{
   title?: string;
@@ -214,7 +214,9 @@ const liveStepMessage = computed(
     props.messages.find((m) => m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text") ?? null,
 );
 
-const liveStepOutlineTitles = computed(() => extractMarkdownOutlineTitles(liveStepMessage.value?.content ?? ""));
+const liveStepOutlineAnalysis = computed(() => analyzeMarkdownOutline(liveStepMessage.value?.content ?? ""));
+const liveStepOutlineTitles = computed(() => liveStepOutlineAnalysis.value.titles);
+const liveStepHasMeaningfulBody = computed(() => liveStepOutlineAnalysis.value.hasMeaningfulBody);
 const liveStepOutlineItems = computed(() => {
   const titles = liveStepOutlineTitles.value;
   if (titles.length <= 3) return titles;
@@ -222,6 +224,15 @@ const liveStepOutlineItems = computed(() => {
   return titles.slice(0, 2);
 });
 const liveStepOutlineHiddenCount = computed(() => Math.max(0, liveStepOutlineTitles.value.length - liveStepOutlineItems.value.length));
+const liveStepCollapsedTrivialOutline = computed(
+  () => !liveStepExpanded.value && liveStepOutlineTitles.value.length === 1 && !liveStepHasMeaningfulBody.value && liveStepOutlineHiddenCount.value === 0,
+);
+const liveStepCanToggleExpanded = computed(() => {
+  if (liveStepExpanded.value) return true;
+  if (!liveStepMessage.value) return false;
+  if (liveStepCollapsedTrivialOutline.value) return false;
+  return liveStepHasMeaningfulBody.value || liveStepOutlineHiddenCount.value > 0 || liveStepHasOverflow.value;
+});
 
 function isLiveStepRenderMessage(m: RenderMessage): boolean {
   return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
@@ -575,7 +586,8 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
           <div v-else-if="isLiveStepRenderMessage(m)" class="liveStep">
             <div class="liveStepBody" :data-expanded="String(liveStepExpanded)"
               :data-outline-only="String(!liveStepExpanded && liveStepOutlineItems.length > 0)"
-              :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded }">
+              :data-trivial-outline="String(liveStepCollapsedTrivialOutline)"
+              :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded && liveStepCanToggleExpanded }">
               <MarkdownContent :content="m.content" />
               <div v-if="!liveStepExpanded && liveStepOutlineItems.length > 0" class="liveStepOutline" aria-hidden="true">
                 <div v-for="(title, idx) in liveStepOutlineItems" :key="idx" class="liveStepOutlineItem" :title="title">
@@ -587,7 +599,7 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
                 </div>
               </div>
             </div>
-            <div v-if="liveStepHasOverflow || liveStepExpanded" class="liveStepToggleRow">
+            <div v-if="liveStepCanToggleExpanded" class="liveStepToggleRow">
               <button class="liveStepToggleBtn" type="button" :aria-expanded="liveStepExpanded"
                 @click.stop="toggleLiveStepExpanded">
                 {{ liveStepExpanded ? "Collapse" : "Expand" }}

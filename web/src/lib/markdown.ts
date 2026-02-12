@@ -367,3 +367,74 @@ export function extractMarkdownOutlineTitles(
 
   return titles;
 }
+
+export function analyzeMarkdownOutline(
+  markdown: string,
+  opts?: {
+    maxTitleLength?: number;
+  },
+): { titles: string[]; hasMeaningfulBody: boolean } {
+  const raw = String(markdown ?? "");
+  if (!raw.trim()) return { titles: [], hasMeaningfulBody: false };
+
+  const maxTitleLength = Math.max(8, Math.min(200, Number(opts?.maxTitleLength ?? 80)));
+
+  let tokens: MarkdownOutlineToken[] = [];
+  try {
+    tokens = md.parse(raw, {}) as unknown as MarkdownOutlineToken[];
+  } catch {
+    return { titles: [], hasMeaningfulBody: false };
+  }
+
+  const titles: string[] = [];
+  const seen = new Set<string>();
+  let hasMeaningfulBody = false;
+
+  function pushTitle(candidate: string): void {
+    const normalized = normalizeOutlineTitle(candidate, maxTitleLength);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    titles.push(normalized);
+  }
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+
+    if (token.type === "heading_open") {
+      const inline = tokens[i + 1];
+      if (inline?.type === "inline") pushTitle(String(inline.content ?? ""));
+      continue;
+    }
+
+    if (token.type === "paragraph_open") {
+      const inline = tokens[i + 1];
+      const close = tokens[i + 2];
+      if (inline?.type !== "inline" || close?.type !== "paragraph_close") continue;
+
+      const strongTitle = extractStrongOnlyParagraphTitle(inline);
+      if (strongTitle) {
+        pushTitle(strongTitle);
+        continue;
+      }
+
+      if (String(inline.content ?? "").trim()) hasMeaningfulBody = true;
+      continue;
+    }
+
+    if (
+      token.type === "bullet_list_open" ||
+      token.type === "ordered_list_open" ||
+      token.type === "blockquote_open" ||
+      token.type === "fence" ||
+      token.type === "code_block" ||
+      token.type === "table_open"
+    ) {
+      hasMeaningfulBody = true;
+      continue;
+    }
+  }
+
+  return { titles, hasMeaningfulBody };
+}
