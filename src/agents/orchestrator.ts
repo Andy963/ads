@@ -193,12 +193,17 @@ export class HybridOrchestrator {
         scored.push({ name: skill.name, score: 1_000 });
         continue;
       }
-      const haystack = `${skill.name} ${skill.description ?? ""}`.toLowerCase();
-      const skillTokens = tokenize(haystack);
+      const nameTokens = tokenize(skillName);
+      const descTokens = tokenize(String(skill.description ?? "").toLowerCase());
       let score = 0;
-      for (const tok of skillTokens) {
+      for (const tok of nameTokens) {
         if (tokenSet.has(tok)) {
-          score += 1;
+          score += 3;
+        }
+      }
+      for (const tok of descTokens) {
+        if (tokenSet.has(tok)) {
+          score += isNonAsciiToken(tok) ? 2 : 1;
         }
       }
       if (score > 0) {
@@ -439,10 +444,36 @@ function extractInputText(input: Input): string {
 }
 
 function tokenize(text: string): string[] {
-  return text
-    .split(/[^a-z0-9]+/gi)
-    .map((token) => token.trim().toLowerCase())
-    .filter((token) => token.length >= 3);
+  const lowered = String(text ?? "").toLowerCase();
+  if (!lowered.trim()) {
+    return [];
+  }
+
+  const tokens = new Set<string>();
+
+  for (const match of lowered.matchAll(/[a-z0-9]{3,}/g)) {
+    tokens.add(match[0]);
+  }
+
+  const cjkRe = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+  for (const match of lowered.matchAll(cjkRe)) {
+    const seq = match[0];
+    const sample = seq.length > 32 ? seq.slice(0, 32) : seq;
+    if (sample.length >= 2 && sample.length <= 6) {
+      tokens.add(sample);
+    }
+    addCjkNgrams(tokens, sample, 2);
+    addCjkNgrams(tokens, sample, 3);
+  }
+
+  return Array.from(tokens);
+}
+
+function addCjkNgrams(out: Set<string>, seq: string, n: number): void {
+  if (seq.length < n) return;
+  for (let i = 0; i <= seq.length - n; i += 1) {
+    out.add(seq.slice(i, i + n));
+  }
 }
 
 function uniqStrings(values: string[]): string[] {
@@ -457,6 +488,15 @@ function uniqStrings(values: string[]): string[] {
     out.push(normalized);
   }
   return out;
+}
+
+function isNonAsciiToken(token: string): boolean {
+  for (let i = 0; i < token.length; i += 1) {
+    if (token.charCodeAt(i) > 0x7f) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function extractSkillSaveBlocks(text: string): SkillSaveBlock[] {
