@@ -11,6 +11,17 @@ import { normalizeTaskStatus } from "./normalize.js";
 export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStoreStatements }) {
   const { db, stmts } = deps;
 
+  const deriveTaskTitle = (prompt: string): string => {
+    const firstLine = String(prompt ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0);
+    const base = (firstLine ?? "新任务").replace(/\s+/g, " ");
+    const maxLen = 32;
+    if (base.length <= maxLen) return base;
+    return `${base.slice(0, maxLen)}…`;
+  };
+
   const getTask = (id: string): Task | null => {
     const normalized = String(id ?? "").trim();
     if (!normalized) {
@@ -31,18 +42,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     if (!prompt.trim()) {
       throw new Error("Task prompt is required");
     }
-    const title =
-      rawTitle ||
-      (() => {
-        const firstLine = prompt
-          .split("\n")
-          .map((l) => l.trim())
-          .find((l) => l.length > 0);
-        const base = (firstLine ?? "新任务").replace(/\s+/g, " ");
-        const maxLen = 32;
-        if (base.length <= maxLen) return base;
-        return `${base.slice(0, maxLen)}…`;
-      })();
+    const title = rawTitle || deriveTaskTitle(prompt);
 
     const inheritContext = Boolean(input.inheritContext);
     const agentId = (() => {
@@ -190,6 +190,11 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.queuedAt != null && Number.isFinite(merged.queuedAt) ? merged.queuedAt : (existing.queuedAt ?? null);
     merged.retryCount = Number.isFinite(merged.retryCount) ? merged.retryCount : existing.retryCount;
     merged.maxRetries = Number.isFinite(merged.maxRetries) ? merged.maxRetries : existing.maxRetries;
+
+    if (!String(merged.title ?? "").trim()) {
+      const prompt = String(merged.prompt ?? "");
+      merged.title = prompt.trim() ? deriveTaskTitle(prompt) : existing.title;
+    }
 
     if (merged.status === "queued" && !merged.queuedAt) {
       merged.queuedAt = now;

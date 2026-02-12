@@ -53,6 +53,27 @@ describe("tasks/taskStore", () => {
     assert.ok(!none || none.id !== t1.id);
   });
 
+  it("should derive a title from prompt when updating an empty title", () => {
+    const store = new TaskStore();
+    const created = store.createTask({ title: "Original", prompt: "Hello" });
+
+    const prompt = `\n  abcdefghijklmnopqrstuvwxyz0123456789 \nsecond line`;
+    const updated = store.updateTask(created.id, { title: "   ", prompt }, Date.now());
+    assert.equal(updated.title, "abcdefghijklmnopqrstuvwxyz012345…");
+
+    const fetched = store.getTask(created.id);
+    assert.ok(fetched);
+    assert.equal(fetched.title, "abcdefghijklmnopqrstuvwxyz012345…");
+  });
+
+  it("should keep the existing title when updating with empty title and empty prompt", () => {
+    const store = new TaskStore();
+    const created = store.createTask({ title: "Original", prompt: "Hello" });
+
+    const updated = store.updateTask(created.id, { title: "   ", prompt: "   " }, Date.now());
+    assert.equal(updated.title, "Original");
+  });
+
   it("should allow reordering pending tasks via queueOrder", () => {
     const store = new TaskStore();
     const t1 = store.createTask({ title: "A", prompt: "P1", priority: 0 });
