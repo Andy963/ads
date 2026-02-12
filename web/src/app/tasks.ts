@@ -51,6 +51,14 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const { setNotice, clearNotice } = createNoticeActions({ activeProjectId, normalizeProjectId, getRuntime });
 
+  const formatTaskNoticeLabel = (taskId: string, projectId: string): string => {
+    const pid = normalizeProjectId(projectId);
+    const rt = getRuntime(pid);
+    const title = String(rt.tasks.value.find((t) => t.id === taskId)?.title ?? "").trim();
+    if (title) return `"${title}"`;
+    return taskId.slice(0, 8);
+  };
+
   const resetTaskState = (): void => {
     tasks.value = [];
     selectedId.value = null;
@@ -247,6 +255,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     if (!taskId) return;
     const pid = normalizeProjectId(projectId);
     const rt = getRuntime(pid);
+    const label = formatTaskNoticeLabel(taskId, pid);
 
     rt.apiError.value = null;
     clearNotice(pid);
@@ -266,16 +275,16 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       );
       void res;
       if (res?.queued) {
-        setNotice(`Task ${taskId.slice(0, 8)} queued`, pid);
+        setNotice(`Task ${label} queued`, pid);
       } else {
-        setNotice(`Task ${taskId.slice(0, 8)} scheduled`, pid);
+        setNotice(`Task ${label} scheduled`, pid);
       }
       await refreshTaskRow(taskId, pid);
       await loadQueueStatus(pid);
     } catch (error) {
       const msg = formatApiError(error);
       if (import.meta.env.DEV && looksLikeNotFound(msg)) {
-        setNotice(`Task ${taskId.slice(0, 8)} scheduled (mock)`, pid);
+        setNotice(`Task ${label} scheduled (mock)`, pid);
         mockSingleTaskRun(taskId, pid);
         return;
       }

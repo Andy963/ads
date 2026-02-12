@@ -146,7 +146,7 @@ describe("App.runSingleTask", () => {
 
     expect(called.some((u) => u.includes("/api/tasks/t-1/run"))).toBe(true);
     expect(typeof wrapper.vm.apiNotice).toBe("string");
-    expect(wrapper.vm.apiNotice).toContain("t-1".slice(0, 8));
+    expect(wrapper.vm.apiNotice).toContain("Test Task");
 
     const toast = wrapper.find(".noticeToast");
     expect(toast.exists()).toBe(true);
