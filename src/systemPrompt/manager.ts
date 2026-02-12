@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createLogger, type Logger } from "../utils/logger.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
-import { discoverSkills, loadSkillBody, renderCompactSkills } from "../skills/loader.js";
+import { discoverSkills, loadSkillBody, renderSkillMetaInstruction } from "../skills/loader.js";
 import { readSoul } from "../memory/soul.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -253,10 +253,7 @@ export class SystemPromptManager {
   private renderSkillsBlock(): string | null {
     try {
       const skills = discoverSkills(this.workspaceRoot);
-      if (skills.length === 0) {
-        return null;
-      }
-      return renderCompactSkills(skills);
+      return renderSkillMetaInstruction(skills);
     } catch {
       return null;
     }

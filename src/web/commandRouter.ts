@@ -16,6 +16,7 @@ import { listRules, readRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
 import { normalizeOutput } from "../utils/text.js";
 import { initSkill, normalizeSkillName, parseResourceList, validateSkillDirectory } from "../skills/creator.js";
+import { discoverSkills, loadSkillBody, renderSkillList } from "../skills/loader.js";
 
 export interface CommandResult {
   ok: boolean;
@@ -232,6 +233,29 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
         const message = error instanceof Error ? error.message : String(error);
         return { ok: false, output: `❌ 创建 skill 失败: ${message}` };
       }
+    }
+
+    case "ads.skill.list": {
+      const workspaceRoot = detectWorkspace();
+      const skills = discoverSkills(workspaceRoot);
+      return { ok: true, output: renderSkillList(skills) };
+    }
+
+    case "ads.skill.load": {
+      const name = (params.name ?? positional.join(" ")).trim();
+      if (!name) {
+        return { ok: false, output: "❌ Missing skill name. Usage: /ads.skill.load <name>" };
+      }
+      const workspaceRoot = detectWorkspace();
+      const body = loadSkillBody(name, workspaceRoot);
+      if (!body) {
+        const skills = discoverSkills(workspaceRoot);
+        const available = skills.length > 0
+          ? `可用 skill: ${skills.map((s) => s.name).join(", ")}`
+          : "当前没有可用的 skill";
+        return { ok: false, output: `❌ Skill "${name}" 未找到。${available}` };
+      }
+      return { ok: true, output: body.trim() };
     }
 
     case "ads.skill.validate": {

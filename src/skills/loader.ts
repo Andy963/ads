@@ -91,6 +91,42 @@ export function renderCompactSkills(skills: SkillMetadata[]): string {
   return lines.join("\n");
 }
 
+export function renderSkillMetaInstruction(skills: SkillMetadata[]): string {
+  if (skills.length === 0) {
+    return [
+      "<skill_system>",
+      "当前没有可用的 skill。",
+      "当你需要扩展能力时，可以使用 /ads.skill.init <name> 创建新的 skill。",
+      "skill 存放位置：项目级 .agent/skills/<name>/SKILL.md，全局 ~/.agent/skills/<name>/SKILL.md。",
+      "</skill_system>",
+    ].join("\n");
+  }
+  return [
+    "<skill_system>",
+    `当前有 ${skills.length} 个可用 skill。`,
+    "当你遇到不熟悉的领域、需要专业知识、或者意识到自身能力不足时：",
+    "1. 使用 /ads.skill.list 查看所有可用 skill 的名称和描述",
+    "2. 使用 /ads.skill.load <name> 加载具体 skill 的完整内容到上下文",
+    "3. 如果没有合适的 skill，使用 /ads.skill.init <name> 创建新的 skill",
+    "",
+    "不要猜测，主动查找和加载 skill 来获取专业指导。",
+    "</skill_system>",
+  ].join("\n");
+}
+
+export function renderSkillList(skills: SkillMetadata[]): string {
+  if (skills.length === 0) {
+    return "当前没有可用的 skill。使用 /ads.skill.init <name> 创建。";
+  }
+  const lines: string[] = [`共 ${skills.length} 个可用 skill：`, ""];
+  for (const skill of skills) {
+    lines.push(`- **${skill.name}** (${skill.source}): ${skill.description}`);
+  }
+  lines.push("");
+  lines.push("使用 /ads.skill.load <name> 加载具体 skill。");
+  return lines.join("\n");
+}
+
 function readSkill(skillFile: string, dirName: string, source: SkillMetadata["source"]): SkillMetadata | null {
   if (!fs.existsSync(skillFile)) {
     return null;
