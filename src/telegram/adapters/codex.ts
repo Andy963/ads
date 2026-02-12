@@ -362,6 +362,10 @@ export async function handleCodexMessage(
     const result = await session.send(input, {
       streaming: true,
       signal,
+      env: {
+        ADS_TELEGRAM_CHAT_ID: String(chatId),
+        ADS_TELEGRAM_USER_ID: String(userId),
+      },
     });
 
     await statusUpdater.finalize();
