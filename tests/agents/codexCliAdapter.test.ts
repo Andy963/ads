@@ -96,6 +96,7 @@ describe("CodexCliAdapter", () => {
   });
 
   it("retries fresh when resume fails due to model mismatch", async () => {
+    const expectedModel = "codex-default";
     const binary = await createExecutableScript([
       "#!/usr/bin/env bash",
       "set -euo pipefail",
@@ -120,13 +121,13 @@ describe("CodexCliAdapter", () => {
       "cat >/dev/null || true",
       'if [[ "$count" -eq 1 ]]; then',
       '  if [[ "$has_resume" -ne 1 ]]; then echo \'{"type":"turn.failed","error":{"message":"expected resume"}}\'; exit 0; fi',
-      '  if [[ "$model_value" != "gpt-5.2" ]]; then echo \'{"type":"turn.failed","error":{"message":"expected model gpt-5.2"}}\'; exit 0; fi',
+      `  if [[ "$model_value" != "${expectedModel}" ]]; then echo '{"type":"turn.failed","error":{"message":"expected model"}}'; exit 0; fi`,
       '  if [[ "$has_thread" -ne 1 ]]; then echo \'{"type":"turn.failed","error":{"message":"expected thread id"}}\'; exit 0; fi',
       '  echo \'{"type":"turn.failed","error":{"message":"Cannot resume thread with a different model"}}\'',
       "  exit 0",
       "fi",
       'if [[ "$has_resume" -ne 0 ]]; then echo \'{"type":"turn.failed","error":{"message":"unexpected resume"}}\'; exit 0; fi',
-      'if [[ "$model_value" != "gpt-5.2" ]]; then echo \'{"type":"turn.failed","error":{"message":"expected model gpt-5.2"}}\'; exit 0; fi',
+      `if [[ "$model_value" != "${expectedModel}" ]]; then echo '{"type":"turn.failed","error":{"message":"expected model"}}'; exit 0; fi`,
       'if [[ "$has_thread" -ne 0 ]]; then echo \'{"type":"turn.failed","error":{"message":"unexpected thread id"}}\'; exit 0; fi',
       'echo \'{"type":"thread.started","thread_id":"t-new"}\'',
       'echo \'{"type":"turn.started"}\'',
@@ -140,7 +141,7 @@ describe("CodexCliAdapter", () => {
       binary,
       sandboxMode: "read-only",
       resumeThreadId: "t-old",
-      model: "gpt-5.2",
+      model: expectedModel,
     });
     const result = await adapter.send("hi");
     assert.equal(result.response, "OK");

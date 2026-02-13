@@ -199,11 +199,6 @@ export const migrations: Migration[] = [
           updated_at INTEGER
         );
 
-        INSERT OR IGNORE INTO model_configs (id, display_name, provider, is_default) VALUES
-          ('gpt-5', 'GPT-5 (快速)', 'openai', 0),
-          ('gpt-5.1', 'GPT-5.1 (均衡)', 'openai', 0),
-          ('gpt-5.2', 'GPT-5.2 (推荐)', 'openai', 1);
-
         CREATE TABLE IF NOT EXISTS conversations (
           id TEXT PRIMARY KEY,
           task_id TEXT,
@@ -239,13 +234,8 @@ export const migrations: Migration[] = [
   },
   {
     version: 3,
-    description: "Add gpt-5.1-codex-max model config",
-    up: (db) => {
-      db.exec(`
-        INSERT OR IGNORE INTO model_configs (id, display_name, provider, is_default) VALUES
-          ('gpt-5.1-codex-max', 'GPT-5.1 Codex Max (Code)', 'openai', 0);
-      `);
-    },
+    description: "Models - remove hardcoded seed configs",
+    up: () => {},
   },
   {
     version: 4,
@@ -344,13 +334,8 @@ export const migrations: Migration[] = [
   },
   {
     version: 9,
-    description: "Models - add gpt-5.2-codex model config",
-    up: (db) => {
-      db.exec(`
-        INSERT OR IGNORE INTO model_configs (id, display_name, provider, is_default) VALUES
-          ('gpt-5.2-codex', 'GPT-5.2 Codex', 'openai', 0);
-      `);
-    },
+    description: "Models - remove hardcoded seed configs (continued)",
+    up: () => {},
   },
   {
     version: 10,

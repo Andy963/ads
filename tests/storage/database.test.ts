@@ -155,15 +155,13 @@ describe("storage/database", () => {
     assert.strictEqual(edge.target, "node-b");
   });
 
-  it("should seed model configs", () => {
+  it("should create model_configs table without hardcoded seeds", () => {
     const db = getDatabase();
-    const ids = (db.prepare("SELECT id FROM model_configs ORDER BY id ASC").all() as Array<{ id: string }>).map((row) => row.id);
+    const tableInfo = db.prepare("PRAGMA table_info(model_configs)").all() as Array<{ name: string }>;
+    assert.ok(tableInfo.length > 0, "model_configs table should exist");
 
-    assert.ok(ids.includes("gpt-5"), "Should include gpt-5");
-    assert.ok(ids.includes("gpt-5.1"), "Should include gpt-5.1");
-    assert.ok(ids.includes("gpt-5.2"), "Should include gpt-5.2");
-    assert.ok(ids.includes("gpt-5.2-codex"), "Should include gpt-5.2-codex");
-    assert.ok(ids.includes("gpt-5.1-codex-max"), "Should include gpt-5.1-codex-max");
+    const ids = (db.prepare("SELECT id FROM model_configs ORDER BY id ASC").all() as Array<{ id: string }>).map((row) => row.id);
+    assert.deepStrictEqual(ids, [], "Should not seed model configs by default");
   });
 
   it("should reset database cache correctly", () => {
