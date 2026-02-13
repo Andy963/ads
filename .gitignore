@@ -11,6 +11,8 @@ coverage/
 docs/*
 !docs/adr/
 !docs/adr/**
+!docs/spec/
+!docs/spec/**
 # Runtime/state
 .ads/
 .cache/
