@@ -7,16 +7,16 @@ import { SupervisorVerdictSchema, extractJsonPayload } from "../tasks/schemas.js
 
 import type { CollaborationHooks, DelegationDirective, DelegationSummary } from "./types.js";
 
-const logger = createLogger("AgentHub");
+import { extractDelegationDirectivesWithRanges, stripDelegationDirectives } from "../delegationParser.js";
 
-const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
+const logger = createLogger("AgentHub");
 
 export function stripDelegationBlocks(text: string): string {
   if (!text) {
     return text;
   }
-  const regex = new RegExp(DELEGATION_REGEX.source, DELEGATION_REGEX.flags);
-  const stripped = text.replace(regex, "").trim();
+  const directives = extractDelegationDirectivesWithRanges(text, { requirePrompt: false });
+  const stripped = stripDelegationDirectives(text, directives).trim();
   return stripped.replace(/\n{3,}/g, "\n\n");
 }
 
@@ -34,25 +34,11 @@ export function looksLikeSupervisorVerdict(text: string): boolean {
 }
 
 export function extractDelegationDirectives(text: string, excludeAgentId?: AgentIdentifier): DelegationDirective[] {
-  const directives: DelegationDirective[] = [];
-  const regex = new RegExp(DELEGATION_REGEX.source, DELEGATION_REGEX.flags);
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    const agentId = (match[1] ?? "").trim().toLowerCase();
-    const prompt = (match[2] ?? "").trim();
-    if (!prompt) {
-      continue;
-    }
-    if (excludeAgentId && agentId === excludeAgentId) {
-      continue;
-    }
-    directives.push({
-      raw: match[0],
-      agentId,
-      prompt,
-    });
-  }
-  return directives;
+  return extractDelegationDirectivesWithRanges(text, { excludeAgentId, requirePrompt: true }).map((d) => ({
+    raw: d.raw,
+    agentId: d.agentId,
+    prompt: d.prompt,
+  }));
 }
 
 export function resolveAgentName(orchestrator: HybridOrchestrator, agentId: AgentIdentifier): string {

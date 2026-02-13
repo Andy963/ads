@@ -3,10 +3,12 @@ import type { AgentIdentifier } from "./types.js";
 import type { AgentRunResult } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 
-const AGENT_DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
+import { extractDelegationDirectivesWithRanges } from "./delegationParser.js";
 
 interface DelegationDirective {
   raw: string;
+  start: number;
+  end: number;
   agentId: AgentIdentifier;
   prompt: string;
 }
@@ -73,14 +75,22 @@ export async function resolveDelegations(
     return { response: result.response, usage: result.usage, summaries: [] };
   }
 
-  const directives = extractDelegationBlocks(result.response);
+  if (!orchestrator.invokeAgent) {
+    return { response: result.response, usage: result.usage, summaries: [] };
+  }
+
+  const directives: DelegationDirective[] = extractDelegationDirectivesWithRanges(result.response).map((d) => ({
+    raw: d.raw,
+    start: d.start,
+    end: d.end,
+    agentId: d.agentId,
+    prompt: d.prompt,
+  }));
   let finalResponse = result.response;
   const summaries: DelegationSummary[] = [];
+  const replacements: Array<{ start: number; end: number; text: string }> = [];
 
   const runDelegation = async (agentId: AgentIdentifier, prompt: string) => {
-    if (!orchestrator.invokeAgent) {
-      return null;
-    }
     const agentName = resolveAgentName(orchestrator, agentId);
     await hooks?.onInvoke?.(agentId, prompt);
     try {
@@ -118,14 +128,19 @@ export async function resolveDelegations(
       };
       summaries.push(summary);
       await hooks?.onResult?.(summary);
-      finalResponse = finalResponse.replace(directive.raw, formatDelegationReplacement(summary));
+      replacements.push({ start: directive.start, end: directive.end, text: formatDelegationReplacement(summary) });
       continue;
     }
 
     const replacement = await runDelegation(directive.agentId, directive.prompt);
     if (replacement) {
-      finalResponse = finalResponse.replace(directive.raw, replacement);
+      replacements.push({ start: directive.start, end: directive.end, text: replacement });
     }
+  }
+
+  replacements.sort((a, b) => b.start - a.start);
+  for (const rep of replacements) {
+    finalResponse = finalResponse.slice(0, rep.start) + rep.text + finalResponse.slice(rep.end);
   }
 
   return {
@@ -133,21 +148,6 @@ export async function resolveDelegations(
     usage: result.usage,
     summaries,
   };
-}
-
-function extractDelegationBlocks(response: string): DelegationDirective[] {
-  const directives: DelegationDirective[] = [];
-  const regex = new RegExp(AGENT_DELEGATION_REGEX.source, AGENT_DELEGATION_REGEX.flags);
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(response)) !== null) {
-    const agentId = (match[1] ?? "").trim().toLowerCase();
-    directives.push({
-      raw: match[0],
-      agentId,
-      prompt: (match[2] ?? "").trim(),
-    });
-  }
-  return directives;
 }
 
 function resolveAgentName(orchestrator: HybridOrchestrator, agentId: AgentIdentifier): string {

@@ -5,13 +5,12 @@ import type { HybridOrchestrator } from "../../orchestrator.js";
 
 import { TaskSpecSchema, type TaskSpec, extractJsonPayload } from "../schemas.js";
 import { runVerification } from "../verificationRunner.js";
+import { extractDelegationDirectivesWithRanges } from "../../delegationParser.js";
 
 interface DelegationDirective {
   agentId: AgentIdentifier;
   prompt: string;
 }
-
-const DELEGATION_REGEX = /<<<agent\.([a-z0-9_-]+)[\t ]*\r?\n([\s\S]*?)>>>/gi;
 
 export function createTaskId(): string {
   return `t_${crypto.randomBytes(6).toString("hex")}`;
@@ -122,21 +121,10 @@ export function withTimeout(parent: AbortSignal | undefined, timeoutMs: number):
 }
 
 export function extractDelegationDirectives(text: string, excludeAgentId?: AgentIdentifier): DelegationDirective[] {
-  const directives: DelegationDirective[] = [];
-  const regex = new RegExp(DELEGATION_REGEX.source, DELEGATION_REGEX.flags);
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    const agentId = (match[1] ?? "").trim().toLowerCase();
-    const prompt = (match[2] ?? "").trim();
-    if (!agentId || !prompt) {
-      continue;
-    }
-    if (excludeAgentId && agentId === excludeAgentId) {
-      continue;
-    }
-    directives.push({ agentId, prompt });
-  }
-  return directives;
+  return extractDelegationDirectivesWithRanges(text, { excludeAgentId, requirePrompt: true }).map((d) => ({
+    agentId: d.agentId,
+    prompt: d.prompt,
+  }));
 }
 
 export function buildLegacyTaskSpec(directive: DelegationDirective): TaskSpec {
