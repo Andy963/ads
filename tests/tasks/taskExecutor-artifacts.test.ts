@@ -71,7 +71,7 @@ describe("tasks/executor artifacts", () => {
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: () => orchestrator as any,
       store,
-      defaultModel: "mock",
+      autoModelOverride: "mock",
     });
 
     await executor.execute(task, {});

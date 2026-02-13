@@ -75,10 +75,11 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
       return;
     }
     const desiredModel = String(latest.model ?? "").trim() || "auto";
-    const modelToUse = desiredModel === "auto" ? (process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2") : desiredModel;
+    const taskQueueModelOverride = String(process.env.TASK_QUEUE_DEFAULT_MODEL ?? "").trim() || undefined;
+    const modelOverride = desiredModel.toLowerCase() === "auto" ? taskQueueModelOverride : desiredModel;
     const orchestrator = taskCtx.getTaskQueueOrchestrator(latest);
-    orchestrator.setModel(modelToUse);
-    const agentId = selectAgentForTask({ agentId: latest.agentId, modelToUse });
+    orchestrator.setModel(modelOverride);
+    const agentId = selectAgentForTask({ agentId: latest.agentId, modelToUse: modelOverride ?? "default" });
 
     let lastRespondingText = "";
     const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
@@ -96,7 +97,7 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
             deps.broadcastToSession(taskCtx.sessionId, {
               type: "task:event",
               event: "message:delta",
-              data: { taskId: latest.id, role: "assistant", delta, modelUsed: modelToUse, source: "chat" },
+              data: { taskId: latest.id, role: "assistant", delta, modelUsed: modelOverride ?? null, source: "chat" },
               ts: Date.now(),
             });
           }
@@ -151,7 +152,7 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
           role: "assistant",
           content: text,
           messageType: "chat",
-          modelUsed: modelToUse,
+          modelUsed: modelOverride ?? null,
           tokenCount: null,
           createdAt: Date.now(),
         });

@@ -110,21 +110,32 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
   private readonly getOrchestrator: (task: Task) => HybridOrchestrator;
   private readonly getAgentEnv?: (task: Task, agentId: AgentIdentifier) => Record<string, string> | undefined;
   private readonly store: TaskStore;
-  private readonly defaultModel: string;
+  private readonly autoModelOverride?: string;
   private readonly lock?: AsyncLock;
 
   constructor(options: {
     getOrchestrator: (task: Task) => HybridOrchestrator;
     getAgentEnv?: (task: Task, agentId: AgentIdentifier) => Record<string, string> | undefined;
     store: TaskStore;
-    defaultModel: string;
+    autoModelOverride?: string;
     lock?: AsyncLock;
   }) {
     this.getOrchestrator = options.getOrchestrator;
     this.getAgentEnv = options.getAgentEnv;
     this.store = options.store;
-    this.defaultModel = String(options.defaultModel ?? "").trim() || "gpt-5.2";
+    this.autoModelOverride = String(options.autoModelOverride ?? "").trim() || undefined;
     this.lock = options.lock;
+  }
+
+  private resolveModelOverride(task: Task): { modelOverride?: string; modelForSelection: string; modelForStorage: string | null } {
+    const desiredRaw = String(task.model ?? "").trim();
+    const desired = desiredRaw && desiredRaw.toLowerCase() !== "auto" ? desiredRaw : "";
+    const modelOverride = desired ? desired : this.autoModelOverride;
+    return {
+      modelOverride,
+      modelForSelection: modelOverride ?? "default",
+      modelForStorage: modelOverride ?? null,
+    };
   }
 
   private async executeBootstrap(
@@ -137,10 +148,9 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       ? { kind: "git_url", value: ref }
       : { kind: "local_path", value: ref };
 
-    const desiredModel = String(task.model ?? "").trim() || "auto";
-    const modelToUse = desiredModel === "auto" ? this.defaultModel : desiredModel;
+    const { modelOverride, modelForStorage } = this.resolveModelOverride(task);
     const sandbox = new NoopSandbox();
-    const agentRunner = new CodexBootstrapAgentRunner({ sandbox, model: modelToUse });
+    const agentRunner = new CodexBootstrapAgentRunner({ sandbox, model: modelOverride });
 
     const maxIterations = typeof config.maxIterations === "number" && Number.isFinite(config.maxIterations)
       ? Math.max(1, Math.min(10, config.maxIterations))
@@ -162,7 +172,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         hooks: {
           onIteration(progress) {
             const line = `bootstrap iter=${progress.iteration} ok=${progress.ok} lint=${progress.lint.ok ? "ok" : "fail"} test=${progress.test.ok ? "ok" : "fail"} strategy=${progress.strategy}`;
-            options?.hooks?.onMessage?.({ role: "assistant", content: line, modelUsed: modelToUse });
+            options?.hooks?.onMessage?.({ role: "assistant", content: line, modelUsed: modelForStorage });
           },
         },
       },
@@ -182,7 +192,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         role: "assistant",
         content: summary,
         messageType: "text",
-        modelUsed: modelToUse,
+        modelUsed: modelForStorage,
         tokenCount: null,
         createdAt: Date.now(),
       });
@@ -190,7 +200,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       // ignore
     }
 
-    options?.hooks?.onMessage?.({ role: "assistant", content: summary, modelUsed: modelToUse });
+    options?.hooks?.onMessage?.({ role: "assistant", content: summary, modelUsed: modelForStorage });
     return { resultSummary: summary };
   }
 
@@ -205,13 +215,12 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       }
 
       const orchestrator = this.getOrchestrator(task);
-      const desiredModel = String(task.model ?? "").trim() || "auto";
-      const modelToUse = desiredModel === "auto" ? this.defaultModel : desiredModel;
-      const agentId = selectAgentForTask({ agentId: task.agentId, modelToUse });
-      orchestrator.setModel(modelToUse);
+      const { modelOverride, modelForSelection, modelForStorage } = this.resolveModelOverride(task);
+      const agentId = selectAgentForTask({ agentId: task.agentId, modelToUse: modelForSelection });
+      orchestrator.setModel(modelOverride);
 
       const conversationId = String(task.threadId ?? "").trim() || `conv-${task.id}`;
-      this.store.upsertConversation({ id: conversationId, taskId: task.id, title: task.title, lastModel: modelToUse }, Date.now());
+      this.store.upsertConversation({ id: conversationId, taskId: task.id, title: task.title, lastModel: modelForStorage }, Date.now());
 
       let lastOutput = "";
       const changedPaths = new Set<string>();
@@ -258,7 +267,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           taskId: task.id,
           role: "user",
           content: storedPrompt,
-          modelId: modelToUse,
+          modelId: modelForStorage,
           tokenCount: null,
           metadata: null,
           createdAt: Date.now(),
@@ -306,7 +315,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
                 lastRespondingText = next;
               }
               if (delta) {
-                options?.hooks?.onMessageDelta?.({ role: "assistant", delta, modelUsed: modelToUse });
+                options?.hooks?.onMessageDelta?.({ role: "assistant", delta, modelUsed: modelForStorage });
               }
               return;
             }
@@ -365,7 +374,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
               role: "assistant",
               content: lastOutput,
               messageType: "text",
-              modelUsed: modelToUse,
+              modelUsed: modelForStorage,
               tokenCount: null,
               createdAt: Date.now(),
             });
@@ -378,12 +387,12 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           taskId: task.id,
           role: "assistant",
           content: lastOutput,
-          modelId: modelToUse,
+          modelId: modelForStorage,
           tokenCount: null,
           metadata: null,
           createdAt: Date.now(),
         });
-        options?.hooks?.onMessage?.({ role: "assistant", content: lastOutput, modelUsed: modelToUse });
+        options?.hooks?.onMessage?.({ role: "assistant", content: lastOutput, modelUsed: modelForStorage });
       } finally {
         try {
           const payload = { paths: Array.from(changedPaths.values()) };

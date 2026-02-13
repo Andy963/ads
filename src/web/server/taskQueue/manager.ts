@@ -229,6 +229,7 @@ export function createTaskQueueManager(deps: {
     const attachmentStore = new AttachmentStore({ workspacePath: key });
 
     const taskQueueStatusUserId = 0;
+    const taskQueueModelOverride = String(process.env.TASK_QUEUE_DEFAULT_MODEL ?? "").trim() || undefined;
     const taskQueueThreadStorage = new ThreadStorage({
       namespace: `task-queue:${sessionId}`,
       storagePath: path.join(deps.adsStateDir, `task-queue-threads-${sessionId}.json`),
@@ -237,7 +238,7 @@ export function createTaskQueueManager(deps: {
       0,
       0,
       "workspace-write",
-      process.env.TASK_QUEUE_DEFAULT_MODEL,
+      taskQueueModelOverride,
       taskQueueThreadStorage,
     );
     const getStatusOrchestrator = () => taskQueueSessionManager.getOrCreate(taskQueueStatusUserId, key, true);
@@ -249,7 +250,7 @@ export function createTaskQueueManager(deps: {
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: getTaskQueueOrchestrator,
       store: taskStore,
-      defaultModel: process.env.TASK_QUEUE_DEFAULT_MODEL ?? "gpt-5.2",
+      autoModelOverride: taskQueueModelOverride,
       lock,
     });
     const taskQueue = new TaskQueue({ store: taskStore, executor });

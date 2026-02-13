@@ -55,7 +55,7 @@ const PLANNER_CODEX_HOME =
   process.env.ADS_PLANNER_CODEX_HOME?.trim() || path.join(os.homedir(), ".codex-planner");
 const PLANNER_CODEX_MODEL = process.env.ADS_PLANNER_CODEX_MODEL?.trim() || undefined;
 const plannerCodexEnv: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: PLANNER_CODEX_HOME };
-const sessionManager = new SessionManager(0, 0, "workspace-write", "gpt-5.2", webThreadStorage);
+const sessionManager = new SessionManager(0, 0, "workspace-write", undefined, webThreadStorage);
 const plannerSessionManager = new SessionManager(0, 0, "read-only", PLANNER_CODEX_MODEL, webThreadStorage, plannerCodexEnv);
 const historyStore = new HistoryStore({
   storagePath: stateDbPath,
