@@ -26,6 +26,7 @@ temp/
 .ads/telegram-bot.pid
 
 # Agent skills
+.agent/skills/
 .agent/skills/**/SKILL.md.bak.*
 
 # Soul (long-term memory)
