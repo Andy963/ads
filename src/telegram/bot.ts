@@ -34,23 +34,44 @@ const TELEGRAM_CONTROL_COMMANDS = new Set([
   'pref',
 ]);
 
-process.on('unhandledRejection', (reason) => {
-  logger.error('Unhandled promise rejection', reason);
-});
+let crashHandlingStarted = false;
 
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught exception', error);
+function gracefulShutdownAndExit(reason: string, error: unknown): void {
+  if (crashHandlingStarted) {
+    return;
+  }
+  crashHandlingStarted = true;
+
+  logger.error(`[Crash] ${reason}`, error);
+
+  const timeoutMsRaw = Number(process.env.ADS_SHUTDOWN_TIMEOUT_MS ?? 1500);
+  const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(100, Math.floor(timeoutMsRaw)) : 1500;
+  const timer = setTimeout(() => {
+    process.exit(1);
+  }, timeoutMs);
+  timer.unref?.();
+
   try {
     closeAllWorkspaceDatabases();
-  } catch {
-    // ignore
+  } catch (closeError) {
+    logger.warn(`[Crash] closeAllWorkspaceDatabases failed: ${closeError instanceof Error ? closeError.message : String(closeError)}`);
   }
   try {
     closeAllStateDatabases();
-  } catch {
-    // ignore
+  } catch (closeError) {
+    logger.warn(`[Crash] closeAllStateDatabases failed: ${closeError instanceof Error ? closeError.message : String(closeError)}`);
   }
+
+  clearTimeout(timer);
   process.exit(1);
+}
+
+process.once('unhandledRejection', (reason) => {
+  gracefulShutdownAndExit('Unhandled promise rejection', reason);
+});
+
+process.once('uncaughtException', (error) => {
+  gracefulShutdownAndExit('Uncaught exception', error);
 });
 
 async function requireUserId(ctx: Context, action: string): Promise<number | null> {

@@ -13,8 +13,8 @@ vim .env.test  # Add your test bot token and user ID
 
 # 2. Start bot in test mode
 TELEGRAM_BOT_TOKEN=<test-token> \
-TELEGRAM_ALLOWED_USERS=<your-user-id> \
-TELEGRAM_ALLOWED_DIRS=/tmp,/home/test \
+TELEGRAM_ALLOWED_USER_ID=<your-user-id> \
+ALLOWED_DIRS=/tmp,/home/test \
 node dist/telegram/bot.js
 ```
 

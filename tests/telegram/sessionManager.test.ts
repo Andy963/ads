@@ -64,8 +64,8 @@ describe('SessionManager', () => {
   });
 
   it('should track user model', () => {
-    manager.setUserModel(123456, 'gpt-4o');
-    assert.strictEqual(manager.getUserModel(123456), 'gpt-4o');
+    manager.setUserModel(123456, 'model-override');
+    assert.strictEqual(manager.getUserModel(123456), 'model-override');
   });
 
   it('should track user cwd', () => {

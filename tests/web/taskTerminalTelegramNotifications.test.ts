@@ -18,6 +18,8 @@ describe("web/taskNotifications telegram", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-task-notify-test-"));
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
+    delete process.env.TELEGRAM_ALLOWED_USER_ID;
+    delete process.env.TELEGRAM_ALLOWED_USERS;
     resetStateDatabaseForTests();
   });
 
@@ -33,6 +35,7 @@ describe("web/taskNotifications telegram", () => {
 
   it("records binding with fallback project name and missing config error", () => {
     delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_ALLOWED_USER_ID;
     delete process.env.TELEGRAM_ALLOWED_USERS;
 
     const db = getStateDatabase();
@@ -54,7 +57,7 @@ describe("web/taskNotifications telegram", () => {
 
   it("prefers web_projects display_name at create time", () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
 
     const db = getStateDatabase();
     ensureWebAuthTables(db);
@@ -89,7 +92,7 @@ describe("web/taskNotifications telegram", () => {
 
   it("sends at most once and marks notified", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
 
     const db = getStateDatabase();
     upsertTaskNotificationBinding({
@@ -133,7 +136,7 @@ describe("web/taskNotifications telegram", () => {
 
   it("records failures with retry_count and next_retry_at", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
 
     const db = getStateDatabase();
     recordTaskTerminalStatus({
@@ -164,9 +167,9 @@ describe("web/taskNotifications telegram", () => {
     assert.ok(row.nextRetryAt! <= after + 5_000);
   });
 
-  it("uses TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS for notifications", async () => {
+  it("uses TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_ID for notifications", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
 
     const db = getStateDatabase();
     recordTaskTerminalStatus({
@@ -197,7 +200,7 @@ describe("web/taskNotifications telegram", () => {
 
   it("formats timestamps in Asia/Shanghai and omits TaskId line", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
     delete process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE;
 
     const db = getStateDatabase();
@@ -239,7 +242,7 @@ describe("web/taskNotifications telegram", () => {
 
   it("uses ADS_TELEGRAM_NOTIFY_TIMEZONE when valid", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
     process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE = "UTC";
 
     const db = getStateDatabase();
@@ -272,7 +275,7 @@ describe("web/taskNotifications telegram", () => {
 
   it("falls back to Asia/Shanghai on invalid ADS_TELEGRAM_NOTIFY_TIMEZONE", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
-    process.env.TELEGRAM_ALLOWED_USERS = "123";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
     process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE = "Invalid/Zone";
 
     const db = getStateDatabase();

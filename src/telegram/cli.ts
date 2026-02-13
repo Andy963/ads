@@ -29,7 +29,7 @@ if (!existsSync(botPath)) {
 }
 
 switch (command) {
-	case 'start': {
+  case 'start': {
     writeStdout('🚀 Starting Telegram bot...');
     const bot = spawn('node', [botPath], {
       stdio: 'inherit',
@@ -48,11 +48,11 @@ switch (command) {
     break;
   }
 
-	case 'help':
-	case '--help':
-	case '-h':
+  case 'help':
+  case '--help':
+  case '-h':
     writeStdout(`
-	Telegram Bot CLI
+Telegram Bot CLI
 
 Usage:
   ads-telegram [command]
@@ -64,25 +64,26 @@ Commands:
 
 Environment Variables:
   TELEGRAM_BOT_TOKEN          Your Telegram bot token (required)
-  TELEGRAM_ALLOWED_USERS      Comma-separated user IDs (required)
+  TELEGRAM_ALLOWED_USER_ID    Single user ID (required)
+  TELEGRAM_ALLOWED_USERS      Legacy alias (single value only)
   ALLOWED_DIRS                Comma-separated directory paths (shared by all endpoints)
   TELEGRAM_MAX_RPM            Max requests per minute (default: 10)
   SANDBOX_MODE                Sandbox mode: read-only|workspace-write|danger-full-access (shared)
-  TELEGRAM_MODEL             AI model to use
-  TELEGRAM_PROXY_URL         Optional HTTP proxy (e.g. http://127.0.0.1:7897)
+  TELEGRAM_MODEL              Optional model override (otherwise use Codex CLI config)
+  TELEGRAM_PROXY_URL          Optional HTTP proxy (e.g. http://127.0.0.1:7897)
 
 Quick Start:
   1. Create .env file with your configuration (shared by Telegram & web)
   2. Run: ads-telegram start
 
-	Documentation:
-	  https://github.com/your-repo/ads-js#telegram-bot
+Documentation:
+  https://github.com/your-repo/ads-js#telegram-bot
 `);
     break;
 
   case 'version':
   case '--version':
-	case '-v': {
+  case '-v': {
     const pkg = await import('../../package.json', { assert: { type: 'json' } });
     writeStdout(`Telegram Bot v${pkg.default.version}`);
     break;

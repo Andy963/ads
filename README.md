@@ -182,7 +182,7 @@ Droid 集成通过 `droid` CLI 落地（JSONL stream），不依赖 SDK；工具
 - 使用统一的 services 脚本启动（构建后）：`npm run services -- start web`
 - 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ALLOWED_DIRS` 控制（Web/Telegram 共用）。
 - 浏览器访问对应地址即可与 Telegram 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
-- （可选）任务完成 Telegram 通知：复用 `TELEGRAM_BOT_TOKEN`，并使用唯一的 `TELEGRAM_ALLOWED_USERS` 作为通知 `chat_id`（单用户约束）；可用 `ADS_TELEGRAM_NOTIFY_TIMEZONE` 设置通知时间戳时区（默认 `Asia/Shanghai`）。
+- （可选）任务完成 Telegram 通知：复用 `TELEGRAM_BOT_TOKEN`，并使用 `TELEGRAM_ALLOWED_USER_ID` 作为通知 `chat_id`（单用户约束；`TELEGRAM_ALLOWED_USERS` 为 legacy alias）；可用 `ADS_TELEGRAM_NOTIFY_TIMEZONE` 设置通知时间戳时区（默认 `Asia/Shanghai`）。
 - 聊天日志支持本地缓存（按 token 隔离，约 100 条/200KB，TTL 1 天），顶部“清空历史”按钮可同时清理日志与缓存；会话标签支持重命名并按 token 记住工作目录，重连/切换时自动恢复；流式回复的“正在输入”占位符按会话隔离。
 - Plan 以侧边栏面板呈现，不再作为聊天消息写入历史（避免刷屏）；同时会过滤掉类似 `Idiomatic English:` 的翻译前缀，保持历史与工具输出更干净。
 
@@ -194,7 +194,7 @@ Droid 集成通过 `droid` CLI 落地（JSONL stream），不依赖 SDK；工具
 ```bash
 # 设置环境变量
 export TELEGRAM_BOT_TOKEN="your-bot-token"
-export TELEGRAM_ALLOWED_USERS="your-telegram-user-id"
+export TELEGRAM_ALLOWED_USER_ID="your-telegram-user-id"
 
 # 启动 Bot（构建后，复用根目录 .env）
 npm run services -- start telegram
@@ -265,7 +265,7 @@ Security is important to us. If you discover a security vulnerability, please fo
 - Never commit `.env` or `.env.*` files to version control
 - Use `.env.example` as a template
 - Set proper file permissions for sensitive files (`chmod 600 .env`)
-- Configure `TELEGRAM_ALLOWED_USERS` and `ALLOWED_DIRS` appropriately
+- Configure `TELEGRAM_ALLOWED_USER_ID` (legacy: `TELEGRAM_ALLOWED_USERS`) and `ALLOWED_DIRS` appropriately
 - If your environment requires a proxy, set `TELEGRAM_PROXY_URL` (e.g. `http://127.0.0.1:7897`) instead of hardcoding it in code
 - Revoke leaked tokens immediately via [@BotFather](https://t.me/BotFather)
 

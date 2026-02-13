@@ -16,30 +16,54 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("TelegramConfig");
 
+function parsePositiveInt(raw: string, label: string): number {
+  const trimmed = raw.trim();
+  const num = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(num) || num <= 0) {
+    throw new Error(`Invalid value for ${label} (must be a positive integer): ${raw}`);
+  }
+  return num;
+}
+
+function normalizeModel(raw?: string): string | undefined {
+  const trimmed = String(raw ?? "").trim();
+  return trimmed ? trimmed : undefined;
+}
+
 export function loadTelegramConfig(): TelegramConfig {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
     throw new Error('TELEGRAM_BOT_TOKEN is required');
   }
 
-  const allowedUsersStr = process.env.TELEGRAM_ALLOWED_USERS;
-  if (!allowedUsersStr) {
-    throw new Error('TELEGRAM_ALLOWED_USERS is required (comma-separated user IDs)');
-  }
+  const singleUserRaw = String(process.env.TELEGRAM_ALLOWED_USER_ID ?? "").trim();
+  const allowedUsersRaw = String(process.env.TELEGRAM_ALLOWED_USERS ?? "").trim();
 
-  const allowedUsers = allowedUsersStr
-    .split(',')
-    .map(id => {
-      const num = parseInt(id.trim(), 10);
-      if (!Number.isSafeInteger(num) || num <= 0) {
-        throw new Error(`Invalid user ID in TELEGRAM_ALLOWED_USERS (must be a positive integer): ${id}`);
+  const allowedUsers = (() => {
+    if (singleUserRaw) {
+      const userId = parsePositiveInt(singleUserRaw, "TELEGRAM_ALLOWED_USER_ID");
+      if (allowedUsersRaw) {
+        const parts = allowedUsersRaw.split(",").map((s) => s.trim()).filter(Boolean);
+        if (parts.length !== 1) {
+          throw new Error("TELEGRAM_ALLOWED_USERS must contain exactly one user ID when TELEGRAM_ALLOWED_USER_ID is set");
+        }
+        const legacyId = parsePositiveInt(parts[0] ?? "", "TELEGRAM_ALLOWED_USERS");
+        if (legacyId !== userId) {
+          throw new Error("TELEGRAM_ALLOWED_USER_ID conflicts with TELEGRAM_ALLOWED_USERS (values differ)");
+        }
       }
-      return num;
-    });
+      return [userId];
+    }
 
-  if (allowedUsers.length === 0) {
-    throw new Error('TELEGRAM_ALLOWED_USERS must contain at least one user ID');
-  }
+    if (!allowedUsersRaw) {
+      throw new Error("TELEGRAM_ALLOWED_USER_ID is required (single user ID)");
+    }
+    const parts = allowedUsersRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.length !== 1) {
+      throw new Error("TELEGRAM_ALLOWED_USERS must contain exactly one user ID for this bot");
+    }
+    return [parsePositiveInt(parts[0] ?? "", "TELEGRAM_ALLOWED_USERS")];
+  })();
 
   const allowedDirsStr = process.env.ALLOWED_DIRS || process.cwd();
   const allowedDirs = allowedDirsStr.split(',').map(dir => dir.trim()).filter(Boolean);
@@ -65,7 +89,7 @@ export function loadTelegramConfig(): TelegramConfig {
     throw new Error(`Invalid SANDBOX_MODE: ${sandboxMode}. Must be one of: ${validModes.join(', ')}`);
   }
 
-  const defaultModel = process.env.TELEGRAM_MODEL || "gpt-5.2"; // Optional; defaults to gpt-5.2.
+  const defaultModel = normalizeModel(process.env.TELEGRAM_MODEL);
   const proxyUrl = normalizeProxyUrl(process.env.TELEGRAM_PROXY_URL);
   return {
     botToken,
@@ -101,7 +125,7 @@ export function validateConfig(config: TelegramConfig): void {
   }
 
   if (config.allowedUsers.length !== 1) {
-    throw new Error('TELEGRAM_ALLOWED_USERS must contain exactly one user ID for this bot');
+    throw new Error('Telegram bot supports exactly one allowed user (set TELEGRAM_ALLOWED_USER_ID)');
   }
 
   if (config.allowedDirs.length === 0) {

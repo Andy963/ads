@@ -70,7 +70,7 @@ We appreciate security researchers who help keep ADS safe:
 
 #### Telegram Bot Security
 
-- **Whitelist Users**: Always set `TELEGRAM_ALLOWED_USERS` to specific user IDs
+- **Whitelist Users**: Always set `TELEGRAM_ALLOWED_USER_ID` to a specific user ID (legacy: `TELEGRAM_ALLOWED_USERS`)
 - **Limit Directories**: Use `ALLOWED_DIRS`（全端共享）限制可访问路径
 - **Sandbox Mode**: Use `read-only` or `workspace-write` mode unless absolutely necessary
   - `read-only`: Bot can only read files

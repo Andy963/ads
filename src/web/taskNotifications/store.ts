@@ -126,7 +126,7 @@ export function upsertTaskNotificationBinding(args: {
 
   if (!telegram.ok) {
     args.logger?.warn?.(
-      `[Web][TaskNotifications] Telegram config missing; set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS (single user) to enable notifications taskId=${taskId}`,
+      `[Web][TaskNotifications] Telegram config missing; set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_ID (single user; TELEGRAM_ALLOWED_USERS is legacy alias) to enable notifications taskId=${taskId}`,
     );
   }
 
@@ -200,7 +200,7 @@ export function recordTaskTerminalStatus(args: {
 
   if (!telegram.ok) {
     args.logger?.warn?.(
-      `[Web][TaskNotifications] Telegram config missing; cannot notify terminal status (set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS with exactly one user ID) taskId=${taskId} status=${status}`,
+      `[Web][TaskNotifications] Telegram config missing; cannot notify terminal status (set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_ID with exactly one user ID; TELEGRAM_ALLOWED_USERS is legacy alias) taskId=${taskId} status=${status}`,
     );
   }
 
