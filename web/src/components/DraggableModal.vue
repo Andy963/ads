@@ -148,6 +148,12 @@ function onWindowResize(): void {
   updateBounds();
 }
 
+function onWindowKeydown(ev: KeyboardEvent): void {
+  if (ev.key === "Escape") {
+    emit("close");
+  }
+}
+
 function onOverlayClick(): void {
   if (suppressOverlayClick) {
     return;
@@ -158,10 +164,12 @@ function onOverlayClick(): void {
 onMounted(() => {
   updateBounds();
   window.addEventListener("resize", onWindowResize, { passive: true });
+  window.addEventListener("keydown", onWindowKeydown);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onWindowResize);
+  window.removeEventListener("keydown", onWindowKeydown);
 });
 </script>
 

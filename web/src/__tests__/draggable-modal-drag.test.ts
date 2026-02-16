@@ -103,4 +103,24 @@ describe("DraggableModal", () => {
     expect(x).toBeLessThanOrEqual(552);
     expect(y).toBeLessThanOrEqual(402);
   });
+
+  it("emits close when Escape key is pressed", async () => {
+    const wrapper = mount(DraggableModal, {
+      props: { cardVariant: "default" },
+      slots: {
+        default: `<div>Modal Content</div>`,
+      },
+    });
+
+    await nextTick();
+
+    // Dispatch keydown event on window
+    const escapeEvent = new KeyboardEvent("keydown", { key: "Escape" });
+    window.dispatchEvent(escapeEvent);
+
+    expect(wrapper.emitted("close")).toBeTruthy();
+    expect(wrapper.emitted("close")?.length).toBe(1);
+
+    wrapper.unmount();
+  });
 });
