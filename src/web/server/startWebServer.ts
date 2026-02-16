@@ -300,7 +300,7 @@ export async function startWebServer(): Promise<void> {
     scheduleWorkspacePurge: (ctx) => purgeScheduler.schedule(ctx),
   });
 
-  const server = createHttpServer({ handleApiRequest: apiHandler });
+  const server = createHttpServer({ handleApiRequest: apiHandler, logger });
 
   attachWebSocketServer({
     server,

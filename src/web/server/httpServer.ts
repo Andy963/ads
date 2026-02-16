@@ -4,6 +4,10 @@ import path from "node:path";
 
 import { sendJson } from "./http.js";
 
+interface Logger {
+  error(message: string, ...args: unknown[]): void;
+}
+
 function serveFile(res: http.ServerResponse, filePath: string): boolean {
   const contentTypeFor = (resolvedPath: string): string => {
     const ext = path.extname(resolvedPath).toLowerCase();
@@ -52,6 +56,7 @@ function serveFile(res: http.ServerResponse, filePath: string): boolean {
 
 export function createHttpServer(options: {
   handleApiRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
+  logger?: Logger;
 }): http.Server {
   const distWebDir = path.join(process.cwd(), "dist", "web");
 
@@ -89,6 +94,11 @@ export function createHttpServer(options: {
   };
 
   const server = http.createServer((req, res) => {
+    // Add security headers
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+
     const url = req.url ?? "";
     if (url.startsWith("/api/")) {
       const handler = options.handleApiRequest;
@@ -97,9 +107,15 @@ export function createHttpServer(options: {
         return;
       }
       void handler(req, res).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
+        // Log the full error, but sanitize the response
+        if (options.logger) {
+          options.logger.error("API Error", error);
+        } else {
+          console.error("API Error", error);
+        }
+
         if (!res.headersSent) {
-          sendJson(res, 500, { error: message });
+          sendJson(res, 500, { error: "Internal Server Error" });
         } else {
           try {
             res.end();
