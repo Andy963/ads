@@ -408,36 +408,53 @@ export function getNextNode(nodeId: string): GraphNode | null {
 
 export function getParentNodes(nodeId: string, recursive = true): GraphNode[] {
   const db = getDatabase();
-  const parents: GraphNode[] = [];
-  const seen = new Set<string>();
-  let current = nodeId;
 
-  while (true) {
+  // Optimization: Use recursive CTE to fetch ancestors in a single query
+  // instead of N+1 loop.
+  // We use a path string to detect cycles and stop.
+  // We use LIMIT 1 to mimic the original greedy "single path" behavior.
+
+  if (!recursive) {
     const edge = db
       .prepare("SELECT source FROM edges WHERE target = ? AND source != ? LIMIT 1")
-      .get(current, current) as { source?: string } | undefined;
+      .get(nodeId, nodeId) as { source?: string } | undefined;
+
     if (!edge?.source) {
-      break;
-    }
-    if (seen.has(edge.source)) {
-      break;
+      return [];
     }
 
+    // Reuse getNodeById logic (which does a query + map)
+    // Or we could join here too, but for depth 1 it's fine.
     const node = getNodeById(edge.source);
-    if (!node) {
-      break;
-    }
-
-    parents.push(node);
-    seen.add(node.id);
-
-    if (!recursive) {
-      break;
-    }
-    current = node.id;
+    return node ? [node] : [];
   }
 
-  return parents;
+  const sql = `
+    WITH RECURSIVE lineage AS (
+      -- Anchor: find all parents of the start node
+      SELECT source, target, 1 as depth, '/' || target || '/' || source || '/' as path
+      FROM edges
+      WHERE target = ? AND source != target
+
+      UNION ALL
+
+      -- Recursive: find parents of the previous parents
+      SELECT e.source, e.target, l.depth + 1, l.path || e.source || '/'
+      FROM edges e
+      JOIN lineage l ON e.target = l.source
+      WHERE e.source != e.target
+        AND l.depth < 100
+        AND l.path NOT LIKE '%/' || e.source || '/%'
+    )
+    SELECT n.*
+    FROM lineage l
+    JOIN nodes n ON n.id = l.source
+    GROUP BY n.id
+    ORDER BY min(l.depth) ASC;
+  `;
+
+  const rows = db.prepare(sql).all(nodeId) as unknown[];
+  return rows.map((row) => mapNode(normalizeNodeRow(row)));
 }
 
 export function getNodeContext(nodeId: string): { node: GraphNode; parents: GraphNode[] } | null {
