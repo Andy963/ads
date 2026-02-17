@@ -19,8 +19,15 @@ export function getUserAgent(req: http.IncomingMessage): string | null {
   return trimmed || null;
 }
 
+export function setSecurityHeaders(res: http.ServerResponse): void {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+}
+
 export function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown): void {
   const body = JSON.stringify(payload);
+  setSecurityHeaders(res);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
