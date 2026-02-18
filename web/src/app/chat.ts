@@ -327,7 +327,12 @@ export function createChatActions(ctx: AppContext) {
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
       savePendingPrompt(state, next);
-      state.ws.sendPrompt(next.images.length > 0 ? { text: next.text, images: next.images } : next.text, next.clientMessageId);
+      const effort = String(state.modelReasoningEffort.value ?? "").trim() || "high";
+      const payload =
+        next.images.length > 0
+          ? { text: next.text, images: next.images, model_reasoning_effort: effort }
+          : { text: next.text, model_reasoning_effort: effort };
+      state.ws.sendPrompt(payload, next.clientMessageId);
     } catch {
       state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
     }

@@ -79,6 +79,7 @@ export type ProjectRuntime = {
   threadWarning: Ref<string | null>;
   availableAgents: Ref<AgentDescriptor[]>;
   activeAgentId: Ref<string>;
+  modelReasoningEffort: Ref<string>;
   activeThreadId: Ref<string | null>;
   queueStatus: Ref<TaskQueueStatus | null>;
   workspacePath: Ref<string>;

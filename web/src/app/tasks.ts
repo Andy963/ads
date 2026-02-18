@@ -387,6 +387,45 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     enqueuePrompt(text, images, planner);
   };
 
+  const normalizeReasoningEffort = (value: string): string => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (normalized === "medium" || normalized === "high" || normalized === "xhigh") return normalized;
+    if (normalized === "low") return "medium";
+    return "high";
+  };
+
+  const reasoningEffortStorageKey = (sessionId: string, chatSessionId: string): string => {
+    const sid = String(sessionId ?? "").trim() || "unknown";
+    const chat = String(chatSessionId ?? "").trim() || "main";
+    return `ads.reasoningEffort.${sid}.${chat}`;
+  };
+
+  const persistReasoningEffort = (rt: ProjectRuntime): void => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    if (!sessionId) return;
+    const key = reasoningEffortStorageKey(sessionId, rt.chatSessionId);
+    const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
+    try {
+      localStorage.setItem(key, effort);
+    } catch {
+      // ignore
+    }
+  };
+
+  const setMainModelReasoningEffort = (effort: string): void => {
+    apiError.value = null;
+    const rt = activeRuntime.value;
+    rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
+    persistReasoningEffort(rt);
+  };
+
+  const setPlannerModelReasoningEffort = (effort: string): void => {
+    apiError.value = null;
+    const rt = activePlannerRuntime.value;
+    rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
+    persistReasoningEffort(rt);
+  };
+
   const switchMainAgent = (agentId: string): void => {
     apiError.value = null;
     const next = String(agentId ?? "").trim();
@@ -524,5 +563,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     closeTaskCreateDialog,
     select,
     removePlannerQueuedPrompt,
+    setMainModelReasoningEffort,
+    setPlannerModelReasoningEffort,
   };
 }

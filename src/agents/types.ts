@@ -44,6 +44,8 @@ export interface AgentAdapter {
   reset(): void;
   setWorkingDirectory?(workingDirectory?: string): void;
   setModel?(model?: string): void;
+  setModelReasoningEffort?(effort?: string): void;
+  setDeveloperInstructions?(instructions: string): void;
   getThreadId?(): string | null;
   classifyInput?(input: string): Promise<IntakeClassification>;
 }

@@ -151,4 +151,35 @@ describe("CodexCliAdapter", () => {
     const countRaw = await fs.readFile(countFile, "utf-8");
     assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
   });
+
+  it("passes model_reasoning_effort via --config when set", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'args=("$@")',
+      "found=0",
+      'for i in "${!args[@]}"; do',
+      '  if [[ "${args[$i]}" == "--config" ]]; then',
+      '    value="${args[$((i+1))]:-}"',
+      '    if [[ "$value" == \'model_reasoning_effort="xhigh"\' ]]; then found=1; fi',
+      "  fi",
+      "done",
+      'if [[ "$found" -ne 1 ]]; then',
+      '  echo \'{"type":"turn.failed","error":{"message":"missing model_reasoning_effort config"}}\'',
+      "  exit 0",
+      "fi",
+      "cat >/dev/null || true",
+      'echo \'{"type":"thread.started","thread_id":"t-effort"}\'',
+      'echo \'{"type":"turn.started"}\'',
+      'echo \'{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}\'',
+      'echo \'{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary });
+    adapter.setModelReasoningEffort("xhigh");
+    const result = await adapter.send("hi");
+    assert.equal(result.response, "OK");
+  });
 });

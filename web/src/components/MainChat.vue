@@ -18,6 +18,7 @@ const props = defineProps<{
   busy: boolean;
   agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
   activeAgentId?: string;
+  modelReasoningEffort?: string;
   agentDelegations?: Array<{
     id: string;
     agentId: string;
@@ -36,6 +37,7 @@ const emit = defineEmits<{
   (e: "clearImages"): void;
   (e: "removeQueued", id: string): void;
   (e: "switchAgent", agentId: string): void;
+  (e: "setReasoningEffort", effort: string): void;
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
@@ -280,6 +282,18 @@ function onAgentChange(ev: Event): void {
   const next = String(value ?? "").trim();
   if (!next) return;
   emit("switchAgent", next);
+}
+
+const reasoningEffortValue = computed(() => {
+  const raw = String(props.modelReasoningEffort ?? "").trim().toLowerCase();
+  if (raw === "medium" || raw === "high" || raw === "xhigh") return raw;
+  if (raw === "low") return "medium";
+  return "high";
+});
+
+function onReasoningEffortChange(ev: Event): void {
+  const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
+  emit("setReasoningEffort", String(value ?? "").trim());
 }
 
 const agentDelegationLabel = computed(() => {
@@ -705,6 +719,20 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
                 <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.ready">
                   {{ formatAgentLabel(a) }}
                 </option>
+              </select>
+            </div>
+            <div v-if="selectedAgentId === 'codex'" class="agentSelect">
+              <select
+                class="agentSelectInput"
+                :value="reasoningEffortValue"
+                :disabled="!connected || busy"
+                aria-label="Select reasoning effort"
+                data-testid="chat-reasoning-effort"
+                @change="onReasoningEffortChange"
+              >
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">Extra High</option>
               </select>
             </div>
           </div>

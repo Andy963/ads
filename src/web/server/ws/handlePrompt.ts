@@ -43,6 +43,26 @@ type PatchFileStatLike = { added: number | null; removed: number | null };
 const HISTORY_INJECTION_MAX_ENTRIES = 20;
 const HISTORY_INJECTION_MAX_CHARS = 8_000;
 
+function parseModelReasoningEffortFromPayload(payload: unknown): { present: boolean; effort?: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { present: false };
+  }
+  const rec = payload as Record<string, unknown>;
+  const raw = rec["model_reasoning_effort"] ?? rec["modelReasoningEffort"];
+  if (raw === undefined) {
+    return { present: false };
+  }
+  const normalized = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!normalized || normalized === "default") {
+    return { present: true, effort: undefined };
+  }
+  const allow = new Set(["low", "medium", "high", "xhigh"]);
+  if (!allow.has(normalized)) {
+    return { present: true, effort: undefined };
+  }
+  return { present: true, effort: normalized };
+}
+
 export function buildHistoryInjectionContext(entries: Array<{ role: string; text: string }>): string | null {
   const relevant = entries.filter((e) => e.role === "user" || e.role === "ai");
   if (relevant.length === 0) {
@@ -215,6 +235,10 @@ export async function handlePromptMessage(deps: {
       return;
     }
     orchestrator.setWorkingDirectory(turnCwd);
+    const reasoningEffort = parseModelReasoningEffortFromPayload(deps.parsed.payload);
+    if (reasoningEffort.present) {
+      orchestrator.setModelReasoningEffort(reasoningEffort.effort);
+    }
     const formatStepTraceLine = (event: AgentEvent): string | null => {
       const title = String(event.title ?? "").trim();
       if (!title) {

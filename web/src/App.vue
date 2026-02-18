@@ -67,6 +67,8 @@ const {
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
+  setMainModelReasoningEffort,
+  setPlannerModelReasoningEffort,
   switchMainAgent,
   switchPlannerAgent,
   interruptActive,
@@ -458,9 +460,11 @@ onBeforeUnmount(() => {
           :busy="plannerBusy"
           :agents="plannerAgents"
           :active-agent-id="plannerActiveAgentId"
+          :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
           :agent-delegations="plannerAgentDelegations"
           @send="sendPlannerPrompt"
           @switchAgent="switchPlannerAgent"
+          @setReasoningEffort="setPlannerModelReasoningEffort"
           @interrupt="interruptPlanner"
           @addImages="addPlannerPendingImages"
           @clearImages="clearPlannerPendingImages"
@@ -480,9 +484,11 @@ onBeforeUnmount(() => {
           :busy="agentBusy"
           :agents="workerAgents"
           :active-agent-id="workerActiveAgentId"
+          :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
           @send="sendMainPrompt"
           @switchAgent="switchMainAgent"
+          @setReasoningEffort="setMainModelReasoningEffort"
           @interrupt="interruptActive"
           @clear="clearActiveChat"
           @addImages="addPendingImages"
@@ -514,9 +520,11 @@ onBeforeUnmount(() => {
           :busy="agentBusy"
           :agents="workerAgents"
           :active-agent-id="workerActiveAgentId"
+          :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
           @send="sendMainPrompt"
           @switchAgent="switchMainAgent"
+          @setReasoningEffort="setMainModelReasoningEffort"
           @interrupt="interruptActive"
           @clear="clearActiveChat"
           @addImages="addPendingImages"

@@ -1,6 +1,6 @@
 import { AdsWebSocket } from "../../api/ws";
 
-import type { AppContext, PathValidateResponse, ProjectTab } from "../controller";
+import type { AppContext, PathValidateResponse, ProjectRuntime, ProjectTab } from "../controller";
 import type { ChatActions } from "../chat";
 
 import type { WsDeps } from "./types";
@@ -42,6 +42,33 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     upsertExecuteBlock,
     ingestCommandActivity,
   } = ctx;
+
+  const normalizeReasoningEffort = (value: unknown): string => {
+    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (normalized === "medium" || normalized === "high" || normalized === "xhigh") return normalized;
+    if (normalized === "low") return "medium";
+    return "high";
+  };
+
+  const reasoningEffortStorageKey = (sessionId: string, chatSessionId: string): string => {
+    const sid = String(sessionId ?? "").trim() || "unknown";
+    const chat = String(chatSessionId ?? "").trim() || "main";
+    return `ads.reasoningEffort.${sid}.${chat}`;
+  };
+
+  const restoreReasoningEffort = (rt: ProjectRuntime): void => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    if (!sessionId) return;
+    const key = reasoningEffortStorageKey(sessionId, rt.chatSessionId);
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored !== null) {
+        rt.modelReasoningEffort.value = normalizeReasoningEffort(stored);
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   const clearReconnectTimer = (rt: { reconnectTimer: number | null }): void => {
     if (rt.reconnectTimer === null) return;
@@ -193,6 +220,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
     rt.projectSessionId = String(project.sessionId ?? "").trim();
     rt.chatSessionId = chatSessionId;
+    restoreReasoningEffort(rt);
 
     const identity = await resolveProjectIdentity(project);
     if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
@@ -209,6 +237,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
       rt.projectSessionId = String(project.sessionId ?? "").trim();
       rt.chatSessionId = resolveChatSessionId(project, mode);
+      restoreReasoningEffort(rt);
     }
 
     clearReconnectTimer(rt);

@@ -30,6 +30,7 @@ export interface CodexCliAdapterOptions {
   sandboxMode?: SandboxMode;
   workingDirectory?: string;
   model?: string;
+  modelReasoningEffort?: string;
   resumeThreadId?: string;
   env?: NodeJS.ProcessEnv;
   metadata?: Partial<AgentMetadata>;
@@ -51,6 +52,17 @@ function normalizeSpawnEnv(env: NodeJS.ProcessEnv | undefined): Record<string, s
     }
   }
   return normalized;
+}
+
+function tomlStringLiteral(value: string): string {
+  const raw = String(value ?? "");
+  const escaped = raw
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t");
+  return `"${escaped}"`;
 }
 
 function inputToPromptAndImages(input: Input): { prompt: string; images: string[] } {
@@ -135,7 +147,9 @@ export class CodexCliAdapter implements AgentAdapter {
   private spawnEnv?: NodeJS.ProcessEnv;
   private workingDirectory?: string;
   private model?: string;
+  private modelReasoningEffort?: string;
   private threadId: string | null;
+  private developerInstructions?: string;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
 
   constructor(options: CodexCliAdapterOptions = {}) {
@@ -143,6 +157,7 @@ export class CodexCliAdapter implements AgentAdapter {
     this.sandboxMode = options.sandboxMode ?? "workspace-write";
     this.workingDirectory = options.workingDirectory;
     this.model = options.model;
+    this.modelReasoningEffort = options.modelReasoningEffort;
     this.threadId = options.resumeThreadId?.trim() || null;
     this.spawnEnv = options.env;
     this.metadata = {
@@ -202,6 +217,17 @@ export class CodexCliAdapter implements AgentAdapter {
     if (this.model === normalized) return;
     this.model = normalized;
     this.reset();
+  }
+
+  setModelReasoningEffort(effort?: string): void {
+    const normalized = String(effort ?? "").trim();
+    const next = normalized || undefined;
+    if (this.modelReasoningEffort === next) return;
+    this.modelReasoningEffort = next;
+  }
+
+  setDeveloperInstructions(instructions: string): void {
+    this.developerInstructions = instructions || undefined;
   }
 
   getThreadId(): string | null {
@@ -361,6 +387,12 @@ export class CodexCliAdapter implements AgentAdapter {
     args.push("--json", "--skip-git-repo-check");
     if (this.model) {
       args.push("--model", this.model);
+    }
+    if (this.modelReasoningEffort) {
+      args.push("--config", `model_reasoning_effort=${tomlStringLiteral(this.modelReasoningEffort)}`);
+    }
+    if (this.developerInstructions) {
+      args.push("--config", `developer_instructions=${this.developerInstructions}`);
     }
     for (const imagePath of options.images) {
       args.push("--image", imagePath);

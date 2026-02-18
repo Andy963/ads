@@ -37,6 +37,7 @@ export class HybridOrchestrator {
   private activeAgentId: AgentIdentifier;
   private workingDirectory?: string;
   private model?: string;
+  private modelReasoningEffort?: string;
   private readonly systemPromptManager?: SystemPromptManager;
   private readonly skillAutoloadEnabled: boolean;
   private readonly skillAutosaveEnabled: boolean;
@@ -81,6 +82,9 @@ export class HybridOrchestrator {
     }
     if (this.model) {
       adapter.setModel?.(this.model);
+    }
+    if (this.modelReasoningEffort) {
+      adapter.setModelReasoningEffort?.(this.modelReasoningEffort);
     }
   }
 
@@ -283,6 +287,21 @@ export class HybridOrchestrator {
     const aliasNote =
       `You are ${agentName} (id: ${agentId}), the active ADS agent. ` +
       `If the following instructions mention "Codex", treat them as referring to you.`;
+
+    // Extract <soul> block for developer_instructions (higher priority than user messages)
+    const soulMatch = injection.text.match(/<soul>\n?([\s\S]*?)\n?<\/soul>/);
+    if (soulMatch && entry?.adapter.setDeveloperInstructions) {
+      const soulContent = soulMatch[1].trim();
+      const devInstructions = `${aliasNote}\n\n${soulContent}`;
+      entry.adapter.setDeveloperInstructions(devInstructions);
+      // Remove <soul> block from the injection text to avoid duplication
+      const remainingText = injection.text.replace(/<soul>\n?[\s\S]*?\n?<\/soul>/, "").trim();
+      if (!remainingText) {
+        return input;
+      }
+      return this.mergeSystemPrompt(remainingText, input);
+    }
+
     const decorated = `${aliasNote}\n\n${injection.text}`;
     return this.mergeSystemPrompt(decorated, input);
   }
@@ -402,6 +421,14 @@ export class HybridOrchestrator {
   private broadcastModel(model?: string): void {
     for (const { adapter } of this.adapters.values()) {
       adapter.setModel?.(model);
+    }
+  }
+
+  setModelReasoningEffort(effort?: string): void {
+    const normalized = String(effort ?? "").trim() || undefined;
+    this.modelReasoningEffort = normalized;
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setModelReasoningEffort?.(normalized);
     }
   }
 

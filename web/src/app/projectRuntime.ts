@@ -15,6 +15,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     threadWarning: ref<string | null>(null),
     availableAgents: ref([]),
     activeAgentId: ref(""),
+    modelReasoningEffort: ref("high"),
     activeThreadId: ref<string | null>(null),
     queueStatus: ref(null),
     workspacePath: ref(""),
