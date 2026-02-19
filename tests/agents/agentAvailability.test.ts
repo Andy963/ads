@@ -10,9 +10,9 @@ describe("CliAgentAvailability", () => {
       runner: async () => ({ ok: false, error: "Binary not found: missing" }),
     });
 
-    await availability.probeAll(["amp"]);
+    await availability.probeAll(["codex"]);
 
-    const merged = availability.mergeStatus("amp", { ready: true, streaming: true });
+    const merged = availability.mergeStatus("codex", { ready: true, streaming: true });
     assert.equal(merged.ready, false);
     assert.equal(merged.streaming, true);
     assert.equal(typeof merged.error, "string");
@@ -62,7 +62,7 @@ describe("CliAgentAvailability", () => {
       },
     });
 
-    await availability.probeAll(["amp"]);
+    await availability.probeAll(["codex"]);
     assert.ok(seenTimeouts.length > 0);
     assert.ok(seenTimeouts.every((t) => t >= 5000));
   });

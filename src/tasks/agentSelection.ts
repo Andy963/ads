@@ -13,12 +13,6 @@ export function selectAgentForModel(model: string): AgentIdentifier {
   if (normalized.startsWith("claude") || normalized === "sonnet" || normalized === "opus" || normalized === "haiku") {
     return "claude";
   }
-  if (normalized.startsWith("droid") || normalized.includes("droid")) {
-    return "droid";
-  }
-  if (normalized.startsWith("amp") || normalized.includes("amp")) {
-    return "amp";
-  }
   return "codex";
 }
 
@@ -29,4 +23,3 @@ export function selectAgentForTask(input: { agentId?: unknown; modelToUse: strin
   }
   return selectAgentForModel(input.modelToUse);
 }
-

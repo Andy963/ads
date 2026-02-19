@@ -144,18 +144,6 @@ Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK
 
 适配器启用/禁用开关由 `src/telegram/utils/sessionManager.ts` 读取环境变量（例如 `ADS_CLAUDE_ENABLED`/`ADS_GEMINI_ENABLED`）；Web Console 支持 `/agent` 命令切换激活的 Agent。
 
-### Droid Agent（实验性）
-
-Droid 集成通过 `droid` CLI 落地（JSONL stream），不依赖 SDK；工具调用由 CLI 自身处理。
-
-环境变量：
-
-- `ADS_DROID_ENABLED=0`：禁用 Droid CLI 适配器（默认启用）
-- `ADS_DROID_BIN`：Droid CLI binary（默认 `droid`）
-- `ADS_DROID_MODEL`：Droid 模型名称（透传给 CLI）
-
-鉴权/配置由 Droid CLI 自身负责（例如 `FACTORY_API_KEY`）。
-
 ### 协作代理（主代理自动调度/委派）
 
 - 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。

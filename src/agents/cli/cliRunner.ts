@@ -291,7 +291,7 @@ async function runCliViaFiles(
 
 /**
  * 运行 CLI 命令，返回 stdout 的完整文本。
- * 用于不产生 JSONL 输出的简单命令（如 amp threads new）。
+ * 用于不产生 JSONL 输出的简单命令。
  */
 export async function runCliRaw(
   options: Omit<CliRunOptions, "signal">,
