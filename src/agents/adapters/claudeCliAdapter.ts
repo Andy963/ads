@@ -54,6 +54,9 @@ export class ClaudeCliAdapter implements AgentAdapter {
   private model?: string;
   private sessionId: string;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private sendChain: Promise<void> = Promise.resolve();
+  private pendingSends = 0;
+  private pendingReset = false;
 
   constructor(options: ClaudeCliAdapterOptions = {}) {
     this.binary = options.binary ?? process.env.ADS_CLAUDE_BIN ?? "claude";
@@ -86,6 +89,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
   }
 
   reset(): void {
+    if (this.pendingSends > 0) {
+      this.pendingReset = true;
+      return;
+    }
     this.sessionId = crypto.randomUUID();
   }
 
@@ -112,12 +119,36 @@ export class ClaudeCliAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    this.pendingSends += 1;
+
+    const run = this.sendChain.then(async () => {
+      if (this.pendingReset) {
+        this.pendingReset = false;
+        this.sessionId = crypto.randomUUID();
+      }
+      return await this.sendInner(input, options);
+    });
+
+    this.sendChain = run
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        this.pendingSends -= 1;
+      });
+
+    return await run;
+  }
+
+  private async sendInner(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
     const prompt = inputToString(input);
     if (!prompt.trim()) {
       throw new Error("Prompt 不能为空");
     }
 
     const permissionMode = this.sandboxMode === "read-only" ? "plan" : "bypassPermissions";
+    const sessionId = this.sessionId;
     const args: string[] = [
       "--print",
       "--verbose",
@@ -127,7 +158,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       "--permission-mode",
       permissionMode,
       "--session-id",
-      this.sessionId,
+      sessionId,
     ];
     if (this.model) {
       args.push("--model", this.model);
@@ -136,7 +167,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
 
     const parser = new ClaudeStreamParser();
     let sawTurnFailed = false;
-    logger.info(`sending Claude request session=${this.sessionId} mode=${permissionMode}`);
+    logger.info(`sending Claude request session=${sessionId} mode=${permissionMode}`);
 
     const result = await runCli(
       {
