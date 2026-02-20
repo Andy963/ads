@@ -1,14 +1,14 @@
 import '../utils/logSink.js';
 import '../utils/env.js';
 
-import { Bot, type Context } from 'grammy';
+import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { loadTelegramConfig, validateConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
 import { resolveCodexConfig } from '../codexConfig.js';
 import { SessionManager } from './utils/sessionManager.js';
 import { DirectoryManager } from './utils/directoryManager.js';
-import { handleCodexMessage, interruptExecution } from './adapters/codex.js';
+import { handleCodexMessage, interruptExecution, hasActiveCodexRequest } from './adapters/codex.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
@@ -18,6 +18,9 @@ import { closeAllStateDatabases } from '../state/database.js';
 import { listPreferences, setPreference, deletePreference } from '../memory/soul.js';
 import { closeAllWorkspaceDatabases } from '../storage/database.js';
 import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag } from './botSetup.js';
+import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
+import { transcribeTelegramVoiceMessage } from './utils/voiceTranscription.js';
+import { PendingTranscriptionStore } from './utils/pendingTranscriptions.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
@@ -125,6 +128,24 @@ async function main() {
     config.defaultModel
   );
   const directoryManager = new DirectoryManager(config.allowedDirs);
+  const pendingTranscriptions = new PendingTranscriptionStore({ ttlMs: 5 * 60 * 1000 });
+
+  const formatTranscriptionPreview = (args: { text: string; state: "pending" | "submitted" | "discarded" }): string => {
+    const safeText = args.text.replace(/```/g, '`​``');
+    const stateLabel =
+      args.state === "pending"
+        ? "📝 转录预览（不会自动发送）"
+        : args.state === "submitted"
+          ? "✅ 转录预览（已提交）"
+          : "🗑️ 转录预览（已丢弃）";
+
+    const footer =
+      args.state === "pending"
+        ? "点击 `Submit` 发送给 Codex；点击 `Discard` 丢弃。\n如需编辑：复制后修改，再发送新消息。\n有效期：5 分钟。"
+        : "如需编辑：复制后修改，再发送新消息。";
+
+    return `${stateLabel}\n\n\`\`\`text\n${safeText || "\u200b"}\n\`\`\`\n\n${footer}`;
+  };
 
   // 启动时设置默认工作目录（单用户）
   const userId = config.allowedUsers[0];
@@ -449,16 +470,139 @@ async function main() {
     const caption = ctx.message.caption || '';
     const userId = await requireUserId(ctx, 'message:voice');
     if (userId === null) return;
-    const cwd = directoryManager.getUserCwd(userId);
 
     if (voice.file_size && voice.file_size > 20 * 1024 * 1024) {
       await ctx.reply('❌ 文件过大，限制 20MB');
       return;
     }
 
+    try {
+      const chatId = ctx.chat?.id;
+      if (typeof chatId !== 'number') {
+        await ctx.reply('❌ 无法识别 chat.id');
+        return;
+      }
+
+      const mimeType = typeof voice.mime_type === 'string' ? voice.mime_type : 'audio/ogg';
+      const text = await transcribeTelegramVoiceMessage({
+        api: ctx.api,
+        fileId: voice.file_id,
+        mimeType,
+        caption,
+      });
+
+      const keyboard = new InlineKeyboard().text('Submit', 'vt:submit').text('Discard', 'vt:discard');
+      const previewMarkdown = formatTranscriptionPreview({ text, state: "pending" });
+      const previewText = escapeTelegramMarkdownV2(previewMarkdown);
+
+      const preview = await ctx.reply(previewText, {
+        parse_mode: 'MarkdownV2',
+        reply_markup: keyboard,
+        disable_notification: silentNotifications,
+        reply_parameters: { message_id: ctx.message.message_id },
+        link_preview_options: { is_disabled: true },
+      });
+
+      pendingTranscriptions.add({ chatId, previewMessageId: preview.message_id, text });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await ctx.reply(`❌ 语音识别失败: ${message}`, {
+        disable_notification: silentNotifications,
+        reply_parameters: { message_id: ctx.message.message_id },
+      });
+    }
+  });
+
+  bot.callbackQuery(/^vt:(submit|discard)$/, async (ctx) => {
+    const userId = await requireUserId(ctx, 'callbackQuery:vt');
+    if (userId === null) {
+      return;
+    }
+
+    const chatId = ctx.chat?.id;
+    if (typeof chatId !== 'number') {
+      await ctx.answerCallbackQuery({ text: '❌ 无法识别 chat.id', show_alert: true }).catch(() => undefined);
+      return;
+    }
+
+    const previewMessageId = ctx.callbackQuery.message?.message_id;
+    if (typeof previewMessageId !== 'number') {
+      await ctx.answerCallbackQuery({ text: '❌ 无法识别预览消息', show_alert: true }).catch(() => undefined);
+      return;
+    }
+
+    const data = String(ctx.callbackQuery.data ?? '');
+    const action = data.split(':')[1] ?? '';
+
+    if (action === 'discard') {
+      const result = pendingTranscriptions.discard({ chatId, previewMessageId });
+      if (result.status === 'expired' || result.status === 'missing') {
+        await ctx.answerCallbackQuery({ text: '⏱️ 已过期', show_alert: false }).catch(() => undefined);
+        return;
+      }
+      if (result.status === 'already_discarded') {
+        await ctx.answerCallbackQuery({ text: '🗑️ 已丢弃', show_alert: false }).catch(() => undefined);
+        return;
+      }
+      if (result.status === 'already_submitted') {
+        await ctx.answerCallbackQuery({ text: '✅ 已提交', show_alert: false }).catch(() => undefined);
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: '🗑️ 已丢弃', show_alert: false }).catch(() => undefined);
+
+      const record = pendingTranscriptions.get({ chatId, previewMessageId });
+      const text = record?.text ?? '';
+      const updated = escapeTelegramMarkdownV2(formatTranscriptionPreview({ text, state: "discarded" }));
+      await ctx
+        .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
+        .catch(() => undefined);
+      return;
+    }
+
+    if (action !== 'submit') {
+      await ctx.answerCallbackQuery({ text: '❌ Unknown action', show_alert: true }).catch(() => undefined);
+      return;
+    }
+
+    if (hasActiveCodexRequest(userId)) {
+      await ctx
+        .answerCallbackQuery({ text: '⚠️ 已有请求正在执行，请稍后再提交（或用 /esc 中断）', show_alert: false })
+        .catch(() => undefined);
+      return;
+    }
+
+    const record = pendingTranscriptions.get({ chatId, previewMessageId });
+    if (!record) {
+      await ctx.answerCallbackQuery({ text: '⏱️ 已过期', show_alert: false }).catch(() => undefined);
+      return;
+    }
+
+    const consume = pendingTranscriptions.consume({ chatId, previewMessageId });
+    if (consume.status === 'expired' || consume.status === 'missing') {
+      await ctx.answerCallbackQuery({ text: '⏱️ 已过期', show_alert: false }).catch(() => undefined);
+      return;
+    }
+    if (consume.status === 'already_submitted') {
+      await ctx.answerCallbackQuery({ text: '✅ 已提交', show_alert: false }).catch(() => undefined);
+      return;
+    }
+    if (consume.status === 'already_discarded') {
+      await ctx.answerCallbackQuery({ text: '🗑️ 已丢弃', show_alert: false }).catch(() => undefined);
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: '✅ 已提交', show_alert: false }).catch(() => undefined);
+
+    const updated = escapeTelegramMarkdownV2(formatTranscriptionPreview({ text: consume.text, state: "submitted" }));
+    await ctx
+      .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
+      .catch(() => undefined);
+
+    const cwd = directoryManager.getUserCwd(userId);
     await handleCodexMessage(
       ctx,
-      caption,
+      consume.text,
       sessionManager,
       config.streamUpdateIntervalMs,
       undefined,
@@ -467,9 +611,8 @@ async function main() {
       {
         markNoteEnabled: markStates.get(userId) ?? false,
         silentNotifications,
-        replyToMessageId: ctx.message.message_id,
+        replyToMessageId: previewMessageId,
       },
-      voice.file_id,
     );
   });
 

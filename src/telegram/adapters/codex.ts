@@ -520,3 +520,7 @@ export async function sendFileToUser(
 export function interruptExecution(userId: number): boolean {
   return interruptManager.interrupt(userId);
 }
+
+export function hasActiveCodexRequest(userId: number): boolean {
+  return interruptManager.hasActiveRequest(userId);
+}
