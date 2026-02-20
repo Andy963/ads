@@ -26,6 +26,18 @@ function extractStringField(obj: Record<string, unknown>, keys: string[]): strin
   return undefined;
 }
 
+function extractNestedMessage(obj: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const val = obj[key];
+    if (typeof val === "string" && val.trim()) return val.trim();
+    const rec = asRecord(val);
+    if (!rec) continue;
+    const nested = extractStringField(rec, ["message", "error", "details", "detail"]);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
 function asRecord(val: unknown): Record<string, unknown> | null {
   if (val && typeof val === "object" && !Array.isArray(val)) {
     return val as Record<string, unknown>;
@@ -283,6 +295,23 @@ export class ClaudeStreamParser {
     const events: AgentEvent[] = [];
 
     if (subtype === "success") {
+      const errorVal = obj.error;
+      const hasError =
+        (typeof errorVal === "string" && errorVal.trim()) ||
+        (errorVal !== undefined && errorVal !== null && typeof errorVal === "object") ||
+        (typeof obj.reason === "string" && obj.reason.trim()) ||
+        (typeof obj.message === "string" && obj.message.trim());
+      if (hasError) {
+        const message = extractNestedMessage(obj, ["error", "reason", "message"]) ?? "claude result error";
+        this.lastError = message;
+        const failed = attachCliPayload(
+          { type: "turn.failed", error: { message } } as unknown as ThreadEvent,
+          payload,
+        );
+        events.push(...mapEvent(failed));
+        return events;
+      }
+
       const resultText = typeof obj.result === "string" ? obj.result.trim() : "";
       const finalText = resultText || this.agentMessage.trim();
       if (finalText) {
@@ -300,10 +329,7 @@ export class ClaudeStreamParser {
       return events;
     }
 
-    const message =
-      (typeof obj.error === "string" ? obj.error : null) ??
-      (typeof obj.result === "string" ? obj.result : null) ??
-      "claude result error";
+    const message = extractNestedMessage(obj, ["error", "reason", "message", "result"]) ?? "claude result error";
     this.lastError = message;
     const failed = attachCliPayload(
       { type: "turn.failed", error: { message } } as unknown as ThreadEvent,

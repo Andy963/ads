@@ -80,5 +80,19 @@ describe("ClaudeStreamParser", () => {
     assert.equal(events[0]?.phase, "error");
     assert.equal(parser.getLastError(), "boom");
   });
-});
 
+  it("treats success result with error payload as failure", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+
+    const events = parser.parseLine({
+      type: "result",
+      subtype: "success",
+      error: { message: "x" },
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.phase, "error");
+    assert.equal(events[0]?.detail, "x");
+    assert.equal(parser.getLastError(), "x");
+  });
+});

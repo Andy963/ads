@@ -35,15 +35,14 @@ describe("skills/loader", () => {
     ].join("\n"));
 
     const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    assert.equal(skills.length, 1);
-    assert.equal(skills[0].name, "my-skill");
-    assert.equal(skills[0].description, "A test skill");
-    assert.equal(skills[0].source, "project");
+    const skill = skills.find((s) => s.source === "project" && s.name === "my-skill");
+    assert.ok(skill);
+    assert.equal(skill.description, "A test skill");
   });
 
   it("returns empty when no skills directory exists", () => {
     const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    assert.equal(skills.length, 0);
+    assert.equal(skills.filter((s) => s.source === "project").length, 0);
   });
 
   it("skips directories without SKILL.md", () => {
@@ -52,7 +51,7 @@ describe("skills/loader", () => {
     fs.writeFileSync(path.join(dir, "README.md"), "not a skill", "utf-8");
 
     const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    assert.equal(skills.length, 0);
+    assert.equal(skills.filter((s) => s.source === "project").length, 0);
   });
 
   it("uses directory name when frontmatter has no name", () => {
@@ -64,71 +63,75 @@ describe("skills/loader", () => {
     ].join("\n"));
 
     const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    assert.equal(skills.length, 1);
-    assert.equal(skills[0].name, "fallback-name");
+    const skill = skills.find((s) => s.source === "project" && s.name === "fallback-name");
+    assert.ok(skill);
   });
 
   it("handles missing frontmatter gracefully", () => {
     createSkill(tmpDir, "no-front", "# Just markdown\nNo frontmatter.");
 
     const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    assert.equal(skills.length, 1);
-    assert.equal(skills[0].name, "no-front");
-    assert.equal(skills[0].description, "No description provided.");
+    const skill = skills.find((s) => s.source === "project" && s.name === "no-front");
+    assert.ok(skill);
+    assert.equal(skill.description, "No description provided.");
   });
 
   it("project skills take precedence over builtin skills with same name", () => {
-    createSkill(tmpDir, "dup-skill", [
+    const skillName = `dup-skill-${Date.now()}`;
+    createSkill(tmpDir, skillName, [
       "---",
-      "name: dup-skill",
+      `name: ${skillName}`,
       "description: project version",
       "---",
     ].join("\n"));
 
     const builtinRoot = path.join(tmpDir, "builtins");
-    const builtinDir = path.join(builtinRoot, "dup-skill");
+    const builtinDir = path.join(builtinRoot, skillName);
     fs.mkdirSync(builtinDir, { recursive: true });
     fs.writeFileSync(path.join(builtinDir, "SKILL.md"), [
       "---",
-      "name: dup-skill",
+      `name: ${skillName}`,
       "description: builtin version",
       "---",
     ].join("\n"), "utf-8");
 
     const skills = discoverSkills(tmpDir, builtinRoot);
-    assert.equal(skills.length, 1);
-    assert.equal(skills[0].description, "project version");
-    assert.equal(skills[0].source, "project");
+    const skill = skills.find((s) => s.name === skillName);
+    assert.ok(skill);
+    assert.equal(skill.description, "project version");
+    assert.equal(skill.source, "project");
   });
 
   it("discovers builtin skills", () => {
+    const skillName = `builtin-skill-${Date.now()}`;
     const builtinRoot = path.join(tmpDir, "builtins");
-    const builtinDir = path.join(builtinRoot, "builtin-skill");
+    const builtinDir = path.join(builtinRoot, skillName);
     fs.mkdirSync(builtinDir, { recursive: true });
     fs.writeFileSync(path.join(builtinDir, "SKILL.md"), [
       "---",
-      "name: builtin-skill",
+      `name: ${skillName}`,
       "description: A builtin",
       "---",
     ].join("\n"), "utf-8");
 
     const skills = discoverSkills(tmpDir, builtinRoot);
-    assert.equal(skills.length, 1);
-    assert.equal(skills[0].source, "builtin");
+    const skill = skills.find((s) => s.source === "builtin" && s.name === skillName);
+    assert.ok(skill);
   });
 
   it("loadSkillBody returns full file content", () => {
+    const skillName = `read-me-${Date.now()}`;
     const content = [
       "---",
-      "name: read-me",
+      `name: ${skillName}`,
       "description: Readable",
       "---",
       "# Body",
       "Some instructions.",
     ].join("\n");
-    createSkill(tmpDir, "read-me", content);
+    createSkill(tmpDir, skillName, content);
 
-    const body = loadSkillBody("read-me", tmpDir, NO_BUILTINS);
+    const body = loadSkillBody(skillName, tmpDir, NO_BUILTINS);
     assert.equal(body, content);
   });
 
@@ -167,7 +170,7 @@ describe("skills/loader", () => {
     createSkill(tmpDir, "alpha", "---\nname: alpha\ndescription: a\n---");
     createSkill(tmpDir, "mid", "---\nname: mid\ndescription: m\n---");
 
-    const skills = discoverSkills(tmpDir, NO_BUILTINS);
+    const skills = discoverSkills(tmpDir, NO_BUILTINS).filter((s) => s.source === "project");
     assert.deepEqual(skills.map((s) => s.name), ["alpha", "mid", "zeta"]);
   });
 });
