@@ -10,6 +10,7 @@ import type {
 import type { SystemPromptManager } from "../systemPrompt/manager.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills } from "../skills/loader.js";
+import { loadSkillRegistry } from "../skills/registryMetadata.js";
 import { saveSkillDraftFromBlock, type SavedSkillDraft } from "../skills/creator.js";
 import { setPreference } from "../memory/soul.js";
 import { extractPreferenceDirectives, type PreferenceDirective } from "../memory/preferenceDirectives.js";
@@ -178,6 +179,8 @@ export class HybridOrchestrator {
       return [];
     }
 
+    const registry = loadSkillRegistry();
+
     const text = extractInputText(input);
     const lowered = text.trim().toLowerCase();
     if (!lowered) {
@@ -190,11 +193,25 @@ export class HybridOrchestrator {
     }
     const tokenSet = new Set(tokens);
 
-    const scored: Array<{ name: string; score: number }> = [];
+    const scored: Array<{ name: string; score: number; priority: number; provides: string[] }> = [];
     for (const skill of skills) {
+      if (registry) {
+        const meta = registry.skills.get(skill.name.toLowerCase()) ?? null;
+        if (registry.mode === "whitelist" && !meta) {
+          continue;
+        }
+        if (meta && !meta.enabled) {
+          continue;
+        }
+      }
+
+      const meta = registry ? registry.skills.get(skill.name.toLowerCase()) ?? null : null;
+      const priority = meta?.priority ?? 0;
+      const provides = meta?.provides ?? [];
+
       const skillName = skill.name.toLowerCase();
       if (lowered.includes(skillName)) {
-        scored.push({ name: skill.name, score: 1_000 });
+        scored.push({ name: skill.name, score: 1_000, priority, provides });
         continue;
       }
       const nameTokens = tokenize(skillName);
@@ -211,12 +228,72 @@ export class HybridOrchestrator {
         }
       }
       if (score > 0) {
-        scored.push({ name: skill.name, score });
+        scored.push({ name: skill.name, score, priority, provides });
       }
     }
 
-    scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-    return scored.filter((entry) => entry.score >= 2 || entry.score >= 1_000).slice(0, 2).map((s) => s.name);
+    scored.sort(
+      (a, b) =>
+        b.score - a.score || b.priority - a.priority || a.name.localeCompare(b.name),
+    );
+
+    if (!registry) {
+      return scored
+        .filter((entry) => entry.score >= 2 || entry.score >= 1_000)
+        .slice(0, 2)
+        .map((s) => s.name);
+    }
+
+    const groups = new Map<string, { bestScore: number; candidates: typeof scored }>();
+    for (const entry of scored) {
+      const providesKey = String(entry.provides[0] ?? "")
+        .trim()
+        .toLowerCase();
+      const groupKey = providesKey ? `provides:${providesKey}` : `skill:${entry.name.toLowerCase()}`;
+
+      const existing = groups.get(groupKey);
+      if (existing) {
+        existing.bestScore = Math.max(existing.bestScore, entry.score);
+        existing.candidates.push(entry);
+        continue;
+      }
+      groups.set(groupKey, { bestScore: entry.score, candidates: [entry] });
+    }
+
+    const grouped: Array<{ bestScore: number; representative: (typeof scored)[number] }> = [];
+    for (const group of groups.values()) {
+      let representative = group.candidates[0];
+      for (const candidate of group.candidates) {
+        if (candidate.priority !== representative.priority) {
+          if (candidate.priority > representative.priority) {
+            representative = candidate;
+          }
+          continue;
+        }
+        if (candidate.score !== representative.score) {
+          if (candidate.score > representative.score) {
+            representative = candidate;
+          }
+          continue;
+        }
+        if (candidate.name.localeCompare(representative.name) < 0) {
+          representative = candidate;
+        }
+      }
+      grouped.push({ bestScore: group.bestScore, representative });
+    }
+
+    grouped.sort(
+      (a, b) =>
+        b.bestScore - a.bestScore ||
+        b.representative.priority - a.representative.priority ||
+        a.representative.name.localeCompare(b.representative.name),
+    );
+
+    return grouped
+      .filter((entry) => entry.bestScore >= 2 || entry.bestScore >= 1_000)
+      .slice(0, 2)
+      .map((entry) => entry.representative.name);
   }
 
   private persistSkillsFromResponse(raw: string): { cleaned: string; saved: SavedSkillDraft[] } {
