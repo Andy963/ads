@@ -5,7 +5,10 @@ import { transcribeAudioBuffer } from "../../../../audio/transcription.js";
 
 export async function handleAudioRoutes(
   ctx: ApiRouteContext,
-  deps: { logger: { info?: (msg: string) => void; warn: (msg: string) => void } },
+  deps: {
+    logger: { info?: (msg: string) => void; warn: (msg: string) => void };
+    transcribeAudioBuffer?: typeof transcribeAudioBuffer;
+  },
 ): Promise<boolean> {
   const { req, res, pathname } = ctx;
   if (req.method !== "POST" || pathname !== "/api/audio/transcriptions") {
@@ -34,7 +37,8 @@ export async function handleAudioRoutes(
     return true;
   }
 
-  const result = await transcribeAudioBuffer({ audio, contentType, logger: deps.logger });
+  const transcribe = deps.transcribeAudioBuffer ?? transcribeAudioBuffer;
+  const result = await transcribe({ audio, contentType, logger: deps.logger });
   if (result.ok) {
     sendJson(res, 200, { ok: true, text: result.text });
     return true;

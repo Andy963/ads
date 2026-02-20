@@ -50,7 +50,6 @@ function parseJson(body: string): unknown {
 
 describe("web/server/api/routes/audio", () => {
   const originalEnv = { ...process.env };
-  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
@@ -58,7 +57,6 @@ describe("web/server/api/routes/audio", () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
-    globalThis.fetch = originalFetch;
   });
 
   it("returns false for non-matching routes", async () => {
@@ -96,20 +94,7 @@ describe("web/server/api/routes/audio", () => {
     assert.deepEqual(parseJson(res.body), { error: "音频为空" });
   });
 
-  it("transcribes via Together", async () => {
-    process.env.TOGETHER_API_KEY = "together-test";
-    process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER = "together";
-
-    globalThis.fetch = (async (input: unknown) => {
-      const url = String(input);
-      assert.ok(url.includes("api.together.xyz/v1/audio/transcriptions"));
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ text: "hello" }),
-      } as any;
-    }) as any;
-
+  it("transcribes via injected transcriber", async () => {
     const req = createReq(Buffer.from("abc"));
     const res = createRes();
     const handled = await handleAudioRoutes(
@@ -120,7 +105,10 @@ describe("web/server/api/routes/audio", () => {
         pathname: "/api/audio/transcriptions",
         auth: { userId: "u", username: "t" },
       } as any,
-      { logger: { warn: () => {} } },
+      {
+        logger: { warn: () => {} },
+        transcribeAudioBuffer: async () => ({ ok: true, text: "hello", provider: "skill:test" } as any),
+      },
     );
     assert.equal(handled, true);
     assert.equal(res.statusCode, 200);
@@ -128,26 +116,6 @@ describe("web/server/api/routes/audio", () => {
   });
 
   it("returns 504 when upstream times out", async () => {
-    process.env.TOGETHER_API_KEY = "together-test";
-    process.env.ADS_TOGETHER_AUDIO_TIMEOUT_MS = "1";
-
-    globalThis.fetch = ((_: unknown, init?: { signal?: AbortSignal }) => {
-      const signal = init?.signal;
-      return new Promise((_resolve, reject) => {
-        if (signal?.aborted) {
-          reject(new Error("aborted"));
-          return;
-        }
-        signal?.addEventListener(
-          "abort",
-          () => {
-            reject(new Error("aborted"));
-          },
-          { once: true },
-        );
-      });
-    }) as any;
-
     const req = createReq(Buffer.from("abc"));
     const res = createRes();
     const warnings: string[] = [];
@@ -159,11 +127,14 @@ describe("web/server/api/routes/audio", () => {
         pathname: "/api/audio/transcriptions",
         auth: { userId: "u", username: "t" },
       } as any,
-      { logger: { warn: (msg: string) => warnings.push(msg) } },
+      {
+        logger: { warn: (msg: string) => warnings.push(msg) },
+        transcribeAudioBuffer: async () => ({ ok: false, error: "语音识别超时", errors: ["timeout"], timedOut: true } as any),
+      },
     );
     assert.equal(handled, true);
     assert.equal(res.statusCode, 504);
     assert.deepEqual(parseJson(res.body), { error: "语音识别超时" });
-    assert.ok(warnings.length >= 1);
+    void warnings;
   });
 });

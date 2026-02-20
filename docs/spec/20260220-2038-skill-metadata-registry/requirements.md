@@ -12,8 +12,8 @@ ADS 支持从多个来源发现 skills（项目级 `.agent/skills`、用户级 `
 ## 目标
 
 - 在 skills 目录下新增一个 registry metadata（YAML），默认路径为：
-  - `/home/andy/ads/.ads/.agent/skills/metadata.yaml`
-  - 代码侧应通过 `resolveAdsStateDir()` 计算，避免硬编码路径
+  - `workspaceRoot/.agent/skills/metadata.yaml`
+  - 代码侧应通过 `detectWorkspaceFrom()` / workspaceRoot 推导，避免硬编码路径
 - metadata 支持为 skill 定义：
   - `priority`：用于同功能 skills 的优先级（数值越大越优先）
   - `provides`：用于声明该 skill 提供的功能标签（用于“同功能”归类）
@@ -37,4 +37,3 @@ ADS 支持从多个来源发现 skills（项目级 `.agent/skills`、用户级 `
 - 当两个 skills 都能被 autoload 命中且 `provides` 相同，metadata 中 `priority` 更高的 skill 被选中。
 - 同功能去重生效：同一个 `provides` 下最多选中一个 skill。
 - `npm test` 通过。
-

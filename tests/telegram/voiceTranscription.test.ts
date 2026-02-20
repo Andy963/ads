@@ -8,7 +8,6 @@ import { transcribeTelegramVoiceMessage } from "../../src/telegram/utils/voiceTr
 
 describe("telegram/voiceTranscription", () => {
   const originalEnv = { ...process.env };
-  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
@@ -16,24 +15,9 @@ describe("telegram/voiceTranscription", () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
-    globalThis.fetch = originalFetch;
   });
 
   it("transcribes voice and combines caption", async () => {
-    process.env.TOGETHER_API_KEY = "together-test";
-    process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER = "together";
-
-    globalThis.fetch = (async (_input: unknown, init?: { body?: unknown }) => {
-      const body = init?.body as FormData;
-      assert.ok(body instanceof FormData);
-      assert.equal(body.get("model"), "openai/whisper-large-v3");
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ text: "hello world" }),
-      } as any;
-    }) as any;
-
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-tg-voice-"));
     const audioPath = path.join(tmpDir, "voice.ogg");
     fs.writeFileSync(audioPath, Buffer.from("abc"));
@@ -45,9 +29,9 @@ describe("telegram/voiceTranscription", () => {
       caption: "caption",
       downloadFile: async () => audioPath,
       readFile: async () => Buffer.from("abc"),
+      transcribeAudio: async () => ({ ok: true, text: "hello world" }),
     });
 
     assert.equal(text, "caption\n\nhello world");
   });
 });
-

@@ -1,0 +1,9 @@
+version: 1
+mode: overlay
+skills:
+  groq-whisper-transcribe:
+    provides: [audio.transcribe]
+    priority: 300
+  gemini-transcribe:
+    provides: [audio.transcribe]
+    priority: 200

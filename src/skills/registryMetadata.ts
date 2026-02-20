@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import yaml from "yaml";
@@ -29,12 +30,36 @@ type CachedRegistry = {
 
 let cached: CachedRegistry | null = null;
 
-export function resolveSkillRegistryMetadataPath(): string {
-  return path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml");
+function resolveSkillRegistryMetadataCandidates(workspaceRoot?: string): string[] {
+  const candidates: string[] = [];
+  const explicit = String(process.env.ADS_SKILLS_METADATA_PATH ?? "").trim();
+  if (explicit) {
+    candidates.push(path.resolve(explicit));
+  }
+  if (workspaceRoot) {
+    candidates.push(path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml"));
+  }
+  candidates.push(path.join(os.homedir(), ".agent", "skills", "metadata.yaml"));
+  candidates.push(path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml"));
+  return candidates;
 }
 
-export function loadSkillRegistry(): SkillRegistry | null {
-  const metadataPath = resolveSkillRegistryMetadataPath();
+export function resolveSkillRegistryMetadataPath(workspaceRoot?: string): string {
+  const candidates = resolveSkillRegistryMetadataCandidates(workspaceRoot);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return candidates[0] ?? path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml");
+}
+
+export function loadSkillRegistry(workspaceRoot?: string): SkillRegistry | null {
+  const metadataPath = resolveSkillRegistryMetadataPath(workspaceRoot);
   let stat: fs.Stats;
   try {
     stat = fs.statSync(metadataPath);
@@ -120,4 +145,3 @@ function parseFiniteInt(val: unknown): number | null {
 function isRecord(val: unknown): val is Record<string, unknown> {
   return !!val && typeof val === "object" && !Array.isArray(val);
 }
-

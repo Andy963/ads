@@ -1,7 +1,14 @@
-export type AudioTranscriptionProvider = "together" | "openai";
+import fs from "node:fs";
+import path from "node:path";
+
+import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { discoverSkills } from "../skills/loader.js";
+import { loadSkillRegistry } from "../skills/registryMetadata.js";
+import { runCommand, type CommandRunResult } from "../utils/commandRunner.js";
 
 export type AudioTranscriptionResult =
-  | { ok: true; text: string; provider: AudioTranscriptionProvider }
+  | { ok: true; text: string; provider: string }
   | { ok: false; error: string; errors: string[]; timedOut: boolean };
 
 function normalizeContentType(raw: string | undefined): string {
@@ -22,37 +29,140 @@ function resolveAudioExt(contentType: string): string {
   return "bin";
 }
 
-function resolveProviderPreference(): AudioTranscriptionProvider {
-  const preferProviderRaw = String(process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER ?? "together").trim().toLowerCase();
-  return preferProviderRaw === "openai" ? "openai" : "together";
+function resolveTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.ADS_AUDIO_TRANSCRIPTION_TIMEOUT_MS ?? 120_000);
+  return Number.isFinite(raw) ? Math.max(1000, raw) : 120_000;
 }
 
-function resolveTogetherKey(): string {
-  return String(process.env.TOGETHER_API_KEY ?? "").trim();
+function parseCsv(value: string | undefined): string[] {
+  return String(value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
-function resolveOpenAIKey(): string {
-  return String(process.env.OPENAI_API_KEY ?? process.env.CODEX_API_KEY ?? process.env.CCHAT_OPENAI_API_KEY ?? "").trim();
+function resolveTranscriptionSkillOrder(workspaceRoot: string): string[] {
+  const explicit = parseCsv(process.env.ADS_AUDIO_TRANSCRIPTION_SKILLS);
+  if (explicit.length > 0) {
+    return explicit;
+  }
+
+  const registry = loadSkillRegistry(workspaceRoot);
+  if (registry) {
+    const entries: Array<{ name: string; priority: number }> = [];
+    for (const [name, entry] of registry.skills.entries()) {
+      if (!entry.enabled) continue;
+      const provides = entry.provides.map((p) => p.trim().toLowerCase()).filter(Boolean);
+      if (!provides.includes("audio.transcribe")) continue;
+      entries.push({ name, priority: entry.priority });
+    }
+    entries.sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
+    if (entries.length > 0) {
+      return entries.map((e) => e.name);
+    }
+  }
+
+  return ["groq-whisper-transcribe", "gemini-transcribe", "whisper-transcribe"];
 }
 
-function resolveOpenAIBaseUrl(): string {
-  return String(
-    process.env.OPENAI_BASE_URL ??
-      process.env.OPENAI_API_BASE ??
-      process.env.CODEX_BASE_URL ??
-      "https://api.openai.com/v1",
-  ).trim();
+function resolveTempDir(): string {
+  return path.join(resolveAdsStateDir(), "temp", "audio-transcriptions");
 }
 
-function resolveTimeoutMs(): number {
-  const timeoutMsRaw = Number(process.env.ADS_TOGETHER_AUDIO_TIMEOUT_MS ?? 60_000);
-  return Number.isFinite(timeoutMsRaw) ? Math.max(1000, timeoutMsRaw) : 60_000;
+function writeTempAudioFile(audio: Buffer, ext: string): string {
+  const dir = resolveTempDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const fileName = `audio-${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`;
+  const filePath = path.join(dir, fileName);
+  fs.writeFileSync(filePath, audio);
+  return filePath;
+}
+
+function resolveTranscribeScript(skillLocation: string): { cmd: string; args: string[] } | null {
+  const skillDir = path.dirname(skillLocation);
+  const scriptsDir = path.join(skillDir, "scripts");
+  const py = path.join(scriptsDir, "transcribe.py");
+  if (fs.existsSync(py)) {
+    return { cmd: "python3", args: [py] };
+  }
+  const cjs = path.join(scriptsDir, "transcribe.cjs");
+  if (fs.existsSync(cjs)) {
+    return { cmd: "node", args: [cjs] };
+  }
+  const js = path.join(scriptsDir, "transcribe.js");
+  if (fs.existsSync(js)) {
+    return { cmd: "node", args: [js] };
+  }
+  return null;
+}
+
+async function runTranscriptionSkill(args: {
+  workspaceRoot: string;
+  skillName: string;
+  audioPath: string;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  exec?: (req: {
+    cmd: string;
+    args: string[];
+    cwd: string;
+    timeoutMs: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    allowlist?: string[] | null;
+  }) => Promise<CommandRunResult>;
+}): Promise<{ ok: true; text: string } | { ok: false; error: string; timedOut: boolean }> {
+  const skills = discoverSkills(args.workspaceRoot);
+  const skill = skills.find((s) => s.name.toLowerCase() === args.skillName.toLowerCase()) ?? null;
+  if (!skill) {
+    return { ok: false, error: `skill_not_found:${args.skillName}`, timedOut: false };
+  }
+
+  const script = resolveTranscribeScript(skill.location);
+  if (!script) {
+    return { ok: false, error: `skill_missing_transcribe_script:${args.skillName}`, timedOut: false };
+  }
+
+  const exec = args.exec ?? runCommand;
+  const result = await exec({
+    cmd: script.cmd,
+    args: [...script.args, "--input", args.audioPath],
+    cwd: args.workspaceRoot,
+    timeoutMs: args.timeoutMs,
+    env: process.env,
+    signal: args.signal,
+    allowlist: null,
+  });
+
+  if (result.timedOut) {
+    return { ok: false, error: `timeout:${args.skillName}`, timedOut: true };
+  }
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim() || `exitCode=${result.exitCode}`;
+    return { ok: false, error: `failed:${args.skillName}:${detail}`, timedOut: false };
+  }
+  const text = result.stdout.trim();
+  if (!text) {
+    return { ok: false, error: `empty_output:${args.skillName}`, timedOut: false };
+  }
+  return { ok: true, text };
 }
 
 export async function transcribeAudioBuffer(args: {
   audio: Buffer;
   contentType?: string;
   logger?: { info?: (msg: string) => void; warn?: (msg: string) => void };
+  workspaceRoot?: string;
+  signal?: AbortSignal;
+  exec?: (req: {
+    cmd: string;
+    args: string[];
+    cwd: string;
+    timeoutMs: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    allowlist?: string[] | null;
+  }) => Promise<CommandRunResult>;
 }): Promise<AudioTranscriptionResult> {
   const startedAt = Date.now();
   const audio = args.audio;
@@ -60,136 +170,72 @@ export async function transcribeAudioBuffer(args: {
     return { ok: false, error: "音频为空", errors: ["audio: empty"], timedOut: false };
   }
 
-  const preferProvider = resolveProviderPreference();
-  const togetherKey = resolveTogetherKey();
-  const openaiKey = resolveOpenAIKey();
-  const openaiBaseUrl = resolveOpenAIBaseUrl();
+  const workspaceRoot = detectWorkspaceFrom(args.workspaceRoot ?? process.cwd());
   const contentType = normalizeContentType(args.contentType);
-  const audioBytes = audio.length;
   const ext = resolveAudioExt(contentType);
-  const audioArrayBuffer = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
+  const audioPath = writeTempAudioFile(audio, ext);
 
-  const createForm = (model: string): FormData => {
-    const form = new FormData();
-    form.append("model", model);
-    form.append("file", new Blob([audioArrayBuffer], { type: contentType }), `recording.${ext}`);
-    return form;
-  };
-
-  const parseJsonText = (raw: string): unknown => {
-    try {
-      return raw ? (JSON.parse(raw) as unknown) : null;
-    } catch {
-      return null;
-    }
-  };
-
-  const extractErrorMessage = (parsed: unknown, raw: string, status: number): string => {
-    const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-    const nestedError = record?.error && typeof record.error === "object" ? (record.error as Record<string, unknown>) : null;
-    return String(nestedError?.message ?? record?.message ?? record?.error ?? raw ?? "").trim() || `Upstream error (${status})`;
-  };
-
-  const extractText = (parsed: unknown): string => {
-    const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-    return (
-      (typeof record?.text === "string" ? record.text : "") ||
-      (typeof record?.transcript === "string" ? record.transcript : "") ||
-      (typeof record?.transcription === "string" ? record.transcription : "")
-    );
-  };
-
-  const controller = new AbortController();
   const timeoutMs = resolveTimeoutMs();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const skills = resolveTranscriptionSkillOrder(workspaceRoot);
+  const errors: string[] = [];
+  let sawTimeout = false;
 
   try {
-    const callTogether = async (): Promise<string> => {
-      if (!togetherKey) {
-        throw new Error("未配置 TOGETHER_API_KEY");
-      }
-      const upstream = await fetch("https://api.together.xyz/v1/audio/transcriptions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${togetherKey}` },
-        body: createForm("openai/whisper-large-v3"),
-        signal: controller.signal,
-      });
-      const raw = await upstream.text().catch(() => "");
-      const parsed = parseJsonText(raw);
-      if (!upstream.ok) {
-        throw new Error(extractErrorMessage(parsed, raw, upstream.status));
-      }
-      return extractText(parsed);
-    };
-
-    const callOpenAI = async (): Promise<string> => {
-      if (!openaiKey) {
-        throw new Error("未配置 OPENAI_API_KEY");
-      }
-      const base = (openaiBaseUrl ? openaiBaseUrl : "https://api.openai.com/v1").replace(/\/+$/g, "");
-      const upstream = await fetch(`${base}/audio/transcriptions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${openaiKey}` },
-        body: createForm("whisper-1"),
-        signal: controller.signal,
-      });
-      const raw = await upstream.text().catch(() => "");
-      const parsed = parseJsonText(raw);
-      if (!upstream.ok) {
-        throw new Error(extractErrorMessage(parsed, raw, upstream.status));
-      }
-      return extractText(parsed);
-    };
-
-    const attempts =
-      preferProvider === "openai"
-        ? [
-            { name: "openai" as const, fn: callOpenAI },
-            { name: "together" as const, fn: callTogether },
-          ]
-        : [
-            { name: "together" as const, fn: callTogether },
-            { name: "openai" as const, fn: callOpenAI },
-          ];
-
-    const errors: string[] = [];
-    for (const attempt of attempts) {
+    for (const skillName of skills) {
       try {
-        const text = (await attempt.fn()).trim();
-        if (!text) {
-          throw new Error("未识别到文本");
+        const res = await runTranscriptionSkill({
+          workspaceRoot,
+          skillName,
+          audioPath,
+          timeoutMs,
+          signal: args.signal,
+          exec: args.exec,
+        });
+        if (res.ok) {
+          args.logger?.info?.(
+            `[Audio] transcription ok provider=skill:${skillName} duration_ms=${Date.now() - startedAt} bytes=${audio.length} content_type=${contentType}`,
+          );
+          return { ok: true, text: res.text, provider: `skill:${skillName}` };
         }
-        args.logger?.info?.(
-          `[Audio] transcription ok provider=${attempt.name} duration_ms=${Date.now() - startedAt} bytes=${audioBytes} content_type=${contentType}`,
-        );
-        return { ok: true, text, provider: attempt.name };
+        errors.push(res.error);
+        sawTimeout = sawTimeout || res.timedOut;
+        args.logger?.warn?.(`[Audio] transcription via skill:${skillName} failed: ${res.error}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${attempt.name}: ${message || "unknown error"}`);
-        args.logger?.warn?.(`[Audio] transcription via ${attempt.name} failed: ${message}`);
-        if (controller.signal.aborted) {
-          break;
-        }
+        errors.push(`${skillName}: ${message || "unknown error"}`);
+        args.logger?.warn?.(`[Audio] transcription via skill:${skillName} crashed: ${message}`);
       }
     }
 
-    if (controller.signal.aborted) {
-      args.logger?.warn?.(
-        `[Audio] transcription timeout duration_ms=${Date.now() - startedAt} bytes=${audioBytes} content_type=${contentType} prefer_provider=${preferProvider}`,
-      );
+    if (sawTimeout) {
       return { ok: false, error: "语音识别超时", errors, timedOut: true };
     }
-
-    args.logger?.warn?.(
-      `[Audio] transcription failed duration_ms=${Date.now() - startedAt} bytes=${audioBytes} content_type=${contentType} prefer_provider=${preferProvider}`,
-    );
     return { ok: false, error: errors[0] ?? "语音识别失败", errors, timedOut: false };
-  } catch (error) {
-    const aborted = controller.signal.aborted;
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, error: aborted ? "语音识别超时" : message, errors: [message], timedOut: aborted };
   } finally {
-    clearTimeout(timeout);
+    try {
+      fs.rmSync(audioPath, { force: true });
+    } catch {
+      // ignore
+    }
+    // Best-effort cleanup of old temp files.
+    try {
+      const dir = resolveTempDir();
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const now = Date.now();
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const full = path.join(dir, entry.name);
+        try {
+          const stat = fs.statSync(full);
+          if (now - stat.mtimeMs > 3 * 24 * 60 * 60 * 1000) {
+            fs.rmSync(full, { force: true });
+          }
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore
+    }
   }
 }
-

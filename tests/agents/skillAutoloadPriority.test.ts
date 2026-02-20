@@ -8,7 +8,6 @@ import type { Input } from "../../src/agents/protocol/types.js";
 import type { AgentEvent } from "../../src/codex/events.js";
 import type { AgentAdapter, AgentRunResult, AgentSendOptions } from "../../src/agents/types.js";
 import { HybridOrchestrator } from "../../src/agents/orchestrator.js";
-import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 class FakeSystemPromptManager {
   requestedSkills: string[] = [];
@@ -60,7 +59,6 @@ class DummyAdapter implements AgentAdapter {
   }
 }
 
-let adsState: TempAdsStateDir;
 let workspaceRoot: string;
 
 function writeSkill(root: string, name: string, description: string): void {
@@ -71,20 +69,18 @@ function writeSkill(root: string, name: string, description: string): void {
   fs.writeFileSync(skillFile, content, "utf8");
 }
 
-function writeRegistryMetadata(stateDir: string, yamlBody: string): void {
-  const dir = path.join(stateDir, ".agent", "skills");
+function writeRegistryMetadata(workspaceRoot: string, yamlBody: string): void {
+  const dir = path.join(workspaceRoot, ".agent", "skills");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "metadata.yaml"), yamlBody, "utf8");
 }
 
 describe("skills autoload priority registry", () => {
   beforeEach(() => {
-    adsState = installTempAdsStateDir("ads-state-skill-registry-");
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-workspace-"));
   });
 
   afterEach(() => {
-    adsState.restore();
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
@@ -92,7 +88,7 @@ describe("skills autoload priority registry", () => {
     writeSkill(workspaceRoot, "demo-skill-a", "priodemoalpha priodemobeta priodemogamma");
     writeSkill(workspaceRoot, "demo-skill-b", "priodemoalpha priodemobeta");
 
-    writeRegistryMetadata(adsState.stateDir, [
+    writeRegistryMetadata(workspaceRoot, [
       "version: 1",
       "mode: overlay",
       "skills:",

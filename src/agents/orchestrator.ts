@@ -179,7 +179,7 @@ export class HybridOrchestrator {
       return [];
     }
 
-    const registry = loadSkillRegistry();
+    const registry = loadSkillRegistry(workspaceRoot);
 
     const text = extractInputText(input);
     const lowered = text.trim().toLowerCase();

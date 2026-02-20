@@ -1,65 +1,139 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { transcribeAudioBuffer } from "../../src/audio/transcription.js";
 
-describe("audio/transcription", () => {
+function writeSkill(workspaceRoot: string, name: string): void {
+  const dir = path.join(workspaceRoot, ".agent", "skills", name);
+  fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "SKILL.md"),
+    ["---", `name: ${name}`, "description: \"test\"", "---", "", "# Test", ""].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(dir, "scripts", "transcribe.py"), "#!/usr/bin/env python3\nprint('noop')\n", "utf8");
+}
+
+function writeRegistry(workspaceRoot: string, yamlBody: string): void {
+  const dir = path.join(workspaceRoot, ".agent", "skills");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "metadata.yaml"), yamlBody, "utf8");
+}
+
+describe("audio/transcription (skill-based)", () => {
   const originalEnv = { ...process.env };
-  const originalFetch = globalThis.fetch;
+  let workspaceRoot: string;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-audio-transcription-"));
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
-    globalThis.fetch = originalFetch;
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
-  it("uses Together whisper-large-v3 when preferred", async () => {
-    process.env.TOGETHER_API_KEY = "together-test";
-    process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER = "together";
+  it("picks the highest priority transcription skill", async () => {
+    writeSkill(workspaceRoot, "skill-a");
+    writeSkill(workspaceRoot, "skill-b");
 
-    globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
-      const url = String(input);
-      assert.ok(url.includes("api.together.xyz/v1/audio/transcriptions"));
-      const body = init?.body as FormData;
-      assert.ok(body instanceof FormData);
-      assert.equal(body.get("model"), "openai/whisper-large-v3");
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ text: "hello" }),
-      } as any;
-    }) as any;
+    writeRegistry(workspaceRoot, [
+      "version: 1",
+      "mode: overlay",
+      "skills:",
+      "  skill-a:",
+      "    provides: [audio.transcribe]",
+      "    priority: 100",
+      "  skill-b:",
+      "    provides: [audio.transcribe]",
+      "    priority: 1",
+      "",
+    ].join("\n"));
 
-    const result = await transcribeAudioBuffer({ audio: Buffer.from("abc"), contentType: "audio/ogg" });
-    assert.deepEqual(result, { ok: true, text: "hello", provider: "together" });
+    const result = await transcribeAudioBuffer({
+      workspaceRoot,
+      audio: Buffer.from("abc"),
+      contentType: "audio/ogg",
+      exec: async ({ args }) => {
+        const scriptPath = args[0] ?? "";
+        if (scriptPath.includes(`${path.sep}skill-a${path.sep}`)) {
+          return {
+            commandLine: "python3 transcribe.py",
+            exitCode: 0,
+            signal: null,
+            elapsedMs: 1,
+            timedOut: false,
+            stdout: "hello",
+            stderr: "",
+            truncatedStdout: false,
+            truncatedStderr: false,
+          };
+        }
+        throw new Error(`unexpected call: ${scriptPath}`);
+      },
+    });
+
+    assert.deepEqual(result, { ok: true, text: "hello", provider: "skill:skill-a" });
   });
 
-  it("falls back from OpenAI to Together when OpenAI key is missing", async () => {
-    process.env.TOGETHER_API_KEY = "together-test";
-    process.env.ADS_AUDIO_TRANSCRIPTION_PROVIDER = "openai";
+  it("falls back to the next skill when the first one fails", async () => {
+    writeSkill(workspaceRoot, "skill-a");
+    writeSkill(workspaceRoot, "skill-b");
 
-    let calls = 0;
-    globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
-      const url = String(input);
-      calls += 1;
-      assert.ok(url.includes("api.together.xyz/v1/audio/transcriptions"));
-      const body = init?.body as FormData;
-      assert.ok(body instanceof FormData);
-      assert.equal(body.get("model"), "openai/whisper-large-v3");
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ text: "ok" }),
-      } as any;
-    }) as any;
+    writeRegistry(workspaceRoot, [
+      "version: 1",
+      "mode: overlay",
+      "skills:",
+      "  skill-a:",
+      "    provides: [audio.transcribe]",
+      "    priority: 100",
+      "  skill-b:",
+      "    provides: [audio.transcribe]",
+      "    priority: 10",
+      "",
+    ].join("\n"));
 
-    const result = await transcribeAudioBuffer({ audio: Buffer.from("abc"), contentType: "audio/ogg" });
-    assert.equal(calls, 1);
-    assert.equal(result.ok, true);
-    assert.equal(result.ok && result.provider, "together");
-    assert.equal(result.ok && result.text, "ok");
+    const result = await transcribeAudioBuffer({
+      workspaceRoot,
+      audio: Buffer.from("abc"),
+      contentType: "audio/ogg",
+      exec: async ({ args }) => {
+        const scriptPath = args[0] ?? "";
+        if (scriptPath.includes(`${path.sep}skill-a${path.sep}`)) {
+          return {
+            commandLine: "python3 transcribe.py",
+            exitCode: 2,
+            signal: null,
+            elapsedMs: 1,
+            timedOut: false,
+            stdout: "",
+            stderr: "error: failed",
+            truncatedStdout: false,
+            truncatedStderr: false,
+          };
+        }
+        if (scriptPath.includes(`${path.sep}skill-b${path.sep}`)) {
+          return {
+            commandLine: "python3 transcribe.py",
+            exitCode: 0,
+            signal: null,
+            elapsedMs: 1,
+            timedOut: false,
+            stdout: "ok",
+            stderr: "",
+            truncatedStdout: false,
+            truncatedStderr: false,
+          };
+        }
+        throw new Error(`unexpected call: ${scriptPath}`);
+      },
+    });
+
+    assert.deepEqual(result, { ok: true, text: "ok", provider: "skill:skill-b" });
   });
 });
+

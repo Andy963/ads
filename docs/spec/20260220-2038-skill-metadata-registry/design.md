@@ -4,7 +4,7 @@
 
 采用 YAML，文件路径：
 
-- `resolveAdsStateDir()/.agent/skills/metadata.yaml`
+- `workspaceRoot/.agent/skills/metadata.yaml`
 
 Schema（v1）：
 
@@ -51,4 +51,3 @@ skills:
 
 - metadata 文件不存在：按当前行为执行（不影响现有系统）。
 - YAML 解析失败或字段非法：忽略 metadata，按当前行为执行。
-

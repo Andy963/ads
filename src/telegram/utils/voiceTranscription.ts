@@ -22,6 +22,7 @@ export async function transcribeTelegramVoiceMessage(args: {
   signal?: AbortSignal;
   downloadFile?: (api: Api, fileId: string, fileName: string, signal?: AbortSignal) => Promise<string>;
   readFile?: (filePath: string) => Promise<Buffer>;
+  transcribeAudio?: (args: { audio: Buffer; contentType?: string }) => Promise<{ ok: boolean; text?: string; error?: string }>;
   logger?: { warn?: (msg: string) => void };
 }): Promise<string> {
   const fileName = resolveVoiceFilename(args.mimeType);
@@ -31,11 +32,14 @@ export async function transcribeTelegramVoiceMessage(args: {
   const filePath = await downloadFile(args.api, args.fileId, fileName, args.signal);
   try {
     const audio = await readFile(filePath);
-    const result = await transcribeAudioBuffer({ audio, contentType: args.mimeType });
+    const transcribeAudio = args.transcribeAudio ?? (async ({ audio, contentType }) =>
+      await transcribeAudioBuffer({ audio, contentType, signal: args.signal })
+    );
+    const result = await transcribeAudio({ audio, contentType: args.mimeType });
     if (!result.ok) {
       throw new Error(result.error || "语音识别失败");
     }
-    const transcript = result.text.trim();
+    const transcript = String(result.text ?? "").trim();
     if (!transcript) {
       throw new Error("未识别到文本");
     }
@@ -50,4 +54,3 @@ export async function transcribeTelegramVoiceMessage(args: {
     }
   }
 }
-
