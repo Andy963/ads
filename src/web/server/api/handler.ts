@@ -17,6 +17,10 @@ import { handleAttachmentRoutes } from "./routes/attachments.js";
 import { handleTaskRoutes } from "./routes/tasks.js";
 import { handleTaskBundleDraftRoutes } from "./routes/taskBundleDrafts.js";
 import { handlePreferenceRoutes } from "./routes/preferences.js";
+import { handleScheduleRoutes } from "./routes/schedules.js";
+
+import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
+import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
 
 export function createApiRequestHandler(deps: {
   logger: Logger;
@@ -26,10 +30,13 @@ export function createApiRequestHandler(deps: {
   sessionTtlSeconds: number;
   sessionPepper: string;
   taskQueueAvailable: boolean;
+  resolveTaskWorkspaceRoot: (url: URL) => string;
   resolveTaskContext: (url: URL) => TaskQueueContext;
   promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
   scheduleWorkspacePurge?: (ctx: TaskQueueContext) => void;
+  scheduleCompiler: ScheduleCompiler;
+  scheduler: SchedulerRuntime;
 }): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
   const buildAttachmentRawUrl = (url: URL, attachmentId: string): string => {
     const workspaceParam = url.searchParams.get("workspace");
@@ -80,6 +87,7 @@ export function createApiRequestHandler(deps: {
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handlePreferenceRoutes(routeCtx, { workspaceRoot: deps.workspaceRoot })) return true;
     if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;
+    if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
     if (await handleModelRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
     if (
       await handleTaskQueueRoutes(routeCtx, {

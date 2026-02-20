@@ -371,6 +371,57 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 12,
+    description: "Scheduler - schedules and schedule_runs",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schedules (
+          id TEXT PRIMARY KEY,
+          instruction TEXT NOT NULL,
+          spec_json TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          next_run_at INTEGER,
+          lease_owner TEXT,
+          lease_until INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_schedules_due
+          ON schedules(enabled, next_run_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_schedules_lease_until
+          ON schedules(lease_until, id);
+
+        CREATE TABLE IF NOT EXISTS schedule_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          schedule_id TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          run_at INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          task_id TEXT,
+          result TEXT,
+          error TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_runs_external_id
+          ON schedule_runs(external_id);
+
+        CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule_id_run_at
+          ON schedule_runs(schedule_id, run_at DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_schedule_runs_status_run_at
+          ON schedule_runs(status, run_at DESC, id DESC);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 2,

@@ -26,6 +26,8 @@ import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, re
 import { runAdsCommandLine } from "../commandRouter.js";
 import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions.js";
 import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegramNotifier.js";
+import { AgentScheduleCompiler } from "../../scheduler/compiler.js";
+import { SchedulerRuntime } from "../../scheduler/runtime.js";
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
@@ -247,6 +249,11 @@ export async function startWebServer(): Promise<void> {
 
   const purgeScheduler = new WorkspacePurgeScheduler({ logger });
 
+  const scheduleCompiler = new AgentScheduleCompiler();
+  const scheduler = new SchedulerRuntime();
+  scheduler.registerWorkspace(workspaceRoot);
+  scheduler.start();
+
   const agentAvailability = new CliAgentAvailability();
   const broadcastAgentsSnapshot = (): void => {
     for (const [ws, meta] of clientMetaByWs.entries()) {
@@ -294,10 +301,13 @@ export async function startWebServer(): Promise<void> {
     sessionTtlSeconds,
     sessionPepper,
     taskQueueAvailable,
+    resolveTaskWorkspaceRoot: taskQueueManager.resolveTaskWorkspaceRoot,
     resolveTaskContext: taskQueueManager.resolveTaskContext,
     promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
     broadcastToSession,
     scheduleWorkspacePurge: (ctx) => purgeScheduler.schedule(ctx),
+    scheduleCompiler,
+    scheduler,
   });
 
   const server = createHttpServer({ handleApiRequest: apiHandler });
