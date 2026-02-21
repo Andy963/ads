@@ -405,6 +405,208 @@ describe("web/api/task-bundle-drafts", () => {
     assert.equal(promoteCalled, 0, "already approved drafts should not re-run queue side effects");
   });
 
+  it("approves drafts without acquiring the workspace lock", async () => {
+    const auth = { userId: "u-1", username: "u" };
+    const workspaceRoot = "/tmp/ws-lock-free";
+
+    const inserted = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk",
+      bundle: { version: 1, requestId: "r-lock", tasks: [{ prompt: "p1" }] },
+      now: 10,
+    });
+
+    const tasksById = new Map<string, any>();
+
+    const deps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} },
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext(url: URL) {
+        const w = url.searchParams.get("workspace") || "";
+        return {
+          workspaceRoot: w,
+          sessionId: "default",
+          lock: { runExclusive: async () => Promise.reject(new Error("lock should not be used")) },
+          taskStore: {
+            createTask(input: { id: string; prompt: string; title?: string }, now: number, opts: { status: string }) {
+              const task = {
+                id: input.id,
+                title: input.title ?? "",
+                prompt: input.prompt,
+                model: "auto",
+                status: opts.status,
+                priority: 0,
+                queueOrder: 0,
+                inheritContext: true,
+                retryCount: 0,
+                maxRetries: 0,
+                createdAt: now,
+              };
+              tasksById.set(task.id, task);
+              return task;
+            },
+            getTask(id: string) {
+              return tasksById.get(id) ?? null;
+            },
+            deleteTask(id: string) {
+              tasksById.delete(id);
+            },
+          },
+          attachmentStore: {
+            assignAttachmentsToTask() {},
+            listAttachmentsForTask() {
+              return [];
+            },
+          },
+          taskQueue: { resume: () => {} },
+          queueRunning: false,
+          dequeueInProgress: false,
+          metrics: createMetrics(),
+          runController: { setModeAll: () => {} },
+          getStatusOrchestrator() {
+            return {} as any;
+          },
+          getTaskQueueOrchestrator() {
+            return {} as any;
+          },
+        };
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const approveReq = createReq("POST", { runQueue: false });
+    const approveRes = createRes();
+    const approveUrl = new URL(`http://localhost/api/task-bundle-drafts/${inserted.id}/approve?workspace=${encodeURIComponent(workspaceRoot)}`);
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: approveReq as any, res: approveRes as any, url: approveUrl, pathname: `/api/task-bundle-drafts/${inserted.id}/approve`, auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(approveRes.statusCode, 200);
+    const payload = parseJson<{ success: boolean; createdTaskIds: string[] }>(approveRes.body);
+    assert.equal(payload.success, true);
+    assert.equal(payload.createdTaskIds.length, 1);
+    assert.equal(tasksById.size, 1);
+  });
+
+  it("returns 200 when approval loses the race and draft is already approved", async () => {
+    const auth = { userId: "u-1", username: "u" };
+    const workspaceRoot = "/tmp/ws-approve-race";
+
+    const inserted = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk",
+      bundle: { version: 1, requestId: "r-race", tasks: [{ prompt: "p1" }] },
+      now: 10,
+    });
+
+    const tasksById = new Map<string, any>();
+    let preApproved = false;
+    let resumeCalled = 0;
+    let setModeCalled = 0;
+    let promoteCalled = 0;
+
+    const deps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} },
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext(url: URL) {
+        const w = url.searchParams.get("workspace") || "";
+        return {
+          workspaceRoot: w,
+          sessionId: "default",
+          lock: { runExclusive: async () => Promise.reject(new Error("lock should not be used")) },
+          taskStore: {
+            createTask(input: { id: string; prompt: string; title?: string }, now: number, opts: { status: string }) {
+              if (!preApproved) {
+                preApproved = true;
+                approveTaskBundleDraft({ authUserId: auth.userId, draftId: inserted.id, approvedTaskIds: [input.id], now });
+              }
+              const task = {
+                id: input.id,
+                title: input.title ?? "",
+                prompt: input.prompt,
+                model: "auto",
+                status: opts.status,
+                priority: 0,
+                queueOrder: 0,
+                inheritContext: true,
+                retryCount: 0,
+                maxRetries: 0,
+                createdAt: now,
+              };
+              tasksById.set(task.id, task);
+              return task;
+            },
+            getTask(id: string) {
+              return tasksById.get(id) ?? null;
+            },
+            deleteTask(id: string) {
+              tasksById.delete(id);
+            },
+          },
+          attachmentStore: {
+            assignAttachmentsToTask() {},
+            listAttachmentsForTask() {
+              return [];
+            },
+          },
+          taskQueue: { resume: () => void (resumeCalled += 1) },
+          queueRunning: false,
+          dequeueInProgress: false,
+          metrics: createMetrics(),
+          runController: { setModeAll: () => void (setModeCalled += 1) },
+          getStatusOrchestrator() {
+            return {} as any;
+          },
+          getTaskQueueOrchestrator() {
+            return {} as any;
+          },
+        };
+      },
+      promoteQueuedTasksToPending() {
+        promoteCalled += 1;
+      },
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const approveReq = createReq("POST", { runQueue: true });
+    const approveRes = createRes();
+    const approveUrl = new URL(`http://localhost/api/task-bundle-drafts/${inserted.id}/approve?workspace=${encodeURIComponent(workspaceRoot)}`);
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: approveReq as any, res: approveRes as any, url: approveUrl, pathname: `/api/task-bundle-drafts/${inserted.id}/approve`, auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(approveRes.statusCode, 200);
+    const payload = parseJson<{ success: boolean; createdTaskIds: string[]; draft: { status: string; approvedTaskIds: string[] } }>(approveRes.body);
+    assert.equal(payload.success, true);
+    assert.equal(payload.draft.status, "approved");
+    assert.deepEqual(payload.createdTaskIds, payload.draft.approvedTaskIds);
+    assert.equal(tasksById.size, 1);
+    assert.equal(setModeCalled, 0, "race-loser should not trigger queue side effects");
+    assert.equal(resumeCalled, 0, "race-loser should not trigger queue side effects");
+    assert.equal(promoteCalled, 0, "race-loser should not trigger queue side effects");
+  });
+
   it("does not downgrade approved drafts on upsert by requestId", () => {
     const authUserId = "u-1";
     const workspaceRoot = "/tmp/ws-3";

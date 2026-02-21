@@ -197,84 +197,97 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
     const now = Date.now();
     const bundle: TaskBundle = existing.bundle;
     const createdTaskIds: string[] = [];
+    let approvedDraft = existing;
+    let ownedApproval = false;
 
     try {
-      await taskCtx.lock.runExclusive(async () => {
-        for (let i = 0; i < bundle.tasks.length; i++) {
-          const specTask = bundle.tasks[i]!;
-          const input = normalizeCreateTaskInput(draftId, specTask, i);
-          const attachmentIds = (input.attachments ?? []).slice();
-          const { attachments: _attachments, ...createInput } = input;
+      for (let i = 0; i < bundle.tasks.length; i++) {
+        const specTask = bundle.tasks[i]!;
+        const input = normalizeCreateTaskInput(draftId, specTask, i);
+        const attachmentIds = (input.attachments ?? []).slice();
+        const { attachments: _attachments, ...createInput } = input;
 
-          let created;
-          try {
-            created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            const existingTask = taskCtx.taskStore.getTask(input.id);
-            if (existingTask) {
-              created = existingTask;
-            } else {
-              throw new Error(`Create task failed (idx=${i + 1}): ${message}`);
-            }
+        let created;
+        try {
+          created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const existingTask = taskCtx.taskStore.getTask(input.id);
+          if (existingTask) {
+            created = existingTask;
+          } else {
+            throw new Error(`Create task failed (idx=${i + 1}): ${message}`);
           }
+        }
 
-          if (attachmentIds.length > 0) {
+        if (attachmentIds.length > 0) {
+          try {
+            taskCtx.attachmentStore.assignAttachmentsToTask(created.id, attachmentIds);
+          } catch (error) {
             try {
-              taskCtx.attachmentStore.assignAttachmentsToTask(created.id, attachmentIds);
-            } catch (error) {
-              try {
-                taskCtx.taskStore.deleteTask(created.id);
-              } catch {
-                // ignore
-              }
-              const message = error instanceof Error ? error.message : String(error);
-              throw new Error(`Assign attachments failed (idx=${i + 1}): ${message}`);
+              taskCtx.taskStore.deleteTask(created.id);
+            } catch {
+              // ignore
             }
-          }
-
-          const attachments = taskCtx.attachmentStore.listAttachmentsForTask(created.id).map((a) => ({
-            id: a.id,
-            url: deps.buildAttachmentRawUrl(url, a.id),
-            sha256: a.sha256,
-            width: a.width,
-            height: a.height,
-            contentType: a.contentType,
-            sizeBytes: a.sizeBytes,
-            filename: a.filename,
-          }));
-
-          recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "planner_draft" });
-          deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: { ...created, attachments }, ts: now });
-          createdTaskIds.push(created.id);
-
-          try {
-            upsertTaskNotificationBinding({
-              authUserId,
-              workspaceRoot: taskCtx.workspaceRoot,
-              taskId: created.id,
-              taskTitle: created.title,
-              now,
-              logger: deps.logger,
-            });
-          } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${created.id} err=${message}`);
+            throw new Error(`Assign attachments failed (idx=${i + 1}): ${message}`);
           }
         }
 
-        const approved = approveTaskBundleDraft({ authUserId, draftId, approvedTaskIds: createdTaskIds, now });
-        if (!approved) {
-          throw new Error("Failed to mark draft as approved");
-        }
+        const attachments = taskCtx.attachmentStore.listAttachmentsForTask(created.id).map((a) => ({
+          id: a.id,
+          url: deps.buildAttachmentRawUrl(url, a.id),
+          sha256: a.sha256,
+          width: a.width,
+          height: a.height,
+          contentType: a.contentType,
+          sizeBytes: a.sizeBytes,
+          filename: a.filename,
+        }));
 
-        if (runQueue) {
-          taskCtx.runController.setModeAll();
-          taskCtx.taskQueue.resume();
-          taskCtx.queueRunning = true;
-          deps.promoteQueuedTasksToPending(taskCtx);
+        recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "planner_draft" });
+        deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: { ...created, attachments }, ts: now });
+        createdTaskIds.push(created.id);
+
+        try {
+          upsertTaskNotificationBinding({
+            authUserId,
+            workspaceRoot: taskCtx.workspaceRoot,
+            taskId: created.id,
+            taskTitle: created.title,
+            now,
+            logger: deps.logger,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${created.id} err=${message}`);
         }
-      });
+      }
+
+      const approved = approveTaskBundleDraft({ authUserId, draftId, approvedTaskIds: createdTaskIds, now });
+      if (approved) {
+        approvedDraft = approved;
+        ownedApproval = true;
+      } else {
+        const raced = getTaskBundleDraft({ authUserId, draftId });
+        if (!raced) {
+          sendJson(res, 404, { error: "Not Found" });
+          return true;
+        }
+        if (raced.status !== "approved") {
+          sendJson(res, 409, { error: `Draft not approvable in status: ${raced.status}` });
+          return true;
+        }
+        approvedDraft = raced;
+        ownedApproval = false;
+      }
+
+      if (ownedApproval && runQueue) {
+        taskCtx.runController.setModeAll();
+        taskCtx.taskQueue.resume();
+        taskCtx.queueRunning = true;
+        deps.promoteQueuedTasksToPending(taskCtx);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       try {
@@ -286,8 +299,7 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       return true;
     }
 
-    const updated = getTaskBundleDraft({ authUserId, draftId });
-    sendJson(res, 200, { success: true, createdTaskIds, draft: updated });
+    sendJson(res, 200, { success: true, createdTaskIds: approvedDraft.approvedTaskIds, draft: approvedDraft });
     return true;
   }
 
