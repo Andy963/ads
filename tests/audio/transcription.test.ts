@@ -6,8 +6,8 @@ import path from "node:path";
 
 import { transcribeAudioBuffer } from "../../src/audio/transcription.js";
 
-function writeSkill(workspaceRoot: string, name: string): void {
-  const dir = path.join(workspaceRoot, ".agent", "skills", name);
+function writeSkill(adsStateDir: string, name: string): void {
+  const dir = path.join(adsStateDir, ".agent", "skills", name);
   fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
   fs.writeFileSync(
     path.join(dir, "SKILL.md"),
@@ -17,8 +17,8 @@ function writeSkill(workspaceRoot: string, name: string): void {
   fs.writeFileSync(path.join(dir, "scripts", "transcribe.py"), "#!/usr/bin/env python3\nprint('noop')\n", "utf8");
 }
 
-function writeRegistry(workspaceRoot: string, yamlBody: string): void {
-  const dir = path.join(workspaceRoot, ".agent", "skills");
+function writeRegistry(adsStateDir: string, yamlBody: string): void {
+  const dir = path.join(adsStateDir, ".agent", "skills");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "metadata.yaml"), yamlBody, "utf8");
 }
@@ -26,22 +26,27 @@ function writeRegistry(workspaceRoot: string, yamlBody: string): void {
 describe("audio/transcription (skill-based)", () => {
   const originalEnv = { ...process.env };
   let workspaceRoot: string;
+  let adsStateDir: string;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-audio-transcription-"));
+    adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-audio-transcription-state-"));
+    process.env.ADS_STATE_DIR = adsStateDir;
+    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    fs.rmSync(adsStateDir, { recursive: true, force: true });
   });
 
   it("picks the highest priority transcription skill", async () => {
-    writeSkill(workspaceRoot, "skill-a");
-    writeSkill(workspaceRoot, "skill-b");
+    writeSkill(adsStateDir, "skill-a");
+    writeSkill(adsStateDir, "skill-b");
 
-    writeRegistry(workspaceRoot, [
+    writeRegistry(adsStateDir, [
       "version: 1",
       "mode: overlay",
       "skills:",
@@ -81,10 +86,10 @@ describe("audio/transcription (skill-based)", () => {
   });
 
   it("falls back to the next skill when the first one fails", async () => {
-    writeSkill(workspaceRoot, "skill-a");
-    writeSkill(workspaceRoot, "skill-b");
+    writeSkill(adsStateDir, "skill-a");
+    writeSkill(adsStateDir, "skill-b");
 
-    writeRegistry(workspaceRoot, [
+    writeRegistry(adsStateDir, [
       "version: 1",
       "mode: overlay",
       "skills:",
@@ -136,4 +141,3 @@ describe("audio/transcription (skill-based)", () => {
     assert.deepEqual(result, { ok: true, text: "ok", provider: "skill:skill-b" });
   });
 });
-

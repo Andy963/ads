@@ -4,7 +4,8 @@
 
 采用 YAML，文件路径：
 
-- `workspaceRoot/.agent/skills/metadata.yaml`
+- `$ADS_STATE_DIR/.agent/skills/metadata.yaml`（默认 `.ads/.agent/skills/metadata.yaml`）
+- 当启用 `ADS_ENABLE_WORKSPACE_SKILLS=1` 时，也允许 `workspaceRoot/.agent/skills/metadata.yaml`
 
 Schema（v1）：
 

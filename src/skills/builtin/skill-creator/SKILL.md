@@ -13,10 +13,11 @@ Skills are modular, self-contained folders that extend agent capabilities by pro
 
 ### Skill Location Policy
 
-1. Project-local: `$workspace/.agent/skills/<skill-name>`
-2. Global: `~/.agent/skills/<skill-name>` (shared across workspaces)
+1. ADS state store (shared across workspaces): `$ADS_STATE_DIR/.agent/skills/<skill-name>` (default: `.ads/.agent/skills`)
+2. Project-local (workspace): `$workspace/.agent/skills/<skill-name>` (disabled by default; enable via `ADS_ENABLE_WORKSPACE_SKILLS=1`)
+3. Global: `~/.agent/skills/<skill-name>` (shared across workspaces)
 
-Prefer project-local by default. Use global only when the user explicitly wants the skill available across multiple workspaces.
+Prefer the ADS state store by default. Use project-local only when you intentionally want workspace-scoped skills and have enabled workspace skill loading.
 
 ### Anatomy of a Skill
 
@@ -72,8 +73,8 @@ npx tsx scripts/init-skill.ts <skill-name> --path <output-directory> [--resource
 Examples:
 
 ```bash
-npx tsx scripts/init-skill.ts my-skill --path $workspace/.agent/skills
-npx tsx scripts/init-skill.ts my-skill --path $workspace/.agent/skills --resources scripts,references
+npx tsx scripts/init-skill.ts my-skill --path $ADS_STATE_DIR/.agent/skills
+npx tsx scripts/init-skill.ts my-skill --path $ADS_STATE_DIR/.agent/skills --resources scripts,references
 npx tsx scripts/init-skill.ts my-skill --path $HOME/.agent/skills
 ```
 

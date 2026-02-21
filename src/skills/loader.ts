@@ -7,28 +7,42 @@ import yaml from "yaml";
 import { fileURLToPath } from "node:url";
 
 import { createLogger } from "../utils/logger.js";
+import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 
 const logger = createLogger("SkillLoader");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ADS_REPO_ROOT = path.resolve(__dirname, "..", "..");
 const BUILTIN_SKILLS_ROOT = path.resolve(__dirname, "builtin");
-const PROJECT_SKILLS_DIR = ".agent/skills";
+const WORKSPACE_SKILLS_DIR = ".agent/skills";
+const ADS_REPO_SKILLS_DIR = path.join(ADS_REPO_ROOT, WORKSPACE_SKILLS_DIR);
 const SKILL_FILE_NAME = "SKILL.md";
 
 export interface SkillMetadata {
   name: string;
   description: string;
   location: string;
-  source: "project" | "global" | "builtin";
+  source: "workspace" | "ads" | "state" | "global" | "builtin";
+}
+
+function isWorkspaceSkillsEnabled(): boolean {
+  const raw = String(process.env.ADS_ENABLE_WORKSPACE_SKILLS ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 export function discoverSkills(workspacePath: string, builtinRoot?: string): SkillMetadata[] {
   const resolvedBuiltin = builtinRoot ?? BUILTIN_SKILLS_ROOT;
-  const roots: Array<{ dir: string; source: SkillMetadata["source"] }> = [
-    { dir: path.join(path.resolve(workspacePath), PROJECT_SKILLS_DIR), source: "project" },
-    { dir: path.join(os.homedir(), PROJECT_SKILLS_DIR), source: "global" },
+  const adsStateSkillsDir = path.join(resolveAdsStateDir(), WORKSPACE_SKILLS_DIR);
+  const roots: Array<{ dir: string; source: SkillMetadata["source"] }> = [];
+  if (isWorkspaceSkillsEnabled()) {
+    roots.push({ dir: path.join(path.resolve(workspacePath), WORKSPACE_SKILLS_DIR), source: "workspace" });
+  }
+  roots.push(
+    { dir: adsStateSkillsDir, source: "state" },
+    { dir: ADS_REPO_SKILLS_DIR, source: "ads" },
+    { dir: path.join(os.homedir(), WORKSPACE_SKILLS_DIR), source: "global" },
     { dir: resolvedBuiltin, source: "builtin" },
-  ];
+  );
 
   const byName = new Map<string, SkillMetadata>();
 
@@ -97,7 +111,7 @@ export function renderSkillMetaInstruction(skills: SkillMetadata[]): string {
       "<skill_system>",
       "当前没有可用的 skill。",
       "当你需要扩展能力时，可以使用 /ads.skill.init <name> 创建新的 skill。",
-      "skill 存放位置：项目级 .agent/skills/<name>/SKILL.md，全局 ~/.agent/skills/<name>/SKILL.md。",
+      "skill 存放位置：ADS state $ADS_STATE_DIR/.agent/skills/<name>/SKILL.md（默认 .ads/.agent/skills），全局 ~/.agent/skills/<name>/SKILL.md。",
       "</skill_system>",
     ].join("\n");
   }

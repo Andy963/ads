@@ -2,7 +2,7 @@
 
 ## 背景
 
-ADS 支持从多个来源发现 skills（项目级 `.agent/skills`、用户级 `~/.agent/skills`、内置 skills），并在 `HybridOrchestrator` 中基于用户输入自动推断需要加载的 skill（autoload）。
+ADS 支持从多个来源发现 skills（ADS state store `$ADS_STATE_DIR/.agent/skills`、用户级 `~/.agent/skills`、内置 skills；workspace 的 `.agent/skills` 默认不启用），并在 `HybridOrchestrator` 中基于用户输入自动推断需要加载的 skill（autoload）。
 
 当存在多个“功能相同/高度重叠”的 skills 时（例如多个 TTS / 转写 / research skills），autoload 可能同时命中多个技能，或因描述差异导致选中结果不稳定。需要一个可配置的 registry metadata，用于：
 
@@ -12,8 +12,9 @@ ADS 支持从多个来源发现 skills（项目级 `.agent/skills`、用户级 `
 ## 目标
 
 - 在 skills 目录下新增一个 registry metadata（YAML），默认路径为：
-  - `workspaceRoot/.agent/skills/metadata.yaml`
-  - 代码侧应通过 `detectWorkspaceFrom()` / workspaceRoot 推导，避免硬编码路径
+  - `$ADS_STATE_DIR/.agent/skills/metadata.yaml`（默认 `.ads/.agent/skills/metadata.yaml`）
+  - 当启用 `ADS_ENABLE_WORKSPACE_SKILLS=1` 时，也允许 `workspaceRoot/.agent/skills/metadata.yaml`
+  - 代码侧应通过 `resolveAdsStateDir()` / workspaceRoot 推导，避免硬编码路径
 - metadata 支持为 skill 定义：
   - `priority`：用于同功能 skills 的优先级（数值越大越优先）
   - `provides`：用于声明该 skill 提供的功能标签（用于“同功能”归类）

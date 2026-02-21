@@ -60,6 +60,8 @@ class DummyAdapter implements AgentAdapter {
 }
 
 let workspaceRoot: string;
+let adsStateDir: string;
+let originalEnv: NodeJS.ProcessEnv;
 
 function writeSkill(root: string, name: string, description: string): void {
   const dir = path.join(root, ".agent", "skills", name);
@@ -77,18 +79,24 @@ function writeRegistryMetadata(workspaceRoot: string, yamlBody: string): void {
 
 describe("skills autoload priority registry", () => {
   beforeEach(() => {
+    originalEnv = { ...process.env };
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-workspace-"));
+    adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-state-"));
+    process.env.ADS_STATE_DIR = adsStateDir;
+    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
   });
 
   afterEach(() => {
+    process.env = { ...originalEnv };
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    fs.rmSync(adsStateDir, { recursive: true, force: true });
   });
 
   it("dedupes same provides group and picks higher priority skill", async () => {
-    writeSkill(workspaceRoot, "demo-skill-a", "priodemoalpha priodemobeta priodemogamma");
-    writeSkill(workspaceRoot, "demo-skill-b", "priodemoalpha priodemobeta");
+    writeSkill(adsStateDir, "demo-skill-a", "priodemoalpha priodemobeta priodemogamma");
+    writeSkill(adsStateDir, "demo-skill-b", "priodemoalpha priodemobeta");
 
-    writeRegistryMetadata(workspaceRoot, [
+    writeRegistryMetadata(adsStateDir, [
       "version: 1",
       "mode: overlay",
       "skills:",

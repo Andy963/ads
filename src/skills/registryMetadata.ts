@@ -4,10 +4,15 @@ import path from "node:path";
 
 import yaml from "yaml";
 
+import { fileURLToPath } from "node:url";
+
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("SkillRegistryMetadata");
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ADS_REPO_ROOT = path.resolve(__dirname, "..", "..");
 
 export type SkillRegistryMode = "overlay" | "whitelist";
 
@@ -30,17 +35,24 @@ type CachedRegistry = {
 
 let cached: CachedRegistry | null = null;
 
+function isWorkspaceSkillsEnabled(): boolean {
+  const raw = String(process.env.ADS_ENABLE_WORKSPACE_SKILLS ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 function resolveSkillRegistryMetadataCandidates(workspaceRoot?: string): string[] {
   const candidates: string[] = [];
   const explicit = String(process.env.ADS_SKILLS_METADATA_PATH ?? "").trim();
   if (explicit) {
     candidates.push(path.resolve(explicit));
   }
-  if (workspaceRoot) {
+
+  candidates.push(path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml"));
+  candidates.push(path.join(ADS_REPO_ROOT, ".agent", "skills", "metadata.yaml"));
+  candidates.push(path.join(os.homedir(), ".agent", "skills", "metadata.yaml"));
+  if (workspaceRoot && isWorkspaceSkillsEnabled()) {
     candidates.push(path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml"));
   }
-  candidates.push(path.join(os.homedir(), ".agent", "skills", "metadata.yaml"));
-  candidates.push(path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml"));
   return candidates;
 }
 

@@ -2,7 +2,7 @@
 
 ## Skill Selection
 
-以 `audio.transcribe` 作为功能标签，在 `workspaceRoot/.agent/skills/metadata.yaml` 中配置优先级：
+以 `audio.transcribe` 作为功能标签，在 `$ADS_STATE_DIR/.agent/skills/metadata.yaml` 中配置优先级（workspace override behind `ADS_ENABLE_WORKSPACE_SKILLS=1`）：
 
 ```yaml
 version: 1
@@ -55,4 +55,3 @@ skills:
 - 没有任何候选 skill 可用：返回失败（HTTP 502 / TG 报错）。
 - skill 执行超时：标记 timedOut，Web 返回 504。
 - skill 输出为空：视为失败并回退到下一个。
-

@@ -208,6 +208,7 @@ npm run services -- status
 | `/mark [on\|off]` | 记录对话到 `YYYY-MM-DD-note.md`（可省略参数切换状态） |
 | `/pref [list|add|del]` | 管理偏好设置（长期记忆） |
 | `/draft <text>` | 创建任务草稿（需确认后入队） |
+| `/rebuild_restart` | 构建并重启 Telegram 服务 |
 | `/pwd` | 当前工作目录 |
 | `/cd <path>` | 切换工作目录 |
 
@@ -222,14 +223,16 @@ npm run services -- status
 
 ADS 不再内置 Tavily 的 runtime 集成（已移除 `src/tools/search/**`）。联网搜索与 URL 抓取仅通过 skill 脚本提供：
 
+默认 `ADS_STATE_DIR` 为项目根目录下的 `.ads`。
+
 ```bash
 export TAVILY_API_KEY="your_tavily_api_key"
 
 # Web search (JSON output)
-node .agent/skills/tavily-research/scripts/tavily-cli.cjs search --query "..." --maxResults 5
+node $ADS_STATE_DIR/.agent/skills/tavily-research/scripts/tavily-cli.cjs search --query "..." --maxResults 5
 
 # URL fetch/extract (JSON output)
-node .agent/skills/tavily-research/scripts/tavily-cli.cjs fetch --url "https://..." --extractDepth advanced --format markdown
+node $ADS_STATE_DIR/.agent/skills/tavily-research/scripts/tavily-cli.cjs fetch --url "https://..." --extractDepth advanced --format markdown
 ```
 
 ### 🔍 Review

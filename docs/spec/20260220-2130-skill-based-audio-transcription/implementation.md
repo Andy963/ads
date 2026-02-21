@@ -9,10 +9,10 @@
   - Allow injecting a transcriber for tests; default to `transcribeAudioBuffer()` (skill-based).
 - `src/web/server/api/routes/audio.ts`
   - Allow injecting a transcriber for tests; default to `transcribeAudioBuffer()` (skill-based).
-- `.agent/skills/metadata.yaml`
+- `$ADS_STATE_DIR/.agent/skills/metadata.yaml` (fallback: `.agent/skills/metadata.yaml`)
   - Configure `audio.transcribe` priority: Groq > Gemini > OpenRouter.
 - `.gitignore`
-  - Track `.agent/skills/metadata.yaml` while keeping other `.agent/skills/**` ignored.
+  - Track `.agent/skills/metadata.yaml` (fallback) while keeping other `.agent/skills/**` ignored.
 
 ## Tests
 
@@ -29,4 +29,3 @@ npx tsc --noEmit
 npm run lint
 npm test
 ```
-

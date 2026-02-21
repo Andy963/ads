@@ -12,6 +12,7 @@ import {
 import { buildAdsHelpMessage } from "../workflow/commands.js";
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
 import { detectWorkspace } from "../workspace/detector.js";
+import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
 import { syncAllNodesToFiles } from "../graph/service.js";
 import { normalizeOutput } from "../utils/text.js";
@@ -211,7 +212,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
         };
       }
 
-      const workspaceRoot = detectWorkspace();
+      const workspaceRoot = resolveAdsStateDir();
       const includeExamples =
         params.examples === "true" || params.examples === "1" || params.examples === "yes" || params.examples === "on";
       const resources = parseResourceList(params.resources);
@@ -259,7 +260,7 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
     }
 
     case "ads.skill.validate": {
-      const workspaceRoot = detectWorkspace();
+      const workspaceRoot = resolveAdsStateDir();
       const arg = (params.path ?? positional.join(" ")).trim();
       if (!arg) {
         return { ok: false, output: "❌ Missing skill name/path" };

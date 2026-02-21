@@ -51,17 +51,24 @@ class CaptureAgentAdapter implements AgentAdapter {
 
 describe("skills auto-load and auto-save", () => {
   let workspace: string;
+  let adsStateDir: string;
+  const originalEnv = { ...process.env };
 
   beforeEach(() => {
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-flow-"));
+    adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-flow-state-"));
+    process.env.ADS_STATE_DIR = adsStateDir;
+    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
   });
 
   afterEach(() => {
+    process.env = { ...originalEnv };
     fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(adsStateDir, { recursive: true, force: true });
   });
 
   it("auto-loads matching skill bodies without explicit $skill reference", async () => {
-    const skillDir = path.join(workspace, ".agent", "skills", "kube-helper");
+    const skillDir = path.join(adsStateDir, ".agent", "skills", "kube-helper");
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(
       path.join(skillDir, "SKILL.md"),
@@ -94,7 +101,7 @@ describe("skills auto-load and auto-save", () => {
     assert.ok(prompt.includes("MY_SKILL_MARKER"));
   });
 
-  it("auto-saves <skill_save> blocks into .agent/skills and strips them from response", async () => {
+  it("auto-saves <skill_save> blocks into ADS state .agent/skills and strips them from response", async () => {
     const response = [
       "Hello.",
       "",
@@ -117,10 +124,9 @@ describe("skills auto-load and auto-save", () => {
     const result = await orchestrator.send("hi");
     assert.ok(!result.response.includes("<skill_save"));
 
-    const savedDir = path.join(workspace, ".agent", "skills", "my-skill");
+    const savedDir = path.join(adsStateDir, ".agent", "skills", "my-skill");
     const validated = validateSkillDirectory(savedDir);
     assert.equal(validated.valid, true, validated.message);
     assert.ok(fs.readFileSync(path.join(savedDir, "SKILL.md"), "utf8").includes("name: my-skill"));
   });
 });
-

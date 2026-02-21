@@ -6,7 +6,9 @@ import path from "node:path";
 
 import { discoverSkills, loadSkillBody, renderCompactSkills, type SkillMetadata } from "../../src/skills/loader.js";
 
-let tmpDir: string;
+let workspaceRoot: string;
+let adsStateDir: string;
+let originalEnv: NodeJS.ProcessEnv;
 const NO_BUILTINS = "/nonexistent-builtin-root";
 
 function createSkill(root: string, name: string, frontmatter: string): void {
@@ -17,15 +19,21 @@ function createSkill(root: string, name: string, frontmatter: string): void {
 
 describe("skills/loader", () => {
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-test-"));
+    originalEnv = { ...process.env };
+    workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-workspace-"));
+    adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-state-"));
+    process.env.ADS_STATE_DIR = adsStateDir;
+    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    process.env = { ...originalEnv };
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    fs.rmSync(adsStateDir, { recursive: true, force: true });
   });
 
-  it("discovers skills from workspace .agent/skills", () => {
-    createSkill(tmpDir, "my-skill", [
+  it("discovers skills from ADS state store by default", () => {
+    createSkill(adsStateDir, "my-skill", [
       "---",
       "name: my-skill",
       "description: A test skill",
@@ -34,58 +42,70 @@ describe("skills/loader", () => {
       "Body content here.",
     ].join("\n"));
 
-    const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    const skill = skills.find((s) => s.source === "project" && s.name === "my-skill");
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const skill = skills.find((s) => s.source === "state" && s.name === "my-skill");
     assert.ok(skill);
     assert.equal(skill.description, "A test skill");
   });
 
-  it("returns empty when no skills directory exists", () => {
-    const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    assert.equal(skills.filter((s) => s.source === "project").length, 0);
+  it("ignores workspace .agent/skills by default", () => {
+    const skillName = `workspace-only-${Date.now()}`;
+    createSkill(workspaceRoot, skillName, [
+      "---",
+      `name: ${skillName}`,
+      "description: Workspace skill",
+      "---",
+      "# Workspace Skill",
+      "Body",
+    ].join("\n"));
+
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const found = skills.find((s) => s.name === skillName) ?? null;
+    assert.equal(found, null);
   });
 
   it("skips directories without SKILL.md", () => {
-    const dir = path.join(tmpDir, ".agent", "skills", "no-skill-md");
+    const dir = path.join(adsStateDir, ".agent", "skills", "no-skill-md");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "README.md"), "not a skill", "utf-8");
 
-    const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    assert.equal(skills.filter((s) => s.source === "project").length, 0);
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const found = skills.find((s) => s.name === "no-skill-md") ?? null;
+    assert.equal(found, null);
   });
 
   it("uses directory name when frontmatter has no name", () => {
-    createSkill(tmpDir, "fallback-name", [
+    createSkill(adsStateDir, "fallback-name", [
       "---",
       "description: No name field",
       "---",
       "Body.",
     ].join("\n"));
 
-    const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    const skill = skills.find((s) => s.source === "project" && s.name === "fallback-name");
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const skill = skills.find((s) => s.source === "state" && s.name === "fallback-name");
     assert.ok(skill);
   });
 
   it("handles missing frontmatter gracefully", () => {
-    createSkill(tmpDir, "no-front", "# Just markdown\nNo frontmatter.");
+    createSkill(adsStateDir, "no-front", "# Just markdown\nNo frontmatter.");
 
-    const skills = discoverSkills(tmpDir, NO_BUILTINS);
-    const skill = skills.find((s) => s.source === "project" && s.name === "no-front");
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const skill = skills.find((s) => s.source === "state" && s.name === "no-front");
     assert.ok(skill);
     assert.equal(skill.description, "No description provided.");
   });
 
-  it("project skills take precedence over builtin skills with same name", () => {
+  it("state skills take precedence over builtin skills with same name", () => {
     const skillName = `dup-skill-${Date.now()}`;
-    createSkill(tmpDir, skillName, [
+    createSkill(adsStateDir, skillName, [
       "---",
       `name: ${skillName}`,
-      "description: project version",
+      "description: state version",
       "---",
     ].join("\n"));
 
-    const builtinRoot = path.join(tmpDir, "builtins");
+    const builtinRoot = path.join(workspaceRoot, "builtins");
     const builtinDir = path.join(builtinRoot, skillName);
     fs.mkdirSync(builtinDir, { recursive: true });
     fs.writeFileSync(path.join(builtinDir, "SKILL.md"), [
@@ -95,16 +115,47 @@ describe("skills/loader", () => {
       "---",
     ].join("\n"), "utf-8");
 
-    const skills = discoverSkills(tmpDir, builtinRoot);
+    const skills = discoverSkills(workspaceRoot, builtinRoot);
     const skill = skills.find((s) => s.name === skillName);
     assert.ok(skill);
-    assert.equal(skill.description, "project version");
-    assert.equal(skill.source, "project");
+    assert.equal(skill.description, "state version");
+    assert.equal(skill.source, "state");
+  });
+
+  it("discovers workspace skills when ADS_ENABLE_WORKSPACE_SKILLS=1", () => {
+    process.env.ADS_ENABLE_WORKSPACE_SKILLS = "1";
+    const skillName = `ws-skill-${Date.now()}`;
+    createSkill(workspaceRoot, skillName, [
+      "---",
+      `name: ${skillName}`,
+      "description: workspace version",
+      "---",
+    ].join("\n"));
+
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const skill = skills.find((s) => s.name === skillName);
+    assert.ok(skill);
+    assert.equal(skill.source, "workspace");
+    assert.equal(skill.description, "workspace version");
+  });
+
+  it("workspace skills take precedence over state skills when enabled", () => {
+    process.env.ADS_ENABLE_WORKSPACE_SKILLS = "1";
+    const skillName = `ws-over-state-${Date.now()}`;
+
+    createSkill(adsStateDir, skillName, ["---", `name: ${skillName}`, "description: state version", "---"].join("\n"));
+    createSkill(workspaceRoot, skillName, ["---", `name: ${skillName}`, "description: workspace version", "---"].join("\n"));
+
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const skill = skills.find((s) => s.name === skillName);
+    assert.ok(skill);
+    assert.equal(skill.source, "workspace");
+    assert.equal(skill.description, "workspace version");
   });
 
   it("discovers builtin skills", () => {
     const skillName = `builtin-skill-${Date.now()}`;
-    const builtinRoot = path.join(tmpDir, "builtins");
+    const builtinRoot = path.join(workspaceRoot, "builtins");
     const builtinDir = path.join(builtinRoot, skillName);
     fs.mkdirSync(builtinDir, { recursive: true });
     fs.writeFileSync(path.join(builtinDir, "SKILL.md"), [
@@ -114,7 +165,7 @@ describe("skills/loader", () => {
       "---",
     ].join("\n"), "utf-8");
 
-    const skills = discoverSkills(tmpDir, builtinRoot);
+    const skills = discoverSkills(workspaceRoot, builtinRoot);
     const skill = skills.find((s) => s.source === "builtin" && s.name === skillName);
     assert.ok(skill);
   });
@@ -129,27 +180,27 @@ describe("skills/loader", () => {
       "# Body",
       "Some instructions.",
     ].join("\n");
-    createSkill(tmpDir, skillName, content);
+    createSkill(adsStateDir, skillName, content);
 
-    const body = loadSkillBody(skillName, tmpDir, NO_BUILTINS);
+    const body = loadSkillBody(skillName, workspaceRoot, NO_BUILTINS);
     assert.equal(body, content);
   });
 
   it("loadSkillBody returns null for unknown skill", () => {
-    const body = loadSkillBody("nonexistent", tmpDir, NO_BUILTINS);
+    const body = loadSkillBody("nonexistent", workspaceRoot, NO_BUILTINS);
     assert.equal(body, null);
   });
 
   it("renderCompactSkills formats skills as XML", () => {
     const skills: SkillMetadata[] = [
-      { name: "alpha", description: "First skill", location: "/tmp/a", source: "project" },
+      { name: "alpha", description: "First skill", location: "/tmp/a", source: "state" },
       { name: "beta", description: "Second skill", location: "/tmp/b", source: "global" },
     ];
     const output = renderCompactSkills(skills);
     assert.ok(output.includes("<available_skills>"));
     assert.ok(output.includes('name="alpha"'));
     assert.ok(output.includes('name="beta"'));
-    assert.ok(output.includes('source="project"'));
+    assert.ok(output.includes('source="state"'));
     assert.ok(output.includes('source="global"'));
     assert.ok(output.includes("First skill"));
   });
@@ -159,18 +210,21 @@ describe("skills/loader", () => {
   });
 
   it("discovers builtin skill-creator by default", () => {
-    const skills = discoverSkills(tmpDir);
+    const skills = discoverSkills(workspaceRoot);
     const creator = skills.find((s) => s.name === "skill-creator");
     assert.ok(creator, "skill-creator should be discovered");
     assert.equal(creator.source, "builtin");
   });
 
   it("sorts discovered skills alphabetically", () => {
-    createSkill(tmpDir, "zeta", "---\nname: zeta\ndescription: z\n---");
-    createSkill(tmpDir, "alpha", "---\nname: alpha\ndescription: a\n---");
-    createSkill(tmpDir, "mid", "---\nname: mid\ndescription: m\n---");
+    const prefix = `sort-${Date.now()}-`;
+    createSkill(adsStateDir, `${prefix}zeta`, `---\nname: ${prefix}zeta\ndescription: z\n---`);
+    createSkill(adsStateDir, `${prefix}alpha`, `---\nname: ${prefix}alpha\ndescription: a\n---`);
+    createSkill(adsStateDir, `${prefix}mid`, `---\nname: ${prefix}mid\ndescription: m\n---`);
 
-    const skills = discoverSkills(tmpDir, NO_BUILTINS).filter((s) => s.source === "project");
-    assert.deepEqual(skills.map((s) => s.name), ["alpha", "mid", "zeta"]);
+    const sorted = discoverSkills(workspaceRoot, NO_BUILTINS)
+      .filter((s) => s.name.startsWith(prefix))
+      .map((s) => s.name);
+    assert.deepEqual(sorted, [`${prefix}alpha`, `${prefix}mid`, `${prefix}zeta`]);
   });
 });
