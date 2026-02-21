@@ -21,6 +21,13 @@ import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag 
 import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
 import { transcribeTelegramVoiceMessage } from './utils/voiceTranscription.js';
 import { PendingTranscriptionStore } from './utils/pendingTranscriptions.js';
+import {
+  cancelTelegramTaskDraft,
+  confirmTelegramTaskDraft,
+  createTelegramTaskDraft,
+  deriveTelegramAuthUserId,
+  getTelegramTaskDraft,
+} from './utils/taskDrafts.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
@@ -35,6 +42,7 @@ const TELEGRAM_CONTROL_COMMANDS = new Set([
   'pwd',
   'cd',
   'pref',
+  'draft',
 ]);
 
 let crashHandlingStarted = false;
@@ -87,6 +95,18 @@ async function requireUserId(ctx: Context, action: string): Promise<number | nul
     await ctx.reply('❌ 无法识别用户信息（可能是匿名/频道消息），请用普通用户身份发送消息后重试。');
   }
   return null;
+}
+
+async function requirePrivateChat(ctx: Context, action: string): Promise<boolean> {
+  const chatType = ctx.chat?.type;
+  if (chatType === 'private') {
+    return true;
+  }
+  logger.warn(`[Telegram] Non-private chat blocked for ${action}: type=${String(chatType ?? '')}`);
+  if (ctx.chat) {
+    await ctx.reply('❌ 该功能仅支持私聊（private chat）。');
+  }
+  return false;
 }
 
 async function main() {
@@ -147,6 +167,54 @@ async function main() {
     return `${stateLabel}\n\n\`\`\`text\n${safeText || "\u200b"}\n\`\`\`\n\n${footer}`;
   };
 
+  const formatTaskDraftPreview = (args: {
+    prompt: string;
+    workspaceRoot: string;
+    state: "pending" | "approved" | "cancelled";
+    createdTaskIds?: string[];
+  }): string => {
+    const safePrompt = args.prompt.replace(/```/g, '`​``');
+    const safeWorkspace = args.workspaceRoot.replace(/```/g, '`​``');
+    const stateLabel =
+      args.state === "pending"
+        ? "🧾 任务草稿（待确认，不会自动入队）"
+        : args.state === "approved"
+          ? "✅ 任务草稿（已入队）"
+          : "🗑️ 任务草稿（已取消）";
+
+    const createdLine = (() => {
+      const ids = (args.createdTaskIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
+      if (!ids.length) {
+        return "";
+      }
+      const shown = ids.slice(0, 5).map((id) => id.slice(0, 8));
+      const suffix = ids.length > shown.length ? ` …(+${ids.length - shown.length})` : "";
+      return `Created: \`${shown.join(", ")}\`${suffix}`;
+    })();
+
+    const footer =
+      args.state === "pending"
+        ? "点击 `Confirm & Run` 仅入队；不会在 TG 里直接执行。\n点击 `Cancel` 将取消该草稿。"
+        : args.state === "approved"
+          ? "如需调整：请重新创建新的草稿。"
+          : "如需重新执行：请重新创建新的草稿。";
+
+    const lines: string[] = [];
+    lines.push(stateLabel);
+    lines.push("");
+    lines.push(`Workspace: \`${safeWorkspace || "\u200b"}\``);
+    if (createdLine) {
+      lines.push(createdLine);
+    }
+    lines.push("");
+    lines.push("```text");
+    lines.push(safePrompt || "\u200b");
+    lines.push("```");
+    lines.push("");
+    lines.push(footer);
+    return lines.join("\n");
+  };
+
   // 启动时设置默认工作目录（单用户）
   const userId = config.allowedUsers[0];
   const defaultDir = config.allowedDirs[0];
@@ -189,6 +257,7 @@ async function main() {
       { command: 'pwd', description: '当前目录' },
       { command: 'cd', description: '切换目录' },
       { command: 'pref', description: '管理偏好设置' },
+      { command: 'draft', description: '创建任务草稿（需确认后入队）' },
     ]);
     logger.info('Telegram commands registered');
   } catch (error) {
@@ -205,6 +274,7 @@ async function main() {
       '/reset - 重置会话\n' +
       '/mark - 切换对话标记，记录到当天 note\n' +
       '/pref - 管理偏好设置（长期记忆）\n' +
+      '/draft <text> - 创建任务草稿（需确认后入队）\n' +
       '/pwd - 查看当前目录\n' +
       '/cd <path> - 切换目录\n\n' +
       '直接发送文本与 Codex 对话'
@@ -226,6 +296,8 @@ async function main() {
       '📁 目录管理：\n' +
       '/pwd - 当前工作目录\n' +
       '/cd <path> - 切换目录\n\n' +
+      '🧾 Draft：\n' +
+      '/draft <text> - 创建任务草稿（需确认后入队）\n\n' +
       '💬 对话：\n' +
       '直接发送消息与 Codex AI 对话\n' +
       '发送图片可让 Codex 分析图像\n' +
@@ -405,6 +477,130 @@ async function main() {
     } else {
       await ctx.reply(`❌ ${result.error}`);
     }
+  });
+
+	  bot.command('draft', async (ctx) => {
+	    const userId = await requireUserId(ctx, '/draft');
+	    if (userId === null) return;
+	    if (!(await requirePrivateChat(ctx, '/draft'))) return;
+
+    const replyToMessageId = ctx.message?.message_id;
+    const replyParameters = typeof replyToMessageId === 'number' ? { reply_parameters: { message_id: replyToMessageId } } : {};
+
+	    const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
+	    const text = args.join(' ').trim();
+	    if (!text) {
+	      await ctx.reply('用法: /draft <text>');
+	      return;
+    }
+
+    const cwd = directoryManager.getUserCwd(userId);
+    const workspaceRoot = detectWorkspaceFrom(cwd);
+    const authUserId = deriveTelegramAuthUserId(userId);
+    const sourceChatSessionId = `tg:${String(ctx.chat?.id ?? '')}`;
+
+    let draft;
+    try {
+      draft = createTelegramTaskDraft({ authUserId, workspaceRoot, sourceChatSessionId, text });
+	    } catch (error) {
+	      const message = error instanceof Error ? error.message : String(error);
+	      await ctx.reply(`❌ 创建草稿失败: ${message}`, {
+	        disable_notification: silentNotifications,
+        ...replyParameters,
+	      });
+	      return;
+	    }
+
+    const keyboard = new InlineKeyboard()
+      .text('Confirm & Run', `td:confirm:${draft.id}`)
+      .text('Cancel', `td:cancel:${draft.id}`);
+
+    const previewMarkdown = formatTaskDraftPreview({ prompt: text, workspaceRoot, state: 'pending' });
+    const previewText = escapeTelegramMarkdownV2(previewMarkdown);
+
+	    await ctx.reply(previewText, {
+	      parse_mode: 'MarkdownV2',
+	      reply_markup: keyboard,
+	      disable_notification: silentNotifications,
+      ...replyParameters,
+	      link_preview_options: { is_disabled: true },
+	    });
+	  });
+
+  bot.callbackQuery(/^td:(confirm|cancel):([0-9a-f-]{8}-[0-9a-f-]{4}-[0-9a-f-]{4}-[0-9a-f-]{4}-[0-9a-f-]{12})$/i, async (ctx) => {
+    const userId = await requireUserId(ctx, 'callbackQuery:td');
+    if (userId === null) return;
+    if (!(await requirePrivateChat(ctx, 'callbackQuery:td'))) return;
+
+    const data = String(ctx.callbackQuery.data ?? '');
+    const [prefix, action, draftId] = data.split(':');
+    if (prefix !== 'td' || !action || !draftId) {
+      await ctx.answerCallbackQuery({ text: '❌ Invalid callback', show_alert: true }).catch(() => undefined);
+      return;
+    }
+
+    const authUserId = deriveTelegramAuthUserId(userId);
+
+    if (action === 'cancel') {
+      const result = cancelTelegramTaskDraft({ authUserId, draftId });
+      if (result.status === 'not_found') {
+        await ctx.answerCallbackQuery({ text: '❌ Draft not found', show_alert: false }).catch(() => undefined);
+        return;
+      }
+      if (result.status === 'already_approved') {
+        await ctx.answerCallbackQuery({ text: '✅ 已入队', show_alert: false }).catch(() => undefined);
+        return;
+      }
+      if (result.status === 'already_cancelled' || result.status === 'cancelled') {
+        await ctx.answerCallbackQuery({ text: '🗑️ 已取消', show_alert: false }).catch(() => undefined);
+        const draft = getTelegramTaskDraft({ authUserId, draftId });
+        const prompt = draft?.bundle?.tasks?.[0]?.prompt ?? '';
+        const workspaceRoot = draft?.workspaceRoot ?? (result.status === 'cancelled' ? result.workspaceRoot : '');
+        const updated = escapeTelegramMarkdownV2(formatTaskDraftPreview({ prompt, workspaceRoot, state: 'cancelled' }));
+        await ctx
+          .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
+          .catch(() => undefined);
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: '❌ 取消失败', show_alert: false }).catch(() => undefined);
+      return;
+    }
+
+    if (action !== 'confirm') {
+      await ctx.answerCallbackQuery({ text: '❌ Unknown action', show_alert: true }).catch(() => undefined);
+      return;
+    }
+
+    const result = confirmTelegramTaskDraft({ authUserId, draftId });
+    if (result.status === 'not_found') {
+      await ctx.answerCallbackQuery({ text: '❌ Draft not found', show_alert: false }).catch(() => undefined);
+      return;
+    }
+    if (result.status === 'cancelled') {
+      await ctx.answerCallbackQuery({ text: '🗑️ 已取消', show_alert: false }).catch(() => undefined);
+      return;
+    }
+    if (result.status === 'workspace_unavailable') {
+      await ctx.answerCallbackQuery({ text: '❌ workspace 不可用，请重新创建草稿', show_alert: true }).catch(() => undefined);
+      return;
+    }
+    if (result.status === 'error') {
+      await ctx.answerCallbackQuery({ text: '❌ 入队失败', show_alert: false }).catch(() => undefined);
+      return;
+    }
+
+    const createdTaskIds = result.createdTaskIds;
+	    const updated = (() => {
+	      const draft = getTelegramTaskDraft({ authUserId, draftId });
+	      const prompt = draft?.bundle?.tasks?.[0]?.prompt ?? '';
+	      const workspaceRoot = draft?.workspaceRoot ?? result.workspaceRoot;
+	      return escapeTelegramMarkdownV2(formatTaskDraftPreview({ prompt, workspaceRoot, state: "approved", createdTaskIds }));
+	    })();
+
+    await ctx.answerCallbackQuery({ text: '✅ 已入队', show_alert: false }).catch(() => undefined);
+    await ctx
+      .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
+      .catch(() => undefined);
   });
 
   // 处理带图片的消息
