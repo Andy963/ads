@@ -28,6 +28,7 @@ import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions
 import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegramNotifier.js";
 import { AgentScheduleCompiler } from "../../scheduler/compiler.js";
 import { SchedulerRuntime } from "../../scheduler/runtime.js";
+import { parseBooleanFlag } from "../../utils/flags.js";
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
@@ -68,20 +69,6 @@ const historyStore = new HistoryStore({
 });
 const cwdStorePath = stateDbPath;
 const cwdStore = loadCwdStore(cwdStorePath);
-
-function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boolean {
-  if (value === undefined) {
-    return defaultValue;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
-  }
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-  return defaultValue;
-}
 
 async function ensureWebPidFile(): Promise<string> {
   const runDir = path.join(adsStateDir, "run");
