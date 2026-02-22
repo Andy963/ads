@@ -13,6 +13,7 @@ docs/*
 !docs/adr/**
 !docs/spec/
 !docs/spec/**
+!docs/REFACTOR.md
 # Runtime/state
 .ads/
 .cache/

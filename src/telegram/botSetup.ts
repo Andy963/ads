@@ -2,19 +2,7 @@ import type { Bot, Context } from 'grammy';
 
 export type BotLogger = { info: (message: string) => void };
 
-export function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boolean {
-  if (value == null) {
-    return defaultValue;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
-    return true;
-  }
-  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
-    return false;
-  }
-  return defaultValue;
-}
+export { parseBooleanFlag } from '../utils/flags.js';
 
 export function installApiDebugLogging(bot: Bot<Context>, logger: BotLogger): void {
   bot.api.config.use(async (prev, method, payload, signal) => {
@@ -43,4 +31,3 @@ export function installSilentReplyMiddleware(bot: Bot<Context>, silentNotificati
     await next();
   });
 }
-
