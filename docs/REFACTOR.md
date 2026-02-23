@@ -15,6 +15,7 @@
 ## Reviewed Modules (read in detail)
 
 - `src/web/server/startWebServer.ts` (server bootstrap, env flags, process behavior)
+- `src/web/utils.ts` (web server utilities; sqlite/json store; prompt input helpers)
 - `src/telegram/botSetup.ts` (telegram bot utilities)
 - `src/telegram/utils/downloadUtils.ts` (shared telegram download helpers)
 - `src/telegram/utils/fileHandler.ts` (telegram file download/upload helpers)
@@ -23,6 +24,8 @@
 - `src/utils/env.ts` (env loading behavior and side effects)
 - `src/utils/flags.ts` (env flag parsing helpers)
 - `src/utils/activityTracker.ts` (explored tracking, env-driven config)
+- `src/utils/historyStore.ts` (history persistence; sqlite/json dual mode; migrations)
+- `src/utils/sqlitePaths.ts` (shared sqlite path detection)
 - `src/agents/orchestrator.ts` (skill/prefs toggles, orchestration behavior)
 - `src/agents/hub.ts` (coordinator config, env parsing)
 - `src/systemPrompt/manager.ts` (reinjection config, prompt assembly)
@@ -45,6 +48,7 @@
 - Consolidate optional boolean env parsing helpers into `src/utils/flags.ts` (DONE: `parseOptionalBooleanFlag`).
 - Consolidate positive int env parsing helpers into `src/utils/flags.ts` (DONE: `parsePositiveIntFlag`).
 - Consolidate non-negative int env parsing helpers into `src/utils/flags.ts` (DONE: `parseNonNegativeIntFlag`).
+- Consolidate sqlite path detection helpers into `src/utils/sqlitePaths.ts` (DONE: `isSqliteDbPath`).
 - Standardize "resolve paths from state dir" helpers into a small set of utilities (avoid ad-hoc joins).
 
 ### Extensibility & Maintainability

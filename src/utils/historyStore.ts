@@ -5,7 +5,9 @@ import type { Database as DatabaseType, Statement as StatementType } from "bette
 
 import { getStateDatabase } from "../state/database.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { parseBooleanFlag } from "./flags.js";
 import { createLogger } from "./logger.js";
+import { isSqliteDbPath } from "./sqlitePaths.js";
 import { truncateForLog } from "./text.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
@@ -28,13 +30,7 @@ interface HistoryStoreOptions {
 const logger = createLogger("HistoryStore");
 
 function isHistoryInsertTraceEnabled(): boolean {
-  const raw = String(process.env.ADS_TRACE_HISTORY_INSERT ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-function isSqlitePath(storagePath: string): boolean {
-  const lowered = storagePath.trim().toLowerCase();
-  return lowered.endsWith(".db") || lowered.endsWith(".sqlite") || lowered.endsWith(".sqlite3");
+  return parseBooleanFlag(process.env.ADS_TRACE_HISTORY_INSERT, false);
 }
 
 export class HistoryStore {
@@ -55,13 +51,11 @@ export class HistoryStore {
   private setMigrationMarkerStmt?: SqliteStatement;
 
   constructor(options: HistoryStoreOptions = {}) {
-    this.storagePath =
-      options.storagePath ??
-      path.join(resolveAdsStateDir(), "state.db");
+    this.storagePath = options.storagePath ?? path.join(resolveAdsStateDir(), "state.db");
     this.namespace = options.namespace?.trim() || "default";
     this.maxEntriesPerSession = Math.max(1, options.maxEntriesPerSession ?? 200);
     this.maxTextLength = options.maxTextLength ?? 4000;
-    this.useSqlite = isSqlitePath(this.storagePath);
+    this.useSqlite = isSqliteDbPath(this.storagePath);
     if (this.useSqlite) {
       this.db = getStateDatabase(this.storagePath);
       this.prepareSqliteStatements();
@@ -125,6 +119,10 @@ export class HistoryStore {
         normalized.ts,
         normalized.kind ?? null,
       );
+
+      const changes = (info as { changes?: unknown }).changes;
+      const inserted = typeof changes === "number" ? changes > 0 : true;
+
       if (isHistoryInsertTraceEnabled()) {
         const lastInsertRowid = (info as { lastInsertRowid?: unknown }).lastInsertRowid;
         const rowId =
@@ -133,17 +131,14 @@ export class HistoryStore {
             : typeof lastInsertRowid === "number"
               ? String(lastInsertRowid)
               : "unknown";
-        const changes = (info as { changes?: unknown }).changes;
-        const inserted = typeof changes === "number" ? changes > 0 : true;
         const action = inserted ? "insert" : "dedupe";
         logger.info(
           `[HistoryStore] ${action} ns=${this.namespace} session=${normalizedKey} id=${rowId} role=${normalized.role} kind=${normalized.kind ?? ""} ts=${normalized.ts} text=${truncateForLog(normalized.text, 160)}`,
         );
       }
-      const changes = (info as { changes?: unknown }).changes;
-      const inserted = typeof changes === "number" ? changes > 0 : true;
+
       if (inserted) {
-      this.trimSqlite(normalizedKey);
+        this.trimSqlite(normalizedKey);
       }
       return inserted;
     });

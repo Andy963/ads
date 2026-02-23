@@ -9,6 +9,7 @@ import type { Database as DatabaseType, Statement as StatementType } from "bette
 import type { ImagePersistOutcome, IncomingImage, PromptInputOutcome, PromptPayload, WorkspaceState } from "./types.js";
 
 import { createLogger } from "../utils/logger.js";
+import { isSqliteDbPath } from "../utils/sqlitePaths.js";
 import { getStateDatabase } from "../state/database.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
@@ -28,11 +29,6 @@ export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const logger = createLogger("WebUtils");
 
 type SqliteStatement = StatementType<unknown[], unknown>;
-
-function isSqlitePath(storagePath: string): boolean {
-  const lowered = storagePath.trim().toLowerCase();
-  return lowered.endsWith(".db") || lowered.endsWith(".sqlite") || lowered.endsWith(".sqlite3");
-}
 
 function migrateLegacyCwdJson(db: DatabaseType, stateDbPath: string): void {
   const legacyPath = path.join(path.dirname(stateDbPath), "web-cwd.json");
@@ -91,7 +87,7 @@ function migrateLegacyCwdJson(db: DatabaseType, stateDbPath: string): void {
 }
 
 export function loadCwdStore(filePath: string): Map<string, string> {
-  if (isSqlitePath(filePath)) {
+  if (isSqliteDbPath(filePath)) {
     const db = getStateDatabase(filePath);
     migrateLegacyCwdJson(db, filePath);
     try {
@@ -118,7 +114,7 @@ export function loadCwdStore(filePath: string): Map<string, string> {
 }
 
 export function persistCwdStore(filePath: string, store: Map<string, string>): void {
-  if (isSqlitePath(filePath)) {
+  if (isSqliteDbPath(filePath)) {
     const db = getStateDatabase(filePath);
     const upsertStmt: SqliteStatement = db.prepare(
       `INSERT INTO kv_state (namespace, key, value, updated_at)
@@ -159,7 +155,8 @@ export function persistCwdStore(filePath: string, store: Map<string, string>): v
 
 export function isProcessRunning(pid: number): boolean {
   try {
-    return process.kill(pid, 0), true;
+    process.kill(pid, 0);
+    return true;
   } catch {
     return false;
   }
