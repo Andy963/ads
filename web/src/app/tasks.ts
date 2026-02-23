@@ -431,7 +431,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const next = String(agentId ?? "").trim();
     if (!next) return;
     const rt = activeRuntime.value;
-    rt.ws?.send?.("command", { command: `/agent ${next}`, silent: true });
+    rt.ws?.send?.("set_agent", { agentId: next });
   };
 
   const switchPlannerAgent = (agentId: string): void => {
@@ -439,7 +439,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const next = String(agentId ?? "").trim();
     if (!next) return;
     const rt = activePlannerRuntime.value;
-    rt.ws?.send?.("command", { command: `/agent ${next}`, silent: true });
+    rt.ws?.send?.("set_agent", { agentId: next });
   };
 
   const interruptActive = (): void => {

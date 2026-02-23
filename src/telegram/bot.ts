@@ -1,6 +1,7 @@
 import '../utils/logSink.js';
 import '../utils/env.js';
 
+import { spawn } from 'node:child_process';
 import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { loadTelegramConfig, validateConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
@@ -21,13 +22,6 @@ import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag 
 import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
 import { transcribeTelegramVoiceMessage } from './utils/voiceTranscription.js';
 import { PendingTranscriptionStore } from './utils/pendingTranscriptions.js';
-import {
-  cancelTelegramTaskDraft,
-  confirmTelegramTaskDraft,
-  createTelegramTaskDraft,
-  deriveTelegramAuthUserId,
-  getTelegramTaskDraft,
-} from './utils/taskDrafts.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
@@ -42,7 +36,6 @@ const TELEGRAM_CONTROL_COMMANDS = new Set([
   'pwd',
   'cd',
   'pref',
-  'draft',
 ]);
 
 let crashHandlingStarted = false;
@@ -150,7 +143,7 @@ async function main() {
   const directoryManager = new DirectoryManager(config.allowedDirs);
   const pendingTranscriptions = new PendingTranscriptionStore({ ttlMs: 5 * 60 * 1000 });
 
-  const formatTranscriptionPreview = (args: { text: string; state: "pending" | "submitted" | "discarded" }): string => {
+	  const formatTranscriptionPreview = (args: { text: string; state: "pending" | "submitted" | "discarded" }): string => {
     const safeText = args.text.replace(/```/g, '`​``');
     const stateLabel =
       args.state === "pending"
@@ -164,59 +157,61 @@ async function main() {
         ? "点击 `Submit` 发送给 Codex；点击 `Discard` 丢弃。\n如需编辑：复制后修改，再发送新消息。\n有效期：5 分钟。"
         : "如需编辑：复制后修改，再发送新消息。";
 
-    return `${stateLabel}\n\n\`\`\`text\n${safeText || "\u200b"}\n\`\`\`\n\n${footer}`;
-  };
+	    return `${stateLabel}\n\n\`\`\`text\n${safeText || "\u200b"}\n\`\`\`\n\n${footer}`;
+	  };
 
-  const formatTaskDraftPreview = (args: {
-    prompt: string;
-    workspaceRoot: string;
-    state: "pending" | "approved" | "cancelled";
-    createdTaskIds?: string[];
-  }): string => {
-    const safePrompt = args.prompt.replace(/```/g, '`​``');
-    const safeWorkspace = args.workspaceRoot.replace(/```/g, '`​``');
-    const stateLabel =
-      args.state === "pending"
-        ? "🧾 任务草稿（待确认，不会自动入队）"
-        : args.state === "approved"
-          ? "✅ 任务草稿（已入队）"
-          : "🗑️ 任务草稿（已取消）";
+	  type RestartScope = "self" | "web" | "all";
 
-    const createdLine = (() => {
-      const ids = (args.createdTaskIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
-      if (!ids.length) {
-        return "";
-      }
-      const shown = ids.slice(0, 5).map((id) => id.slice(0, 8));
-      const suffix = ids.length > shown.length ? ` …(+${ids.length - shown.length})` : "";
-      return `Created: \`${shown.join(", ")}\`${suffix}`;
-    })();
+	  const parseRestartIntent = (raw: string): { scope: RestartScope } | null => {
+	    const input = String(raw ?? "").trim();
+	    if (!input) return null;
+	    if (input.length > 64) return null;
 
-    const footer =
-      args.state === "pending"
-        ? "点击 `Confirm & Run` 仅入队；不会在 TG 里直接执行。\n点击 `Cancel` 将取消该草稿。"
-        : args.state === "approved"
-          ? "如需调整：请重新创建新的草稿。"
-          : "如需重新执行：请重新创建新的草稿。";
+	    const normalized = input.toLowerCase().replace(/\s+/g, " ").trim();
+	    const token = normalized.replace(/\s+/g, "");
 
-    const lines: string[] = [];
-    lines.push(stateLabel);
-    lines.push("");
-    lines.push(`Workspace: \`${safeWorkspace || "\u200b"}\``);
-    if (createdLine) {
-      lines.push(createdLine);
-    }
-    lines.push("");
-    lines.push("```text");
-    lines.push(safePrompt || "\u200b");
-    lines.push("```");
-    lines.push("");
-    lines.push(footer);
-    return lines.join("\n");
-  };
+	    const self = new Set([
+	      "restart",
+	      "reboot",
+	      "restartbot",
+	      "restarttelegram",
+	      "restarttg",
+	      "重启",
+	      "重启一下",
+	      "重启下",
+	      "重启bot",
+	      "重启telegram",
+	      "重启tg",
+	    ]);
+	    const web = new Set(["restartweb", "rebootweb", "重启web"]);
+	    const all = new Set(["restartall", "rebootall", "重启全部", "全部重启", "重启所有"]);
 
-  // 启动时设置默认工作目录（单用户）
-  const userId = config.allowedUsers[0];
+	    if (all.has(token)) return { scope: "all" };
+	    if (web.has(token)) return { scope: "web" };
+	    if (self.has(token)) return { scope: "self" };
+	    return null;
+	  };
+
+	  const restartPm2Apps = async (apps: string[]): Promise<void> => {
+	    const args = apps.map((app) => String(app ?? "").trim()).filter(Boolean);
+	    if (args.length === 0) {
+	      throw new Error("pm2 app name is required");
+	    }
+	    await new Promise<void>((resolve, reject) => {
+	      const child = spawn("pm2", ["restart", ...args], { stdio: "ignore" });
+	      child.once("error", (error) => reject(error));
+	      child.once("exit", (code) => {
+	        if (code === 0) {
+	          resolve();
+	          return;
+	        }
+	        reject(new Error(`pm2 restart failed (exit=${code ?? "null"})`));
+	      });
+	    });
+	  };
+
+	  // 启动时设置默认工作目录（单用户）
+	  const userId = config.allowedUsers[0];
   const defaultDir = config.allowedDirs[0];
   directoryManager.setUserCwd(userId, defaultDir);
   sessionManager.setUserCwd(userId, defaultDir);
@@ -246,65 +241,61 @@ async function main() {
 
   // 注册命令列表（显示在 Telegram 输入框）
   try {
-    await bot.api.setMyCommands([
-      { command: 'start', description: '欢迎信息' },
-      { command: 'help', description: '命令帮助' },
-      { command: 'status', description: '系统状态' },
-      { command: 'esc', description: '中断当前任务' },
-      { command: 'reset', description: '开始新对话' },
-      { command: 'resume', description: '恢复之前的对话' },
-      { command: 'mark', description: '记录对话到笔记' },
-      { command: 'pwd', description: '当前目录' },
-      { command: 'cd', description: '切换目录' },
-      { command: 'pref', description: '管理偏好设置' },
-      { command: 'draft', description: '创建任务草稿（需确认后入队）' },
-    ]);
-    logger.info('Telegram commands registered');
-  } catch (error) {
-    logger.warn(`Failed to register Telegram commands (will continue): ${(error as Error).message}`);
-  }
+	    await bot.api.setMyCommands([
+	      { command: 'start', description: '欢迎信息' },
+	      { command: 'help', description: '命令帮助' },
+	      { command: 'status', description: '系统状态' },
+	      { command: 'esc', description: '中断当前任务' },
+	      { command: 'reset', description: '开始新对话' },
+	      { command: 'resume', description: '恢复之前的对话' },
+	      { command: 'mark', description: '记录对话到笔记' },
+	      { command: 'pwd', description: '当前目录' },
+	      { command: 'cd', description: '切换目录' },
+	      { command: 'pref', description: '管理偏好设置' },
+	    ]);
+	    logger.info('Telegram commands registered');
+	  } catch (error) {
+	    logger.warn(`Failed to register Telegram commands (will continue): ${(error as Error).message}`);
+	  }
 
   // 基础命令
-  bot.command('start', async (ctx) => {
-    await ctx.reply(
-      '👋 欢迎使用 Codex Telegram Bot!\n\n' +
-      '可用命令：\n' +
-      '/help - 查看所有命令\n' +
-      '/status - 查看系统状态\n' +
-      '/reset - 重置会话\n' +
-      '/mark - 切换对话标记，记录到当天 note\n' +
-      '/pref - 管理偏好设置（长期记忆）\n' +
-      '/draft <text> - 创建任务草稿（需确认后入队）\n' +
-      '/pwd - 查看当前目录\n' +
-      '/cd <path> - 切换目录\n\n' +
-      '直接发送文本与 Codex 对话'
-    );
-  });
+	  bot.command('start', async (ctx) => {
+	    await ctx.reply(
+	      '👋 欢迎使用 Codex Telegram Bot!\n\n' +
+	      '可用命令：\n' +
+	      '/help - 查看所有命令\n' +
+	      '/status - 查看系统状态\n' +
+	      '/reset - 重置会话\n' +
+	      '/mark - 切换对话标记，记录到当天 note\n' +
+	      '/pref - 管理偏好设置（长期记忆）\n' +
+	      '/pwd - 查看当前目录\n' +
+	      '/cd <path> - 切换目录\n\n' +
+	      '直接发送文本与 Codex 对话'
+	    );
+	  });
 
-  bot.command('help', async (ctx) => {
-    await ctx.reply(
-      '📖 Codex Telegram Bot 命令列表\n\n' +
-      '🔧 系统命令：\n' +
-      '/start - 欢迎信息\n' +
-      '/help - 显示此帮助\n' +
-      '/status - 系统状态\n' +
-      '/reset - 重置会话（开始新对话）\n' +
-      '/resume - 恢复之前的对话\n' +
-      '/mark - 切换对话标记（记录每日 note）\n' +
-      '/pref [list|add|del] - 管理偏好设置（长期记忆）\n' +
-      '/esc - 中断当前任务（Agent 保持运行）\n\n' +
-      '📁 目录管理：\n' +
-      '/pwd - 当前工作目录\n' +
-      '/cd <path> - 切换目录\n\n' +
-      '🧾 Draft：\n' +
-      '/draft <text> - 创建任务草稿（需确认后入队）\n\n' +
-      '💬 对话：\n' +
-      '直接发送消息与 Codex AI 对话\n' +
-      '发送图片可让 Codex 分析图像\n' +
-      '发送文件让 Codex 处理文件\n' +
-      '执行过程中可用 /esc 中断当前任务'
-    );
-  });
+	  bot.command('help', async (ctx) => {
+	    await ctx.reply(
+	      '📖 Codex Telegram Bot 命令列表\n\n' +
+	      '🔧 系统命令：\n' +
+	      '/start - 欢迎信息\n' +
+	      '/help - 显示此帮助\n' +
+	      '/status - 系统状态\n' +
+	      '/reset - 重置会话（开始新对话）\n' +
+	      '/resume - 恢复之前的对话\n' +
+	      '/mark - 切换对话标记（记录每日 note）\n' +
+	      '/pref [list|add|del] - 管理偏好设置（长期记忆）\n' +
+	      '/esc - 中断当前任务（Agent 保持运行）\n\n' +
+	      '📁 目录管理：\n' +
+	      '/pwd - 当前工作目录\n' +
+	      '/cd <path> - 切换目录\n\n' +
+	      '💬 对话：\n' +
+	      '直接发送消息与 Codex AI 对话\n' +
+	      '发送图片可让 Codex 分析图像\n' +
+	      '发送文件让 Codex 处理文件\n' +
+	      '执行过程中可用 /esc 中断当前任务'
+	    );
+	  });
 
   bot.command('status', async (ctx) => {
     const userId = await requireUserId(ctx, '/status');
@@ -449,10 +440,10 @@ async function main() {
     );
   });
 
-  bot.command('cd', async (ctx) => {
-    const userId = await requireUserId(ctx, '/cd');
-    if (userId === null) return;
-    const args = ctx.message?.text?.split(/\s+/).slice(1);
+	  bot.command('cd', async (ctx) => {
+	    const userId = await requireUserId(ctx, '/cd');
+	    if (userId === null) return;
+	    const args = ctx.message?.text?.split(/\s+/).slice(1);
 
     if (!args || args.length === 0) {
       await ctx.reply('用法: /cd <path>');
@@ -476,136 +467,12 @@ async function main() {
       await ctx.reply(replyMessage);
     } else {
       await ctx.reply(`❌ ${result.error}`);
-    }
-  });
-
-	  bot.command('draft', async (ctx) => {
-	    const userId = await requireUserId(ctx, '/draft');
-	    if (userId === null) return;
-	    if (!(await requirePrivateChat(ctx, '/draft'))) return;
-
-    const replyToMessageId = ctx.message?.message_id;
-    const replyParameters = typeof replyToMessageId === 'number' ? { reply_parameters: { message_id: replyToMessageId } } : {};
-
-	    const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
-	    const text = args.join(' ').trim();
-	    if (!text) {
-	      await ctx.reply('用法: /draft <text>');
-	      return;
-    }
-
-    const cwd = directoryManager.getUserCwd(userId);
-    const workspaceRoot = detectWorkspaceFrom(cwd);
-    const authUserId = deriveTelegramAuthUserId(userId);
-    const sourceChatSessionId = `tg:${String(ctx.chat?.id ?? '')}`;
-
-    let draft;
-    try {
-      draft = createTelegramTaskDraft({ authUserId, workspaceRoot, sourceChatSessionId, text });
-	    } catch (error) {
-	      const message = error instanceof Error ? error.message : String(error);
-	      await ctx.reply(`❌ 创建草稿失败: ${message}`, {
-	        disable_notification: silentNotifications,
-        ...replyParameters,
-	      });
-	      return;
 	    }
-
-    const keyboard = new InlineKeyboard()
-      .text('Confirm & Run', `td:confirm:${draft.id}`)
-      .text('Cancel', `td:cancel:${draft.id}`);
-
-    const previewMarkdown = formatTaskDraftPreview({ prompt: text, workspaceRoot, state: 'pending' });
-    const previewText = escapeTelegramMarkdownV2(previewMarkdown);
-
-	    await ctx.reply(previewText, {
-	      parse_mode: 'MarkdownV2',
-	      reply_markup: keyboard,
-	      disable_notification: silentNotifications,
-      ...replyParameters,
-	      link_preview_options: { is_disabled: true },
-	    });
 	  });
 
-  bot.callbackQuery(/^td:(confirm|cancel):([0-9a-f-]{8}-[0-9a-f-]{4}-[0-9a-f-]{4}-[0-9a-f-]{4}-[0-9a-f-]{12})$/i, async (ctx) => {
-    const userId = await requireUserId(ctx, 'callbackQuery:td');
-    if (userId === null) return;
-    if (!(await requirePrivateChat(ctx, 'callbackQuery:td'))) return;
-
-    const data = String(ctx.callbackQuery.data ?? '');
-    const [prefix, action, draftId] = data.split(':');
-    if (prefix !== 'td' || !action || !draftId) {
-      await ctx.answerCallbackQuery({ text: '❌ Invalid callback', show_alert: true }).catch(() => undefined);
-      return;
-    }
-
-    const authUserId = deriveTelegramAuthUserId(userId);
-
-    if (action === 'cancel') {
-      const result = cancelTelegramTaskDraft({ authUserId, draftId });
-      if (result.status === 'not_found') {
-        await ctx.answerCallbackQuery({ text: '❌ Draft not found', show_alert: false }).catch(() => undefined);
-        return;
-      }
-      if (result.status === 'already_approved') {
-        await ctx.answerCallbackQuery({ text: '✅ 已入队', show_alert: false }).catch(() => undefined);
-        return;
-      }
-      if (result.status === 'already_cancelled' || result.status === 'cancelled') {
-        await ctx.answerCallbackQuery({ text: '🗑️ 已取消', show_alert: false }).catch(() => undefined);
-        const draft = getTelegramTaskDraft({ authUserId, draftId });
-        const prompt = draft?.bundle?.tasks?.[0]?.prompt ?? '';
-        const workspaceRoot = draft?.workspaceRoot ?? (result.status === 'cancelled' ? result.workspaceRoot : '');
-        const updated = escapeTelegramMarkdownV2(formatTaskDraftPreview({ prompt, workspaceRoot, state: 'cancelled' }));
-        await ctx
-          .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
-          .catch(() => undefined);
-        return;
-      }
-      await ctx.answerCallbackQuery({ text: '❌ 取消失败', show_alert: false }).catch(() => undefined);
-      return;
-    }
-
-    if (action !== 'confirm') {
-      await ctx.answerCallbackQuery({ text: '❌ Unknown action', show_alert: true }).catch(() => undefined);
-      return;
-    }
-
-    const result = confirmTelegramTaskDraft({ authUserId, draftId });
-    if (result.status === 'not_found') {
-      await ctx.answerCallbackQuery({ text: '❌ Draft not found', show_alert: false }).catch(() => undefined);
-      return;
-    }
-    if (result.status === 'cancelled') {
-      await ctx.answerCallbackQuery({ text: '🗑️ 已取消', show_alert: false }).catch(() => undefined);
-      return;
-    }
-    if (result.status === 'workspace_unavailable') {
-      await ctx.answerCallbackQuery({ text: '❌ workspace 不可用，请重新创建草稿', show_alert: true }).catch(() => undefined);
-      return;
-    }
-    if (result.status === 'error') {
-      await ctx.answerCallbackQuery({ text: '❌ 入队失败', show_alert: false }).catch(() => undefined);
-      return;
-    }
-
-    const createdTaskIds = result.createdTaskIds;
-	    const updated = (() => {
-	      const draft = getTelegramTaskDraft({ authUserId, draftId });
-	      const prompt = draft?.bundle?.tasks?.[0]?.prompt ?? '';
-	      const workspaceRoot = draft?.workspaceRoot ?? result.workspaceRoot;
-	      return escapeTelegramMarkdownV2(formatTaskDraftPreview({ prompt, workspaceRoot, state: "approved", createdTaskIds }));
-	    })();
-
-    await ctx.answerCallbackQuery({ text: '✅ 已入队', show_alert: false }).catch(() => undefined);
-    await ctx
-      .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
-      .catch(() => undefined);
-  });
-
-  // 处理带图片的消息
-  bot.on('message:photo', async (ctx) => {
-    const caption = ctx.message.caption || '请描述这张图片';
+	  // 处理带图片的消息
+	  bot.on('message:photo', async (ctx) => {
+	    const caption = ctx.message.caption || '请描述这张图片';
     const photos = ctx.message.photo;
     const userId = await requireUserId(ctx, 'message:photo');
     if (userId === null) return;
@@ -813,26 +680,85 @@ async function main() {
   });
 
   // 处理普通文本消息 - Codex 对话
-  bot.on('message:text', async (ctx) => {
-    const text = ctx.message.text;
-    const userId = await requireUserId(ctx, 'message:text');
-    if (userId === null) return;
+	  bot.on('message:text', async (ctx) => {
+	    const text = ctx.message.text;
+	    const userId = await requireUserId(ctx, 'message:text');
+	    if (userId === null) return;
 
-    const trimmed = text.trim();
-    if (trimmed.startsWith('/')) {
-      const firstToken = trimmed.split(/\s+/)[0] ?? '';
-      const withoutSlash = firstToken.slice(1);
-      const command = withoutSlash.split('@')[0]?.toLowerCase() ?? '';
-      if (command && TELEGRAM_CONTROL_COMMANDS.has(command)) {
-        return;
-      }
-    }
+	    const trimmed = text.trim();
+	    if (trimmed.startsWith('/')) {
+	      const firstToken = trimmed.split(/\s+/)[0] ?? '';
+	      const withoutSlash = firstToken.slice(1);
+	      const command = withoutSlash.split('@')[0]?.toLowerCase() ?? '';
+	      if (command && TELEGRAM_CONTROL_COMMANDS.has(command)) {
+	        return;
+	      }
+	      if (command) {
+	        await ctx.reply(`❌ 未知命令: /${command}\n用 /help 查看可用命令`);
+	        return;
+	      }
+	    }
 
-    const cwd = directoryManager.getUserCwd(userId);
+	    const restart = parseRestartIntent(trimmed);
+	    if (restart) {
+	      if (!(await requirePrivateChat(ctx, "restart"))) return;
 
-    await handleCodexMessage(
-      ctx,
-      text,
+	      const underPm2 = typeof process.env.pm_id === "string" && process.env.pm_id.trim().length > 0;
+	      const allowRestart = parseBooleanFlag(process.env.ADS_TG_ALLOW_SUICIDE_RESTART, false);
+	      if (!underPm2 && !allowRestart) {
+	        await ctx.reply("❌ 当前未启用重启：仅在 pm2 下可用（或设置 ADS_TG_ALLOW_SUICIDE_RESTART=true）。");
+	        return;
+	      }
+
+	      const triggerSelfRestart = (): void => {
+	        const timer = setTimeout(() => {
+	          try {
+	            process.kill(process.pid, "SIGTERM");
+	          } catch {
+	            process.exit(0);
+	          }
+	        }, 250);
+	        timer.unref?.();
+	      };
+
+	      if (restart.scope === "self") {
+	        await ctx.reply("♻️ 正在重启 Telegram 服务…");
+	        logger.warn(`[Telegram] Suicide restart requested scope=self user=${userId} pm2=${underPm2}`);
+	        triggerSelfRestart();
+	        return;
+	      }
+
+	      const webApp = String(process.env.ADS_PM2_APP_WEB ?? "").trim();
+	      if (!webApp) {
+	        await ctx.reply("❌ 未配置 ADS_PM2_APP_WEB，无法重启 Web（示例：ADS_PM2_APP_WEB=ads-web）。");
+	        return;
+	      }
+
+	      try {
+	        await restartPm2Apps([webApp]);
+	      } catch (error) {
+	        const message = error instanceof Error ? error.message : String(error);
+	        await ctx.reply(`❌ 重启失败: ${message}`);
+	        return;
+	      }
+
+	      if (restart.scope === "web") {
+	        await ctx.reply("♻️ 已请求重启 Web 服务。");
+	        logger.warn(`[Telegram] pm2 restart requested scope=web user=${userId} app=${webApp}`);
+	        return;
+	      }
+
+	      await ctx.reply("♻️ 已请求重启 Web 服务，正在重启 Telegram 服务…");
+	      logger.warn(`[Telegram] Suicide restart requested scope=all user=${userId} app=${webApp} pm2=${underPm2}`);
+	      triggerSelfRestart();
+	      return;
+	    }
+
+	    const cwd = directoryManager.getUserCwd(userId);
+
+	    await handleCodexMessage(
+	      ctx,
+	      text,
       sessionManager,
       config.streamUpdateIntervalMs,
       undefined,

@@ -142,7 +142,7 @@ Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK
 
 鉴权/配置由 Gemini CLI 自身负责（例如 `gemini auth` / 主目录配置），ADS 不再通过 SDK 直接读取/管理密钥。
 
-适配器启用/禁用开关由 `src/telegram/utils/sessionManager.ts` 读取环境变量（例如 `ADS_CLAUDE_ENABLED`/`ADS_GEMINI_ENABLED`）；Web Console 支持 `/agent` 命令切换激活的 Agent。
+适配器启用/禁用开关由 `src/telegram/utils/sessionManager.ts` 读取环境变量（例如 `ADS_CLAUDE_ENABLED`/`ADS_GEMINI_ENABLED`）；Web Console 通过 UI 选择激活的 Agent（不再提供 `/agent` 命令）。
 
 ### 协作代理（主代理自动调度/委派）
 
@@ -207,10 +207,13 @@ npm run services -- status
 | `/reset` | 重置会话，开始新对话 |
 | `/mark [on\|off]` | 记录对话到 `YYYY-MM-DD-note.md`（可省略参数切换状态） |
 | `/pref [list|add|del]` | 管理偏好设置（长期记忆） |
-| `/draft <text>` | 创建任务草稿（需确认后入队） |
 | `/rebuild_restart` | 构建并重启 Telegram 服务 |
 | `/pwd` | 当前工作目录 |
 | `/cd <path>` | 切换工作目录 |
+
+**自然语言控制（pm2）**：
+- 发送 `restart` / `reboot` / `重启`：重启 Telegram 服务（仅 pm2 下可用，或设置 `ADS_TG_ALLOW_SUICIDE_RESTART=true`）。
+- 发送 `restart web` / `restart all` / `重启 web` / `重启全部`：需要配置 `ADS_PM2_APP_WEB=ads-web`，否则不会执行。
 
 **特性**：
 - 💬 直接发送消息与 AI 对话，支持多轮交互

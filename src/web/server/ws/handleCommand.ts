@@ -45,19 +45,56 @@ export async function handleCommandMessage(deps: {
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   currentCwd: string;
 }> {
-  if (deps.parsed.type !== "command") {
-    return {
-      handled: false,
-      orchestrator: deps.orchestrator,
-      currentCwd: deps.currentCwd,
-    };
-  }
-
   const sendToClient = (payload: unknown): void => deps.safeJsonSend(deps.ws, payload);
   const sendToChat = (payload: unknown): void => deps.broadcastJson(payload);
 
   let orchestrator = deps.orchestrator;
   let currentCwd = deps.currentCwd;
+
+  if (deps.parsed.type === "set_agent") {
+    const payload = deps.parsed.payload;
+    const agentId =
+      payload && typeof payload === "object" && !Array.isArray(payload)
+        ? String((payload as Record<string, unknown>).agentId ?? "").trim()
+        : "";
+
+    if (!agentId) {
+      sendToClient({ type: "error", message: "Payload must include agentId" });
+      return { handled: true, orchestrator, currentCwd };
+    }
+
+    const switchResult = deps.sessionManager.switchAgent(deps.userId, agentId);
+    if (!switchResult.success) {
+      sendToClient({ type: "error", message: switchResult.message });
+      return { handled: true, orchestrator, currentCwd };
+    }
+
+    orchestrator = deps.sessionManager.getOrCreate(deps.userId, currentCwd);
+    const activeAgentId = orchestrator.getActiveAgentId();
+    sendToClient({
+      type: "agents",
+      activeAgentId,
+      agents: orchestrator.listAgents().map((entry) => {
+        const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+        return {
+          id: entry.metadata.id,
+          name: entry.metadata.name,
+          ready: merged.ready,
+          error: merged.error,
+        };
+      }),
+      threadId: deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId) ?? orchestrator.getThreadId(),
+    });
+    return { handled: true, orchestrator, currentCwd };
+  }
+
+  if (deps.parsed.type !== "command") {
+    return {
+      handled: false,
+      orchestrator,
+      currentCwd,
+    };
+  }
 
   const lock = deps.getWorkspaceLock(detectWorkspaceFrom(currentCwd));
   await lock.runExclusive(async () => {
@@ -134,81 +171,6 @@ export async function handleCommandMessage(deps: {
         deps.sessionLogger?.logOutput(message);
       }
       deps.sendWorkspaceState(deps.ws, currentCwd);
-      return;
-    }
-
-    if (slash?.command === "agent") {
-      orchestrator = deps.sessionManager.getOrCreate(deps.userId, currentCwd);
-      const sendAgentsSnapshot = () => {
-        const activeAgentId = orchestrator.getActiveAgentId();
-        sendToCommandScope({
-          type: "agents",
-          activeAgentId,
-          agents: orchestrator.listAgents().map((entry) => {
-            const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
-            return {
-              id: entry.metadata.id,
-              name: entry.metadata.name,
-              ready: merged.ready,
-              error: merged.error,
-            };
-          }),
-          threadId: deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId) ?? orchestrator.getThreadId(),
-        });
-      };
-      let agentArg = slash.body.trim();
-      if (!agentArg) {
-        if (isSilentCommandPayload) {
-          sendAgentsSnapshot();
-          return;
-        }
-        const agents = orchestrator.listAgents();
-        if (agents.length === 0) {
-          const output = "暂无可用代理";
-          sendToCommandScope({ type: "result", ok: false, output });
-          deps.sessionLogger?.logOutput(output);
-          return;
-        }
-        const activeId = orchestrator.getActiveAgentId();
-        const lines = agents
-          .map((entry) => {
-            const marker = entry.metadata.id === activeId ? "•" : "○";
-            const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
-            const state = merged.ready ? "可用" : merged.error ?? "未配置";
-            return `${marker} ${entry.metadata.name} (${entry.metadata.id}) - ${state}`;
-          })
-          .join("\n");
-        const message = [
-          "🤖 可用代理：",
-          lines,
-          "",
-          "使用 /agent <id> 切换代理，如 /agent gemini。",
-          "提示：当主代理为 Codex 时，会在需要前端/文案等场景自动调用 Claude/Gemini 协作并整合验收。",
-        ].join("\n");
-        sendToCommandScope({ type: "result", ok: true, output: message });
-        deps.sessionLogger?.logOutput(message);
-        sendAgentsSnapshot();
-        return;
-      }
-      const normalized = agentArg.toLowerCase();
-      if (normalized === "auto" || normalized === "manual") {
-        agentArg = "codex";
-      }
-      const switchResult = deps.sessionManager.switchAgent(deps.userId, agentArg);
-      if (isSilentCommandPayload) {
-        if (switchResult.success) {
-          sendAgentsSnapshot();
-        } else {
-          sendToCommandScope({ type: "error", message: switchResult.message });
-          deps.sessionLogger?.logError(switchResult.message);
-        }
-        return;
-      }
-      sendToCommandScope({ type: "result", ok: switchResult.success, output: switchResult.message });
-      deps.sessionLogger?.logOutput(switchResult.message);
-      if (switchResult.success) {
-        sendAgentsSnapshot();
-      }
       return;
     }
 

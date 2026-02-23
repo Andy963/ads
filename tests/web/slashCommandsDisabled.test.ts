@@ -565,14 +565,16 @@ describe("web slash commands", () => {
     });
   });
 
-  it("supports silent /agent routing commands", async () => {
+  it("supports set_agent control messages", async () => {
     await withTempWorkspace("ads-web-ws-command-agent-", async (workspaceRoot) => {
       const clientMessages: unknown[] = [];
       const chatMessages: unknown[] = [];
       let called = false;
+      let switched: { userId: number; agentId: string } | null = null;
+      const orchestrator = new FakeOrchestrator();
 
       const result = await handleCommandMessage({
-        parsed: { type: "command", payload: { command: "/agent", silent: true } as any },
+        parsed: { type: "set_agent", payload: { agentId: "codex" } as any },
         ws: {} as any,
         safeJsonSend: (_ws, payload) => clientMessages.push(payload),
         broadcastJson: (payload) => chatMessages.push(payload),
@@ -591,7 +593,11 @@ describe("web slash commands", () => {
         cwdStorePath: "",
         persistCwdStore: () => {},
         sessionManager: {
-          getOrCreate: () => new FakeOrchestrator() as any,
+          switchAgent: (userId: number, agentId: string) => {
+            switched = { userId, agentId };
+            return { success: true, message: "ok" };
+          },
+          getOrCreate: () => orchestrator as any,
           getSavedThreadId: () => undefined,
         } as any,
         agentAvailability: { mergeStatus: (_agentId: string, status: any) => status } as any,
@@ -618,6 +624,7 @@ describe("web slash commands", () => {
       assert.equal(result.handled, true);
       assert.equal(called, false);
       assert.equal(chatMessages.length, 0);
+      assert.deepEqual(switched, { userId: 1, agentId: "codex" });
       assert.equal(clientMessages.length, 1);
       assert.equal((clientMessages[0] as { type?: unknown }).type, "agents");
     });
