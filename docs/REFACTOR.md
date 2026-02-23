@@ -58,7 +58,7 @@
 
 ### Backend (src/)
 
-- `src/agents/*`
+- `src/agents/*` (except `src/agents/orchestrator.ts`, `src/agents/hub.ts`, `src/agents/tasks/taskCoordinator/helpers.ts`, `src/agents/tasks/supervisorPrompt.ts`)
 - `src/audio/*`
 - `src/bootstrap/*`
 - `src/codex/*`
@@ -69,14 +69,14 @@
 - `src/state/*`
 - `src/storage/*` (except `database.ts`)
 - `src/systemPrompt/*`
-- `src/tasks/*`
+- `src/tasks/*` (except `src/tasks/storeStatements.ts`, `src/tasks/storeImpl/messageOps.ts`, `src/tasks/storeImpl/conversationOps.ts`, `src/tasks/executor.ts`)
 - `src/telegram/*` (except `botSetup.ts`)
 - `src/types/*`
 - `src/utils/*` (except any files touched by refactors)
-- `src/web/*` (except `server/startWebServer.ts`)
+- `src/web/*` (except `src/web/server/startWebServer.ts`, `src/web/server/ws/handleTaskResume.ts`)
 - `src/workflow/*`
 - `src/workspace/*`
 
 ### Frontend (web/)
 
-- `web/*`
+- `web/*` (except `web/src/api/types.ts`)
