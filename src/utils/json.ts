@@ -12,6 +12,17 @@ export function safeParseJson<T>(payload: string | null | undefined): T | null {
   }
 }
 
+export function safeParseJsonFromUnknown<T>(raw: unknown): T | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return safeParseJson<T>(trimmed);
+}
+
 export function safeParseJsonWithSchema<TSchema extends z.ZodTypeAny>(
   payload: string | null | undefined,
   schema: TSchema,
