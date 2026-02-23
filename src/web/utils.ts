@@ -179,11 +179,21 @@ export function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function deriveWebUserId(token: string, sessionId: string): number {
+const WEB_USER_ID_PREFIX = 0x700000000000;
+const WEB_USER_ID_LEGACY_PREFIX = 0x70000000;
+
+export function deriveLegacyWebUserId(token: string, sessionId: string): number {
   const base = `${token || "default"}::${sessionId || "default"}`;
   const hash = crypto.createHash("sha256").update(base).digest();
   const value = hash.readUInt32BE(0);
-  return 0x70000000 + value;
+  return WEB_USER_ID_LEGACY_PREFIX + value;
+}
+
+export function deriveWebUserId(token: string, sessionId: string): number {
+  const base = `${token || "default"}::${sessionId || "default"}`;
+  const hash = crypto.createHash("sha256").update(base).digest();
+  const value = hash.readUIntBE(0, 6);
+  return WEB_USER_ID_PREFIX + value;
 }
 
 export function resolveAllowedDirs(workspaceRoot: string): string[] {

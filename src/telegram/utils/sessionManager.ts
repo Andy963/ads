@@ -242,6 +242,31 @@ export class SessionManager {
     return { threadId: record.threadId, cwd: record.cwd };
   }
 
+  maybeMigrateThreadState(fromUserId: number, toUserId: number): boolean {
+    if (fromUserId === toUserId) {
+      return false;
+    }
+    const storage = this.threadStorage;
+    if (!storage) {
+      return false;
+    }
+
+    const migrated = storage.cloneRecord(fromUserId, toUserId);
+    if (!migrated) {
+      return false;
+    }
+
+    const model = this.userModels.get(fromUserId);
+    if (model && !this.userModels.has(toUserId)) {
+      this.userModels.set(toUserId, model);
+    }
+    if (this.pendingHistoryInjections.has(fromUserId)) {
+      this.pendingHistoryInjections.add(toUserId);
+    }
+
+    return true;
+  }
+
   getSavedResumeThreadId(userId: number): string | undefined {
     const record = this.threadStorage?.getRecord(userId);
     const raw = record?.agentThreads?.resume;

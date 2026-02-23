@@ -35,7 +35,7 @@ export function serializeCookie(name: string, value: string, options?: CookieOpt
   if (options?.httpOnly !== false) {
     parts.push("HttpOnly");
   }
-  if (options?.secure !== false) {
+  if (options?.secure === true) {
     parts.push("Secure");
   }
   if (options?.sameSite) {
@@ -43,4 +43,3 @@ export function serializeCookie(name: string, value: string, options?: CookieOpt
   }
   return parts.join("; ");
 }
-

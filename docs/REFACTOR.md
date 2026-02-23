@@ -23,6 +23,11 @@
 - `src/workspace/detector.ts` / `src/workspace/adsPaths.ts` / `src/workspace/service.ts`：阅读（工作空间探测与集中式 state 目录）。
 - `src/workspace/rulesService.ts`：重构（规则违规检测做大小写不敏感匹配，降低误漏判）。
 - `src/skills/loader.ts`：阅读（skill 发现与缓存逻辑）。
+- `src/web/utils.ts`：重构（`deriveWebUserId()` 扩展到 48-bit 熵，并保留 legacy 32-bit 派生用于迁移）。
+- `src/web/server/ws/server.ts`：重构（WebSocket 建连时 best-effort 迁移 legacy `userId` 的 thread/cwd 状态，尽量保持“续聊/目录”体验不变）。
+- `src/web/auth/cookies.ts`：重构（`serializeCookie()` 不再默认添加 `Secure`，避免未来 HTTP 场景误用）。
+- `src/telegram/utils/threadStorage.ts`：重构（新增 `cloneRecord()`，用于迁移时保留 `updated_at` 语义）。
+- `src/telegram/utils/sessionManager.ts`：重构（新增 `maybeMigrateThreadState()`，封装 thread state 迁移入口）。
 
 ### Frontend (`web/`)
 
@@ -35,25 +40,29 @@
 - `docs/spec/20260223-1600-project-wide-refactor-pass-1/`：新增（本轮 refactor spec）。
 - `docs/spec/20260223-1700-refactor-command-runner-lifecycle/`：新增（`commandRunner` 去重与测试补齐）。
 - `docs/spec/20260223-1800-refactor-activity-tracker-tool-invoke/`：新增（`ActivityTracker` 可维护性重构 + 规则违规检测补强）。
+- `docs/spec/20260223-1900-project-wide-refactor-pass-2/`：新增（Web `userId` 扩展 + cookie 防御性默认值）。
 
 ### Tests
 
 - `tests/utils/streamingText.test.ts`：新增（覆盖累积/增量/overlap/截断输入场景）。
 - `tests/utils/commandRunner.test.ts`：更新（覆盖 abort/timeout/maxOutputBytes）。
 - `tests/utils/abort.test.ts`：新增（覆盖 `createAbortError()` / `isAbortError()` 默认与自定义 message 语义）。
+- `tests/web/authCookies.test.ts`：更新（`serializeCookie()` 的 `Secure` 默认值语义调整）。
+- `tests/web/webUserId.test.ts`：新增（覆盖新/旧 `deriveWebUserId()` 派生稳定性）。
+- `tests/telegram/threadStorage.test.ts`：新增（覆盖 `cloneRecord()` 保留 `updated_at` 的迁移语义）。
 
 ## Refactor Opportunities (Backlog)
 
 ### Correctness / Robustness
 
 - （已处理）`src/tasks/executor.ts`：`event.delta` 合并逻辑已增强，并补充 `tests/utils/streamingText.test.ts` 覆盖。
-- `src/web/utils.ts`：`deriveWebUserId()` 仅使用 32-bit 哈希，理论上存在碰撞导致不同用户/会话共享状态的风险；建议评估是否可提升到更大空间（例如 48-bit）或改为字符串 ID。
+- （已处理）`src/web/utils.ts`：`deriveWebUserId()` 已扩展到 48-bit 熵；并通过迁移逻辑兼容 legacy 32-bit `userId` 的持久化状态。
 
 ### Maintainability
 
 - （已处理）`src/utils/commandRunner.ts`：抽取共享 lifecycle，减少 pipe/file 重复并补齐测试。
 - （已处理）`src/utils/abort.ts`：集中 `AbortError` 创建/识别，跨模块统一中断语义并减少重复代码。
-- `web/src/components/TaskDetail.vue`：文案与 aria-label/title 统一为中文；`queued` / `paused` 等状态在空态与占位提示上需覆盖。
+- （已处理）`web/src/components/TaskDetail.vue`：文案与 aria-label/title 已统一为中文，并补齐 `queued` / `paused` 状态下的占位提示。
 
 ### Performance
 

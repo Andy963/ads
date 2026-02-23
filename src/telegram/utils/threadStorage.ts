@@ -313,6 +313,46 @@ export class ThreadStorage {
     }
   }
 
+  cloneRecord(fromUserId: number, toUserId: number, options: { overwrite?: boolean } = {}): boolean {
+    if (fromUserId === toUserId) {
+      return false;
+    }
+
+    const fromHash = this.hashUserId(fromUserId);
+    const toHash = this.hashUserId(toUserId);
+
+    if (!options.overwrite) {
+      try {
+        const existing = this.getStmt.get(this.namespace, toHash) as
+          | { threadId: string; cwd: string | null; updatedAt: number | null }
+          | undefined;
+        if (existing?.threadId) {
+          return false;
+        }
+      } catch (error) {
+        logger.warn(`[ThreadStorage] Failed to read destination thread record (ns=${this.namespace})`, error);
+        return false;
+      }
+    }
+
+    try {
+      const row = this.getStmt.get(this.namespace, fromHash) as
+        | { threadId: string; cwd: string | null; updatedAt: number | null }
+        | undefined;
+      if (!row?.threadId) {
+        return false;
+      }
+      const updatedAt =
+        typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) && row.updatedAt > 0 ? row.updatedAt : 0;
+      const cwd = typeof row.cwd === 'string' && row.cwd.trim() ? row.cwd.trim() : null;
+      this.upsertStmt.run(this.namespace, toHash, row.threadId, cwd, updatedAt);
+      return true;
+    } catch (error) {
+      logger.warn(`[ThreadStorage] Failed to clone thread record (ns=${this.namespace})`, error);
+      return false;
+    }
+  }
+
   removeThread(userId: number): void {
     const userHash = this.hashUserId(userId);
     try {

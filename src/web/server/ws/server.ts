@@ -17,7 +17,7 @@ import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
 
-import { deriveWebUserId, getWorkspaceState } from "../../utils.js";
+import { deriveLegacyWebUserId, deriveWebUserId, getWorkspaceState } from "../../utils.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { wsMessageSchema } from "./schema.js";
@@ -188,7 +188,9 @@ export function attachWebSocketServer(deps: {
 
     const authUserId = String(auth.userId ?? "").trim();
     const chatKey = `${sessionId}:${chatSessionId}`;
+    const legacyUserId = deriveLegacyWebUserId(authUserId, chatKey);
     const userId = deriveWebUserId(authUserId, chatKey);
+    sessionManager.maybeMigrateThreadState(legacyUserId, userId);
     const historyKey = `${authUserId}::${sessionId}::${chatSessionId}`;
     const connectionId = crypto.randomBytes(3).toString("hex");
     deps.clientMetaByWs.set(ws, {
@@ -210,8 +212,16 @@ export function attachWebSocketServer(deps: {
 
     const cacheKey = `${authUserId}::${sessionId}`;
     const cachedWorkspace = deps.workspaceCache.get(cacheKey);
+    const userCwdKey = String(userId);
+    if (!deps.cwdStore.has(userCwdKey)) {
+      const legacyCwd = deps.cwdStore.get(String(legacyUserId));
+      if (legacyCwd && legacyCwd.trim()) {
+        deps.cwdStore.set(userCwdKey, legacyCwd);
+        deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
+      }
+    }
     const savedState = sessionManager.getSavedState(userId);
-    const storedCwd = deps.cwdStore.get(String(userId));
+    const storedCwd = deps.cwdStore.get(userCwdKey);
     let currentCwd = directoryManager.getUserCwd(userId);
     const preferredProjectCwd = (() => {
       try {
