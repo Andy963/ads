@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase } from "../state/database.js";
+import { prepareMigrationMarkerStatements } from "../state/migrations.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { parseBooleanFlag } from "./flags.js";
 import { createLogger } from "./logger.js";
@@ -220,15 +221,9 @@ export class HistoryStore {
       `DELETE FROM history_entries WHERE namespace = ? AND session_id = ? AND id < ?`,
     );
 
-    this.getMigrationMarkerStmt = this.db.prepare(
-      `SELECT value FROM kv_state WHERE namespace = 'migrations' AND key = ?`,
-    );
-    this.setMigrationMarkerStmt = this.db.prepare(
-      `INSERT INTO kv_state (namespace, key, value, updated_at)
-       VALUES ('migrations', ?, ?, ?)
-       ON CONFLICT(namespace, key)
-       DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    );
+    const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(this.db);
+    this.getMigrationMarkerStmt = getMigrationMarkerStmt;
+    this.setMigrationMarkerStmt = setMigrationMarkerStmt;
   }
 
   private trimSqlite(sessionId: string): void {

@@ -20,12 +20,15 @@
 - `src/telegram/utils/downloadUtils.ts` (shared telegram download helpers)
 - `src/telegram/utils/fileHandler.ts` (telegram file download/upload helpers)
 - `src/telegram/utils/imageHandler.ts` (telegram image download helper)
+- `src/telegram/utils/threadStorage.ts` (telegram thread persistence; legacy migration)
 - `src/telegram/utils/urlHandler.ts` (URL extraction, safe download, SSRF guard)
 - `src/utils/env.ts` (env loading behavior and side effects)
 - `src/utils/flags.ts` (env flag parsing helpers)
 - `src/utils/activityTracker.ts` (explored tracking, env-driven config)
 - `src/utils/historyStore.ts` (history persistence; sqlite/json dual mode; migrations)
 - `src/utils/sqlitePaths.ts` (shared sqlite path detection)
+- `src/state/database.ts` (state db bootstrap & caching)
+- `src/state/migrations.ts` (migration marker statement helpers)
 - `src/agents/orchestrator.ts` (skill/prefs toggles, orchestration behavior)
 - `src/agents/hub.ts` (coordinator config, env parsing)
 - `src/systemPrompt/manager.ts` (reinjection config, prompt assembly)
@@ -49,6 +52,7 @@
 - Consolidate positive int env parsing helpers into `src/utils/flags.ts` (DONE: `parsePositiveIntFlag`).
 - Consolidate non-negative int env parsing helpers into `src/utils/flags.ts` (DONE: `parseNonNegativeIntFlag`).
 - Consolidate sqlite path detection helpers into `src/utils/sqlitePaths.ts` (DONE: `isSqliteDbPath`).
+- Consolidate migration marker statements into `src/state/migrations.ts` (DONE: `prepareMigrationMarkerStatements`).
 - Standardize "resolve paths from state dir" helpers into a small set of utilities (avoid ad-hoc joins).
 
 ### Extensibility & Maintainability
@@ -75,11 +79,11 @@
 - `src/intake/*`
 - `src/memory/*`
 - `src/skills/*` (except `loader.ts`)
-- `src/state/*`
+- `src/state/*` (except `database.ts`, `migrations.ts`)
 - `src/storage/*` (except `database.ts`)
 - `src/systemPrompt/*`
 - `src/tasks/*` (except `src/tasks/storeStatements.ts`, `src/tasks/storeImpl/messageOps.ts`, `src/tasks/storeImpl/conversationOps.ts`, `src/tasks/executor.ts`)
-- `src/telegram/*` (except `botSetup.ts`, `utils/downloadUtils.ts`, `utils/fileHandler.ts`, `utils/imageHandler.ts`, `utils/urlHandler.ts`)
+- `src/telegram/*` (except `botSetup.ts`, `utils/downloadUtils.ts`, `utils/fileHandler.ts`, `utils/imageHandler.ts`, `utils/threadStorage.ts`, `utils/urlHandler.ts`)
 - `src/types/*`
 - `src/utils/*` (except any files touched by refactors)
 - `src/web/*` (except `src/web/server/startWebServer.ts`, `src/web/server/ws/handleTaskResume.ts`)

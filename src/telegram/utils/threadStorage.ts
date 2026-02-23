@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import type { Database as DatabaseType, Statement as StatementType } from 'better-sqlite3';
 
 import { getStateDatabase } from '../../state/database.js';
+import { prepareMigrationMarkerStatements } from '../../state/migrations.js';
 import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -94,15 +95,9 @@ export class ThreadStorage {
        ON CONFLICT(namespace, key)
        DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     );
-    this.getMigrationMarkerStmt = this.db.prepare(
-      `SELECT value FROM kv_state WHERE namespace = 'migrations' AND key = ?`,
-    );
-    this.setMigrationMarkerStmt = this.db.prepare(
-      `INSERT INTO kv_state (namespace, key, value, updated_at)
-       VALUES ('migrations', ?, ?, ?)
-       ON CONFLICT(namespace, key)
-       DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    );
+    const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(this.db);
+    this.getMigrationMarkerStmt = getMigrationMarkerStmt;
+    this.setMigrationMarkerStmt = setMigrationMarkerStmt;
 
     this.salt = this.loadSalt();
     this.migrateLegacyThreads();

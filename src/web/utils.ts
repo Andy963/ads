@@ -11,6 +11,7 @@ import type { ImagePersistOutcome, IncomingImage, PromptInputOutcome, PromptPayl
 import { createLogger } from "../utils/logger.js";
 import { isSqliteDbPath } from "../utils/sqlitePaths.js";
 import { getStateDatabase } from "../state/database.js";
+import { prepareMigrationMarkerStatements } from "../state/migrations.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 
 export { truncateForLog } from "../utils/text.js";
@@ -37,15 +38,8 @@ function migrateLegacyCwdJson(db: DatabaseType, stateDbPath: string): void {
   }
 
   const marker = `cwd:web:${path.basename(legacyPath)}`;
-  const getMarkerStmt: SqliteStatement = db.prepare(
-    `SELECT value FROM kv_state WHERE namespace = 'migrations' AND key = ?`,
-  );
-  const setMarkerStmt: SqliteStatement = db.prepare(
-    `INSERT INTO kv_state (namespace, key, value, updated_at)
-     VALUES ('migrations', ?, ?, ?)
-     ON CONFLICT(namespace, key)
-     DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-  );
+  const { getMigrationMarkerStmt: getMarkerStmt, setMigrationMarkerStmt: setMarkerStmt } =
+    prepareMigrationMarkerStatements(db);
 
   try {
     const existing = getMarkerStmt.get(marker) as { value?: string } | undefined;
