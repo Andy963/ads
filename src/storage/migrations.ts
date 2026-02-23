@@ -424,7 +424,7 @@ export const migrations: Migration[] = [
   },
   // 示例：未来的迁移
   // {
-  //   version: 2,
+  //   version: 13,
   //   description: "Add tags column to nodes",
   //   up: (db) => {
   //     // 检查列是否存在

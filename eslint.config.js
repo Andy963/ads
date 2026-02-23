@@ -33,6 +33,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist/", "node_modules/", ".ads/", ".ads-test-tmp/", ".agent/"],
+    ignores: ["dist/", "node_modules/", ".ads/", ".ads-test-tmp/", ".agent/", ".worktrees/"],
   }
 );

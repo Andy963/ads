@@ -7,6 +7,7 @@ import { runBootstrapLoop } from "../bootstrap/bootstrapLoop.js";
 import { CodexBootstrapAgentRunner } from "../bootstrap/agentRunner.js";
 import { NoopSandbox } from "../bootstrap/sandbox.js";
 import type { BootstrapProjectRef } from "../bootstrap/types.js";
+import { mergeStreamingText } from "../utils/streamingText.js";
 
 import type { TaskStore } from "./store.js";
 import type { Task, TaskContext } from "./types.js";
@@ -289,7 +290,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           .filter(Boolean)
           .join("\n");
 
-        let lastRespondingText = "";
+        let respondingText = "";
         const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
           try {
             const raw = event.raw as unknown as { type?: unknown; item?: unknown };
@@ -306,16 +307,10 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
             }
 
             if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
-              const next = event.delta;
-              let delta = next;
-              if (lastRespondingText && next.startsWith(lastRespondingText)) {
-                delta = next.slice(lastRespondingText.length);
-              }
-              if (next.length >= lastRespondingText.length) {
-                lastRespondingText = next;
-              }
-              if (delta) {
-                options?.hooks?.onMessageDelta?.({ role: "assistant", delta, modelUsed: modelForStorage });
+              const merged = mergeStreamingText(respondingText, event.delta);
+              respondingText = merged.full;
+              if (merged.delta) {
+                options?.hooks?.onMessageDelta?.({ role: "assistant", delta: merged.delta, modelUsed: modelForStorage });
               }
               return;
             }

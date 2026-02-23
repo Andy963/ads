@@ -198,7 +198,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="!task" class="empty">
-    <span class="empty-text">Select a task to start chatting</span>
+    <span class="empty-text">选择一个任务开始对话</span>
   </div>
   <div v-else class="detail">
     <div class="header">
@@ -267,17 +267,19 @@ onBeforeUnmount(() => {
 
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
-        <span v-if="task.status === 'pending'">Waiting to start...</span>
-        <span v-else-if="task.status === 'planning'">Preparing...</span>
-        <span v-else-if="task.status === 'running'">Running...</span>
-        <span v-else>No messages yet</span>
+        <span v-if="task.status === 'queued'">排队中...</span>
+        <span v-else-if="task.status === 'pending'">等待开始...</span>
+        <span v-else-if="task.status === 'planning'">准备中...</span>
+        <span v-else-if="task.status === 'running'">执行中...</span>
+        <span v-else-if="task.status === 'paused'">已暂停</span>
+        <span v-else>暂无消息</span>
       </div>
       <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
         <div class="bubble" :class="{ hasActions: shouldShowMsgActions(m) }">
           <pre v-if="m.kind === 'command'" class="mono">{{ m.content }}</pre>
           <MarkdownContent v-else :content="m.content" :tone="m.role === 'user' ? 'inverted' : 'default'" />
           <div v-if="shouldShowMsgActions(m)" class="msgActions">
-            <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="onCopyMessage(m)">
+            <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="onCopyMessage(m)">
               <svg v-if="copiedMessageId === m.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
@@ -292,16 +294,18 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-if="messages.length > 0 && showPendingReply" class="chat-placeholder">
-        <span v-if="task.status === 'pending'">Waiting to start...</span>
-        <span v-else-if="task.status === 'planning'">Preparing...</span>
-        <span v-else>Running...</span>
+        <span v-if="task.status === 'queued'">排队中...</span>
+        <span v-else-if="task.status === 'pending'">等待开始...</span>
+        <span v-else-if="task.status === 'planning'">准备中...</span>
+        <span v-else-if="task.status === 'paused'">已暂停</span>
+        <span v-else>执行中...</span>
       </div>
       <button
         v-if="showScrollToBottom"
         class="scrollToBottom"
         type="button"
-        aria-label="Scroll to bottom"
-        title="Back to bottom"
+        aria-label="滚动到底部"
+        title="返回底部"
         @click="scrollToBottom"
       >
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -316,10 +320,10 @@ onBeforeUnmount(() => {
         ref="inputEl"
         rows="3"
         class="composer-input"
-        :placeholder="isRunning ? 'Continue with instruction... (Enter to send, Alt+Enter for newline)' : 'Enter instruction... (Enter to send, Alt+Enter for newline)'"
+        :placeholder="isRunning ? '继续输入指令…（Enter 发送，Alt+Enter 换行）' : '输入指令…（Enter 发送，Alt+Enter 换行）'"
         @keydown="onInputKeydown"
       />
-      <button class="send" :disabled="!input.trim()" type="button" @click="send">Send</button>
+      <button class="send" :disabled="!input.trim()" type="button" @click="send">发送</button>
     </div>
   </div>
 </template>
