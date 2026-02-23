@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import zlib from "node:zlib";
+import { pipeline } from "node:stream";
 
 import { sendJson, setSecurityHeaders } from "./http.js";
 
@@ -8,7 +10,7 @@ interface Logger {
   error(message: string, ...args: unknown[]): void;
 }
 
-function serveFile(res: http.ServerResponse, filePath: string): boolean {
+function serveFile(req: http.IncomingMessage, res: http.ServerResponse, filePath: string): boolean {
   const contentTypeFor = (resolvedPath: string): string => {
     const ext = path.extname(resolvedPath).toLowerCase();
     switch (ext) {
@@ -43,11 +45,42 @@ function serveFile(res: http.ServerResponse, filePath: string): boolean {
       return false;
     }
     setSecurityHeaders(res);
-    res.writeHead(200, {
-      "Content-Type": contentTypeFor(filePath),
+
+    const contentType = contentTypeFor(filePath);
+    const headers: http.OutgoingHttpHeaders = {
+      "Content-Type": contentType,
       "Cache-Control": filePath.endsWith(".html") ? "no-store" : "public, max-age=31536000, immutable",
-    });
-    fs.createReadStream(filePath).pipe(res);
+    };
+
+    // Check for compression eligibility
+    const acceptEncoding = req.headers["accept-encoding"];
+    const canCompress = /\.(html|js|css|json|svg|map|txt)$/i.test(filePath);
+    const useGzip = canCompress && /\bgzip\b/.test(String(acceptEncoding ?? ""));
+
+    if (useGzip) {
+      headers["Content-Encoding"] = "gzip";
+      headers["Vary"] = "Accept-Encoding";
+      res.writeHead(200, headers);
+
+      const source = fs.createReadStream(filePath);
+      const gzip = zlib.createGzip();
+
+      pipeline(source, gzip, res, (err) => {
+        if (err) {
+          // If stream fails, try to close connection cleanly if possible
+          try {
+            res.destroy();
+          } catch {
+            // ignore
+          }
+        }
+      });
+      return true;
+    } else {
+      headers["Content-Length"] = stat.size;
+      res.writeHead(200, headers);
+      fs.createReadStream(filePath).pipe(res);
+    }
     return true;
   } catch {
     return false;
@@ -60,7 +93,7 @@ export function createHttpServer(options: {
 }): http.Server {
   const distWebDir = path.join(process.cwd(), "dist", "web");
 
-  const serveTasksUi = (res: http.ServerResponse, url: string): boolean => {
+  const serveTasksUi = (req: http.IncomingMessage, res: http.ServerResponse, url: string): boolean => {
     if (!fs.existsSync(distWebDir)) {
       setSecurityHeaders(res);
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
@@ -80,15 +113,15 @@ export function createHttpServer(options: {
     }
 
     if (safeRel === "/" || safeRel === "") {
-      return serveFile(res, path.join(distWebDir, "index.html"));
+      return serveFile(req, res, path.join(distWebDir, "index.html"));
     }
 
-    if (serveFile(res, resolved)) {
+    if (serveFile(req, res, resolved)) {
       return true;
     }
 
     if (!path.posix.basename(safeRel).includes(".")) {
-      return serveFile(res, path.join(distWebDir, "index.html"));
+      return serveFile(req, res, path.join(distWebDir, "index.html"));
     }
 
     setSecurityHeaders(res);
@@ -133,7 +166,7 @@ export function createHttpServer(options: {
         res.writeHead(200).end("ok");
         return;
       }
-      serveTasksUi(res, url);
+      serveTasksUi(req, res, url);
       return;
     }
     setSecurityHeaders(res);
