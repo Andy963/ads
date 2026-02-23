@@ -42,8 +42,7 @@ export function createTaskStoreMessageOps(deps: { stmts: TaskStoreStatements }) 
         ? (stmts.getMessagesLimitedStmt.all(id, Math.floor(limit)) as Record<string, unknown>[])
         : (stmts.getMessagesStmt.all(id) as Record<string, unknown>[]);
 
-    const mapped = rows.map((row) => toTaskMessage(row));
-    return typeof limit === "number" && limit > 0 ? mapped.reverse() : mapped;
+    return rows.map((row) => toTaskMessage(row));
   };
 
   const saveContext = (
@@ -85,4 +84,3 @@ export function createTaskStoreMessageOps(deps: { stmts: TaskStoreStatements }) 
 
   return { addMessage, getMessages, saveContext, getContext };
 }
-

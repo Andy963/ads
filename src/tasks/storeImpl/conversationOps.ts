@@ -112,7 +112,7 @@ export function createTaskStoreConversationOps(deps: { stmts: TaskStoreStatement
         ? (stmts.getConversationMessagesLimitedStmt.all(id, Math.floor(limit)) as Record<string, unknown>[])
         : (stmts.getConversationMessagesStmt.all(id) as Record<string, unknown>[]);
 
-    const mapped = rows.map((row) => ({
+    return rows.map((row) => ({
       id: typeof row.id === "number" ? row.id : Number(row.id ?? 0),
       conversationId: String(row.conversation_id ?? ""),
       taskId: row.task_id == null ? null : String(row.task_id),
@@ -123,9 +123,7 @@ export function createTaskStoreConversationOps(deps: { stmts: TaskStoreStatement
       metadata: parseJson<Record<string, unknown>>(row.metadata) ?? null,
       createdAt: typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0),
     }));
-    return typeof limit === "number" && limit > 0 ? mapped.reverse() : mapped;
   };
 
   return { upsertConversation, getConversation, addConversationMessage, getConversationMessages };
 }
-

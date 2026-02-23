@@ -26,6 +26,12 @@
 - `src/agents/tasks/supervisorPrompt.ts` (supervisor prompt loader; env parsing)
 - `src/skills/loader.ts` (skill discovery & loading; caching)
 - `src/storage/database.ts` (sqlite open path, busy timeout parsing)
+- `src/tasks/storeStatements.ts` (sqlite statements; message/conversation queries)
+- `src/tasks/storeImpl/messageOps.ts` (task message persistence & ordering)
+- `src/tasks/storeImpl/conversationOps.ts` (conversation message persistence & ordering)
+- `src/tasks/executor.ts` (conversation history snippet for prompts)
+- `src/web/server/ws/handleTaskResume.ts` (conversation history resume path)
+- `web/src/api/types.ts` (web API types; Task shape)
 
 ## Candidates / Opportunities
 
@@ -46,6 +52,7 @@
 
 - Avoid repeated SKILL.md reads on hot paths (e.g. skill discovery); cache by `mtimeMs/size` with invalidation on change (DONE: `src/skills/loader.ts`).
 - Prefer streaming where possible for large payloads (attachments/logs) instead of buffering whole files.
+- Avoid `ORDER BY ... DESC LIMIT ...` + in-memory `reverse()` for "most recent N but return ASC" queries; prefer SQL subquery ordering (DONE: `src/tasks/storeStatements.ts`, `src/tasks/storeImpl/messageOps.ts`, `src/tasks/storeImpl/conversationOps.ts`).
 
 ## Not Yet Reviewed (high-level only)
 

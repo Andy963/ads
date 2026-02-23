@@ -21,6 +21,8 @@ export interface Task {
   promptInjectedAt?: number | null;
   inheritContext: boolean;
   agentId: string | null;
+  parentTaskId?: string | null;
+  threadId?: string | null;
   result?: string | null;
   error?: string | null;
   retryCount: number;

@@ -177,7 +177,12 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
     ),
 
     getMessagesLimitedStmt: db.prepare(
-      `SELECT * FROM task_messages WHERE task_id = ? ORDER BY created_at DESC LIMIT ?`,
+      `SELECT * FROM (
+         SELECT * FROM task_messages
+         WHERE task_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?
+       ) ORDER BY created_at ASC`,
     ),
 
     insertContextStmt: db.prepare(
@@ -263,7 +268,12 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
     ),
 
     getConversationMessagesLimitedStmt: db.prepare(
-      `SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?`,
+      `SELECT * FROM (
+         SELECT * FROM conversation_messages
+         WHERE conversation_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?
+       ) ORDER BY created_at ASC`,
     ),
 
     selectMostRecentThreadIdStmt: db.prepare(
