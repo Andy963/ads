@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { safeStringify } from "../utils/json.js";
+
 import type { BootstrapIterationOutcome, BootstrapRunResult, BootstrapRunSpec } from "./types.js";
 
 function ensureDir(dirPath: string): void {
@@ -10,14 +12,6 @@ function ensureDir(dirPath: string): void {
 function writeUtf8(filePath: string, content: string): void {
   ensureDir(path.dirname(filePath));
   fs.writeFileSync(filePath, content, "utf8");
-}
-
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return JSON.stringify({ error: "failed to stringify value" }, null, 2);
-  }
 }
 
 export class BootstrapArtifactStore {
