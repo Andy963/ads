@@ -7,6 +7,7 @@ import { runBootstrapLoop } from "../bootstrap/bootstrapLoop.js";
 import { CodexBootstrapAgentRunner } from "../bootstrap/agentRunner.js";
 import { NoopSandbox } from "../bootstrap/sandbox.js";
 import type { BootstrapProjectRef } from "../bootstrap/types.js";
+import { safeParseJson } from "../utils/json.js";
 import { mergeStreamingText } from "../utils/streamingText.js";
 
 import type { TaskStore } from "./store.js";
@@ -35,16 +36,6 @@ type WorkspacePatchFileStat = { path: string; added: number | null; removed: num
 type WorkspacePatchPayload = { files: WorkspacePatchFileStat[]; diff: string; truncated: boolean };
 type TaskWorkspacePatchArtifact = { paths: string[]; patch: WorkspacePatchPayload | null; reason?: string; createdAt: number };
 
-function safeJsonParse<T>(raw: string): T | null {
-  const trimmed = String(raw ?? "").trim();
-  if (!trimmed) return null;
-  try {
-    return JSON.parse(trimmed) as T;
-  } catch {
-    return null;
-  }
-}
-
 function getLatestContextOfType(contexts: TaskContext[], contextType: string): TaskContext | null {
   const type = String(contextType ?? "").trim();
   if (!type) return null;
@@ -57,7 +48,7 @@ function getLatestContextOfType(contexts: TaskContext[], contextType: string): T
 
 function formatWorkspacePatchArtifactForPrompt(context: TaskContext | null): string {
   if (!context) return "";
-  const parsed = safeJsonParse<TaskWorkspacePatchArtifact>(context.content);
+  const parsed = safeParseJson<TaskWorkspacePatchArtifact>(context.content);
   if (!parsed) return "";
   const paths = Array.isArray(parsed.paths) ? parsed.paths.map((p) => String(p ?? "").trim()).filter(Boolean) : [];
   const patch = parsed.patch ?? null;

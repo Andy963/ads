@@ -1,9 +1,7 @@
+import { safeParseJson } from "../json.js";
+
 function safeJsonParse(value: string): unknown | null {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+  return safeParseJson<unknown>(value);
 }
 
 function normalizeFirstLine(text: string): string {
@@ -47,4 +45,3 @@ function displayPath(value: string): string {
 }
 
 export { displayPath, normalizeFirstLine, safeJsonParse, truncate };
-

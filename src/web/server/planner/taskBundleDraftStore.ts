@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase } from "../../../state/database.js";
+import { safeParseJsonFromUnknown } from "../../../utils/json.js";
 import { taskBundleSchema, type TaskBundle } from "./taskBundle.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
@@ -29,19 +30,8 @@ function normalizeStatus(status: unknown): TaskBundleDraftStatus {
   return "draft";
 }
 
-function safeJsonParse(raw: unknown): unknown | null {
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return null;
-  }
-}
-
 function parseApprovedTaskIds(raw: unknown): string[] {
-  const parsed = safeJsonParse(raw);
+  const parsed = safeParseJsonFromUnknown<unknown>(raw);
   if (!Array.isArray(parsed)) return [];
   return parsed.map((id) => String(id ?? "").trim()).filter(Boolean);
 }
@@ -67,7 +57,7 @@ function mapRow(row: Record<string, unknown>): TaskBundleDraft {
 
   const approvedTaskIds = parseApprovedTaskIds(row.approved_task_ids_json);
 
-  const parsedBundle = safeJsonParse(row.bundle_json);
+  const parsedBundle = safeParseJsonFromUnknown<unknown>(row.bundle_json);
   const bundle = (() => {
     if (!parsedBundle) return null;
     const result = taskBundleSchema.safeParse(parsedBundle);

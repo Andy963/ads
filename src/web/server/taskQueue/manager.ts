@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { Logger } from "../../../utils/logger.js";
+import { safeParseJson } from "../../../utils/json.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import { ThreadStorage } from "../../../telegram/utils/threadStorage.js";
@@ -55,16 +56,6 @@ export type TaskQueueContext = {
 type ChangedPathsContext = { paths?: unknown };
 type TaskWorkspacePatchArtifact = { paths: string[]; patch: WorkspacePatchPayload | null; reason?: string; createdAt: number };
 
-function safeJsonParse<T>(raw: string): T | null {
-  const trimmed = String(raw ?? "").trim();
-  if (!trimmed) return null;
-  try {
-    return JSON.parse(trimmed) as T;
-  } catch {
-    return null;
-  }
-}
-
 function recordTaskWorkspacePatchArtifact(ctx: TaskQueueContext, taskId: string, now = Date.now()): void {
   const id = String(taskId ?? "").trim();
   if (!id) return;
@@ -87,7 +78,7 @@ function recordTaskWorkspacePatchArtifact(ctx: TaskQueueContext, taskId: string,
     return null;
   })();
 
-  const parsed = changedCtx ? safeJsonParse<ChangedPathsContext>(changedCtx.content) : null;
+  const parsed = changedCtx ? safeParseJson<ChangedPathsContext>(changedCtx.content) : null;
   const paths = Array.isArray(parsed?.paths) ? (parsed?.paths as unknown[]).map((p) => String(p ?? "").trim()).filter(Boolean) : [];
 
   let patch: WorkspacePatchPayload | null = null;

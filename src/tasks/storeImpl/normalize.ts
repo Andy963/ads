@@ -1,18 +1,9 @@
 import type { ConversationStatus, TaskRole, TaskStatus } from "../types.js";
 
+import { safeParseJsonFromUnknown } from "../../utils/json.js";
+
 export function parseJson<T>(raw: unknown): T | null {
-  if (typeof raw !== "string") {
-    return null;
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return null;
-  }
-  try {
-    return JSON.parse(trimmed) as T;
-  } catch {
-    return null;
-  }
+  return safeParseJsonFromUnknown<T>(raw);
 }
 
 export function normalizeTaskStatus(value: unknown): TaskStatus {
