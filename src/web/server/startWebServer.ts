@@ -297,7 +297,7 @@ export async function startWebServer(): Promise<void> {
     scheduler,
   });
 
-  const server = createHttpServer({ handleApiRequest: apiHandler });
+  const server = createHttpServer({ handleApiRequest: apiHandler, logger });
 
   attachWebSocketServer({
     server,
