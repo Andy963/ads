@@ -4,6 +4,7 @@ import https from 'node:https';
 import { pipeline } from 'node:stream/promises';
 import type { Api } from 'grammy';
 
+import { createAbortError, isAbortError } from '../../utils/abort.js';
 import { createLogger } from '../../utils/logger.js';
 import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 import { createTimeoutSignal } from './downloadUtils.js';
@@ -35,7 +36,7 @@ export async function downloadTelegramImage(
 
   // 保存到临时文件
   const localPath = join(TEMP_DIR, `${Date.now()}-${fileName}`);
-  
+
   // 下载文件（需要时走 TELEGRAM_PROXY_URL）
   const fileUrl = `https://api.telegram.org/file/bot${api.token}/${file.file_path}`;
   const agent = resolveTelegramProxyAgent();
@@ -61,10 +62,8 @@ export async function downloadTelegramImage(
     });
   } catch (error) {
     cleanupImage(localPath);
-    if ((error as Error).name === 'AbortError') {
-      const abortError = new Error(didTimeout() ? '图片下载超时' : '图片下载被中断');
-      abortError.name = 'AbortError';
-      throw abortError;
+    if (isAbortError(error)) {
+      throw createAbortError(didTimeout() ? '图片下载超时' : '图片下载被中断');
     }
     throw error;
   } finally {

@@ -1,13 +1,31 @@
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 
+import { createAbortError, isAbortError } from '../../utils/abort.js';
 import { createLogger } from '../../utils/logger.js';
 import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 import { createTimeoutSignal, formatFileSize, sanitizeFileName } from './downloadUtils.js';
 
-const DOWNLOAD_DIR = join(resolveAdsStateDir(), 'temp', 'url-downloads');
+function resolveDownloadDir(): string {
+  return join(resolveAdsStateDir(), 'temp', 'url-downloads');
+}
+
+const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024;
 let dnsResolveOverride: ((hostname: string) => Promise<string[]>) | null = null;
 const logger = createLogger('TelegramUrlHandler');
+
+function cleanupDownloadedFile(filePath: string): void {
+  try {
+    if (existsSync(filePath)) {
+      unlinkSync(filePath);
+    }
+  } catch (error) {
+    logger.warn(`Failed to cleanup ${filePath}`, error);
+  }
+}
 
 /**
  * URL 类型
@@ -153,13 +171,14 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
   const parsed = new URL(url);
   await assertUrlSafe(parsed);
 
-  if (!existsSync(DOWNLOAD_DIR)) {
-    mkdirSync(DOWNLOAD_DIR, { recursive: true });
+  const downloadDir = resolveDownloadDir();
+  if (!existsSync(downloadDir)) {
+    mkdirSync(downloadDir, { recursive: true });
   }
 
   const timestamp = Date.now();
   const safeName = sanitizeFileName(fileName);
-  const localPath = join(DOWNLOAD_DIR, `${timestamp}-${safeName}`);
+  const localPath = join(downloadDir, `${timestamp}-${safeName}`);
 
   // 超时控制
   const { signal: combinedSignal, cleanup } = createTimeoutSignal(signal, 30000);
@@ -176,7 +195,7 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
     const contentLength = response.headers.get('content-length');
     if (contentLength) {
       const size = parseInt(contentLength, 10);
-      if (size > 50 * 1024 * 1024) {
+      if (Number.isFinite(size) && size > MAX_DOWNLOAD_SIZE) {
         throw new Error(`文件过大 (${formatFileSize(size)})，限制 50MB`);
       }
     }
@@ -186,33 +205,34 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
       throw new Error('No response body');
     }
 
-    const fileStream = createWriteStream(localPath);
-    const reader = response.body.getReader();
     let downloadedSize = 0;
+    const sizeLimiter = new Transform({
+      transform(chunk, _encoding, callback) {
+        downloadedSize += chunk.length;
+        if (downloadedSize > MAX_DOWNLOAD_SIZE) {
+          callback(new Error('下载超过 50MB 限制'));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      downloadedSize += value.length;
-      if (downloadedSize > 50 * 1024 * 1024) {
-        fileStream.destroy();
-        throw new Error(`下载超过 50MB 限制`);
-      }
-
-      fileStream.write(Buffer.from(value));
-    }
-    fileStream.end();
+    await pipeline(
+      Readable.fromWeb(response.body as unknown as NodeReadableStream),
+      sizeLimiter,
+      createWriteStream(localPath),
+      { signal: combinedSignal }
+    );
 
     logger.info(`Downloaded to ${localPath}`);
     return localPath;
   } catch (error) {
-    if ((error as Error).name === 'AbortError') {
-      const abortError = new Error('下载被中断');
-      abortError.name = 'AbortError';
-      throw abortError;
+    cleanupDownloadedFile(localPath);
+    if (isAbortError(error)) {
+      throw createAbortError('下载被中断');
     }
-    throw new Error(`下载失败: ${(error as Error).message}`);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`下载失败: ${message}`, { cause: error });
   } finally {
     cleanup();
   }
@@ -245,9 +265,7 @@ export async function processUrls(text: string, signal?: AbortSignal): Promise<{
   for (const url of urls) {
     try {
       if (signal?.aborted) {
-        const abortError = new Error('链接处理已中断');
-        abortError.name = 'AbortError';
-        throw abortError;
+        throw createAbortError('链接处理已中断');
       }
       const info = await detectUrlType(url, signal);
       

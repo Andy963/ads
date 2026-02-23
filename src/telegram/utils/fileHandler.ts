@@ -1,10 +1,11 @@
-import { Api } from 'grammy';
+import type { Api } from 'grammy';
 import { createWriteStream, createReadStream, existsSync, mkdirSync, statSync, unlinkSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import https from 'node:https';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 
+import { createAbortError, isAbortError } from '../../utils/abort.js';
 import { createLogger } from '../../utils/logger.js';
 import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
 import { createTimeoutSignal, formatFileSize, sanitizeFileName } from './downloadUtils.js';
@@ -85,10 +86,8 @@ export async function downloadTelegramFile(
       });
     } catch (error) {
       cleanupFile(localPath);
-      if ((error as Error).name === 'AbortError') {
-        const abortError = new Error(didTimeout() ? '文件下载超时' : '文件下载被中断');
-        abortError.name = 'AbortError';
-        throw abortError;
+      if (isAbortError(error)) {
+        throw createAbortError(didTimeout() ? '文件下载超时' : '文件下载被中断');
       }
       throw error;
     } finally {
@@ -99,7 +98,7 @@ export async function downloadTelegramFile(
     logger.info(`Downloaded file: ${localPath} (${formatFileSize(stats.size)})`);
     return localPath;
   } catch (error) {
-    if ((error as Error).name === 'AbortError') {
+    if (isAbortError(error)) {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);

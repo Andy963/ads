@@ -28,6 +28,9 @@
 - `src/web/auth/cookies.ts`：重构（`serializeCookie()` 不再默认添加 `Secure`，避免未来 HTTP 场景误用）。
 - `src/telegram/utils/threadStorage.ts`：重构（新增 `cloneRecord()`，用于迁移时保留 `updated_at` 语义）。
 - `src/telegram/utils/sessionManager.ts`：重构（新增 `maybeMigrateThreadState()`，封装 thread state 迁移入口）。
+- `src/telegram/utils/urlHandler.ts`：重构（`downloadUrl()` 改用 `pipeline`+size limiter，失败时清理临时文件并保留 error cause；`AbortError` 语义统一到 `createAbortError()` / `isAbortError()`）。
+- `src/telegram/utils/fileHandler.ts`：重构（`Api` 改为 type-only import；`AbortError` 语义统一到 `createAbortError()` / `isAbortError()`，减少手写 name 分叉）。
+- `src/telegram/utils/imageHandler.ts`：重构（`AbortError` 语义统一到 `createAbortError()` / `isAbortError()`，减少手写 name 分叉）。
 
 ### Frontend (`web/`)
 
@@ -50,6 +53,7 @@
 - `tests/web/authCookies.test.ts`：更新（`serializeCookie()` 的 `Secure` 默认值语义调整）。
 - `tests/web/webUserId.test.ts`：新增（覆盖新/旧 `deriveWebUserId()` 派生稳定性）。
 - `tests/telegram/threadStorage.test.ts`：新增（覆盖 `cloneRecord()` 保留 `updated_at` 的迁移语义）。
+- `tests/telegram/urlHandler.test.ts`：更新（补齐 `downloadUrl()` 成功/中断/stream error 清理覆盖）。
 
 ## Refactor Opportunities (Backlog)
 
@@ -63,6 +67,8 @@
 - （已处理）`src/utils/commandRunner.ts`：抽取共享 lifecycle，减少 pipe/file 重复并补齐测试。
 - （已处理）`src/utils/abort.ts`：集中 `AbortError` 创建/识别，跨模块统一中断语义并减少重复代码。
 - （已处理）`web/src/components/TaskDetail.vue`：文案与 aria-label/title 已统一为中文，并补齐 `queued` / `paused` 状态下的占位提示。
+- （已处理）`src/telegram/utils/*Handler.ts`：`AbortError` 创建/识别收敛到 `src/utils/abort.ts`，减少手写 name 分叉。
+- （已处理）`src/telegram/utils/urlHandler.ts`：下载失败时清理半写入文件并保留 `cause`，提升可调试性。
 
 ### Performance
 
@@ -86,7 +92,7 @@
 - `src/storage/`（除 `migrations.ts` 外）
 - `src/systemPrompt/`
 - `src/tasks/`（除 `executor.ts` / `queue.ts` 外）
-- `src/telegram/`
+- `src/telegram/`（除 `utils/{threadStorage,sessionManager,urlHandler,fileHandler,imageHandler}.ts` 外）
 - `src/types/`
 - `src/utils/`（除已列出的文件外）
 - `src/web/`
