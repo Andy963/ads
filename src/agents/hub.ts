@@ -2,6 +2,7 @@ import type { Input } from "./protocol/types.js";
 
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
+import { createAbortError } from "../utils/abort.js";
 import { createLogger } from "../utils/logger.js";
 import { parsePositiveIntFlag } from "../utils/flags.js";
 import { ActivityTracker, resolveExploredConfig } from "../utils/activityTracker.js";
@@ -24,15 +25,9 @@ import {
 const logger = createLogger("AgentHub");
 const supervisorPromptLoader = new SupervisorPromptLoader({ logger });
 
-function createAbortError(message = "用户中断了请求"): Error {
-  const abortError = new Error(message);
-  abortError.name = "AbortError";
-  return abortError;
-}
-
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
-    throw createAbortError();
+    throw createAbortError("用户中断了请求");
   }
 }
 

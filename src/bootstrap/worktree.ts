@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { createAbortError } from "../utils/abort.js";
 import { getExecAllowlistFromEnv, runCommand } from "../utils/commandRunner.js";
 import { AsyncLock } from "../utils/asyncLock.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
@@ -76,12 +77,6 @@ type DirLockOwner = {
   runId: string;
 };
 
-function formatAbortError(): Error {
-  const error = new Error("AbortError");
-  error.name = "AbortError";
-  return error;
-}
-
 async function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) {
     return;
@@ -91,7 +86,7 @@ async function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
     return;
   }
   if (signal.aborted) {
-    throw formatAbortError();
+    throw createAbortError();
   }
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -100,7 +95,7 @@ async function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     const onAbort = () => {
       cleanup();
-      reject(formatAbortError());
+      reject(createAbortError());
     };
     const cleanup = () => {
       clearTimeout(timer);
@@ -177,7 +172,7 @@ async function acquireDirLock(
 
   while (true) {
     if (options.signal?.aborted) {
-      throw formatAbortError();
+      throw createAbortError();
     }
 
     try {

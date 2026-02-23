@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type { ThreadEvent, Usage } from "../../agents/protocol/types.js";
 import { runCli } from "../../agents/cli/cliRunner.js";
+import { createAbortError } from "../../utils/abort.js";
 import { getExecAllowlistFromEnv } from "../../utils/commandRunner.js";
 import type { BootstrapSandbox } from "../sandbox.js";
 
@@ -154,9 +155,7 @@ export class CodexBootstrapReviewerRunner implements BootstrapReviewerRunner {
     );
 
     if (result.cancelled) {
-      const err = new Error("AbortError");
-      err.name = "AbortError";
-      throw err;
+      throw createAbortError();
     }
 
     if (result.exitCode !== 0 || sawTurnFailed) {
@@ -171,4 +170,3 @@ export class CodexBootstrapReviewerRunner implements BootstrapReviewerRunner {
     return { response: responseText.trim(), usage };
   }
 }
-

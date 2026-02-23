@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type { Input, ThreadEvent } from "../agents/protocol/types.js";
 import type { Usage } from "../agents/protocol/types.js";
+import { createAbortError } from "../utils/abort.js";
 import { getExecAllowlistFromEnv } from "../utils/commandRunner.js";
 import { runCli } from "../agents/cli/cliRunner.js";
 import type { BootstrapSandbox } from "./sandbox.js";
@@ -238,9 +239,7 @@ export class CodexBootstrapAgentRunner implements BootstrapAgentRunner {
     );
 
     if (result.cancelled) {
-      const err = new Error("AbortError");
-      err.name = "AbortError";
-      throw err;
+      throw createAbortError();
     }
 
     if (result.exitCode !== 0 || sawTurnFailed) {

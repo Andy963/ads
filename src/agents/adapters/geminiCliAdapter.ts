@@ -12,6 +12,7 @@ import type { SandboxMode } from "../../telegram/config.js";
 import { runCli, runCliRaw } from "../cli/cliRunner.js";
 import { GeminiStreamParser } from "../cli/geminiStreamParser.js";
 import { createLogger } from "../../utils/logger.js";
+import { createAbortError } from "../../utils/abort.js";
 
 const logger = createLogger("GeminiCliAdapter");
 
@@ -167,9 +168,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     );
 
     if (result.cancelled) {
-      const err = new Error("用户中断了请求");
-      err.name = "AbortError";
-      throw err;
+      throw createAbortError("用户中断了请求");
     }
 
     if (result.exitCode !== 0 || sawTurnFailed) {

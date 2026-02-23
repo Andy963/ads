@@ -14,6 +14,7 @@ import type { SandboxMode } from "../../telegram/config.js";
 import { runCli } from "../cli/cliRunner.js";
 import { ClaudeStreamParser } from "../cli/claudeStreamParser.js";
 import { createLogger } from "../../utils/logger.js";
+import { createAbortError } from "../../utils/abort.js";
 
 const logger = createLogger("ClaudeCliAdapter");
 
@@ -190,9 +191,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     );
 
     if (result.cancelled) {
-      const err = new Error("用户中断了请求");
-      err.name = "AbortError";
-      throw err;
+      throw createAbortError("用户中断了请求");
     }
 
     if (result.exitCode !== 0 || sawTurnFailed) {

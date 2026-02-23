@@ -1,6 +1,7 @@
 import type { AgentIdentifier } from "../types.js";
 import type { HybridOrchestrator } from "../orchestrator.js";
 
+import { createAbortError } from "../../utils/abort.js";
 import { createLogger } from "../../utils/logger.js";
 
 import { SupervisorVerdictSchema, extractJsonPayload } from "../tasks/schemas.js";
@@ -67,9 +68,7 @@ export async function runDelegationQueue(
 
   while (queue.length > 0 && results.length < options.maxDelegations) {
     if (options.signal?.aborted) {
-      const abortError = new Error("用户中断了请求");
-      abortError.name = "AbortError";
-      throw abortError;
+      throw createAbortError("用户中断了请求");
     }
     const next = queue.shift();
     if (!next) {

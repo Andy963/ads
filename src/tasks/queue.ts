@@ -1,30 +1,12 @@
 import { EventEmitter } from "node:events";
 
+import { createAbortError, isAbortError } from "../utils/abort.js";
+import { getErrorMessage } from "../utils/error.js";
+
 import type { TaskStore } from "./store.js";
 import type { Task } from "./types.js";
 import type { TaskExecutor } from "./executor.js";
 import type { TaskQueueEventMap, TaskQueueEventName } from "./events.js";
-
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const candidate = error as { name?: unknown };
-  return candidate.name === "AbortError";
-}
-
-function createAbortError(message = "Aborted"): Error {
-  const error = new Error(message);
-  (error as { name?: string }).name = "AbortError";
-  return error;
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error ?? "unknown error");
-}
 
 export class TaskQueue extends EventEmitter {
   private readonly store: TaskStore;
@@ -181,7 +163,7 @@ export class TaskQueue extends EventEmitter {
           hooks,
         });
         if (this.runningAbort.signal.aborted || this.store.getTask(task.id)?.status === "cancelled") {
-          throw createAbortError();
+          throw createAbortError("Aborted");
         }
 
         const completed = this.store.updateTask(
@@ -231,7 +213,7 @@ export class TaskQueue extends EventEmitter {
   }
 
   private async handleError(task: Task, error: unknown): Promise<void> {
-    const message = formatError(error);
+    const message = getErrorMessage(error);
     const current = this.store.getTask(task.id) ?? task;
     const nextRetry = current.retryCount + 1;
     if (nextRetry <= current.maxRetries) {

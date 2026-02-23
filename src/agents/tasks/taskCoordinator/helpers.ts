@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { AgentIdentifier } from "../../types.js";
 import type { HybridOrchestrator } from "../../orchestrator.js";
 
+import { createAbortError } from "../../../utils/abort.js";
 import { parseOptionalBooleanFlag } from "../../../utils/flags.js";
 import { TaskSpecSchema, type TaskSpec, extractJsonPayload } from "../schemas.js";
 import { runVerification } from "../verificationRunner.js";
@@ -40,9 +41,7 @@ export function delay(ms: number, signal?: AbortSignal): Promise<void> {
   }
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      const abortError = new Error("用户中断了请求");
-      abortError.name = "AbortError";
-      reject(abortError);
+      reject(createAbortError("用户中断了请求"));
       return;
     }
 
@@ -66,9 +65,7 @@ export function delay(ms: number, signal?: AbortSignal): Promise<void> {
       if (settled) return;
       settled = true;
       cleanup();
-      const abortError = new Error("用户中断了请求");
-      abortError.name = "AbortError";
-      reject(abortError);
+      reject(createAbortError("用户中断了请求"));
     };
 
     if (signal) {

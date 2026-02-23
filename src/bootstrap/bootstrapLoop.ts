@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { runVerification } from "../agents/tasks/verificationRunner.js";
 import type { VerificationReport } from "../agents/tasks/verificationRunner.js";
+import { createAbortError, isAbortError } from "../utils/abort.js";
 import { createLogger, type Logger } from "../utils/logger.js";
 
 import { createBootstrapRunCommand } from "./commandRunner.js";
@@ -250,7 +251,7 @@ export async function runBootstrapLoop(
   try {
     for (let iteration = 1; iteration <= spec.maxIterations; iteration += 1) {
       if (deps.signal?.aborted) {
-        throw new Error("AbortError");
+        throw createAbortError();
       }
 
       const feedback: BootstrapAgentFeedback | null = (() => {
@@ -570,8 +571,8 @@ export async function runBootstrapLoop(
         // ignore hook failures
       }
     }
-    if (loopError instanceof Error && loopError.message === "AbortError") {
-      throw loopError;
+    if (isAbortError(loopError)) {
+      throw loopError instanceof Error ? loopError : createAbortError();
     }
     return finalResult;
   }

@@ -12,6 +12,7 @@ import { mapThreadEventToAgentEvent } from "../../codex/events.js";
 import type { SandboxMode } from "../../telegram/config.js";
 import { runCli } from "../cli/cliRunner.js";
 import { createLogger } from "../../utils/logger.js";
+import { createAbortError, isAbortError } from "../../utils/abort.js";
 
 const logger = createLogger("CodexCliAdapter");
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -318,9 +319,7 @@ export class CodexCliAdapter implements AgentAdapter {
       );
 
       if (result.cancelled) {
-        const err = new Error("用户中断了请求");
-        err.name = "AbortError";
-        throw err;
+        throw createAbortError("用户中断了请求");
       }
 
       if (result.exitCode !== 0 || sawTurnFailed) {
@@ -348,8 +347,8 @@ export class CodexCliAdapter implements AgentAdapter {
       if (!shouldResume) {
         throw error;
       }
-      if (error instanceof Error && error.name === "AbortError") {
-        throw error;
+      if (isAbortError(error)) {
+        throw error instanceof Error ? error : createAbortError();
       }
       const message = error instanceof Error ? error.message : String(error);
       if (!isResumeModelMismatchError(message)) {

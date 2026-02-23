@@ -1,6 +1,7 @@
 import type { AgentIdentifier, AgentRunResult } from "../types.js";
 import type { HybridOrchestrator } from "../orchestrator.js";
 
+import { createAbortError } from "../../utils/abort.js";
 import { createLogger, type Logger } from "../../utils/logger.js";
 
 import { TaskSpecSchema, TaskResultSchema, SupervisorVerdictSchema, extractJsonPayload, type TaskResult, type TaskSpec } from "./schemas.js";
@@ -97,9 +98,7 @@ export class TaskCoordinator {
 
     while (rounds < this.options.maxSupervisorRounds) {
       if (this.options.signal?.aborted) {
-        const abortError = new Error("用户中断了请求");
-        abortError.name = "AbortError";
-        throw abortError;
+        throw createAbortError("用户中断了请求");
       }
 
       const directives = extractDelegationDirectives(result.response, this.options.supervisorAgentId);

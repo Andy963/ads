@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
+import { createAbortError } from "./abort.js";
+
 const DEFAULT_MAX_OUTPUT_BYTES = 48 * 1024;
 const ABORT_KILL_DELAY_MS = 1200;
 
@@ -11,12 +13,6 @@ interface ChildProcessExit {
   signal: string | null;
   elapsedMs: number;
   timedOut: boolean;
-}
-
-function createAbortError(): Error {
-  const error = new Error("AbortError");
-  error.name = "AbortError";
-  return error;
 }
 
 function normalizeError(error: unknown): Error {
