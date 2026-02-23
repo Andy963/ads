@@ -9,7 +9,7 @@
 ### Backend (`src/`)
 
 - `src/tasks/executor.ts`：更新 `responding` 流式 `delta` 合并逻辑，兼容累积/增量语义并通过 overlap 去重。
-- `src/utils/commandRunner.ts`：阅读（存在可抽取的 abort/timeout 重复逻辑，待后续小步重构）。
+- `src/utils/commandRunner.ts`：重构（抽取子进程 lifecycle：timeout/abort/cleanup，减少 pipe/file 两条路径重复逻辑，并补齐测试覆盖）。
 - `src/utils/logger.ts`：阅读（风格可统一，但当前不作为优先项）。
 - `src/utils/flags.ts` / `src/utils/env.ts` / `src/utils/error.ts` / `src/utils/text.ts`：阅读（通用工具）。
 - `src/utils/streamingText.ts`：新增（流式文本合并工具：`mergeStreamingText()`）。
@@ -25,10 +25,12 @@
 
 - `docs/code-review-issues.md`：阅读（部分问题已被后续实现覆盖，但仍可作为回归清单）。
 - `docs/spec/20260223-1600-project-wide-refactor-pass-1/`：新增（本轮 refactor spec）。
+- `docs/spec/20260223-1700-refactor-command-runner-lifecycle/`：新增（`commandRunner` 去重与测试补齐）。
 
 ### Tests
 
 - `tests/utils/streamingText.test.ts`：新增（覆盖累积/增量/overlap/截断输入场景）。
+- `tests/utils/commandRunner.test.ts`：更新（覆盖 abort/timeout/maxOutputBytes）。
 
 ## Refactor Opportunities (Backlog)
 
@@ -38,7 +40,7 @@
 
 ### Maintainability
 
-- `src/utils/commandRunner.ts`：piped/file 两条路径的 abort/timeout/cleanup 逻辑重复，可抽象为共享的 child-process lifecycle 辅助函数（需保持行为等价）。
+- （已处理）`src/utils/commandRunner.ts`：抽取共享 lifecycle，减少 pipe/file 重复并补齐测试。
 - `web/src/components/TaskDetail.vue`：文案与 aria-label/title 统一为中文；`queued` / `paused` 等状态在空态与占位提示上需覆盖。
 
 ### Performance

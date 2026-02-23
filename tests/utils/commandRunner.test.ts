@@ -44,4 +44,48 @@ describe("utils/commandRunner", () => {
 
     assert.equal(res.exitCode, 0);
   });
+
+  it("rejects with AbortError when the signal aborts", async () => {
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 50);
+
+    try {
+      await assert.rejects(
+        runCommand({
+          cmd: "node",
+          args: ["-e", "setTimeout(() => {}, 10_000)"],
+          cwd: process.cwd(),
+          timeoutMs: 10_000,
+          signal: controller.signal,
+        }),
+        (error: unknown) => error instanceof Error && error.name === "AbortError",
+      );
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  });
+
+  it("marks timedOut when the command exceeds timeoutMs", async () => {
+    const res = await runCommand({
+      cmd: "node",
+      args: ["-e", "setTimeout(() => {}, 10_000)"],
+      cwd: process.cwd(),
+      timeoutMs: 50,
+    });
+
+    assert.equal(res.timedOut, true);
+  });
+
+  it("truncates stdout when maxOutputBytes is exceeded", async () => {
+    const res = await runCommand({
+      cmd: "node",
+      args: ["-e", "process.stdout.write('a'.repeat(100))"],
+      cwd: process.cwd(),
+      timeoutMs: 10_000,
+      maxOutputBytes: 10,
+    });
+
+    assert.equal(res.truncatedStdout, true);
+    assert.equal(res.stdout.length, 10);
+  });
 });

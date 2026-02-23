@@ -1,9 +1,122 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 48 * 1024;
+const ABORT_KILL_DELAY_MS = 1200;
+
+interface ChildProcessExit {
+  exitCode: number | null;
+  signal: string | null;
+  elapsedMs: number;
+  timedOut: boolean;
+}
+
+function createAbortError(): Error {
+  const error = new Error("AbortError");
+  error.name = "AbortError";
+  return error;
+}
+
+function normalizeError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(String(error));
+}
+
+function waitForChildProcess(args: {
+  child: ChildProcess;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  startedAt: number;
+}): Promise<ChildProcessExit> {
+  return new Promise((resolve, reject) => {
+    let timedOut = false;
+    let settled = false;
+    let abortKillTimer: NodeJS.Timeout | null = null;
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try {
+        args.child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+    }, args.timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (args.signal) {
+        args.signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    const clearAbortKillTimer = () => {
+      if (abortKillTimer) {
+        clearTimeout(abortKillTimer);
+        abortKillTimer = null;
+      }
+    };
+
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      timedOut = false;
+      try {
+        args.child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      abortKillTimer = setTimeout(() => {
+        try {
+          args.child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, ABORT_KILL_DELAY_MS);
+      cleanup();
+      reject(createAbortError());
+    };
+
+    if (args.signal) {
+      if (args.signal.aborted) {
+        onAbort();
+        return;
+      }
+      args.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    args.child.on("error", (error) => {
+      clearAbortKillTimer();
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(normalizeError(error));
+    });
+
+    args.child.on("close", (code, signalName) => {
+      clearAbortKillTimer();
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+
+      resolve({
+        exitCode: typeof code === "number" ? code : null,
+        signal: signalName ?? null,
+        elapsedMs: Date.now() - args.startedAt,
+        timedOut,
+      });
+    });
+  });
+}
 
 export interface CommandRunRequest {
   cmd: string;
@@ -113,130 +226,53 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     return await runCommandViaFiles({ cmd, args, cwd, env, timeoutMs, signal: request.signal, maxOutputBytes, startedAt, commandLine });
   }
 
-  return await new Promise<CommandRunResult>((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-    });
-
-    const signal = request.signal;
-    let stdout: Buffer = Buffer.alloc(0);
-    let stderr: Buffer = Buffer.alloc(0);
-    let truncatedStdout = false;
-    let truncatedStderr = false;
-    let timedOut = false;
-    let settled = false;
-    let abortKillTimer: NodeJS.Timeout | null = null;
-
-    const append = (target: Buffer, chunk: Buffer, kind: "stdout" | "stderr"): Buffer => {
-      if (target.length >= maxOutputBytes) {
-        if (kind === "stdout") truncatedStdout = true;
-        if (kind === "stderr") truncatedStderr = true;
-        return target;
-      }
-      const remaining = maxOutputBytes - target.length;
-      if (chunk.length > remaining) {
-        if (kind === "stdout") truncatedStdout = true;
-        if (kind === "stderr") truncatedStderr = true;
-        return Buffer.concat([target, chunk.subarray(0, remaining)]);
-      }
-      return Buffer.concat([target, chunk]);
-    };
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-    }, timeoutMs);
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      if (signal) {
-        signal.removeEventListener("abort", onAbort);
-      }
-    };
-
-    const onAbort = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      timedOut = false;
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
-      abortKillTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-      }, 1200);
-      cleanup();
-      const abortError = new Error("AbortError");
-      abortError.name = "AbortError";
-      reject(abortError);
-    };
-
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout = append(stdout, chunk, "stdout");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = append(stderr, chunk, "stderr");
-    });
-
-    child.on("error", (error) => {
-      if (abortKillTimer) {
-        clearTimeout(abortKillTimer);
-        abortKillTimer = null;
-      }
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      reject(error);
-    });
-
-    child.on("close", (code, signalName) => {
-      if (abortKillTimer) {
-        clearTimeout(abortKillTimer);
-        abortKillTimer = null;
-      }
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-
-      resolve({
-        commandLine,
-        exitCode: typeof code === "number" ? code : null,
-        signal: signalName ?? null,
-        elapsedMs: Date.now() - startedAt,
-        timedOut,
-        stdout: stdout.toString("utf8").trimEnd(),
-        stderr: stderr.toString("utf8").trimEnd(),
-        truncatedStdout,
-        truncatedStderr,
-      });
-    });
+  const child = spawn(cmd, args, {
+    cwd,
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
   });
+
+  let stdout: Buffer = Buffer.alloc(0);
+  let stderr: Buffer = Buffer.alloc(0);
+  let truncatedStdout = false;
+  let truncatedStderr = false;
+
+  const append = (target: Buffer, chunk: Buffer, kind: "stdout" | "stderr"): Buffer => {
+    if (target.length >= maxOutputBytes) {
+      if (kind === "stdout") truncatedStdout = true;
+      if (kind === "stderr") truncatedStderr = true;
+      return target;
+    }
+    const remaining = maxOutputBytes - target.length;
+    if (chunk.length > remaining) {
+      if (kind === "stdout") truncatedStdout = true;
+      if (kind === "stderr") truncatedStderr = true;
+      return Buffer.concat([target, chunk.subarray(0, remaining)]);
+    }
+    return Buffer.concat([target, chunk]);
+  };
+
+  child.stdout?.on("data", (chunk: Buffer) => {
+    stdout = append(stdout, chunk, "stdout");
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr = append(stderr, chunk, "stderr");
+  });
+
+  const exit = await waitForChildProcess({ child, timeoutMs, signal: request.signal, startedAt });
+
+  return {
+    commandLine,
+    exitCode: exit.exitCode,
+    signal: exit.signal,
+    elapsedMs: exit.elapsedMs,
+    timedOut: exit.timedOut,
+    stdout: stdout.toString("utf8").trimEnd(),
+    stderr: stderr.toString("utf8").trimEnd(),
+    truncatedStdout,
+    truncatedStderr,
+  };
 }
 
 async function runCommandViaFiles(args: {
@@ -257,7 +293,7 @@ async function runCommandViaFiles(args: {
   const stdoutFd = fs.openSync(stdoutPath, "w");
   const stderrFd = fs.openSync(stderrPath, "w");
 
-  let child;
+  let child: ChildProcess;
   try {
     child = spawn(args.cmd, args.args, {
       cwd: args.cwd,
@@ -278,141 +314,66 @@ async function runCommandViaFiles(args: {
     }
   }
 
-  const startedAt = args.startedAt;
-  const timeoutMs = args.timeoutMs;
   const maxOutputBytes = args.maxOutputBytes;
-  const signal = args.signal;
 
-  let timedOut = false;
-  let settled = false;
-  let abortKillTimer: NodeJS.Timeout | null = null;
-
-  const timeout = setTimeout(() => {
-    timedOut = true;
+  const readLimited = (filePath: string): { text: string; truncated: boolean } => {
     try {
-      child.kill("SIGKILL");
-    } catch {
-      // ignore
-    }
-  }, timeoutMs);
-
-  const cleanup = () => {
-    clearTimeout(timeout);
-    if (signal) {
-      signal.removeEventListener("abort", onAbort);
-    }
-  };
-
-  const onAbort = () => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    timedOut = false;
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // ignore
-    }
-    abortKillTimer = setTimeout(() => {
+      const stat = fs.statSync(filePath);
+      const size = typeof stat.size === "number" && Number.isFinite(stat.size) ? stat.size : 0;
+      const truncated = size > maxOutputBytes;
+      const toRead = Math.max(0, Math.min(size, maxOutputBytes));
+      const fd = fs.openSync(filePath, "r");
       try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
+        const buf = Buffer.alloc(toRead);
+        const bytesRead = fs.readSync(fd, buf, 0, toRead, 0);
+        return { text: buf.subarray(0, bytesRead).toString("utf8").trimEnd(), truncated };
+      } finally {
+        fs.closeSync(fd);
       }
-    }, 1200);
-    cleanup();
-    const abortError = new Error("AbortError");
-    abortError.name = "AbortError";
-    rejectPromise(abortError);
+    } catch {
+      return { text: "", truncated: false };
+    }
   };
 
-  let rejectPromise: (error: Error) => void = () => {};
-  const resultPromise = new Promise<CommandRunResult>((resolve, reject) => {
-    rejectPromise = (error: Error) => reject(error);
-
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    child.on("error", (error) => {
-      if (abortKillTimer) {
-        clearTimeout(abortKillTimer);
-        abortKillTimer = null;
-      }
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      reject(error instanceof Error ? error : new Error(String(error)));
+  let tmpDirRemoved = false;
+  try {
+    const exit = await waitForChildProcess({
+      child,
+      timeoutMs: args.timeoutMs,
+      signal: args.signal,
+      startedAt: args.startedAt,
     });
 
-    child.on("close", (code, signalName) => {
-      if (abortKillTimer) {
-        clearTimeout(abortKillTimer);
-        abortKillTimer = null;
-      }
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
+    const stdout = readLimited(stdoutPath);
+    const stderr = readLimited(stderrPath);
 
-      const readLimited = (filePath: string): { text: string; truncated: boolean } => {
-        try {
-          const stat = fs.statSync(filePath);
-          const size = typeof stat.size === "number" && Number.isFinite(stat.size) ? stat.size : 0;
-          const truncated = size > maxOutputBytes;
-          const toRead = Math.max(0, Math.min(size, maxOutputBytes));
-          const fd = fs.openSync(filePath, "r");
-          try {
-            const buf = Buffer.alloc(toRead);
-            const bytesRead = fs.readSync(fd, buf, 0, toRead, 0);
-            return { text: buf.subarray(0, bytesRead).toString("utf8").trimEnd(), truncated };
-          } finally {
-            fs.closeSync(fd);
-          }
-        } catch {
-          return { text: "", truncated: false };
-        }
-      };
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDirRemoved = true;
+    } catch {
+      // ignore
+    }
 
-      const stdout = readLimited(stdoutPath);
-      const stderr = readLimited(stderrPath);
-
+    return {
+      commandLine: args.commandLine,
+      exitCode: exit.exitCode,
+      signal: exit.signal,
+      elapsedMs: exit.elapsedMs,
+      timedOut: exit.timedOut,
+      stdout: stdout.text,
+      stderr: stderr.text,
+      truncatedStdout: stdout.truncated,
+      truncatedStderr: stderr.truncated,
+    };
+  } catch (error) {
+    throw normalizeError(error);
+  } finally {
+    if (!tmpDirRemoved) {
       try {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       } catch {
         // ignore
       }
-
-      resolve({
-        commandLine: args.commandLine,
-        exitCode: typeof code === "number" ? code : null,
-        signal: signalName ?? null,
-        elapsedMs: Date.now() - startedAt,
-        timedOut,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        truncatedStdout: stdout.truncated,
-        truncatedStderr: stderr.truncated,
-      });
-    });
-  });
-
-  try {
-    return await resultPromise;
-  } catch (error) {
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
     }
-    throw error;
   }
 }
