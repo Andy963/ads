@@ -10,7 +10,7 @@
 ## Status
 
 - Branch: `refactor/*` (work happens in small PRs)
-- Last updated: 2026-02-22
+- Last updated: 2026-02-23
 
 ## Reviewed Modules (read in detail)
 
@@ -18,12 +18,20 @@
 - `src/telegram/botSetup.ts` (telegram bot utilities)
 - `src/utils/env.ts` (env loading behavior and side effects)
 - `src/utils/flags.ts` (env flag parsing helpers)
+- `src/utils/activityTracker.ts` (explored tracking, env-driven config)
+- `src/agents/orchestrator.ts` (skill/prefs toggles, orchestration behavior)
+- `src/agents/hub.ts` (coordinator config, env parsing)
+- `src/systemPrompt/manager.ts` (reinjection config, prompt assembly)
+- `src/agents/tasks/taskCoordinator/helpers.ts` (task coordinator helpers; env parsing)
+- `src/agents/tasks/supervisorPrompt.ts` (supervisor prompt loader; env parsing)
 
 ## Candidates / Opportunities
 
 ### Code Structure
 
 - Consolidate duplicated env flag parsing helpers into `src/utils/flags.ts` (DONE: `parseBooleanFlag`).
+- Consolidate optional boolean env parsing helpers into `src/utils/flags.ts` (DONE: `parseOptionalBooleanFlag`).
+- Consolidate positive int env parsing helpers into `src/utils/flags.ts` (DONE: `parsePositiveIntFlag`).
 - Standardize "resolve paths from state dir" helpers into a small set of utilities (avoid ad-hoc joins).
 
 ### Extensibility & Maintainability

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../utils/logger.js";
+import { parseOptionalBooleanFlag } from "../utils/flags.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills, loadSkillBody, renderSkillMetaInstruction } from "../skills/loader.js";
@@ -43,20 +44,6 @@ function shortHash(hash: string): string {
   return hash.slice(0, 8);
 }
 
-function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (["0", "false", "off", "no"].includes(normalized)) {
-    return false;
-  }
-  if (["1", "true", "on", "yes"].includes(normalized)) {
-    return true;
-  }
-  return undefined;
-}
-
 function parseTurns(value: string | undefined): number | undefined {
   if (!value) {
     return undefined;
@@ -74,8 +61,8 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
   const rulesTurnsEnvName = prefix ? `${prefix}_RULES_REINJECTION_TURNS` : undefined;
 
   const enabledEnv =
-    parseBoolean(enabledEnvName ? process.env[enabledEnvName] : undefined) ??
-    parseBoolean(process.env.ADS_REINJECTION_ENABLED);
+    parseOptionalBooleanFlag(enabledEnvName ? process.env[enabledEnvName] : undefined) ??
+    parseOptionalBooleanFlag(process.env.ADS_REINJECTION_ENABLED);
   const turnsEnv =
     parseTurns(turnsEnvName ? process.env[turnsEnvName] : undefined) ??
     parseTurns(process.env.ADS_REINJECTION_TURNS);

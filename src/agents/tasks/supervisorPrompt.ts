@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../../utils/logger.js";
+import { parseOptionalBooleanFlag } from "../../utils/flags.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../workspace/adsPaths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,20 +23,6 @@ export interface SupervisorPromptResult {
   source: "workspace" | "default" | "custom" | "missing";
   path: string;
   hash: string;
-}
-
-function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (["0", "false", "off", "no"].includes(normalized)) {
-    return false;
-  }
-  if (["1", "true", "on", "yes"].includes(normalized)) {
-    return true;
-  }
-  return undefined;
 }
 
 function resolveWorkspacePromptPath(workspaceRoot: string): string {
@@ -67,7 +54,7 @@ export class SupervisorPromptLoader {
   }
 
   load(workspaceRoot: string): SupervisorPromptResult {
-    const enabled = parseBoolean(process.env.ADS_SUPERVISOR_PROMPT_ENABLED);
+    const enabled = parseOptionalBooleanFlag(process.env.ADS_SUPERVISOR_PROMPT_ENABLED);
     if (enabled === false) {
       return { text: "", source: "missing", path: "", hash: "disabled" };
     }
