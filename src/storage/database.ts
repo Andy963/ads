@@ -6,6 +6,7 @@ import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlit
 
 import { detectWorkspace, getWorkspaceDbPath } from "../workspace/detector.js";
 import { getWorkspaceContextRoot } from "../workspace/asyncWorkspaceContext.js";
+import { parseNonNegativeIntFlag } from "../utils/flags.js";
 import { migrations } from "./migrations.js";
 
 let cachedDbs: Map<string, DatabaseType> = new Map();
@@ -16,17 +17,6 @@ const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000;
 
 /** 当前 schema 版本（等于 migrations 数组长度） */
 export const SCHEMA_VERSION = migrations.length;
-
-function parseNonNegativeInt(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return fallback;
-  }
-  return parsed;
-}
 
 function readPackageName(): string | null {
   const pkgPath = path.join(PROJECT_ROOT, "package.json");
@@ -164,7 +154,7 @@ export function getDatabase(workspacePath?: string): DatabaseType {
   const db = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  const busyTimeoutMs = parseNonNegativeInt(
+  const busyTimeoutMs = parseNonNegativeIntFlag(
     process.env.ADS_SQLITE_BUSY_TIMEOUT_MS,
     DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
   );

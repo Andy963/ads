@@ -30,6 +30,52 @@ function isWorkspaceSkillsEnabled(): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+interface SkillFileCacheEntry {
+  mtimeMs: number;
+  size: number;
+  content: string;
+  meta: SkillMetadata | null;
+}
+
+const skillFileCache = new Map<string, SkillFileCacheEntry>();
+
+function makeSkillFileCacheKey(source: SkillMetadata["source"], resolvedSkillFile: string): string {
+  return `${source}:${resolvedSkillFile}`;
+}
+
+function readSkillFileWithCache(skillFile: string, source: SkillMetadata["source"]): SkillFileCacheEntry | null {
+  const resolved = path.resolve(skillFile);
+  const cacheKey = makeSkillFileCacheKey(source, resolved);
+  const cached = skillFileCache.get(cacheKey) ?? null;
+
+  try {
+    const stats = fs.statSync(resolved);
+    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+      return cached;
+    }
+
+    const content = fs.readFileSync(resolved, "utf-8");
+    const dirName = path.basename(path.dirname(resolved));
+    const frontmatter = parseFrontmatter(content);
+    const name = String(frontmatter.name ?? dirName).trim();
+    const description = String(frontmatter.description ?? "No description provided.").trim();
+
+    const next: SkillFileCacheEntry = {
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      content,
+      meta: name ? { name, description, location: resolved, source } : null,
+    };
+    skillFileCache.set(cacheKey, next);
+    return next;
+  } catch {
+    if (cached) {
+      skillFileCache.delete(cacheKey);
+    }
+    return null;
+  }
+}
+
 export function discoverSkills(workspacePath: string, builtinRoot?: string): SkillMetadata[] {
   const resolvedBuiltin = builtinRoot ?? BUILTIN_SKILLS_ROOT;
   const adsStateSkillsDir = path.join(resolveAdsStateDir(), WORKSPACE_SKILLS_DIR);
@@ -63,7 +109,7 @@ export function discoverSkills(workspacePath: string, builtinRoot?: string): Ski
         continue;
       }
       const skillFile = path.join(dir, entry.name, SKILL_FILE_NAME);
-      const meta = readSkill(skillFile, entry.name, source);
+      const meta = readSkillFileWithCache(skillFile, source)?.meta ?? null;
       if (meta === null) {
         continue;
       }
@@ -81,11 +127,7 @@ export function loadSkillBody(name: string, workspacePath: string, builtinRoot?:
   const lowered = name.toLowerCase();
   for (const skill of discoverSkills(workspacePath, builtinRoot)) {
     if (skill.name.toLowerCase() === lowered) {
-      try {
-        return fs.readFileSync(skill.location, "utf-8");
-      } catch {
-        return null;
-      }
+      return readSkillFileWithCache(skill.location, skill.source)?.content ?? null;
     }
   }
   return null;
@@ -139,29 +181,6 @@ export function renderSkillList(skills: SkillMetadata[]): string {
   lines.push("");
   lines.push("使用 /ads.skill.load <name> 加载具体 skill。");
   return lines.join("\n");
-}
-
-function readSkill(skillFile: string, dirName: string, source: SkillMetadata["source"]): SkillMetadata | null {
-  if (!fs.existsSync(skillFile)) {
-    return null;
-  }
-
-  let content: string;
-  try {
-    content = fs.readFileSync(skillFile, "utf-8");
-  } catch {
-    return null;
-  }
-
-  const frontmatter = parseFrontmatter(content);
-  const name = String(frontmatter.name ?? dirName).trim();
-  const description = String(frontmatter.description ?? "No description provided.").trim();
-
-  if (!name) {
-    return null;
-  }
-
-  return { name, description, location: path.resolve(skillFile), source };
 }
 
 function parseFrontmatter(content: string): Record<string, unknown> {

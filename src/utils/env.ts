@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { createLogger } from "./logger.js";
+import { parseNonNegativeIntFlag } from "./flags.js";
 import { resolveCodexHomeDir } from "./codexHome.js";
 
 const logger = createLogger("Env");
@@ -9,17 +10,6 @@ const logger = createLogger("Env");
 let loaded = false;
 
 const DEFAULT_ENV_SEARCH_MAX_DEPTH = 25;
-
-function parseNonNegativeInt(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return fallback;
-  }
-  return parsed;
-}
 
 function resolveExplicitEnvPath(): string | null {
   const raw = process.env.ADS_ENV_PATH;
@@ -49,7 +39,7 @@ function findSearchBoundary(startDir: string): string | null {
 
 function findEnvFile(startDir: string = process.cwd()): string | null {
   const boundary = findSearchBoundary(startDir);
-  const maxDepth = parseNonNegativeInt(
+  const maxDepth = parseNonNegativeIntFlag(
     process.env.ADS_ENV_SEARCH_MAX_DEPTH,
     DEFAULT_ENV_SEARCH_MAX_DEPTH,
   );

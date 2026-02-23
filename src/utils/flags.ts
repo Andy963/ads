@@ -36,3 +36,14 @@ export function parsePositiveIntFlag(value: string | undefined, defaultValue: nu
   }
   return parsed;
 }
+
+export function parseNonNegativeIntFlag(value: string | undefined, defaultValue: number): number {
+  if (!value) {
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return defaultValue;
+  }
+  return parsed;
+}

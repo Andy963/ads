@@ -9,7 +9,7 @@
 
 ## Status
 
-- Branch: `refactor/*` (work happens in small PRs)
+- Branch: `dev` (keep changes small and reviewable)
 - Last updated: 2026-02-23
 
 ## Reviewed Modules (read in detail)
@@ -24,6 +24,8 @@
 - `src/systemPrompt/manager.ts` (reinjection config, prompt assembly)
 - `src/agents/tasks/taskCoordinator/helpers.ts` (task coordinator helpers; env parsing)
 - `src/agents/tasks/supervisorPrompt.ts` (supervisor prompt loader; env parsing)
+- `src/skills/loader.ts` (skill discovery & loading; caching)
+- `src/storage/database.ts` (sqlite open path, busy timeout parsing)
 
 ## Candidates / Opportunities
 
@@ -32,6 +34,7 @@
 - Consolidate duplicated env flag parsing helpers into `src/utils/flags.ts` (DONE: `parseBooleanFlag`).
 - Consolidate optional boolean env parsing helpers into `src/utils/flags.ts` (DONE: `parseOptionalBooleanFlag`).
 - Consolidate positive int env parsing helpers into `src/utils/flags.ts` (DONE: `parsePositiveIntFlag`).
+- Consolidate non-negative int env parsing helpers into `src/utils/flags.ts` (DONE: `parseNonNegativeIntFlag`).
 - Standardize "resolve paths from state dir" helpers into a small set of utilities (avoid ad-hoc joins).
 
 ### Extensibility & Maintainability
@@ -41,7 +44,7 @@
 
 ### Performance
 
-- Avoid repeated filesystem scans on hot paths (e.g. skill discovery); add caching with explicit invalidation.
+- Avoid repeated SKILL.md reads on hot paths (e.g. skill discovery); cache by `mtimeMs/size` with invalidation on change (DONE: `src/skills/loader.ts`).
 - Prefer streaming where possible for large payloads (attachments/logs) instead of buffering whole files.
 
 ## Not Yet Reviewed (high-level only)
@@ -55,9 +58,9 @@
 - `src/graph/*`
 - `src/intake/*`
 - `src/memory/*`
-- `src/skills/*`
+- `src/skills/*` (except `loader.ts`)
 - `src/state/*`
-- `src/storage/*`
+- `src/storage/*` (except `database.ts`)
 - `src/systemPrompt/*`
 - `src/tasks/*`
 - `src/telegram/*` (except `botSetup.ts`)
