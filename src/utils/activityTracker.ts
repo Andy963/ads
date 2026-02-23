@@ -6,6 +6,7 @@ import type {
   WebSearchItem,
 } from "../agents/protocol/types.js";
 
+import { parseBooleanFlag, parsePositiveIntFlag } from "./flags.js";
 import { compactExploredEntries } from "./activityTracker/compact.js";
 import { extractDiffPaths } from "./activityTracker/patch.js";
 import { categorizeCommand, summarizeCommand } from "./activityTracker/shell.js";
@@ -40,34 +41,9 @@ export interface ExploredConfig {
   dedupe: "none" | "consecutive";
 }
 
-function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
-  if (value === undefined) {
-    return defaultValue;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (["0", "false", "off", "no"].includes(normalized)) {
-    return false;
-  }
-  if (["1", "true", "on", "yes"].includes(normalized)) {
-    return true;
-  }
-  return defaultValue;
-}
-
-function parsePositiveInt(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value.trim(), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  return parsed;
-}
-
 export function resolveExploredConfig(): ExploredConfig {
-  const enabled = parseBoolean(process.env.ADS_EXPLORED_ENABLED, true);
-  const maxItems = parsePositiveInt(process.env.ADS_EXPLORED_MAX_ITEMS, 30);
+  const enabled = parseBooleanFlag(process.env.ADS_EXPLORED_ENABLED, true);
+  const maxItems = parsePositiveIntFlag(process.env.ADS_EXPLORED_MAX_ITEMS, 30);
   const dedupeRaw = (process.env.ADS_EXPLORED_DEDUPE ?? "none").trim().toLowerCase();
   const dedupe = dedupeRaw === "none" ? "none" : "consecutive";
   return { enabled, maxItems, dedupe };

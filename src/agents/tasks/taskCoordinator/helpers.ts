@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { AgentIdentifier } from "../../types.js";
 import type { HybridOrchestrator } from "../../orchestrator.js";
 
+import { parseOptionalBooleanFlag } from "../../../utils/flags.js";
 import { TaskSpecSchema, type TaskSpec, extractJsonPayload } from "../schemas.js";
 import { runVerification } from "../verificationRunner.js";
 import { extractDelegationDirectivesWithRanges } from "../../delegationParser.js";
@@ -29,17 +30,7 @@ export function truncate(text: string, limit = 1400): string {
 }
 
 export function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (["0", "false", "off", "no"].includes(normalized)) {
-    return false;
-  }
-  if (["1", "true", "on", "yes"].includes(normalized)) {
-    return true;
-  }
-  return undefined;
+  return parseOptionalBooleanFlag(value);
 }
 
 export function delay(ms: number, signal?: AbortSignal): Promise<void> {

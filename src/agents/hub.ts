@@ -3,6 +3,7 @@ import type { Input } from "./protocol/types.js";
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { createLogger } from "../utils/logger.js";
+import { parsePositiveIntFlag } from "../utils/flags.js";
 import { ActivityTracker, resolveExploredConfig } from "../utils/activityTracker.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
@@ -33,17 +34,6 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw createAbortError();
   }
-}
-
-function parsePositiveInt(value: string | undefined, defaultValue: number): number {
-  if (!value) {
-    return defaultValue;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return defaultValue;
-  }
-  return parsed;
 }
 
 export async function runCollaborativeTurn(
@@ -103,10 +93,10 @@ export async function runCollaborativeTurn(
       isCoordinatorEnabled();
 
     if (coordinatorEnabled) {
-      const maxParallelDelegations = parsePositiveInt(process.env.ADS_TASK_MAX_PARALLEL, 3);
-      const taskTimeoutMs = parsePositiveInt(process.env.ADS_TASK_TIMEOUT_MS, 2 * 60 * 1000);
-      const maxTaskAttempts = parsePositiveInt(process.env.ADS_TASK_MAX_ATTEMPTS, 2);
-      const retryBackoffMs = parsePositiveInt(process.env.ADS_TASK_RETRY_BACKOFF_MS, 1200);
+      const maxParallelDelegations = parsePositiveIntFlag(process.env.ADS_TASK_MAX_PARALLEL, 3);
+      const taskTimeoutMs = parsePositiveIntFlag(process.env.ADS_TASK_TIMEOUT_MS, 2 * 60 * 1000);
+      const maxTaskAttempts = parsePositiveIntFlag(process.env.ADS_TASK_MAX_ATTEMPTS, 2);
+      const retryBackoffMs = parsePositiveIntFlag(process.env.ADS_TASK_RETRY_BACKOFF_MS, 1200);
 
       const coordinator = new TaskCoordinator(orchestrator, {
         workspaceRoot,

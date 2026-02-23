@@ -15,6 +15,7 @@ import { loadSkillRegistry } from "../skills/registryMetadata.js";
 import { saveSkillDraftFromBlock, type SavedSkillDraft } from "../skills/creator.js";
 import { setPreference } from "../memory/soul.js";
 import { extractPreferenceDirectives, type PreferenceDirective } from "../memory/preferenceDirectives.js";
+import { parseBooleanFlag } from "../utils/flags.js";
 
 interface AgentEntry {
   adapter: AgentAdapter;
@@ -50,9 +51,9 @@ export class HybridOrchestrator {
       throw new Error("HybridOrchestrator requires at least one agent adapter");
     }
     this.systemPromptManager = options.systemPromptManager;
-    this.skillAutoloadEnabled = parseEnvBoolean(process.env.ADS_SKILLS_AUTOLOAD, true);
-    this.skillAutosaveEnabled = parseEnvBoolean(process.env.ADS_SKILLS_AUTOSAVE, true);
-    this.preferenceDirectiveEnabled = parseEnvBoolean(process.env.ADS_PREFERENCE_DIRECTIVES, true);
+    this.skillAutoloadEnabled = parseBooleanFlag(process.env.ADS_SKILLS_AUTOLOAD, true);
+    this.skillAutosaveEnabled = parseBooleanFlag(process.env.ADS_SKILLS_AUTOSAVE, true);
+    this.preferenceDirectiveEnabled = parseBooleanFlag(process.env.ADS_PREFERENCE_DIRECTIVES, true);
 
     for (const adapter of options.adapters) {
       this.registerAdapter(adapter);
@@ -528,16 +529,6 @@ export class HybridOrchestrator {
 }
 
 type SkillSaveBlock = { name: string; description: string | null; body: string };
-
-function parseEnvBoolean(raw: string | undefined, defaultValue: boolean): boolean {
-  if (raw === undefined) {
-    return defaultValue;
-  }
-  const normalized = raw.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return defaultValue;
-}
 
 function extractInputText(input: Input): string {
   if (typeof input === "string") return input;
