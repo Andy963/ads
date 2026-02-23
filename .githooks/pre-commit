@@ -9,11 +9,11 @@ fi
 
 blocked_paths="$(
   git diff --cached --name-only --diff-filter=ACMR \
-    | grep -E '^(docs/spec/|docs/adr/)' \
+    | grep -E '^docs/' \
     || true
 )"
 if [[ -n "$blocked_paths" ]]; then
-  echo "ERROR: committing files under 'docs/spec/' or 'docs/adr/' is blocked." >&2
+  echo "ERROR: committing files under 'docs/' is blocked." >&2
   echo "Blocked paths:" >&2
   while IFS= read -r path; do
     [[ -z "$path" ]] && continue
