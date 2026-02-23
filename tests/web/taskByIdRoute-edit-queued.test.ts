@@ -15,6 +15,7 @@ type FakeRes = {
   statusCode: number | null;
   headers: Record<string, string>;
   body: string;
+  setHeader: (name: string, value: string) => void;
   writeHead: (status: number, headers: Record<string, string>) => void;
   end: (body: string) => void;
 };
@@ -36,6 +37,9 @@ function createRes(): FakeRes {
     statusCode: null,
     headers: {},
     body: "",
+    setHeader(name: string, value: string) {
+      this.headers[name.toLowerCase()] = value;
+    },
     writeHead(status: number, headers: Record<string, string>) {
       this.statusCode = status;
       this.headers = headers;

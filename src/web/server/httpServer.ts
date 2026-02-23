@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
-import { sendJson } from "./http.js";
+import { sendJson, setSecurityHeaders } from "./http.js";
 
 function serveFile(res: http.ServerResponse, filePath: string): boolean {
   const contentTypeFor = (resolvedPath: string): string => {
@@ -38,10 +38,10 @@ function serveFile(res: http.ServerResponse, filePath: string): boolean {
     if (!stat.isFile()) {
       return false;
     }
+    setSecurityHeaders(res);
     res.writeHead(200, {
       "Content-Type": contentTypeFor(filePath),
       "Cache-Control": filePath.endsWith(".html") ? "no-store" : "public, max-age=31536000, immutable",
-      "Access-Control-Allow-Origin": "*",
     });
     fs.createReadStream(filePath).pipe(res);
     return true;
@@ -57,6 +57,7 @@ export function createHttpServer(options: {
 
   const serveTasksUi = (res: http.ServerResponse, url: string): boolean => {
     if (!fs.existsSync(distWebDir)) {
+      setSecurityHeaders(res);
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Web app not built. Run: npm run build:web\n");
       return true;
@@ -68,6 +69,7 @@ export function createHttpServer(options: {
     const safeRel = normalized.startsWith("/") ? normalized : `/${normalized}`;
     const resolved = path.resolve(distWebDir, "." + safeRel);
     if (!resolved.startsWith(distWebDir)) {
+      setSecurityHeaders(res);
       res.writeHead(403).end("Forbidden");
       return true;
     }
@@ -84,6 +86,7 @@ export function createHttpServer(options: {
       return serveFile(res, path.join(distWebDir, "index.html"));
     }
 
+    setSecurityHeaders(res);
     res.writeHead(404).end("Not Found");
     return true;
   };
@@ -113,12 +116,14 @@ export function createHttpServer(options: {
 
     if (req.method === "GET") {
       if (url.startsWith("/healthz")) {
+        setSecurityHeaders(res);
         res.writeHead(200).end("ok");
         return;
       }
       serveTasksUi(res, url);
       return;
     }
+    setSecurityHeaders(res);
     res.writeHead(404).end("Not Found");
   });
   return server;
