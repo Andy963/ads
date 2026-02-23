@@ -1,21 +1,9 @@
 import { resolveGroqBaseUrl, resolveGroqKey } from "../../utils/groq.js";
+import { parseBooleanFlag } from "../../utils/flags.js";
 
 export type TranscriptCorrectionResult =
   | { ok: true; text: string; corrected: boolean }
   | { ok: false; error: string };
-
-function parseBooleanFlag(value: string | undefined, fallback: boolean): boolean {
-  if (value === undefined) {
-    return fallback;
-  }
-  const normalized = String(value).trim().toLowerCase();
-  if (!normalized) {
-    return fallback;
-  }
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return fallback;
-}
 
 function resolveCorrectionEnabled(): boolean {
   return parseBooleanFlag(process.env.ADS_TELEGRAM_VOICE_CORRECTION_ENABLED, true);
