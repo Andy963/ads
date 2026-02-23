@@ -178,6 +178,15 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     }
 
     sendJson(res, 201, { ...task, attachments });
+
+    if (taskCtx.queueRunning && taskCtx.runController.getMode() === "all") {
+      try {
+        deps.promoteQueuedTasksToPending(taskCtx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger.warn(`[Web][TaskQueue] promote queued tasks after create failed taskId=${task.id} err=${message}`);
+      }
+    }
     return true;
   }
 
@@ -320,6 +329,15 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     }
 
     sendJson(res, 201, { success: true, sourceTaskId: source.id, task: created });
+
+    if (taskCtx.queueRunning && taskCtx.runController.getMode() === "all") {
+      try {
+        deps.promoteQueuedTasksToPending(taskCtx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger.warn(`[Web][TaskQueue] promote queued tasks after rerun failed taskId=${created.id} err=${message}`);
+      }
+    }
     return true;
   }
 

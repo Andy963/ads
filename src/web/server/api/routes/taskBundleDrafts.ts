@@ -286,7 +286,19 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
         taskCtx.runController.setModeAll();
         taskCtx.taskQueue.resume();
         taskCtx.queueRunning = true;
-        deps.promoteQueuedTasksToPending(taskCtx);
+        try {
+          deps.promoteQueuedTasksToPending(taskCtx);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          deps.logger.warn(`[Web][TaskQueue] promote queued tasks after approve failed draftId=${draftId} err=${message}`);
+        }
+      } else if (taskCtx.queueRunning && taskCtx.runController.getMode() === "all") {
+        try {
+          deps.promoteQueuedTasksToPending(taskCtx);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          deps.logger.warn(`[Web][TaskQueue] promote queued tasks after approve failed draftId=${draftId} err=${message}`);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

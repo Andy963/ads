@@ -72,22 +72,25 @@ describe("web/api/tasks create", () => {
     }
   });
 
-  it("creates tasks as queued and does not notify the executor on save", async () => {
+  it("creates tasks as queued and promotes them when the queue is already running (all mode)", async () => {
     const req = createReq("POST", { prompt: "Hello" });
     const res = createRes();
     const url = new URL("http://localhost/api/tasks?workspace=/tmp/ws");
 
     let createStatus: unknown = null;
-    let notifyCalls = 0;
+    let promoteCalls = 0;
 
     const taskCtx = {
       sessionId: "s-1",
       queueRunning: true,
       metrics: { counts: {}, events: [] },
-      taskQueue: {
-        notifyNewTask() {
-          notifyCalls += 1;
+      runController: {
+        getMode() {
+          return "all";
         },
+      },
+      taskQueue: {
+        notifyNewTask() {},
       },
       taskStore: {
         createTask(_input: unknown, _now: number, options?: unknown) {
@@ -112,7 +115,9 @@ describe("web/api/tasks create", () => {
       resolveTaskContext() {
         return taskCtx as any;
       },
-      promoteQueuedTasksToPending() {},
+      promoteQueuedTasksToPending() {
+        promoteCalls += 1;
+      },
       broadcastToSession() {},
       buildAttachmentRawUrl() {
         return "";
@@ -131,7 +136,71 @@ describe("web/api/tasks create", () => {
     assert.equal(handled, true);
     assert.equal(res.statusCode, 201);
     assert.equal(createStatus, "queued");
-    assert.equal(notifyCalls, 0);
+    assert.equal(promoteCalls, 1);
+  });
+
+  it("does not auto-promote when the queue is running in single-task mode", async () => {
+    const req = createReq("POST", { prompt: "Hello" });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks?workspace=/tmp/ws");
+
+    let promoteCalls = 0;
+
+    const taskCtx = {
+      sessionId: "s-1",
+      queueRunning: true,
+      metrics: { counts: {}, events: [] },
+      runController: {
+        getMode() {
+          return "single";
+        },
+      },
+      taskQueue: {
+        notifyNewTask() {},
+      },
+      taskStore: {
+        createTask() {
+          return { id: "t-1", title: "T", prompt: "Hello", model: "auto", status: "queued", priority: 0, queueOrder: 0, inheritContext: false, retryCount: 0, maxRetries: 0, createdAt: Date.now() } as any;
+        },
+        deleteTask() {},
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
+        },
+        assignAttachmentsToTask() {},
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as any,
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as any;
+      },
+      promoteQueuedTasksToPending() {
+        promoteCalls += 1;
+      },
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as any,
+      res: res as any,
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskRoutes(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 201);
+    assert.equal(promoteCalls, 0);
   });
 
   it("returns 400 for invalid JSON body", async () => {
