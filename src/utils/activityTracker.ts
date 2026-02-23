@@ -49,7 +49,6 @@ export function resolveExploredConfig(): ExploredConfig {
   return { enabled, maxItems, dedupe };
 }
 
-
 export type ExploredEntryCallback = (entry: ExploredEntry) => void;
 
 export class ActivityTracker {
@@ -103,178 +102,198 @@ export class ActivityTracker {
       return;
     }
 
-    if (normalizedTool === "grep") {
-      const parsed = safeJsonParse(trimmedPayload);
-      const record =
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : null;
-      const pattern =
-        typeof parsed === "string"
-          ? parsed.trim()
-          : typeof record?.pattern === "string"
-            ? record.pattern.trim()
-            : trimmedPayload;
-      const pathValue = typeof record?.path === "string" ? record.path.trim() : "";
-      const globValue = typeof record?.glob === "string" ? record.glob.trim() : "";
-      const scopeParts = [pathValue ? displayPath(pathValue) : "", globValue ? `glob:${globValue}` : ""].filter(Boolean);
-      const scope = scopeParts.length > 0 ? ` in ${scopeParts.join(" ")}` : "";
-      this.add({
-        category: "Search",
-        summary: truncate(`${pattern}${scope}`, 180),
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
+    switch (normalizedTool) {
+      case "grep":
+        this.ingestToolInvokeGrep(trimmedPayload);
+        return;
+      case "find":
+        this.ingestToolInvokeFind(trimmedPayload);
+        return;
+      case "agent":
+        this.ingestToolInvokeAgent(trimmedPayload);
+        return;
+      case "read":
+        this.ingestToolInvokeRead(trimmedPayload);
+        return;
+      case "write":
+        this.ingestToolInvokeWrite(trimmedPayload);
+        return;
+      case "apply_patch":
+        this.ingestToolInvokeApplyPatch(trimmedPayload);
+        return;
+      case "search":
+        this.ingestToolInvokeSearch(trimmedPayload);
+        return;
+      case "exec":
+        this.ingestToolInvokeExec(trimmedPayload);
+        return;
+      default:
+        this.add({
+          category: "Tool",
+          summary: normalizedTool,
+          source: "tool_hook",
+          meta: { tool: normalizedTool },
+        });
+        return;
     }
-
-    if (normalizedTool === "find") {
-      const parsed = safeJsonParse(trimmedPayload);
-      const record =
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : null;
-      const pattern =
-        typeof parsed === "string"
-          ? parsed.trim()
-          : typeof record?.pattern === "string"
-            ? record.pattern.trim()
-            : trimmedPayload;
-      const pathValue = typeof record?.path === "string" ? record.path.trim() : "";
-      const scope = pathValue ? ` in ${displayPath(pathValue)}` : "";
-      this.add({
-        category: "List",
-        summary: truncate(`${pattern}${scope}`, 180),
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
-    }
-
-    if (normalizedTool === "agent") {
-      const parsed = safeJsonParse(trimmedPayload);
-      const record =
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : null;
-      let agentId = "";
-      let prompt = "";
-      if (record) {
-        agentId = String(record.agentId ?? record.agent_id ?? record.agent ?? "").trim();
-        prompt = String(record.prompt ?? record.input ?? record.query ?? "").trim();
-      } else {
-        const lines = trimmedPayload.split(/\r?\n/);
-        agentId = String(lines[0] ?? "").trim();
-        prompt = lines.slice(1).join("\n").trim();
-      }
-      const label = agentId ? agentId.toLowerCase() : "agent";
-      const summary = prompt ? `${label}: ${truncate(prompt, 160)}` : label;
-      this.add({
-        category: "Agent",
-        summary,
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
-    }
-
-    if (normalizedTool === "read") {
-      const parsed = safeJsonParse(trimmedPayload);
-      const pathValue =
-        parsed && typeof parsed === "object" && typeof (parsed as { path?: unknown }).path === "string"
-          ? (parsed as { path: string }).path
-          : trimmedPayload;
-      this.add({
-        category: "Read",
-        summary: displayPath(pathValue),
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
-    }
-
-    if (normalizedTool === "write") {
-      const parsed = safeJsonParse(trimmedPayload);
-      const pathValue =
-        parsed && typeof parsed === "object" && typeof (parsed as { path?: unknown }).path === "string"
-          ? (parsed as { path: string }).path
-          : trimmedPayload;
-      this.add({
-        category: "Write",
-        summary: displayPath(pathValue),
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
-    }
-
-    if (normalizedTool === "apply_patch") {
-      const paths = extractDiffPaths(trimmedPayload);
-      const summary =
-        paths.length === 0
-          ? "apply_patch"
-          : paths.length <= 3
-            ? paths.map(displayPath).join(", ")
-            : `${paths.slice(0, 2).map(displayPath).join(", ")}, … (${paths.length} files)`;
-      this.add({
-        category: "Write",
-        summary,
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
-    }
-
-    if (normalizedTool === "search") {
-      const parsed = safeJsonParse(trimmedPayload);
-      const queryValue =
-        typeof parsed === "string"
-          ? parsed
-          : parsed && typeof parsed === "object" && typeof (parsed as { query?: unknown }).query === "string"
-            ? (parsed as { query: string }).query
-            : trimmedPayload;
-      this.add({
-        category: "WebSearch",
-        summary: truncate(String(queryValue ?? "").trim(), 140),
-        source: "tool_hook",
-        meta: { tool: normalizedTool },
-      });
-      return;
-    }
-
-    if (normalizedTool === "exec") {
-      const parsed = safeJsonParse(trimmedPayload);
-      let commandLine = trimmedPayload;
-      if (parsed && typeof parsed === "object") {
-        const record = parsed as { cmd?: unknown; args?: unknown; argv?: unknown };
-        if (typeof record.cmd === "string" && record.cmd.trim()) {
-          const argsRaw = record.args ?? record.argv;
-          const args = Array.isArray(argsRaw) ? argsRaw.map((entry) => String(entry)) : [];
-          commandLine = [record.cmd, ...args].join(" ").trim();
-        }
-      }
-      const category = categorizeCommand(commandLine);
-      const summary = summarizeCommand(commandLine, category);
-      this.add({
-        category,
-        summary,
-        source: "tool_hook",
-        meta: { tool: normalizedTool, command: commandLine },
-      });
-      return;
-    }
-
-    this.add({
-      category: "Tool",
-      summary: normalizedTool,
-      source: "tool_hook",
-      meta: { tool: normalizedTool },
-    });
   }
 
   compact(config: Pick<ExploredConfig, "maxItems" | "dedupe">): ExploredEntry[] {
     const compacted = compactExploredEntries(this.entries, config.dedupe).slice(0, config.maxItems);
     return compacted.map((entry) => ({ ...entry }));
+  }
+
+  private ingestToolInvokeGrep(payload: string): void {
+    const parsed = safeJsonParse(payload);
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    const pattern =
+      typeof parsed === "string"
+        ? parsed.trim()
+        : typeof record?.pattern === "string"
+          ? record.pattern.trim()
+          : payload;
+    const pathValue = typeof record?.path === "string" ? record.path.trim() : "";
+    const globValue = typeof record?.glob === "string" ? record.glob.trim() : "";
+    const scopeParts = [pathValue ? displayPath(pathValue) : "", globValue ? `glob:${globValue}` : ""].filter(Boolean);
+    const scope = scopeParts.length > 0 ? ` in ${scopeParts.join(" ")}` : "";
+    this.add({
+      category: "Search",
+      summary: truncate(`${pattern}${scope}`, 180),
+      source: "tool_hook",
+      meta: { tool: "grep" },
+    });
+  }
+
+  private ingestToolInvokeFind(payload: string): void {
+    const parsed = safeJsonParse(payload);
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    const pattern =
+      typeof parsed === "string"
+        ? parsed.trim()
+        : typeof record?.pattern === "string"
+          ? record.pattern.trim()
+          : payload;
+    const pathValue = typeof record?.path === "string" ? record.path.trim() : "";
+    const scope = pathValue ? ` in ${displayPath(pathValue)}` : "";
+    this.add({
+      category: "List",
+      summary: truncate(`${pattern}${scope}`, 180),
+      source: "tool_hook",
+      meta: { tool: "find" },
+    });
+  }
+
+  private ingestToolInvokeAgent(payload: string): void {
+    const parsed = safeJsonParse(payload);
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    let agentId = "";
+    let prompt = "";
+    if (record) {
+      agentId = String(record.agentId ?? record.agent_id ?? record.agent ?? "").trim();
+      prompt = String(record.prompt ?? record.input ?? record.query ?? "").trim();
+    } else {
+      const lines = payload.split(/\r?\n/);
+      agentId = String(lines[0] ?? "").trim();
+      prompt = lines.slice(1).join("\n").trim();
+    }
+    const label = agentId ? agentId.toLowerCase() : "agent";
+    const summary = prompt ? `${label}: ${truncate(prompt, 160)}` : label;
+    this.add({
+      category: "Agent",
+      summary,
+      source: "tool_hook",
+      meta: { tool: "agent" },
+    });
+  }
+
+  private ingestToolInvokeRead(payload: string): void {
+    const parsed = safeJsonParse(payload);
+    const pathValue =
+      parsed && typeof parsed === "object" && typeof (parsed as { path?: unknown }).path === "string"
+        ? (parsed as { path: string }).path
+        : payload;
+    this.add({
+      category: "Read",
+      summary: displayPath(pathValue),
+      source: "tool_hook",
+      meta: { tool: "read" },
+    });
+  }
+
+  private ingestToolInvokeWrite(payload: string): void {
+    const parsed = safeJsonParse(payload);
+    const pathValue =
+      parsed && typeof parsed === "object" && typeof (parsed as { path?: unknown }).path === "string"
+        ? (parsed as { path: string }).path
+        : payload;
+    this.add({
+      category: "Write",
+      summary: displayPath(pathValue),
+      source: "tool_hook",
+      meta: { tool: "write" },
+    });
+  }
+
+  private ingestToolInvokeApplyPatch(payload: string): void {
+    const paths = extractDiffPaths(payload);
+    const summary =
+      paths.length === 0
+        ? "apply_patch"
+        : paths.length <= 3
+          ? paths.map(displayPath).join(", ")
+          : `${paths.slice(0, 2).map(displayPath).join(", ")}, … (${paths.length} files)`;
+    this.add({
+      category: "Write",
+      summary,
+      source: "tool_hook",
+      meta: { tool: "apply_patch" },
+    });
+  }
+
+  private ingestToolInvokeSearch(payload: string): void {
+    const parsed = safeJsonParse(payload);
+    const queryValue =
+      typeof parsed === "string"
+        ? parsed
+        : parsed && typeof parsed === "object" && typeof (parsed as { query?: unknown }).query === "string"
+          ? (parsed as { query: string }).query
+          : payload;
+    this.add({
+      category: "WebSearch",
+      summary: truncate(String(queryValue ?? "").trim(), 140),
+      source: "tool_hook",
+      meta: { tool: "search" },
+    });
+  }
+
+  private ingestToolInvokeExec(payload: string): void {
+    const parsed = safeJsonParse(payload);
+    let commandLine = payload;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as { cmd?: unknown; args?: unknown; argv?: unknown };
+      if (typeof record.cmd === "string" && record.cmd.trim()) {
+        const argsRaw = record.args ?? record.argv;
+        const args = Array.isArray(argsRaw) ? argsRaw.map((entry) => String(entry)) : [];
+        commandLine = [record.cmd, ...args].join(" ").trim();
+      }
+    }
+    const category = categorizeCommand(commandLine);
+    const summary = summarizeCommand(commandLine, category);
+    this.add({
+      category,
+      summary,
+      source: "tool_hook",
+      meta: { tool: "exec", command: commandLine },
+    });
   }
 
   private ingestCommandExecution(item: CommandExecutionItem): void {

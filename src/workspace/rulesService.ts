@@ -110,7 +110,8 @@ export async function checkRuleViolation(params: {
 
   if (operation === "delete_file") {
     const filePath = String(details.file_path ?? "");
-    if ([".db", ".sqlite", ".sqlite3", "index.json"].some((ext) => filePath.endsWith(ext))) {
+    const normalized = filePath.toLowerCase();
+    if ([".db", ".sqlite", ".sqlite3", "index.json"].some((ext) => normalized.endsWith(ext))) {
       violations.push({
         rule: "禁止删除数据库文件",
         severity: "critical",
@@ -131,7 +132,7 @@ export async function checkRuleViolation(params: {
         action: "stop",
       });
     }
-    if (message.includes("Co-authored-by")) {
+    if (/co-authored-by/i.test(message)) {
       violations.push({
         rule: "禁止添加 Co-authored-by",
         severity: "critical",
