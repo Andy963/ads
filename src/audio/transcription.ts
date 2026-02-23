@@ -1,9 +1,10 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
-import { discoverSkills } from "../skills/loader.js";
+import { discoverSkills, type SkillMetadata } from "../skills/loader.js";
 import { loadSkillRegistry } from "../skills/registryMetadata.js";
 import { runCommand, type CommandRunResult } from "../utils/commandRunner.js";
 
@@ -72,10 +73,21 @@ function resolveTempDir(): string {
 function writeTempAudioFile(audio: Buffer, ext: string): string {
   const dir = resolveTempDir();
   fs.mkdirSync(dir, { recursive: true });
-  const fileName = `audio-${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`;
+  const fileName = `audio-${Date.now()}-${crypto.randomUUID()}.${ext}`;
   const filePath = path.join(dir, fileName);
   fs.writeFileSync(filePath, audio);
   return filePath;
+}
+
+function indexSkillsByName(skills: SkillMetadata[]): Map<string, SkillMetadata> {
+  const out = new Map<string, SkillMetadata>();
+  for (const skill of skills) {
+    const key = skill.name.toLowerCase();
+    if (!out.has(key)) {
+      out.set(key, skill);
+    }
+  }
+  return out;
 }
 
 function resolveTranscribeScript(skillLocation: string): { cmd: string; args: string[] } | null {
@@ -99,6 +111,7 @@ function resolveTranscribeScript(skillLocation: string): { cmd: string; args: st
 async function runTranscriptionSkill(args: {
   workspaceRoot: string;
   skillName: string;
+  skill: SkillMetadata | null;
   audioPath: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -112,8 +125,7 @@ async function runTranscriptionSkill(args: {
     allowlist?: string[] | null;
   }) => Promise<CommandRunResult>;
 }): Promise<{ ok: true; text: string } | { ok: false; error: string; timedOut: boolean }> {
-  const skills = discoverSkills(args.workspaceRoot);
-  const skill = skills.find((s) => s.name.toLowerCase() === args.skillName.toLowerCase()) ?? null;
+  const skill = args.skill;
   if (!skill) {
     return { ok: false, error: `skill_not_found:${args.skillName}`, timedOut: false };
   }
@@ -177,6 +189,8 @@ export async function transcribeAudioBuffer(args: {
 
   const timeoutMs = resolveTimeoutMs();
   const skills = resolveTranscriptionSkillOrder(workspaceRoot);
+  const discoveredSkills = discoverSkills(workspaceRoot);
+  const skillLookup = indexSkillsByName(discoveredSkills);
   const errors: string[] = [];
   let sawTimeout = false;
 
@@ -186,6 +200,7 @@ export async function transcribeAudioBuffer(args: {
         const res = await runTranscriptionSkill({
           workspaceRoot,
           skillName,
+          skill: skillLookup.get(skillName.toLowerCase()) ?? null,
           audioPath,
           timeoutMs,
           signal: args.signal,
