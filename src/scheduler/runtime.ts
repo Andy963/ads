@@ -1,25 +1,11 @@
 import crypto from "node:crypto";
 
 import { TaskStore } from "../tasks/store.js";
+import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
 
 import { computeNextCronRunAt } from "./cron.js";
 import { ScheduleStore } from "./store.js";
 import type { StoredSchedule } from "./store.js";
-
-function parseBooleanEnv(raw: string | undefined, defaultValue: boolean): boolean {
-  if (raw === undefined) return defaultValue;
-  const normalized = raw.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return defaultValue;
-}
-
-function parsePositiveInt(raw: string | undefined, fallback: number): number {
-  if (!raw) return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return parsed;
-}
 
 function renderIdempotencyKey(template: string, scheduleId: string, runAtIso: string): string {
   const t = String(template ?? "").trim();
@@ -57,11 +43,11 @@ export class SchedulerRuntime {
     reconcileLimit?: number;
     ownerId?: string;
   }) {
-    this.enabled = options?.enabled ?? parseBooleanEnv(process.env.ADS_SCHEDULER_ENABLED, true);
-    this.tickMs = options?.tickMs ?? parsePositiveInt(process.env.ADS_SCHEDULER_TICK_MS, 5000);
-    this.leaseTtlMs = options?.leaseTtlMs ?? parsePositiveInt(process.env.ADS_SCHEDULER_LEASE_TTL_MS, 30_000);
-    this.dueLimit = options?.dueLimit ?? parsePositiveInt(process.env.ADS_SCHEDULER_DUE_LIMIT, 20);
-    this.reconcileLimit = options?.reconcileLimit ?? parsePositiveInt(process.env.ADS_SCHEDULER_RECONCILE_LIMIT, 200);
+    this.enabled = options?.enabled ?? parseBooleanFlag(process.env.ADS_SCHEDULER_ENABLED, true);
+    this.tickMs = options?.tickMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_TICK_MS, 5000);
+    this.leaseTtlMs = options?.leaseTtlMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_LEASE_TTL_MS, 30_000);
+    this.dueLimit = options?.dueLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_DUE_LIMIT, 20);
+    this.reconcileLimit = options?.reconcileLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RECONCILE_LIMIT, 200);
     this.ownerId = options?.ownerId ?? crypto.randomUUID();
   }
 

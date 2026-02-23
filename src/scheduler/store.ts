@@ -35,7 +35,7 @@ export type StoredScheduleRun = {
   updatedAt: number;
 };
 
-function parseBooleanFlag(value: unknown): boolean {
+function parseSqliteBoolean(value: unknown): boolean {
   if (typeof value === "number") {
     return value !== 0;
   }
@@ -78,7 +78,7 @@ function parseScheduleRow(row: Record<string, unknown>): StoredSchedule {
     id,
     instruction,
     spec: specParsed.data,
-    enabled: parseBooleanFlag(row.enabled),
+    enabled: parseSqliteBoolean(row.enabled),
     nextRunAt: parseOptionalInt(row.next_run_at),
     leaseOwner: row.lease_owner == null ? null : String(row.lease_owner ?? "").trim() || null,
     leaseUntil: parseOptionalInt(row.lease_until),
@@ -422,4 +422,3 @@ export class ScheduleStore {
     return updated;
   }
 }
-

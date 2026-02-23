@@ -1,19 +1,13 @@
 import crypto from "node:crypto";
 
 import { SessionManager } from "../telegram/utils/sessionManager.js";
+import { parsePositiveIntFlag } from "../utils/flags.js";
 
 import { ScheduleSpecSchema, type ScheduleSpec } from "./scheduleSpec.js";
 import { parseSupportedCron, validateTimeZone } from "./cron.js";
 
 export interface ScheduleCompiler {
   compile(options: { workspaceRoot: string; instruction: string; signal?: AbortSignal }): Promise<ScheduleSpec>;
-}
-
-function parsePositiveInt(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return parsed;
 }
 
 function extractSingleFencedJsonBlock(text: string): string {
@@ -94,11 +88,11 @@ export class AgentScheduleCompiler implements ScheduleCompiler {
     const timeoutMs =
       typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
         ? Math.floor(options.timeoutMs)
-        : parsePositiveInt(process.env.ADS_SCHEDULER_COMPILE_TIMEOUT_MS, 120_000);
+        : parsePositiveIntFlag(process.env.ADS_SCHEDULER_COMPILE_TIMEOUT_MS, 120_000);
     const maxAttempts =
       typeof options?.maxAttempts === "number" && Number.isFinite(options.maxAttempts) && options.maxAttempts > 0
         ? Math.floor(options.maxAttempts)
-        : parsePositiveInt(process.env.ADS_SCHEDULER_COMPILE_MAX_ATTEMPTS, 2);
+        : parsePositiveIntFlag(process.env.ADS_SCHEDULER_COMPILE_MAX_ATTEMPTS, 2);
     const model = String(options?.model ?? process.env.ADS_SCHEDULER_COMPILE_MODEL ?? "").trim() || undefined;
 
     this.timeoutMs = timeoutMs;
@@ -204,4 +198,3 @@ export class AgentScheduleCompiler implements ScheduleCompiler {
     }
   }
 }
-

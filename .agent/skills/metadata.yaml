@@ -7,3 +7,9 @@ skills:
   gemini-transcribe:
     provides: [audio.transcribe]
     priority: 200
+  gemini-tts:
+    provides: [audio.tts]
+    priority: 200
+  openai-tts:
+    provides: [audio.tts]
+    priority: 100
