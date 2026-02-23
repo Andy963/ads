@@ -7,6 +7,21 @@ if [[ "$branch" == "main" ]]; then
   exit 1
 fi
 
+blocked_paths="$(
+  git diff --cached --name-only --diff-filter=ACMR \
+    | grep -E '^(docs/spec/|docs/adr/)' \
+    || true
+)"
+if [[ -n "$blocked_paths" ]]; then
+  echo "ERROR: committing files under 'docs/spec/' or 'docs/adr/' is blocked." >&2
+  echo "Blocked paths:" >&2
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    echo "- $path" >&2
+  done <<<"$blocked_paths"
+  exit 1
+fi
+
 # Lightweight secret scan on staged content to catch obvious leaks before they hit GitGuardian.
 # - Scans only staged files (not the working tree).
 # - Prints file/line and rule id, never the matched secret.
