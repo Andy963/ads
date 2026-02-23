@@ -1,6 +1,6 @@
 ---
 name: scheduler-compile
-description: "Compile a natural-language scheduled job into a deterministic ScheduleSpec JSON for compile-on-create scheduling."
+description: "Compile a natural-language scheduled job into a deterministic ScheduleSpec JSON for compile-on-create scheduling. Use when user asks 定时任务/cron/schedule/提醒/每天几点做什么."
 ---
 
 # Scheduler Compile
