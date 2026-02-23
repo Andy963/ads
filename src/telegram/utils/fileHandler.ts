@@ -7,6 +7,7 @@ import { createGzip } from 'node:zlib';
 
 import { createLogger } from '../../utils/logger.js';
 import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
+import { createTimeoutSignal, formatFileSize, sanitizeFileName } from './downloadUtils.js';
 import { resolveTelegramProxyAgent } from './proxyAgent.js';
 
 const DOWNLOAD_DIR = join(resolveAdsStateDir(), 'temp', 'telegram-files');
@@ -28,36 +29,6 @@ function ensureDownloadDir(): void {
   if (!existsSync(DOWNLOAD_DIR)) {
     mkdirSync(DOWNLOAD_DIR, { recursive: true });
   }
-}
-
-function createTimeoutSignal(
-  parent: AbortSignal | undefined,
-  timeoutMs: number,
-): { signal: AbortSignal; cleanup: () => void; didTimeout: () => boolean } {
-  const controller = new AbortController();
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-
-  const abortHandler = () => controller.abort();
-  if (parent) {
-    if (parent.aborted) {
-      controller.abort();
-    } else {
-      parent.addEventListener('abort', abortHandler);
-    }
-  }
-
-  const cleanup = () => {
-    clearTimeout(timeout);
-    if (parent) {
-      parent.removeEventListener('abort', abortHandler);
-    }
-  };
-
-  return { signal: controller.signal, cleanup, didTimeout: () => timedOut };
 }
 
 /**
@@ -252,22 +223,6 @@ export function cleanupAllTempFiles(): void {
   if (cleaned > 0) {
     logger.debug(`Cleaned up ${cleaned} old temp files`);
   }
-}
-
-/**
- * 格式化文件大小
- */
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/**
- * 清理文件名中的非法字符
- */
-function sanitizeFileName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
 /**

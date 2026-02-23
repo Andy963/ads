@@ -16,6 +16,10 @@
 
 - `src/web/server/startWebServer.ts` (server bootstrap, env flags, process behavior)
 - `src/telegram/botSetup.ts` (telegram bot utilities)
+- `src/telegram/utils/downloadUtils.ts` (shared telegram download helpers)
+- `src/telegram/utils/fileHandler.ts` (telegram file download/upload helpers)
+- `src/telegram/utils/imageHandler.ts` (telegram image download helper)
+- `src/telegram/utils/urlHandler.ts` (URL extraction, safe download, SSRF guard)
 - `src/utils/env.ts` (env loading behavior and side effects)
 - `src/utils/flags.ts` (env flag parsing helpers)
 - `src/utils/activityTracker.ts` (explored tracking, env-driven config)
@@ -47,6 +51,7 @@
 
 - Reduce module-local utilities that are used across areas; prefer shared helpers under `src/utils/`.
 - Introduce small, well-named types for frequently passed option bags (reduce `Record<string, unknown>`).
+- Deduplicate Telegram download helpers (`createTimeoutSignal`, file naming, size formatting) into a shared module (DONE: `src/telegram/utils/downloadUtils.ts`).
 
 ### Performance
 
@@ -70,7 +75,7 @@
 - `src/storage/*` (except `database.ts`)
 - `src/systemPrompt/*`
 - `src/tasks/*` (except `src/tasks/storeStatements.ts`, `src/tasks/storeImpl/messageOps.ts`, `src/tasks/storeImpl/conversationOps.ts`, `src/tasks/executor.ts`)
-- `src/telegram/*` (except `botSetup.ts`)
+- `src/telegram/*` (except `botSetup.ts`, `utils/downloadUtils.ts`, `utils/fileHandler.ts`, `utils/imageHandler.ts`, `utils/urlHandler.ts`)
 - `src/types/*`
 - `src/utils/*` (except any files touched by refactors)
 - `src/web/*` (except `src/web/server/startWebServer.ts`, `src/web/server/ws/handleTaskResume.ts`)

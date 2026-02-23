@@ -6,6 +6,7 @@ import type { Api } from 'grammy';
 
 import { createLogger } from '../../utils/logger.js';
 import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
+import { createTimeoutSignal } from './downloadUtils.js';
 import { resolveTelegramProxyAgent } from './proxyAgent.js';
 
 const TEMP_DIR = join(resolveAdsStateDir(), 'temp', 'telegram-images');
@@ -16,36 +17,6 @@ function ensureTempDir() {
   if (!existsSync(TEMP_DIR)) {
     mkdirSync(TEMP_DIR, { recursive: true });
   }
-}
-
-function createTimeoutSignal(
-  parent: AbortSignal | undefined,
-  timeoutMs: number,
-): { signal: AbortSignal; cleanup: () => void; didTimeout: () => boolean } {
-  const controller = new AbortController();
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-
-  const abortHandler = () => controller.abort();
-  if (parent) {
-    if (parent.aborted) {
-      controller.abort();
-    } else {
-      parent.addEventListener('abort', abortHandler);
-    }
-  }
-
-  const cleanup = () => {
-    clearTimeout(timeout);
-    if (parent) {
-      parent.removeEventListener('abort', abortHandler);
-    }
-  };
-
-  return { signal: controller.signal, cleanup, didTimeout: () => timedOut };
 }
 
 export async function downloadTelegramImage(

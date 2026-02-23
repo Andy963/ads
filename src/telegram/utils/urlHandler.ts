@@ -3,6 +3,7 @@ import { join, extname } from 'node:path';
 
 import { createLogger } from '../../utils/logger.js';
 import { resolveAdsStateDir } from '../../workspace/adsPaths.js';
+import { createTimeoutSignal, formatFileSize, sanitizeFileName } from './downloadUtils.js';
 
 const DOWNLOAD_DIR = join(resolveAdsStateDir(), 'temp', 'url-downloads');
 let dnsResolveOverride: ((hostname: string) => Promise<string[]>) | null = null;
@@ -139,28 +140,6 @@ async function assertUrlSafe(parsed: URL): Promise<void> {
   }
 }
 
-function createTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const abortHandler = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
-      signal.addEventListener('abort', abortHandler);
-    }
-  }
-
-  const cleanup = () => {
-    clearTimeout(timeout);
-    if (signal) {
-      signal.removeEventListener('abort', abortHandler);
-    }
-  };
-
-  return { signal: controller.signal, cleanup };
-}
-
 // 仅用于测试注入自定义 DNS 解析行为
 export function setDnsResolver(resolver: ((hostname: string) => Promise<string[]>) | null): void {
   dnsResolveOverride = resolver;
@@ -173,35 +152,26 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
   // 验证 URL 安全性
   const parsed = new URL(url);
   await assertUrlSafe(parsed);
-  
+
   if (!existsSync(DOWNLOAD_DIR)) {
     mkdirSync(DOWNLOAD_DIR, { recursive: true });
   }
-  
+
   const timestamp = Date.now();
   const safeName = sanitizeFileName(fileName);
   const localPath = join(DOWNLOAD_DIR, `${timestamp}-${safeName}`);
-  
+
   // 超时控制
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  const abortHandler = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
-      signal.addEventListener('abort', abortHandler);
-    }
-  }
-  
+  const { signal: combinedSignal, cleanup } = createTimeoutSignal(signal, 30000);
+
   try {
     logger.info(`Downloading ${url}...`);
-    
-    const response = await fetch(url, { signal: controller.signal });
+
+    const response = await fetch(url, { signal: combinedSignal });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-    
+
     // 检查大小
     const contentLength = response.headers.get('content-length');
     if (contentLength) {
@@ -210,30 +180,30 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
         throw new Error(`文件过大 (${formatFileSize(size)})，限制 50MB`);
       }
     }
-    
+
     // 流式下载，限制大小
     if (!response.body) {
       throw new Error('No response body');
     }
-    
+
     const fileStream = createWriteStream(localPath);
     const reader = response.body.getReader();
     let downloadedSize = 0;
-    
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       downloadedSize += value.length;
       if (downloadedSize > 50 * 1024 * 1024) {
         fileStream.destroy();
         throw new Error(`下载超过 50MB 限制`);
       }
-      
+
       fileStream.write(Buffer.from(value));
     }
     fileStream.end();
-    
+
     logger.info(`Downloaded to ${localPath}`);
     return localPath;
   } catch (error) {
@@ -244,10 +214,7 @@ export async function downloadUrl(url: string, fileName: string, signal?: AbortS
     }
     throw new Error(`下载失败: ${(error as Error).message}`);
   } finally {
-    clearTimeout(timeout);
-    if (signal) {
-      signal.removeEventListener('abort', abortHandler);
-    }
+    cleanup();
   }
 }
 
@@ -329,20 +296,4 @@ export async function processUrls(text: string, signal?: AbortSignal): Promise<{
     filePaths,
     webpageUrls,
   };
-}
-
-/**
- * 清理文件名中的非法字符
- */
-function sanitizeFileName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
-/**
- * 格式化文件大小
- */
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
