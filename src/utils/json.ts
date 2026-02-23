@@ -59,13 +59,21 @@ export function parseJsonWithSchema<TSchema extends z.ZodTypeAny>(
 }
 
 export function safeStringify(value: unknown, indent = 2): string {
-  return JSON.stringify(value, (_key, val) => {
-    if (val instanceof Map) {
-      return Object.fromEntries(val.entries());
-    }
-    if (val instanceof Set) {
-      return Array.from(val.values());
-    }
-    return val;
-  }, indent);
+  try {
+    return JSON.stringify(
+      value,
+      (_key, val) => {
+        if (val instanceof Map) {
+          return Object.fromEntries(val.entries());
+        }
+        if (val instanceof Set) {
+          return Array.from(val.values());
+        }
+        return val;
+      },
+      indent,
+    );
+  } catch {
+    return JSON.stringify({ error: "failed to stringify value" }, null, indent);
+  }
 }
