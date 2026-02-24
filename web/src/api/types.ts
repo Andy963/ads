@@ -66,7 +66,6 @@ export interface BootstrapConfig {
   enabled: boolean;
   projectRef: string;
   maxIterations?: number;
-  softSandbox?: boolean;
 }
 
 export interface CreateTaskInput {

@@ -3,9 +3,6 @@ import type { HybridOrchestrator } from "../agents/orchestrator.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { AsyncLock } from "../utils/asyncLock.js";
 
-import { runBootstrapLoop } from "../bootstrap/bootstrapLoop.js";
-import { CodexBootstrapAgentRunner } from "../bootstrap/agentRunner.js";
-import { NoopSandbox } from "../bootstrap/sandbox.js";
 import type { BootstrapProjectRef } from "../bootstrap/types.js";
 import { safeParseJson } from "../utils/json.js";
 import { mergeStreamingText } from "../utils/streamingText.js";
@@ -78,7 +75,6 @@ type BootstrapModelParams = {
     enabled?: boolean;
     projectRef?: string;
     maxIterations?: number;
-    softSandbox?: boolean;
   };
 };
 
@@ -141,6 +137,13 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       : { kind: "local_path", value: ref };
 
     const { modelOverride, modelForStorage } = this.resolveModelOverride(task);
+
+    const [{ runBootstrapLoop }, { CodexBootstrapAgentRunner }, { NoopSandbox }] = await Promise.all([
+      import("../bootstrap/bootstrapLoop.js"),
+      import("../bootstrap/agentRunner.js"),
+      import("../bootstrap/sandbox.js"),
+    ]);
+
     const sandbox = new NoopSandbox();
     const agentRunner = new CodexBootstrapAgentRunner({ sandbox, model: modelOverride });
 

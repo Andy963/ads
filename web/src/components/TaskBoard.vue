@@ -10,7 +10,6 @@ type BootstrapConfig = {
   enabled: true;
   projectRef: string;
   maxIterations?: number;
-  softSandbox?: boolean;
 };
 
 type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "inheritContext" | "maxRetries">> & {

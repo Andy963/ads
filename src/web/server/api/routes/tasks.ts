@@ -80,7 +80,6 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       enabled: z.boolean(),
       projectRef: z.string().min(1),
       maxIterations: z.number().min(1).max(10).optional(),
-      softSandbox: z.boolean().optional(),
     }).optional();
     const schema = z
       .object({
@@ -223,7 +222,6 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         enabled: z.literal(true),
         projectRef: z.string().trim().min(1),
         maxIterations: z.number().int().min(1).max(10).optional(),
-        softSandbox: z.boolean().optional(),
       })
       .nullable()
       .optional();

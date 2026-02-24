@@ -113,7 +113,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         enabled: z.literal(true),
         projectRef: z.string().trim().min(1),
         maxIterations: z.number().int().min(1).max(10).optional(),
-        softSandbox: z.boolean().optional(),
       })
       .nullable()
       .optional();
