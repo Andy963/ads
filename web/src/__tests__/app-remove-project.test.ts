@@ -10,6 +10,7 @@ type DeleteImpl = (url: string) => Promise<unknown>;
 let getImpl: GetImpl | null = null;
 let deleteImpl: DeleteImpl | null = null;
 let deleteCalls: string[] = [];
+let wsCloseCalls: string[] = [];
 
 type RemoteProject = {
   id: string;
@@ -57,14 +58,19 @@ vi.mock("../api/ws", () => {
     onError?: () => void;
     onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
+    readonly key: string;
 
-    constructor(_: { sessionId: string; chatSessionId?: string }) {}
+    constructor(params: { sessionId: string; chatSessionId?: string }) {
+      this.key = `${params.sessionId}:${params.chatSessionId ?? "main"}`;
+    }
 
     connect(): void {
       queueMicrotask(() => this.onOpen?.());
     }
 
-    close(): void {}
+    close(): void {
+      wsCloseCalls.push(this.key);
+    }
   }
 
   return { AdsWebSocket };
@@ -104,6 +110,7 @@ describe("App.removeProject", () => {
     }
 
     deleteCalls = [];
+    wsCloseCalls = [];
     projectsFromApi = [];
     activeProjectIdFromApi = null;
 
@@ -132,6 +139,7 @@ describe("App.removeProject", () => {
     getImpl = null;
     deleteImpl = null;
     deleteCalls = [];
+    wsCloseCalls = [];
     projectsFromApi = [];
     activeProjectIdFromApi = null;
     vi.clearAllMocks();
@@ -165,6 +173,7 @@ describe("App.removeProject", () => {
     expect(deleteCalls).toEqual(["/api/projects/p2"]);
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1", "p3"]);
     expect((wrapper.vm as any).activeProjectId).toBe("p1");
+    expect([...wsCloseCalls].sort()).toEqual(["p2:main", "p2:planner"].sort());
 
     wrapper.unmount();
   });

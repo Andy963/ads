@@ -394,6 +394,43 @@ export function createAppController() {
 
   taskDeps.connectWs = ws.connectWs;
 
+  const clearRuntimeTimers = (rt: { noticeTimer: number | null; liveActivityTtlTimer: number | null }): void => {
+    if (rt.noticeTimer !== null) {
+      try {
+        window.clearTimeout(rt.noticeTimer);
+      } catch {
+        // ignore
+      }
+      rt.noticeTimer = null;
+    }
+    if (rt.liveActivityTtlTimer !== null) {
+      try {
+        window.clearTimeout(rt.liveActivityTtlTimer);
+      } catch {
+        // ignore
+      }
+      rt.liveActivityTtlTimer = null;
+    }
+  };
+
+  const closeProjectConnections = (projectId: string): void => {
+    const pid = ctx.normalizeProjectId(projectId);
+
+    const workerRt = ctx.runtimeByProjectId.get(pid);
+    if (workerRt) {
+      ws.closeRuntimeConnection(workerRt);
+      clearRuntimeTimers(workerRt);
+      ctx.runtimeByProjectId.delete(pid);
+    }
+
+    const plannerRt = ctx.plannerRuntimeByProjectId.get(pid);
+    if (plannerRt) {
+      ws.closeRuntimeConnection(plannerRt);
+      clearRuntimeTimers(plannerRt);
+      ctx.plannerRuntimeByProjectId.delete(pid);
+    }
+  };
+
   const activateProject = async (projectId: string): Promise<void> => {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
@@ -417,6 +454,7 @@ export function createAppController() {
   };
 
   projectDeps.activateProject = activateProject;
+  projectDeps.closeProjectConnections = closeProjectConnections;
 
   const prefetchProjectStatusSpinners = async (): Promise<void> => {
     if (!ctx.loggedIn.value) return;

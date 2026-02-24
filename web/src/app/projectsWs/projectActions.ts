@@ -254,6 +254,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
         throw new Error("Failed to remove project");
       }
 
+      deps.closeProjectConnections?.(pid);
       await loadProjectsFromServer();
       await deps.activateProject(activeProjectId.value);
     } catch (error) {
