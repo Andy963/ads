@@ -17,6 +17,7 @@ const BUILTIN_SKILLS_ROOT = path.resolve(__dirname, "builtin");
 const WORKSPACE_SKILLS_DIR = ".agent/skills";
 const ADS_REPO_SKILLS_DIR = path.join(ADS_REPO_ROOT, WORKSPACE_SKILLS_DIR);
 const SKILL_FILE_NAME = "SKILL.md";
+const WORKSPACE_SKILLS_METADATA_FILE = "metadata.yaml";
 
 export interface SkillMetadata {
   name: string;
@@ -25,9 +26,18 @@ export interface SkillMetadata {
   source: "workspace" | "ads" | "state" | "global" | "builtin";
 }
 
-function isWorkspaceSkillsEnabled(): boolean {
+function isWorkspaceSkillsEnabled(workspacePath: string): boolean {
   const raw = String(process.env.ADS_ENABLE_WORKSPACE_SKILLS ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
+    return true;
+  }
+
+  try {
+    const metadataPath = path.join(path.resolve(workspacePath), WORKSPACE_SKILLS_DIR, WORKSPACE_SKILLS_METADATA_FILE);
+    return fs.existsSync(metadataPath);
+  } catch {
+    return false;
+  }
 }
 
 interface SkillFileCacheEntry {
@@ -80,7 +90,7 @@ export function discoverSkills(workspacePath: string, builtinRoot?: string): Ski
   const resolvedBuiltin = builtinRoot ?? BUILTIN_SKILLS_ROOT;
   const adsStateSkillsDir = path.join(resolveAdsStateDir(), WORKSPACE_SKILLS_DIR);
   const roots: Array<{ dir: string; source: SkillMetadata["source"] }> = [];
-  if (isWorkspaceSkillsEnabled()) {
+  if (isWorkspaceSkillsEnabled(workspacePath)) {
     roots.push({ dir: path.join(path.resolve(workspacePath), WORKSPACE_SKILLS_DIR), source: "workspace" });
   }
   roots.push(

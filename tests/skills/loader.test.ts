@@ -17,6 +17,16 @@ function createSkill(root: string, name: string, frontmatter: string): void {
   fs.writeFileSync(path.join(dir, "SKILL.md"), frontmatter, "utf-8");
 }
 
+function writeWorkspaceSkillsMetadata(workspaceRoot: string): void {
+  const dir = path.join(workspaceRoot, ".agent", "skills");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "metadata.yaml"),
+    ["version: 1", "mode: overlay", "skills: {}", ""].join("\n"),
+    "utf8",
+  );
+}
+
 describe("skills/loader", () => {
   beforeEach(() => {
     originalEnv = { ...process.env };
@@ -62,6 +72,24 @@ describe("skills/loader", () => {
     const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
     const found = skills.find((s) => s.name === skillName) ?? null;
     assert.equal(found, null);
+  });
+
+  it("auto-enables workspace .agent/skills when metadata.yaml exists", () => {
+    writeWorkspaceSkillsMetadata(workspaceRoot);
+    const skillName = `workspace-meta-${Date.now()}`;
+    createSkill(workspaceRoot, skillName, [
+      "---",
+      `name: ${skillName}`,
+      "description: Workspace skill",
+      "---",
+      "# Workspace Skill",
+      "Body",
+    ].join("\n"));
+
+    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    const found = skills.find((s) => s.name === skillName) ?? null;
+    assert.ok(found);
+    assert.equal(found.source, "workspace");
   });
 
   it("skips directories without SKILL.md", () => {

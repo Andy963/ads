@@ -28,16 +28,26 @@ export type SkillRegistry = {
 };
 
 type CachedRegistry = {
-  path: string;
-  mtimeMs: number;
+  signature: string;
   registry: SkillRegistry;
 };
 
 let cached: CachedRegistry | null = null;
 
-function isWorkspaceSkillsEnabled(): boolean {
+function isWorkspaceSkillsEnabled(workspaceRoot?: string): boolean {
   const raw = String(process.env.ADS_ENABLE_WORKSPACE_SKILLS ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
+    return true;
+  }
+  if (!workspaceRoot) {
+    return false;
+  }
+  try {
+    const metadataPath = path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml");
+    return fs.existsSync(metadataPath);
+  } catch {
+    return false;
+  }
 }
 
 function resolveSkillRegistryMetadataCandidates(workspaceRoot?: string): string[] {
@@ -50,7 +60,7 @@ function resolveSkillRegistryMetadataCandidates(workspaceRoot?: string): string[
   candidates.push(path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml"));
   candidates.push(path.join(ADS_REPO_ROOT, ".agent", "skills", "metadata.yaml"));
   candidates.push(path.join(os.homedir(), ".agent", "skills", "metadata.yaml"));
-  if (workspaceRoot && isWorkspaceSkillsEnabled()) {
+  if (workspaceRoot && isWorkspaceSkillsEnabled(workspaceRoot)) {
     candidates.push(path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml"));
   }
   return candidates;
@@ -71,7 +81,9 @@ export function resolveSkillRegistryMetadataPath(workspaceRoot?: string): string
 }
 
 export function loadSkillRegistry(workspaceRoot?: string): SkillRegistry | null {
-  const metadataPath = resolveSkillRegistryMetadataPath(workspaceRoot);
+  const explicit = String(process.env.ADS_SKILLS_METADATA_PATH ?? "").trim();
+  const metadataPath = explicit ? path.resolve(explicit) : resolveSkillRegistryMetadataPath(workspaceRoot);
+
   let stat: fs.Stats;
   try {
     stat = fs.statSync(metadataPath);
@@ -80,15 +92,59 @@ export function loadSkillRegistry(workspaceRoot?: string): SkillRegistry | null 
     return null;
   }
 
-  if (cached && cached.path === metadataPath && cached.mtimeMs === stat.mtimeMs) {
+  const overlayPath =
+    explicit || !workspaceRoot || !isWorkspaceSkillsEnabled(workspaceRoot)
+      ? null
+      : path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml");
+
+  let overlayStat: fs.Stats | null = null;
+  if (overlayPath && overlayPath !== metadataPath) {
+    try {
+      overlayStat = fs.statSync(overlayPath);
+    } catch {
+      overlayStat = null;
+    }
+  }
+
+  const signature = overlayStat
+    ? `${metadataPath}:${stat.mtimeMs}|${overlayPath!}:${overlayStat.mtimeMs}`
+    : `${metadataPath}:${stat.mtimeMs}`;
+
+  if (cached && cached.signature === signature) {
     return cached.registry;
   }
 
+  const baseRegistry = loadSkillRegistryFromPath(metadataPath);
+  if (!baseRegistry) {
+    cached = null;
+    return null;
+  }
+
+  let registry = baseRegistry;
+  if (overlayStat && overlayPath) {
+    const overlayRegistry = loadSkillRegistryFromPath(overlayPath);
+    if (overlayRegistry) {
+      registry = mergeRegistries(registry, overlayRegistry);
+    }
+  }
+
+  cached = { signature, registry };
+  return registry;
+}
+
+function mergeRegistries(base: SkillRegistry, overlay: SkillRegistry): SkillRegistry {
+  const skills = new Map(base.skills);
+  for (const [key, entry] of overlay.skills.entries()) {
+    skills.set(key, entry);
+  }
+  return { mode: overlay.mode, skills };
+}
+
+function loadSkillRegistryFromPath(metadataPath: string): SkillRegistry | null {
   let raw: string;
   try {
     raw = fs.readFileSync(metadataPath, "utf8");
   } catch (error) {
-    cached = null;
     logger.warn(`Failed to read skill metadata: ${error}`);
     return null;
   }
@@ -97,14 +153,11 @@ export function loadSkillRegistry(workspaceRoot?: string): SkillRegistry | null 
   try {
     parsed = yaml.parse(raw);
   } catch (error) {
-    cached = null;
     logger.warn(`Failed to parse skill metadata YAML: ${error}`);
     return null;
   }
 
-  const registry = normalizeRegistry(parsed);
-  cached = { path: metadataPath, mtimeMs: stat.mtimeMs, registry };
-  return registry;
+  return normalizeRegistry(parsed);
 }
 
 function normalizeRegistry(parsed: unknown): SkillRegistry {
