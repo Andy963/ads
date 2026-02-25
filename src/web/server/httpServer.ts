@@ -10,35 +10,44 @@ interface Logger {
   error(message: string, ...args: unknown[]): void;
 }
 
+function resolveContentType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".ico":
+      return "image/x-icon";
+    case ".woff2":
+      return "font/woff2";
+    case ".map":
+      return "application/json; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function destroyResponse(res: http.ServerResponse): void {
+  try {
+    res.destroy();
+  } catch {
+    // ignore
+  }
+}
+
 function serveFile(req: http.IncomingMessage, res: http.ServerResponse, filePath: string): boolean {
-  const contentTypeFor = (resolvedPath: string): string => {
-    const ext = path.extname(resolvedPath).toLowerCase();
-    switch (ext) {
-      case ".html":
-        return "text/html; charset=utf-8";
-      case ".js":
-        return "text/javascript; charset=utf-8";
-      case ".css":
-        return "text/css; charset=utf-8";
-      case ".json":
-        return "application/json; charset=utf-8";
-      case ".svg":
-        return "image/svg+xml";
-      case ".png":
-        return "image/png";
-      case ".jpg":
-      case ".jpeg":
-        return "image/jpeg";
-      case ".ico":
-        return "image/x-icon";
-      case ".woff2":
-        return "font/woff2";
-      case ".map":
-        return "application/json; charset=utf-8";
-      default:
-        return "application/octet-stream";
-    }
-  };
   try {
     const stat = fs.statSync(filePath);
     if (!stat.isFile()) {
@@ -46,7 +55,7 @@ function serveFile(req: http.IncomingMessage, res: http.ServerResponse, filePath
     }
     setSecurityHeaders(res);
 
-    const contentType = contentTypeFor(filePath);
+    const contentType = resolveContentType(filePath);
     const headers: http.OutgoingHttpHeaders = {
       "Content-Type": contentType,
       "Cache-Control": filePath.endsWith(".html") ? "no-store" : "public, max-age=31536000, immutable",
@@ -67,19 +76,19 @@ function serveFile(req: http.IncomingMessage, res: http.ServerResponse, filePath
 
       pipeline(source, gzip, res, (err) => {
         if (err) {
-          // If stream fails, try to close connection cleanly if possible
-          try {
-            res.destroy();
-          } catch {
-            // ignore
-          }
+          destroyResponse(res);
         }
       });
       return true;
     } else {
       headers["Content-Length"] = stat.size;
       res.writeHead(200, headers);
-      fs.createReadStream(filePath).pipe(res);
+      const source = fs.createReadStream(filePath);
+      pipeline(source, res, (err) => {
+        if (err) {
+          destroyResponse(res);
+        }
+      });
     }
     return true;
   } catch {
