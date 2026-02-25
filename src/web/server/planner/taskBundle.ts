@@ -136,7 +136,7 @@ export function formatTaskBundleSummaryMarkdown(
     }
   }
   lines.push("");
-  lines.push("可在右侧「任务草稿」面板中编辑/批准。");
+  lines.push("可在「任务草稿」面板中编辑/批准。");
   return lines.join("\n").trim();
 }
 
