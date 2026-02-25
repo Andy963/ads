@@ -1,7 +1,5 @@
-import path from "node:path";
-
 import { WorkflowContext } from "../workspace/context.js";
-import { detectWorkspace } from "../workspace/detector.js";
+import { resolveWorkspaceRoot } from "../workspace/detector.js";
 import { deleteNode } from "../graph/crud.js";
 import { getDatabase } from "../storage/database.js";
 import { escapeTelegramInlineCode, escapeTelegramMarkdown } from "../utils/markdown.js";
@@ -16,7 +14,7 @@ export async function listWorkflows(params: {
   workflow?: string;
   format?: WorkflowTextFormat;
 }): Promise<string> {
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   const format = params.format ?? "cli";
   const markdown = format === "markdown";
   const escapeText = (value: string) => (markdown ? escapeTelegramMarkdown(value) : value);
@@ -124,7 +122,7 @@ export async function checkoutWorkflow(params: {
   workspace_path?: string;
   format?: WorkflowTextFormat;
 }): Promise<string> {
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   const result = WorkflowContext.switchWorkflow(params.workflow_identifier, workspace);
   if (!result.success) {
     if (result.matches && result.matches.length > 1) {
@@ -142,4 +140,3 @@ export async function checkoutWorkflow(params: {
 
   return `${result.message}\n\n${statusSummary}`;
 }
-

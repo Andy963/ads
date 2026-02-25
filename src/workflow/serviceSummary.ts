@@ -1,12 +1,10 @@
-import path from "node:path";
-
 import { WorkflowContext } from "../workspace/context.js";
-import { detectWorkspace } from "../workspace/detector.js";
+import { resolveWorkspaceRoot } from "../workspace/detector.js";
 
 import { formatWorkflowStatusSummary, type WorkflowTextFormat } from "./formatter.js";
 
 export async function getActiveWorkflowSummary(params: { workspace_path?: string }): Promise<string> {
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   const workflow = WorkflowContext.getActiveWorkflow(workspace);
   if (!workflow) {
     return [
@@ -44,7 +42,7 @@ export async function getActiveWorkflowSummary(params: { workspace_path?: string
 
 export async function getWorkflowStatusSummary(params: { workspace_path?: string; format?: WorkflowTextFormat }): Promise<string> {
   const format = params.format ?? "cli";
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   const workflowStatus = WorkflowContext.getWorkflowStatus(workspace);
   if (!workflowStatus) {
     if (format === "markdown") {

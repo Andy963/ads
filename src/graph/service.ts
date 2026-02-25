@@ -1,8 +1,10 @@
 import path from "node:path";
 
 import {
+  detectWorkspaceFrom,
   getWorkspaceInfo as detectorWorkspaceInfo,
   isWorkspaceInitialized,
+  resolveWorkspaceRoot,
 } from "../workspace/detector.js";
 import {
   getAllNodes,
@@ -18,7 +20,6 @@ import { generateNodeId } from "./workflowConfig.js";
 import { safeStringify } from "../utils/json.js";
 import { getErrorMessage } from "../utils/error.js";
 import type { GraphNode } from "./types.js";
-import { detectWorkspace } from "../workspace/detector.js";
 import { withWorkspaceContext } from "../workspace/asyncWorkspaceContext.js";
 import { finalizeNode as finalizeGraphNodeHelper } from "./finalizeHelper.js";
 
@@ -27,7 +28,7 @@ async function withWorkspaceEnv<T>(workspacePath: string | undefined, fn: () => 
 }
 
 export async function getWorkspaceInfo(params: { workspace_path?: string }): Promise<string> {
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   try {
     if (!isWorkspaceInitialized(workspace)) {
       return safeStringify({
@@ -89,7 +90,7 @@ export async function listNodes(params: {
   limit?: number;
 }): Promise<string> {
   try {
-    const nodes = await withWorkspaceEnv(params.workspace_path ? path.resolve(params.workspace_path) : undefined, () =>
+    const nodes = await withWorkspaceEnv(params.workspace_path ? detectWorkspaceFrom(params.workspace_path) : undefined, () =>
       getAllNodes()
         .filter((node) => !params.node_type || node.type === params.node_type)
         .filter((node) => {
@@ -187,7 +188,7 @@ export async function createGraphNode(params: {
   status?: string;
 }): Promise<string> {
   try {
-    const workspacePath = path.resolve(params.workspace_path);
+    const workspacePath = detectWorkspaceFrom(params.workspace_path);
     return await withWorkspaceEnv(workspacePath, () => {
       const nodeId = generateNodeId(params.node_type);
       const isDraft = params.status !== "finalized";
@@ -317,7 +318,7 @@ export async function finalizeGraphNode(nodeId: string): Promise<string> {
 
 export async function syncAllNodesToFiles(params: { workspace_path?: string }): Promise<string> {
   try {
-    const workspace = params.workspace_path ? path.resolve(params.workspace_path) : undefined;
+    const workspace = params.workspace_path ? detectWorkspaceFrom(params.workspace_path) : undefined;
     const stats = await withWorkspaceEnv(workspace, () => syncAllNodes(workspace));
     return safeStringify({
       success: true,

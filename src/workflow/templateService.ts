@@ -9,7 +9,7 @@ import {
 } from "../graph/workflowConfig.js";
 import { createWorkflowFromConfig, type WorkflowNodeConfig } from "../graph/autoWorkflow.js";
 import { updateNode } from "../graph/crud.js";
-import { detectWorkspace, getWorkspaceSpecsDir } from "../workspace/detector.js";
+import { resolveWorkspaceRoot, getWorkspaceSpecsDir } from "../workspace/detector.js";
 import { WorkflowContext } from "../workspace/context.js";
 import { withWorkspaceContext } from "../workspace/asyncWorkspaceContext.js";
 import { listRules } from "../workspace/rulesService.js";
@@ -153,7 +153,7 @@ export async function createWorkflowFromTemplate(params: {
       return safeStringify({ error: "模板没有可用的必需步骤" });
     }
 
-    const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+    const workspace = resolveWorkspaceRoot(params.workspace_path);
 
     const format = params.format ?? "cli";
 

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { WorkflowContext } from "../workspace/context.js";
-import { detectWorkspace } from "../workspace/detector.js";
+import { resolveWorkspaceRoot } from "../workspace/detector.js";
 import { getNodeById, updateNode } from "../graph/crud.js";
 import { finalizeNode } from "../graph/finalizeHelper.js";
 import { onNodeFinalized } from "../graph/autoWorkflow.js";
@@ -16,7 +16,7 @@ import { recordWorkflowCommit } from "./serviceCommitLog.js";
 import { withWorkspaceEnv } from "./serviceWorkspace.js";
 
 export async function getStepNode(params: { step_name: string; workspace_path?: string }): Promise<string> {
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   const workflow = WorkflowContext.getActiveWorkflow(workspace);
   if (!workflow) {
     return "❌ 没有活动的工作流";
@@ -45,7 +45,7 @@ export async function getStepNode(params: { step_name: string; workspace_path?: 
 }
 
 export async function addStepDraft(params: { step_name: string; content: string; workspace_path?: string }): Promise<string> {
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   const workflow = WorkflowContext.getActiveWorkflow(workspace);
   if (!workflow) {
     return "❌ 没有活动的工作流";
@@ -77,7 +77,7 @@ export async function commitStep(params: {
   workspace_path?: string;
   format?: WorkflowTextFormat;
 }): Promise<string> {
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   return withWorkspaceEnv(workspace, async () => {
     const workflow = WorkflowContext.getActiveWorkflow(workspace);
     if (!workflow) {

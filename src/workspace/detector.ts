@@ -170,6 +170,14 @@ export function detectWorkspace(): string {
   return resolveAbsolute(process.cwd());
 }
 
+export function resolveWorkspaceRoot(workspacePath?: string | null): string {
+  const normalized = typeof workspacePath === "string" ? workspacePath.trim() : "";
+  if (!normalized) {
+    return detectWorkspace();
+  }
+  return detectWorkspaceFrom(normalized);
+}
+
 export function getWorkspaceDbPath(workspace?: string): string {
   const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
   migrateLegacyWorkspaceAdsIfNeeded(root);

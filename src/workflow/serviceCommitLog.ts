@@ -1,7 +1,5 @@
-import path from "node:path";
-
 import { WorkflowContext } from "../workspace/context.js";
-import { detectWorkspace } from "../workspace/detector.js";
+import { resolveWorkspaceRoot } from "../workspace/detector.js";
 import { getDatabase } from "../storage/database.js";
 
 import { formatWorkflowLog, type WorkflowTextFormat } from "./formatter.js";
@@ -76,7 +74,7 @@ export async function listWorkflowLog(params: {
   format?: WorkflowTextFormat;
 }): Promise<string> {
   const format = params.format ?? "cli";
-  const workspace = params.workspace_path ? path.resolve(params.workspace_path) : detectWorkspace();
+  const workspace = resolveWorkspaceRoot(params.workspace_path);
   const db = getDatabase(workspace);
   const limit = params.limit && params.limit > 0 ? Math.min(params.limit, 100) : 20;
 
