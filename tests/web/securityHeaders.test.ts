@@ -1,4 +1,4 @@
-import { describe, it, before, after } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { setSecurityHeaders, sendJson } from "../../src/web/server/http.js";
@@ -68,10 +68,8 @@ describe("web/server/http/securityHeaders", () => {
 
 describe("web/server/httpServer/securityHeaders", () => {
   let server: http.Server;
-  let port: number;
-  let baseUrl: string;
 
-  before(async () => {
+  before(() => {
     server = createHttpServer({
       handleApiRequest: async (req, res) => {
         // dummy handler that uses sendJson
@@ -82,46 +80,40 @@ describe("web/server/httpServer/securityHeaders", () => {
         return false;
       }
     });
-    await new Promise<void>((resolve) => {
-      server.listen(0, () => {
-        const addr = server.address();
-        if (typeof addr === "object" && addr) {
-          port = addr.port;
-          baseUrl = `http://localhost:${port}`;
-        }
-        resolve();
-      });
-    });
   });
 
-  after(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  });
+  async function dispatch(url: string): Promise<MockResponse> {
+    const req = { method: "GET", url, headers: {}, socket: { remoteAddress: "127.0.0.1" } } as any;
+    const res = new MockResponse();
+    server.emit("request", req, res as any);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    return res;
+  }
 
   it("GET /healthz returns security headers", async () => {
-    const res = await fetch(`${baseUrl}/healthz`);
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(res.headers.get("x-frame-options"), "DENY");
-    assert.equal(res.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+    const res = await dispatch("/healthz");
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.getHeader("x-content-type-options"), "nosniff");
+    assert.equal(res.getHeader("x-frame-options"), "DENY");
+    assert.equal(res.getHeader("referrer-policy"), "strict-origin-when-cross-origin");
   });
 
   it("GET /random-path returns security headers (404/503)", async () => {
-    const res = await fetch(`${baseUrl}/random-path-that-does-not-exist`);
-    // Might be 503 if build dir missing, 404 if present but file has an extension, or 200 for SPA fallback (index.html).
-    assert.ok(res.status === 200 || res.status === 404 || res.status === 503);
-    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(res.headers.get("x-frame-options"), "DENY");
-    assert.equal(res.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+    const res = await dispatch("/random-path-that-does-not-exist.js");
+    // Might be 503 if build dir missing, 404 if present but file does not exist.
+    assert.ok(res.statusCode === 404 || res.statusCode === 503);
+    assert.equal(res.getHeader("x-content-type-options"), "nosniff");
+    assert.equal(res.getHeader("x-frame-options"), "DENY");
+    assert.equal(res.getHeader("referrer-policy"), "strict-origin-when-cross-origin");
     // Ensure CORS * is gone
-    assert.equal(res.headers.get("access-control-allow-origin"), null);
+    assert.equal(res.getHeader("access-control-allow-origin"), undefined);
   });
 
   it("API response returns security headers", async () => {
-    const res = await fetch(`${baseUrl}/api/test`);
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(res.headers.get("x-frame-options"), "DENY");
-    assert.equal(res.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+    const res = await dispatch("/api/test");
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.getHeader("x-content-type-options"), "nosniff");
+    assert.equal(res.getHeader("x-frame-options"), "DENY");
+    assert.equal(res.getHeader("referrer-policy"), "strict-origin-when-cross-origin");
   });
 });
