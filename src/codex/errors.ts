@@ -3,6 +3,7 @@ export const CODEX_THREAD_RESET_HINT =
 
 export type CodexErrorCode =
   | "thread_corrupted"
+  | "session_in_use"
   | "rate_limit"
   | "token_limit"
   | "network_timeout"
@@ -28,6 +29,13 @@ const ERROR_PATTERNS: Array<{
   retryable: boolean;
   needsReset: boolean;
 }> = [
+  {
+    pattern: /session id .*already in use|already in use.*session id/i,
+    code: "session_in_use",
+    userHint: "会话已被占用（Session ID already in use）。请稍后重试；如持续发生，请使用 /reset 开始新会话",
+    retryable: true,
+    needsReset: false,
+  },
   {
     pattern: /rate.?limit|too many requests|429/i,
     code: "rate_limit",

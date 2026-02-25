@@ -63,9 +63,17 @@ export class ClaudeStreamParser {
   private sessionId: string | null = null;
   private lastError: string | null = null;
 
-  getSessionId(): string | null { return this.sessionId; }
-  getFinalMessage(): string { return this.agentMessage.trim(); }
-  getLastError(): string | null { return this.lastError; }
+  getSessionId(): string | null {
+    return this.sessionId;
+  }
+
+  getFinalMessage(): string {
+    return this.agentMessage.trim();
+  }
+
+  getLastError(): string | null {
+    return this.lastError;
+  }
 
   parseLine(payload: unknown): AgentEvent[] {
     const obj = asRecord(payload);
@@ -92,9 +100,7 @@ export class ClaudeStreamParser {
     const subtype = String(obj.subtype ?? "").toLowerCase();
     if (subtype !== "init") return [];
 
-    this.sessionId =
-      (typeof obj.session_id === "string" ? obj.session_id : null) ??
-      (typeof obj.thread_id === "string" ? obj.thread_id : null);
+    this.sessionId = extractStringField(obj, ["session_id", "sessionId", "thread_id", "threadId"]) ?? null;
     if (!this.sessionId) return [];
 
     const threadStarted = attachCliPayload(

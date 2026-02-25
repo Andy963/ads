@@ -1,5 +1,3 @@
-import crypto from "node:crypto";
-
 import type { Input } from "../protocol/types.js";
 
 import type {
@@ -53,7 +51,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
   private readonly sandboxMode: SandboxMode;
   private workingDirectory?: string;
   private model?: string;
-  private sessionId: string;
+  private sessionId: string | null;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private sendChain: Promise<void> = Promise.resolve();
   private pendingSends = 0;
@@ -64,7 +62,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     this.sandboxMode = options.sandboxMode ?? "workspace-write";
     this.workingDirectory = options.workingDirectory;
     this.model = options.model ?? process.env.ADS_CLAUDE_MODEL;
-    this.sessionId = options.sessionId?.trim() || crypto.randomUUID();
+    this.sessionId = options.sessionId?.trim() || null;
     this.metadata = {
       ...DEFAULT_METADATA,
       ...options.metadata,
@@ -94,7 +92,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       this.pendingReset = true;
       return;
     }
-    this.sessionId = crypto.randomUUID();
+    this.sessionId = null;
   }
 
   setWorkingDirectory(workingDirectory?: string): void {
@@ -125,7 +123,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     const run = this.sendChain.then(async () => {
       if (this.pendingReset) {
         this.pendingReset = false;
-        this.sessionId = crypto.randomUUID();
+        this.sessionId = null;
       }
       return await this.sendInner(input, options);
     });
@@ -158,9 +156,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
       "--include-partial-messages",
       "--permission-mode",
       permissionMode,
-      "--session-id",
-      sessionId,
     ];
+    if (sessionId) {
+      args.push("--resume", sessionId);
+    }
     if (this.model) {
       args.push("--model", this.model);
     }
@@ -168,7 +167,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
 
     const parser = new ClaudeStreamParser();
     let sawTurnFailed = false;
-    logger.info(`sending Claude request session=${sessionId} mode=${permissionMode}`);
+    logger.info(`sending Claude request session=${sessionId ?? "(new)"} mode=${permissionMode}`);
 
     const result = await runCli(
       {
@@ -197,6 +196,13 @@ export class ClaudeCliAdapter implements AgentAdapter {
     if (result.exitCode !== 0 || sawTurnFailed) {
       const message = parser.getLastError() ?? (result.stderr.trim() || `claude exited with code ${result.exitCode}`);
       throw new Error(message);
+    }
+
+    const nextSessionId = parser.getSessionId();
+    if (nextSessionId && nextSessionId.trim()) {
+      this.sessionId = nextSessionId.trim();
+    } else if (!this.sessionId) {
+      logger.warn("Claude CLI did not provide a session id; multi-turn resume will be unavailable");
     }
 
     return {
