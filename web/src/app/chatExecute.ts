@@ -8,9 +8,18 @@ function stripCommandHeader(outputDelta: string, command: string): string {
   const normalizedDelta = String(outputDelta ?? "");
   const normalizedCommand = String(command ?? "").trim();
   if (!normalizedCommand) return normalizedDelta;
-  const header = `$ ${normalizedCommand}\n`;
-  if (normalizedDelta.startsWith(header)) {
-    return normalizedDelta.slice(header.length);
+  const leadingNewlinesMatch = normalizedDelta.match(/^(?:\r?\n)+/);
+  const leadingNewlines = leadingNewlinesMatch?.[0] ?? "";
+  const deltaWithoutLeadingNewlines = normalizedDelta.slice(leadingNewlines.length);
+
+  const headerLf = `$ ${normalizedCommand}\n`;
+  if (deltaWithoutLeadingNewlines.startsWith(headerLf)) {
+    return leadingNewlines + deltaWithoutLeadingNewlines.slice(headerLf.length);
+  }
+
+  const headerCrlf = `$ ${normalizedCommand}\r\n`;
+  if (deltaWithoutLeadingNewlines.startsWith(headerCrlf)) {
+    return leadingNewlines + deltaWithoutLeadingNewlines.slice(headerCrlf.length);
   }
   return normalizedDelta;
 }

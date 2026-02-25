@@ -72,4 +72,34 @@ describe("execute preview queue ordering", () => {
 
     wrapper.unmount();
   });
+
+  it("strips the redundant `$ <command>` echo even when output starts with newlines", () => {
+    const rt = {
+      messages: ref([] as Array<any>),
+      executePreviewByKey: new Map<string, any>(),
+      executeOrder: [] as string[],
+      recentCommands: ref([] as string[]),
+      turnCommands: [] as string[],
+      seenCommandIds: new Set<string>(),
+    } as any;
+
+    const { upsertExecuteBlock } = createExecuteActions({
+      runtimeOrActive: () => rt,
+      setMessages: (items) => {
+        rt.messages.value = items;
+      },
+      pushRecentCommand: () => {},
+      randomId: () => "id",
+      maxExecutePreviewLines: 8,
+      maxTurnCommands: 64,
+      isLiveMessageId: () => false,
+      findFirstLiveIndex: () => -1,
+      findLastLiveIndex: () => -1,
+    });
+
+    upsertExecuteBlock("k1", "cmd-1", "\n\n$ cmd-1\nout-1\n", rt);
+
+    const executeMessage = rt.messages.value.find((m: any) => m.kind === "execute" && m.command === "cmd-1");
+    expect(executeMessage?.content).toBe("out-1");
+  });
 });
