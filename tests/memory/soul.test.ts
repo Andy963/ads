@@ -200,4 +200,21 @@ describe("preference management", () => {
       fs.rmSync(freshWorkspace, { recursive: true, force: true });
     }
   });
+
+  it("preserves content after Preferences section", () => {
+    const freshWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-pref-preserve-tail-"));
+    try {
+      const initialContent =
+        "# Soul\n\n## Preferences\n\n- **lang**: en\n\n## Notes\n\nImportant notes here.\n";
+      writeSoul(freshWorkspace, initialContent);
+      setPreference(freshWorkspace, "theme", "dark");
+      const content = readSoul(freshWorkspace);
+      assert.ok(content.includes("## Notes"), "Notes section should be preserved");
+      assert.ok(content.includes("Important notes here."), "Notes content should be preserved");
+      assert.ok(content.includes("- **lang**: en"), "Existing preference should be preserved");
+      assert.ok(content.includes("- **theme**: dark"), "New preference should be added");
+    } finally {
+      fs.rmSync(freshWorkspace, { recursive: true, force: true });
+    }
+  });
 });

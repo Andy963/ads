@@ -45,16 +45,10 @@ function parsePreferences(content: string): { prefs: Preference[]; sectionStart:
 
   const sectionStart = match.index + match[0].length;
 
-  const nextSection = /^## /m;
-  const rest = content.slice(sectionStart);
-  const nextMatch = nextSection.exec(rest.replace(/^\n*/, "").length ? rest.slice(1) : "");
-
-  let sectionEnd: number;
-  if (nextMatch) {
-    sectionEnd = sectionStart + 1 + nextMatch.index;
-  } else {
-    sectionEnd = content.length;
-  }
+  const nextSection = /^## /gm;
+  nextSection.lastIndex = sectionStart;
+  const nextMatch = nextSection.exec(content);
+  const sectionEnd = nextMatch ? nextMatch.index : content.length;
 
   const sectionBody = content.slice(sectionStart, sectionEnd);
   const prefs: Preference[] = [];
