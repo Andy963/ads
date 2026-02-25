@@ -7,13 +7,13 @@ LOG_DIR="$ROOT/.ads/logs"
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
 declare -A CMDS=(
-  [web]="node dist/src/web/server.js"
-  [telegram]="node dist/src/telegram/bot.js"
+  [web]="node dist/src/cli.js web"
+  [telegram]="node dist/src/cli.js telegram"
 )
 
 declare -A ARTIFACTS=(
-  [web]="dist/src/web/server.js"
-  [telegram]="dist/src/telegram/bot.js"
+  [web]="dist/src/cli.js"
+  [telegram]="dist/src/cli.js"
 )
 
 usage() {

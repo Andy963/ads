@@ -33,6 +33,8 @@ npm run build
 1. **Start the Web Console**:
    ```bash
    npm run web
+   # Or (after build)
+   node dist/src/cli.js web
    ```
 
 2. **Describe your goal in chat** (slash commands are not supported).
@@ -46,6 +48,7 @@ npm run build
 Comprehensive documentation is being migrated into this repository. Until those guides land, use the following sources:
 
 - `docs/spec/**` — canonical specifications describing features (requirements, design, implementation).
+- `docs/pm2.md` — recommended pm2 deployment (web + telegram as separate apps).
 - `templates/` — the workspace templates synced into centralized `.ads/workspaces/<workspaceId>/templates/`, useful for understanding prompts and workflows.
 - Inline comments in `src/telegram/**` for Telegram bot behavior, including workspace initialization prompts.
 
@@ -186,7 +189,9 @@ export TELEGRAM_ALLOWED_USER_ID="your-telegram-user-id"
 
 # 启动 Bot（构建后，复用根目录 .env）
 npm run services -- start telegram
-# Or run the telegram launcher (after build)
+# Or start via the unified CLI (after build)
+node dist/src/cli.js telegram
+# Legacy alias (after build)
 ads-telegram start
 
 # 停止 / 状态

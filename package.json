@@ -29,11 +29,11 @@
     "test:web": "vitest --config web/vitest.config.ts run",
     "dev:console": "bash scripts/dev-console.sh",
     "postbuild": "node scripts/chmod-bins.js",
-    "start": "node dist/src/web/server.js",
+    "start": "node dist/src/cli.js web",
     "dev": "tsx watch src/web/server.ts",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
-    "web": "node dist/src/web/server.js",
+    "web": "node dist/src/cli.js web",
     "web:init-admin": "tsx src/web/auth/initAdminCli.ts",
     "web:reset-admin": "tsx src/web/auth/resetAdminCli.ts",
     "web:bg": "npm run services -- start web",
@@ -46,7 +46,8 @@
     "node": ">=20"
   },
   "bin": {
-    "ads-telegram": "./dist/src/telegram/cli.js"
+    "ads": "./dist/src/cli.js",
+    "ads-telegram": "./dist/src/cli.js"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
 
-const BIN_TARGETS = ["dist/src/telegram/cli.js"];
+const BIN_TARGETS = ["dist/src/cli.js", "dist/src/telegram/cli.js"];
 
 function setExecutable(filePath) {
   const resolved = path.join(ROOT_DIR, filePath);
