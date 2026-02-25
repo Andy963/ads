@@ -217,28 +217,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     if (!project) return;
 
     const chatSessionId = resolveChatSessionId(project, mode);
-    let rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
+    const initialRt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
+    let rt = initialRt;
     rt.projectSessionId = String(project.sessionId ?? "").trim();
     rt.chatSessionId = chatSessionId;
     restoreReasoningEffort(rt);
-
-    const identity = await resolveProjectIdentity(project);
-    if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
-      const nextProject: ProjectTab = {
-        ...project,
-        id: identity.sessionId,
-        sessionId: identity.sessionId,
-        path: identity.path,
-        updatedAt: Date.now(),
-      };
-      replaceProjectId(project.id, nextProject);
-      pid = nextProject.id;
-      project = nextProject;
-      rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
-      rt.projectSessionId = String(project.sessionId ?? "").trim();
-      rt.chatSessionId = resolveChatSessionId(project, mode);
-      restoreReasoningEffort(rt);
-    }
 
     clearReconnectTimer(rt);
 
@@ -250,7 +233,58 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       // ignore
     }
 
-    const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId });
+    const provisionalWs = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId });
+    rt.ws = provisionalWs;
+
+    const identity = await resolveProjectIdentity(project);
+    if (initialRt.ws !== provisionalWs) {
+      // Runtime was closed or superseded while resolving project identity. Avoid reconnecting.
+      return;
+    }
+
+    const identityChanged = Boolean(identity && (identity.sessionId !== project.sessionId || identity.path !== project.path));
+    if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
+      const nextProject: ProjectTab = {
+        ...project,
+        id: identity.sessionId,
+        sessionId: identity.sessionId,
+        path: identity.path,
+        updatedAt: Date.now(),
+      };
+      replaceProjectId(project.id, nextProject);
+      pid = nextProject.id;
+      project = nextProject;
+    }
+
+    rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
+    rt.projectSessionId = String(project.sessionId ?? "").trim();
+    rt.chatSessionId = resolveChatSessionId(project, mode);
+    restoreReasoningEffort(rt);
+
+    let wsInstance = provisionalWs;
+    if (identityChanged || rt !== initialRt) {
+      if (rt !== initialRt && initialRt.ws === provisionalWs) {
+        try {
+          provisionalWs.close();
+        } catch {
+          // ignore
+        }
+        initialRt.ws = null;
+      }
+
+      clearReconnectTimer(rt);
+      const prevFinal = rt.ws as { close: () => void } | null;
+      rt.ws = null;
+      try {
+        prevFinal?.close();
+      } catch {
+        // ignore
+      }
+
+      wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId });
+      rt.ws = wsInstance;
+    }
+
     rt.ws = wsInstance;
     let disconnectCleanupDone = false;
     let disconnectWasBusy = false;
