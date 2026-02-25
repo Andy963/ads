@@ -338,15 +338,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     const rows = stmts.listPendingForReorderStmt.all() as Array<{ id?: string; queue_order?: number; created_at?: number }>;
     const current = rows.map((r) => String(r.id ?? "").trim()).filter(Boolean);
     const currentSet = new Set(current);
-    const pendingIds = normalized.filter((id) => currentSet.has(id));
-    if (pendingIds.length === 0) {
-      return current.map((id) => getTask(id)).filter((t): t is Task => Boolean(t));
-    }
-    for (const id of pendingIds) {
+    for (const id of normalized) {
       if (!currentSet.has(id)) {
         throw new Error(`task is not pending: ${id}`);
       }
     }
+    const pendingIds = normalized;
 
     const nextIds = (() => {
       if (pendingIds.length === current.length) {

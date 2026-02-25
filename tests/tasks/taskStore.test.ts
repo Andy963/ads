@@ -140,6 +140,18 @@ describe("tasks/taskStore", () => {
     assert.equal(third.id, t2.id);
   });
 
+  it("should reject reorderPendingTasks for tasks that are not pending", () => {
+    const store = new TaskStore();
+    const t1 = store.createTask({ title: "A", prompt: "P1", priority: 0 });
+    store.createTask({ title: "B", prompt: "P2", priority: 0 });
+
+    const claimed = store.claimNextPendingTask(Date.now());
+    assert.ok(claimed);
+    assert.equal(claimed.id, t1.id);
+
+    assert.throws(() => store.reorderPendingTasks([t1.id]), /task is not pending/);
+  });
+
   it("should add and list task messages", () => {
     const store = new TaskStore();
     const task = store.createTask({ title: "T", prompt: "P" });
