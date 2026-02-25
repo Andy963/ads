@@ -12,7 +12,7 @@ import { readJsonBody, sendJson } from "../../http.js";
 
 import { handleTaskChatRoute } from "./tasks/chat.js";
 import { handleTaskByIdRoute } from "./tasks/taskById.js";
-import { parseTaskStatus } from "./tasks/shared.js";
+import { buildTaskAttachments, parseTaskStatus } from "./tasks/shared.js";
 
 export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url, auth } = ctx;
@@ -30,19 +30,10 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const limitRaw = url.searchParams.get("limit")?.trim();
     const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
     const tasks = taskCtx.taskStore.listTasks({ status, limit }).filter((t) => t.archivedAt == null);
-    const enriched = tasks.map((task) => {
-      const attachments = taskCtx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
-        id: a.id,
-        url: deps.buildAttachmentRawUrl(url, a.id),
-        sha256: a.sha256,
-        width: a.width,
-        height: a.height,
-        contentType: a.contentType,
-        sizeBytes: a.sizeBytes,
-        filename: a.filename,
-      }));
-      return { ...task, attachments };
-    });
+    const enriched = tasks.map((task) => ({
+      ...task,
+      attachments: buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore }),
+    }));
     sendJson(res, 200, enriched);
 
     // Schedule maintenance asynchronously; never block the response path.
@@ -143,16 +134,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
 
-    const attachments = taskCtx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
-      id: a.id,
-      url: deps.buildAttachmentRawUrl(url, a.id),
-      sha256: a.sha256,
-      width: a.width,
-      height: a.height,
-      contentType: a.contentType,
-      sizeBytes: a.sizeBytes,
-      filename: a.filename,
-    }));
+    const attachments = buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore });
 
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: task.id });
     deps.broadcastToSession(taskCtx.sessionId, {
@@ -436,16 +418,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
     const enriched = updated.map((task) => {
-      const attachments = taskCtx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
-        id: a.id,
-        url: deps.buildAttachmentRawUrl(url, a.id),
-        sha256: a.sha256,
-        width: a.width,
-        height: a.height,
-        contentType: a.contentType,
-        sizeBytes: a.sizeBytes,
-        filename: a.filename,
-      }));
+      const attachments = buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore });
       return { ...task, attachments };
     });
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
 import { readJsonBody, sendJson } from "../../../http.js";
 import { notifyTaskTerminalViaTelegram } from "../../../../taskNotifications/telegramNotifier.js";
+import { buildTaskAttachments } from "./shared.js";
 
 export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -28,16 +29,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       sendJson(res, 404, { error: "Not Found" });
       return true;
     }
-    const attachments = taskCtx.attachmentStore.listAttachmentsForTask(task.id).map((a) => ({
-      id: a.id,
-      url: deps.buildAttachmentRawUrl(url, a.id),
-      sha256: a.sha256,
-      width: a.width,
-      height: a.height,
-      contentType: a.contentType,
-      sizeBytes: a.sizeBytes,
-      filename: a.filename,
-    }));
+    const attachments = buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore });
     sendJson(res, 200, {
       ...task,
       attachments,

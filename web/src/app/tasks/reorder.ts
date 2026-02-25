@@ -2,6 +2,11 @@ import type { Task } from "../../api/types";
 import type { ChatActions } from "../chat";
 import type { AppContext } from "../controller";
 
+function normalizeQueueOrderForSort(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return Number.POSITIVE_INFINITY;
+}
+
 export function createTaskReorderActions(
   ctx: AppContext & ChatActions,
   deps: {
@@ -19,7 +24,9 @@ export function createTaskReorderActions(
       .filter((t) => t.status === "pending")
       .slice()
       .sort((a, b) => {
-        if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
+        const aq = normalizeQueueOrderForSort(a.queueOrder);
+        const bq = normalizeQueueOrderForSort(b.queueOrder);
+        if (aq !== bq) return aq - bq;
         if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
         return a.id.localeCompare(b.id);
       })
@@ -37,27 +44,24 @@ export function createTaskReorderActions(
 
     const pending = rt.tasks.value.filter((t) => t.status === "pending");
     const priorQueueOrderById = new Map<string, number>();
+    let minQueueOrder = Number.POSITIVE_INFINITY;
     for (const t of pending) {
-      priorQueueOrderById.set(t.id, (t as unknown as { queueOrder?: number }).queueOrder ?? 0);
-    }
-    const orderIndex = new Map<string, number>();
-    for (let i = 0; i < normalized.length; i++) {
-      orderIndex.set(normalized[i]!, i);
-    }
-    const base = (() => {
-      let min = Number.POSITIVE_INFINITY;
-      for (const t of pending) {
-        const q = (t as unknown as { queueOrder?: number }).queueOrder;
-        if (typeof q === "number" && Number.isFinite(q)) min = Math.min(min, q);
+      const q = t.queueOrder;
+      if (typeof q === "number" && Number.isFinite(q)) {
+        priorQueueOrderById.set(t.id, q);
+        minQueueOrder = Math.min(minQueueOrder, q);
+      } else {
+        priorQueueOrderById.set(t.id, 0);
       }
-      return Number.isFinite(min) ? Math.floor(min) : Date.now();
-    })();
+    }
+    const orderIndex = new Map<string, number>(normalized.map((id, i) => [id, i]));
+    const base = Number.isFinite(minQueueOrder) ? Math.floor(minQueueOrder) : Date.now();
 
     rt.tasks.value = rt.tasks.value.map((t) => {
       if (t.status !== "pending") return t;
       const idx = orderIndex.get(t.id);
       if (idx == null) return t;
-      return { ...(t as object), queueOrder: base + idx } as Task;
+      return { ...t, queueOrder: base + idx };
     });
 
     try {
@@ -75,7 +79,7 @@ export function createTaskReorderActions(
         if (t.status !== "pending") return t;
         const prior = priorQueueOrderById.get(t.id);
         if (prior == null) return t;
-        return { ...(t as object), queueOrder: prior } as Task;
+        return { ...t, queueOrder: prior };
       });
     }
   };
@@ -118,4 +122,3 @@ export function createTaskReorderActions(
 
   return { pendingIdsInQueueOrder, reorderPendingTasks, updateQueuedTask, updateQueuedTaskAndRun };
 }
-
