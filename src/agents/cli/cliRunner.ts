@@ -64,16 +64,84 @@ function readFileLimited(filePath: string, maxBytes = 8 * 1024 * 1024): { text: 
   }
 }
 
+function formatSpawnErrorHint(binary: string, error: Error): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOENT") {
+    return `找不到可执行文件 "${binary}"，请确认已安装并在 PATH 中`;
+  }
+  return error.message;
+}
+
+function waitForSpawn(child: ReturnType<typeof spawn>): Promise<Error | null> {
+  return new Promise<Error | null>((resolve) => {
+    const onError = (err: Error) => {
+      cleanup();
+      resolve(err);
+    };
+    const onSpawn = () => {
+      cleanup();
+      resolve(null);
+    };
+    const cleanup = () => {
+      child.off("error", onError);
+      child.off("spawn", onSpawn);
+    };
+    child.once("error", onError);
+    child.once("spawn", onSpawn);
+  });
+}
+
+function tryParseJsonLine(rawLine: string): unknown | null {
+  const stripped = stripAnsi(rawLine).trim();
+  if (!stripped || !stripped.startsWith("{")) {
+    return null;
+  }
+  try {
+    return JSON.parse(stripped) as unknown;
+  } catch {
+    logger.debug(`跳过无法解析的行: ${stripped.substring(0, 100)}`);
+    return null;
+  }
+}
+
+function attachAbortHandler(
+  child: ReturnType<typeof spawn>,
+  signal?: AbortSignal,
+): { isCancelled: () => boolean; dispose: () => void } {
+  let cancelled = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const onAbort = () => {
+    cancelled = true;
+    child.kill("SIGTERM");
+    killTimer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already dead */ }
+    }, 2000);
+  };
+
+  if (signal) {
+    if (signal.aborted) {
+      child.kill("SIGTERM");
+      cancelled = true;
+    } else {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+
+  const dispose = () => {
+    signal?.removeEventListener("abort", onAbort);
+    if (killTimer) clearTimeout(killTimer);
+  };
+
+  return { isCancelled: () => cancelled, dispose };
+}
+
 function emitJsonLines(rawStdout: string, onLine: LineHandler): void {
   const lines = String(rawStdout ?? "").split("\n");
   for (const rawLine of lines) {
-    const stripped = stripAnsi(rawLine).trim();
-    if (!stripped || !stripped.startsWith("{")) continue;
-    try {
-      const parsed: unknown = JSON.parse(stripped);
+    const parsed = tryParseJsonLine(rawLine);
+    if (parsed !== null) {
       onLine(parsed);
-    } catch {
-      logger.debug(`跳过无法解析的行: ${stripped.substring(0, 100)}`);
     }
   }
 }
@@ -100,39 +168,12 @@ export async function runCli(
     shell: false,
   });
 
-  let cancelled = false;
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const onAbort = () => {
-    cancelled = true;
-    child.kill("SIGTERM");
-    killTimer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch { /* already dead */ }
-    }, 2000);
-  };
-
-  if (signal) {
-    if (signal.aborted) {
-      child.kill("SIGTERM");
-      cancelled = true;
-    } else {
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  }
-
-  const spawnError = await new Promise<Error | null>((resolve) => {
-    child.on("error", (err) => resolve(err));
-    child.on("spawn", () => resolve(null));
-  });
+  const abortHandler = attachAbortHandler(child, signal);
+  const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
-    signal?.removeEventListener("abort", onAbort);
-    if (killTimer) clearTimeout(killTimer);
-    const hint =
-      (spawnError as NodeJS.ErrnoException).code === "ENOENT"
-        ? `找不到可执行文件 "${binary}"，请确认已安装并在 PATH 中`
-        : spawnError.message;
-    throw new Error(hint);
+    abortHandler.dispose();
+    throw new Error(formatSpawnErrorHint(binary, spawnError));
   }
 
   if (child.stdin) {
@@ -147,18 +188,14 @@ export async function runCli(
 
   const rl = createInterface({ input: child.stdout! });
   for await (const rawLine of rl) {
-    if (cancelled) {
+    if (abortHandler.isCancelled()) {
       rl.close();
       child.stdout?.resume();
       break;
     }
-    const stripped = stripAnsi(rawLine).trim();
-    if (!stripped || !stripped.startsWith("{")) continue;
-    try {
-      const parsed: unknown = JSON.parse(stripped);
+    const parsed = tryParseJsonLine(rawLine);
+    if (parsed !== null) {
       onLine(parsed);
-    } catch {
-      logger.debug(`跳过无法解析的行: ${stripped.substring(0, 100)}`);
     }
   }
 
@@ -170,8 +207,8 @@ export async function runCli(
     }
   });
 
-  signal?.removeEventListener("abort", onAbort);
-  if (killTimer) clearTimeout(killTimer);
+  const cancelled = abortHandler.isCancelled();
+  abortHandler.dispose();
 
   return {
     exitCode,
@@ -225,44 +262,17 @@ async function runCliViaFiles(
     }
   }
 
-  let cancelled = false;
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const onAbort = () => {
-    cancelled = true;
-    child.kill("SIGTERM");
-    killTimer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch { /* already dead */ }
-    }, 2000);
-  };
-
-  if (signal) {
-    if (signal.aborted) {
-      child.kill("SIGTERM");
-      cancelled = true;
-    } else {
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  }
-
-  const spawnError = await new Promise<Error | null>((resolve) => {
-    child.on("error", (err) => resolve(err));
-    child.on("spawn", () => resolve(null));
-  });
+  const abortHandler = attachAbortHandler(child, signal);
+  const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
-    signal?.removeEventListener("abort", onAbort);
-    if (killTimer) clearTimeout(killTimer);
+    abortHandler.dispose();
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
       // ignore
     }
-    const hint =
-      (spawnError as NodeJS.ErrnoException).code === "ENOENT"
-        ? `找不到可执行文件 "${binary}"，请确认已安装并在 PATH 中`
-        : spawnError.message;
-    throw new Error(hint);
+    throw new Error(formatSpawnErrorHint(binary, spawnError));
   }
 
   const exitCode = await new Promise<number | null>((resolve) => {
@@ -273,8 +283,8 @@ async function runCliViaFiles(
     }
   });
 
-  signal?.removeEventListener("abort", onAbort);
-  if (killTimer) clearTimeout(killTimer);
+  const cancelled = abortHandler.isCancelled();
+  abortHandler.dispose();
 
   const stdout = readFileLimited(stdoutPath, 32 * 1024 * 1024).text;
   const stderr = readFileLimited(stderrPath, 32 * 1024 * 1024).text;
@@ -309,17 +319,10 @@ export async function runCliRaw(
     shell: false,
   });
 
-  const spawnError = await new Promise<Error | null>((resolve) => {
-    child.on("error", (err) => resolve(err));
-    child.on("spawn", () => resolve(null));
-  });
+  const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
-    const hint =
-      (spawnError as NodeJS.ErrnoException).code === "ENOENT"
-        ? `找不到可执行文件 "${binary}"，请确认已安装并在 PATH 中`
-        : spawnError.message;
-    throw new Error(hint);
+    throw new Error(formatSpawnErrorHint(binary, spawnError));
   }
 
   if (child.stdin) {
@@ -386,10 +389,7 @@ async function runCliRawViaFiles(
     }
   }
 
-  const spawnError = await new Promise<Error | null>((resolve) => {
-    child.on("error", (err) => resolve(err));
-    child.on("spawn", () => resolve(null));
-  });
+  const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
     try {
@@ -397,11 +397,7 @@ async function runCliRawViaFiles(
     } catch {
       // ignore
     }
-    const hint =
-      (spawnError as NodeJS.ErrnoException).code === "ENOENT"
-        ? `找不到可执行文件 "${binary}"，请确认已安装并在 PATH 中`
-        : spawnError.message;
-    throw new Error(hint);
+    throw new Error(formatSpawnErrorHint(binary, spawnError));
   }
 
   const exitCode = await new Promise<number | null>((resolve) => {
