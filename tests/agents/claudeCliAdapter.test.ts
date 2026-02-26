@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { ClaudeCliAdapter } from "../../src/agents/adapters/claudeCliAdapter.js";
+import type { Input } from "../../src/agents/protocol/types.js";
 
 async function createExecutableScript(contents: string): Promise<{ binary: string; dir: string }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ads-claude-cli-"));
@@ -30,6 +31,37 @@ async function waitForFile(filePath: string, timeoutMs = 2000): Promise<void> {
 }
 
 describe("ClaudeCliAdapter", () => {
+  it("passes prompt byte-for-byte (including trailing whitespace) when input is parts[]", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'prompt_file="$dir/prompt.txt"',
+      'args=("$@")',
+      'prompt="${args[$(( ${#args[@]} - 1 ))]}"',
+      'printf "%s" "$prompt" >"$prompt_file"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const input: Input = [
+      { type: "text", text: "hello\n" },
+      { type: "local_image", path: "/tmp/a.png" },
+      { type: "text", text: "world\n\n" },
+    ];
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const result = await adapter.send(input);
+    assert.equal(result.response, "OK");
+
+    const promptFile = path.join(dir, "prompt.txt");
+    const prompt = await fs.readFile(promptFile, "utf-8");
+    assert.equal(prompt, "hello\n\nworld\n\n");
+  });
+
   it("captures session id and resumes it across sends", async () => {
     const sessionA = "11111111-1111-1111-1111-111111111111";
     const { binary, dir } = await createExecutableScript([

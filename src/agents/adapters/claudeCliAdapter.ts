@@ -12,6 +12,7 @@ import type { SandboxMode } from "../../telegram/config.js";
 import { runCli } from "../cli/cliRunner.js";
 import { ClaudeStreamParser } from "../cli/claudeStreamParser.js";
 import { createLogger } from "../../utils/logger.js";
+import { extractTextFromInput } from "../../utils/inputText.js";
 import { createAbortError } from "../../utils/abort.js";
 
 const logger = createLogger("ClaudeCliAdapter");
@@ -31,17 +32,6 @@ const DEFAULT_METADATA: AgentMetadata = {
   vendor: "Anthropic",
   capabilities: ["text", "images", "files", "commands"],
 };
-
-function inputToString(input: Input): string {
-  if (typeof input === "string") return input;
-  if (Array.isArray(input)) {
-    return input
-      .filter((item): item is { type: "text"; text: string } => item.type === "text")
-      .map((item) => item.text)
-      .join("\n");
-  }
-  return String(input ?? "");
-}
 
 export class ClaudeCliAdapter implements AgentAdapter {
   readonly id: string;
@@ -141,7 +131,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
   }
 
   private async sendInner(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
-    const prompt = inputToString(input);
+    const prompt = extractTextFromInput(input, { trim: false });
     if (!prompt.trim()) {
       throw new Error("Prompt 不能为空");
     }
