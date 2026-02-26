@@ -1,14 +1,6 @@
 import type { ThreadEvent } from "../protocol/types.js";
-import { mapThreadEventToAgentEvent, type AgentEvent } from "../../codex/events.js";
-
-type ToolKind = "command" | "file_change" | "web_search" | "tool_call";
-
-interface TrackedTool {
-  name: string;
-  input: Record<string, unknown>;
-  kind: ToolKind;
-  changeKind?: "add" | "update";
-}
+import type { AgentEvent } from "../../codex/events.js";
+import { asRecord, attachCliPayload, extractStringField, mapEvent, type ToolKind, type TrackedTool } from "./streamParserUtils.js";
 
 function classifyToolName(name: string): ToolKind {
   const key = name.trim().toLowerCase();
@@ -16,32 +8,6 @@ function classifyToolName(name: string): ToolKind {
   if (key.includes("write") || key.includes("edit") || key.includes("patch")) return "file_change";
   if (key.includes("search")) return "web_search";
   return "tool_call";
-}
-
-function extractStringField(obj: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const val = obj[key];
-    if (typeof val === "string" && val.trim()) return val.trim();
-  }
-  return undefined;
-}
-
-function asRecord(val: unknown): Record<string, unknown> | null {
-  if (val && typeof val === "object" && !Array.isArray(val)) {
-    return val as Record<string, unknown>;
-  }
-  return null;
-}
-
-function attachCliPayload(event: ThreadEvent, payload: unknown): ThreadEvent {
-  const out = event as ThreadEvent & { __cli?: unknown };
-  out.__cli = payload;
-  return out;
-}
-
-function mapEvent(event: ThreadEvent): AgentEvent[] {
-  const mapped = mapThreadEventToAgentEvent(event, Date.now());
-  return mapped ? [mapped] : [];
 }
 
 export class GeminiStreamParser {
