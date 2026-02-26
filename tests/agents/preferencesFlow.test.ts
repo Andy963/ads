@@ -103,5 +103,23 @@ describe("orchestrator preference directives", () => {
     assert.equal(adapter.lastInput, null);
     assert.ok(result.response.includes("theme=dark"));
   });
-});
 
+  it("applies preference directives when invoking a specific agent", async () => {
+    const codex = new CaptureAgentAdapter({ id: "codex", name: "Codex", fixedResponse: "done" });
+    const gemini = new CaptureAgentAdapter({ id: "gemini", name: "Gemini", fixedResponse: "done" });
+    const orchestrator = new HybridOrchestrator({
+      adapters: [codex, gemini],
+      defaultAgentId: "codex",
+      initialWorkingDirectory: workspaceSubdir,
+    });
+
+    const result = await orchestrator.invokeAgent("gemini", ["记住偏好: tone=concise", "hello"].join("\n"));
+
+    assert.equal(codex.calls, 0);
+    assert.equal(gemini.calls, 1);
+    assert.equal(gemini.lastInput, "hello");
+    const prefs = listPreferences(workspaceRoot);
+    assert.deepEqual(prefs, [{ key: "tone", value: "concise" }]);
+    assert.ok(result.response.includes("已保存偏好"), "expected preference suffix in response");
+  });
+});

@@ -111,6 +111,35 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
   const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object";
 
+  const buildWorkspaceProjectUpdates = (
+    current: ProjectTab,
+    nextPath: string,
+    wsState: WorkspaceState | null,
+  ): Partial<ProjectTab> => {
+    const updates: Partial<ProjectTab> = { initialized: true };
+    if (nextPath && (current.id === "default" || !current.path.trim())) {
+      updates.path = nextPath;
+    }
+    if (current.id === "default" && nextPath) {
+      updates.name = deriveProjectNameFromPath(nextPath);
+    }
+    if (wsState && Object.prototype.hasOwnProperty.call(wsState, "branch")) {
+      updates.branch = String(wsState.branch ?? "");
+    }
+    return updates;
+  };
+
+  const syncProjectFromWorkspaceState = (
+    current: ProjectTab | null,
+    nextPath: string,
+    wsState: WorkspaceState | null,
+  ): void => {
+    if (!current) {
+      return;
+    }
+    updateProject(current.id, buildWorkspaceProjectUpdates(current, nextPath, wsState));
+  };
+
   return (msg: unknown): void => {
     if (!isRecord(msg)) return;
     const typeValue = msg.type;
@@ -288,15 +317,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           return;
         }
       }
-      if (current) {
-        const updates: Partial<ProjectTab> = { initialized: true };
-        if (nextPath && (current.id === "default" || !current.path.trim())) updates.path = nextPath;
-        if (current.id === "default" && nextPath) updates.name = deriveProjectNameFromPath(nextPath);
-        if (wsState && Object.prototype.hasOwnProperty.call(wsState, "branch")) {
-          updates.branch = String(wsState.branch ?? "");
-        }
-        updateProject(current.id, updates);
-      }
+      syncProjectFromWorkspaceState(current, nextPath, wsState);
 
       if (typeof inFlight === "boolean" && !inFlight) {
         flushQueuedPrompts(rt);
@@ -313,30 +334,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
         if (rt.pendingCdRequestedPath) {
           const current = projects.value.find((p) => p.id === pid) ?? null;
-          if (current) {
-            const updates: Partial<ProjectTab> = { initialized: true };
-            if (Object.prototype.hasOwnProperty.call(wsState, "branch")) {
-              updates.branch = String(wsState.branch ?? "");
-            }
-            if (nextPath && (current.id === "default" || !current.path.trim())) {
-              updates.path = nextPath;
-            }
-            if (current.id === "default" && nextPath) updates.name = deriveProjectNameFromPath(nextPath);
-            updateProject(current.id, updates);
-          }
+          syncProjectFromWorkspaceState(current, nextPath, wsState);
           rt.pendingCdRequestedPath = null;
           return;
         }
         const current = projects.value.find((p) => p.id === pid) ?? null;
-        if (current) {
-          const updates: Partial<ProjectTab> = { initialized: true };
-          if (nextPath && (current.id === "default" || !current.path.trim())) updates.path = nextPath;
-          if (current.id === "default" && nextPath) updates.name = deriveProjectNameFromPath(nextPath);
-          if (Object.prototype.hasOwnProperty.call(wsState, "branch")) {
-            updates.branch = String(wsState.branch ?? "");
-          }
-          updateProject(current.id, updates);
-        }
+        syncProjectFromWorkspaceState(current, nextPath, wsState);
       }
       return;
     }

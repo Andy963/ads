@@ -393,6 +393,65 @@ export class HybridOrchestrator {
     this.systemPromptManager.completeTurn();
   }
 
+  private buildResultWithSavedArtifacts(
+    result: AgentRunResult,
+    savedPreferences: PreferenceDirective[],
+  ): AgentRunResult {
+    const persisted = this.persistSkillsFromResponse(result.response);
+    const suffixes: string[] = [];
+    if (persisted.saved.length > 0) {
+      suffixes.push(`（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`);
+    }
+    if (savedPreferences.length > 0) {
+      suffixes.push(formatSavedPreferencesSuffix(savedPreferences));
+    }
+    const suffix = suffixes.length > 0 ? `\n\n${suffixes.join("\n")}` : "";
+    return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
+  }
+
+  private maybeBuildPreferenceOnlyResult(
+    agentId: AgentIdentifier,
+    cleanedInput: Input,
+    savedPreferences: PreferenceDirective[],
+  ): AgentRunResult | null {
+    if (savedPreferences.length === 0 || !isEmptyInput(cleanedInput)) {
+      return null;
+    }
+    return {
+      response: formatSavedPreferencesSuffix(savedPreferences),
+      usage: null,
+      agentId,
+    };
+  }
+
+  private async sendWithAgent(
+    agentId: AgentIdentifier,
+    entry: AgentEntry,
+    input: Input,
+    options?: AgentSendOptions,
+  ): Promise<AgentRunResult> {
+    const preferences = this.persistPreferencesFromInput(input);
+    const cleanedInput = preferences.cleanedInput;
+    const savedPreferences = preferences.saved;
+
+    const preferenceOnly = this.maybeBuildPreferenceOnlyResult(
+      agentId,
+      cleanedInput,
+      savedPreferences,
+    );
+    if (preferenceOnly) {
+      return preferenceOnly;
+    }
+
+    const prompt = this.applySystemPrompt(agentId, cleanedInput);
+    try {
+      const result = await entry.adapter.send(prompt, options);
+      return this.buildResultWithSavedArtifacts(result, savedPreferences);
+    } finally {
+      this.completeTurn(agentId);
+    }
+  }
+
   getStreamingConfig(): { enabled: boolean; throttleMs: number } {
     return this.activeEntry.adapter.getStreamingConfig();
   }
@@ -418,32 +477,7 @@ export class HybridOrchestrator {
     if (!entry) {
       throw new Error(`Active agent "${agentId}" not found`);
     }
-    const preferences = this.persistPreferencesFromInput(input);
-    const cleanedInput = preferences.cleanedInput;
-    if (preferences.saved.length > 0 && isEmptyInput(cleanedInput)) {
-      return {
-        response: formatSavedPreferencesSuffix(preferences.saved),
-        usage: null,
-        agentId,
-      };
-    }
-
-    const prompt = this.applySystemPrompt(agentId, cleanedInput);
-    try {
-      const result = await entry.adapter.send(prompt, options);
-      const persisted = this.persistSkillsFromResponse(result.response);
-      const suffixes: string[] = [];
-      if (persisted.saved.length > 0) {
-        suffixes.push(`（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`);
-      }
-      if (preferences.saved.length > 0) {
-        suffixes.push(formatSavedPreferencesSuffix(preferences.saved));
-      }
-      const suffix = suffixes.length > 0 ? `\n\n${suffixes.join("\n")}` : "";
-      return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
-    } finally {
-      this.completeTurn(agentId);
-    }
+    return this.sendWithAgent(agentId, entry, input, options);
   }
 
   async invokeAgent(agentId: AgentIdentifier, input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
@@ -451,32 +485,7 @@ export class HybridOrchestrator {
     if (!entry) {
       throw new Error(`Agent "${agentId}" is not registered`);
     }
-    const preferences = this.persistPreferencesFromInput(input);
-    const cleanedInput = preferences.cleanedInput;
-    if (preferences.saved.length > 0 && isEmptyInput(cleanedInput)) {
-      return {
-        response: formatSavedPreferencesSuffix(preferences.saved),
-        usage: null,
-        agentId,
-      };
-    }
-
-    const prompt = this.applySystemPrompt(agentId, cleanedInput);
-    try {
-      const result = await entry.adapter.send(prompt, options);
-      const persisted = this.persistSkillsFromResponse(result.response);
-      const suffixes: string[] = [];
-      if (persisted.saved.length > 0) {
-        suffixes.push(`（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`);
-      }
-      if (preferences.saved.length > 0) {
-        suffixes.push(formatSavedPreferencesSuffix(preferences.saved));
-      }
-      const suffix = suffixes.length > 0 ? `\n\n${suffixes.join("\n")}` : "";
-      return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
-    } finally {
-      this.completeTurn(agentId);
-    }
+    return this.sendWithAgent(agentId, entry, input, options);
   }
 
   setWorkingDirectory(workingDirectory?: string): void {
