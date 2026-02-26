@@ -229,7 +229,7 @@ export function createTaskQueueManager(deps: {
     const taskQueueSessionManager = new SessionManager(
       0,
       0,
-      "workspace-write",
+      "danger-full-access",
       taskQueueModelOverride,
       taskQueueThreadStorage,
     );
