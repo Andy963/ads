@@ -52,6 +52,7 @@ export async function handleTaskQueueRoutes(
       taskCtx.taskQueue.resume();
       taskCtx.queueRunning = true;
       deps.promoteQueuedTasksToPending(taskCtx);
+      taskCtx.runController.maybePauseAfterDrain(taskCtx);
     };
     if (taskCtx.lock.isBusy()) {
       void taskCtx.lock.runExclusive(action);

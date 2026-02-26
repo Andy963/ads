@@ -45,6 +45,7 @@ export type TaskQueueContext = {
   taskStore: QueueTaskStore;
   attachmentStore: AttachmentStore;
   taskQueue: TaskQueue;
+  queueAutoStart: boolean;
   queueRunning: boolean;
   dequeueInProgress: boolean;
   metrics: TaskQueueMetrics;
@@ -253,6 +254,7 @@ export function createTaskQueueManager(deps: {
       taskStore,
       attachmentStore,
       taskQueue,
+      queueAutoStart: deps.autoStart,
       queueRunning: false,
       dequeueInProgress: false,
       metrics: createTaskQueueMetrics(),
@@ -321,6 +323,7 @@ export function createTaskQueueManager(deps: {
         return;
       }
       promoteQueuedTasksToPending(ctx);
+      ctx.runController.maybePauseAfterDrain(ctx);
     });
     taskQueue.on("task:failed", ({ task, error }) => {
       deps.broadcastToSession(sessionId, { type: "task:event", event: "task:failed", data: { task, error }, ts: Date.now() });
@@ -338,6 +341,7 @@ export function createTaskQueueManager(deps: {
           return;
         }
         promoteQueuedTasksToPending(ctx);
+        ctx.runController.maybePauseAfterDrain(ctx);
       }
     });
     taskQueue.on("task:cancelled", ({ task }) => {
@@ -355,16 +359,19 @@ export function createTaskQueueManager(deps: {
         return;
       }
       promoteQueuedTasksToPending(ctx);
+      ctx.runController.maybePauseAfterDrain(ctx);
     });
 
     if (deps.available) {
       const status = getStatusOrchestrator().status();
       if (deps.autoStart) {
+        ctx.runController.setModeAll();
         void taskQueue.start();
         ctx.queueRunning = true;
         deps.logger.info(`[Web] TaskQueue started workspace=${key}`);
         promoteQueuedTasksToPending(ctx);
       } else {
+        ctx.runController.setModeManual();
         taskQueue.pause("manual");
         void taskQueue.start();
         ctx.queueRunning = false;

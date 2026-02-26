@@ -14,6 +14,7 @@ export type TaskRunControllerContext = {
   taskStore: TaskStore;
   taskQueue: Pick<TaskQueue, "pause" | "resume" | "notifyNewTask">;
   queueRunning: boolean;
+  queueAutoStart?: boolean;
 };
 
 function isTerminalStatus(status: TaskStatus): boolean {
@@ -67,6 +68,43 @@ export class TaskRunController {
   setModeManual(): void {
     this.mode = "manual";
     this.singleTaskId = null;
+  }
+
+  /**
+   * When running in "all" mode (manual queue run), we should automatically
+   * reset the queue state once it drains; otherwise newly created tasks would
+   * immediately execute without an explicit "run" action.
+   *
+   * Returns true if the controller paused and reset the queue.
+   */
+  maybePauseAfterDrain(ctx: TaskRunControllerContext): boolean {
+    if (!ctx.queueRunning) {
+      return false;
+    }
+    if (this.mode !== "all") {
+      return false;
+    }
+    if (ctx.queueAutoStart) {
+      return false;
+    }
+    if (ctx.taskStore.getActiveTaskId()) {
+      return false;
+    }
+    if (ctx.taskStore.listTasks({ status: "pending", limit: 1 }).length > 0) {
+      return false;
+    }
+    if (ctx.taskStore.listTasks({ status: "queued", limit: 1 }).length > 0) {
+      return false;
+    }
+
+    try {
+      ctx.taskQueue.pause("drained");
+    } catch {
+      // ignore
+    }
+    ctx.queueRunning = false;
+    this.setModeManual();
+    return true;
   }
 
   /**
