@@ -1,7 +1,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../src/state/database.js";
 import { TaskStore } from "../../src/agents/tasks/taskStore.js";
 import { TaskResultSchema, TaskSpecSchema } from "../../src/agents/tasks/schemas.js";
 
@@ -102,5 +105,43 @@ describe("agents/tasks/taskStore", () => {
     assert.equal(reloaded.result, undefined);
     assert.equal(reloaded.verification, undefined);
   });
-});
 
+  it("handles malformed persisted json fields without throwing", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-task-store-"));
+    const dbPath = path.join(tmpDir, "state.db");
+
+    try {
+      const store = new TaskStore({
+        workspaceRoot: process.cwd(),
+        namespace: "test",
+        sessionId: "s1",
+        dbPath,
+      });
+
+      const spec = TaskSpecSchema.parse({
+        taskId: "t_malformed",
+        agentId: "codex",
+        revision: 1,
+        goal: "read me",
+        constraints: [],
+        deliverables: [],
+        acceptanceCriteria: [],
+        verification: { commands: [] },
+      });
+
+      store.upsertTask(spec, "PENDING");
+      const db = getStateDatabase(dbPath);
+      db.prepare(
+        "UPDATE tasks SET spec_json = ?, result_json = ?, verification_json = ? WHERE task_id = ?",
+      ).run("{broken", "{broken", "{broken", spec.taskId);
+
+      const row = store.getTask(spec.taskId);
+      assert.ok(row);
+      assert.equal(typeof row.spec, "object");
+      assert.equal(row.result, undefined);
+      assert.equal(row.verification, undefined);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

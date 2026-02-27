@@ -1,6 +1,7 @@
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
 import { getStateDatabase, resolveStateDbPath } from "../../state/database.js";
+import { safeParseJsonFromUnknown } from "../../utils/json.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../workspace/adsPaths.js";
 
 import type { TaskResult, TaskSpec } from "./schemas.js";
@@ -55,19 +56,21 @@ function normalizeStatus(value: unknown): TaskStatus {
   }
 }
 
-function parseJson<T>(raw: unknown): T | undefined {
-  if (typeof raw !== "string") {
+function parsePersistedJson<T>(raw: unknown): T | undefined {
+  const parsed = safeParseJsonFromUnknown<T>(raw);
+  return parsed === null ? undefined : parsed;
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" ? value : Number(value ?? fallback);
+}
+
+function toOptionalTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
     return undefined;
   }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  try {
-    return JSON.parse(trimmed) as T;
-  } catch {
-    return undefined;
-  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 export class TaskStore {
@@ -307,24 +310,24 @@ export class TaskStore {
   }
 
   private toTaskRow(row: Record<string, unknown>): TaskRow {
-    const spec = parseJson<TaskSpec>(row.spec_json) ?? ({} as TaskSpec);
-    const result = parseJson<TaskResult>(row.result_json);
-    const verification = parseJson<unknown>(row.verification_json);
+    const spec = parsePersistedJson<TaskSpec>(row.spec_json) ?? ({} as TaskSpec);
+    const result = parsePersistedJson<TaskResult>(row.result_json);
+    const verification = parsePersistedJson<unknown>(row.verification_json);
     return {
       taskId: String(row.task_id ?? ""),
-      parentTaskId: typeof row.parent_task_id === "string" && row.parent_task_id.trim() ? row.parent_task_id.trim() : undefined,
+      parentTaskId: toOptionalTrimmedString(row.parent_task_id),
       namespace: String(row.namespace ?? ""),
       sessionId: String(row.session_id ?? ""),
       agentId: String(row.agent_id ?? ""),
-      revision: typeof row.revision === "number" ? row.revision : Number(row.revision ?? 0),
+      revision: toNumber(row.revision),
       status: normalizeStatus(row.status),
       spec,
       result,
       verification,
-      attempts: typeof row.attempts === "number" ? row.attempts : Number(row.attempts ?? 0),
-      lastError: typeof row.last_error === "string" && row.last_error.trim() ? row.last_error.trim() : undefined,
-      createdAt: typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0),
-      updatedAt: typeof row.updated_at === "number" ? row.updated_at : Number(row.updated_at ?? 0),
+      attempts: toNumber(row.attempts),
+      lastError: toOptionalTrimmedString(row.last_error),
+      createdAt: toNumber(row.created_at),
+      updatedAt: toNumber(row.updated_at),
     };
   }
 }

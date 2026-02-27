@@ -3,6 +3,7 @@ import { computed, nextTick, ref } from "vue";
 import { ChatDotRound, Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
 import type { Task, TaskQueueStatus } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
+import { compareTasksForDisplay } from "../lib/task_sort";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
@@ -257,24 +258,10 @@ function deriveTaskTitleFromPrompt(prompt: string): string {
 }
 
 const sorted = computed(() => {
-  const weight = (s: string) => {
-    if (s === "running") return 0;
-    if (s === "planning") return 1;
-    if (s === "pending" || s === "queued") return 2;
-    if (s === "completed") return 9;
-    return 5;
-  };
   return props.tasks
     .filter((t) => t.archivedAt == null)
     .slice()
-    .sort((a, b) => {
-      const wa = weight(a.status);
-      const wb = weight(b.status);
-      if (wa !== wb) return wa - wb;
-      if (a.status !== b.status) return a.status.localeCompare(b.status);
-      if (a.priority !== b.priority) return b.priority - a.priority;
-      return b.createdAt - a.createdAt;
-    });
+    .sort(compareTasksForDisplay);
 });
 
 const editingId = ref<string | null>(null);
