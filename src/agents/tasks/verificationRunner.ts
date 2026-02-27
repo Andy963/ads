@@ -4,7 +4,8 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 
-import { getExecAllowlistFromEnv, runCommand } from "../../utils/commandRunner.js";
+import { assertCommandAllowed, getExecAllowlistFromEnv, runCommand } from "../../utils/commandRunner.js";
+import { parseBooleanFlag } from "../../utils/flags.js";
 
 import type { CommandRunRequest, CommandRunResult } from "../../utils/commandRunner.js";
 
@@ -36,20 +37,12 @@ export interface VerificationRunnerDeps {
   fetch?: typeof fetch;
 }
 
-function parseBoolean(value: string | undefined, defaultValue = false): boolean {
-  if (value === undefined) {
-    return defaultValue;
-  }
-  const normalized = value.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-}
-
-function isVerificationEnabled(): boolean {
-  const enabled = parseBoolean(process.env.ADS_TASK_VERIFICATION_ENABLED, true);
+function isVerificationEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const enabled = parseBooleanFlag(env.ADS_TASK_VERIFICATION_ENABLED, true);
   if (!enabled) {
     return false;
   }
-  return parseBoolean(process.env.ENABLE_AGENT_EXEC_TOOL, true);
+  return parseBooleanFlag(env.ENABLE_AGENT_EXEC_TOOL, true);
 }
 
 function stringifyCommand(cmd: string, args: string[]): string {
@@ -58,6 +51,14 @@ function stringifyCommand(cmd: string, args: string[]): string {
 
 function buildOutputForAssertions(stdout: string, stderr: string): string {
   return [stdout ?? "", stderr ?? ""].join("\n").trim();
+}
+
+function normalizePositiveInt(value: unknown, defaultValue: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : defaultValue;
+}
+
+function normalizeInt(value: unknown, defaultValue: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : defaultValue;
 }
 
 type AssertionsSpec = Pick<VerificationCommand, "assertContains" | "assertNotContains" | "assertRegex">;
@@ -274,6 +275,45 @@ async function runUiSmokeSuite(
       const svcCwd = svc.cwd ? path.resolve(context.cwd, svc.cwd) : context.cwd;
       const svcEnv: NodeJS.ProcessEnv = { ...env, ...(svc.env ?? {}) };
 
+      if (!cmd) {
+        results.push({
+          cmd,
+          args,
+          ok: false,
+          expectedExitCode: 0,
+          exitCode: null,
+          signal: null,
+          elapsedMs: 0,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          suite,
+          notes: ["missing service cmd"],
+        });
+        return results;
+      }
+
+      try {
+        assertCommandAllowed(cmd, args, context.allowlist);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        results.push({
+          cmd,
+          args,
+          ok: false,
+          expectedExitCode: 0,
+          exitCode: null,
+          signal: null,
+          elapsedMs: 0,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          suite,
+          notes: [`service command blocked: ${message}`],
+        });
+        return results;
+      }
+
       const startedAt = Date.now();
       serviceChild = spawn(cmd, args, {
         cwd: svcCwd,
@@ -281,11 +321,12 @@ async function runUiSmokeSuite(
         stdio: ["ignore", "pipe", "pipe"],
       });
       serviceOutput = collectChildOutput(serviceChild, 24 * 1024);
+      let serviceSpawnError: string | null = null;
+      serviceChild.once("error", (error) => {
+        serviceSpawnError = error instanceof Error ? error.message : String(error);
+      });
 
-      const readyTimeoutMs =
-        typeof svc.readyTimeoutMs === "number" && Number.isFinite(svc.readyTimeoutMs) && svc.readyTimeoutMs > 0
-          ? Math.floor(svc.readyTimeoutMs)
-          : 30_000;
+      const readyTimeoutMs = normalizePositiveInt(svc.readyTimeoutMs, 30_000);
 
       const ready = await waitForReadyUrl(
         svc.readyUrl,
@@ -293,7 +334,7 @@ async function runUiSmokeSuite(
         deps,
         {
           signal: context.signal,
-          isServiceExited: () => serviceChild?.exitCode !== null,
+          isServiceExited: () => serviceSpawnError !== null || serviceChild?.exitCode !== null,
         },
       );
 
@@ -311,7 +352,10 @@ async function runUiSmokeSuite(
         suite,
         notes: ready.ok
           ? [`readyUrl ok: ${svc.readyUrl}${ready.status ? ` (status=${ready.status})` : ""}`]
-          : [`readyUrl failed: ${svc.readyUrl}${ready.error ? ` (${ready.error})` : ""}`],
+          : [
+              `readyUrl failed: ${svc.readyUrl}${ready.error ? ` (${ready.error})` : ""}`,
+              ...(serviceSpawnError ? [`service spawn error: ${serviceSpawnError}`] : []),
+            ],
       });
 
       if (!ready.ok) {
@@ -322,14 +366,8 @@ async function runUiSmokeSuite(
     for (let stepIndex = 0; stepIndex < (uiSmoke.steps?.length ?? 0); stepIndex += 1) {
       const step: UiSmokeStep = uiSmoke.steps[stepIndex]!;
       const args = Array.isArray(step.args) ? step.args.map((a) => String(a)) : [];
-      const timeoutMs =
-        typeof step.timeoutMs === "number" && Number.isFinite(step.timeoutMs) && step.timeoutMs > 0
-          ? Math.floor(step.timeoutMs)
-          : 60_000;
-      const expectedExitCode =
-        typeof step.expectExitCode === "number" && Number.isFinite(step.expectExitCode)
-          ? Math.floor(step.expectExitCode)
-          : 0;
+      const timeoutMs = normalizePositiveInt(step.timeoutMs, 60_000);
+      const expectedExitCode = normalizeInt(step.expectExitCode, 0);
 
       let run: CommandRunResult;
       try {
@@ -425,10 +463,7 @@ async function runUiSmokeSuite(
     }
   } finally {
     await safeClose();
-    const graceMs =
-      typeof uiSmoke.service?.shutdownGraceMs === "number" && Number.isFinite(uiSmoke.service.shutdownGraceMs) && uiSmoke.service.shutdownGraceMs > 0
-        ? Math.floor(uiSmoke.service.shutdownGraceMs)
-        : 2_500;
+    const graceMs = normalizePositiveInt(uiSmoke.service?.shutdownGraceMs, 2_500);
     await stopService(serviceChild, { graceMs });
   }
 
@@ -458,14 +493,8 @@ export async function runVerification(
   for (const command of commands) {
     const cmd = String(command.cmd ?? "").trim();
     const args = Array.isArray(command.args) ? command.args.map((arg) => String(arg)) : [];
-    const timeoutMs =
-      typeof command.timeoutMs === "number" && Number.isFinite(command.timeoutMs) && command.timeoutMs > 0
-        ? Math.floor(command.timeoutMs)
-        : 5 * 60 * 1000;
-    const expectedExitCode =
-      typeof command.expectExitCode === "number" && Number.isFinite(command.expectExitCode)
-        ? Math.floor(command.expectExitCode)
-        : 0;
+    const timeoutMs = normalizePositiveInt(command.timeoutMs, 5 * 60 * 1000);
+    const expectedExitCode = normalizeInt(command.expectExitCode, 0);
 
     if (!cmd) {
       results.push({
