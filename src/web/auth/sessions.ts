@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { getStateDatabase, resolveStateDbPath } from "../../state/database.js";
+import { parseBooleanFlag } from "../../utils/flags.js";
 import { ensureWebAuthTables } from "./schema.js";
 
 export const ADS_SESSION_COOKIE_NAME = "ads_session";
@@ -30,6 +31,9 @@ export type WebSession = {
   user_agent: string | null;
 };
 
+const MIN_SESSION_TTL_SECONDS = 60;
+const DEFAULT_SESSION_TTL_SECONDS = 604_800;
+
 function getDb(explicitPath?: string): DatabaseType {
   const dbPath = resolveStateDbPath(explicitPath);
   const db = getStateDatabase(dbPath);
@@ -46,7 +50,7 @@ function parseIntEnv(name: string, defaultValue: number): number {
 }
 
 export function resolveSessionTtlSeconds(): number {
-  return Math.max(60, parseIntEnv("ADS_WEB_SESSION_TTL_SECONDS", 604800));
+  return Math.max(MIN_SESSION_TTL_SECONDS, parseIntEnv("ADS_WEB_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS));
 }
 
 export function resolveSessionPepper(): string {
@@ -54,9 +58,11 @@ export function resolveSessionPepper(): string {
 }
 
 export function resolveSessionSlidingEnabled(): boolean {
-  const raw = String(process.env.ADS_WEB_SESSION_SLIDING ?? "").trim().toLowerCase();
-  if (!raw) return false;
-  return ["1", "true", "yes", "on"].includes(raw);
+  return parseBooleanFlag(process.env.ADS_WEB_SESSION_SLIDING, false);
+}
+
+function normalizeSessionTtlSeconds(ttlSeconds: number | undefined): number {
+  return Math.max(MIN_SESSION_TTL_SECONDS, ttlSeconds ?? resolveSessionTtlSeconds());
 }
 
 export function createSessionToken(): string {
@@ -118,7 +124,7 @@ export function createWebSession(options: {
 }): { token: string; expiresAt: number; session: WebSession } {
   const db = getDb(options.dbPath);
   const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const ttlSeconds = Math.max(60, options.ttlSeconds ?? resolveSessionTtlSeconds());
+  const ttlSeconds = normalizeSessionTtlSeconds(options.ttlSeconds);
   const pepper = options.pepper ?? resolveSessionPepper();
 
   const token = createSessionToken();
@@ -170,7 +176,7 @@ export function lookupSessionByToken(options: {
   ensureWebAuthTables(db);
 
   const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const ttlSeconds = Math.max(60, options.ttlSeconds ?? resolveSessionTtlSeconds());
+  const ttlSeconds = normalizeSessionTtlSeconds(options.ttlSeconds);
   const pepper = options.pepper ?? resolveSessionPepper();
 
   const tokenHash = hashSessionToken(options.token, pepper);
@@ -209,7 +215,7 @@ export function refreshSessionIfNeeded(options: {
   refresh: boolean;
 }): { updatedExpiresAt: number } {
   const db = getDb(options.dbPath);
-  const expiresAt = options.refresh ? options.nowSeconds + Math.max(60, options.ttlSeconds) : 0;
+  const expiresAt = options.refresh ? options.nowSeconds + normalizeSessionTtlSeconds(options.ttlSeconds) : 0;
 
   if (options.refresh) {
     db.prepare(

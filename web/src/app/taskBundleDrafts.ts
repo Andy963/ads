@@ -2,24 +2,24 @@ import type { ApiClient } from "../api/client";
 import type { TaskBundle, TaskBundleDraft } from "../api/types";
 
 import type { ProjectRuntime } from "./controllerTypes";
+import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "./taskBundleDraftsState";
 
 type Ref<T> = { value: T };
 
 function upsertDraftLocal(rt: ProjectRuntime, draft: TaskBundleDraft): void {
-  const existing = Array.isArray(rt.taskBundleDrafts.value) ? rt.taskBundleDrafts.value : [];
-  const idx = existing.findIndex((d) => d.id === draft.id);
-  if (idx >= 0) {
-    rt.taskBundleDrafts.value = existing.map((d, i) => (i === idx ? draft : d));
-    return;
+  const existing = listTaskBundleDrafts(rt.taskBundleDrafts.value);
+  const next = upsertTaskBundleDraft(existing, draft);
+  if (next !== existing) {
+    rt.taskBundleDrafts.value = next;
   }
-  rt.taskBundleDrafts.value = [draft, ...existing];
 }
 
 function deleteDraftLocal(rt: ProjectRuntime, draftId: string): void {
-  const id = String(draftId ?? "").trim();
-  if (!id) return;
-  const existing = Array.isArray(rt.taskBundleDrafts.value) ? rt.taskBundleDrafts.value : [];
-  rt.taskBundleDrafts.value = existing.filter((d) => d.id !== id);
+  const existing = listTaskBundleDrafts(rt.taskBundleDrafts.value);
+  const next = removeTaskBundleDraft(existing, draftId);
+  if (next !== existing) {
+    rt.taskBundleDrafts.value = next;
+  }
 }
 
 export function createTaskBundleDraftActions(deps: {

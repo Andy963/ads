@@ -10,6 +10,8 @@ import {
   createWebSession,
   hashSessionToken,
   lookupSessionByToken,
+  resolveSessionSlidingEnabled,
+  resolveSessionTtlSeconds,
   revokeSessionByTokenHash,
 } from "../../src/web/auth/sessions.js";
 
@@ -70,5 +72,24 @@ describe("web/auth/sessions", () => {
       assert.equal(lookup2.reason, "revoked");
     }
   });
-});
 
+  it("resolves session env config with safe defaults", () => {
+    delete process.env.ADS_WEB_SESSION_TTL_SECONDS;
+    delete process.env.ADS_WEB_SESSION_SLIDING;
+    assert.equal(resolveSessionTtlSeconds(), 604800);
+    assert.equal(resolveSessionSlidingEnabled(), false);
+
+    process.env.ADS_WEB_SESSION_TTL_SECONDS = "30";
+    assert.equal(resolveSessionTtlSeconds(), 60);
+
+    process.env.ADS_WEB_SESSION_TTL_SECONDS = "120";
+    assert.equal(resolveSessionTtlSeconds(), 120);
+
+    process.env.ADS_WEB_SESSION_SLIDING = "TrUe";
+    assert.equal(resolveSessionSlidingEnabled(), true);
+    process.env.ADS_WEB_SESSION_SLIDING = "off";
+    assert.equal(resolveSessionSlidingEnabled(), false);
+    process.env.ADS_WEB_SESSION_SLIDING = "unknown";
+    assert.equal(resolveSessionSlidingEnabled(), false);
+  });
+});

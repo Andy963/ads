@@ -3,6 +3,7 @@ import type { ChatItem, ProjectRuntime, ProjectTab, WorkspaceState } from "../co
 import type { TaskBundleDraft } from "../../api/types";
 
 import { deriveProjectNameFromPath } from "./projectName";
+import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
 
 type Ref<T> = { value: T };
 
@@ -237,17 +238,18 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         return;
       }
 
-      const existing = Array.isArray(rt.taskBundleDrafts.value) ? rt.taskBundleDrafts.value : [];
+      const existing = listTaskBundleDrafts(rt.taskBundleDrafts.value);
       if (action === "delete") {
-        rt.taskBundleDrafts.value = existing.filter((d) => d.id !== draftId);
+        const next = removeTaskBundleDraft(existing, draftId);
+        if (next !== existing) {
+          rt.taskBundleDrafts.value = next;
+        }
         return;
       }
 
-      const idx = existing.findIndex((d) => d.id === draftId);
-      if (idx >= 0) {
-        rt.taskBundleDrafts.value = existing.map((d, i) => (i === idx ? { ...d, ...draft } : d));
-      } else {
-        rt.taskBundleDrafts.value = [draft, ...existing];
+      const next = upsertTaskBundleDraft(existing, draft, { mergeExisting: true });
+      if (next !== existing) {
+        rt.taskBundleDrafts.value = next;
       }
       return;
     }
@@ -255,8 +257,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "task_bundle_auto_approved") {
       const draftId = String((msg as { draftId?: unknown }).draftId ?? "").trim();
       if (draftId) {
-        const existing = Array.isArray(rt.taskBundleDrafts.value) ? rt.taskBundleDrafts.value : [];
-        rt.taskBundleDrafts.value = existing.filter((d) => d.id !== draftId);
+        const existing = listTaskBundleDrafts(rt.taskBundleDrafts.value);
+        const next = removeTaskBundleDraft(existing, draftId);
+        if (next !== existing) {
+          rt.taskBundleDrafts.value = next;
+        }
       }
       return;
     }
