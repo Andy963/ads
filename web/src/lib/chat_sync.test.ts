@@ -76,5 +76,21 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     const out = mergeHistoryFromServer(local, server, LIVE);
     expect(out).toEqual(local);
   });
-});
 
+  it("uses the newest overlap when comparable messages repeat", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Hi" }),
+      msg({ id: "a1", role: "assistant", content: "Ack" }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "Hi" }),
+      msg({ id: "s2", role: "assistant", content: "Ack" }),
+      msg({ id: "s3", role: "user", content: "Intermediate" }),
+      msg({ id: "s4", role: "assistant", content: "Ack" }),
+      msg({ id: "s5", role: "assistant", content: "Tail" }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out.map((m) => m.content)).toEqual(["Hi", "Ack", "Tail"]);
+  });
+});

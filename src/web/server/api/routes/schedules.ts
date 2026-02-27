@@ -8,6 +8,57 @@ import { ScheduleStore } from "../../../../scheduler/store.js";
 import type { ScheduleCompiler } from "../../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../../scheduler/runtime.js";
 
+const createScheduleBodySchema = z
+  .object({
+    instruction: z.string().min(1),
+    enabled: z.boolean().optional(),
+  })
+  .passthrough();
+
+const updateScheduleBodySchema = z
+  .object({
+    instruction: z.string().min(1),
+  })
+  .passthrough();
+
+type CompiledSchedule = Awaited<ReturnType<ScheduleCompiler["compile"]>>;
+
+function resolveInstruction(raw: string): string | null {
+  const instruction = String(raw ?? "").trim();
+  return instruction || null;
+}
+
+function resolveCompiledSchedule(args: {
+  compiled: CompiledSchedule;
+  instruction: string;
+  enableRequested: boolean;
+  nowMs: number;
+}): { spec: CompiledSchedule; enabled: boolean; nextRunAt: number | null } {
+  let enabled = Boolean(args.enableRequested && args.compiled.enabled && (args.compiled.questions?.length ?? 0) === 0);
+  let nextRunAt: number | null = null;
+  let spec: CompiledSchedule = { ...args.compiled, enabled, instruction: args.instruction };
+
+  if (enabled) {
+    try {
+      nextRunAt = computeNextCronRunAt({
+        cron: spec.schedule.cron,
+        timezone: spec.schedule.timezone,
+        afterMs: args.nowMs,
+      });
+    } catch {
+      enabled = false;
+      nextRunAt = null;
+      spec = {
+        ...spec,
+        enabled: false,
+        questions: [...(spec.questions ?? []), `Cron expression is not supported by runtime: ${spec.schedule.cron}`],
+      };
+    }
+  }
+
+  return { spec, enabled, nextRunAt };
+}
+
 export async function handleScheduleRoutes(
   ctx: ApiRouteContext,
   deps: {
@@ -19,6 +70,24 @@ export async function handleScheduleRoutes(
   const { req, res, pathname, url } = ctx;
 
   const resolveWorkspaceRoot = (): string => deps.resolveWorkspaceRoot(url);
+  const readJsonBodyOrSendBadRequest = async (): Promise<{ ok: true; body: unknown } | { ok: false }> => {
+    try {
+      return { ok: true, body: await readJsonBody(req) };
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return { ok: false };
+    }
+  };
+
+  const compileScheduleOrSendError = async (workspaceRoot: string, instruction: string): Promise<CompiledSchedule | null> => {
+    try {
+      return await deps.scheduleCompiler.compile({ workspaceRoot, instruction });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 500, { error: message });
+      return null;
+    }
+  };
 
   if (req.method === "GET" && pathname === "/api/schedules") {
     const workspaceRoot = resolveWorkspaceRoot();
@@ -32,62 +101,37 @@ export async function handleScheduleRoutes(
 
   if (req.method === "POST" && pathname === "/api/schedules") {
     const workspaceRoot = resolveWorkspaceRoot();
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
+    const bodyResult = await readJsonBodyOrSendBadRequest();
+    if (!bodyResult.ok) {
       return true;
     }
-
-    const schema = z
-      .object({
-        instruction: z.string().min(1),
-        enabled: z.boolean().optional(),
-      })
-      .passthrough();
-    const parsed = schema.safeParse(body ?? {});
+    const parsed = createScheduleBodySchema.safeParse(bodyResult.body ?? {});
     if (!parsed.success) {
       sendJson(res, 400, { error: "Invalid payload" });
       return true;
     }
 
-    const instruction = parsed.data.instruction.trim();
-    if (!instruction) {
+    const instruction = resolveInstruction(parsed.data.instruction);
+    if (instruction == null) {
       sendJson(res, 400, { error: "instruction is required" });
       return true;
     }
 
-    let compiled;
-    try {
-      compiled = await deps.scheduleCompiler.compile({ workspaceRoot, instruction });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 500, { error: message });
+    const compiled = await compileScheduleOrSendError(workspaceRoot, instruction);
+    if (!compiled) {
       return true;
     }
-
-    const enableRequested = typeof parsed.data.enabled === "boolean" ? parsed.data.enabled : true;
-    let enabled = Boolean(enableRequested && compiled.enabled && (compiled.questions?.length ?? 0) === 0);
-    let nextRunAt: number | null = null;
-
-    let spec = { ...compiled, enabled, instruction };
-    if (enabled) {
-      try {
-        nextRunAt = computeNextCronRunAt({
-          cron: spec.schedule.cron,
-          timezone: spec.schedule.timezone,
-          afterMs: Date.now(),
-        });
-      } catch {
-        enabled = false;
-        nextRunAt = null;
-        spec = { ...spec, enabled: false, questions: [...(spec.questions ?? []), `Cron expression is not supported by runtime: ${spec.schedule.cron}`] };
-      }
-    }
+    const now = Date.now();
+    const enableRequested = parsed.data.enabled ?? true;
+    const { spec, enabled, nextRunAt } = resolveCompiledSchedule({
+      compiled,
+      instruction,
+      enableRequested,
+      nowMs: now,
+    });
 
     const store = new ScheduleStore({ workspacePath: workspaceRoot });
-    const schedule = store.createSchedule({ instruction, spec, enabled, nextRunAt }, Date.now());
+    const schedule = store.createSchedule({ instruction, spec, enabled, nextRunAt }, now);
 
     deps.scheduler.registerWorkspace(workspaceRoot);
     sendJson(res, 201, { schedule });
@@ -98,27 +142,18 @@ export async function handleScheduleRoutes(
   if (patchMatch && req.method === "PATCH") {
     const workspaceRoot = resolveWorkspaceRoot();
     const scheduleId = patchMatch[1] ?? "";
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
+    const bodyResult = await readJsonBodyOrSendBadRequest();
+    if (!bodyResult.ok) {
       return true;
     }
-
-    const schema = z
-      .object({
-        instruction: z.string().min(1),
-      })
-      .passthrough();
-    const parsed = schema.safeParse(body ?? {});
+    const parsed = updateScheduleBodySchema.safeParse(bodyResult.body ?? {});
     if (!parsed.success) {
       sendJson(res, 400, { error: "Invalid payload" });
       return true;
     }
 
-    const instruction = parsed.data.instruction.trim();
-    if (!instruction) {
+    const instruction = resolveInstruction(parsed.data.instruction);
+    if (instruction == null) {
       sendJson(res, 400, { error: "instruction is required" });
       return true;
     }
@@ -130,40 +165,30 @@ export async function handleScheduleRoutes(
       return true;
     }
 
-    let compiled;
-    try {
-      compiled = await deps.scheduleCompiler.compile({ workspaceRoot, instruction });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 500, { error: message });
+    const compiled = await compileScheduleOrSendError(workspaceRoot, instruction);
+    if (!compiled) {
       return true;
     }
-
-    let enabled = Boolean(existing.enabled && compiled.enabled && (compiled.questions?.length ?? 0) === 0);
-    let nextRunAt: number | null = null;
-    let spec = { ...compiled, enabled, instruction };
-    if (enabled) {
-      try {
-        nextRunAt = computeNextCronRunAt({
-          cron: spec.schedule.cron,
-          timezone: spec.schedule.timezone,
-          afterMs: Date.now(),
-        });
-      } catch {
-        enabled = false;
-        nextRunAt = null;
-        spec = { ...spec, enabled: false, questions: [...(spec.questions ?? []), `Cron expression is not supported by runtime: ${spec.schedule.cron}`] };
-      }
-    }
-
-    const updated = store.updateSchedule(scheduleId, {
+    const now = Date.now();
+    const { spec, enabled, nextRunAt } = resolveCompiledSchedule({
+      compiled,
       instruction,
-      spec,
-      enabled,
-      nextRunAt,
-      leaseOwner: null,
-      leaseUntil: null,
-    }, Date.now());
+      enableRequested: existing.enabled,
+      nowMs: now,
+    });
+
+    const updated = store.updateSchedule(
+      scheduleId,
+      {
+        instruction,
+        spec,
+        enabled,
+        nextRunAt,
+        leaseOwner: null,
+        leaseUntil: null,
+      },
+      now,
+    );
 
     deps.scheduler.registerWorkspace(workspaceRoot);
     sendJson(res, 200, { schedule: updated });
@@ -246,4 +271,3 @@ export async function handleScheduleRoutes(
 
   return false;
 }
-

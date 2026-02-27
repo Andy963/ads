@@ -13,14 +13,16 @@ function normalizeContentForMerge(text: string): string {
   return String(text ?? "").replace(/\r\n/g, "\n").trim();
 }
 
-function toComparable(items: ChatItem[], liveStepId: string): ComparableChat[] {
-  return items
-    .filter((m) => m.id !== liveStepId && m.kind !== "execute")
-    .map((m) => ({ role: m.role, kind: m.kind, content: normalizeContentForMerge(m.content) }));
+function withoutLiveAndExecute(items: ChatItem[], liveStepId: string): ChatItem[] {
+  return items.filter((m) => m.id !== liveStepId && m.kind !== "execute");
 }
 
-function comparableEquals(a: ComparableChat, b: ComparableChat): boolean {
-  return a.role === b.role && a.kind === b.kind && a.content === b.content;
+function toComparable(items: ChatItem[]): ComparableChat[] {
+  return items.map((m) => ({ role: m.role, kind: m.kind, content: normalizeContentForMerge(m.content) }));
+}
+
+function comparableKey(chat: ComparableChat): string {
+  return `${chat.role}\u0000${chat.kind}\u0000${chat.content}`;
 }
 
 export function finalizeStreamingOnDisconnect(items: ChatItem[], liveStepId: string): ChatItem[] {
@@ -44,26 +46,19 @@ export function mergeHistoryFromServer(
   serverHistory: ChatItem[],
   liveStepId: string,
 ): ChatItem[] {
-  const local = localMessages.filter((m) => m.id !== liveStepId && m.kind !== "execute");
-  const server = serverHistory.filter((m) => m.id !== liveStepId && m.kind !== "execute");
+  const local = withoutLiveAndExecute(localMessages, liveStepId);
+  const server = withoutLiveAndExecute(serverHistory, liveStepId);
   if (local.length === 0) return server;
   if (server.length === 0) return local;
 
-  const localCmp = toComparable(local, liveStepId);
-  const serverCmp = toComparable(server, liveStepId);
+  const localCmp = toComparable(local);
+  const serverCmp = toComparable(server);
+  const localComparableKeys = new Set(localCmp.map((item) => comparableKey(item)));
   let lastMatchedServerIdx = -1;
 
   // Find the newest server message that already exists locally; local history may have been trimmed.
   for (let s = serverCmp.length - 1; s >= 0; s--) {
-    const target = serverCmp[s]!;
-    let found = false;
-    for (let l = localCmp.length - 1; l >= 0; l--) {
-      if (comparableEquals(target, localCmp[l]!)) {
-        found = true;
-        break;
-      }
-    }
-    if (found) {
+    if (localComparableKeys.has(comparableKey(serverCmp[s]!))) {
       lastMatchedServerIdx = s;
       break;
     }
