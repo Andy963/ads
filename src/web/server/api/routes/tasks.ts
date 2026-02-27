@@ -8,24 +8,18 @@ import { recordTaskQueueMetric } from "../../taskQueue/manager.js";
 import { upsertTaskNotificationBinding } from "../../../taskNotifications/store.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
-import { readJsonBody, sendJson } from "../../http.js";
+import { sendJson } from "../../http.js";
 
 import { handleTaskChatRoute } from "./tasks/chat.js";
 import { handleTaskByIdRoute } from "./tasks/taskById.js";
-import { buildTaskAttachments, parseTaskStatus } from "./tasks/shared.js";
+import { buildTaskAttachments, parseTaskStatus, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./tasks/shared.js";
 
 export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url, auth } = ctx;
 
   if (req.method === "GET" && pathname === "/api/tasks") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
     const status = parseTaskStatus(url.searchParams.get("status"));
     const limitRaw = url.searchParams.get("limit")?.trim();
     const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
@@ -52,21 +46,11 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
   }
 
   if (req.method === "POST" && pathname === "/api/tasks") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
+    const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+    if (!bodyResult.ok) return true;
+    const body = bodyResult.body;
     const bootstrapSchema = z.object({
       enabled: z.boolean(),
       projectRef: z.string().min(1),
@@ -173,14 +157,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
   const rerunMatch = /^\/api\/tasks\/([^/]+)\/rerun$/.exec(pathname);
   if (rerunMatch && req.method === "POST") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
     const taskId = rerunMatch[1] ?? "";
     const source = taskCtx.taskStore.getTask(taskId);
     if (!source) {
@@ -192,13 +170,9 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
 
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
+    const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+    if (!bodyResult.ok) return true;
+    const body = bodyResult.body;
     const bootstrapSchema = z
       .object({
         enabled: z.literal(true),
@@ -323,14 +297,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
   const retryMatch = /^\/api\/tasks\/([^/]+)\/retry$/.exec(pathname);
   if (retryMatch && req.method === "POST") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
     const taskId = retryMatch[1] ?? "";
     taskCtx.taskQueue.retry(taskId);
     const task = taskCtx.taskStore.getTask(taskId);
@@ -343,14 +311,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
   const runSingleTaskId = matchSingleTaskRunPath(pathname);
   if (runSingleTaskId && req.method === "POST") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
     const taskExists = Boolean(taskCtx.taskStore.getTask(runSingleTaskId));
     if (!taskExists) {
       sendJson(res, 404, { error: "Not Found" });
@@ -386,21 +348,11 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
   }
 
   if (req.method === "POST" && pathname === "/api/tasks/reorder") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
+    const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+    if (!bodyResult.ok) return true;
+    const body = bodyResult.body;
     const schema = z.object({ ids: z.array(z.string().min(1)).min(1) }).passthrough();
     const result = schema.safeParse(body ?? {});
     if (!result.success) {
@@ -431,26 +383,16 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
   const moveMatch = /^\/api\/tasks\/([^/]+)\/move$/.exec(pathname);
   if (moveMatch && req.method === "POST") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
     if (taskCtx.queueRunning) {
       sendJson(res, 409, { error: "Task queue is running" });
       return true;
     }
     const taskId = moveMatch[1] ?? "";
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
+    const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+    if (!bodyResult.ok) return true;
+    const body = bodyResult.body;
     const schema = z.object({ direction: z.enum(["up", "down"]) }).passthrough();
     const result = schema.safeParse(body ?? {});
     if (!result.success) {

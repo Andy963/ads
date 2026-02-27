@@ -1,4 +1,7 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+
 import type { ApiSharedDeps } from "../../types.js";
+import { readJsonBody, sendJson } from "../../../http.js";
 
 export function parseTaskStatus(value: string | undefined | null):
   | "queued"
@@ -23,6 +26,41 @@ export function parseTaskStatus(value: string | undefined | null):
       return raw;
     default:
       return undefined;
+  }
+}
+
+export type ResolvedTaskContext = ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+
+export function resolveTaskContextOrSendBadRequest(
+  deps: Pick<ApiSharedDeps, "resolveTaskContext">,
+  url: URL,
+  res: ServerResponse,
+): ResolvedTaskContext | null {
+  try {
+    return deps.resolveTaskContext(url);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendJson(res, 400, { error: message });
+    return null;
+  }
+}
+
+export type JsonBodyResult =
+  | {
+      ok: true;
+      body: unknown;
+    }
+  | {
+      ok: false;
+    };
+
+export async function readJsonBodyOrSendBadRequest(req: IncomingMessage, res: ServerResponse): Promise<JsonBodyResult> {
+  try {
+    const body = await readJsonBody(req);
+    return { ok: true, body };
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON body" });
+    return { ok: false };
   }
 }
 

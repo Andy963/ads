@@ -4,7 +4,8 @@ import type { AgentEvent } from "../../../../../codex/events.js";
 import { selectAgentForTask } from "../../../../../tasks/agentSelection.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
-import { readJsonBody, sendJson } from "../../../http.js";
+import { sendJson } from "../../../http.js";
+import { readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./shared.js";
 
 export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -19,14 +20,8 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
     return true;
   }
 
-  let taskCtx;
-  try {
-    taskCtx = deps.resolveTaskContext(url);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendJson(res, 400, { error: message });
-    return true;
-  }
+  const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+  if (!taskCtx) return true;
 
   const taskId = chatMatch[1] ?? "";
   const task = taskCtx.taskStore.getTask(taskId);
@@ -39,10 +34,16 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
     return true;
   }
 
-  const body = await readJsonBody(req);
+  const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+  if (!bodyResult.ok) return true;
+  const body = bodyResult.body;
   const schema = z.object({ content: z.string().min(1) }).passthrough();
-  const parsed = schema.parse(body ?? {});
-  const content = String(parsed.content ?? "").trim();
+  const parseResult = schema.safeParse(body ?? {});
+  if (!parseResult.success) {
+    sendJson(res, 400, { error: "Invalid payload" });
+    return true;
+  }
+  const content = String(parseResult.data.content ?? "").trim();
   if (!content) {
     sendJson(res, 400, { error: "Empty message" });
     return true;

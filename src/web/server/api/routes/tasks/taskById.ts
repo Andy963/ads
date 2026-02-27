@@ -1,9 +1,9 @@
 import { z } from "zod";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
-import { readJsonBody, sendJson } from "../../../http.js";
+import { sendJson } from "../../../http.js";
 import { notifyTaskTerminalViaTelegram } from "../../../../taskNotifications/telegramNotifier.js";
-import { buildTaskAttachments } from "./shared.js";
+import { buildTaskAttachments, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./shared.js";
 
 export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -13,14 +13,8 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     return false;
   }
 
-  let taskCtx;
-  try {
-    taskCtx = deps.resolveTaskContext(url);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendJson(res, 400, { error: message });
-    return true;
-  }
+  const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+  if (!taskCtx) return true;
   const taskId = taskMatch[1] ?? "";
 
   if (req.method === "GET") {
@@ -56,13 +50,9 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
   }
 
   if (req.method === "PATCH") {
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
+    const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+    if (!bodyResult.ok) return true;
+    const body = bodyResult.body;
     const action =
       typeof (body as { action?: unknown } | null)?.action === "string" ? String((body as { action: string }).action) : "";
     if (action) {
