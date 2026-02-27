@@ -1,8 +1,19 @@
-import type { Task, TaskMessage } from "../types.js";
-import { normalizeRole, normalizeTaskStatus, parseJson } from "./normalize.js";
+import type { Conversation, ConversationMessage, ModelConfig, Task, TaskMessage } from "../types.js";
+import { normalizeConversationStatus, normalizeRole, normalizeTaskStatus, parseJson } from "./normalize.js";
+
+function toNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" ? value : Number(value ?? fallback);
+}
+
+function toNullableNumber(value: unknown): number | null {
+  if (value == null) {
+    return null;
+  }
+  return typeof value === "number" ? value : Number(value);
+}
 
 export function toTask(row: Record<string, unknown>): Task {
-  const createdAt = typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0);
+  const createdAt = toNumber(row.created_at);
   return {
     id: String(row.id ?? ""),
     title: String(row.title ?? ""),
@@ -10,44 +21,76 @@ export function toTask(row: Record<string, unknown>): Task {
     model: String(row.model ?? "auto"),
     modelParams: parseJson<Record<string, unknown>>(row.model_params),
     status: normalizeTaskStatus(row.status),
-    priority: typeof row.priority === "number" ? row.priority : Number(row.priority ?? 0),
-    queueOrder:
-      typeof row.queue_order === "number"
-        ? row.queue_order
-        : row.queue_order == null
-          ? createdAt
-          : Number(row.queue_order),
-    queuedAt: row.queued_at == null ? null : (typeof row.queued_at === "number" ? row.queued_at : Number(row.queued_at)),
-    promptInjectedAt:
-      row.prompt_injected_at == null
-        ? null
-        : (typeof row.prompt_injected_at === "number" ? row.prompt_injected_at : Number(row.prompt_injected_at)),
+    priority: toNumber(row.priority),
+    queueOrder: row.queue_order == null ? createdAt : toNumber(row.queue_order),
+    queuedAt: toNullableNumber(row.queued_at),
+    promptInjectedAt: toNullableNumber(row.prompt_injected_at),
     inheritContext: Boolean(row.inherit_context),
     agentId: row.agent_id == null ? null : (String(row.agent_id ?? "").trim() || null),
     parentTaskId: row.parent_task_id == null ? null : String(row.parent_task_id),
     threadId: row.thread_id == null ? null : String(row.thread_id),
     result: row.result == null ? null : String(row.result),
     error: row.error == null ? null : String(row.error),
-    retryCount: typeof row.retry_count === "number" ? row.retry_count : Number(row.retry_count ?? 0),
-    maxRetries: typeof row.max_retries === "number" ? row.max_retries : Number(row.max_retries ?? 3),
+    retryCount: toNumber(row.retry_count),
+    maxRetries: toNumber(row.max_retries, 3),
     createdAt,
-    startedAt: row.started_at == null ? null : (typeof row.started_at === "number" ? row.started_at : Number(row.started_at)),
-    completedAt: row.completed_at == null ? null : (typeof row.completed_at === "number" ? row.completed_at : Number(row.completed_at ?? 0)),
-    archivedAt: row.archived_at == null ? null : (typeof row.archived_at === "number" ? row.archived_at : Number(row.archived_at ?? 0)),
+    startedAt: toNullableNumber(row.started_at),
+    completedAt: toNullableNumber(row.completed_at),
+    archivedAt: toNullableNumber(row.archived_at),
     createdBy: row.created_by == null ? null : String(row.created_by),
   };
 }
 
 export function toTaskMessage(row: Record<string, unknown>): TaskMessage {
   return {
-    id: typeof row.id === "number" ? row.id : Number(row.id ?? 0),
+    id: toNumber(row.id),
     taskId: String(row.task_id ?? ""),
-    planStepId: row.plan_step_id == null ? null : (typeof row.plan_step_id === "number" ? row.plan_step_id : Number(row.plan_step_id)),
+    planStepId: toNullableNumber(row.plan_step_id),
     role: normalizeRole(row.role),
     content: String(row.content ?? ""),
     messageType: row.message_type == null ? null : String(row.message_type),
     modelUsed: row.model_used == null ? null : String(row.model_used),
-    tokenCount: row.token_count == null ? null : (typeof row.token_count === "number" ? row.token_count : Number(row.token_count)),
-    createdAt: typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0),
+    tokenCount: toNullableNumber(row.token_count),
+    createdAt: toNumber(row.created_at),
+  };
+}
+
+export function toConversation(row: Record<string, unknown>): Conversation {
+  return {
+    id: String(row.id ?? ""),
+    taskId: row.task_id == null ? null : String(row.task_id),
+    title: row.title == null ? null : String(row.title),
+    totalTokens: toNumber(row.total_tokens),
+    lastModel: row.last_model == null ? null : String(row.last_model),
+    modelResponseIds: parseJson<Record<string, string>>(row.model_response_ids) ?? null,
+    status: normalizeConversationStatus(row.status),
+    createdAt: toNumber(row.created_at),
+    updatedAt: toNumber(row.updated_at),
+  };
+}
+
+export function toConversationMessage(row: Record<string, unknown>): ConversationMessage {
+  return {
+    id: toNumber(row.id),
+    conversationId: String(row.conversation_id ?? ""),
+    taskId: row.task_id == null ? null : String(row.task_id),
+    role: normalizeRole(row.role),
+    content: String(row.content ?? ""),
+    modelId: row.model_id == null ? null : String(row.model_id),
+    tokenCount: toNullableNumber(row.token_count),
+    metadata: parseJson<Record<string, unknown>>(row.metadata) ?? null,
+    createdAt: toNumber(row.created_at),
+  };
+}
+
+export function toModelConfig(row: Record<string, unknown>): ModelConfig {
+  return {
+    id: String(row.id ?? ""),
+    displayName: String(row.display_name ?? ""),
+    provider: String(row.provider ?? ""),
+    isEnabled: Boolean(row.is_enabled),
+    isDefault: Boolean(row.is_default),
+    configJson: parseJson<Record<string, unknown>>(row.config_json) ?? null,
+    updatedAt: toNullableNumber(row.updated_at),
   };
 }

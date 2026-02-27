@@ -3,22 +3,14 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import type { TaskStoreStatements } from "../storeStatements.js";
 import type { ModelConfig } from "../types.js";
 
-import { parseJson } from "./normalize.js";
+import { toModelConfig } from "./mappers.js";
 
 export function createTaskStoreModelConfigOps(deps: { db: DatabaseType; stmts: TaskStoreStatements }) {
   const { db, stmts } = deps;
 
   const listModelConfigs = (): ModelConfig[] => {
     const rows = stmts.listModelConfigsStmt.all() as Record<string, unknown>[];
-    return rows.map((row) => ({
-      id: String(row.id ?? ""),
-      displayName: String(row.display_name ?? ""),
-      provider: String(row.provider ?? ""),
-      isEnabled: Boolean(row.is_enabled),
-      isDefault: Boolean(row.is_default),
-      configJson: parseJson<Record<string, unknown>>(row.config_json) ?? null,
-      updatedAt: typeof row.updated_at === "number" ? row.updated_at : row.updated_at == null ? null : Number(row.updated_at),
-    }));
+    return rows.map((row) => toModelConfig(row));
   };
 
   const getModelConfig = (modelId: string): ModelConfig | null => {
@@ -30,15 +22,7 @@ export function createTaskStoreModelConfigOps(deps: { db: DatabaseType; stmts: T
     if (!row) {
       return null;
     }
-    return {
-      id: String(row.id ?? ""),
-      displayName: String(row.display_name ?? ""),
-      provider: String(row.provider ?? ""),
-      isEnabled: Boolean(row.is_enabled),
-      isDefault: Boolean(row.is_default),
-      configJson: parseJson<Record<string, unknown>>(row.config_json) ?? null,
-      updatedAt: typeof row.updated_at === "number" ? row.updated_at : row.updated_at == null ? null : Number(row.updated_at),
-    };
+    return toModelConfig(row);
   };
 
   const upsertModelConfig = (config: ModelConfig, now = Date.now()): ModelConfig => {
@@ -86,4 +70,3 @@ export function createTaskStoreModelConfigOps(deps: { db: DatabaseType; stmts: T
 
   return { listModelConfigs, getModelConfig, upsertModelConfig, deleteModelConfig };
 }
-

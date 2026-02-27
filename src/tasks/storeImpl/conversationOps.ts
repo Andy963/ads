@@ -1,7 +1,8 @@
 import type { TaskStoreStatements } from "../storeStatements.js";
 import type { Conversation, ConversationMessage } from "../types.js";
 
-import { normalizeConversationStatus, normalizeRole, parseJson } from "./normalize.js";
+import { toConversation, toConversationMessage } from "./mappers.js";
+import { normalizeConversationStatus, normalizeRole } from "./normalize.js";
 
 export function createTaskStoreConversationOps(deps: { stmts: TaskStoreStatements }) {
   const { stmts } = deps;
@@ -15,17 +16,7 @@ export function createTaskStoreConversationOps(deps: { stmts: TaskStoreStatement
     if (!row) {
       return null;
     }
-    return {
-      id: String(row.id ?? ""),
-      taskId: row.task_id == null ? null : String(row.task_id),
-      title: row.title == null ? null : String(row.title),
-      totalTokens: typeof row.total_tokens === "number" ? row.total_tokens : Number(row.total_tokens ?? 0),
-      lastModel: row.last_model == null ? null : String(row.last_model),
-      modelResponseIds: parseJson<Record<string, string>>(row.model_response_ids) ?? null,
-      status: normalizeConversationStatus(row.status),
-      createdAt: typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0),
-      updatedAt: typeof row.updated_at === "number" ? row.updated_at : Number(row.updated_at ?? 0),
-    };
+    return toConversation(row);
   };
 
   const upsertConversation = (
@@ -112,17 +103,7 @@ export function createTaskStoreConversationOps(deps: { stmts: TaskStoreStatement
         ? (stmts.getConversationMessagesLimitedStmt.all(id, Math.floor(limit)) as Record<string, unknown>[])
         : (stmts.getConversationMessagesStmt.all(id) as Record<string, unknown>[]);
 
-    return rows.map((row) => ({
-      id: typeof row.id === "number" ? row.id : Number(row.id ?? 0),
-      conversationId: String(row.conversation_id ?? ""),
-      taskId: row.task_id == null ? null : String(row.task_id),
-      role: normalizeRole(row.role),
-      content: String(row.content ?? ""),
-      modelId: row.model_id == null ? null : String(row.model_id),
-      tokenCount: row.token_count == null ? null : (typeof row.token_count === "number" ? row.token_count : Number(row.token_count)),
-      metadata: parseJson<Record<string, unknown>>(row.metadata) ?? null,
-      createdAt: typeof row.created_at === "number" ? row.created_at : Number(row.created_at ?? 0),
-    }));
+    return rows.map((row) => toConversationMessage(row));
   };
 
   return { upsertConversation, getConversation, addConversationMessage, getConversationMessages };

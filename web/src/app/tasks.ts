@@ -12,6 +12,7 @@ import { removeTaskLocal } from "./tasks/localState";
 import { createNoticeActions } from "./tasks/notice";
 import { createTaskReorderActions } from "./tasks/reorder";
 import { createTaskRunHelpers } from "./tasks/runHelpers";
+import { pickNextSelectedTaskId } from "./tasks/selection";
 
 export type TaskDeps = {
   connectWs: (projectId?: string) => Promise<void>;
@@ -118,16 +119,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       return;
     }
 
-    if (!rt.selectedId.value && rt.tasks.value.length > 0) {
-      const nextPending = rt.tasks.value
-        .filter((t) => t.status === "pending")
-        .slice()
-        .sort((a, b) => {
-          if (a.priority !== b.priority) return b.priority - a.priority;
-          if (a.queueOrder !== b.queueOrder) return a.queueOrder - b.queueOrder;
-          return a.createdAt - b.createdAt;
-        })[0];
-      rt.selectedId.value = (nextPending ?? rt.tasks.value[0])!.id;
+    if (!rt.selectedId.value) {
+      rt.selectedId.value = pickNextSelectedTaskId(rt.tasks.value);
     }
   };
 

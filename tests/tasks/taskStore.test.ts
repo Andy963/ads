@@ -198,6 +198,38 @@ describe("tasks/taskStore", () => {
     assert.equal(contexts[0]?.content, "done");
   });
 
+  it("should upsert and list model configs with parsed configJson", () => {
+    const store = new TaskStore();
+    const now = Date.now();
+
+    const saved = store.upsertModelConfig(
+      {
+        id: "claude-sonnet",
+        displayName: "Claude Sonnet",
+        provider: "anthropic",
+        isEnabled: true,
+        isDefault: true,
+        configJson: { maxTokens: 4096 },
+      },
+      now,
+    );
+
+    assert.equal(saved.id, "claude-sonnet");
+    assert.equal(saved.isDefault, true);
+    assert.deepEqual(saved.configJson, { maxTokens: 4096 });
+    assert.equal(saved.updatedAt, now);
+
+    const listed = store.listModelConfigs();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]?.id, "claude-sonnet");
+    assert.equal(listed[0]?.displayName, "Claude Sonnet");
+    assert.equal(listed[0]?.provider, "anthropic");
+    assert.equal(listed[0]?.isEnabled, true);
+    assert.equal(listed[0]?.isDefault, true);
+    assert.deepEqual(listed[0]?.configJson, { maxTokens: 4096 });
+    assert.equal(listed[0]?.updatedAt, now);
+  });
+
   it("should persist conversation messages", () => {
     const store = new TaskStore();
     const task = store.createTask({ title: "T", prompt: "P" });
