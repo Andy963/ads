@@ -171,6 +171,28 @@ function hasPathSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
 }
 
+export function isGitPushCommand(cmd: string, args: string[] = []): boolean {
+  const executable = path.basename(cmd).toLowerCase();
+  if (executable !== "git") return false;
+  const first = String(args[0] ?? "").toLowerCase();
+  return first === "push";
+}
+
+export function assertCommandAllowed(cmd: string, args: string[], allowlist: string[] | null | undefined): void {
+  if (allowlist && hasPathSeparator(cmd)) {
+    throw new Error(`command path is not allowed when allowlist is enabled: ${cmd}`);
+  }
+
+  const executable = path.basename(cmd).toLowerCase();
+  if (allowlist && !allowlist.includes(executable)) {
+    throw new Error(`command not allowed: ${executable}`);
+  }
+
+  if (isGitPushCommand(cmd, args)) {
+    throw new Error("git push is blocked; push manually if needed");
+  }
+}
+
 export function getExecAllowlistFromEnv(env: NodeJS.ProcessEnv = process.env): string[] | null {
   const raw = env.AGENT_EXEC_TOOL_ALLOWLIST;
   if (raw === undefined) {
@@ -202,18 +224,7 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     : DEFAULT_MAX_OUTPUT_BYTES;
 
   const allowlist = request.allowlist;
-  if (allowlist && hasPathSeparator(cmd)) {
-    throw new Error(`command path is not allowed when allowlist is enabled: ${cmd}`);
-  }
-
-  const executable = path.basename(cmd).toLowerCase();
-  if (allowlist && !allowlist.includes(executable)) {
-    throw new Error(`command not allowed: ${executable}`);
-  }
-
-  if (executable === "git" && args.length > 0 && args[0].toLowerCase() === "push") {
-    throw new Error("git push is blocked; push manually if needed");
-  }
+  assertCommandAllowed(cmd, args, allowlist);
 
   const commandLine = [cmd, ...args].join(" ").trim();
   const startedAt = Date.now();

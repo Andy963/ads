@@ -8,6 +8,15 @@ import type { ProjectDeps } from "./types";
 
 const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
+type StoredProjectTabInput = Partial<ProjectTab> & { chatSessionId?: unknown };
+type RemoteProjectInput = {
+  id?: unknown;
+  workspaceRoot?: unknown;
+  name?: unknown;
+  chatSessionId?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
 
 export function createProjectActions(ctx: AppContext & ChatActions, deps: ProjectDeps) {
   const {
@@ -46,15 +55,44 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   let projectPathValidationSeq = 0;
 
   const deriveProjectName = (value: string): string => deriveProjectNameFromPath(value);
+  const normalizeString = (value: unknown): string => String(value ?? "").trim();
+  const normalizeChatSessionId = (value: unknown): string => normalizeString(value) || "main";
+  const normalizeTimestamp = (value: unknown, fallback: number): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
   const createProjectTab = (params: { path: string; name?: string; sessionId?: string; initialized?: boolean }): ProjectTab => {
     const now = Date.now();
-    const path = String(params.path ?? "").trim();
-    const sessionId = path ? (params.sessionId?.trim() || (crypto.randomUUID?.() ?? randomId("sess"))) : "default";
+    const path = normalizeString(params.path);
+    const sessionId = path ? (normalizeString(params.sessionId) || (crypto.randomUUID?.() ?? randomId("sess"))) : "default";
     const id = sessionId;
-    const name = String(params.name ?? "").trim() || deriveProjectNameFromPath(path);
+    const name = normalizeString(params.name) || deriveProjectNameFromPath(path);
     const initialized = params.initialized ?? !path;
     return { id, name, path, sessionId, chatSessionId: "main", initialized, createdAt: now, updatedAt: now, expanded: false };
+  };
+
+  const normalizeStoredProject = (input: StoredProjectTabInput): ProjectTab | null => {
+    const sessionId = normalizeString(input.sessionId);
+    if (!sessionId) return null;
+    const path = normalizeString(input.path);
+    const rawName = normalizeString(input.name);
+    const derivedName = deriveProjectNameFromPath(path);
+    const name = sessionId === "default" ? derivedName : rawName || derivedName;
+    const base = createProjectTab({ path, name, sessionId, initialized: Boolean(input.initialized) || !path });
+    return { ...base, chatSessionId: normalizeChatSessionId(input.chatSessionId) };
+  };
+
+  const normalizeRemoteProject = (input: RemoteProjectInput, now: number): ProjectTab | null => {
+    const id = normalizeString(input.id);
+    const workspaceRoot = normalizeString(input.workspaceRoot);
+    const name = normalizeString(input.name);
+    if (!id || !workspaceRoot || !name) return null;
+    const base = createProjectTab({ path: workspaceRoot, name, sessionId: id, initialized: false });
+    return {
+      ...base,
+      createdAt: normalizeTimestamp(input.createdAt, base.createdAt),
+      updatedAt: normalizeTimestamp(input.updatedAt, now),
+      chatSessionId: normalizeChatSessionId(input.chatSessionId),
+    };
   };
 
   const persistProjects = (): void => {
@@ -70,18 +108,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     const stored = safeJsonParse<ProjectTab[]>(localStorage.getItem(PROJECTS_KEY));
     const normalized: ProjectTab[] = Array.isArray(stored)
       ? stored
-          .map((p) => {
-            const raw = p as Partial<ProjectTab> & { chatSessionId?: unknown };
-            const sessionId = String(raw.sessionId ?? "").trim();
-            const path = String(raw.path ?? "").trim();
-            const rawName = String(raw.name ?? "").trim();
-            const derivedName = deriveProjectNameFromPath(path);
-            const name = sessionId === "default" ? derivedName : rawName || derivedName;
-            const chatSessionId = String(raw.chatSessionId ?? "").trim() || "main";
-            if (!sessionId) return null;
-            const base = createProjectTab({ path, name, sessionId, initialized: Boolean(raw.initialized) || !path });
-            return { ...base, chatSessionId };
-          })
+          .map((item) => normalizeStoredProject(item as StoredProjectTabInput))
           .filter((p): p is ProjectTab => Boolean(p))
       : [];
 
@@ -118,12 +145,12 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       // Keep a single explicit default entry for UI affordances.
       const prevDefault = projects.value.find((p) => p.id === "default") ?? null;
       const defaultPath =
-        (prevDefault ? String(prevDefault.path ?? "").trim() : "") ||
-        (activeProjectId.value === "default" ? String(workspacePath.value ?? "").trim() : "");
+        (prevDefault ? normalizeString(prevDefault.path) : "") ||
+        (activeProjectId.value === "default" ? normalizeString(workspacePath.value) : "");
       const defaultBase = createProjectTab({ path: defaultPath, sessionId: "default", initialized: true });
       const defaultChatSessionId =
-        String(prevDefault?.chatSessionId ?? "").trim() ||
-        (activeProjectId.value === "default" ? String(activeRuntime.value.chatSessionId ?? "").trim() : "") ||
+        normalizeString(prevDefault?.chatSessionId) ||
+        (activeProjectId.value === "default" ? normalizeString(activeRuntime.value.chatSessionId) : "") ||
         defaultBase.chatSessionId;
       const defaultName = deriveProjectNameFromPath(defaultPath);
       next.push({
@@ -137,23 +164,14 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       });
 
       for (const entry of remote) {
-        const id = String(entry.id ?? "").trim();
-        const workspaceRoot = String(entry.workspaceRoot ?? "").trim();
-        const name = String(entry.name ?? "").trim();
-        if (!id || !workspaceRoot || !name) continue;
-        if (seenWorkspaceRoots.has(workspaceRoot)) continue;
-        seenWorkspaceRoots.add(workspaceRoot);
-
-        const base = createProjectTab({ path: workspaceRoot, name, sessionId: id, initialized: false });
-        const createdAt =
-          typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : base.createdAt;
-        const updatedAt =
-          typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt) ? entry.updatedAt : now;
-        const chatSessionId = String(entry.chatSessionId ?? "").trim() || "main";
-        next.push({ ...base, createdAt, updatedAt, chatSessionId });
+        const normalized = normalizeRemoteProject(entry as RemoteProjectInput, now);
+        if (!normalized) continue;
+        if (seenWorkspaceRoots.has(normalized.path)) continue;
+        seenWorkspaceRoots.add(normalized.path);
+        next.push(normalized);
       }
 
-      const desiredActive = String(result.activeProjectId ?? "").trim();
+      const desiredActive = normalizeString(result.activeProjectId);
       const nextActive =
         desiredActive && next.some((p) => p.id === desiredActive) ? desiredActive : next.find((p) => p.id !== "default")?.id ?? "default";
 

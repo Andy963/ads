@@ -27,6 +27,79 @@ export function createTaskEventActions(
     clearStepLive,
   } = ctx;
   const { upsertTask, removeTask, loadQueueStatus } = deps;
+  type MessageEvent = { taskId: string; role: string; content: string };
+  type CommandEvent = { taskId: string; command: string };
+  type MessageDeltaEvent = { taskId: string; role: string; delta: string; source?: "chat" | "step" };
+  type TaskFailedEvent = { task: Task; error: string };
+
+  const asRecord = (value: unknown): Record<string, unknown> | null => {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  };
+
+  const asTrimmedString = (value: unknown): string => String(value ?? "").trim();
+
+  const parseTask = (value: unknown): Task | null => {
+    const record = asRecord(value);
+    if (!record) return null;
+    const taskId = asTrimmedString(record.id);
+    if (!taskId) return null;
+    const task = value as Task;
+    if (task.id === taskId) {
+      return task;
+    }
+    return { ...task, id: taskId };
+  };
+
+  const parseTaskId = (value: unknown): string => {
+    const record = asRecord(value);
+    if (!record) return "";
+    return asTrimmedString(record.taskId);
+  };
+
+  const parseTaskMessage = (value: unknown): MessageEvent | null => {
+    const record = asRecord(value);
+    if (!record) return null;
+    return {
+      taskId: asTrimmedString(record.taskId),
+      role: asTrimmedString(record.role),
+      content: String(record.content ?? ""),
+    };
+  };
+
+  const parseCommandEvent = (value: unknown): CommandEvent | null => {
+    const record = asRecord(value);
+    if (!record) return null;
+    return {
+      taskId: asTrimmedString(record.taskId),
+      command: String(record.command ?? ""),
+    };
+  };
+
+  const parseMessageDeltaEvent = (value: unknown): MessageDeltaEvent | null => {
+    const record = asRecord(value);
+    if (!record) return null;
+    const source = record.source === "step" ? "step" : "chat";
+    return {
+      taskId: asTrimmedString(record.taskId),
+      role: asTrimmedString(record.role),
+      delta: String(record.delta ?? ""),
+      source,
+    };
+  };
+
+  const parseTaskFailedEvent = (value: unknown): TaskFailedEvent | null => {
+    const record = asRecord(value);
+    if (!record) return null;
+    const task = parseTask(record.task);
+    if (!task) return null;
+    return {
+      task,
+      error: String(record.error ?? ""),
+    };
+  };
 
   const shouldHideTask = (task: Task): boolean => task.status === "completed" && task.archivedAt != null;
 
@@ -49,9 +122,9 @@ export function createTaskEventActions(
     void loadQueueStatus();
   };
 
-  const onTaskMessage = (data: { taskId: string; role: string; content: string }, state: ProjectRuntime): void => {
-    const taskId = String(data.taskId ?? "").trim();
-    const role = String(data.role ?? "").trim();
+  const onTaskMessage = (data: MessageEvent, state: ProjectRuntime): void => {
+    const taskId = asTrimmedString(data.taskId);
+    const role = asTrimmedString(data.role);
     const content = String(data.content ?? "");
 
     if (role === "user" && !state.startedTaskIds.has(taskId)) {
@@ -89,34 +162,30 @@ export function createTaskEventActions(
 
     switch (payload.event) {
       case "task:deleted": {
-        const data = payload.data as { taskId?: unknown };
-        const taskId = String(data?.taskId ?? "").trim();
+        const taskId = parseTaskId(payload.data);
         if (taskId) {
           removeTask(taskId, state);
         }
         return;
       }
       case "task:updated": {
-        const task = payload.data as Task;
+        const task = parseTask(payload.data);
+        if (!task) return;
         upsertOrRemoveTask(task, state);
         return;
       }
       case "command": {
-        const data = payload.data as { taskId: string; command: string };
-        const taskId = String(data.taskId ?? "").trim();
+        const data = parseCommandEvent(payload.data);
+        if (!data) return;
+        const taskId = data.taskId;
         markTaskChatStarted(taskId, state);
         ingestCommand(data.command, state, null);
         upsertExecuteBlock(`task:${taskId}:${randomId("cmd")}`, data.command, "", state);
         return;
       }
       case "message:delta": {
-        const data = payload.data as {
-          taskId: string;
-          role: string;
-          delta: string;
-          modelUsed?: string | null;
-          source?: "chat" | "step";
-        };
+        const data = parseMessageDeltaEvent(payload.data);
+        if (!data) return;
         if (data.role !== "assistant") {
           return;
         }
@@ -129,24 +198,29 @@ export function createTaskEventActions(
         return;
       }
       case "task:started": {
-        const task = payload.data as Task;
+        const task = parseTask(payload.data);
+        if (!task) return;
         upsertTask(task, state);
         finalizeCommandBlock(state);
         markTaskChatStarted(task.id, state);
         return;
       }
       case "task:running": {
-        const task = payload.data as Task;
+        const task = parseTask(payload.data);
+        if (!task) return;
         upsertTask(task, state);
         markTaskChatStarted(task.id, state);
         return;
       }
       case "message": {
-        onTaskMessage(payload.data as { taskId: string; role: string; content: string }, state);
+        const message = parseTaskMessage(payload.data);
+        if (!message) return;
+        onTaskMessage(message, state);
         return;
       }
       case "task:completed": {
-        const task = payload.data as Task;
+        const task = parseTask(payload.data);
+        if (!task) return;
         markTaskChatStarted(task.id, state);
         upsertOrRemoveTask(task, state);
         clearStepLive(state);
@@ -158,7 +232,8 @@ export function createTaskEventActions(
         return;
       }
       case "task:failed": {
-        const data = payload.data as { task: Task; error: string };
+        const data = parseTaskFailedEvent(payload.data);
+        if (!data) return;
         startTaskTerminalCleanup(data.task.id, state);
         upsertTask(data.task, state);
         pushMessageBeforeLive({ role: "system", kind: "text", content: `[任务失败] ${data.error}` }, state);
@@ -166,7 +241,8 @@ export function createTaskEventActions(
         return;
       }
       case "task:cancelled": {
-        const task = payload.data as Task;
+        const task = parseTask(payload.data);
+        if (!task) return;
         startTaskTerminalCleanup(task.id, state);
         upsertTask(task, state);
         pushMessageBeforeLive({ role: "system", kind: "text", content: "[已终止]" }, state);
