@@ -8,7 +8,12 @@ import { getStateDatabase, resetStateDatabaseForTests } from "../../src/state/da
 import { ensureWebAuthTables } from "../../src/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../src/web/projects/schema.js";
 import { deriveProjectSessionId } from "../../src/web/server/projectSessionId.js";
-import { getTaskNotificationRow, recordTaskTerminalStatus, upsertTaskNotificationBinding } from "../../src/web/taskNotifications/store.js";
+import {
+  getTaskNotificationRow,
+  isTaskTerminalStatus,
+  recordTaskTerminalStatus,
+  upsertTaskNotificationBinding,
+} from "../../src/web/taskNotifications/store.js";
 import { attemptSendTaskTerminalTelegramNotification } from "../../src/web/taskNotifications/telegramNotifier.js";
 
 describe("web/taskNotifications telegram", () => {
@@ -53,6 +58,15 @@ describe("web/taskNotifications telegram", () => {
     assert.equal(row.projectName, "my-workspace");
     assert.equal(row.status, "created");
     assert.equal(row.lastError, "missing_telegram_config");
+  });
+
+  it("matches task terminal status case-insensitively", () => {
+    assert.equal(isTaskTerminalStatus("completed"), true);
+    assert.equal(isTaskTerminalStatus("Completed"), true);
+    assert.equal(isTaskTerminalStatus("FAILED"), true);
+    assert.equal(isTaskTerminalStatus("cancelled"), true);
+    assert.equal(isTaskTerminalStatus("running"), false);
+    assert.equal(isTaskTerminalStatus(""), false);
   });
 
   it("prefers web_projects display_name at create time", () => {

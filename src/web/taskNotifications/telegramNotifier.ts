@@ -3,6 +3,7 @@ import type { Logger } from "../../utils/logger.js";
 import {
   claimTaskNotificationSendLease,
   getTaskNotificationRow,
+  isTaskTerminalStatus,
   listDueTaskNotifications,
   markTaskNotificationNotified,
   recordTaskNotificationFailure,
@@ -17,6 +18,7 @@ export type TelegramSendResult = TelegramSendOk | TelegramSendError;
 export type TelegramSender = (args: { botToken: string; chatId: string; text: string }) => Promise<TelegramSendResult>;
 
 const DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE = "Asia/Shanghai";
+const telegramTimestampFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function resolveTelegramNotifyTimeZoneFromEnv(): string {
   const raw = String(process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE ?? "").trim();
@@ -40,6 +42,17 @@ function createTelegramTimestampFormatter(timeZone: string): Intl.DateTimeFormat
     second: "2-digit",
     hourCycle: "h23",
   });
+}
+
+function getTelegramTimestampFormatterFromEnv(): Intl.DateTimeFormat {
+  const timeZone = resolveTelegramNotifyTimeZoneFromEnv();
+  const cached = telegramTimestampFormatterCache.get(timeZone);
+  if (cached) {
+    return cached;
+  }
+  const formatter = createTelegramTimestampFormatter(timeZone);
+  telegramTimestampFormatterCache.set(timeZone, formatter);
+  return formatter;
 }
 
 function formatTelegramTimestamp(ts: number | null, formatter: Intl.DateTimeFormat): string {
@@ -92,8 +105,7 @@ function buildTelegramText(row: {
   completedAt: number | null;
   taskId: string;
 }): string {
-  const timeZone = resolveTelegramNotifyTimeZoneFromEnv();
-  const formatter = createTelegramTimestampFormatter(timeZone);
+  const formatter = getTelegramTimestampFormatterFromEnv();
   const started = row.startedAt ?? null;
   const completed = row.completedAt ?? null;
   const duration = started != null && completed != null ? completed - started : null;
@@ -185,7 +197,7 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
   if (!row || row.notifiedAt != null) {
     return "skipped";
   }
-  if (!row.completedAt || !["completed", "failed", "cancelled"].includes(row.status)) {
+  if (!row.completedAt || !isTaskTerminalStatus(row.status)) {
     return "skipped";
   }
 

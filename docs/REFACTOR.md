@@ -51,6 +51,8 @@
 - `src/web/server/api/routes/schedules.ts`：重构（抽取并复用 body 读取/compile 错误处理/instruction 归一/spec 激活态组装 helper，减少 `POST/PATCH` 分支重复逻辑并保持响应语义不变）。
 - `src/web/server/httpServer.ts`：重构（提取 content-type 解析；gzip/non-gzip 统一 `pipeline` 写入并对齐错误清理）。
 - `src/web/server/ws/{taskResume.ts,handleTaskResume.ts}`：阅读（恢复上下文选择、thread resume 验证与 fallback transcript 恢复链路）。
+- `src/web/taskNotifications/{store.ts,telegramNotifier.ts}`：重构（收敛终态状态来源与数值归一化 helper；通知发送路径复用统一终态判定并按时区缓存 timestamp formatter，减少重复构造开销）。
+- `src/web/taskNotifications/{telegramConfig.ts,schema.ts}`：阅读（Telegram 通知配置解析与持久化 schema 约束）。
 - `src/telegram/utils/threadStorage.ts`：重构（新增 `cloneRecord()`，用于迁移时保留 `updated_at` 语义）。
 - `src/telegram/utils/sessionManager.ts`：重构（新增 `maybeMigrateThreadState()`，封装 thread state 迁移入口）。
 - `src/telegram/utils/urlHandler.ts`：重构（`downloadUrl()` 改用 `pipeline`+size limiter，失败时清理临时文件并保留 error cause；`AbortError` 语义统一到 `createAbortError()` / `isAbortError()`）。
@@ -93,6 +95,7 @@
 - `web/src/app/tasks/events.ts`：重构（抽取 task event payload parsing helper，集中字段 sanitize/guard，减少分支内重复类型断言）。
 - `web/src/components/{TaskBoard.vue,TaskList.vue}` / `web/src/lib/task_sort.ts`：重构（抽取并复用任务展示排序 comparator，降低规则漂移风险，保持排序语义不变）。
 - `web/src/lib/chat_sync.ts`：重构（抽取消息过滤 helper，并将 overlap 检测从双层循环改为 key-based `Set` 匹配，保持“最新重叠点”语义不变）。
+- `web/src/lib/live_activity.ts`：重构（抽取类别标签映射、pending command 消费与最近未绑定步骤查找 helper，保持展示语义不变）。
 
 ### Docs
 
@@ -123,6 +126,7 @@
 - `docs/spec/20260227-1100-project-wide-refactor-pass-17/`：新增（任务路由共享 helper 去重 + 前端 task event 分发结构化重构）。
 - `docs/spec/20260227-1200-project-wide-refactor-pass-18/`：新增（schedules 路由 helper 去重 + chat history overlap 匹配复杂度收敛）。
 - `docs/spec/20260227-1300-project-wide-refactor-pass-19/`：新增（command allowlist 校验去重 + 前端 drafts/project/task-events 结构收敛）。
+- `docs/spec/20260227-1400-project-wide-refactor-pass-20/`：新增（task notifications 状态/解析 helper 收敛 + telegram formatter 缓存 + live activity helper 收敛）。
 
 ### Tests
 
@@ -149,6 +153,8 @@
 - `web/src/app/taskBundleDraftsState.test.ts`：新增（锁定草稿列表 helper 的 insert/replace/merge/delete/no-op 语义）。
 - `web/src/lib/chat_sync.test.ts`：更新（新增重复可比消息场景，锁定 merge 时“最新重叠点” tail 拼接语义）。
 - `tests/utils/commandRunner.test.ts`：更新（新增共享 `assertCommandAllowed()` 对 `git push` 拦截回归覆盖）。
+- `tests/web/taskTerminalTelegramNotifications.test.ts`：更新（新增 `isTaskTerminalStatus()` 大小写与非法输入覆盖）。
+- `web/src/lib/live_activity.test.ts`：更新（新增 maxSteps fallback、latest pending command 覆盖与 unknown category 归一化渲染覆盖）。
 
 ## Refactor Opportunities (Backlog)
 
@@ -175,6 +181,8 @@
 - （已处理）`web/src/components/{TaskBoard.vue,TaskList.vue}`：收敛任务展示排序规则到 `web/src/lib/task_sort.ts`，降低多处实现漂移风险。
 - （已处理）`src/web/server/api/routes/schedules.ts`：收敛 `POST/PATCH` 的 body 解析、compile 错误处理与 spec 激活态组装，降低重复分支漂移风险。
 - （已处理）`web/src/lib/chat_sync.ts`：overlap 检测改为 key-based 匹配，降低历史合并复杂度并保持语义稳定。
+- （已处理）`src/web/taskNotifications/{store.ts,telegramNotifier.ts}`：终态状态来源、数值归一化与发送侧判定收敛，降低 store/notifier 规则漂移风险。
+- （已处理）`web/src/lib/live_activity.ts`：类别映射与命令绑定查找逻辑收敛到 helper，降低分支膨胀与后续维护成本。
 
 ### Performance
 
@@ -196,13 +204,13 @@
 - `src/telegram/`（除 `utils/{threadStorage,sessionManager,urlHandler,fileHandler,imageHandler,transcriptCorrection}.ts` 外）
 - `src/types/`
 - `src/utils/`（除已列出的文件外）
-- `src/web/`（除 `utils.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` 外）
+- `src/web/`（除 `utils.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
 - `src/workspace/`（除 `detector.ts` / `adsPaths.ts` / `service.ts` / `rulesService.ts` 外）
 
 ### Frontend (`web/src/`)
 
 - `web/src/app/`（除 `chatExecute.ts` / `taskBundleDrafts.ts` / `taskBundleDraftsState.ts` / `tasks.ts` / `tasks/localState.ts` / `tasks/selection.ts` / `tasks/reorder.ts` / `tasks/events.ts` / `projectsWs/webSocketActions.ts` / `projectsWs/projectActions.ts` / `projectsWs/wsMessage.ts` 外）
 - `web/src/components/`（除 `TaskDetail.vue` / `TaskBoard.vue` / `TaskList.vue` 外）
-- `web/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` 外）
+- `web/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` / `live_activity.ts` 外）
 - `web/src/main.ts` / `web/src/App.vue`
 - `web/src/__tests__/`（除 `execute-preview-queue-order.test.ts` 外）

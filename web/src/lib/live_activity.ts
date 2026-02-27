@@ -10,10 +10,26 @@ export type LiveActivityWindow = {
   pendingCommand: string | null;
 };
 
+const DEFAULT_MAX_STEPS = 5;
+const CATEGORY_LABEL_BY_KIND: Record<string, string> = {
+  List: "List",
+  Search: "Search",
+  Read: "Read",
+  Write: "Write",
+  Execute: "Execute",
+  Agent: "Agent",
+  Tool: "Tool",
+  WebSearch: "Web search",
+};
+
+function resolveMaxSteps(maxSteps: number): number {
+  const parsed = Number.isFinite(maxSteps) ? Math.floor(maxSteps) : DEFAULT_MAX_STEPS;
+  return parsed > 0 ? parsed : DEFAULT_MAX_STEPS;
+}
+
 export function createLiveActivityWindow(maxSteps = 5): LiveActivityWindow {
-  const parsed = Number.isFinite(maxSteps) ? Math.floor(maxSteps) : 5;
   return {
-    maxSteps: parsed > 0 ? parsed : 5,
+    maxSteps: resolveMaxSteps(maxSteps),
     steps: [],
     pendingCommand: null,
   };
@@ -29,27 +45,9 @@ function normalizeOneLine(value: string): string {
 }
 
 function categoryLabel(category: string): string {
-  const normalized = String(category ?? "").trim();
-  switch (normalized) {
-    case "List":
-      return "List";
-    case "Search":
-      return "Search";
-    case "Read":
-      return "Read";
-    case "Write":
-      return "Write";
-    case "Execute":
-      return "Execute";
-    case "Agent":
-      return "Agent";
-    case "Tool":
-      return "Tool";
-    case "WebSearch":
-      return "Web search";
-    default:
-      return normalized || "Activity";
-  }
+  const normalized = normalizeOneLine(category);
+  const resolved = CATEGORY_LABEL_BY_KIND[normalized] ?? normalized;
+  return resolved || "Activity";
 }
 
 function trimToMax(window: LiveActivityWindow): void {
@@ -58,15 +56,34 @@ function trimToMax(window: LiveActivityWindow): void {
   window.steps = window.steps.slice(window.steps.length - max);
 }
 
+function consumePendingCommand(window: LiveActivityWindow): string | undefined {
+  const pending = window.pendingCommand;
+  if (!pending) {
+    return undefined;
+  }
+  window.pendingCommand = null;
+  return pending;
+}
+
+function findLastStepWithoutCommand(steps: LiveActivityStep[]): LiveActivityStep | null {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i]!;
+    if (!step.command) {
+      return step;
+    }
+  }
+  return null;
+}
+
 export function ingestExploredActivity(window: LiveActivityWindow, category: string, summary: string): void {
-  const normalizedCategory = String(category ?? "").trim();
+  const normalizedCategory = normalizeOneLine(category);
   const normalizedSummary = normalizeOneLine(summary);
   if (!normalizedSummary) return;
 
   const step: LiveActivityStep = { category: normalizedCategory, summary: normalizedSummary };
-  if (window.pendingCommand) {
-    step.command = window.pendingCommand;
-    window.pendingCommand = null;
+  const pending = consumePendingCommand(window);
+  if (pending) {
+    step.command = pending;
   }
   window.steps = [...window.steps, step];
   trimToMax(window);
@@ -76,12 +93,10 @@ export function ingestCommandActivity(window: LiveActivityWindow, command: strin
   const normalized = normalizeOneLine(command);
   if (!normalized) return;
 
-  for (let i = window.steps.length - 1; i >= 0; i--) {
-    const step = window.steps[i]!;
-    if (!step.command) {
-      step.command = normalized;
-      return;
-    }
+  const target = findLastStepWithoutCommand(window.steps);
+  if (target) {
+    target.command = normalized;
+    return;
   }
 
   window.pendingCommand = normalized;

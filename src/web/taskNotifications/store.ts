@@ -12,6 +12,13 @@ import { resolveTaskNotificationTelegramConfigFromEnv } from "./telegramConfig.j
 
 export type TaskTerminalStatus = "completed" | "failed" | "cancelled";
 
+const TERMINAL_TASK_STATUSES = ["completed", "failed", "cancelled"] as const satisfies ReadonlyArray<TaskTerminalStatus>;
+const TERMINAL_TASK_STATUS_SET = new Set<string>(TERMINAL_TASK_STATUSES);
+const TERMINAL_TASK_STATUSES_SQL = TERMINAL_TASK_STATUSES.map((status) => `'${status}'`).join(", ");
+const DEFAULT_LIST_LIMIT = 20;
+const DEFAULT_MAX_RETRIES = 10;
+const DEFAULT_LEASE_MS = 60_000;
+
 export type TaskNotificationRow = {
   taskId: string;
   workspaceRoot: string;
@@ -29,16 +36,73 @@ export type TaskNotificationRow = {
   nextRetryAt: number | null;
 };
 
+function normalizeText(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function parseFiniteNumber(value: unknown): number | null {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseOptionalTimestamp(value: unknown, options: { positiveOnly?: boolean } = {}): number | null {
+  const parsed = parseFiniteNumber(value);
+  if (parsed == null) {
+    return null;
+  }
+  const normalized = Math.floor(parsed);
+  if (options.positiveOnly && normalized <= 0) {
+    return null;
+  }
+  return normalized;
+}
+
+function parseNonNegativeInteger(value: unknown, fallback = 0): number {
+  const parsed = parseFiniteNumber(value);
+  if (parsed == null) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(parsed));
+}
+
+function resolveNow(now: unknown): number {
+  const parsed = parseFiniteNumber(now);
+  if (parsed == null) {
+    return Date.now();
+  }
+  return Math.floor(parsed);
+}
+
+function resolvePositiveInteger(value: unknown, fallback: number): number {
+  const parsed = parseFiniteNumber(value);
+  if (parsed == null) {
+    return fallback;
+  }
+  const normalized = Math.floor(parsed);
+  return normalized > 0 ? normalized : fallback;
+}
+
+export function isTaskTerminalStatus(status: string): status is TaskTerminalStatus {
+  const normalized = normalizeText(status).toLowerCase();
+  return TERMINAL_TASK_STATUS_SET.has(normalized);
+}
+
 function normalizePathBasename(workspaceRoot: string): string {
-  const trimmed = String(workspaceRoot ?? "").trim();
+  const trimmed = normalizeText(workspaceRoot);
   const withoutTrailing = trimmed.replace(/[\\/]+$/, "");
   const base = path.basename(withoutTrailing);
   return base || "Workspace";
 }
 
 function resolveProjectNameAtCreate(db: DatabaseType, authUserId: string, workspaceRoot: string): string {
-  const uid = String(authUserId ?? "").trim();
-  const root = String(workspaceRoot ?? "").trim();
+  const uid = normalizeText(authUserId);
+  const root = normalizeText(workspaceRoot);
   if (!uid || !root) {
     return normalizePathBasename(root);
   }
@@ -49,7 +113,7 @@ function resolveProjectNameAtCreate(db: DatabaseType, authUserId: string, worksp
     const row = db
       .prepare(`SELECT display_name AS name FROM web_projects WHERE user_id = ? AND workspace_root = ? LIMIT 1`)
       .get(uid, root) as { name?: unknown } | undefined;
-    const name = String(row?.name ?? "").trim();
+    const name = normalizeText(row?.name);
     if (name) {
       return name;
     }
@@ -61,26 +125,14 @@ function resolveProjectNameAtCreate(db: DatabaseType, authUserId: string, worksp
 }
 
 function mapRow(row: Record<string, unknown>): TaskNotificationRow {
-  const taskId = String(row.task_id ?? "").trim();
-  const workspaceRoot = String(row.workspace_root ?? "").trim();
-  const projectId = String(row.project_id ?? "").trim();
-  const projectName = String(row.project_name ?? "").trim();
-  const taskTitle = String(row.task_title ?? "").trim();
-  const telegramChatId = String(row.telegram_chat_id ?? "").trim();
-  const status = String(row.status ?? "").trim();
-  const startedAt = typeof row.started_at === "number" && Number.isFinite(row.started_at) ? row.started_at : row.started_at == null ? null : Number(row.started_at);
-  const completedAt =
-    typeof row.completed_at === "number" && Number.isFinite(row.completed_at) ? row.completed_at : row.completed_at == null ? null : Number(row.completed_at);
-  const createdAt = typeof row.created_at === "number" && Number.isFinite(row.created_at) ? row.created_at : 0;
-  const notifiedAt =
-    typeof row.notified_at === "number" && Number.isFinite(row.notified_at) && row.notified_at > 0 ? row.notified_at : null;
-  const lastError = (() => {
-    const raw = String(row.last_error ?? "").trim();
-    return raw ? raw : null;
-  })();
-  const retryCount = typeof row.retry_count === "number" && Number.isFinite(row.retry_count) ? row.retry_count : Number(row.retry_count ?? 0) || 0;
-  const nextRetryAt =
-    typeof row.next_retry_at === "number" && Number.isFinite(row.next_retry_at) && row.next_retry_at > 0 ? row.next_retry_at : null;
+  const taskId = normalizeText(row.task_id);
+  const workspaceRoot = normalizeText(row.workspace_root);
+  const projectId = normalizeText(row.project_id);
+  const projectName = normalizeText(row.project_name);
+  const taskTitle = normalizeText(row.task_title);
+  const telegramChatId = normalizeText(row.telegram_chat_id);
+  const status = normalizeText(row.status);
+  const lastErrorRaw = normalizeText(row.last_error);
 
   return {
     taskId,
@@ -90,13 +142,13 @@ function mapRow(row: Record<string, unknown>): TaskNotificationRow {
     taskTitle,
     telegramChatId,
     status,
-    startedAt: startedAt != null && Number.isFinite(startedAt) ? Math.floor(startedAt) : null,
-    completedAt: completedAt != null && Number.isFinite(completedAt) ? Math.floor(completedAt) : null,
-    createdAt,
-    notifiedAt,
-    lastError,
-    retryCount: Number.isFinite(retryCount) ? Math.max(0, Math.floor(retryCount)) : 0,
-    nextRetryAt,
+    startedAt: parseOptionalTimestamp(row.started_at),
+    completedAt: parseOptionalTimestamp(row.completed_at),
+    createdAt: parseNonNegativeInteger(row.created_at),
+    notifiedAt: parseOptionalTimestamp(row.notified_at, { positiveOnly: true }),
+    lastError: lastErrorRaw || null,
+    retryCount: parseNonNegativeInteger(row.retry_count),
+    nextRetryAt: parseOptionalTimestamp(row.next_retry_at, { positiveOnly: true }),
   };
 }
 
@@ -112,10 +164,10 @@ export function upsertTaskNotificationBinding(args: {
   const db = args.db ?? getStateDatabase();
   ensureTaskNotificationTables(db);
 
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
-  const taskId = String(args.taskId ?? "").trim();
-  const workspaceRoot = String(args.workspaceRoot ?? "").trim();
-  const taskTitle = String(args.taskTitle ?? "").trim();
+  const now = resolveNow(args.now);
+  const taskId = normalizeText(args.taskId);
+  const workspaceRoot = normalizeText(args.workspaceRoot);
+  const taskTitle = normalizeText(args.taskTitle);
   const projectId = deriveProjectSessionId(workspaceRoot);
   const projectName = resolveProjectNameAtCreate(db, args.authUserId, workspaceRoot);
   const telegram = resolveTaskNotificationTelegramConfigFromEnv();
@@ -183,14 +235,13 @@ export function recordTaskTerminalStatus(args: {
   const db = args.db ?? getStateDatabase();
   ensureTaskNotificationTables(db);
 
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
-  const taskId = String(args.taskId ?? "").trim();
-  const workspaceRoot = String(args.workspaceRoot ?? "").trim();
-  const taskTitle = String(args.taskTitle ?? "").trim() || "Task";
+  const now = resolveNow(args.now);
+  const taskId = normalizeText(args.taskId);
+  const workspaceRoot = normalizeText(args.workspaceRoot);
+  const taskTitle = normalizeText(args.taskTitle) || "Task";
   const status = args.status;
-  const completedAt = typeof args.completedAt === "number" && Number.isFinite(args.completedAt) ? Math.floor(args.completedAt) : now;
-  const startedAt =
-    typeof args.startedAt === "number" && Number.isFinite(args.startedAt) ? Math.floor(args.startedAt) : completedAt;
+  const completedAt = parseOptionalTimestamp(args.completedAt) ?? now;
+  const startedAt = parseOptionalTimestamp(args.startedAt) ?? completedAt;
   const projectId = deriveProjectSessionId(workspaceRoot);
   const telegram = resolveTaskNotificationTelegramConfigFromEnv();
 
@@ -266,9 +317,9 @@ export function listDueTaskNotifications(args: {
   const db = args.db ?? getStateDatabase();
   ensureTaskNotificationTables(db);
 
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
-  const limit = typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0 ? Math.floor(args.limit) : 20;
-  const maxRetries = typeof args.maxRetries === "number" && Number.isFinite(args.maxRetries) && args.maxRetries > 0 ? Math.floor(args.maxRetries) : 10;
+  const now = resolveNow(args.now);
+  const limit = resolvePositiveInteger(args.limit, DEFAULT_LIST_LIMIT);
+  const maxRetries = resolvePositiveInteger(args.maxRetries, DEFAULT_MAX_RETRIES);
 
   const rows = db
     .prepare(
@@ -277,7 +328,7 @@ export function listDueTaskNotifications(args: {
         FROM task_notifications
         WHERE notified_at IS NULL
           AND completed_at IS NOT NULL
-          AND status IN ('completed', 'failed', 'cancelled')
+          AND status IN (${TERMINAL_TASK_STATUSES_SQL})
           AND retry_count < ?
           AND (next_retry_at IS NULL OR next_retry_at <= ?)
         ORDER BY COALESCE(next_retry_at, 0) ASC, completed_at ASC, created_at ASC, task_id ASC
@@ -302,12 +353,11 @@ export function claimTaskNotificationSendLease(args: {
   const db = args.db ?? getStateDatabase();
   ensureTaskNotificationTables(db);
 
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
-  const leaseMs =
-    typeof args.leaseMs === "number" && Number.isFinite(args.leaseMs) && args.leaseMs > 0 ? Math.floor(args.leaseMs) : 60_000;
-  const maxRetries = typeof args.maxRetries === "number" && Number.isFinite(args.maxRetries) && args.maxRetries > 0 ? Math.floor(args.maxRetries) : 10;
+  const now = resolveNow(args.now);
+  const leaseMs = resolvePositiveInteger(args.leaseMs, DEFAULT_LEASE_MS);
+  const maxRetries = resolvePositiveInteger(args.maxRetries, DEFAULT_MAX_RETRIES);
 
-  const taskId = String(args.taskId ?? "").trim();
+  const taskId = normalizeText(args.taskId);
   if (!taskId) {
     return false;
   }
@@ -321,7 +371,7 @@ export function claimTaskNotificationSendLease(args: {
         WHERE task_id = ?
           AND notified_at IS NULL
           AND completed_at IS NOT NULL
-          AND status IN ('completed', 'failed', 'cancelled')
+          AND status IN (${TERMINAL_TASK_STATUSES_SQL})
           AND retry_count < ?
           AND (next_retry_at IS NULL OR next_retry_at <= ?)
       `,
@@ -335,7 +385,7 @@ export function getTaskNotificationRow(args: { db?: DatabaseType; taskId: string
   const db = args.db ?? getStateDatabase();
   ensureTaskNotificationTables(db);
 
-  const taskId = String(args.taskId ?? "").trim();
+  const taskId = normalizeText(args.taskId);
   if (!taskId) {
     return null;
   }
@@ -355,8 +405,8 @@ export function markTaskNotificationNotified(args: { db?: DatabaseType; taskId: 
   const db = args.db ?? getStateDatabase();
   ensureTaskNotificationTables(db);
 
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
-  const taskId = String(args.taskId ?? "").trim();
+  const now = resolveNow(args.now);
+  const taskId = normalizeText(args.taskId);
   if (!taskId) {
     return;
   }
@@ -379,9 +429,9 @@ export function recordTaskNotificationFailure(args: {
   const db = args.db ?? getStateDatabase();
   ensureTaskNotificationTables(db);
 
-  const taskId = String(args.taskId ?? "").trim();
-  const error = String(args.error ?? "").trim() || "unknown_error";
-  const nextRetryAt = args.nextRetryAt != null && Number.isFinite(args.nextRetryAt) ? Math.floor(args.nextRetryAt) : null;
+  const taskId = normalizeText(args.taskId);
+  const error = normalizeText(args.error) || "unknown_error";
+  const nextRetryAt = parseOptionalTimestamp(args.nextRetryAt);
   if (!taskId) {
     return;
   }
