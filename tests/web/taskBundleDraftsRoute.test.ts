@@ -72,6 +72,16 @@ function createMetrics(): TaskQueueMetrics {
   };
 }
 
+function ensureSpecFiles(workspaceRoot: string, slug: string): string {
+  const specRef = `docs/spec/${slug}`;
+  const specDir = path.resolve(workspaceRoot, specRef);
+  fs.mkdirSync(specDir, { recursive: true });
+  fs.writeFileSync(path.join(specDir, "requirements.md"), "# Requirements\n", "utf8");
+  fs.writeFileSync(path.join(specDir, "design.md"), "# Design\n", "utf8");
+  fs.writeFileSync(path.join(specDir, "implementation.md"), "# Implementation\n", "utf8");
+  return specRef;
+}
+
 describe("web/api/task-bundle-drafts", () => {
   let tmpDir: string;
   const originalEnv = { ...process.env };
@@ -251,9 +261,136 @@ describe("web/api/task-bundle-drafts", () => {
     assert.deepEqual(parseJson<{ error: string }>(res.body), { error: "Invalid JSON body" });
   });
 
+  it("rejects approval when draft bundle has no specRef", async () => {
+    const auth = { userId: "u-1", username: "u" };
+    const workspaceRoot = "/tmp/ws-no-spec-ref";
+
+    const inserted = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk",
+      bundle: { version: 1, requestId: "r-no-spec", tasks: [{ prompt: "p1" }] },
+      now: 10,
+    });
+
+    const deps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} },
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext(url: URL) {
+        const w = url.searchParams.get("workspace") || "";
+        return {
+          workspaceRoot: w,
+          sessionId: "default",
+          lock: { runExclusive: async (fn: () => Promise<void>) => fn() },
+          taskStore: {} as any,
+          attachmentStore: {} as any,
+          taskQueue: {} as any,
+          queueRunning: false,
+          dequeueInProgress: false,
+          metrics: createMetrics(),
+          runController: {} as any,
+          getStatusOrchestrator() {
+            return {} as any;
+          },
+          getTaskQueueOrchestrator() {
+            return {} as any;
+          },
+        };
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const approveReq = createReq("POST", { runQueue: false });
+    const approveRes = createRes();
+    const approveUrl = new URL(`http://localhost/api/task-bundle-drafts/${inserted.id}/approve?workspace=${encodeURIComponent(workspaceRoot)}`);
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: approveReq as any, res: approveRes as any, url: approveUrl, pathname: `/api/task-bundle-drafts/${inserted.id}/approve`, auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(approveRes.statusCode, 400);
+    const payload = parseJson<{ error: string }>(approveRes.body);
+    assert.equal(payload.error, "specRef is required before approving draft");
+  });
+
+  it("rejects approval when spec files are incomplete", async () => {
+    const auth = { userId: "u-1", username: "u" };
+    const workspaceRoot = "/tmp/ws-missing-spec-files";
+    const specRef = "docs/spec/incomplete";
+    const specDir = path.resolve(workspaceRoot, specRef);
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(path.join(specDir, "requirements.md"), "# Requirements\n", "utf8");
+
+    const inserted = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk",
+      bundle: { version: 1, requestId: "r-missing-files", specRef, tasks: [{ prompt: "p1" }] },
+      now: 10,
+    });
+
+    const deps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} },
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext(url: URL) {
+        const w = url.searchParams.get("workspace") || "";
+        return {
+          workspaceRoot: w,
+          sessionId: "default",
+          lock: { runExclusive: async (fn: () => Promise<void>) => fn() },
+          taskStore: {} as any,
+          attachmentStore: {} as any,
+          taskQueue: {} as any,
+          queueRunning: false,
+          dequeueInProgress: false,
+          metrics: createMetrics(),
+          runController: {} as any,
+          getStatusOrchestrator() {
+            return {} as any;
+          },
+          getTaskQueueOrchestrator() {
+            return {} as any;
+          },
+        };
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const approveReq = createReq("POST", { runQueue: false });
+    const approveRes = createRes();
+    const approveUrl = new URL(`http://localhost/api/task-bundle-drafts/${inserted.id}/approve?workspace=${encodeURIComponent(workspaceRoot)}`);
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: approveReq as any, res: approveRes as any, url: approveUrl, pathname: `/api/task-bundle-drafts/${inserted.id}/approve`, auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(approveRes.statusCode, 400);
+    const payload = parseJson<{ error: string }>(approveRes.body);
+    assert.match(payload.error, /Spec files missing/);
+  });
+
   it("approves drafts idempotently and can run the queue", async () => {
     const auth = { userId: "u-1", username: "u" };
     const workspaceRoot = "/tmp/ws-2";
+    const specRef = ensureSpecFiles(workspaceRoot, "approve-idempotent");
 
     const inserted = upsertTaskBundleDraft({
       authUserId: auth.userId,
@@ -263,6 +400,7 @@ describe("web/api/task-bundle-drafts", () => {
       bundle: {
         version: 1,
         requestId: "r2",
+        specRef,
         tasks: [
           { externalId: "a", prompt: "p1", attachments: ["att-1"] },
           { externalId: "b", prompt: "p2" },
@@ -412,13 +550,14 @@ describe("web/api/task-bundle-drafts", () => {
   it("approves drafts without acquiring the workspace lock", async () => {
     const auth = { userId: "u-1", username: "u" };
     const workspaceRoot = "/tmp/ws-lock-free";
+    const specRef = ensureSpecFiles(workspaceRoot, "approve-without-lock");
 
     const inserted = upsertTaskBundleDraft({
       authUserId: auth.userId,
       workspaceRoot,
       sourceChatSessionId: "planner",
       sourceHistoryKey: "hk",
-      bundle: { version: 1, requestId: "r-lock", tasks: [{ prompt: "p1" }] },
+      bundle: { version: 1, requestId: "r-lock", specRef, tasks: [{ prompt: "p1" }] },
       now: 10,
     });
 
@@ -506,13 +645,14 @@ describe("web/api/task-bundle-drafts", () => {
   it("returns 200 when approval loses the race and draft is already approved", async () => {
     const auth = { userId: "u-1", username: "u" };
     const workspaceRoot = "/tmp/ws-approve-race";
+    const specRef = ensureSpecFiles(workspaceRoot, "approve-race");
 
     const inserted = upsertTaskBundleDraft({
       authUserId: auth.userId,
       workspaceRoot,
       sourceChatSessionId: "planner",
       sourceHistoryKey: "hk",
-      bundle: { version: 1, requestId: "r-race", tasks: [{ prompt: "p1" }] },
+      bundle: { version: 1, requestId: "r-race", specRef, tasks: [{ prompt: "p1" }] },
       now: 10,
     });
 

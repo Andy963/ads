@@ -6,6 +6,7 @@ import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 
 import { taskBundleSchema, type TaskBundle } from "../../planner/taskBundle.js";
+import { validateTaskBundleSpec } from "../../planner/specValidation.js";
 import {
   approveTaskBundleDraft,
   deleteTaskBundleDraft,
@@ -196,6 +197,20 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
 
     const now = Date.now();
     const bundle: TaskBundle = existing.bundle;
+    const specValidation = validateTaskBundleSpec({
+      bundle,
+      workspaceRoot: taskCtx.workspaceRoot,
+      requireFiles: true,
+    });
+    if (!specValidation.ok) {
+      try {
+        setTaskBundleDraftError({ authUserId, draftId, error: specValidation.error, now });
+      } catch {
+        // ignore
+      }
+      sendJson(res, 400, { error: specValidation.error });
+      return true;
+    }
     const createdTaskIds: string[] = [];
     let approvedDraft = existing;
     let ownedApproval = false;

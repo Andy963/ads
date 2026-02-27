@@ -26,6 +26,7 @@ import {
   parseTaskBundle,
   stripTaskBundleCodeBlocks,
 } from "../planner/taskBundle.js";
+import { validateTaskBundleSpec } from "../planner/specValidation.js";
 import {
   approveTaskBundleDraft,
   getTaskBundleDraftByRequestId,
@@ -531,6 +532,7 @@ export async function handlePromptMessage(deps: {
         const blocks = extractTaskBundleJsonBlocks(outputToSend);
         const stripCandidates = new Set<string>();
         const summaryTasks: Array<{ title: string; prompt: string }> = [];
+        const draftErrors: string[] = [];
         const defaultRequestId = (() => {
           const clientMessageId = String(deps.clientMessageId ?? "").trim();
           if (clientMessageId) return `cmid:${clientMessageId}`;
@@ -565,6 +567,20 @@ export async function handlePromptMessage(deps: {
             if (normalized.autoApprove && !allowAutoApprove) {
               normalized = { ...normalized, autoApprove: undefined };
             }
+            const specRefValidation = validateTaskBundleSpec({
+              bundle: normalized,
+              workspaceRoot: workspaceRootForDraft,
+              requireFiles: false,
+            });
+            if (!specRefValidation.ok) {
+              draftErrors.push(specRefValidation.error);
+              deps.logger.warn(`[PlannerDraft] rejected bundle: ${specRefValidation.error}`);
+              stripCandidates.add(block);
+              continue;
+            }
+            if (specRefValidation.specRef !== String(normalized.specRef ?? "").trim()) {
+              normalized = { ...normalized, specRef: specRefValidation.specRef };
+            }
             const requestId = String(normalized.requestId ?? "").trim();
 
             if (!originalRequestId && requestId) {
@@ -593,6 +609,13 @@ export async function handlePromptMessage(deps: {
 
             const riskResult = normalized.autoApprove ? detectBundleRisk(normalized) : null;
             const shouldAutoApprove = normalized.autoApprove && !riskResult?.isHighRisk && deps.ensureTaskContext && deps.promoteQueuedTasksToPending && deps.broadcastToSession;
+            const autoApproveSpecValidation = shouldAutoApprove
+              ? validateTaskBundleSpec({
+                  bundle: normalized,
+                  workspaceRoot: workspaceRootForDraft,
+                  requireFiles: true,
+                })
+              : null;
 
             if (riskResult?.isHighRisk) {
               const degradeReason = riskResult.reasons.join("；");
@@ -603,6 +626,15 @@ export async function handlePromptMessage(deps: {
                 // ignore
               }
               sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: `降级为草稿：${degradeReason}`, degradeReason } });
+            } else if (autoApproveSpecValidation && !autoApproveSpecValidation.ok) {
+              const message = autoApproveSpecValidation.error;
+              deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${message}`);
+              try {
+                setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: message });
+              } catch {
+                // ignore
+              }
+              sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: message } });
             } else if (shouldAutoApprove) {
               const ensureCtx = deps.ensureTaskContext!;
               const promote = deps.promoteQueuedTasksToPending!;
@@ -694,7 +726,21 @@ export async function handlePromptMessage(deps: {
           const stripped = stripTaskBundleCodeBlocks(outputToSend, { shouldStrip: (rawJson) => stripCandidates.has(rawJson) });
           const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
 
-          const summary = formatTaskBundleSummaryMarkdown(summaryTasks);
+          const parts: string[] = [];
+          if (summaryTasks.length > 0) {
+            parts.push(formatTaskBundleSummaryMarkdown(summaryTasks));
+          }
+          if (draftErrors.length > 0) {
+            const uniqueErrors = Array.from(new Set(draftErrors));
+            parts.push(
+              [
+                "任务草稿未写入：",
+                ...uniqueErrors.map((message) => `- ${message}`),
+              ].join("\n"),
+            );
+          }
+
+          const summary = parts.join("\n\n---\n").trim();
           outputForChat = base ? `${base}\n\n---\n${summary}` : summary;
         }
       }
