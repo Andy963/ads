@@ -2,32 +2,14 @@ import Database from "better-sqlite3";
 
 import { getWorkspaceDbPath } from "../../detector.js";
 import type { GraphNode } from "../../../graph/types.js";
-import { safeParseJson } from "../../../utils/json.js";
+import { parseOptionalSqliteInt, parseSqliteBoolean, parseSqliteJsonObject } from "../../../utils/sqlite.js";
 
 import type { NodeDbRow } from "./types.js";
 
 function mapDbRowToNode(row: NodeDbRow): GraphNode {
-  const metadataValue = typeof row.metadata === "string" ? safeParseJson<unknown>(row.metadata) : row.metadata;
-  const metadata =
-    metadataValue && typeof metadataValue === "object" && !Array.isArray(metadataValue)
-      ? (metadataValue as Record<string, unknown>)
-      : {};
-
-  const positionValue = typeof row.position === "string" ? safeParseJson<unknown>(row.position) : row.position;
-  const position =
-    positionValue && typeof positionValue === "object" && !Array.isArray(positionValue)
-      ? (positionValue as Record<string, unknown>)
-      : { x: 0, y: 0 };
-
-  const draftMessageId =
-    typeof row.draft_message_id === "number"
-      ? row.draft_message_id
-      : typeof row.draft_message_id === "string" && row.draft_message_id.trim().length > 0
-        ? (() => {
-            const parsed = Number.parseInt(row.draft_message_id as string, 10);
-            return Number.isNaN(parsed) ? null : parsed;
-          })()
-        : null;
+  const metadata = parseSqliteJsonObject(row.metadata, {});
+  const position = parseSqliteJsonObject(row.position, { x: 0, y: 0 });
+  const draftMessageId = parseOptionalSqliteInt(row.draft_message_id);
 
   return {
     id: row.id,
@@ -38,7 +20,7 @@ function mapDbRowToNode(row: NodeDbRow): GraphNode {
     position,
     currentVersion: row.current_version ?? 0,
     draftContent: row.draft_content ?? null,
-    isDraft: Boolean(row.is_draft),
+    isDraft: parseSqliteBoolean(row.is_draft),
     createdAt: row.created_at ? new Date(row.created_at) : null,
     updatedAt: row.updated_at ? new Date(row.updated_at) : null,
     draftSourceType: row.draft_source_type ?? null,
@@ -117,4 +99,3 @@ export function getParentNodesFromWorkspace(nodeId: string, workspace: string, r
     db.close();
   }
 }
-

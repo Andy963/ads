@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { getDatabase } from "../storage/database.js";
+import { parseOptionalSqliteInt, parseSqliteBoolean } from "../utils/sqlite.js";
 
 import { ScheduleSpecSchema, type ScheduleSpec } from "./scheduleSpec.js";
 
@@ -35,27 +36,6 @@ export type StoredScheduleRun = {
   updatedAt: number;
 };
 
-function parseSqliteBoolean(value: unknown): boolean {
-  if (typeof value === "number") {
-    return value !== 0;
-  }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  return false;
-}
-
-function parseOptionalInt(value: unknown): number | null {
-  if (value == null) return null;
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function parseScheduleRow(row: Record<string, unknown>): StoredSchedule {
   const id = String(row.id ?? "").trim();
   if (!id) {
@@ -79,22 +59,22 @@ function parseScheduleRow(row: Record<string, unknown>): StoredSchedule {
     instruction,
     spec: specParsed.data,
     enabled: parseSqliteBoolean(row.enabled),
-    nextRunAt: parseOptionalInt(row.next_run_at),
+    nextRunAt: parseOptionalSqliteInt(row.next_run_at),
     leaseOwner: row.lease_owner == null ? null : String(row.lease_owner ?? "").trim() || null,
-    leaseUntil: parseOptionalInt(row.lease_until),
-    createdAt: parseOptionalInt(row.created_at) ?? 0,
-    updatedAt: parseOptionalInt(row.updated_at) ?? 0,
+    leaseUntil: parseOptionalSqliteInt(row.lease_until),
+    createdAt: parseOptionalSqliteInt(row.created_at) ?? 0,
+    updatedAt: parseOptionalSqliteInt(row.updated_at) ?? 0,
   };
 }
 
 function parseScheduleRunRow(row: Record<string, unknown>): StoredScheduleRun {
-  const id = parseOptionalInt(row.id);
+  const id = parseOptionalSqliteInt(row.id);
   if (id == null) {
     throw new Error("Schedule run row missing id");
   }
   const scheduleId = String(row.schedule_id ?? "").trim();
   const externalId = String(row.external_id ?? "").trim();
-  const runAt = parseOptionalInt(row.run_at) ?? 0;
+  const runAt = parseOptionalSqliteInt(row.run_at) ?? 0;
   const statusRaw = String(row.status ?? "").trim();
   const status = (["queued", "running", "completed", "failed", "cancelled"].includes(statusRaw)
     ? statusRaw
@@ -109,10 +89,10 @@ function parseScheduleRunRow(row: Record<string, unknown>): StoredScheduleRun {
     taskId: row.task_id == null ? null : String(row.task_id ?? "").trim() || null,
     result: row.result == null ? null : String(row.result ?? ""),
     error: row.error == null ? null : String(row.error ?? ""),
-    createdAt: parseOptionalInt(row.created_at) ?? 0,
-    startedAt: parseOptionalInt(row.started_at),
-    completedAt: parseOptionalInt(row.completed_at),
-    updatedAt: parseOptionalInt(row.updated_at) ?? 0,
+    createdAt: parseOptionalSqliteInt(row.created_at) ?? 0,
+    startedAt: parseOptionalSqliteInt(row.started_at),
+    completedAt: parseOptionalSqliteInt(row.completed_at),
+    updatedAt: parseOptionalSqliteInt(row.updated_at) ?? 0,
   };
 }
 
@@ -379,8 +359,8 @@ export class ScheduleStore {
       }
 
       const taskStatus = String(task.status ?? "").trim();
-      const startedAt = parseOptionalInt(task.started_at);
-      const completedAt = parseOptionalInt(task.completed_at);
+      const startedAt = parseOptionalSqliteInt(task.started_at);
+      const completedAt = parseOptionalSqliteInt(task.completed_at);
       const result = task.result == null ? null : String(task.result ?? "");
       const error = task.error == null ? null : String(task.error ?? "");
 

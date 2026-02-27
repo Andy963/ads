@@ -1,5 +1,5 @@
 import { getDatabase } from "../storage/database.js";
-import { safeParseJson } from "../utils/json.js";
+import { parseOptionalSqliteInt, parseSqliteBoolean, parseSqliteJsonObject } from "../utils/sqlite.js";
 import type { GraphNode, GraphEdge } from "./types.js";
 
 interface CreateNodeInput {
@@ -102,31 +102,10 @@ function normalizeDate(value: SqlDateValue): Date | null {
   return new Date(value);
 }
 
-function parseJsonColumn(
-  value: string | Record<string, unknown> | null | undefined,
-  fallback: Record<string, unknown>,
-): Record<string, unknown> {
-  if (typeof value === "string") {
-    return safeParseJson<Record<string, unknown>>(value) ?? fallback;
-  }
-  if (typeof value === "object" && value !== null) {
-    return value as Record<string, unknown>;
-  }
-  return fallback;
-}
-
 function mapNode(row: NodeRow): GraphNode {
-  const metadata = parseJsonColumn(row.metadata ?? null, {});
-  const position = parseJsonColumn(row.position ?? null, { x: 0, y: 0 });
-
-  const draftMessageIdRaw = row.draft_message_id;
-  let draftMessageId: number | null = null;
-  if (typeof draftMessageIdRaw === "number") {
-    draftMessageId = draftMessageIdRaw;
-  } else if (draftMessageIdRaw !== undefined && draftMessageIdRaw !== null) {
-    const numeric = Number(draftMessageIdRaw);
-    draftMessageId = Number.isFinite(numeric) ? numeric : null;
-  }
+  const metadata = parseSqliteJsonObject(row.metadata, {});
+  const position = parseSqliteJsonObject(row.position, { x: 0, y: 0 });
+  const draftMessageId = parseOptionalSqliteInt(row.draft_message_id);
 
   return {
     id: row.id,
@@ -137,7 +116,7 @@ function mapNode(row: NodeRow): GraphNode {
     position,
     currentVersion: row.current_version ?? 0,
     draftContent: row.draft_content ?? null,
-    isDraft: Boolean(row.is_draft),
+    isDraft: parseSqliteBoolean(row.is_draft),
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
     draftSourceType: row.draft_source_type ?? null,

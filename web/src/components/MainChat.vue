@@ -97,6 +97,8 @@ async function scrollChatToBottom(): Promise<void> {
   showScrollToBottom.value = false;
 }
 
+const scrollToBottom = scrollChatToBottom;
+
 function scheduleChatScrollToBottom(): void {
   if (!autoScroll.value) return;
   if (chatScrollQueued) return;
@@ -528,9 +530,22 @@ function getCommands(content: string): string[] {
     .map((line) => line.replace(/^\$\s*/, ""));
 }
 
+const commandTreeCommandsById = computed(() => {
+  const map = new Map<string, string[]>();
+  for (const m of renderMessages.value) {
+    if (m.kind !== "command") continue;
+    map.set(m.id, getCommands(m.content));
+  }
+  return map;
+});
+
+function getCommandTreeCommands(m: RenderMessage): string[] {
+  return commandTreeCommandsById.value.get(m.id) ?? [];
+}
+
 function getCommandTreeShownCount(m: RenderMessage): number {
   if (typeof m.commandsShown === "number" && Number.isFinite(m.commandsShown) && m.commandsShown >= 0) return m.commandsShown;
-  return getCommands(m.content).length;
+  return getCommandTreeCommands(m).length;
 }
 
 function getCommandTreeTotalCount(m: RenderMessage): number {
@@ -557,11 +572,11 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       <div v-for="m in renderMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
         <div v-if="m.kind === 'command'" class="command-block">
           <button class="command-tree-header" type="button" aria-label="Toggle commands"
-            :aria-expanded="isCommandTreeOpen(m.id, getCommands(m.content).length)" @click="toggleCommandTree(m.id)">
-            <span v-if="getCommands(m.content).length > 0" class="command-caret" aria-hidden="true">
+            :aria-expanded="isCommandTreeOpen(m.id, getCommandTreeCommands(m).length)" @click="toggleCommandTree(m.id)">
+            <span v-if="getCommandTreeCommands(m).length > 0" class="command-caret" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path :d="caretPath(isCommandTreeOpen(m.id, getCommands(m.content).length))" />
+                <path :d="caretPath(isCommandTreeOpen(m.id, getCommandTreeCommands(m).length))" />
               </svg>
             </span>
             <span class="prompt-tag">Executes</span>
@@ -570,8 +585,8 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
                 (showing last {{ getCommandTreeShownCount(m) }})</span>
             </span>
           </button>
-          <div v-if="isCommandTreeOpen(m.id, getCommands(m.content).length)" class="command-tree">
-            <div v-for="(cmd, cIdx) in getCommands(m.content)" :key="cIdx" class="command-tree-item">
+          <div v-if="isCommandTreeOpen(m.id, getCommandTreeCommands(m).length)" class="command-tree">
+            <div v-for="(cmd, cIdx) in getCommandTreeCommands(m)" :key="cIdx" class="command-tree-item">
               <span class="command-tree-branch">├─</span>
               <span class="command-cmd">{{ cmd }}</span>
             </div>

@@ -22,6 +22,7 @@ export type LoadTasksOptions = {
   status?: Task["status"];
   limit?: number;
   preserveSelection?: boolean;
+  skipIfTasksNonEmpty?: boolean;
 };
 
 export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps) {
@@ -113,7 +114,11 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const status = String(options?.status ?? "").trim();
     const base = `/api/tasks?limit=${encodeURIComponent(String(limit))}`;
     const url = status ? `${base}&status=${encodeURIComponent(status)}` : base;
-    rt.tasks.value = await api.get<Task[]>(withWorkspaceQueryFor(pid, url));
+    const fetched = await api.get<Task[]>(withWorkspaceQueryFor(pid, url));
+    if (options?.skipIfTasksNonEmpty && rt.tasks.value.length > 0) {
+      return;
+    }
+    rt.tasks.value = fetched;
 
     if (options?.preserveSelection) {
       return;

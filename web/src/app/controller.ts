@@ -468,7 +468,7 @@ export function createAppController() {
       const rt = ctx.getRuntime(pid);
       if (Array.isArray(rt.tasks.value) && rt.tasks.value.length > 0) continue;
       try {
-        await tasks.loadTasks(pid, { status: "running", limit: 1, preserveSelection: true });
+        await tasks.loadTasks(pid, { status: "running", limit: 1, preserveSelection: true, skipIfTasksNonEmpty: true });
       } catch {
         // Best-effort only: status spinners should not break boot.
       }
