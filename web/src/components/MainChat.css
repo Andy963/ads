@@ -739,7 +739,7 @@
 
 .agentSelectInput {
   height: 28px;
-  max-width: 240px;
+  max-width: 180px;
   border-radius: 8px;
   border: 1px solid rgba(226, 232, 240, 0.95);
   background: white;
