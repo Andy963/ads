@@ -321,51 +321,7 @@ export function extractMarkdownOutlineTitles(
     maxTitleLength?: number;
   },
 ): string[] {
-  const raw = String(markdown ?? "");
-  if (!raw.trim()) return [];
-
-  const maxTitleLength = Math.max(8, Math.min(200, Number(opts?.maxTitleLength ?? 80)));
-
-  let tokens: MarkdownOutlineToken[] = [];
-  try {
-    tokens = md.parse(raw, {}) as unknown as MarkdownOutlineToken[];
-  } catch {
-    return [];
-  }
-
-  const titles: string[] = [];
-  const seen = new Set<string>();
-
-  function pushTitle(candidate: string): void {
-    const normalized = normalizeOutlineTitle(candidate, maxTitleLength);
-    if (!normalized) return;
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    titles.push(normalized);
-  }
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i]!;
-
-    if (token.type === "heading_open") {
-      const inline = tokens[i + 1];
-      if (inline?.type === "inline") pushTitle(String(inline.content ?? ""));
-      continue;
-    }
-
-    if (token.type === "paragraph_open") {
-      const inline = tokens[i + 1];
-      const close = tokens[i + 2];
-      if (inline?.type !== "inline" || close?.type !== "paragraph_close") continue;
-
-      const strongTitle = extractStrongOnlyParagraphTitle(inline);
-      if (strongTitle) pushTitle(strongTitle);
-      continue;
-    }
-  }
-
-  return titles;
+  return analyzeMarkdownOutline(markdown, opts).titles;
 }
 
 export function analyzeMarkdownOutline(

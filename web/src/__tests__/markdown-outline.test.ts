@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractMarkdownOutlineTitles } from "../lib/markdown";
+import { analyzeMarkdownOutline, extractMarkdownOutlineTitles } from "../lib/markdown";
 
 describe("markdown outline extraction", () => {
   it("extracts headings and strong-only paragraph titles in order", () => {
@@ -38,5 +38,34 @@ describe("markdown outline extraction", () => {
     const titles = extractMarkdownOutlineTitles(md);
     expect(titles).toEqual(["Real heading"]);
   });
-});
 
+  it("reports meaningful body while keeping title extraction consistent", () => {
+    const md = [
+      "# Heading",
+      "",
+      "**Strong title**",
+      "",
+      "Body text.",
+      "",
+      "- list item",
+    ].join("\n");
+
+    const analysis = analyzeMarkdownOutline(md);
+    expect(analysis.titles).toEqual(["Heading", "Strong title"]);
+    expect(analysis.hasMeaningfulBody).toBe(true);
+  });
+
+  it("treats title-only content as not meaningful body", () => {
+    const md = [
+      "# Heading",
+      "",
+      "**Strong title**",
+      "",
+      "### Subheading",
+    ].join("\n");
+
+    const analysis = analyzeMarkdownOutline(md);
+    expect(analysis.titles).toEqual(["Heading", "Strong title", "Subheading"]);
+    expect(analysis.hasMeaningfulBody).toBe(false);
+  });
+});

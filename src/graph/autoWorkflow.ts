@@ -62,7 +62,7 @@ export function createWorkflowFromConfig(params: {
   const offsetX = 250;
   let previousNode: GraphNode | null = null;
 
-  nodes.forEach((nodeConfig, index) => {
+  for (const [index, nodeConfig] of nodes.entries()) {
     const nodeId = generateNodeId(nodeConfig.node_type);
     const nodeLabel = `${rootLabel} - ${nodeConfig.label_suffix}`;
 
@@ -77,7 +77,7 @@ export function createWorkflowFromConfig(params: {
         required: nodeConfig.required,
       },
       position: { x: currentX, y: currentY },
-      isDraft: true,  // 工作流节点始终创建为草稿，需要用户 commit 后才定稿
+      isDraft: true, // 工作流节点始终创建为草稿，需要用户 commit 后才定稿
     });
 
     createdNodes.push(node);
@@ -98,9 +98,19 @@ export function createWorkflowFromConfig(params: {
 
     previousNode = node;
     currentX += offsetX;
-  });
+  }
 
   return { nodes: createdNodes, edges: createdEdges };
+}
+
+function findNextNodeOfType(nodeId: string, nextType: string): GraphNode | null {
+  for (const edge of getEdgesFromNode(nodeId)) {
+    const nextNode = getNodeById(edge.target);
+    if (nextNode?.type === nextType) {
+      return nextNode;
+    }
+  }
+  return null;
 }
 
 export function onNodeFinalized(nodeId: string): {
@@ -116,28 +126,21 @@ export function onNodeFinalized(nodeId: string): {
   }
 
   const rule = FLOW_RULES[node.type];
-  if (!rule || !rule.next_type) {
+  const nextType = rule?.next_type;
+  if (!rule || !nextType) {
     return {
-    workflow_completed: true,
-    message: `工作流已完成，节点 ${node.label} 是最后一个节点`,
+      workflow_completed: true,
+      message: `工作流已完成，节点 ${node.label} 是最后一个节点`,
     };
   }
 
-  const existingEdge = getEdgesFromNode(nodeId).find((edge) => {
-    const nextNode = getNodeById(edge.target);
-    return nextNode?.type === rule.next_type;
-  });
-
-  if (existingEdge) {
-    const nextNode = getNodeById(existingEdge.target);
-    if (!nextNode) {
-      return null;
-    }
+  const existingNextNode = findNextNodeOfType(nodeId, nextType);
+  if (existingNextNode) {
     return {
       action: "activated_existing",
-      node_id: nextNode.id,
-      node_label: nextNode.label,
-      message: `已激活现有节点: ${nextNode.label}`,
+      node_id: existingNextNode.id,
+      node_label: existingNextNode.label,
+      message: `已激活现有节点: ${existingNextNode.label}`,
     };
   }
 
@@ -150,8 +153,8 @@ export function onNodeFinalized(nodeId: string): {
   const parentY = typeof position.y === "number" ? position.y : 100;
 
   const newNode = createNode({
-    id: generateNodeId(rule.next_type),
-    type: rule.next_type,
+    id: generateNodeId(nextType),
+    type: nextType,
     label: newLabel,
     content: "",
     metadata: {
