@@ -13,7 +13,7 @@ import type {
   TodoListItem,
 } from "../agents/protocol/types.js";
 
-// SDK 中 agent_message 类型的 item 结构
+// Shape of `agent_message` items from the SDK.
 interface AgentMessageItem {
   type: "agent_message";
   id?: string;
@@ -165,81 +165,42 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
           raw: event,
         };
       }
-    }
-      return event.type === "item.completed"
-        ? {
-            phase: "responding",
-            title: "生成回复",
-            // 对完成事件不再携带 detail，保持与增量事件一致
-            detail: undefined,
-            timestamp,
-            raw: event,
-          }
-        : null;
-    case "reasoning":
-      if (event.type === "item.started") {
-        return {
-          phase: "analysis",
-          title: "Reasoning",
-          detail: undefined,
-          delta: String(item.text ?? ""),
-          timestamp,
-          raw: event,
-        };
-      }
-      if (event.type === "item.updated") {
-        return {
-          phase: "analysis",
-          title: "Reasoning",
-          detail: undefined,
-          delta: String(item.text ?? ""),
-          timestamp,
-          raw: event,
-        };
-      }
+
       if (event.type === "item.completed") {
         return {
-          phase: "analysis",
-          title: "Reasoning",
+          phase: "responding",
+          title: "生成回复",
+          // Do not attach detail on completion to keep parity with incremental events.
           detail: undefined,
-          delta: String(item.text ?? ""),
           timestamp,
           raw: event,
         };
       }
+
       return null;
+    }
+    case "reasoning":
+      return {
+        phase: "analysis",
+        title: "Reasoning",
+        detail: undefined,
+        delta: String(item.text ?? ""),
+        timestamp,
+        raw: event,
+      };
     case "web_search":
       return mapWebSearch(event, item, timestamp);
     case "todo_list": {
       const detail = formatTodoListPreview(item);
-      if (event.type === "item.started") {
-        return {
-          phase: "analysis",
-          title: "生成任务计划",
-          detail,
-          timestamp,
-          raw: event,
-        };
-      }
-      if (event.type === "item.updated") {
-        return {
-          phase: "analysis",
-          title: "更新任务计划",
-          detail,
-          timestamp,
-          raw: event,
-        };
-      }
-      if (event.type === "item.completed") {
-        return {
-          phase: "analysis",
-          title: "任务计划完成",
-          detail,
-          timestamp,
-          raw: event,
-        };
-      }
-      return null;
+      const title =
+        event.type === "item.started" ? "生成任务计划" : event.type === "item.updated" ? "更新任务计划" : "任务计划完成";
+      return {
+        phase: "analysis",
+        title,
+        detail,
+        timestamp,
+        raw: event,
+      };
     }
     case "error":
       return {

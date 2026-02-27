@@ -2,7 +2,7 @@
 
 本文件用于持续记录：已阅读/触达模块、可重构点（backlog）、尚未覆盖模块。每次重构落地请同步更新。
 
-最后更新：2026-02-27
+最后更新：2026-02-28
 
 ## Reviewed / Touched
 
@@ -27,18 +27,21 @@
 - `src/agents/hub.ts` / `src/agents/hub/delegations.ts` / `src/agents/tasks/taskCoordinator.ts` / `src/agents/tasks/taskCoordinator/helpers.ts` / `src/agents/adapters/{codex,claude,gemini}CliAdapter.ts`：重构（统一 `AbortError` 语义与实现，减少重复代码）。
 - `src/agents/orchestrator.ts`：重构（抽取 `send()` / `invokeAgent()` 共享发送管线，收敛 preference-only 短路与响应后缀拼装逻辑，保持行为不变）。
 - `src/agents/adapters/{claude,gemini}CliAdapter.ts`：重构（移除重复 `inputToString()`，复用 `src/utils/inputText.ts` 的 `extractTextFromInput({ trim: false })`，保持 prompt 字节级一致）。
+- `src/agents/tasks/verificationRunner.ts`：重构（flag 解析复用 `parseBooleanFlag()`；ui smoke managed service spawn 复用 `assertCommandAllowed()`；readyUrl 失败时补充 spawn error 提示并尽快失败）。
 - `src/agents/adapters/claudeCliAdapter.ts` / `src/agents/cli/claudeStreamParser.ts`：修复（Claude CLI 首次请求不再传 `--session-id`；从 `system.init` 捕获 `session_id` 并在后续 `send()` 通过 `--resume` 复用同一会话，避免 `Session ID ... is already in use`）。
 - `src/agents/cli/cliRunner.ts`：重构（抽取 spawn wait / ENOENT hint / JSONL 单行解析 / abort handler 私有 helper，减少 pipe/file 路径重复逻辑并保持行为不变）。
 - `src/agents/cli/{claudeStreamParser.ts,geminiStreamParser.ts,streamParserUtils.ts}`：重构（抽取共享 `ToolKind`/`TrackedTool` 与 `asRecord()`/`extractStringField()`/`attachCliPayload()`/`mapEvent()`，减少重复并保持行为不变）。
 - `src/agents/cli/stripAnsi.ts`：阅读（ANSI 清理工具）。
 - `src/agents/tasks/taskStore.ts`：重构（复用 `safeParseJsonFromUnknown()` 并抽取 row 字段转换 helper，减少 `toTaskRow()` 重复样板并保持容错语义不变）。
 - `src/codex/errors.ts`：更新（识别 `Session ID ... is already in use` 并分类为 `session_in_use`，给出可操作的用户提示）。
+- `src/codex/events.ts`：重构（`reasoning`/`todo_list` 事件映射去重，整理 `agent_message` 分支可读性，保持行为不变）。
 - `src/attachments/{images.ts,store.ts,types.ts}`：阅读（图片元信息探测 + 附件去重存储与归属管理）。
 - `src/workspace/detector.ts` / `src/workspace/adsPaths.ts` / `src/workspace/service.ts`：阅读（工作空间探测与集中式 state 目录）。
 - `src/workspace/rulesService.ts`：重构（规则违规检测做大小写不敏感匹配，降低误漏判）。
 - `src/workspace/detector.ts`：重构（新增 `resolveWorkspaceRoot()`，统一将外部传入的 `workspace_path` 归一到 workspace root，避免子目录传参导致 state/db/spec 漂移）。
 - `src/workflow/{formatter.ts,serviceCommitLog.ts,serviceSteps.ts,serviceSummary.ts,serviceWorkflows.ts,templateService.ts}`：重构（`workspace_path` 通过 `resolveWorkspaceRoot()` 归一到 workspace root，行为保持不变）。
 - `src/graph/service.ts`：重构（`workspace_path` 通过 `detectWorkspaceFrom()` 归一到 workspace root，避免子目录传参导致 graph 操作落错 workspace）。
+- `src/graph/autoWorkflow.ts`：重构（整理 `onNodeFinalized()` 分支并抽取“查找已有 next node” helper，减少重复查询并保持工作流语义不变）。
 - `src/skills/loader.ts`：阅读（skill 发现与缓存逻辑）。
 - `src/systemPrompt/manager.ts`：阅读（system prompt reinjection、workspace fallback、skill/soul 注入与缓存策略）。
 - `src/web/utils.ts`：重构（`deriveWebUserId()` 扩展到 48-bit 熵，并保留 legacy 32-bit 派生用于迁移）。
@@ -65,6 +68,9 @@
 - `src/tasks/executor.ts`：重构（改用 `safeParseJson()` 解析 `workspace_patch` artifact，删除本地重复实现）。
 - `src/web/server/taskQueue/manager.ts`：重构（改用 `safeParseJson()` 解析 `changed_paths` artifact，删除本地重复实现）。
 - `src/web/server/planner/taskBundleDraftStore.ts`：重构（改用 `safeParseJsonFromUnknown()` 解析 sqlite 行内 JSON 字段，删除本地重复实现）。
+- `src/web/server/planner/specValidation.ts`：新增（task bundle 草稿/审批的 `specRef` 归一与目录/文件完整性校验）。
+- `src/web/server/ws/handlePrompt.ts`：更新（planner 草稿写入前校验 `specRef`；auto-approve 也校验 spec 文件完整性；并在 summary 中汇总未写入原因）。
+- `src/web/server/api/routes/taskBundleDrafts.ts`：更新（approve API 在执行前校验 `specRef` + spec 文件完整性，失败写入 lastError 并返回 400）。
 - `src/utils/activityTracker/text.ts`：重构（`safeJsonParse()` 改为代理到 `safeParseJson()`，收敛 JSON parse 语义）。
 - `src/tasks/storeImpl/normalize.ts`：重构（`parseJson()` 改为代理到 `safeParseJsonFromUnknown()`，删除本地重复实现）。
 - `src/tasks/storeImpl/taskOps.ts`：修复（`reorderPendingTasks()` 对传入 ids 做 pending 集合校验，避免静默部分重排）。
@@ -127,6 +133,9 @@
 - `docs/spec/20260227-1200-project-wide-refactor-pass-18/`：新增（schedules 路由 helper 去重 + chat history overlap 匹配复杂度收敛）。
 - `docs/spec/20260227-1300-project-wide-refactor-pass-19/`：新增（command allowlist 校验去重 + 前端 drafts/project/task-events 结构收敛）。
 - `docs/spec/20260227-1400-project-wide-refactor-pass-20/`：新增（task notifications 状态/解析 helper 收敛 + telegram formatter 缓存 + live activity helper 收敛）。
+- `docs/spec/20260227-1730-enforce-spec-for-planner-drafts/`：新增（planner 草稿/审批链路强制校验 `specRef` + spec 三件套完整性）。
+- `docs/spec/20260227-2330-project-wide-refactor-pass-21/`：新增（Markdown outline helper 去重 + workflow auto-flow 可读性整理）。
+- `docs/spec/20260227-2359-project-wide-refactor-pass-22/`：新增（verification flags 语义统一 + ui smoke service allowlist 硬化）。
 
 ### Tests
 
@@ -137,6 +146,7 @@
 - `tests/web/authCookies.test.ts`：更新（`serializeCookie()` 的 `Secure` 默认值语义调整）。
 - `tests/web/authSessions.test.ts`：更新（补充会话 TTL/sliding env 配置解析回归覆盖）。
 - `tests/web/webUserId.test.ts`：新增（覆盖新/旧 `deriveWebUserId()` 派生稳定性）。
+- `tests/web/plannerDraftSpecGuard.test.ts`：新增（planner WS 草稿缺失 `specRef` 时不落库并剥离 `ads-tasks` code block）。
 - `tests/telegram/threadStorage.test.ts`：新增（覆盖 `cloneRecord()` 保留 `updated_at` 的迁移语义）。
 - `tests/telegram/urlHandler.test.ts`：更新（补齐 `downloadUrl()` 成功/中断/stream error 清理覆盖）。
 - `tests/utils/json.test.ts`：更新（覆盖 `safeParseJsonFromUnknown()` / schema parse / `safeStringify()` 异常输入与 `Map`/`Set` 序列化语义）。
@@ -147,14 +157,18 @@
 - `tests/agents/geminiCliAdapter.test.ts`：新增（锁定 `--prompt` 参数字节级传递语义，覆盖 mixed `local_image` + trailing whitespace）。
 - `tests/agents/preferencesFlow.test.ts`：更新（新增 `invokeAgent()` 路径的 preference directives 保存/清洗覆盖）。
 - `tests/agents/taskStore.test.ts`：更新（新增持久化 JSON 字段损坏场景的安全降级回归覆盖）。
+- `tests/agents/verificationRunner.flags.test.ts`：新增（覆盖 verification enable flags 的 invalid/disabled 语义与 ui smoke service allowlist 拦截）。
 - `web/src/__tests__/ws-workspace-project-sync.test.ts`：新增（覆盖 `welcome`/`workspace` 下 project path/name/branch 同步与 `pendingCdRequestedPath` 清理语义）。
 - `web/src/app/tasks/selection.test.ts`：新增（锁定任务默认选中规则：pending 优先 + priority/queueOrder/createdAt 排序 + fallback 语义）。
 - `web/src/lib/task_sort.test.ts`：新增（锁定任务展示排序权重与同状态下 priority/createdAt 比较语义）。
 - `web/src/app/taskBundleDraftsState.test.ts`：新增（锁定草稿列表 helper 的 insert/replace/merge/delete/no-op 语义）。
 - `web/src/lib/chat_sync.test.ts`：更新（新增重复可比消息场景，锁定 merge 时“最新重叠点” tail 拼接语义）。
+- `web/src/lib/markdown.ts`：重构（`extractMarkdownOutlineTitles()` 复用 `analyzeMarkdownOutline()` 的共享实现，避免标题规则漂移）。
 - `tests/utils/commandRunner.test.ts`：更新（新增共享 `assertCommandAllowed()` 对 `git push` 拦截回归覆盖）。
 - `tests/web/taskTerminalTelegramNotifications.test.ts`：更新（新增 `isTaskTerminalStatus()` 大小写与非法输入覆盖）。
 - `web/src/lib/live_activity.test.ts`：更新（新增 maxSteps fallback、latest pending command 覆盖与 unknown category 归一化渲染覆盖）。
+- `web/src/__tests__/markdown-outline.test.ts`：更新（新增 `analyzeMarkdownOutline()` 的 `hasMeaningfulBody` 回归覆盖，锁定标题提取语义）。
+- `tests/web/taskBundleDraftsRoute.test.ts`：更新（approve 路径缺失 `specRef` / 缺 spec 文件时返回 `400` 的回归覆盖）。
 
 ## Refactor Opportunities (Backlog)
 
@@ -192,10 +206,10 @@
 
 ### Backend (`src/`)
 
-- `src/agents/`（除 `orchestrator.ts` / `hub.ts` / `hub/delegations.ts` / `adapters/*CliAdapter.ts` / `cli/claudeStreamParser.ts` / `cli/cliRunner.ts` / `cli/stripAnsi.ts` / `tasks/taskCoordinator*` / `tasks/taskStore.ts` 外）
+- `src/agents/`（除 `orchestrator.ts` / `hub.ts` / `hub/delegations.ts` / `adapters/*CliAdapter.ts` / `cli/claudeStreamParser.ts` / `cli/cliRunner.ts` / `cli/stripAnsi.ts` / `tasks/taskCoordinator*` / `tasks/taskStore.ts` / `tasks/verificationRunner.ts` 外）
 - `src/bootstrap/`（除 `bootstrapLoop.ts` / `worktree.ts` / `agentRunner.ts` / `commandRunner.ts` / `artifacts.ts` / `review/reviewerRunner.ts` 外）
-- `src/codex/`（除 `errors.ts` 外）
-- `src/graph/`（除 `crud.ts` / `fileManager.ts` / `service.ts` / `workflowConfig.ts` / `finalizeHelper.ts` / `types.ts` 外）
+- `src/codex/`（除 `errors.ts` / `events.ts` 外）
+- `src/graph/`（除 `crud.ts` / `fileManager.ts` / `service.ts` / `workflowConfig.ts` / `finalizeHelper.ts` / `types.ts` / `autoWorkflow.ts` 外）
 - `src/intake/`
 - `src/skills/`（除 `loader.ts` 外）
 - `src/state/`（除 `database.ts` / `migrations.ts` 外）
@@ -204,13 +218,13 @@
 - `src/telegram/`（除 `utils/{threadStorage,sessionManager,urlHandler,fileHandler,imageHandler,transcriptCorrection}.ts` 外）
 - `src/types/`
 - `src/utils/`（除已列出的文件外）
-- `src/web/`（除 `utils.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
+- `src/web/`（除 `utils.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/planner/specValidation.ts` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
 - `src/workspace/`（除 `detector.ts` / `adsPaths.ts` / `service.ts` / `rulesService.ts` 外）
 
 ### Frontend (`web/src/`)
 
 - `web/src/app/`（除 `chatExecute.ts` / `taskBundleDrafts.ts` / `taskBundleDraftsState.ts` / `tasks.ts` / `tasks/localState.ts` / `tasks/selection.ts` / `tasks/reorder.ts` / `tasks/events.ts` / `projectsWs/webSocketActions.ts` / `projectsWs/projectActions.ts` / `projectsWs/wsMessage.ts` 外）
 - `web/src/components/`（除 `TaskDetail.vue` / `TaskBoard.vue` / `TaskList.vue` 外）
-- `web/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` / `live_activity.ts` 外）
+- `web/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` / `live_activity.ts` / `markdown.ts` 外）
 - `web/src/main.ts` / `web/src/App.vue`
 - `web/src/__tests__/`（除 `execute-preview-queue-order.test.ts` 外）
