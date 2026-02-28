@@ -14,6 +14,74 @@ import { handleTaskChatRoute } from "./tasks/chat.js";
 import { handleTaskByIdRoute } from "./tasks/taskById.js";
 import { buildTaskAttachments, parseTaskStatus, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./tasks/shared.js";
 
+type TaskRouteTaskContext = ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function resolveCreateTaskErrorStatusCode(message: string): number {
+  const lower = message.toLowerCase();
+  if (lower.includes("already assigned") || lower.includes("conflict")) {
+    return 409;
+  }
+  return 400;
+}
+
+function broadcastTaskUpdated(
+  deps: ApiSharedDeps,
+  taskCtx: TaskRouteTaskContext,
+  task: unknown,
+  now: number,
+): void {
+  deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: now });
+}
+
+function upsertTaskNotificationBindingSafe(args: {
+  deps: ApiSharedDeps;
+  taskCtx: TaskRouteTaskContext;
+  authUserId: string;
+  taskId: string;
+  taskTitle: string;
+  now: number;
+}): void {
+  const { deps, taskCtx, authUserId, taskId, taskTitle, now } = args;
+  try {
+    upsertTaskNotificationBinding({
+      authUserId,
+      workspaceRoot: taskCtx.workspaceRoot,
+      taskId,
+      taskTitle,
+      now,
+      logger: deps.logger,
+    });
+  } catch (error) {
+    const message = getErrorMessage(error);
+    deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${taskId} err=${message}`);
+  }
+}
+
+function maybePromoteQueuedTasks(args: {
+  deps: ApiSharedDeps;
+  taskCtx: TaskRouteTaskContext;
+  taskId: string;
+  reason: "create" | "rerun";
+}): void {
+  const { deps, taskCtx, taskId, reason } = args;
+  if (!taskCtx.queueRunning) {
+    return;
+  }
+  if (taskCtx.runController.getMode() !== "all") {
+    return;
+  }
+  try {
+    deps.promoteQueuedTasksToPending(taskCtx);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    deps.logger.warn(`[Web][TaskQueue] promote queued tasks after ${reason} failed taskId=${taskId} err=${message}`);
+  }
+}
+
 export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url, auth } = ctx;
 
@@ -110,10 +178,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       } catch {
         // ignore rollback errors
       }
-      const message = error instanceof Error ? error.message : String(error);
-      const lower = message.toLowerCase();
-      const statusCode =
-        lower.includes("already assigned") || lower.includes("conflict") ? 409 : lower.includes("not found") ? 400 : 400;
+      const message = getErrorMessage(error);
+      const statusCode = resolveCreateTaskErrorStatusCode(message);
       sendJson(res, statusCode, { error: message });
       return true;
     }
@@ -121,37 +187,20 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const attachments = buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore });
 
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: task.id });
-    deps.broadcastToSession(taskCtx.sessionId, {
-      type: "task:event",
-      event: "task:updated",
-      data: { ...task, attachments },
-      ts: now,
-    });
+    broadcastTaskUpdated(deps, taskCtx, { ...task, attachments }, now);
 
-    try {
-      upsertTaskNotificationBinding({
-        authUserId: auth.userId,
-        workspaceRoot: taskCtx.workspaceRoot,
-        taskId: task.id,
-        taskTitle: task.title,
-        now,
-        logger: deps.logger,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${task.id} err=${message}`);
-    }
+    upsertTaskNotificationBindingSafe({
+      deps,
+      taskCtx,
+      authUserId: auth.userId,
+      taskId: task.id,
+      taskTitle: task.title,
+      now,
+    });
 
     sendJson(res, 201, { ...task, attachments });
 
-    if (taskCtx.queueRunning && taskCtx.runController.getMode() === "all") {
-      try {
-        deps.promoteQueuedTasksToPending(taskCtx);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        deps.logger.warn(`[Web][TaskQueue] promote queued tasks after create failed taskId=${task.id} err=${message}`);
-      }
-    }
+    maybePromoteQueuedTasks({ deps, taskCtx, taskId: task.id, reason: "create" });
     return true;
   }
 
@@ -245,7 +294,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         { status: "queued" },
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       sendJson(res, 400, { error: message });
       return true;
     }
@@ -266,32 +315,20 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: `rerun_from:${source.id}` });
 
-    deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
+    broadcastTaskUpdated(deps, taskCtx, created, now);
 
-    try {
-      upsertTaskNotificationBinding({
-        authUserId: auth.userId,
-        workspaceRoot: taskCtx.workspaceRoot,
-        taskId: created.id,
-        taskTitle: created.title,
-        now,
-        logger: deps.logger,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${created.id} err=${message}`);
-    }
+    upsertTaskNotificationBindingSafe({
+      deps,
+      taskCtx,
+      authUserId: auth.userId,
+      taskId: created.id,
+      taskTitle: created.title,
+      now,
+    });
 
     sendJson(res, 201, { success: true, sourceTaskId: source.id, task: created });
 
-    if (taskCtx.queueRunning && taskCtx.runController.getMode() === "all") {
-      try {
-        deps.promoteQueuedTasksToPending(taskCtx);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        deps.logger.warn(`[Web][TaskQueue] promote queued tasks after rerun failed taskId=${created.id} err=${message}`);
-      }
-    }
+    maybePromoteQueuedTasks({ deps, taskCtx, taskId: created.id, reason: "rerun" });
     return true;
   }
 
@@ -335,7 +372,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
     if (taskCtx.lock.isBusy()) {
       void taskCtx.lock.runExclusive(run).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = getErrorMessage(error);
         deps.logger.warn(`[Web][Tasks] background single-task run failed taskId=${runSingleTaskId} err=${message}`);
       });
       sendJson(res, 202, { success: true, queued: true, mode: "single", taskId: runSingleTaskId, state: "queued" });
@@ -365,7 +402,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     try {
       updated = taskCtx.taskStore.reorderPendingTasks(ids);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       sendJson(res, 400, { error: message });
       return true;
     }

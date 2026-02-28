@@ -246,5 +246,97 @@ describe("web/api/tasks/:id/rerun", () => {
     assert.ok(createInput);
     assert.deepEqual(createInput?.modelParams, { foo: "bar" });
   });
-});
 
+  it("promotes queued tasks after rerun when queue is running in all mode", async () => {
+    const now = Date.now();
+    const source: Task = {
+      id: "t-1",
+      title: "T",
+      prompt: "P",
+      model: "auto",
+      modelParams: null,
+      status: "completed",
+      priority: 0,
+      queueOrder: 0,
+      inheritContext: true,
+      agentId: null,
+      retryCount: 0,
+      maxRetries: 3,
+      createdAt: now,
+    };
+
+    let promoteCalls = 0;
+
+    const taskCtx = {
+      sessionId: "s-1",
+      workspaceRoot: "/tmp/ws",
+      queueRunning: true,
+      runController: {
+        getMode() {
+          return "all";
+        },
+      },
+      metrics: { counts: {}, events: [] },
+      taskStore: {
+        getTask(id: string) {
+          return id === source.id ? source : null;
+        },
+        createTask(input: Record<string, unknown>) {
+          return {
+            id: String(input.id),
+            title: String(input.title),
+            prompt: String(input.prompt),
+            model: String(input.model),
+            modelParams: (input.modelParams as any) ?? null,
+            status: "queued",
+            priority: 0,
+            queueOrder: 0,
+            inheritContext: Boolean(input.inheritContext),
+            agentId: null,
+            retryCount: 0,
+            maxRetries: 3,
+            createdAt: Date.now(),
+            parentTaskId: String(input.parentTaskId ?? ""),
+          } satisfies Task;
+        },
+        getContext() {
+          return [];
+        },
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as unknown as ApiSharedDeps["logger"],
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as unknown as ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+      },
+      promoteQueuedTasksToPending() {
+        promoteCalls += 1;
+      },
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const req = createReq("POST", {});
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/t-1/rerun?workspace=/tmp/ws");
+
+    const ctx: ApiRouteContext = {
+      req: req as unknown as ApiRouteContext["req"],
+      res: res as unknown as ApiRouteContext["res"],
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskRoutes(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 201);
+    assert.equal(promoteCalls, 1);
+  });
+});
