@@ -2,14 +2,31 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deriveProjectSessionId } from "../../src/web/server/projectSessionId.js";
-import { matchesBroadcastSessionId, parseWsSessionFromProtocols, resolveWebSocketSessionId } from "../../src/web/server/ws/session.js";
+import {
+  matchesBroadcastSessionId,
+  parseWsChatSessionFromProtocols,
+  parseWsSessionFromProtocols,
+  resolveWebSocketChatSessionId,
+  resolveWebSocketSessionId,
+} from "../../src/web/server/ws/session.js";
 
 describe("web/server/ws/session", () => {
   it("parses session token from websocket protocols", () => {
     assert.equal(parseWsSessionFromProtocols(["ads-v1", "ads-session.abc"]), "abc");
     assert.equal(parseWsSessionFromProtocols(["ads-session:xyz"]), "xyz");
+    assert.equal(parseWsSessionFromProtocols(["ads-session:team:alpha"]), "team:alpha");
     assert.equal(parseWsSessionFromProtocols(["ads-session", "next"]), "next");
     assert.equal(parseWsSessionFromProtocols(["ads-v1"]), null);
+  });
+
+  it("parses chat session token and resolves defaults", () => {
+    assert.equal(parseWsChatSessionFromProtocols(["ads-v1", "ads-chat.room-a"]), "room-a");
+    assert.equal(parseWsChatSessionFromProtocols(["ads-chat:room:beta"]), "room:beta");
+    assert.equal(parseWsChatSessionFromProtocols(["ads-chat", "room-c"]), "room-c");
+    assert.equal(parseWsChatSessionFromProtocols(["ads-v1"]), null);
+
+    assert.equal(resolveWebSocketChatSessionId({ protocols: ["ads-v1"] }), "main");
+    assert.equal(resolveWebSocketChatSessionId({ protocols: ["ads-chat.room-z"] }), "room-z");
   });
 
   it("maps ads-session.default to derived project session id", () => {

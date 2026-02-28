@@ -25,6 +25,21 @@ export function createStreamingActions(params: {
   const { liveStepId, liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, findLastLiveIndex, isLiveMessageId, randomId } =
     params;
 
+  const findLastStreamingAssistantIndex = (items: ChatItem[]): number => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const msg = items[i]!;
+      if (msg.role === "assistant" && msg.streaming && !isLiveMessageId(msg.id)) {
+        return i;
+      }
+    }
+    return -1;
+  };
+
+  const findInsertAtBeforeStreamingAssistant = (items: ChatItem[]): number => {
+    const index = findLastStreamingAssistantIndex(items);
+    return index >= 0 ? index : items.length;
+  };
+
   const clearLiveActivityTimer = (state: ProjectRuntime): void => {
     if (state.liveActivityTtlTimer === null) return;
     window.clearTimeout(state.liveActivityTtlTimer);
@@ -61,15 +76,7 @@ export function createStreamingActions(params: {
     if (!chunk) return;
     dropEmptyAssistantPlaceholder(state);
     const existing = state.messages.value.slice();
-    let streamIndex = -1;
-    for (let i = existing.length - 1; i >= 0; i--) {
-      const m = existing[i]!;
-      if (isLiveMessageId(m.id)) continue;
-      if (m.role === "assistant" && m.streaming) {
-        streamIndex = i;
-        break;
-      }
-    }
+    const streamIndex = findLastStreamingAssistantIndex(existing);
     if (streamIndex >= 0) {
       existing[streamIndex]!.content += chunk;
       setMessages(existing.slice(), state);
@@ -111,15 +118,7 @@ export function createStreamingActions(params: {
       ts: (idx >= 0 ? existing[idx]!.ts : null) ?? Date.now(),
     };
     const withoutStep = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
-
-    let insertAt = withoutStep.length;
-    for (let i = withoutStep.length - 1; i >= 0; i--) {
-      const m = withoutStep[i]!;
-      if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
-        insertAt = i;
-        break;
-      }
-    }
+    const insertAt = findInsertAtBeforeStreamingAssistant(withoutStep);
 
     const next = [...withoutStep.slice(0, insertAt), nextItem, ...withoutStep.slice(insertAt)];
     setMessages(next, state);
@@ -152,16 +151,7 @@ export function createStreamingActions(params: {
     const withoutActivity = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
 
     const stepIdx = withoutActivity.findIndex((m) => m.id === liveStepId);
-    let insertAt = stepIdx >= 0 ? stepIdx : withoutActivity.length;
-    if (stepIdx < 0) {
-      for (let i = withoutActivity.length - 1; i >= 0; i--) {
-        const m = withoutActivity[i]!;
-        if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
-          insertAt = i;
-          break;
-        }
-      }
-    }
+    const insertAt = stepIdx >= 0 ? stepIdx : findInsertAtBeforeStreamingAssistant(withoutActivity);
 
     const next = [...withoutActivity.slice(0, insertAt), nextItem, ...withoutActivity.slice(insertAt)];
     setMessages(next, state);
