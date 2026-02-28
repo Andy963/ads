@@ -1,33 +1,72 @@
+import type { TaskQueueContext } from "../../taskQueue/manager.js";
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { sendJson } from "../../http.js";
 
+type TaskQueueRouteDeps = Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending">;
+
+function resolveTaskContextOrSendBadRequest(
+  ctx: Pick<ApiRouteContext, "url" | "res">,
+  deps: Pick<TaskQueueRouteDeps, "resolveTaskContext">,
+): TaskQueueContext | null {
+  try {
+    return deps.resolveTaskContext(ctx.url);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendJson(ctx.res, 400, { error: message });
+    return null;
+  }
+}
+
+function ensureTaskQueueEnabled(
+  ctx: Pick<ApiRouteContext, "res">,
+  deps: Pick<TaskQueueRouteDeps, "taskQueueAvailable">,
+): boolean {
+  if (deps.taskQueueAvailable) {
+    return true;
+  }
+  sendJson(ctx.res, 409, { error: "Task queue disabled" });
+  return false;
+}
+
+function buildQueueStatusPayload(args: {
+  taskCtx: TaskQueueContext;
+  enabled: boolean;
+  success?: boolean;
+  queued?: boolean;
+}): Record<string, unknown> {
+  const { taskCtx, enabled, success, queued } = args;
+  const payload: Record<string, unknown> = {
+    enabled,
+    running: taskCtx.queueRunning,
+    ...taskCtx.getStatusOrchestrator().status(),
+  };
+  if (typeof success === "boolean") {
+    payload.success = success;
+  }
+  if (typeof queued === "boolean") {
+    payload.queued = queued;
+  }
+  return payload;
+}
+
 export async function handleTaskQueueRoutes(
   ctx: ApiRouteContext,
-  deps: Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending">,
+  deps: TaskQueueRouteDeps,
 ): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
 
   if (req.method === "GET" && pathname === "/api/task-queue/status") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    if (!taskCtx) {
       return true;
     }
-    const status = taskCtx.getStatusOrchestrator().status();
-    sendJson(res, 200, { enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
+    sendJson(res, 200, buildQueueStatusPayload({ taskCtx, enabled: deps.taskQueueAvailable }));
     return true;
   }
 
   if (req.method === "GET" && pathname === "/api/task-queue/metrics") {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    if (!taskCtx) {
       return true;
     }
     sendJson(res, 200, { workspaceRoot: taskCtx.workspaceRoot, running: taskCtx.queueRunning, ...taskCtx.metrics });
@@ -35,16 +74,11 @@ export async function handleTaskQueueRoutes(
   }
 
   if (req.method === "POST" && pathname === "/api/task-queue/run") {
-    if (!deps.taskQueueAvailable) {
-      sendJson(res, 409, { error: "Task queue disabled" });
+    if (!ensureTaskQueueEnabled({ res }, deps)) {
       return true;
     }
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    if (!taskCtx) {
       return true;
     }
     const action = async () => {
@@ -56,34 +90,26 @@ export async function handleTaskQueueRoutes(
     };
     if (taskCtx.lock.isBusy()) {
       void taskCtx.lock.runExclusive(action);
-      const status = taskCtx.getStatusOrchestrator().status();
-      sendJson(res, 202, { success: true, queued: true, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
+      sendJson(res, 202, buildQueueStatusPayload({ taskCtx, enabled: deps.taskQueueAvailable, success: true, queued: true }));
       return true;
     }
     await taskCtx.lock.runExclusive(action);
-    const status = taskCtx.getStatusOrchestrator().status();
-    sendJson(res, 200, { success: true, queued: false, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
+    sendJson(res, 200, buildQueueStatusPayload({ taskCtx, enabled: deps.taskQueueAvailable, success: true, queued: false }));
     return true;
   }
 
   if (req.method === "POST" && pathname === "/api/task-queue/pause") {
-    if (!deps.taskQueueAvailable) {
-      sendJson(res, 409, { error: "Task queue disabled" });
+    if (!ensureTaskQueueEnabled({ res }, deps)) {
       return true;
     }
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    if (!taskCtx) {
       return true;
     }
     taskCtx.runController.setModeManual();
     taskCtx.taskQueue.pause("manual");
     taskCtx.queueRunning = false;
-    const status = taskCtx.getStatusOrchestrator().status();
-    sendJson(res, 200, { success: true, enabled: deps.taskQueueAvailable, running: taskCtx.queueRunning, ...status });
+    sendJson(res, 200, buildQueueStatusPayload({ taskCtx, enabled: deps.taskQueueAvailable, success: true }));
     return true;
   }
 

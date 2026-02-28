@@ -8,19 +8,22 @@ type NoticeCtx = {
   getRuntime: (projectId: string | null | undefined) => ProjectRuntime;
 };
 
+function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void {
+  if (rt.noticeTimer === null) return;
+  try {
+    clearTimeout(rt.noticeTimer);
+  } catch {
+    // ignore
+  }
+  rt.noticeTimer = null;
+}
+
 export function createNoticeActions(ctx: NoticeCtx) {
   const setNotice = (message: string, projectId: string = ctx.activeProjectId.value): void => {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
     rt.apiNotice.value = message;
-    if (rt.noticeTimer !== null) {
-      try {
-        clearTimeout(rt.noticeTimer);
-      } catch {
-        // ignore
-      }
-      rt.noticeTimer = null;
-    }
+    clearRuntimeNoticeTimer(rt);
     rt.noticeTimer = window.setTimeout(() => {
       rt.noticeTimer = null;
       rt.apiNotice.value = null;
@@ -31,16 +34,8 @@ export function createNoticeActions(ctx: NoticeCtx) {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
     rt.apiNotice.value = null;
-    if (rt.noticeTimer !== null) {
-      try {
-        clearTimeout(rt.noticeTimer);
-      } catch {
-        // ignore
-      }
-      rt.noticeTimer = null;
-    }
+    clearRuntimeNoticeTimer(rt);
   };
 
   return { setNotice, clearNotice };
 }
-

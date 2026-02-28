@@ -7,6 +7,20 @@ import { safeParseJsonFromUnknown } from "../../../utils/json.js";
 import { taskBundleSchema, type TaskBundle } from "./taskBundle.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
+type PreparedStatements = {
+  insertStmt: SqliteStatement;
+  updateByRequestIdStmt: SqliteStatement;
+  selectByRequestIdStmt: SqliteStatement;
+  selectByIdStmt: SqliteStatement;
+  listStmt: SqliteStatement;
+  deleteStmt: SqliteStatement;
+  cancelStmt: SqliteStatement;
+  updateDraftStmt: SqliteStatement;
+  approveStmt: SqliteStatement;
+  setErrorStmt: SqliteStatement;
+};
+
+const preparedStatementsByDb = new WeakMap<DatabaseType, PreparedStatements>();
 
 export type TaskBundleDraftStatus = "draft" | "approved" | "deleted";
 
@@ -88,7 +102,19 @@ function isSqliteUniqueConstraintError(error: unknown): boolean {
   return message.includes("unique constraint failed") || message.includes("constraint failed");
 }
 
-function prepareStatements(db: DatabaseType) {
+function normalizeText(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function normalizeNamespace(value: unknown): string {
+  return normalizeText(value ?? "web") || "web";
+}
+
+function normalizeNow(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : Date.now();
+}
+
+function createPreparedStatements(db: DatabaseType): PreparedStatements {
   const insertStmt: SqliteStatement = db.prepare(
     `INSERT INTO web_task_bundle_drafts (
         draft_id,
@@ -178,6 +204,16 @@ function prepareStatements(db: DatabaseType) {
   };
 }
 
+function prepareStatements(db: DatabaseType): PreparedStatements {
+  const cached = preparedStatementsByDb.get(db);
+  if (cached) {
+    return cached;
+  }
+  const created = createPreparedStatements(db);
+  preparedStatementsByDb.set(db, created);
+  return created;
+}
+
 export function upsertTaskBundleDraft(args: {
   db?: DatabaseType;
   namespace?: string;
@@ -189,12 +225,12 @@ export function upsertTaskBundleDraft(args: {
   now?: number;
 }): TaskBundleDraft {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const workspaceRoot = String(args.workspaceRoot ?? "").trim();
-  const sourceChatSessionId = String(args.sourceChatSessionId ?? "").trim();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const workspaceRoot = normalizeText(args.workspaceRoot);
+  const sourceChatSessionId = normalizeText(args.sourceChatSessionId);
   const sourceHistoryKey = args.sourceHistoryKey == null ? null : String(args.sourceHistoryKey ?? "").trim();
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
+  const now = normalizeNow(args.now);
 
   if (!authUserId) {
     throw new Error("authUserId is required");
@@ -207,7 +243,7 @@ export function upsertTaskBundleDraft(args: {
   }
 
   const stmts = prepareStatements(db);
-  const requestId = String(args.bundle.requestId ?? "").trim();
+  const requestId = normalizeText(args.bundle.requestId);
   const bundleJson = JSON.stringify(args.bundle);
 
   if (requestId) {
@@ -271,10 +307,10 @@ export function getTaskBundleDraftByRequestId(args: {
   requestId: string;
 }): TaskBundleDraft | null {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const workspaceRoot = String(args.workspaceRoot ?? "").trim();
-  const requestId = String(args.requestId ?? "").trim();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const workspaceRoot = normalizeText(args.workspaceRoot);
+  const requestId = normalizeText(args.requestId);
   if (!authUserId || !workspaceRoot || !requestId) return null;
 
   const stmts = prepareStatements(db);
@@ -290,9 +326,9 @@ export function listTaskBundleDrafts(args: {
   limit?: number;
 }): TaskBundleDraft[] {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const workspaceRoot = String(args.workspaceRoot ?? "").trim();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const workspaceRoot = normalizeText(args.workspaceRoot);
   const limit =
     typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0 ? Math.floor(args.limit) : 50;
 
@@ -312,9 +348,9 @@ export function getTaskBundleDraft(args: {
   draftId: string;
 }): TaskBundleDraft | null {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const draftId = String(args.draftId ?? "").trim();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const draftId = normalizeText(args.draftId);
   if (!authUserId || !draftId) return null;
 
   const stmts = prepareStatements(db);
@@ -330,10 +366,10 @@ export function deleteTaskBundleDraft(args: {
   now?: number;
 }): { ok: boolean } {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const draftId = String(args.draftId ?? "").trim();
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const draftId = normalizeText(args.draftId);
+  const now = normalizeNow(args.now);
   if (!authUserId || !draftId) return { ok: false };
 
   const stmts = prepareStatements(db);
@@ -349,10 +385,10 @@ export function cancelTaskBundleDraft(args: {
   now?: number;
 }): { ok: boolean } {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const draftId = String(args.draftId ?? "").trim();
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const draftId = normalizeText(args.draftId);
+  const now = normalizeNow(args.now);
   if (!authUserId || !draftId) return { ok: false };
 
   const stmts = prepareStatements(db);
@@ -369,10 +405,10 @@ export function updateTaskBundleDraft(args: {
   now?: number;
 }): TaskBundleDraft | null {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const draftId = String(args.draftId ?? "").trim();
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const draftId = normalizeText(args.draftId);
+  const now = normalizeNow(args.now);
   if (!authUserId || !draftId) return null;
 
   const stmts = prepareStatements(db);
@@ -393,10 +429,10 @@ export function approveTaskBundleDraft(args: {
   now?: number;
 }): TaskBundleDraft | null {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const draftId = String(args.draftId ?? "").trim();
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const draftId = normalizeText(args.draftId);
+  const now = normalizeNow(args.now);
   if (!authUserId || !draftId) return null;
 
   const stmts = prepareStatements(db);
@@ -417,10 +453,10 @@ export function setTaskBundleDraftError(args: {
   now?: number;
 }): void {
   const db = args.db ?? getStateDatabase();
-  const namespace = String(args.namespace ?? "web").trim() || "web";
-  const authUserId = String(args.authUserId ?? "").trim();
-  const draftId = String(args.draftId ?? "").trim();
-  const now = typeof args.now === "number" && Number.isFinite(args.now) ? Math.floor(args.now) : Date.now();
+  const namespace = normalizeNamespace(args.namespace);
+  const authUserId = normalizeText(args.authUserId);
+  const draftId = normalizeText(args.draftId);
+  const now = normalizeNow(args.now);
   if (!authUserId || !draftId) return;
 
   const stmts = prepareStatements(db);
