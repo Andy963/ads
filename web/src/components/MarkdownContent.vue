@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount } from "vue";
 import { renderMarkdownToHtml } from "../lib/markdown";
+import { copyTextToClipboard } from "../lib/clipboard";
 
 const props = defineProps<{
   content: string;
@@ -9,33 +10,6 @@ const props = defineProps<{
 
 let lastCodeCopyButton: HTMLButtonElement | null = null;
 let lastCodeCopyTimer: ReturnType<typeof setTimeout> | null = null;
-
-async function copyToClipboard(text: string): Promise<boolean> {
-  const normalized = String(text ?? "");
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(normalized);
-      return true;
-    } catch {
-      // fallback below
-    }
-  }
-  try {
-    const textarea = document.createElement("textarea");
-    textarea.value = normalized;
-    textarea.setAttribute("readonly", "true");
-    textarea.style.position = "fixed";
-    textarea.style.top = "-1000px";
-    textarea.style.left = "-1000px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
-  } catch {
-    return false;
-  }
-}
 
 function resetCodeCopyToast(): void {
   if (lastCodeCopyTimer) {
@@ -64,7 +38,7 @@ async function onClick(ev: MouseEvent): Promise<void> {
   const codeText = codeEl?.textContent ?? "";
   if (!codeText.trim()) return;
 
-  const ok = await copyToClipboard(codeText);
+  const ok = await copyTextToClipboard(codeText);
   if (!ok) return;
 
   resetCodeCopyToast();

@@ -86,6 +86,40 @@ function copyDirIfMissing(srcDir: string, destDir: string): void {
   fs.cpSync(srcDir, destDir, { recursive: true, errorOnExist: false, force: false });
 }
 
+type CopyPair = readonly [source: string, target: string];
+
+function copyPairIfMissing([source, target]: CopyPair): boolean {
+  if (!fs.existsSync(source) || fs.existsSync(target)) {
+    return false;
+  }
+  copyIfMissing(source, target);
+  return true;
+}
+
+function copyDirPairIfMissing([source, target]: CopyPair): boolean {
+  if (!fs.existsSync(source) || fs.existsSync(target)) {
+    return false;
+  }
+  copyDirIfMissing(source, target);
+  return true;
+}
+
+function copyPairsIfMissing(pairs: readonly CopyPair[]): boolean {
+  let copied = false;
+  for (const pair of pairs) {
+    copied = copyPairIfMissing(pair) || copied;
+  }
+  return copied;
+}
+
+function copyDirPairsIfMissing(pairs: readonly CopyPair[]): boolean {
+  let copied = false;
+  for (const pair of pairs) {
+    copied = copyDirPairIfMissing(pair) || copied;
+  }
+  return copied;
+}
+
 function ensureWorkspaceConfig(stateDir: string, workspaceRoot: string): void {
   const configPath = path.join(stateDir, "workspace.json");
   if (fs.existsSync(configPath)) {
@@ -126,39 +160,31 @@ export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolea
   // initialized before the legacy folder gained new files (or if migration was partial).
   if (hasLegacy) {
     fs.mkdirSync(stateDir, { recursive: true });
+    const legacyTemplatesDir = path.join(legacyDir, "templates");
+    const stateTemplatesDir = path.join(stateDir, "templates");
 
-    const wouldCopy = (src: string, dest: string): boolean => fs.existsSync(src) && !fs.existsSync(dest);
-    let copied = false;
+    const filePairs: CopyPair[] = [
+      [legacyConfig, stateConfig],
+      [path.join(legacyDir, "ads.db"), path.join(stateDir, "ads.db")],
+      [path.join(legacyDir, "state.db"), path.join(stateDir, "state.db")],
+      [path.join(legacyDir, "rules.md"), path.join(stateDir, "rules.md")],
+      [path.join(legacyDir, "intake-state.json"), path.join(stateDir, "intake-state.json")],
+      [path.join(legacyDir, "context.json"), path.join(stateDir, "context.json")],
+      // Legacy workspaces stored instructions/rules at the root of `.ads/`. The new system prompt manager
+      // reads them from the centralized state under `templates/`.
+      [path.join(legacyTemplatesDir, "instructions.md"), path.join(stateTemplatesDir, "instructions.md")],
+      [path.join(legacyDir, "instructions.md"), path.join(stateTemplatesDir, "instructions.md")],
+      [path.join(legacyTemplatesDir, "rules.md"), path.join(stateTemplatesDir, "rules.md")],
+    ];
+    const dirPairs: CopyPair[] = [
+      [legacyTemplatesDir, stateTemplatesDir],
+      [path.join(legacyDir, "rules"), path.join(stateDir, "rules")],
+      [path.join(legacyDir, "commands"), path.join(stateDir, "commands")],
+    ];
 
-    copied = copied || wouldCopy(legacyConfig, stateConfig);
-    copyIfMissing(legacyConfig, stateConfig);
-    copied = copied || wouldCopy(path.join(legacyDir, "ads.db"), path.join(stateDir, "ads.db"));
-    copyIfMissing(path.join(legacyDir, "ads.db"), path.join(stateDir, "ads.db"));
-    copied = copied || wouldCopy(path.join(legacyDir, "state.db"), path.join(stateDir, "state.db"));
-    copyIfMissing(path.join(legacyDir, "state.db"), path.join(stateDir, "state.db"));
-    copied = copied || wouldCopy(path.join(legacyDir, "rules.md"), path.join(stateDir, "rules.md"));
-    copyIfMissing(path.join(legacyDir, "rules.md"), path.join(stateDir, "rules.md"));
-    copied = copied || wouldCopy(path.join(legacyDir, "intake-state.json"), path.join(stateDir, "intake-state.json"));
-    copyIfMissing(path.join(legacyDir, "intake-state.json"), path.join(stateDir, "intake-state.json"));
-    copied = copied || wouldCopy(path.join(legacyDir, "context.json"), path.join(stateDir, "context.json"));
-    copyIfMissing(path.join(legacyDir, "context.json"), path.join(stateDir, "context.json"));
-
-    // Legacy workspaces stored instructions/rules at the root of `.ads/`. The new system prompt manager
-    // reads them from the centralized state under `templates/`.
-    copied =
-      copied ||
-      wouldCopy(path.join(legacyDir, "templates", "instructions.md"), path.join(stateDir, "templates", "instructions.md"));
-    copyIfMissing(path.join(legacyDir, "templates", "instructions.md"), path.join(stateDir, "templates", "instructions.md"));
-    copied = copied || wouldCopy(path.join(legacyDir, "instructions.md"), path.join(stateDir, "templates", "instructions.md"));
-    copyIfMissing(path.join(legacyDir, "instructions.md"), path.join(stateDir, "templates", "instructions.md"));
-    copied = copied || wouldCopy(path.join(legacyDir, "templates", "rules.md"), path.join(stateDir, "templates", "rules.md"));
-    copyIfMissing(path.join(legacyDir, "templates", "rules.md"), path.join(stateDir, "templates", "rules.md"));
-
-    copyDirIfMissing(path.join(legacyDir, "templates"), path.join(stateDir, "templates"));
-    copyDirIfMissing(path.join(legacyDir, "rules"), path.join(stateDir, "rules"));
-    copyDirIfMissing(path.join(legacyDir, "commands"), path.join(stateDir, "commands"));
-
-    migrated = shouldMigrate || copied;
+    const copiedFiles = copyPairsIfMissing(filePairs);
+    const copiedDirs = copyDirPairsIfMissing(dirPairs);
+    migrated = shouldMigrate || copiedFiles || copiedDirs;
   }
 
   // Always ensure per-workspace state exists under ADS_STATE_DIR, even if the workspace was never explicitly initialized.

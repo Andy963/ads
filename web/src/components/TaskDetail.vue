@@ -5,6 +5,7 @@ import MarkdownContent from "./MarkdownContent.vue";
 import AttachmentThumb from "./AttachmentThumb.vue";
 import { autosizeTextarea } from "../lib/textarea_autosize";
 import { isPatchMessageMarkdown } from "../lib/patch_message";
+import { copyTextToClipboard } from "../lib/clipboard";
 
 type ChatMessage = {
   id: string;
@@ -126,35 +127,8 @@ function shouldShowMsgActions(m: ChatMessage): boolean {
   return m.kind !== "command";
 }
 
-async function copyToClipboard(text: string): Promise<boolean> {
-  const normalized = String(text ?? "");
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(normalized);
-      return true;
-    } catch {
-      // fallback below
-    }
-  }
-  try {
-    const textarea = document.createElement("textarea");
-    textarea.value = normalized;
-    textarea.setAttribute("readonly", "true");
-    textarea.style.position = "fixed";
-    textarea.style.top = "-1000px";
-    textarea.style.left = "-1000px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
-  } catch {
-    return false;
-  }
-}
-
 async function onCopyMessage(message: ChatMessage): Promise<void> {
-  const ok = await copyToClipboard(message.content);
+  const ok = await copyTextToClipboard(message.content);
   if (!ok) return;
   clearCopiedToast();
   copiedMessageId.value = message.id;
