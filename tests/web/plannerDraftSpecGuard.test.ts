@@ -172,4 +172,78 @@ describe("web/ws/planner-draft-spec-guard", () => {
     assert.equal(drafts.length, 0);
     assert.ok(Array.isArray(clientMessages));
   });
+
+  it("rejects planner ads-tasks draft when spec directory is missing", async () => {
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+    const orchestrator = new FakeOrchestrator(
+      [
+        "Here is your draft.",
+        "```ads-tasks",
+        '{"version":1,"specRef":"docs/spec/does-not-exist","tasks":[{"title":"Task 1","prompt":"Do it"}]}',
+        "```",
+      ].join("\n"),
+    );
+
+    await handlePromptMessage({
+      parsed: { type: "prompt", payload: "add as a task" },
+      ws: {} as any,
+      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
+      broadcastJson: (payload) => chatMessages.push(payload),
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      requestId: "req-2",
+      clientMessageId: null,
+      traceWsDuplication: false,
+      receivedAt: Date.now(),
+      authUserId: "test-user",
+      sessionId: "s",
+      chatSessionId: "planner",
+      userId: 1,
+      historyKey: "h",
+      currentCwd: workspaceRoot,
+      allowedDirs: [workspaceRoot],
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map(),
+      historyStore: historyStore as any,
+      sessionManager: {
+        getOrCreate: () => orchestrator as any,
+        getSavedThreadId: () => undefined,
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: () => {},
+      } as any,
+      orchestrator: orchestrator as any,
+      sendWorkspaceState: () => {},
+    });
+
+    const draftUpserts = chatMessages.filter((message) => {
+      if (!message || typeof message !== "object") return false;
+      const rec = message as { type?: unknown; action?: unknown };
+      return rec.type === "task_bundle_draft" && rec.action === "upsert";
+    });
+    assert.equal(draftUpserts.length, 0);
+
+    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+    assert.ok(result);
+    const output = String((result as { output?: unknown }).output ?? "");
+    assert.match(output, /任务草稿未写入/);
+    assert.match(output, /Spec directory not found: docs\/spec\/does-not-exist/);
+    assert.doesNotMatch(output, /```ads-tasks/);
+
+    const drafts = listTaskBundleDrafts({
+      authUserId: "test-user",
+      workspaceRoot,
+      limit: 10,
+    });
+    assert.equal(drafts.length, 0);
+    assert.ok(Array.isArray(clientMessages));
+  });
 });

@@ -278,6 +278,26 @@ export function attachWebSocketServer(deps: {
       }
     };
 
+    const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean => {
+      let found = false;
+      for (const [candidate, meta] of deps.clientMetaByWs.entries()) {
+        if (meta.historyKey !== targetHistoryKey) {
+          continue;
+        }
+        const controller = deps.interruptControllers.get(candidate);
+        if (!controller) {
+          continue;
+        }
+        found = true;
+        try {
+          controller.abort();
+        } catch {
+          // ignore
+        }
+      }
+      return found;
+    };
+
     safeJsonSend(ws, {
       type: "welcome",
       message: "ADS WebSocket bridge ready.",
@@ -456,12 +476,8 @@ export function attachWebSocketServer(deps: {
         }
 
         if (parsed.type === "interrupt") {
-          const controller = deps.interruptControllers.get(ws);
-          if (controller) {
-            controller.abort();
-            deps.interruptControllers.delete(ws);
-            safeJsonSend(ws, { type: "result", ok: false, output: "⛔ 已中断，输出可能不完整" });
-          } else {
+          const found = abortInFlightForHistoryKey(historyKey);
+          if (!found) {
             safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
           }
           return;
@@ -605,6 +621,14 @@ export function attachWebSocketServer(deps: {
         return;
       }
       if (parsed.type === "pong") {
+        return;
+      }
+
+      if (parsed.type === "interrupt") {
+        const found = abortInFlightForHistoryKey(historyKey);
+        if (!found) {
+          safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
+        }
         return;
       }
 

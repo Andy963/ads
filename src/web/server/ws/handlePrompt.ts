@@ -581,6 +581,18 @@ export async function handlePromptMessage(deps: {
             if (specRefValidation.specRef !== String(normalized.specRef ?? "").trim()) {
               normalized = { ...normalized, specRef: specRefValidation.specRef };
             }
+
+            const specFilesValidation = validateTaskBundleSpec({
+              bundle: normalized,
+              workspaceRoot: workspaceRootForDraft,
+              requireFiles: true,
+            });
+            if (!specFilesValidation.ok) {
+              draftErrors.push(specFilesValidation.error);
+              deps.logger.warn(`[PlannerDraft] rejected bundle: ${specFilesValidation.error}`);
+              stripCandidates.add(block);
+              continue;
+            }
             const requestId = String(normalized.requestId ?? "").trim();
 
             if (!originalRequestId && requestId) {

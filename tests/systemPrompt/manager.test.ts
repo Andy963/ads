@@ -147,4 +147,29 @@ describe("SystemPromptManager rule reinjection", () => {
       fs.rmSync(tempWorkspace, { recursive: true, force: true });
     }
   });
+
+  it("backfills legacy .ads/instructions.md into state templates/instructions.md", () => {
+    const tempWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-legacy-"));
+    try {
+      const stateTemplatesDir = resolveWorkspaceStatePath(tempWorkspace, "templates");
+      fs.mkdirSync(stateTemplatesDir, { recursive: true });
+      fs.writeFileSync(resolveWorkspaceStatePath(tempWorkspace, "workspace.json"), JSON.stringify({ name: "ws", version: "1.0" }), "utf8");
+
+      const legacyDir = path.join(tempWorkspace, ".ads");
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.writeFileSync(path.join(legacyDir, "workspace.json"), JSON.stringify({ name: "legacy", version: "1.0" }), "utf8");
+      fs.writeFileSync(path.join(legacyDir, "instructions.md"), "LEGACY_INSTRUCTIONS_123", "utf8");
+
+      const manager = new SystemPromptManager({ workspaceRoot: tempWorkspace, reinjection: { enabled: true, turns: 999, rulesTurns: 999 } });
+      const injection = manager.maybeInject();
+      assert(injection);
+      assert.match(injection.text, /LEGACY_INSTRUCTIONS_123/);
+
+      const backfilled = resolveWorkspaceStatePath(tempWorkspace, "templates", "instructions.md");
+      assert.ok(fs.existsSync(backfilled));
+      assert.match(fs.readFileSync(backfilled, "utf8"), /LEGACY_INSTRUCTIONS_123/);
+    } finally {
+      fs.rmSync(tempWorkspace, { recursive: true, force: true });
+    }
+  });
 });
