@@ -9,11 +9,23 @@ export function createTaskRunHelpers(params: {
   getRuntime: (projectId: string | null | undefined) => ProjectRuntime;
   upsertTask: (t: Task, rt?: ProjectRuntime) => void;
 }) {
-  const setTaskRunBusy = (id: string, busy: boolean, projectId: string = params.activeProjectId.value): void => {
-    const taskId = String(id ?? "").trim();
-    if (!taskId) return;
-    const pid = params.normalizeProjectId(projectId);
+  const resolveTaskRuntime = (
+    taskIdInput: string,
+    projectIdInput: string,
+  ): { taskId: string; rt: ProjectRuntime } | null => {
+    const taskId = String(taskIdInput ?? "").trim();
+    if (!taskId) {
+      return null;
+    }
+    const pid = params.normalizeProjectId(projectIdInput);
     const rt = params.getRuntime(pid);
+    return { taskId, rt };
+  };
+
+  const setTaskRunBusy = (id: string, busy: boolean, projectId: string = params.activeProjectId.value): void => {
+    const resolved = resolveTaskRuntime(id, projectId);
+    if (!resolved) return;
+    const { taskId, rt } = resolved;
     const next = new Set(rt.runBusyIds.value);
     if (busy) next.add(taskId);
     else next.delete(taskId);
@@ -21,10 +33,9 @@ export function createTaskRunHelpers(params: {
   };
 
   const mockSingleTaskRun = (taskId: string, projectId: string = params.activeProjectId.value): void => {
-    const id = String(taskId ?? "").trim();
-    if (!id) return;
-    const pid = params.normalizeProjectId(projectId);
-    const rt = params.getRuntime(pid);
+    const resolved = resolveTaskRuntime(taskId, projectId);
+    if (!resolved) return;
+    const { taskId: id, rt } = resolved;
     const now = Date.now();
 
     const existing = rt.tasks.value.find((t) => t.id === id);
@@ -40,4 +51,3 @@ export function createTaskRunHelpers(params: {
 
   return { setTaskRunBusy, mockSingleTaskRun };
 }
-

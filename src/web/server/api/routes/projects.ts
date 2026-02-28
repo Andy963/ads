@@ -1,10 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import { z } from "zod";
 
-import { DirectoryManager } from "../../../../telegram/utils/directoryManager.js";
-import { detectWorkspaceFrom } from "../../../../workspace/detector.js";
 import { getStateDatabase } from "../../../../state/database.js";
 import { ensureWebAuthTables } from "../../../auth/schema.js";
 import { deriveProjectSessionId } from "../../projectSessionId.js";
@@ -20,64 +17,12 @@ import {
   updateWebProject,
   upsertWebProject,
 } from "../../../projects/store.js";
+import { getProjectPathValidationErrorMessage, validateWorkspacePath } from "./workspacePath.js";
 
 type ProjectsResponse = {
   projects: ReturnType<typeof listWebProjects>;
   activeProjectId: string | null;
 };
-
-function resolveAndValidateWorkspaceRoot(args: { candidatePath: string; allowedDirs: string[] }): {
-  ok: true;
-  workspaceRoot: string;
-  projectId: string;
-} | {
-  ok: false;
-  error: string;
-} {
-  const candidate = String(args.candidatePath ?? "").trim();
-  if (!candidate) {
-    return { ok: false, error: "path is required" };
-  }
-
-  const directoryManager = new DirectoryManager(args.allowedDirs);
-  const absolutePath = path.resolve(candidate);
-  if (!directoryManager.validatePath(absolutePath)) {
-    return { ok: false, error: "path is not allowed" };
-  }
-
-  if (!fs.existsSync(absolutePath)) {
-    return { ok: false, error: "path does not exist" };
-  }
-
-  let resolvedPath = absolutePath;
-  try {
-    resolvedPath = fs.realpathSync(absolutePath);
-  } catch {
-    resolvedPath = absolutePath;
-  }
-
-  let isDirectory = false;
-  try {
-    isDirectory = fs.statSync(resolvedPath).isDirectory();
-  } catch {
-    isDirectory = false;
-  }
-  if (!isDirectory) {
-    return { ok: false, error: "path is not a directory" };
-  }
-
-  let workspaceRootCandidate = detectWorkspaceFrom(resolvedPath);
-  try {
-    workspaceRootCandidate = fs.realpathSync(workspaceRootCandidate);
-  } catch {
-    // ignore
-  }
-  if (!directoryManager.validatePath(workspaceRootCandidate)) {
-    workspaceRootCandidate = resolvedPath;
-  }
-
-  return { ok: true, workspaceRoot: workspaceRootCandidate, projectId: deriveProjectSessionId(workspaceRootCandidate) };
-}
 
 export async function handleProjectRoutes(
   ctx: ApiRouteContext,
@@ -104,9 +49,12 @@ export async function handleProjectRoutes(
       return true;
     }
 
-    const validated = resolveAndValidateWorkspaceRoot({ candidatePath: parsed.data.path, allowedDirs: deps.allowedDirs });
+    const validated = validateWorkspacePath({
+      candidatePath: parsed.data.path,
+      allowedDirs: deps.allowedDirs,
+    });
     if (!validated.ok) {
-      sendJson(res, 400, { error: validated.error });
+      sendJson(res, 400, { error: getProjectPathValidationErrorMessage(validated.reason) });
       return true;
     }
 
@@ -115,9 +63,10 @@ export async function handleProjectRoutes(
     ensureWebProjectTables(db);
 
     const name = parsed.data.name?.trim() || path.basename(validated.workspaceRoot) || "Project";
+    const projectId = deriveProjectSessionId(validated.workspaceRoot);
     const project = upsertWebProject(db, {
       userId: auth.userId,
-      projectId: validated.projectId,
+      projectId,
       workspaceRoot: validated.workspaceRoot,
       name,
       chatSessionId: "main",
