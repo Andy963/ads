@@ -1,15 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-import { ThreadStorage } from "../../src/telegram/utils/threadStorage.js";
+import { ThreadStorage } from "../../server/telegram/utils/threadStorage.js";
 
 describe("ThreadStorage", () => {
   it("stores thread IDs per agent", () => {
-    const scratchRoot = path.join(process.cwd(), ".ads-test-tmp");
-    fs.mkdirSync(scratchRoot, { recursive: true });
-    const tmpDir = fs.mkdtempSync(path.join(scratchRoot, "thread-storage-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-thread-storage-"));
 
     const storage = new ThreadStorage({
       namespace: "test",

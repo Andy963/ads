@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { processSpecBlocks } from "../../src/utils/specRecording.js";
+import { processSpecBlocks } from "../../server/utils/specRecording.js";
 
 function makeTempWorkspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-spec-"));

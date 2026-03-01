@@ -4,11 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetDatabaseForTests } from "../../src/storage/database.js";
-import { computeNextCronRunAt } from "../../src/scheduler/cron.js";
-import { ScheduleStore } from "../../src/scheduler/store.js";
-import type { ScheduleSpec } from "../../src/scheduler/scheduleSpec.js";
-import { TaskStore } from "../../src/tasks/store.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { computeNextCronRunAt } from "../../server/scheduler/cron.js";
+import { ScheduleStore } from "../../server/scheduler/store.js";
+import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
+import { TaskStore } from "../../server/tasks/store.js";
 
 describe("scheduler/store", () => {
   let tmpDir: string;

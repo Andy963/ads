@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 
-import { resolveCodexConfig, maskKey, parseSlashCommand } from "../../src/codexConfig.js";
+import { resolveCodexConfig, maskKey, parseSlashCommand } from "../../server/codexConfig.js";
 
 describe("codexConfig", () => {
   const originalEnv: Record<string, string | undefined> = {};

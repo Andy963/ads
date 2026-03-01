@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 
-import { parseTaskResumeRequest, selectTaskResumeThread } from "../../src/web/server/ws/taskResume.js";
+import { parseTaskResumeRequest, selectTaskResumeThread } from "../../server/web/server/ws/taskResume.js";
 
 describe("web/ws/taskResume", () => {
   it("defaults to auto mode when payload missing", () => {

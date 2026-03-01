@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getStateDatabase, resetStateDatabaseForTests } from "../../src/state/database.js";
-import { initAdmin } from "../../src/web/auth/initAdmin.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import { initAdmin } from "../../server/web/auth/initAdmin.js";
 
 describe("web/auth/initAdmin", () => {
   let tmpDir: string;

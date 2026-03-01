@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { resetDatabaseForTests } from "../../src/storage/database.js";
-import { TaskStore } from "../../src/tasks/store.js";
-import { AttachmentStore } from "../../src/attachments/store.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { TaskStore } from "../../server/tasks/store.js";
+import { AttachmentStore } from "../../server/attachments/store.js";
 
 describe("tasks/taskPurge", () => {
   let tmpDir: string;

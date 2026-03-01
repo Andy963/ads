@@ -12,9 +12,9 @@ import {
   getWorkspaceSpecsDir,
   isWorkspaceInitialized,
   ensureDefaultTemplates,
-} from "../../src/workspace/detector.js";
-import { withWorkspaceContext } from "../../src/workspace/asyncWorkspaceContext.js";
-import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+} from "../../server/workspace/detector.js";
+import { withWorkspaceContext } from "../../server/workspace/asyncWorkspaceContext.js";
+import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("workspace/detector", () => {

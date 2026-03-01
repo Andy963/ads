@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractDelegationDirectives, looksLikeSupervisorVerdict, stripDelegationBlocks } from "../../src/agents/hub/delegations.js";
+import { extractDelegationDirectives, looksLikeSupervisorVerdict, stripDelegationBlocks } from "../../server/agents/hub/delegations.js";
 
 describe("agents/hub/delegations", () => {
   it("extracts delegation directives and normalizes agent id", () => {

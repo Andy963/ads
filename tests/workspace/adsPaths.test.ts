@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("workspace/adsPaths migrateLegacyWorkspaceAdsIfNeeded", () => {

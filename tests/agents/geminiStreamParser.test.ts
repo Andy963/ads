@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { GeminiStreamParser } from "../../src/agents/cli/geminiStreamParser.js";
+import { GeminiStreamParser } from "../../server/agents/cli/geminiStreamParser.js";
 
 describe("GeminiStreamParser", () => {
   it("maps init to boot + analysis and captures session id", () => {

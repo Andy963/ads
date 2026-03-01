@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractTextFromInput } from "../../src/utils/inputText.js";
-import type { Input } from "../../src/agents/protocol/types.js";
+import { extractTextFromInput } from "../../server/utils/inputText.js";
+import type { Input } from "../../server/agents/protocol/types.js";
 
 describe("extractTextFromInput", () => {
   it("returns string input unchanged when trim is false", () => {

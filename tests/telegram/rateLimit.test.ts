@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { InMemoryRateLimiter } from "../../src/telegram/middleware/rateLimit.js";
+import { InMemoryRateLimiter } from "../../server/telegram/middleware/rateLimit.js";
 
 describe("telegram/rateLimit", () => {
   it("sweeps expired user records to prevent unbounded growth", () => {

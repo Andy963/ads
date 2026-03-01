@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { TaskSpecSchema } from "../../src/agents/tasks/schemas.js";
-import { runVerification } from "../../src/agents/tasks/verificationRunner.js";
+import { TaskSpecSchema } from "../../server/agents/tasks/schemas.js";
+import { runVerification } from "../../server/agents/tasks/verificationRunner.js";
 
 describe("agents/tasks/verificationRunner (ui smoke)", () => {
   const originalEnv = { ...process.env };

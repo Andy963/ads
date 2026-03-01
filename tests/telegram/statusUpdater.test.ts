@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { createTelegramCodexStatusUpdater } from "../../src/telegram/adapters/codex/statusUpdater.js";
-import type { AgentEvent } from "../../src/codex/events.js";
+import { createTelegramCodexStatusUpdater } from "../../server/telegram/adapters/codex/statusUpdater.js";
+import type { AgentEvent } from "../../server/codex/events.js";
 
 function createCommandEvent(params: {
   id: string;

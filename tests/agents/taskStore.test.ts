@@ -4,9 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getStateDatabase, resetStateDatabaseForTests } from "../../src/state/database.js";
-import { TaskStore } from "../../src/agents/tasks/taskStore.js";
-import { TaskResultSchema, TaskSpecSchema } from "../../src/agents/tasks/schemas.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import { TaskStore } from "../../server/agents/tasks/taskStore.js";
+import { TaskResultSchema, TaskSpecSchema } from "../../server/agents/tasks/schemas.js";
 
 describe("agents/tasks/taskStore", () => {
   beforeEach(() => {

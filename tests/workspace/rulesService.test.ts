@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { initializeWorkspace } from "../../src/workspace/detector.js";
-import { readRules, listRules, checkRuleViolation } from "../../src/workspace/rulesService.js";
-import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { initializeWorkspace } from "../../server/workspace/detector.js";
+import { readRules, listRules, checkRuleViolation } from "../../server/workspace/rulesService.js";
+import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("workspace/rulesService", () => {

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractDelegationDirectivesWithRanges } from "../../src/agents/delegationParser.js";
+import { extractDelegationDirectivesWithRanges } from "../../server/agents/delegationParser.js";
 
 describe("agents/delegationParser", () => {
   it("requires directive start at beginning of line", () => {

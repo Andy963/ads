@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
-import { runCommand } from "../../src/utils/commandRunner.js";
+import { runCommand } from "../../server/utils/commandRunner.js";
 
 function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { installTempAdsStateDir } from '../helpers/adsStateDir.js';
-import { extractUrls, detectUrlType, UrlType, setDnsResolver, downloadUrl } from '../../src/telegram/utils/urlHandler.js';
+import { extractUrls, detectUrlType, UrlType, setDnsResolver, downloadUrl } from '../../server/telegram/utils/urlHandler.js';
 
 function stubFetch(impl: typeof fetch) {
   const original = global.fetch;

@@ -34,7 +34,7 @@ npm run build
    ```bash
    npm run web
    # Or (after build)
-   node dist/src/cli.js web
+   node dist/server/cli.js web
    ```
 
 2. **Describe your goal in chat** (slash commands are not supported).
@@ -50,7 +50,7 @@ Comprehensive documentation is being migrated into this repository. Until those 
 - `docs/spec/**` — canonical specifications describing features (requirements, design, implementation).
 - `docs/pm2.md` — recommended pm2 deployment (web + telegram as separate apps).
 - `templates/` — the workspace templates synced into centralized `.ads/workspaces/<workspaceId>/templates/`, useful for understanding prompts and workflows.
-- Inline comments in `src/telegram/**` for Telegram bot behavior, including workspace initialization prompts.
+- Inline comments in `server/telegram/**` for Telegram bot behavior, including workspace initialization prompts.
 
 Missing guides referenced elsewhere will be restored once the documentation migration completes.
 
@@ -145,7 +145,7 @@ Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK
 
 鉴权/配置由 Gemini CLI 自身负责（例如 `gemini auth` / 主目录配置），ADS 不再通过 SDK 直接读取/管理密钥。
 
-适配器启用/禁用开关由 `src/telegram/utils/sessionManager.ts` 读取环境变量（例如 `ADS_CLAUDE_ENABLED`/`ADS_GEMINI_ENABLED`）；Web Console 通过 UI 选择激活的 Agent（不再提供 `/agent` 命令）。
+适配器启用/禁用开关由 `server/telegram/utils/sessionManager.ts` 读取环境变量（例如 `ADS_CLAUDE_ENABLED`/`ADS_GEMINI_ENABLED`）；Web Console 通过 UI 选择激活的 Agent（不再提供 `/agent` 命令）。
 
 ### 协作代理（主代理自动调度/委派）
 
@@ -170,7 +170,7 @@ Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK
 
 ### 🌐 Web Console（实验性）
 
-- 使用统一的 services 脚本启动（构建后）：`npm run services -- start web`
+- 构建后启动：`npm run web`（等价于 `node dist/server/cli.js web`）
 - 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ALLOWED_DIRS` 控制（Web/Telegram 共用）。
 - 浏览器访问对应地址即可与 Telegram 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
 - （可选）任务完成 Telegram 通知：复用 `TELEGRAM_BOT_TOKEN`，并使用 `TELEGRAM_ALLOWED_USER_ID` 作为通知 `chat_id`（单用户约束；`TELEGRAM_ALLOWED_USERS` 为 legacy alias）；可用 `ADS_TELEGRAM_NOTIFY_TIMEZONE` 设置通知时间戳时区（默认 `Asia/Shanghai`）。
@@ -188,19 +188,13 @@ export TELEGRAM_BOT_TOKEN="your-bot-token"
 export TELEGRAM_ALLOWED_USER_ID="your-telegram-user-id"
 
 # 启动 Bot（构建后，复用根目录 .env）
-npm run services -- start telegram
-# Or start via the unified CLI (after build)
-node dist/src/cli.js telegram
+node dist/server/cli.js telegram
 # Legacy alias (after build)
 ads-telegram start
-
-# 停止 / 状态
-npm run services -- stop telegram
-npm run services -- status
 ```
 
 > 推荐：把上述配置写入根目录的 `.env`，Telegram 与 Web Console 会共用这一份环境变量。目录白名单使用统一的 `ALLOWED_DIRS`。
-> 旧的 `telegram-bot.sh` 已移除，统一通过 `npm run services -- <start|stop|status>` 管理服务。
+> 如需后台常驻/自动重启，推荐用 pm2/systemd 等外部进程管理器托管 `node dist/server/cli.js telegram`。
 
 **常用命令**：
 | 命令 | 说明 |
@@ -229,7 +223,7 @@ npm run services -- status
 
 ### 🔍 Tavily Research (Skill)
 
-ADS 不再内置 Tavily 的 runtime 集成（已移除 `src/tools/search/**`）。联网搜索与 URL 抓取仅通过 skill 脚本提供：
+ADS 不再内置 Tavily 的 runtime 集成（已移除 `server/tools/search/**`）。联网搜索与 URL 抓取仅通过 skill 脚本提供：
 
 默认 `ADS_STATE_DIR` 为项目根目录下的 `.ads`。
 
@@ -275,12 +269,12 @@ See [SECURITY.md](SECURITY.md) for complete security guidelines.
 
 ```
 ads/
-├── src/              # Source code
-│   ├── tools/        # ADS tool implementations
+├── server/           # Backend (Node.js, TypeScript)
 │   ├── graph/        # Graph persistence & workflow logic
 │   ├── workspace/    # Workspace management
 │   ├── telegram/     # Telegram bot implementation
-│   └── templates/    # Template rendering
+│   └── web/          # Web Console backend
+├── client/           # Frontend (Vue 3, Vite)
 ├── tests/            # Test files
 ├── templates/        # Workspace templates
 ├── docs/             # Documentation

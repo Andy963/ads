@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { CodexCliAdapter } from "../../src/agents/adapters/codexCliAdapter.js";
+import { CodexCliAdapter } from "../../server/agents/adapters/codexCliAdapter.js";
 
 async function createExecutableScript(contents: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ads-codex-cli-"));

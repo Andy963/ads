@@ -1,14 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { deriveProjectSessionId } from "../../src/web/server/projectSessionId.js";
+import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 import {
   matchesBroadcastSessionId,
   parseWsChatSessionFromProtocols,
   parseWsSessionFromProtocols,
   resolveWebSocketChatSessionId,
   resolveWebSocketSessionId,
-} from "../../src/web/server/ws/session.js";
+} from "../../server/web/server/ws/session.js";
 
 describe("web/server/ws/session", () => {
   it("parses session token from websocket protocols", () => {

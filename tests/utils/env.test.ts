@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { loadEnv, resetEnvForTests } = await import("../../src/utils/env.js");
+const { loadEnv, resetEnvForTests } = await import("../../server/utils/env.js");
 
 const RESTORED_ENV_KEYS = [
   "ADS_ENV_PATH",

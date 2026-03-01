@@ -4,10 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { SystemPromptManager } from "../../src/systemPrompt/manager.js";
-import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { SystemPromptManager } from "../../server/systemPrompt/manager.js";
+import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
-import { setPreference } from "../../src/memory/soul.js";
+import { setPreference } from "../../server/memory/soul.js";
 
 describe("SystemPromptManager rule reinjection", () => {
   let workspace: string;

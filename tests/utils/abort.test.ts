@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { ABORT_ERROR_NAME, createAbortError, isAbortError } from "../../src/utils/abort.js";
+import { ABORT_ERROR_NAME, createAbortError, isAbortError } from "../../server/utils/abort.js";
 
 describe("utils/abort", () => {
   it("createAbortError should set name and default message", () => {

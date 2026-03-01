@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { runCli, runCliRaw } from "../../src/agents/cli/cliRunner.js";
+import { runCli, runCliRaw } from "../../server/agents/cli/cliRunner.js";
 
 describe("cliRunner", () => {
   it("parses JSONL output and skips noise", async () => {

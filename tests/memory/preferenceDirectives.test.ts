@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractPreferenceDirectives } from "../../src/memory/preferenceDirectives.js";
+import { extractPreferenceDirectives } from "../../server/memory/preferenceDirectives.js";
 
 describe("preference directives", () => {
   it("extracts directives and removes directive lines", () => {

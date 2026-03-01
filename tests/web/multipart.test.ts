@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 
-import { extractMultipartFile } from "../../src/web/multipart.js";
+import { extractMultipartFile } from "../../server/web/multipart.js";
 
 function makeTinyPng(): Buffer {
   const buf = Buffer.alloc(8 + 4 + 4 + 13 + 4);

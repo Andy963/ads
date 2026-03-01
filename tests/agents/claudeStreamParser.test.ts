@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { ClaudeStreamParser } from "../../src/agents/cli/claudeStreamParser.js";
+import { ClaudeStreamParser } from "../../server/agents/cli/claudeStreamParser.js";
 
 describe("ClaudeStreamParser", () => {
   it("maps system init to boot + analysis and captures session id", () => {

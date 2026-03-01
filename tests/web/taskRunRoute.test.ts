@@ -4,13 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetDatabaseForTests } from "../../src/storage/database.js";
-import { TaskStore } from "../../src/tasks/store.js";
-import { TaskQueue } from "../../src/tasks/queue.js";
-import type { TaskExecutor } from "../../src/tasks/executor.js";
-import type { Task } from "../../src/tasks/types.js";
-import { TaskRunController } from "../../src/web/taskRunController.js";
-import { handleSingleTaskRun, matchSingleTaskRunPath } from "../../src/web/api/taskRun.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { TaskStore } from "../../server/tasks/store.js";
+import { TaskQueue } from "../../server/tasks/queue.js";
+import type { TaskExecutor } from "../../server/tasks/executor.js";
+import type { Task } from "../../server/tasks/types.js";
+import { TaskRunController } from "../../server/web/taskRunController.js";
+import { handleSingleTaskRun, matchSingleTaskRunPath } from "../../server/web/api/taskRun.js";
 
 describe("web/api/taskRun", () => {
   let tmpDir: string;

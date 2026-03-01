@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { discoverSkills, loadSkillBody, renderCompactSkills, type SkillMetadata } from "../../src/skills/loader.js";
+import { discoverSkills, loadSkillBody, renderCompactSkills, type SkillMetadata } from "../../server/skills/loader.js";
 
 let workspaceRoot: string;
 let adsStateDir: string;

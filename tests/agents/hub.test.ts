@@ -1,13 +1,14 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-import type { Input } from "../../src/agents/protocol/types.js";
-import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../../src/agents/types.js";
-import { HybridOrchestrator } from "../../src/agents/orchestrator.js";
-import { runCollaborativeTurn } from "../../src/agents/hub.js";
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
+import type { Input } from "../../server/agents/protocol/types.js";
+import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../../server/agents/types.js";
+import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
+import { runCollaborativeTurn } from "../../server/agents/hub.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 class QueueAgentAdapter implements AgentAdapter {
@@ -74,9 +75,7 @@ describe("agents/hub", () => {
     setEnv("ADS_COORDINATOR_ENABLED", "1");
     adsState = installTempAdsStateDir("ads-state-hub-");
 
-    const scratchRoot = path.join(process.cwd(), ".ads-test-tmp");
-    fs.mkdirSync(scratchRoot, { recursive: true });
-    tmpDir = fs.mkdtempSync(path.join(scratchRoot, "agent-hub-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-agent-hub-"));
   });
 
   afterEach(() => {

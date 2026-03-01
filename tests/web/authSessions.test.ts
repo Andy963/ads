@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetStateDatabaseForTests, getStateDatabase } from "../../src/state/database.js";
-import { initAdmin } from "../../src/web/auth/initAdmin.js";
+import { resetStateDatabaseForTests, getStateDatabase } from "../../server/state/database.js";
+import { initAdmin } from "../../server/web/auth/initAdmin.js";
 import {
   createWebSession,
   hashSessionToken,
@@ -13,7 +13,7 @@ import {
   resolveSessionSlidingEnabled,
   resolveSessionTtlSeconds,
   revokeSessionByTokenHash,
-} from "../../src/web/auth/sessions.js";
+} from "../../server/web/auth/sessions.js";
 
 describe("web/auth/sessions", () => {
   let tmpDir: string;

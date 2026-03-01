@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import type { TaskQueueContext, TaskQueueMetrics } from "../../src/web/server/taskQueue/manager.js";
-import { handleTaskQueueRoutes } from "../../src/web/server/api/routes/taskQueue.js";
+import type { TaskQueueContext, TaskQueueMetrics } from "../../server/web/server/taskQueue/manager.js";
+import { handleTaskQueueRoutes } from "../../server/web/server/api/routes/taskQueue.js";
 
 type FakeReq = {
   method: string;

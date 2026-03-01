@@ -4,10 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { Input } from "../../src/agents/protocol/types.js";
-import type { AgentEvent } from "../../src/codex/events.js";
-import type { AgentAdapter, AgentRunResult, AgentSendOptions } from "../../src/agents/types.js";
-import { HybridOrchestrator } from "../../src/agents/orchestrator.js";
+import type { Input } from "../../server/agents/protocol/types.js";
+import type { AgentEvent } from "../../server/codex/events.js";
+import type { AgentAdapter, AgentRunResult, AgentSendOptions } from "../../server/agents/types.js";
+import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
 
 class FakeSystemPromptManager {
   requestedSkills: string[] = [];

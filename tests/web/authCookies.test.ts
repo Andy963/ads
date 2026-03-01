@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { serializeCookie } from "../../src/web/auth/cookies.js";
+import { serializeCookie } from "../../server/web/auth/cookies.js";
 
 describe("web/auth/cookies", () => {
   it("serializeCookie should include HttpOnly by default", () => {

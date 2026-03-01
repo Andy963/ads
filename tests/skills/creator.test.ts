@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { initSkill, parseResourceList, validateSkillDirectory } from "../../src/skills/creator.js";
+import { initSkill, parseResourceList, validateSkillDirectory } from "../../server/skills/creator.js";
 
 describe("skills/creator", () => {
   let workspace: string;

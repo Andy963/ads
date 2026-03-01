@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resolveBootstrapRecipe } from "../../src/bootstrap/recipeResolver.js";
+import { resolveBootstrapRecipe } from "../../server/bootstrap/recipeResolver.js";
 
 function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

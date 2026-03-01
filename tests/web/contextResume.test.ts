@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildHistoryInjectionContext,
   prependContextToInput,
-} from "../../src/web/server/ws/handlePrompt.js";
+} from "../../server/web/server/ws/handlePrompt.js";
 
 describe("context resume — history injection", () => {
   it("builds transcript from user/ai entries only", () => {

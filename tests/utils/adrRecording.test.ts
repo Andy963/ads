@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { processAdrBlocks } from "../../src/utils/adrRecording.js";
+import { processAdrBlocks } from "../../server/utils/adrRecording.js";
 
 function makeTempWorkspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-adr-"));

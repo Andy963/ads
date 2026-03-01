@@ -4,9 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { detectImageInfo } from "../../src/attachments/images.js";
-import { AttachmentStore } from "../../src/attachments/store.js";
-import { getDatabase, resetDatabaseForTests } from "../../src/storage/database.js";
+import { detectImageInfo } from "../../server/attachments/images.js";
+import { AttachmentStore } from "../../server/attachments/store.js";
+import { getDatabase, resetDatabaseForTests } from "../../server/storage/database.js";
 
 function makeTinyPng(width: number, height: number): Buffer {
   const buf = Buffer.alloc(8 + 4 + 4 + 13 + 4);

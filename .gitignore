@@ -15,7 +15,6 @@ docs/
 .tmp/
 temp/
 *.pid
-.ads-test-tmp/
 
 # ADS specific
 .ads/logs/

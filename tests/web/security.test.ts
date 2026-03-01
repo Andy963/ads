@@ -2,7 +2,7 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 
-import { createHttpServer } from "../../src/web/server/httpServer.js";
+import { createHttpServer } from "../../server/web/server/httpServer.js";
 
 describe("web/server/security", () => {
   let server: http.Server;

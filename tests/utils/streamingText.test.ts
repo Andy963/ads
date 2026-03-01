@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { mergeStreamingText } from "../../src/utils/streamingText.js";
+import { mergeStreamingText } from "../../server/utils/streamingText.js";
 
 describe("utils/streamingText.mergeStreamingText", () => {
   it("treats next as cumulative when next starts with prev", () => {

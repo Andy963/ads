@@ -4,10 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runCommand } from "../../src/utils/commandRunner.js";
-import { runBootstrapLoop } from "../../src/bootstrap/bootstrapLoop.js";
-import type { BootstrapAgentRunner } from "../../src/bootstrap/agentRunner.js";
-import type { BootstrapReviewerRunner } from "../../src/bootstrap/review/reviewerRunner.js";
+import { runCommand } from "../../server/utils/commandRunner.js";
+import { runBootstrapLoop } from "../../server/bootstrap/bootstrapLoop.js";
+import type { BootstrapAgentRunner } from "../../server/bootstrap/agentRunner.js";
+import type { BootstrapReviewerRunner } from "../../server/bootstrap/review/reviewerRunner.js";
 
 function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { correctTranscriptWithModel } from "../../src/telegram/utils/transcriptCorrection.js";
+import { correctTranscriptWithModel } from "../../server/telegram/utils/transcriptCorrection.js";
 
 describe("telegram/transcriptCorrection", () => {
   const originalEnv = { ...process.env };

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { getDatabase, resetDatabaseForTests } from "../../src/storage/database.js";
+import { getDatabase, resetDatabaseForTests } from "../../server/storage/database.js";
 
 describe("storage/database", () => {
   let tmpDir: string;

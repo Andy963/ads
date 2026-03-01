@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { loadTelegramConfig } from '../../src/telegram/config.js';
+import { loadTelegramConfig } from '../../server/telegram/config.js';
 
 describe('Telegram Config', () => {
   const originalEnv = process.env;

@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runCommand } from "../../src/utils/commandRunner.js";
-import { stageSafeBootstrapChanges } from "../../src/bootstrap/gitCommitter.js";
+import { runCommand } from "../../server/utils/commandRunner.js";
+import { stageSafeBootstrapChanges } from "../../server/bootstrap/gitCommitter.js";
 
 function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

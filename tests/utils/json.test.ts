@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { z } from "zod";
 
 const { parseJsonWithSchema, safeParseJson, safeParseJsonFromUnknown, safeParseJsonWithSchema, safeStringify } = await import(
-  "../../src/utils/json.js"
+  "../../server/utils/json.js"
 );
 
 describe("utils/json", () => {

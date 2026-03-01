@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { chunkMessage } from "../../src/telegram/adapters/codex/chunkMessage.js";
+import { chunkMessage } from "../../server/telegram/adapters/codex/chunkMessage.js";
 
 describe("telegram/adapters/codex/chunkMessage", () => {
   it("returns a single chunk when under limit", () => {

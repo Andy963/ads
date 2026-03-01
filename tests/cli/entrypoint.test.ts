@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseAdsCli } from "../../src/cli.js";
+import { parseAdsCli } from "../../server/cli.js";
 
 describe("ads unified cli entrypoint", () => {
   test("defaults to help for ads", () => {

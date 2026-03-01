@@ -4,8 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { createNode, createEdge, getParentNodes } from "../../src/graph/crud.js";
-import { resetDatabaseForTests } from "../../src/storage/database.js";
+import { createNode, createEdge, getParentNodes } from "../../server/graph/crud.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
 
 describe("graph/crud", () => {
   let workspace: string;

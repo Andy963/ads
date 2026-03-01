@@ -4,11 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { resetDatabaseForTests } from "../../src/storage/database.js";
-import { TaskStore } from "../../src/tasks/store.js";
-import { TaskQueue } from "../../src/tasks/queue.js";
-import type { TaskExecutor } from "../../src/tasks/executor.js";
-import type { Task } from "../../src/tasks/types.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { TaskStore } from "../../server/tasks/store.js";
+import { TaskQueue } from "../../server/tasks/queue.js";
+import type { TaskExecutor } from "../../server/tasks/executor.js";
+import type { Task } from "../../server/tasks/types.js";
 
 type MetricName =
   | "TASK_ADDED"

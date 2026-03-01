@@ -4,11 +4,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
-import { createWorkflowFromTemplate } from "../../src/workflow/templateService.js";
-import { getAllNodes, getNodeById } from "../../src/graph/crud.js";
-import { resetDatabaseForTests, getDatabase } from "../../src/storage/database.js";
-import { initializeWorkspace } from "../../src/workspace/detector.js";
-import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { createWorkflowFromTemplate } from "../../server/workflow/templateService.js";
+import { getAllNodes, getNodeById } from "../../server/graph/crud.js";
+import { resetDatabaseForTests, getDatabase } from "../../server/storage/database.js";
+import { initializeWorkspace } from "../../server/workspace/detector.js";
+import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 interface WorkflowCreationResponse {

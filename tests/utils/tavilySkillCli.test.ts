@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { CommandRunRequest, CommandRunResult } from "../../src/utils/commandRunner.js";
-import { hasTavilyApiKey, runTavilyCli } from "../../src/utils/tavilySkillCli.js";
+import type { CommandRunRequest, CommandRunResult } from "../../server/utils/commandRunner.js";
+import { hasTavilyApiKey, runTavilyCli } from "../../server/utils/tavilySkillCli.js";
 
 function makeTempScript(): { cwd: string; scriptPath: string; cleanup: () => void } {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ads-tavily-skill-"));

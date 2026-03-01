@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
-import { ThreadStorage } from "../../src/telegram/utils/threadStorage.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { ThreadStorage } from "../../server/telegram/utils/threadStorage.js";
 
 describe("ThreadStorage", () => {
   let tmpDir: string | null = null;

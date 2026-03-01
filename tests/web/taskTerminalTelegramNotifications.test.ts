@@ -4,17 +4,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getStateDatabase, resetStateDatabaseForTests } from "../../src/state/database.js";
-import { ensureWebAuthTables } from "../../src/web/auth/schema.js";
-import { ensureWebProjectTables } from "../../src/web/projects/schema.js";
-import { deriveProjectSessionId } from "../../src/web/server/projectSessionId.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
+import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
+import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 import {
   getTaskNotificationRow,
   isTaskTerminalStatus,
   recordTaskTerminalStatus,
   upsertTaskNotificationBinding,
-} from "../../src/web/taskNotifications/store.js";
-import { attemptSendTaskTerminalTelegramNotification } from "../../src/web/taskNotifications/telegramNotifier.js";
+} from "../../server/web/taskNotifications/store.js";
+import { attemptSendTaskTerminalTelegramNotification } from "../../server/web/taskNotifications/telegramNotifier.js";
 
 describe("web/taskNotifications telegram", () => {
   let tmpDir: string;

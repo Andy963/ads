@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { loadSkillRegistry } from "../../src/skills/registryMetadata.js";
+import { loadSkillRegistry } from "../../server/skills/registryMetadata.js";
 
 function writeRegistry(root: string, yamlBody: string): void {
   const dir = path.join(root, ".agent", "skills");

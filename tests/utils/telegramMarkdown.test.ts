@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { escapeTelegramMarkdownV2 } from "../../src/utils/markdown.js";
+import { escapeTelegramMarkdownV2 } from "../../server/utils/markdown.js";
 
 describe("utils/markdown escapeTelegramMarkdownV2", () => {
   it("preserves fenced code block language", () => {

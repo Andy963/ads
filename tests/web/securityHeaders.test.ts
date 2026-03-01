@@ -1,8 +1,8 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { setSecurityHeaders, sendJson } from "../../src/web/server/http.js";
-import { createHttpServer } from "../../src/web/server/httpServer.js";
+import { setSecurityHeaders, sendJson } from "../../server/web/server/http.js";
+import { createHttpServer } from "../../server/web/server/httpServer.js";
 
 // Mock response object for unit testing sendJson/setSecurityHeaders
 class MockResponse extends http.ServerResponse {

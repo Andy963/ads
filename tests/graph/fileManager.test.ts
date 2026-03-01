@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { saveNodeToFile, getNodeFilePath } from "../../src/graph/fileManager.js";
-import { createNode, createEdge } from "../../src/graph/crud.js";
-import { resetDatabaseForTests } from "../../src/storage/database.js";
+import { saveNodeToFile, getNodeFilePath } from "../../server/graph/fileManager.js";
+import { createNode, createEdge } from "../../server/graph/crud.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
 
 describe("graph/fileManager", () => {
   let workspace: string;

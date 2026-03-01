@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getProjectPathValidationErrorMessage, validateWorkspacePath } from "../../src/web/server/api/routes/workspacePath.js";
+import { getProjectPathValidationErrorMessage, validateWorkspacePath } from "../../server/web/server/api/routes/workspacePath.js";
 
 describe("web/workspacePath validation", () => {
   let tmpDir: string;

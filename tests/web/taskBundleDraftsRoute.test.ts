@@ -4,10 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
-import type { TaskQueueMetrics } from "../../src/web/server/taskQueue/manager.js";
-import { handleTaskBundleDraftRoutes } from "../../src/web/server/api/routes/taskBundleDrafts.js";
-import { approveTaskBundleDraft, upsertTaskBundleDraft } from "../../src/web/server/planner/taskBundleDraftStore.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import type { TaskQueueMetrics } from "../../server/web/server/taskQueue/manager.js";
+import { handleTaskBundleDraftRoutes } from "../../server/web/server/api/routes/taskBundleDrafts.js";
+import { approveTaskBundleDraft, upsertTaskBundleDraft } from "../../server/web/server/planner/taskBundleDraftStore.js";
 
 type FakeReq = {
   method: string;

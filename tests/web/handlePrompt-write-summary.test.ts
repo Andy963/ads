@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { formatWriteExploredSummary } from "../../src/web/server/ws/handlePrompt.js";
+import { formatWriteExploredSummary } from "../../server/web/server/ws/handlePrompt.js";
 
 describe("web/server/ws/handlePrompt Write summary", () => {
   it("appends a git-style diffstat when patch stats are available", () => {

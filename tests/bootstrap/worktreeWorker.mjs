@@ -41,7 +41,7 @@ async function main() {
 
   try {
     register();
-    const { prepareBootstrapWorktree } = await import("../../src/bootstrap/worktree.js");
+    const { prepareBootstrapWorktree } = await import("../../server/bootstrap/worktree.js");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
     try {

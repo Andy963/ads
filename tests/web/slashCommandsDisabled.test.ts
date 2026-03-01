@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { handleCommandMessage } from "../../src/web/server/ws/handleCommand.js";
-import { handlePromptMessage } from "../../src/web/server/ws/handlePrompt.js";
+import { handleCommandMessage } from "../../server/web/server/ws/handleCommand.js";
+import { handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
 
 type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
 

@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 
-import { deriveLegacyWebUserId, deriveWebUserId } from "../../src/web/utils.js";
+import { deriveLegacyWebUserId, deriveWebUserId } from "../../server/web/utils.js";
 
 describe("web/utils deriveWebUserId", () => {
   it("derives a stable 48-bit userId with a dedicated prefix", () => {

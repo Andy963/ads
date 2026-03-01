@@ -1,9 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import type { ThreadEvent } from "../../src/agents/protocol/types.js";
+import type { ThreadEvent } from "../../server/agents/protocol/types.js";
 
-import { ActivityTracker, formatExploredTree } from "../../src/utils/activityTracker.js";
+import { ActivityTracker, formatExploredTree } from "../../server/utils/activityTracker.js";
 
 describe("utils/activityTracker", () => {
   it("summarizes common command_execution events", () => {

@@ -7,12 +7,12 @@ import path from "node:path";
 
 import WebSocket, { type RawData } from "ws";
 
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
-import { AsyncLock } from "../../src/utils/asyncLock.js";
-import { HistoryStore } from "../../src/utils/historyStore.js";
-import { SessionManager } from "../../src/telegram/utils/sessionManager.js";
-import { NoopAgentAvailability } from "../../src/agents/health/agentAvailability.js";
-import { attachWebSocketServer } from "../../src/web/server/ws/server.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { AsyncLock } from "../../server/utils/asyncLock.js";
+import { HistoryStore } from "../../server/utils/historyStore.js";
+import { SessionManager } from "../../server/telegram/utils/sessionManager.js";
+import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
+import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 

@@ -173,12 +173,12 @@ describe('Feature Name', () => {
 
 ```
 ads/
-├── src/           # Source code
-│   ├── tools/     # ADS tool implementations
+├── server/        # Backend (Node.js, TypeScript)
 │   ├── graph/     # Graph/workflow logic
 │   ├── workspace/ # Workspace management
 │   ├── telegram/  # Telegram bot
-│   └── templates/ # Template rendering
+│   └── web/       # Web Console backend
+├── client/        # Frontend (Vue 3, Vite)
 ├── tests/         # Test files
 ├── templates/     # Workspace templates
 ├── scripts/       # Build and utility scripts

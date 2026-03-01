@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { transcribeTelegramVoiceMessage } from "../../src/telegram/utils/voiceTranscription.js";
+import { transcribeTelegramVoiceMessage } from "../../server/telegram/utils/voiceTranscription.js";
 
 describe("telegram/voiceTranscription", () => {
   const originalEnv = { ...process.env };

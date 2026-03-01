@@ -1,14 +1,14 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import type { Input } from "../../src/agents/protocol/types.js";
+import type { Input } from "../../server/agents/protocol/types.js";
 
-import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../../src/agents/types.js";
-import { HybridOrchestrator } from "../../src/agents/orchestrator.js";
-import { TaskCoordinator } from "../../src/agents/tasks/taskCoordinator.js";
-import { TaskStore } from "../../src/agents/tasks/taskStore.js";
+import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../../server/agents/types.js";
+import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
+import { TaskCoordinator } from "../../server/agents/tasks/taskCoordinator.js";
+import { TaskStore } from "../../server/agents/tasks/taskStore.js";
 
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
 
 class QueueAgentAdapter implements AgentAdapter {
   readonly id: string;

@@ -4,9 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
-import { listTaskBundleDrafts } from "../../src/web/server/planner/taskBundleDraftStore.js";
-import { handlePromptMessage } from "../../src/web/server/ws/handlePrompt.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { listTaskBundleDrafts } from "../../server/web/server/planner/taskBundleDraftStore.js";
+import { handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
 
 type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
 

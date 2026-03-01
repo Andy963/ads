@@ -4,10 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetDatabaseForTests } from "../../src/storage/database.js";
-import { handleScheduleRoutes } from "../../src/web/server/api/routes/schedules.js";
-import type { ScheduleSpec } from "../../src/scheduler/scheduleSpec.js";
-import { SchedulerRuntime } from "../../src/scheduler/runtime.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { handleScheduleRoutes } from "../../server/web/server/api/routes/schedules.js";
+import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
+import { SchedulerRuntime } from "../../server/scheduler/runtime.js";
 
 type FakeReq = {
   method: string;

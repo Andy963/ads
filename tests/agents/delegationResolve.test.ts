@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveDelegations } from "../../src/agents/delegation.js";
+import { resolveDelegations } from "../../server/agents/delegation.js";
 
 describe("agents/delegation resolveDelegations", () => {
   it("replaces multiple identical delegation blocks without leaving leftovers", async () => {

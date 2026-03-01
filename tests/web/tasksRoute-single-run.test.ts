@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { handleTaskRoutes } from "../../src/web/server/api/routes/tasks.js";
-import type { ApiRouteContext, ApiSharedDeps } from "../../src/web/server/api/types.js";
+import { handleTaskRoutes } from "../../server/web/server/api/routes/tasks.js";
+import type { ApiRouteContext, ApiSharedDeps } from "../../server/web/server/api/types.js";
 
 type FakeReq = {
   method: string;

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { mapThreadEventToAgentEvent } from "../../src/codex/events.js";
+import { mapThreadEventToAgentEvent } from "../../server/codex/events.js";
 
 describe("mapThreadEventToAgentEvent", () => {
   it("maps turn.started to analysis phase", () => {

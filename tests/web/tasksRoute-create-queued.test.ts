@@ -4,9 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { handleTaskRoutes } from "../../src/web/server/api/routes/tasks.js";
-import type { ApiRouteContext, ApiSharedDeps } from "../../src/web/server/api/types.js";
-import { resetStateDatabaseForTests } from "../../src/state/database.js";
+import { handleTaskRoutes } from "../../server/web/server/api/routes/tasks.js";
+import type { ApiRouteContext, ApiSharedDeps } from "../../server/web/server/api/types.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
 
 type FakeReq = {
   method: string;

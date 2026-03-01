@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { PendingTranscriptionStore } from "../../src/telegram/utils/pendingTranscriptions.js";
+import { PendingTranscriptionStore } from "../../server/telegram/utils/pendingTranscriptions.js";
 
 describe("telegram/pendingTranscriptions", () => {
   it("consumes pending transcription exactly once", () => {

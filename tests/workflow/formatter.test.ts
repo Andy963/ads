@@ -5,7 +5,7 @@ import {
   formatWorkflowStatusSummary,
   formatWorkflowLog,
   formatWorkflowList,
-} from "../../src/workflow/formatter.js";
+} from "../../server/workflow/formatter.js";
 
 const sampleWorkflow = {
   workflow_id: "req_demo",

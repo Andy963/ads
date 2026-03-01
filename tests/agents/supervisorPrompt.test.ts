@@ -1,10 +1,11 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-import { SupervisorPromptLoader } from "../../src/agents/tasks/supervisorPrompt.js";
-import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+import { SupervisorPromptLoader } from "../../server/agents/tasks/supervisorPrompt.js";
+import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("agents/tasks/supervisorPrompt", () => {
@@ -13,9 +14,7 @@ describe("agents/tasks/supervisorPrompt", () => {
   let adsState: TempAdsStateDir | null = null;
 
   beforeEach(() => {
-    const scratchRoot = path.join(process.cwd(), ".ads-test-tmp");
-    fs.mkdirSync(scratchRoot, { recursive: true });
-    tmpDir = fs.mkdtempSync(path.join(scratchRoot, "supervisor-prompt-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-supervisor-prompt-"));
     process.env = { ...originalEnv };
     adsState = installTempAdsStateDir("ads-state-supervisor-");
   });

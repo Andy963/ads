@@ -23,31 +23,26 @@
     "url": "https://github.com/Andy963/ads/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-templates.js && npm run build:web",
-    "build:web": "vite build --config web/vite.config.ts",
-    "dev:web": "vite --config web/vite.config.ts",
-    "test:web": "vitest --config web/vitest.config.ts run",
-    "dev:console": "bash scripts/dev-console.sh",
+    "build": "tsc -p tsconfig.json && node scripts/copy-runtime-assets.js && npm run build:web",
+    "build:web": "vite build --config client/vite.config.ts",
+    "dev:web": "vite --config client/vite.config.ts",
+    "test:web": "vitest --config client/vitest.config.ts run",
     "postbuild": "node scripts/chmod-bins.js",
-    "start": "node dist/src/cli.js web",
-    "dev": "tsx watch src/web/server.ts",
+    "start": "node dist/server/cli.js web",
+    "dev": "tsx watch server/web/server.ts",
     "test": "node --import tsx --test tests/**/*.test.ts",
-    "coverage": "c8 --all --include src --exclude 'src/telegram/**' --reporter=text --reporter=lcov npm test",
-    "web": "node dist/src/cli.js web",
-    "web:init-admin": "tsx src/web/auth/initAdminCli.ts",
-    "web:reset-admin": "tsx src/web/auth/resetAdminCli.ts",
-    "web:bg": "npm run services -- start web",
-    "web:stop": "npm run services -- stop web",
-    "web:status": "npm run services -- status web",
-    "services": "bash scripts/services.sh",
+    "coverage": "c8 --all --include server --exclude 'server/telegram/**' --reporter=text --reporter=lcov npm test",
+    "web": "node dist/server/cli.js web",
+    "web:init-admin": "tsx server/web/auth/initAdminCli.ts",
+    "web:reset-admin": "tsx server/web/auth/resetAdminCli.ts",
     "lint": "eslint . --ext .ts"
   },
   "engines": {
     "node": ">=20"
   },
   "bin": {
-    "ads": "./dist/src/cli.js",
-    "ads-telegram": "./dist/src/cli.js"
+    "ads": "./dist/server/cli.js",
+    "ads-telegram": "./dist/server/cli.js"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

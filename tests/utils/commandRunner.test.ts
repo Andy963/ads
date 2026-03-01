@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import { assertCommandAllowed, runCommand } from "../../src/utils/commandRunner.js";
+import { assertCommandAllowed, runCommand } from "../../server/utils/commandRunner.js";
 
 describe("utils/commandRunner", () => {
   it("rejects command paths when allowlist is enabled", async () => {

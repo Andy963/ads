@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { stripAnsi } from "../../src/agents/cli/stripAnsi.js";
+import { stripAnsi } from "../../server/agents/cli/stripAnsi.js";
 
 describe("stripAnsi", () => {
   it("removes CSI sequences", () => {

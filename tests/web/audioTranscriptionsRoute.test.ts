@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { handleAudioRoutes } from "../../src/web/server/api/routes/audio.js";
+import { handleAudioRoutes } from "../../server/web/server/api/routes/audio.js";
 
 type FakeReq = {
   method: string;

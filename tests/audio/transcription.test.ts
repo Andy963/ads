@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { transcribeAudioBuffer } from "../../src/audio/transcription.js";
+import { transcribeAudioBuffer } from "../../server/audio/transcription.js";
 
 function writeSkill(adsStateDir: string, name: string): void {
   const dir = path.join(adsStateDir, ".agent", "skills", name);

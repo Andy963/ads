@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderTelegramOutbound } from "../../src/telegram/adapters/codex/renderOutbound.js";
+import { renderTelegramOutbound } from "../../server/telegram/adapters/codex/renderOutbound.js";
 
 describe("telegram outbound renderer", () => {
   it("renders text as MarkdownV2", () => {

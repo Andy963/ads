@@ -4,11 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getStateDatabase, resetStateDatabaseForTests } from "../../src/state/database.js";
-import { ensureWebAuthTables } from "../../src/web/auth/schema.js";
-import { ensureWebProjectTables } from "../../src/web/projects/schema.js";
-import { listWebProjects, upsertWebProject } from "../../src/web/projects/store.js";
-import { handleProjectRoutes } from "../../src/web/server/api/routes/projects.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
+import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
+import { listWebProjects, upsertWebProject } from "../../server/web/projects/store.js";
+import { handleProjectRoutes } from "../../server/web/server/api/routes/projects.js";
 
 type FakeReq = {
   method: string;

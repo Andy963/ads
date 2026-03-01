@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { RotatingLogFile } from "../../src/utils/rotatingLogFile.js";
+import { RotatingLogFile } from "../../server/utils/rotatingLogFile.js";
 
 test("rotates before exceeding maxBytes", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-rotating-log-"));

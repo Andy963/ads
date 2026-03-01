@@ -4,8 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { ClaudeCliAdapter } from "../../src/agents/adapters/claudeCliAdapter.js";
-import type { Input } from "../../src/agents/protocol/types.js";
+import { ClaudeCliAdapter } from "../../server/agents/adapters/claudeCliAdapter.js";
+import type { Input } from "../../server/agents/protocol/types.js";
 
 async function createExecutableScript(contents: string): Promise<{ binary: string; dir: string }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ads-claude-cli-"));

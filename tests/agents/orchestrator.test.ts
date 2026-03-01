@@ -1,10 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import type { Input } from "../../src/agents/protocol/types.js";
+import type { Input } from "../../server/agents/protocol/types.js";
 
-import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../../src/agents/types.js";
-import { HybridOrchestrator } from "../../src/agents/orchestrator.js";
+import type { AgentAdapter, AgentMetadata, AgentRunResult, AgentSendOptions } from "../../server/agents/types.js";
+import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
 

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractTaskBundleJsonBlocks, formatTaskBundleSummaryMarkdown, stripTaskBundleCodeBlocks } from "../../src/web/server/planner/taskBundle.js";
+import { extractTaskBundleJsonBlocks, formatTaskBundleSummaryMarkdown, stripTaskBundleCodeBlocks } from "../../server/web/server/planner/taskBundle.js";
 
 describe("planner task bundle chat formatting", () => {
   it("extracts ads-tasks blocks only", () => {

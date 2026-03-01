@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { getStateDatabase, resetStateDatabaseForTests } from "../../src/state/database.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 
 describe("state/database", () => {
   let tmpDir: string;

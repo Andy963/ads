@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { SessionManager } from '../../src/telegram/utils/sessionManager.js';
+import { SessionManager } from '../../server/telegram/utils/sessionManager.js';
 
 describe('SessionManager', () => {
   let manager: SessionManager;

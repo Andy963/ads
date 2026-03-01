@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { CliAgentAvailability } from "../../src/agents/health/agentAvailability.js";
+import { CliAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 
 describe("CliAgentAvailability", () => {
   it("merges probe result into adapter status", async () => {

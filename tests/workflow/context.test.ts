@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { WorkflowContext } from "../../src/workspace/context.js";
-import { createNode, createEdge } from "../../src/graph/crud.js";
-import { resetDatabaseForTests } from "../../src/storage/database.js";
+import { WorkflowContext } from "../../server/workspace/context.js";
+import { createNode, createEdge } from "../../server/graph/crud.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("workflow/context", () => {

@@ -11,8 +11,8 @@ import {
   listPreferences,
   setPreference,
   deletePreference,
-} from "../../src/memory/soul.js";
-import { resolveWorkspaceStatePath } from "../../src/workspace/adsPaths.js";
+} from "../../server/memory/soul.js";
+import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("soul store", () => {

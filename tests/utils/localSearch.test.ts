@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { formatLocalSearchOutput, searchWorkspaceFiles } from "../../src/utils/localSearch.js";
+import { formatLocalSearchOutput, searchWorkspaceFiles } from "../../server/utils/localSearch.js";
 
 function makeWorkspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-local-search-"));
