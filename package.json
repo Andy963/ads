@@ -48,7 +48,7 @@
     "@element-plus/icons-vue": "^2.3.2",
     "@grammyjs/types": "^3.22.2",
     "@tavily/core": "^0.5.4",
-    "better-sqlite3": "^12.5.0",
+    "better-sqlite3": "^12.6.2",
     "element-plus": "^2.13.2",
     "grammy": "^1.38.3",
     "highlight.js": "^11.11.1",
