@@ -371,15 +371,9 @@ export class CodexCliAdapter implements AgentAdapter {
 
     if (this.sandboxMode === "read-only") {
       args.push("--sandbox", "read-only");
-    }
-
-    if (options.useResume) {
-      args.push("resume");
-    }
-
-    if (this.sandboxMode === "danger-full-access") {
+    } else if (this.sandboxMode === "danger-full-access") {
       args.push("--dangerously-bypass-approvals-and-sandbox");
-    } else if (this.sandboxMode !== "read-only") {
+    } else {
       args.push("--full-auto");
     }
 
@@ -395,6 +389,10 @@ export class CodexCliAdapter implements AgentAdapter {
     }
     for (const imagePath of options.images) {
       args.push("--image", imagePath);
+    }
+
+    if (options.useResume) {
+      args.push("resume");
     }
     return args;
   }

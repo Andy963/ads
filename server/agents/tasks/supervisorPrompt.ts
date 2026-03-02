@@ -1,14 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../../utils/logger.js";
 import { parseOptionalBooleanFlag } from "../../utils/flags.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../workspace/adsPaths.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
+import { PROJECT_ROOT } from "../../utils/projectRoot.js";
 const DEFAULT_SUPERVISOR_PROMPT_PATH = path.join(PROJECT_ROOT, "templates", "supervisor.md");
 
 interface FileCache {

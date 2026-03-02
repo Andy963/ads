@@ -1,13 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
 
 import { createLogger, type Logger } from "../../utils/logger.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../../workspace/adsPaths.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
+import { PROJECT_ROOT } from "../../utils/projectRoot.js";
 const DEFAULT_SKILLS_DIR = path.join(PROJECT_ROOT, "templates", "skills");
 
 interface FileCache {

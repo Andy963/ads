@@ -50,17 +50,15 @@ async function assertCodexThreadResumable(args: {
 
   if (args.sandboxMode === "read-only") {
     cliArgs.push("--sandbox", "read-only");
-  }
-
-  cliArgs.push("resume");
-
-  if (args.sandboxMode === "danger-full-access") {
+  } else if (args.sandboxMode === "danger-full-access") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");
-  } else if (args.sandboxMode !== "read-only") {
+  } else {
     cliArgs.push("--full-auto");
   }
 
-  cliArgs.push("--json", "--skip-git-repo-check", threadId, "-");
+  cliArgs.push("--json", "--skip-git-repo-check");
+
+  cliArgs.push("resume", threadId, "-");
 
   let sawTurnFailed = false;
   let lastError: string | null = null;

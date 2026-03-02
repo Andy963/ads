@@ -5,6 +5,7 @@ import zlib from "node:zlib";
 import { pipeline } from "node:stream";
 
 import { sendJson, setSecurityHeaders } from "./http.js";
+import { PROJECT_ROOT } from "../../utils/projectRoot.js";
 
 interface Logger {
   error(message: string, ...args: unknown[]): void;
@@ -100,7 +101,9 @@ export function createHttpServer(options: {
   handleApiRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
   logger?: Logger;
 }): http.Server {
-  const distClientDir = path.join(process.cwd(), "dist", "client");
+  const distClientDir = fs.existsSync(path.join(PROJECT_ROOT, "server", "cli.js"))
+    ? path.join(PROJECT_ROOT, "client")
+    : path.join(PROJECT_ROOT, "dist", "client");
 
   const serveTasksUi = (req: http.IncomingMessage, res: http.ServerResponse, url: string): boolean => {
     if (!fs.existsSync(distClientDir)) {

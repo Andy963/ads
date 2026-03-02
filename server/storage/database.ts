@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
@@ -8,11 +7,9 @@ import { detectWorkspace, getWorkspaceDbPath } from "../workspace/detector.js";
 import { getWorkspaceContextRoot } from "../workspace/asyncWorkspaceContext.js";
 import { parseNonNegativeIntFlag } from "../utils/flags.js";
 import { migrations } from "./migrations.js";
+import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 let cachedDbs: Map<string, DatabaseType> = new Map();
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000;
 
 /** 当前 schema 版本（等于 migrations 数组长度） */

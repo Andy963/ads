@@ -1,6 +1,5 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import {
   getAllWorkflowTemplates,
@@ -17,9 +16,8 @@ import { safeStringify } from "../utils/json.js";
 import { getErrorMessage } from "../utils/error.js";
 import { createLogger } from "../utils/logger.js";
 import { saveNodeToFile } from "../graph/fileManager.js";
+import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const TEMPLATE_ROOT = path.join(PROJECT_ROOT, "templates");
 const REQUIREMENT_TEMPLATE = path.join(TEMPLATE_ROOT, "requirement.md");
 const DESIGN_TEMPLATE = path.join(TEMPLATE_ROOT, "design.md");

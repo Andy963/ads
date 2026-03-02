@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import yaml from "yaml";
+
+import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 export interface NodeTypeConfig {
   key: string;
@@ -42,9 +43,6 @@ interface WorkflowRulesFile {
   connection_rules?: Record<string, string[]>;
   workflow_templates?: Record<string, WorkflowTemplateConfig>;
 }
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 function loadYamlFile(filePath: string): WorkflowRulesFile {
   const content = fs.readFileSync(filePath, "utf-8");

@@ -1,16 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { createLogger } from "../utils/logger.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveLegacyWorkspaceAdsPath, resolveWorkspaceStatePath } from "./adsPaths.js";
 import { getWorkspaceContextRoot } from "./asyncWorkspaceContext.js";
+import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 const GIT_MARKER = ".git";
 const WORKSPACE_CONFIG_FILE = "workspace.json";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
 const REQUIRED_TEMPLATE_FILES = [
   "instructions.md",

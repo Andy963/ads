@@ -1,13 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { detectWorkspace } from "./detector.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "./adsPaths.js";
 import { safeStringify } from "../utils/json.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+import { PROJECT_ROOT } from "../utils/projectRoot.js";
 const TEMPLATE_RULES_PATH = path.join(PROJECT_ROOT, "templates", "rules.md");
 
 function readFileIfExists(filePath: string): string | null {

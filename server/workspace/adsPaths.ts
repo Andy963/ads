@@ -1,20 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = (() => {
-  const candidate = path.resolve(__dirname, "..", "..");
-  if (path.basename(candidate) !== "dist") {
-    return candidate;
-  }
-  const parent = path.resolve(candidate, "..");
-  if (fs.existsSync(path.join(parent, ".git"))) {
-    return parent;
-  }
-  return candidate;
-})();
+import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 function sanitizeSegment(value: string, maxLen = 48): string {
   const normalized = String(value ?? "").trim() || "workspace";
