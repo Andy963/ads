@@ -325,7 +325,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       syncProjectFromWorkspaceState(current, nextPath, wsState);
 
       if (typeof inFlight === "boolean" && !inFlight) {
-        flushQueuedPrompts(rt);
+        void flushQueuedPrompts(rt);
       }
       return;
     }
@@ -487,7 +487,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (msg.ok === true && kind === "clear_history") {
           clearStepLive(rt);
           finalizeCommandBlock(rt);
-          flushQueuedPrompts(rt);
+          void flushQueuedPrompts(rt);
           return;
         }
       }
@@ -518,7 +518,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       clearStepLive(rt);
       finalizeCommandBlock(rt);
       finalizeAssistant(output, rt);
-      flushQueuedPrompts(rt);
+      void flushQueuedPrompts(rt);
       return;
     }
 
@@ -552,7 +552,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         : userMessage;
 
       pushMessageBeforeLive({ role: "system", kind: "text", content: errorContent }, rt);
-      flushQueuedPrompts(rt);
+      void flushQueuedPrompts(rt);
       return;
     }
 

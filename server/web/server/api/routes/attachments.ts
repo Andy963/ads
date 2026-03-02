@@ -15,6 +15,8 @@ export async function handleAttachmentRoutes(
   deps: Pick<ApiSharedDeps, "resolveTaskContext" | "buildAttachmentRawUrl">,
 ): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
+  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+  const MAX_BODY_BYTES = MAX_IMAGE_BYTES + 512 * 1024;
 
   if (req.method === "POST" && pathname === "/api/attachments/images") {
     let taskCtx;
@@ -29,7 +31,7 @@ export async function handleAttachmentRoutes(
     const contentTypeHeader = String(req.headers["content-type"] ?? "").trim();
     let raw: Buffer;
     try {
-      raw = await readRawBody(req, { maxBytes: 6 * 1024 * 1024 });
+      raw = await readRawBody(req, { maxBytes: MAX_BODY_BYTES });
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
       const message = rawMessage === "Request body too large" ? "Image too large" : rawMessage;
@@ -54,8 +56,8 @@ export async function handleAttachmentRoutes(
       sendJson(res, 400, { error: "Empty file" });
       return true;
     }
-    if (bytes.length > 5 * 1024 * 1024) {
-      sendJson(res, 413, { error: "Image too large (>5MB)" });
+    if (bytes.length > MAX_IMAGE_BYTES) {
+      sendJson(res, 413, { error: "Image too large (>25MB)" });
       return true;
     }
 
@@ -177,4 +179,3 @@ export async function handleAttachmentRoutes(
 
   return false;
 }
-

@@ -11,6 +11,15 @@ export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
 
 type PersistedPrompt = { clientMessageId: string; text: string; createdAt: number };
+type UploadedImageAttachment = {
+  id: string;
+  url: string;
+  sha256: string;
+  width: number;
+  height: number;
+  contentType: string;
+  sizeBytes: number;
+};
 
 export function createChatActions(ctx: AppContext) {
   const {
@@ -23,6 +32,82 @@ export function createChatActions(ctx: AppContext) {
     maxTurnCommands,
   } = ctx;
   const { randomId, randomUuid } = ctx;
+
+  const guessImageFilename = (attachment: IncomingImage, contentType: string): string => {
+    const name = String(attachment.name ?? "").trim();
+    if (name) return name;
+    const t = String(attachment.mime ?? contentType ?? "").trim().toLowerCase();
+    if (t === "image/png") return "pasted.png";
+    if (t === "image/webp") return "pasted.webp";
+    if (t === "image/jpeg" || t === "image/jpg") return "pasted.jpg";
+    if (t === "image/gif") return "pasted.gif";
+    if (t === "image/bmp") return "pasted.bmp";
+    if (t === "image/svg+xml") return "pasted.svg";
+    return "pasted.bin";
+  };
+
+  const uploadPromptImages = async (args: {
+    workspaceRoot: string;
+    images: IncomingImage[];
+  }): Promise<UploadedImageAttachment[]> => {
+    const workspaceRoot = String(args.workspaceRoot ?? "").trim();
+    const images = Array.isArray(args.images) ? args.images : [];
+    if (images.length === 0) return [];
+
+    const uploadUrl = workspaceRoot
+      ? `/api/attachments/images?workspace=${encodeURIComponent(workspaceRoot)}`
+      : "/api/attachments/images";
+    const results: UploadedImageAttachment[] = [];
+
+    for (const img of images) {
+      const dataUrl = String(img.data ?? "").trim();
+      if (!dataUrl) {
+        continue;
+      }
+      const blob = await fetch(dataUrl)
+        .then((r) => (r.ok ? r.blob() : null))
+        .catch(() => null);
+      if (!blob || blob.size <= 0) {
+        continue;
+      }
+      const form = new FormData();
+      form.append("file", blob, guessImageFilename(img, blob.type));
+      const res = await fetch(uploadUrl, { method: "POST", body: form, credentials: "include" });
+      const text = await res.text().catch(() => "");
+      const parseErrorMessage = (): string => {
+        try {
+          const obj = JSON.parse(text) as { error?: unknown };
+          const msg = String(obj?.error ?? "").trim();
+          return msg || `HTTP ${res.status}`;
+        } catch {
+          return text.trim() || `HTTP ${res.status}`;
+        }
+      };
+      if (!res.ok) {
+        throw new Error(parseErrorMessage());
+      }
+      try {
+        const parsed = JSON.parse(text) as UploadedImageAttachment;
+        if (!parsed?.id || !parsed?.url) {
+          throw new Error("Invalid JSON response");
+        }
+        results.push(parsed);
+      } catch (error) {
+        throw new Error(`Invalid JSON response: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    return results;
+  };
+
+  const formatPromptTextWithAttachments = (text: string, attachments: UploadedImageAttachment[]): string => {
+    const base = String(text ?? "").trim();
+    const list = Array.isArray(attachments) ? attachments : [];
+    if (list.length === 0) return base;
+    const imgs = list.map((a, idx) => `![attachment ${idx + 1}](${a.url})`).join("\n");
+    if (!base) return imgs;
+    return `${base}\n\n${imgs}`;
+  };
 
   const pendingPromptStorageKey = (sessionId: string, chatSessionId: string): string => {
     const normalizedSession = String(sessionId ?? "").trim();
@@ -294,12 +379,12 @@ export function createChatActions(ctx: AppContext) {
       ...state.queuedPrompts.value,
       { id: randomId("q"), clientMessageId: randomUuid(), text: content, images: imgs, createdAt: Date.now() },
     ];
-    flushQueuedPrompts(state);
+    void flushQueuedPrompts(state);
   };
 
   const enqueueMainPrompt = (text: string, images: IncomingImage[]): void => enqueuePrompt(text, images);
 
-  const flushQueuedPrompts = (rt?: ProjectRuntime): void => {
+  const flushQueuedPrompts = async (rt?: ProjectRuntime): Promise<void> => {
     const state = runtimeOrActive(rt);
     if (runtimeAgentBusy(state)) return;
     if (!state.connected.value) return;
@@ -310,12 +395,29 @@ export function createChatActions(ctx: AppContext) {
     state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
 
     try {
-      const display =
-        next.text && next.images.length > 0
-          ? `${next.text}\n\n[图片 x${next.images.length}]`
-          : next.text
-            ? next.text
-            : `[图片 x${next.images.length}]`;
+      let display = "";
+      let promptText = next.text;
+
+      if (next.images.length > 0) {
+        try {
+          const attachments = await uploadPromptImages({ workspaceRoot: state.workspacePath.value, images: next.images });
+          if (attachments.length > 0) {
+            promptText = formatPromptTextWithAttachments(next.text, attachments);
+            display = promptText;
+          }
+        } catch {
+          // ignore: fall back to the legacy placeholder below
+        }
+      }
+
+      if (!display) {
+        display =
+          next.text && next.images.length > 0
+            ? `${next.text}\n\n[图片 x${next.images.length}]`
+            : next.text
+              ? next.text
+              : `[图片 x${next.images.length}]`;
+      }
 
       finalizeCommandBlock(state);
       clearStepLive(state);
@@ -330,8 +432,8 @@ export function createChatActions(ctx: AppContext) {
       const effort = String(state.modelReasoningEffort.value ?? "").trim() || "high";
       const payload =
         next.images.length > 0
-          ? { text: next.text, images: next.images, model_reasoning_effort: effort }
-          : { text: next.text, model_reasoning_effort: effort };
+          ? { text: promptText, images: next.images, model_reasoning_effort: effort }
+          : { text: promptText, model_reasoning_effort: effort };
       state.ws.sendPrompt(payload, next.clientMessageId);
     } catch {
       state.queuedPrompts.value = [next, ...state.queuedPrompts.value];

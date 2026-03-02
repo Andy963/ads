@@ -118,7 +118,7 @@ export function createTaskEventActions(
   };
 
   const finishTaskTerminalCleanup = (state: ProjectRuntime): void => {
-    flushQueuedPrompts(state);
+    void flushQueuedPrompts(state);
     void loadQueueStatus();
   };
 

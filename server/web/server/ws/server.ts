@@ -26,6 +26,7 @@ import { createSafeJsonSend, formatCloseReason, summarizeWsPayloadForLog } from 
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import { handlePromptMessage } from "./handlePrompt.js";
 import { handleCommandMessage } from "./handleCommand.js";
+import { buildPromptHistoryText } from "./promptHistory.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
@@ -379,28 +380,6 @@ export function attachWebSocketServer(deps: {
       return { ok: true, command, shouldPersist: !isSilent && !isCd };
     };
 
-    const buildPromptHistoryText = (payload: unknown): { ok: boolean; text: string } => {
-      if (typeof payload === "string") {
-        const text = deps.sanitizeInput(payload)?.trim() ?? "";
-        return text ? { ok: true, text } : { ok: false, text: "" };
-      }
-      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-        const rec = payload as Record<string, unknown>;
-        const text = typeof rec.text === "string" ? (deps.sanitizeInput(rec.text)?.trim() ?? "") : "";
-        const imageCount = Array.isArray(rec.images) ? rec.images.length : 0;
-        const lines: string[] = [];
-        if (text) {
-          lines.push(text);
-        }
-        if (imageCount > 0) {
-          lines.push(`Images: ${imageCount}`);
-        }
-        const joined = lines.join("\n").trim();
-        return joined ? { ok: true, text: joined } : { ok: false, text: "" };
-      }
-      return { ok: false, text: "" };
-    };
-
     const preflightPersistAndAck = (args: {
       parsed: import("./schema.js").WsMessage;
       requestId: string;
@@ -412,7 +391,7 @@ export function attachWebSocketServer(deps: {
       }
       const entryKind = `client_message_id:${args.clientMessageId}`;
       if (args.parsed.type === "prompt") {
-        const textResult = buildPromptHistoryText(args.parsed.payload);
+        const textResult = buildPromptHistoryText(args.parsed.payload, deps.sanitizeInput);
         if (!textResult.ok) {
           return { enqueue: true };
         }
