@@ -75,6 +75,11 @@ Missing guides referenced elsewhere will be restored once the documentation migr
    npm start
    ```
 
+### Deployment bundle (optional)
+
+- `npm run bundle` 会生成更“自包含”的 `dist/`（包含 `better-sqlite3` 的 native addon）。
+- 该产物与构建机平台绑定（OS/arch；Linux 还可能受 glibc/musl 影响），需要在目标平台构建。
+
 ### Environment loading
 
 - Web Console、Telegram Bot 会自动读取工作区根目录的 `.env`，并在存在时加载 `.env.local` 作为覆盖，无需手动 `source`。
