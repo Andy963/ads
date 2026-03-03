@@ -1,25 +1,31 @@
 import { isTextInputElement } from "./dom";
 
-type ViewportMetrics = { topPx: number; bottomPx: number };
+type ViewportMetrics = { topPx: number; bottomPx: number; heightPx: number };
 
 function readViewportMetrics(): ViewportMetrics {
   const layoutHeightPx = Math.max(1, Math.round(window.innerHeight));
   const viewport = window.visualViewport;
   if (!viewport) {
-    return { topPx: 0, bottomPx: 0 };
+    return { topPx: 0, bottomPx: 0, heightPx: layoutHeightPx };
   }
   const topPx = Number.isFinite(viewport.offsetTop) ? Math.max(0, Math.round(viewport.offsetTop)) : 0;
   const heightPx = Number.isFinite(viewport.height) ? Math.max(1, Math.round(viewport.height)) : layoutHeightPx;
   const bottomPx = Math.max(0, layoutHeightPx - topPx - heightPx);
-  return { topPx, bottomPx };
+  return { topPx, bottomPx, heightPx };
 }
 
-type MetricsState = { topPx: number; bottomPx: number; keyboardOpen: boolean };
+type MetricsState = { topPx: number; bottomPx: number; keyboardOpen: boolean; heightPx: number };
 
-let lastMetrics: MetricsState = { topPx: Number.NaN, bottomPx: Number.NaN, keyboardOpen: false };
+let lastMetrics: MetricsState = {
+  topPx: Number.NaN,
+  bottomPx: Number.NaN,
+  keyboardOpen: false,
+  heightPx: Number.NaN,
+};
 function applyViewportVars(): void {
   const next = readViewportMetrics();
   const keyboardOpen = isTextInputElement(document.activeElement) && next.bottomPx > 0;
+  const heightPx = next.heightPx;
   // Only shrink the fixed app container when the on-screen keyboard is open.
   // Some browsers report a non-zero visualViewport bottom inset even when the keyboard is closed,
   // which created a persistent blank area under the composer.
@@ -28,7 +34,8 @@ function applyViewportVars(): void {
   if (
     appTopPx === lastMetrics.topPx &&
     appBottomPx === lastMetrics.bottomPx &&
-    keyboardOpen === lastMetrics.keyboardOpen
+    keyboardOpen === lastMetrics.keyboardOpen &&
+    heightPx === lastMetrics.heightPx
   ) {
     return;
   }
@@ -41,7 +48,10 @@ function applyViewportVars(): void {
   if (keyboardOpen !== lastMetrics.keyboardOpen) {
     document.documentElement.style.setProperty("--safe-bottom-multiplier", keyboardOpen ? "0" : "1");
   }
-  lastMetrics = { topPx: appTopPx, bottomPx: appBottomPx, keyboardOpen };
+  if (heightPx !== lastMetrics.heightPx) {
+    document.documentElement.style.setProperty("--ads-visual-viewport-height", `${heightPx}px`);
+  }
+  lastMetrics = { topPx: appTopPx, bottomPx: appBottomPx, keyboardOpen, heightPx };
 }
 
 let heightRaf = 0;
@@ -108,4 +118,3 @@ export function installViewportCssVars(): void {
     applyViewportVars();
   }, 250);
 }
-

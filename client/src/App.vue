@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
@@ -134,6 +134,9 @@ const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.val
 const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
 const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
 const workerChatKey = computed(() => `${activeProjectId.value}:${activeProject.value?.chatSessionId ?? "main"}`);
+const workerQueuedPrompts = computed(() =>
+  queuedPrompts.value.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length })),
+);
 const resumeThreadBlocked = computed(() =>
   Boolean(queueStatus.value?.running) || tasks.value.some((t) => t.status === "planning" || t.status === "running"),
 );
@@ -283,27 +286,6 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
   ids.splice(Math.max(0, Math.min(ids.length, insertAt)), 0, dragging);
   await reorderProjects(ids);
 }
-
-
-const updateViewportHeightVar = (): void => {
-  if (typeof window === "undefined") return;
-  const vv = window.visualViewport;
-  const height = vv && Number.isFinite(vv.height) && vv.height > 0 ? vv.height : window.innerHeight;
-  document.documentElement.style.setProperty("--ads-visual-viewport-height", `${Math.round(height)}px`);
-};
-
-onMounted(() => {
-  updateViewportHeightVar();
-  window.addEventListener("resize", updateViewportHeightVar, { passive: true });
-  window.visualViewport?.addEventListener("resize", updateViewportHeightVar, { passive: true });
-  window.visualViewport?.addEventListener("scroll", updateViewportHeightVar, { passive: true });
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", updateViewportHeightVar);
-  window.visualViewport?.removeEventListener("resize", updateViewportHeightVar);
-  window.visualViewport?.removeEventListener("scroll", updateViewportHeightVar);
-});
 </script>
 
 <template>
@@ -490,7 +472,7 @@ onBeforeUnmount(() => {
           class="chatHost"
           title="Worker"
           :messages="messages"
-          :queued-prompts="queuedPrompts.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length }))"
+          :queued-prompts="workerQueuedPrompts"
           :pending-images="pendingImages"
           :connected="connected"
           :busy="agentBusy"
@@ -563,7 +545,7 @@ onBeforeUnmount(() => {
           :key="workerChatKey"
           class="chatHost"
           :messages="messages"
-          :queued-prompts="queuedPrompts.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length }))"
+          :queued-prompts="workerQueuedPrompts"
           :pending-images="pendingImages"
           :connected="connected"
           :busy="agentBusy"
