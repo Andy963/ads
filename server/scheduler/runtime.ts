@@ -1,7 +1,18 @@
 import crypto from "node:crypto";
+import path from "node:path";
 
+import DatabaseConstructor, { type Database as SqliteDatabase } from "better-sqlite3";
+import { Runner, SqliteQueue, buildDBClient } from "liteque";
+
+import { getDatabaseInfo } from "../storage/database.js";
 import { TaskStore } from "../tasks/store.js";
+import type { Task } from "../tasks/types.js";
+import { OrchestratorTaskExecutor } from "../tasks/executor.js";
+import { SessionManager } from "../telegram/utils/sessionManager.js";
+import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
+import { getErrorMessage } from "../utils/error.js";
+import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 
 import { computeNextCronRunAt } from "./cron.js";
 import { ScheduleStore } from "./store.js";
@@ -21,6 +32,94 @@ function buildExternalId(schedule: StoredSchedule, runAtMs: number): string {
   return renderIdempotencyKey(schedule.spec.policy.idempotencyKeyTemplate, schedule.id, runAtIso);
 }
 
+type SchedulerJobPayload = {
+  workspaceRoot: string;
+  scheduleId: string;
+  externalId: string;
+  runAt: number;
+};
+
+type SchedulerExecutionInput = {
+  workspaceRoot: string;
+  schedule: StoredSchedule;
+  task: Task;
+  signal: AbortSignal;
+};
+
+type SchedulerExecutionResult = {
+  resultSummary?: string;
+};
+
+type SchedulerExecuteRun = (input: SchedulerExecutionInput) => Promise<SchedulerExecutionResult>;
+
+type WorkspaceSchedulerState = {
+  store: ScheduleStore;
+  taskStore: TaskStore;
+  queue: SqliteQueue<SchedulerJobPayload>;
+  queueRawDb: SqliteDatabase;
+  runner: Runner<SchedulerJobPayload, SchedulerExecutionResult>;
+  executor: OrchestratorTaskExecutor;
+  runnerPromise: Promise<void> | null;
+};
+
+function hashTaskId(taskId: string): number {
+  const normalized = String(taskId ?? "").trim();
+  if (!normalized) return 0;
+  const compact = normalized.replace(/-/g, "");
+  const hex = compact.slice(0, 8);
+  const parsed = Number.parseInt(hex, 16);
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+  let hash = 2166136261;
+  for (let i = 0; i < normalized.length; i += 1) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildQueueName(workspaceRoot: string): string {
+  const digest = crypto.createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
+  return `ads_scheduler_v1_${digest}`;
+}
+
+function resolveLitequeDbPath(workspaceRoot: string): string {
+  const base = getDatabaseInfo(workspaceRoot).path;
+  const ext = path.extname(base);
+  if (!ext) {
+    return `${base}.liteque.db`;
+  }
+  return `${base.slice(0, -ext.length)}.liteque${ext}`;
+}
+
+function generateAllocationId(): string {
+  return Math.random().toString(36).substring(2, 15);
+}
+
+type LitequeDequeuedRow = {
+  id: number;
+  payload: string;
+  priority: number;
+  allocationId: string;
+  numRunsLeft: number;
+  maxNumRuns: number;
+};
+
+function normalizeQuestions(questions: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const q of questions) {
+    const trimmed = String(q ?? "").trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
 export class SchedulerRuntime {
   private readonly enabled: boolean;
   private readonly tickMs: number;
@@ -28,11 +127,15 @@ export class SchedulerRuntime {
   private readonly dueLimit: number;
   private readonly reconcileLimit: number;
   private readonly ownerId: string;
+  private readonly runnerPollMs: number;
+  private readonly runnerTimeoutSecs: number;
+  private readonly runnerConcurrency: number;
+  private readonly adsStateDir: string;
+  private readonly executeRun: SchedulerExecuteRun;
 
   private interval: NodeJS.Timeout | null = null;
   private readonly workspaces = new Set<string>();
-  private readonly stores = new Map<string, ScheduleStore>();
-  private readonly taskStores = new Map<string, TaskStore>();
+  private readonly states = new Map<string, WorkspaceSchedulerState>();
   private readonly inFlight = new Set<string>();
 
   constructor(options?: {
@@ -42,6 +145,11 @@ export class SchedulerRuntime {
     dueLimit?: number;
     reconcileLimit?: number;
     ownerId?: string;
+    runnerPollMs?: number;
+    runnerTimeoutSecs?: number;
+    runnerConcurrency?: number;
+    adsStateDir?: string;
+    executeRun?: SchedulerExecuteRun;
   }) {
     this.enabled = options?.enabled ?? parseBooleanFlag(process.env.ADS_SCHEDULER_ENABLED, true);
     this.tickMs = options?.tickMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_TICK_MS, 5000);
@@ -49,14 +157,23 @@ export class SchedulerRuntime {
     this.dueLimit = options?.dueLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_DUE_LIMIT, 20);
     this.reconcileLimit = options?.reconcileLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RECONCILE_LIMIT, 200);
     this.ownerId = options?.ownerId ?? crypto.randomUUID();
+    this.runnerPollMs = options?.runnerPollMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RUNNER_POLL_MS, 1000);
+    this.runnerTimeoutSecs =
+      options?.runnerTimeoutSecs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RUNNER_TIMEOUT_SECS, 1800);
+    this.runnerConcurrency =
+      options?.runnerConcurrency ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RUNNER_CONCURRENCY, 1);
+    this.adsStateDir = options?.adsStateDir ?? resolveAdsStateDir();
+    this.executeRun = options?.executeRun ?? (async (input) => await this.defaultExecuteRun(input));
   }
 
   registerWorkspace(workspaceRoot: string): void {
     const normalized = String(workspaceRoot ?? "").trim();
     if (!normalized) return;
     this.workspaces.add(normalized);
-    // Ensure db schema exists eagerly.
-    this.getStore(normalized);
+    this.getState(normalized);
+    if (this.interval && this.enabled) {
+      this.startWorkspaceRunner(normalized);
+    }
   }
 
   start(): void {
@@ -65,6 +182,9 @@ export class SchedulerRuntime {
     }
     if (this.interval) {
       return;
+    }
+    for (const root of this.workspaces.values()) {
+      this.startWorkspaceRunner(root);
     }
     this.interval = setInterval(() => void this.tickAll(), this.tickMs);
     this.interval.unref?.();
@@ -76,28 +196,88 @@ export class SchedulerRuntime {
       clearInterval(this.interval);
       this.interval = null;
     }
+    for (const state of this.states.values()) {
+      try {
+        state.runner.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        state.queueRawDb.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 
-  private getStore(workspaceRoot: string): ScheduleStore {
+  private getState(workspaceRoot: string): WorkspaceSchedulerState {
     const key = String(workspaceRoot ?? "").trim() || process.cwd();
-    const existing = this.stores.get(key);
+    const existing = this.states.get(key);
     if (existing) {
       return existing;
     }
-    const store = new ScheduleStore({ workspacePath: key });
-    this.stores.set(key, store);
-    return store;
-  }
 
-  private getTaskStore(workspaceRoot: string): TaskStore {
-    const key = String(workspaceRoot ?? "").trim() || process.cwd();
-    const existing = this.taskStores.get(key);
-    if (existing) {
-      return existing;
-    }
-    const store = new TaskStore({ workspacePath: key });
-    this.taskStores.set(key, store);
-    return store;
+    const scheduleStore = new ScheduleStore({ workspacePath: key });
+    const taskStore = new TaskStore({ workspacePath: key });
+    const dbPath = resolveLitequeDbPath(key);
+    const queueDb = buildDBClient(dbPath, { runMigrations: true });
+    const queueRawDb = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
+    queueRawDb.pragma("journal_mode = WAL");
+    queueRawDb.pragma("foreign_keys = ON");
+    queueRawDb.pragma("busy_timeout = 5000");
+    const queue = new SqliteQueue<SchedulerJobPayload>(buildQueueName(key), queueDb, {
+      defaultJobArgs: { numRetries: 0 },
+      keepFailedJobs: true,
+    });
+    this.patchQueueAttemptDequeue(queue, queueRawDb);
+
+    const schedulerModelOverride = String(process.env.ADS_SCHEDULER_MODEL ?? process.env.TASK_QUEUE_DEFAULT_MODEL ?? "").trim() || undefined;
+    const sessionManager = new SessionManager(
+      0,
+      0,
+      "danger-full-access",
+      schedulerModelOverride,
+      new ThreadStorage({
+        namespace: `scheduler:${buildQueueName(key)}`,
+        storagePath: path.join(this.adsStateDir, `scheduler-threads-${buildQueueName(key)}.json`),
+      }),
+    );
+
+    const executor = new OrchestratorTaskExecutor({
+      getOrchestrator: (task) => sessionManager.getOrCreate(hashTaskId(task.id), key, true),
+      store: taskStore,
+      autoModelOverride: schedulerModelOverride,
+    });
+
+    const runner = new Runner<SchedulerJobPayload, SchedulerExecutionResult>(
+      queue,
+      {
+        run: async (job) => await this.runScheduledJob(job.data, job.abortSignal),
+        onComplete: async (job, result) => {
+          await this.handleJobComplete(job.data, result);
+        },
+        onError: async (job) => {
+          await this.handleJobError(job.data, job.error, job.numRetriesLeft, job.runNumber);
+        },
+      },
+      {
+        concurrency: this.runnerConcurrency,
+        pollIntervalMs: this.runnerPollMs,
+        timeoutSecs: this.runnerTimeoutSecs,
+      },
+    );
+
+    const state: WorkspaceSchedulerState = {
+      store: scheduleStore,
+      taskStore,
+      queue,
+      queueRawDb,
+      runner,
+      executor,
+      runnerPromise: null,
+    };
+    this.states.set(key, state);
+    return state;
   }
 
   private async tickAll(): Promise<void> {
@@ -112,7 +292,8 @@ export class SchedulerRuntime {
     }
     this.inFlight.add(root);
     try {
-      const store = this.getStore(root);
+      const state = this.getState(root);
+      const store = state.store;
       const now = Date.now();
 
       store.reconcileRuns({ limit: this.reconcileLimit, nowMs: now });
@@ -141,7 +322,8 @@ export class SchedulerRuntime {
 
   private async triggerOne(options: { workspaceRoot: string; scheduleId: string; nowMs: number }): Promise<void> {
     const root = options.workspaceRoot;
-    const store = this.getStore(root);
+    const state = this.getState(root);
+    const store = state.store;
     const schedule = store.getSchedule(options.scheduleId);
     if (!schedule || !schedule.enabled || schedule.nextRunAt == null) {
       return;
@@ -149,55 +331,25 @@ export class SchedulerRuntime {
 
     const runAt = schedule.nextRunAt;
     const externalId = buildExternalId(schedule, runAt);
-
-    const taskStore = this.getTaskStore(root);
-    const taskCreated = (() => {
-      try {
-        taskStore.createTask(
-          {
-            id: externalId,
-            title: schedule.spec.compiledTask.title,
-            prompt: schedule.spec.compiledTask.prompt,
-            model: "auto",
-            inheritContext: false,
-            maxRetries: schedule.spec.policy.maxRetries,
-            createdBy: "scheduler",
-          },
-          options.nowMs,
-          { status: "pending" },
-        );
-        return true;
-      } catch {
-        const existing = taskStore.getTask(externalId);
-        return Boolean(existing);
+    const existingRun = store.getRunByExternalId(externalId);
+    const isTerminal =
+      existingRun?.status === "completed" || existingRun?.status === "failed" || existingRun?.status === "cancelled";
+    if (!isTerminal) {
+      if (!existingRun) {
+        store.insertRun({ scheduleId: schedule.id, externalId, runAt, taskId: null, status: "queued" }, options.nowMs);
       }
-    })();
-
-    const runStatus = taskCreated ? "queued" : "failed";
-    const runTaskId = taskCreated ? externalId : null;
-    const insert = store.insertRun({ scheduleId: schedule.id, externalId, runAt, taskId: runTaskId, status: runStatus }, options.nowMs);
-
-    if (taskCreated && !insert.inserted) {
-      const existingRun = store.getRunByExternalId(externalId);
-      if (existingRun && !existingRun.taskId) {
-        try {
-          store.updateRunByExternalId(externalId, { taskId: externalId }, options.nowMs);
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    if (!taskCreated) {
-      try {
-        store.updateRunByExternalId(
+      await state.queue.enqueue(
+        {
+          workspaceRoot: root,
+          scheduleId: schedule.id,
           externalId,
-          { status: "failed", error: "Failed to create task", completedAt: options.nowMs },
-          options.nowMs,
-        );
-      } catch {
-        // ignore
-      }
+          runAt,
+        },
+        {
+          numRetries: Math.max(0, schedule.spec.policy.maxRetries),
+          idempotencyKey: externalId,
+        },
+      );
     }
 
     const nextRunAt = (() => {
@@ -231,18 +383,314 @@ export class SchedulerRuntime {
 
     store.updateSchedule(schedule.id, { nextRunAt, leaseOwner: null, leaseUntil: null }, options.nowMs);
   }
-}
 
-function normalizeQuestions(questions: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const q of questions) {
-    const trimmed = String(q ?? "").trim();
-    if (!trimmed) continue;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(trimmed);
+  private startWorkspaceRunner(workspaceRoot: string): void {
+    const state = this.getState(workspaceRoot);
+    if (state.runnerPromise) {
+      return;
+    }
+    state.runnerPromise = state.runner
+      .run()
+      .catch(() => {
+        // ignore; next tick/register can restart runner.
+      })
+      .finally(() => {
+        state.runnerPromise = null;
+      });
   }
-  return out;
+
+  private patchQueueAttemptDequeue(queue: SqliteQueue<SchedulerJobPayload>, db: SqliteDatabase): void {
+    const queueName = queue.name();
+    const queueLike = queue as unknown as {
+      attemptDequeue: (options: { timeoutSecs: number }) => Promise<LitequeDequeuedRow | null>;
+    };
+    queueLike.attemptDequeue = async (options: { timeoutSecs: number }) => {
+      const timeoutSecs = Number.isFinite(options.timeoutSecs) ? Math.max(1, Math.floor(options.timeoutSecs)) : 60;
+      const nowMs = Date.now();
+      const nowSec = Math.floor(nowMs / 1000);
+
+      const row = db
+        .prepare(
+          `SELECT
+             id AS id,
+             payload AS payload,
+             priority AS priority,
+             allocationId AS allocationId,
+             numRunsLeft AS numRunsLeft,
+             maxNumRuns AS maxNumRuns
+           FROM tasks
+           WHERE queue = ?
+             AND (availableAt IS NULL OR availableAt <= ?)
+             AND (
+               status = 'pending'
+               OR status = 'pending_retry'
+               OR (status = 'running' AND expireAt IS NOT NULL AND expireAt < ?)
+             )
+           ORDER BY priority ASC, createdAt ASC
+           LIMIT 1`,
+        )
+        .get(queueName, nowMs, nowSec) as LitequeDequeuedRow | undefined;
+
+      if (!row) {
+        return null;
+      }
+
+      if (row.numRunsLeft === 0) {
+        await queue.finalize(row.id, row.allocationId, "failed");
+        return null;
+      }
+
+      const allocationId = generateAllocationId();
+      const result = db
+        .prepare(
+          `UPDATE tasks
+           SET status = 'running',
+               numRunsLeft = ?,
+               allocationId = ?,
+               expireAt = ?
+           WHERE id = ?
+             AND allocationId = ?`,
+        )
+        .run(row.numRunsLeft - 1, allocationId, nowSec + timeoutSecs, row.id, row.allocationId) as { changes?: number };
+
+      if (!result || result.changes !== 1) {
+        return null;
+      }
+
+      return {
+        ...row,
+        allocationId,
+        numRunsLeft: row.numRunsLeft - 1,
+      };
+    };
+  }
+
+  private parsePayload(raw: unknown): SchedulerJobPayload | null {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    const record = raw as Record<string, unknown>;
+    const workspaceRoot = String(record.workspaceRoot ?? "").trim();
+    const scheduleId = String(record.scheduleId ?? "").trim();
+    const externalId = String(record.externalId ?? "").trim();
+    const runAtRaw = Number(record.runAt);
+    const runAt = Number.isFinite(runAtRaw) ? Math.floor(runAtRaw) : NaN;
+    if (!workspaceRoot || !scheduleId || !externalId || !Number.isFinite(runAt)) {
+      return null;
+    }
+    return { workspaceRoot, scheduleId, externalId, runAt };
+  }
+
+  private ensureTaskForRun(payload: SchedulerJobPayload, schedule: StoredSchedule, now: number): Task {
+    const state = this.getState(payload.workspaceRoot);
+    const existing = state.taskStore.getTask(payload.externalId);
+    if (existing) {
+      return existing;
+    }
+    try {
+      return state.taskStore.createTask(
+        {
+          id: payload.externalId,
+          title: schedule.spec.compiledTask.title,
+          prompt: schedule.spec.compiledTask.prompt,
+          model: "auto",
+          inheritContext: false,
+          maxRetries: Math.max(0, schedule.spec.policy.maxRetries),
+          createdBy: "scheduler",
+        },
+        now,
+        { status: "pending" },
+      );
+    } catch {
+      const fallback = state.taskStore.getTask(payload.externalId);
+      if (!fallback) {
+        throw new Error(`Failed to create scheduler task: ${payload.externalId}`);
+      }
+      return fallback;
+    }
+  }
+
+  private async defaultExecuteRun(input: SchedulerExecutionInput): Promise<SchedulerExecutionResult> {
+    const state = this.getState(input.workspaceRoot);
+    return await state.executor.execute(input.task, { signal: input.signal });
+  }
+
+  private async runScheduledJob(rawPayload: unknown, signal: AbortSignal): Promise<SchedulerExecutionResult> {
+    const payload = this.parsePayload(rawPayload);
+    if (!payload) {
+      return {};
+    }
+    const state = this.getState(payload.workspaceRoot);
+    const now = Date.now();
+
+    const schedule = state.store.getSchedule(payload.scheduleId);
+    if (!schedule || !schedule.enabled) {
+      try {
+        state.store.updateRunByExternalId(
+          payload.externalId,
+          {
+            status: "cancelled",
+            error: schedule ? "Schedule is disabled" : "Schedule not found",
+            completedAt: now,
+          },
+          now,
+        );
+      } catch {
+        // ignore
+      }
+      return {};
+    }
+
+    const currentRun = state.store.getRunByExternalId(payload.externalId);
+    if (currentRun?.status === "completed" || currentRun?.status === "cancelled") {
+      return { resultSummary: currentRun.result ?? undefined };
+    }
+
+    const task = this.ensureTaskForRun(payload, schedule, now);
+    const runningTask = state.taskStore.updateTask(
+      task.id,
+      {
+        title: schedule.spec.compiledTask.title,
+        prompt: schedule.spec.compiledTask.prompt,
+        status: "running",
+        error: null,
+        result: null,
+        startedAt: now,
+        completedAt: null,
+      },
+      now,
+    );
+
+    try {
+      state.store.updateRunByExternalId(
+        payload.externalId,
+        {
+          status: "running",
+          taskId: runningTask.id,
+          error: null,
+          startedAt: now,
+          completedAt: null,
+        },
+        now,
+      );
+    } catch {
+      // ignore
+    }
+
+    return await this.executeRun({
+      workspaceRoot: payload.workspaceRoot,
+      schedule,
+      task: runningTask,
+      signal,
+    });
+  }
+
+  private async handleJobComplete(rawPayload: unknown, result: SchedulerExecutionResult): Promise<void> {
+    const payload = this.parsePayload(rawPayload);
+    if (!payload) {
+      return;
+    }
+    const state = this.getState(payload.workspaceRoot);
+    const now = Date.now();
+    const resultSummary = String(result.resultSummary ?? "").trim() || null;
+
+    try {
+      state.store.updateRunByExternalId(
+        payload.externalId,
+        {
+          status: "completed",
+          result: resultSummary,
+          error: null,
+          completedAt: now,
+        },
+        now,
+      );
+    } catch {
+      // ignore
+    }
+
+    const task = state.taskStore.getTask(payload.externalId);
+    if (!task) {
+      return;
+    }
+    try {
+      const completed = state.taskStore.updateTask(
+        task.id,
+        {
+          status: "completed",
+          result: resultSummary,
+          error: null,
+          completedAt: now,
+        },
+        now,
+      );
+      if (completed.result && completed.result.trim()) {
+        try {
+          state.taskStore.saveContext(completed.id, { contextType: "summary", content: completed.result }, now);
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private async handleJobError(
+    rawPayload: unknown,
+    error: unknown,
+    numRetriesLeft: number,
+    runNumber: number,
+  ): Promise<void> {
+    const payload = this.parsePayload(rawPayload);
+    if (!payload) {
+      return;
+    }
+    const state = this.getState(payload.workspaceRoot);
+    const now = Date.now();
+    const terminal = numRetriesLeft <= 0;
+    const message = getErrorMessage(error);
+
+    try {
+      state.store.updateRunByExternalId(
+        payload.externalId,
+        {
+          status: terminal ? "failed" : "queued",
+          error: message,
+          completedAt: terminal ? now : null,
+        },
+        now,
+      );
+    } catch {
+      // ignore
+    }
+
+    const task = state.taskStore.getTask(payload.externalId);
+    if (!task) {
+      return;
+    }
+
+    try {
+      const updated = state.taskStore.updateTask(
+        task.id,
+        {
+          status: terminal ? "failed" : "pending",
+          error: message,
+          result: null,
+          retryCount: Math.max(task.retryCount, runNumber + 1),
+          completedAt: terminal ? now : null,
+        },
+        now,
+      );
+      if (terminal) {
+        try {
+          state.taskStore.saveContext(updated.id, { contextType: "summary", content: `[Failed]\n${message}` }, now);
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
 }

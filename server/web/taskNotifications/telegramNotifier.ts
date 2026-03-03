@@ -19,6 +19,7 @@ export type TelegramSender = (args: { botToken: string; chatId: string; text: st
 
 const DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE = "Asia/Shanghai";
 const telegramTimestampFormatterCache = new Map<string, Intl.DateTimeFormat>();
+const pendingTaskResults = new Map<string, string>();
 
 function resolveTelegramNotifyTimeZoneFromEnv(): string {
   const raw = String(process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE ?? "").trim();
@@ -104,6 +105,7 @@ function buildTelegramText(row: {
   startedAt: number | null;
   completedAt: number | null;
   taskId: string;
+  result?: string | null;
 }): string {
   const formatter = getTelegramTimestampFormatterFromEnv();
   const started = row.startedAt ?? null;
@@ -111,14 +113,23 @@ function buildTelegramText(row: {
   const duration = started != null && completed != null ? completed - started : null;
   const statusLabel = normalizeStatusLabel(row.status);
 
-  return [
+  const lines = [
     `Task terminal: ${statusLabel}`,
     `Project: ${row.projectName || "Workspace"}`,
     `Task: ${row.taskTitle || row.taskId}`,
     `Started: ${formatTelegramTimestamp(started, formatter)}`,
     `Completed: ${formatTelegramTimestamp(completed, formatter)}`,
     `Duration: ${formatDuration(duration)}`,
-  ].join("\n");
+  ];
+
+  const result = String(row.result ?? "").trim();
+  if (result) {
+    const maxLen = 3000;
+    const truncated = result.length > maxLen ? result.slice(0, maxLen) + "…" : result;
+    lines.push("", "--- Result ---", truncated);
+  }
+
+  return lines.join("\n");
 }
 
 function computeBackoffNextRetryAt(now: number, retryCount: number): number {
@@ -201,6 +212,9 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
     return "skipped";
   }
 
+  const cachedResult = pendingTaskResults.get(taskId) ?? null;
+  pendingTaskResults.delete(taskId);
+
   const sender = args.sender ?? defaultTelegramSender;
   const text = buildTelegramText({
     projectName: row.projectName,
@@ -209,6 +223,7 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
     startedAt: row.startedAt,
     completedAt: row.completedAt,
     taskId: row.taskId,
+    result: cachedResult,
   });
 
   const result = await sender({ botToken: telegram.botToken, chatId: telegram.chatId, text });
@@ -236,12 +251,17 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
 export function notifyTaskTerminalViaTelegram(args: {
   logger: Logger;
   workspaceRoot: string;
-  task: { id: string; title?: string | null; status?: string | null; startedAt?: number | null; completedAt?: number | null };
+  task: { id: string; title?: string | null; status?: string | null; startedAt?: number | null; completedAt?: number | null; result?: string | null };
   terminalStatus: "completed" | "failed" | "cancelled";
   eventTs?: number;
 }): void {
   const taskId = String(args.task.id ?? "").trim();
   if (!taskId) return;
+
+  const resultText = String(args.task.result ?? "").trim();
+  if (resultText) {
+    pendingTaskResults.set(taskId, resultText);
+  }
 
   const now = typeof args.eventTs === "number" && Number.isFinite(args.eventTs) ? Math.floor(args.eventTs) : Date.now();
   const title = String(args.task.title ?? "").trim() || taskId;
