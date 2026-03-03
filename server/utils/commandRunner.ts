@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 import { createAbortError } from "./abort.js";
+import { parseCsv } from "./text.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 48 * 1024;
 const ABORT_KILL_DELAY_MS = 1200;
@@ -135,16 +136,6 @@ export interface CommandRunResult {
   stderr: string;
   truncatedStdout: boolean;
   truncatedStderr: boolean;
-}
-
-function parseCsv(value: string | undefined): string[] {
-  if (!value) {
-    return [];
-  }
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
 }
 
 let PIPE_STDIOS_SUPPORTED: boolean | null = null;

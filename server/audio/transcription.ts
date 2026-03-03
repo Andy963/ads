@@ -7,6 +7,7 @@ import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { discoverSkills, type SkillMetadata } from "../skills/loader.js";
 import { loadSkillRegistry } from "../skills/registryMetadata.js";
 import { runCommand, type CommandRunResult } from "../utils/commandRunner.js";
+import { parseCsv } from "../utils/text.js";
 
 export type AudioTranscriptionResult =
   | { ok: true; text: string; provider: string }
@@ -33,13 +34,6 @@ function resolveAudioExt(contentType: string): string {
 function resolveTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.ADS_AUDIO_TRANSCRIPTION_TIMEOUT_MS ?? 120_000);
   return Number.isFinite(raw) ? Math.max(1000, raw) : 120_000;
-}
-
-function parseCsv(value: string | undefined): string[] {
-  return String(value ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
 }
 
 function resolveTranscriptionSkillOrder(workspaceRoot: string): string[] {

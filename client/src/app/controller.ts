@@ -1,20 +1,14 @@
 import { computed, ref, onBeforeUnmount, onMounted } from "vue";
 
 import { ApiClient } from "../api/client";
-import type { AuthMe, ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import type { AuthMe, ModelConfig } from "../api/types";
 import { isProjectInProgress } from "../lib/project_status";
 
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
 import { createTaskBundleDraftActions } from "./taskBundleDrafts";
 import { createProjectRuntime } from "./projectRuntime";
-import type {
-  ChatItem,
-  IncomingImage,
-  ProjectRuntime,
-  ProjectTab,
-  QueuedPrompt,
-} from "./controllerTypes";
+import type { ProjectRuntime, ProjectTab } from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
 import type { ProjectDeps } from "./projectsWs";
 import { createTaskActions } from "./tasks";
@@ -111,102 +105,32 @@ export function createAppContext() {
   const activeRuntime = computed(() => getRuntime(activeProjectId.value));
   const activePlannerRuntime = computed(() => getPlannerRuntime(activeProjectId.value));
 
-  const connected = computed({
-    get: () => activeRuntime.value.connected.value,
-    set: (v: boolean) => {
-      activeRuntime.value.connected.value = v;
-    },
-  });
-  const apiError = computed({
-    get: () => activeRuntime.value.apiError.value,
-    set: (v: string | null) => {
-      activeRuntime.value.apiError.value = v;
-    },
-  });
-  const apiNotice = computed({
-    get: () => activeRuntime.value.apiNotice.value,
-    set: (v: string | null) => {
-      activeRuntime.value.apiNotice.value = v;
-    },
-  });
-  const wsError = computed({
-    get: () => activeRuntime.value.wsError.value,
-    set: (v: string | null) => {
-      activeRuntime.value.wsError.value = v;
-    },
-  });
-  const threadWarning = computed({
-    get: () => activeRuntime.value.threadWarning.value,
-    set: (v: string | null) => {
-      activeRuntime.value.threadWarning.value = v;
-    },
-  });
-  const activeThreadId = computed({
-    get: () => activeRuntime.value.activeThreadId.value,
-    set: (v: string | null) => {
-      activeRuntime.value.activeThreadId.value = v;
-    },
-  });
-  const queueStatus = computed({
-    get: () => activeRuntime.value.queueStatus.value,
-    set: (v: TaskQueueStatus | null) => {
-      activeRuntime.value.queueStatus.value = v;
-    },
-  });
-  const workspacePath = computed({
-    get: () => activeRuntime.value.workspacePath.value,
-    set: (v: string) => {
-      activeRuntime.value.workspacePath.value = v;
-    },
-  });
-  const tasks = computed({
-    get: () => activeRuntime.value.tasks.value,
-    set: (v: Task[]) => {
-      activeRuntime.value.tasks.value = v;
-    },
-  });
-  const selectedId = computed({
-    get: () => activeRuntime.value.selectedId.value,
-    set: (v: string | null) => {
-      activeRuntime.value.selectedId.value = v;
-    },
-  });
-  const runBusyIds = computed({
-    get: () => activeRuntime.value.runBusyIds.value,
-    set: (v: Set<string>) => {
-      activeRuntime.value.runBusyIds.value = v;
-    },
-  });
-  const busy = computed({
-    get: () => activeRuntime.value.busy.value,
-    set: (v: boolean) => {
-      activeRuntime.value.busy.value = v;
-    },
-  });
-  const messages = computed({
-    get: () => activeRuntime.value.messages.value,
-    set: (v: ChatItem[]) => {
-      activeRuntime.value.messages.value = v;
-    },
-  });
-  const recentCommands = computed({
-    get: () => activeRuntime.value.recentCommands.value,
-    set: (v: string[]) => {
-      activeRuntime.value.recentCommands.value = v;
-    },
-  });
-  const pendingImages = computed({
-    get: () => activeRuntime.value.pendingImages.value,
-    set: (v: IncomingImage[]) => {
-      activeRuntime.value.pendingImages.value = v;
-    },
-  });
-  const queuedPrompts = computed({
-    get: () => activeRuntime.value.queuedPrompts.value,
-    set: (v: QueuedPrompt[]) => {
-      activeRuntime.value.queuedPrompts.value = v;
-    },
-  });
+  type RefLike<T> = { value: T };
+
+  const proxyRuntimeRef = <T>(pick: (rt: ProjectRuntime) => RefLike<T>) =>
+    computed({
+      get: () => pick(activeRuntime.value).value,
+      set: (v: T) => {
+        pick(activeRuntime.value).value = v;
+      },
+    });
+
+  const connected = proxyRuntimeRef((rt) => rt.connected);
+  const apiError = proxyRuntimeRef((rt) => rt.apiError);
+  const apiNotice = proxyRuntimeRef((rt) => rt.apiNotice);
+  const wsError = proxyRuntimeRef((rt) => rt.wsError);
+  const threadWarning = proxyRuntimeRef((rt) => rt.threadWarning);
+  const activeThreadId = proxyRuntimeRef((rt) => rt.activeThreadId);
+  const queueStatus = proxyRuntimeRef((rt) => rt.queueStatus);
+  const workspacePath = proxyRuntimeRef((rt) => rt.workspacePath);
+  const tasks = proxyRuntimeRef((rt) => rt.tasks);
+  const selectedId = proxyRuntimeRef((rt) => rt.selectedId);
+  const runBusyIds = proxyRuntimeRef((rt) => rt.runBusyIds);
+  const busy = proxyRuntimeRef((rt) => rt.busy);
+  const messages = proxyRuntimeRef((rt) => rt.messages);
+  const recentCommands = proxyRuntimeRef((rt) => rt.recentCommands);
+  const pendingImages = proxyRuntimeRef((rt) => rt.pendingImages);
+  const queuedPrompts = proxyRuntimeRef((rt) => rt.queuedPrompts);
 
   const tasksBusy = computed(() => tasks.value.some((t) => t.status === "planning" || t.status === "running"));
   const agentBusy = computed(() => busy.value || tasksBusy.value);
