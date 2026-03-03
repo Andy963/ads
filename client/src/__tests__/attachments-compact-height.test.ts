@@ -101,7 +101,7 @@ describe("compact attachment UI", () => {
 
     const css = await readText("../components/MainChat.css");
     expect(css).toMatch(/\.attachmentsBar\s*\{[\s\S]*min-height:\s*28px\s*;/);
-    expect(css).toMatch(/\.attachmentsThumb\s*\{[\s\S]*width:\s*42px\s*;[\s\S]*height:\s*28px\s*;/);
+    expect(css).toMatch(/\.attachmentsThumb\s*\{[\s\S]*width:\s*36px\s*;[\s\S]*height:\s*24px\s*;/);
     expect(css).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*26px\s*;[\s\S]*height:\s*26px\s*;/);
 
     wrapper.unmount();

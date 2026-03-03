@@ -875,14 +875,9 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
         </div>
         <div class="attachmentsViewerBody">
           <div class="attachmentsViewerImages">
-            <img
-              v-for="img in pendingImagePreviews"
-              :key="img.key"
-              v-if="img.src"
-              class="attachmentsViewerImg"
-              :src="img.src"
-              alt=""
-            />
+            <template v-for="img in pendingImagePreviews" :key="img.key">
+              <img v-if="img.src" class="attachmentsViewerImg" :src="img.src" alt="" />
+            </template>
           </div>
         </div>
       </div>

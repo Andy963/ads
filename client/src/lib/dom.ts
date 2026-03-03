@@ -1,6 +1,7 @@
 export function isTextInputElement(el: unknown): boolean {
   if (!(el instanceof HTMLElement)) return false;
   if (el.isContentEditable) return true;
+  if (String(el.contentEditable).toLowerCase() === "true") return true;
   const tag = el.tagName;
   if (tag === "TEXTAREA" || tag === "SELECT") return true;
   if (tag !== "INPUT") return false;
@@ -18,4 +19,3 @@ export function isTextInputElement(el: unknown): boolean {
     "hidden",
   ].includes(type);
 }
-
