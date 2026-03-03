@@ -157,6 +157,7 @@ export async function startWebServer(): Promise<void> {
   const taskQueueAvailable = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
   const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
 
+  const WS_READY_STATE_OPEN = 1;
   const clients: Set<import("ws").WebSocket> = new Set();
   const traceWsDuplication = parseBooleanFlag(process.env.ADS_TRACE_WS_DUPLICATION, false);
   const clientMetaByWs = new Map<
@@ -172,23 +173,54 @@ export async function startWebServer(): Promise<void> {
     }
   >();
 
+  const safeSendText = (ws: import("ws").WebSocket, text: string): void => {
+    if ((ws as { readyState?: number }).readyState !== WS_READY_STATE_OPEN) {
+      return;
+    }
+    try {
+      ws.send(text);
+    } catch {
+      // ignore
+    }
+  };
+
+  const safeSendJson = (ws: import("ws").WebSocket, payload: unknown): void => {
+    let encoded = "";
+    try {
+      encoded = JSON.stringify(payload);
+    } catch {
+      return;
+    }
+    safeSendText(ws, encoded);
+  };
+
+  const isNonPlannerBroadcastTarget = (
+    broadcastSessionId: string,
+    meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
+  ): boolean => {
+    if (meta.chatSessionId === "planner") {
+      return false;
+    }
+    return matchesBroadcastSessionId({
+      broadcastSessionId,
+      connectionSessionId: meta.sessionId,
+      connectionWorkspaceRoot: meta.workspaceRoot,
+    });
+  };
+
   const broadcastToSession = (sessionId: string, payload: unknown): void => {
+    let encoded = "";
+    try {
+      encoded = JSON.stringify(payload);
+    } catch {
+      return;
+    }
+
     for (const [ws, meta] of clientMetaByWs.entries()) {
-      if (!matchesBroadcastSessionId({
-        broadcastSessionId: sessionId,
-        connectionSessionId: meta.sessionId,
-        connectionWorkspaceRoot: meta.workspaceRoot,
-      })) {
+      if (!isNonPlannerBroadcastTarget(sessionId, meta)) {
         continue;
       }
-      if (meta.chatSessionId === "planner") {
-        continue;
-      }
-      try {
-        ws.send(JSON.stringify(payload));
-      } catch {
-        // ignore
-      }
+      safeSendText(ws, encoded);
     }
   };
 
@@ -196,18 +228,11 @@ export async function startWebServer(): Promise<void> {
     sessionId: string,
     entry: { role: string; text: string; ts: number; kind?: string },
   ): void => {
-    const metas = Array.from(clientMetaByWs.values()).filter((meta) => {
-      if (meta.chatSessionId === "planner") {
-        return false;
-      }
-      return matchesBroadcastSessionId({
-        broadcastSessionId: sessionId,
-        connectionSessionId: meta.sessionId,
-        connectionWorkspaceRoot: meta.workspaceRoot,
-      });
-    });
     const written = new Set<string>();
-    for (const meta of metas) {
+    for (const meta of clientMetaByWs.values()) {
+      if (!isNonPlannerBroadcastTarget(sessionId, meta)) {
+        continue;
+      }
       if (written.has(meta.historyKey)) {
         continue;
       }
@@ -244,31 +269,24 @@ export async function startWebServer(): Promise<void> {
   const agentAvailability = new CliAgentAvailability();
   const broadcastAgentsSnapshot = (): void => {
     for (const [ws, meta] of clientMetaByWs.entries()) {
-      if ((ws as { readyState?: number }).readyState !== 1) {
-        continue;
-      }
       const manager = meta.chatSessionId === "planner" ? plannerSessionManager : sessionManager;
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
       const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
       const activeAgentId = orchestrator.getActiveAgentId();
-      try {
-        ws.send(JSON.stringify({
-          type: "agents",
-          activeAgentId,
-          agents: orchestrator.listAgents().map((entry) => {
-            const merged = agentAvailability.mergeStatus(entry.metadata.id, entry.status);
-            return {
-              id: entry.metadata.id,
-              name: entry.metadata.name,
-              ready: merged.ready,
-              error: merged.error,
-            };
-          }),
-          threadId: manager.getSavedThreadId(meta.sessionUserId, activeAgentId) ?? orchestrator.getThreadId(),
-        }));
-      } catch {
-        // ignore
-      }
+      safeSendJson(ws, {
+        type: "agents",
+        activeAgentId,
+        agents: orchestrator.listAgents().map((entry) => {
+          const merged = agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+          return {
+            id: entry.metadata.id,
+            name: entry.metadata.name,
+            ready: merged.ready,
+            error: merged.error,
+          };
+        }),
+        threadId: manager.getSavedThreadId(meta.sessionUserId, activeAgentId) ?? orchestrator.getThreadId(),
+      });
     }
   };
   const startAgentAvailabilityProbe = (): void => {
