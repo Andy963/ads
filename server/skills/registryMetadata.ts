@@ -7,12 +7,14 @@ import yaml from "yaml";
 import { fileURLToPath } from "node:url";
 
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { parseOptionalBooleanFlag } from "../utils/flags.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("SkillRegistryMetadata");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ADS_REPO_ROOT = path.resolve(__dirname, "..", "..");
+const SKILLS_METADATA_RELATIVE_PATH = path.join(".agent", "skills", "metadata.yaml");
 
 export type SkillRegistryMode = "overlay" | "whitelist";
 
@@ -35,15 +37,15 @@ type CachedRegistry = {
 let cached: CachedRegistry | null = null;
 
 function isWorkspaceSkillsEnabled(workspaceRoot?: string): boolean {
-  const raw = String(process.env.ADS_ENABLE_WORKSPACE_SKILLS ?? "").trim().toLowerCase();
-  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
+  const enabled = parseOptionalBooleanFlag(process.env.ADS_ENABLE_WORKSPACE_SKILLS);
+  if (enabled === true) {
     return true;
   }
   if (!workspaceRoot) {
     return false;
   }
   try {
-    const metadataPath = path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml");
+    const metadataPath = path.join(path.resolve(workspaceRoot), SKILLS_METADATA_RELATIVE_PATH);
     return fs.existsSync(metadataPath);
   } catch {
     return false;
@@ -57,11 +59,11 @@ function resolveSkillRegistryMetadataCandidates(workspaceRoot?: string): string[
     candidates.push(path.resolve(explicit));
   }
 
-  candidates.push(path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml"));
-  candidates.push(path.join(ADS_REPO_ROOT, ".agent", "skills", "metadata.yaml"));
-  candidates.push(path.join(os.homedir(), ".agent", "skills", "metadata.yaml"));
+  candidates.push(path.join(resolveAdsStateDir(), SKILLS_METADATA_RELATIVE_PATH));
+  candidates.push(path.join(ADS_REPO_ROOT, SKILLS_METADATA_RELATIVE_PATH));
+  candidates.push(path.join(os.homedir(), SKILLS_METADATA_RELATIVE_PATH));
   if (workspaceRoot && isWorkspaceSkillsEnabled(workspaceRoot)) {
-    candidates.push(path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml"));
+    candidates.push(path.join(path.resolve(workspaceRoot), SKILLS_METADATA_RELATIVE_PATH));
   }
   return candidates;
 }
@@ -77,7 +79,7 @@ export function resolveSkillRegistryMetadataPath(workspaceRoot?: string): string
       // ignore
     }
   }
-  return candidates[0] ?? path.join(resolveAdsStateDir(), ".agent", "skills", "metadata.yaml");
+  return candidates[0] ?? path.join(resolveAdsStateDir(), SKILLS_METADATA_RELATIVE_PATH);
 }
 
 export function loadSkillRegistry(workspaceRoot?: string): SkillRegistry | null {
@@ -95,7 +97,7 @@ export function loadSkillRegistry(workspaceRoot?: string): SkillRegistry | null 
   const overlayPath =
     explicit || !workspaceRoot || !isWorkspaceSkillsEnabled(workspaceRoot)
       ? null
-      : path.join(path.resolve(workspaceRoot), ".agent", "skills", "metadata.yaml");
+      : path.join(path.resolve(workspaceRoot), SKILLS_METADATA_RELATIVE_PATH);
 
   let overlayStat: fs.Stats | null = null;
   if (overlayPath && overlayPath !== metadataPath) {

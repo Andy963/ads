@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient } from "../api/client";
 import type { AuthMe, AuthStatus } from "../api/types";
+import { isTextInputElement } from "../lib/dom";
 
 const emit = defineEmits<{ (e: "logged-in", me: AuthMe): void }>();
 
@@ -20,12 +21,7 @@ let focusOutTimer: number | null = null;
 const canSubmit = computed(() => Boolean(username.value.trim()) && Boolean(password.value));
 
 function updateKeyboardOpenFromActiveElement(): void {
-  const active = document.activeElement;
-  const focused =
-    active instanceof HTMLInputElement ||
-    active instanceof HTMLTextAreaElement ||
-    (active instanceof HTMLElement && active.isContentEditable);
-  keyboardOpen.value = focused;
+  keyboardOpen.value = isTextInputElement(document.activeElement);
 }
 
 function handleFocusIn(): void {
