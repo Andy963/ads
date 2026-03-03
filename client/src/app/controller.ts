@@ -93,6 +93,7 @@ export function createAppContext() {
     const existing = runtimeByProjectId.get(id);
     if (existing) return existing;
     const created = createProjectRuntime({ maxLiveActivitySteps });
+    created.modelReasoningEffort.value = "xhigh";
     runtimeByProjectId.set(id, created);
     return created;
   };
@@ -374,6 +375,7 @@ export function createAppController() {
 
   const taskDeps: TaskDeps = {
     connectWs: async () => {},
+    connectPlannerWs: async () => {},
   };
   const tasks = createTaskActions({ ...ctx, ...chat } as AppContext & ChatActions, taskDeps);
 
@@ -393,6 +395,7 @@ export function createAppController() {
   });
 
   taskDeps.connectWs = ws.connectWs;
+  taskDeps.connectPlannerWs = ws.connectPlannerWs;
 
   const clearRuntimeTimers = (rt: { noticeTimer: number | null; liveActivityTtlTimer: number | null }): void => {
     if (rt.noticeTimer !== null) {

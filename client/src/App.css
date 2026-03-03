@@ -658,6 +658,32 @@
   font-weight: 900;
   color: #0f172a;
 }
+.workerDrawerActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.workerDrawerIconBtn {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+.workerDrawerIconBtn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(15, 23, 42, 0.04);
+}
+.workerDrawerIconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .workerDrawerClose {
   border: none;
   background: transparent;

@@ -4,7 +4,7 @@ import { mount } from "@vue/test-utils";
 import MainChat from "../components/MainChat.vue";
 
 describe("MainChat pending image viewer", () => {
-  it("opens a viewer when clicking the attachments pill and allows navigation", async () => {
+  it("renders thumbnail previews and opens a viewer on click", async () => {
     const images = [{ data: "data:image/png;base64,AA==" }, { data: "data:image/png;base64,BB==" }];
 
     const wrapper = mount(MainChat, {
@@ -24,22 +24,44 @@ describe("MainChat pending image viewer", () => {
     });
 
     expect(wrapper.find(".attachmentsViewer").exists()).toBe(false);
+    const thumbs = wrapper.findAll(".attachmentsThumb");
+    expect(thumbs).toHaveLength(2);
+    expect(thumbs[0]!.find("img.attachmentsThumbImg").attributes("src")).toBe(images[0]!.data);
 
-    await wrapper.find(".attachmentsPill").trigger("click");
+    await thumbs[0]!.trigger("click");
     expect(wrapper.find(".attachmentsViewer").exists()).toBe(true);
 
-    const img = wrapper.find<HTMLImageElement>(".attachmentsViewerImg");
-    expect(img.exists()).toBe(true);
-    expect(img.attributes("src")).toBe(images[0]!.data);
-
-    await wrapper.find(".attachmentsViewerNext").trigger("click");
-    expect(wrapper.find(".attachmentsViewerImg").attributes("src")).toBe(images[1]!.data);
-
-    await wrapper.find(".attachmentsViewerPrev").trigger("click");
-    expect(wrapper.find(".attachmentsViewerImg").attributes("src")).toBe(images[0]!.data);
+    const viewerImages = wrapper.findAll<HTMLImageElement>(".attachmentsViewerImg");
+    expect(viewerImages).toHaveLength(2);
+    expect(viewerImages[0]!.attributes("src")).toBe(images[0]!.data);
+    expect(viewerImages[1]!.attributes("src")).toBe(images[1]!.data);
 
     await wrapper.find(".attachmentsViewerClose").trigger("click");
     expect(wrapper.find(".attachmentsViewer").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("normalizes attachment id to backend raw URL for preview", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [{ data: "att-preview-1" }],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const thumb = wrapper.find(".attachmentsThumbImg");
+    expect(thumb.exists()).toBe(true);
+    expect(thumb.attributes("src")).toBe("/api/attachments/att-preview-1/raw");
 
     wrapper.unmount();
   });
@@ -70,4 +92,3 @@ describe("MainChat pending image viewer", () => {
     wrapper.unmount();
   });
 });
-

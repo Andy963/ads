@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
-import { ChatDotRound, Delete, Edit, Plus, Refresh } from "@element-plus/icons-vue";
+import { Delete, Edit, Plus } from "@element-plus/icons-vue";
 import type { Task, TaskQueueStatus } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
 import { compareTasksForDisplay, shouldDisplayTask } from "../lib/task_sort";
@@ -47,8 +47,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "select", id: string): void;
   (e: "create"): void;
-  (e: "newSession"): void;
-  (e: "resumeThread"): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
   (e: "update-and-run", payload: { id: string; updates: TaskUpdates }): void;
   (e: "queueRun"): void;
@@ -365,10 +363,6 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
 const queueStatus = computed(() => props.queueStatus ?? null);
 const queueCanRunAll = computed(() => Boolean(queueStatus.value?.enabled) && Boolean(queueStatus.value?.ready));
 const queueIsRunning = computed(() => Boolean(queueStatus.value?.running));
-const canResumeThread = computed(() => {
-  if (queueIsRunning.value) return false;
-  return !props.tasks.some((t) => t.status === "planning" || t.status === "running");
-});
 const canRunSingleNow = computed(() => {
   if (!props.canRunSingle) return false;
   if (!queueStatus.value) return true;
@@ -447,17 +441,6 @@ function toggleQueue(): void {
         >
           <el-icon :size="16" aria-hidden="true" class="icon">
             <Plus />
-          </el-icon>
-        </button>
-        <button class="iconBtn" type="button" title="恢复上下文" aria-label="恢复上下文" :disabled="!canResumeThread"
-          @click.stop="emit('resumeThread')">
-          <el-icon :size="16" aria-hidden="true" class="icon">
-            <Refresh />
-          </el-icon>
-        </button>
-        <button class="iconBtn" type="button" title="新会话" aria-label="新会话" @click.stop="emit('newSession')">
-          <el-icon :size="16" aria-hidden="true" class="icon">
-            <ChatDotRound />
           </el-icon>
         </button>
       </div>

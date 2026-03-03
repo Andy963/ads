@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { ChatDotRound, Refresh } from "@element-plus/icons-vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import DraggableModal from "./DraggableModal.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
+import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
 import { isPatchMessageMarkdown } from "../lib/patch_message";
 import { analyzeMarkdownOutline } from "../lib/markdown";
 
@@ -27,12 +29,16 @@ const props = defineProps<{
     startedAt: number;
   }>;
   apiToken?: string;
+  headerAction?: { title: string; ariaLabel?: string; testId?: string };
+  headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
 }>();
 
 const emit = defineEmits<{
   (e: "send", content: string): void;
   (e: "interrupt"): void;
   (e: "clear"): void;
+  (e: "newSession"): void;
+  (e: "resumeThread"): void;
   (e: "addImages", images: IncomingImage[]): void;
   (e: "clearImages"): void;
   (e: "removeQueued", id: string): void;
@@ -319,15 +325,35 @@ const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 const pendingImageViewerOpen = ref(false);
 const pendingImageViewerIndex = ref(0);
 
+type PendingImagePreview = {
+  key: string;
+  src: string;
+  href: string;
+};
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
-const activePendingImage = computed<IncomingImage | null>(() => {
+const pendingImagePreviews = computed<PendingImagePreview[]>(() => {
+  const token = String(props.apiToken ?? "").trim();
+  return props.pendingImages.map((image, idx) => {
+    const resolved = resolveComposerImagePreview(String(image?.data ?? ""), { apiToken: token });
+    const fallback = `pending-image-${idx + 1}`;
+    const keySeed = resolved?.src ? resolved.src.slice(0, 96) : fallback;
+    return {
+      key: `${idx}-${keySeed}`,
+      src: resolved?.src ?? "",
+      href: resolved?.href ?? "",
+    };
+  });
+});
+
+const activePendingImage = computed<PendingImagePreview | null>(() => {
   const list = props.pendingImages;
   if (!list.length) return null;
   const idx = clamp(pendingImageViewerIndex.value, 0, list.length - 1);
-  return list[idx] ?? null;
+  return pendingImagePreviews.value[idx] ?? null;
 });
 
 const activePendingImageAlt = computed(() => {
@@ -564,6 +590,36 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
   <div class="detail" :class="{ 'detail--active': showActiveBorder }">
     <div v-if="title" class="paneHeader">
       <div class="paneTitle">{{ title }}</div>
+      <div class="paneHeaderActions">
+        <button
+          v-if="headerResumeAction"
+          class="paneHeaderIconBtn"
+          type="button"
+          :title="headerResumeAction.title"
+          :aria-label="headerResumeAction.ariaLabel || headerResumeAction.title"
+          :disabled="busy || Boolean(headerResumeAction.disabled)"
+          :data-testid="headerResumeAction.testId"
+          @click.stop="emit('resumeThread')"
+        >
+          <el-icon :size="16" aria-hidden="true">
+            <Refresh />
+          </el-icon>
+        </button>
+        <button
+          v-if="headerAction"
+          class="paneHeaderIconBtn"
+          type="button"
+          :title="headerAction.title"
+          :aria-label="headerAction.ariaLabel || headerAction.title"
+          :disabled="busy"
+          :data-testid="headerAction.testId"
+          @click.stop="emit('newSession')"
+        >
+          <el-icon :size="16" aria-hidden="true">
+            <ChatDotRound />
+          </el-icon>
+        </button>
+      </div>
     </div>
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
@@ -685,24 +741,27 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       </div>
 
       <div v-if="pendingImages.length" class="attachmentsBar" aria-label="已粘贴图片">
-        <div
-          class="attachmentsPill"
-          role="button"
-          tabindex="0"
-          title="Preview images"
-          @click="openPendingImageViewer(0)"
-          @keydown.enter.prevent="openPendingImageViewer(0)"
-          @keydown.space.prevent="openPendingImageViewer(0)"
-        >
-          <span class="attachmentsText">图片 x{{ pendingImages.length }}</span>
-          <button class="attachmentsClear" type="button" title="清空图片" @click.stop="emit('clearImages')">
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd"
-                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                clip-rule="evenodd" />
-            </svg>
+        <div class="attachmentsStrip" aria-label="图片附件缩略图">
+          <button
+            v-for="(img, idx) in pendingImagePreviews"
+            :key="img.key"
+            class="attachmentsThumb"
+            type="button"
+            :title="`预览图片 ${idx + 1}`"
+            :aria-label="`预览图片 ${idx + 1}`"
+            @click="openPendingImageViewer(idx)"
+          >
+            <img v-if="img.src" class="attachmentsThumbImg" :src="img.src" alt="" />
+            <span v-else class="attachmentsThumbFallback">图片</span>
           </button>
         </div>
+        <button class="attachmentsClear" type="button" title="清空图片" @click="emit('clearImages')">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd"
+              d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+              clip-rule="evenodd" />
+          </svg>
+        </button>
       </div>
 
       <div class="inputWrap">
@@ -802,39 +861,29 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       </div>
     </div>
 
-    <DraggableModal v-if="pendingImageViewerOpen && activePendingImage" card-variant="large" @close="closePendingImageViewer">
+    <DraggableModal v-if="pendingImageViewerOpen" card-variant="large" @close="closePendingImageViewer">
       <div class="attachmentsViewer">
         <div class="attachmentsViewerHeader" data-drag-handle>
-          <div class="attachmentsViewerTitle">
-            Attachments {{ pendingImageViewerIndex + 1 }} / {{ pendingImages.length }}
-          </div>
-          <div class="attachmentsViewerActions">
-            <button class="attachmentsViewerPrev" type="button" :disabled="pendingImages.length <= 1" @click="showPrevPendingImage">
-              Prev
-            </button>
-            <button class="attachmentsViewerNext" type="button" :disabled="pendingImages.length <= 1" @click="showNextPendingImage">
-              Next
-            </button>
-            <button class="attachmentsViewerClose" type="button" @click="closePendingImageViewer">
-              Close
-            </button>
-          </div>
+          <div class="attachmentsViewerTitle">附件预览</div>
+          <button class="attachmentsViewerClose" type="button" @click="closePendingImageViewer">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd"
+                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                clip-rule="evenodd" />
+            </svg>
+          </button>
         </div>
         <div class="attachmentsViewerBody">
-          <img class="attachmentsViewerImg" :src="activePendingImage.data" :alt="activePendingImageAlt" />
-        </div>
-        <div v-if="pendingImages.length > 1" class="attachmentsViewerThumbs" aria-label="Attachment thumbnails">
-          <button
-            v-for="(img, idx) in pendingImages"
-            :key="`${idx}-${img.data.slice(0, 32)}`"
-            class="attachmentsViewerThumb"
-            type="button"
-            :class="{ active: idx === pendingImageViewerIndex }"
-            :title="`Attachment ${idx + 1}`"
-            @click="openPendingImageViewer(idx)"
-          >
-            <img class="attachmentsViewerThumbImg" :src="img.data" alt="" />
-          </button>
+          <div class="attachmentsViewerImages">
+            <img
+              v-for="img in pendingImagePreviews"
+              :key="img.key"
+              v-if="img.src"
+              class="attachmentsViewerImg"
+              :src="img.src"
+              alt=""
+            />
+          </div>
         </div>
       </div>
     </DraggableModal>

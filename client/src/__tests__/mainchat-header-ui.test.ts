@@ -102,4 +102,84 @@ describe("MainChat header UI", () => {
     const css = readUtf8("../components/MainChat.css");
     expect(css).toMatch(/\.detail--active\s*\{[\s\S]*?border-top-color:\s*#22c55e\s*;[\s\S]*?\}/);
   });
+
+  it("renders an optional header action button and emits newSession", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        title: "Worker",
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        headerAction: { title: "New session", testId: "worker-chat-new-session" },
+        headerResumeAction: { title: "Resume context", testId: "worker-chat-resume-thread" },
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+    });
+
+    const resumeBtn = wrapper.find('[data-testid="worker-chat-resume-thread"]');
+    expect(resumeBtn.exists()).toBe(true);
+    await resumeBtn.trigger("click");
+    expect(wrapper.emitted("resumeThread")?.length ?? 0).toBe(1);
+
+    const btn = wrapper.find('[data-testid="worker-chat-new-session"]');
+    expect(btn.exists()).toBe(true);
+    await btn.trigger("click");
+    expect(wrapper.emitted("newSession")?.length ?? 0).toBe(1);
+    wrapper.unmount();
+  });
+
+  it("disables the header action button while busy", () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        title: "Planner",
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: true,
+        headerAction: { title: "Clear", testId: "planner-chat-clear-context" },
+        headerResumeAction: { title: "Resume", testId: "planner-chat-resume-thread" },
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+    });
+
+    const resumeBtn = wrapper.find('[data-testid="planner-chat-resume-thread"]');
+    expect(resumeBtn.exists()).toBe(true);
+    expect(resumeBtn.attributes("disabled")).toBeDefined();
+
+    const btn = wrapper.find('[data-testid="planner-chat-clear-context"]');
+    expect(btn.exists()).toBe(true);
+    expect(btn.attributes("disabled")).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it("disables the resume button when action-disabled is true", () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        title: "Planner",
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        headerResumeAction: { title: "Resume", testId: "planner-chat-resume-thread", disabled: true },
+      },
+      global: { stubs: { MarkdownContent: true } },
+    });
+
+    const btn = wrapper.find('[data-testid="planner-chat-resume-thread"]');
+    expect(btn.exists()).toBe(true);
+    expect(btn.attributes("disabled")).toBeDefined();
+    wrapper.unmount();
+  });
 });

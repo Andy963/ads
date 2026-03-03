@@ -31,6 +31,36 @@
   letter-spacing: 0.02em;
 }
 
+.paneHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.paneHeaderIconBtn {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.paneHeaderIconBtn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.paneHeaderIconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .chat {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -853,44 +883,79 @@
 
 .attachmentsBar {
   display: flex;
-  justify-content: flex-start;
-  height: 14px;
-  margin-bottom: 4px;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  margin-bottom: 2px;
 }
 
-.attachmentsPill {
+.attachmentsStrip {
   display: flex;
   align-items: center;
   gap: 6px;
-  box-sizing: border-box;
-  height: 14px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(15, 23, 42, 0.04);
-  color: #0f172a;
-  cursor: pointer;
-  user-select: none;
+  overflow-x: auto;
+  max-width: min(56vw, 420px);
+  padding: 2px 0;
 }
 
-.attachmentsPill:focus-visible {
+.attachmentsThumb {
+  width: 36px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.04);
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 0;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.attachmentsThumb:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
-.attachmentsText {
+.attachmentsThumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.attachmentsThumbFallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.attachmentsPreviewAll {
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.04);
   color: #475569;
-  line-height: 14px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.attachmentsPreviewAll:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
 .attachmentsClear {
-  width: 14px;
-  height: 14px;
+  width: 26px;
+  height: 26px;
   border-radius: 999px;
-  border: none;
-  background: transparent;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(15, 23, 42, 0.04);
   color: #64748b;
   display: grid;
   place-items: center;
@@ -906,6 +971,11 @@
 .attachmentsClear:hover {
   color: #0f172a;
   background: rgba(15, 23, 42, 0.06);
+}
+
+.attachmentsClear:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
 .attachmentsViewer {
@@ -936,49 +1006,51 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-.attachmentsViewerActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.attachmentsViewerActions button {
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 10px;
+.attachmentsViewerClose {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: rgba(15, 23, 42, 0.04);
-  color: #0f172a;
-  font-size: 12px;
-  font-weight: 700;
+  color: #64748b;
   cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
 }
 
-.attachmentsViewerActions button:hover:not(:disabled) {
+.attachmentsViewerClose:hover {
+  color: #0f172a;
   background: rgba(15, 23, 42, 0.06);
-}
-
-.attachmentsViewerActions button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .attachmentsViewerBody {
   flex: 1 1 auto;
   min-height: 0;
-  display: grid;
-  place-items: center;
-  padding: 14px;
+  padding: 10px;
+  overflow: auto;
   background: var(--surface-2);
+}
+
+.attachmentsViewerImages {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
 }
 
 .attachmentsViewerImg {
   max-width: 100%;
   max-height: 62vh;
   object-fit: contain;
-  border-radius: 14px;
+  border-radius: 8px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: #fff;
+}
+
+.attachmentsViewerFallback {
+  font-size: 13px;
+  color: #64748b;
+  font-weight: 700;
 }
 
 .attachmentsViewerThumbs {
@@ -1014,6 +1086,16 @@
   height: 100%;
   display: block;
   object-fit: cover;
+}
+
+.attachmentsViewerThumbFallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
 }
 
 .composer-input {

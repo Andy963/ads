@@ -16,6 +16,7 @@ import { pickNextSelectedTaskId } from "./tasks/selection";
 
 export type TaskDeps = {
   connectWs: (projectId?: string) => Promise<void>;
+  connectPlannerWs: (projectId?: string) => Promise<void>;
 };
 
 export type LoadTasksOptions = {
@@ -31,6 +32,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     activeProjectId,
     normalizeProjectId,
     getRuntime,
+    getPlannerRuntime,
     activeRuntime,
     activePlannerRuntime,
     apiError,
@@ -49,7 +51,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     runtimeTasksBusy,
   } = ctx;
 
-  const { threadReset, clearConversationForResume, enqueueMainPrompt, enqueuePrompt, removeQueuedPrompt } = ctx;
+  const { threadReset, clearConversationForResume, enqueueMainPrompt, enqueuePrompt, removeQueuedPrompt, pushMessageBeforeLive } = ctx;
 
   const { setNotice, clearNotice } = createNoticeActions({ activeProjectId, normalizeProjectId, getRuntime });
 
@@ -460,6 +462,19 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     });
   };
 
+  const clearPlannerChat = (): void => {
+    const rt = activePlannerRuntime.value;
+    rt.queuedPrompts.value = [];
+    threadReset(rt, {
+      notice: "",
+      warning: null,
+      keepLatestTurn: false,
+      clearBackendHistory: true,
+      resetThreadId: true,
+      source: "user_clear_planner_context",
+    });
+  };
+
   const resumeTaskThread = async (projectId: string = activeProjectId.value): Promise<void> => {
     const pid = normalizeProjectId(projectId);
     const rt = getRuntime(pid);
@@ -482,6 +497,33 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       rt.apiError.value = msg;
+    }
+  };
+
+  const resumePlannerThread = async (projectId: string = activeProjectId.value): Promise<void> => {
+    const pid = normalizeProjectId(projectId);
+    const workerRt = getRuntime(pid);
+    const rt = getPlannerRuntime(pid);
+    rt.apiError.value = null;
+
+    if (rt.busy.value || runtimeTasksBusy(workerRt) || Boolean(workerRt.queueStatus.value?.running)) {
+      const msg = "任务执行中，无法恢复";
+      rt.apiError.value = msg;
+      pushMessageBeforeLive({ role: "system", kind: "text", content: msg }, rt);
+      return;
+    }
+
+    clearConversationForResume(rt);
+
+    try {
+      if (!rt.ws || !rt.connected.value) {
+        await deps.connectPlannerWs(pid);
+      }
+      rt.ws?.send("task_resume");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      rt.apiError.value = msg;
+      pushMessageBeforeLive({ role: "system", kind: "text", content: `恢复上下文失败：${msg}` }, rt);
     }
   };
 
@@ -552,7 +594,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     interruptActive,
     interruptPlanner,
     clearActiveChat,
+    clearPlannerChat,
     resumeTaskThread,
+    resumePlannerThread,
     addPendingImages,
     clearPendingImages,
     addPlannerPendingImages,

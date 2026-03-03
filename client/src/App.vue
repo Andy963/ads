@@ -11,7 +11,7 @@ import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 
 import { createAppController } from "./app/controller";
 import type { TaskBundle } from "./api/types";
-import { CirclePlus } from "@element-plus/icons-vue";
+import { ChatDotRound, CirclePlus, Refresh } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -52,7 +52,9 @@ const {
   onTaskEvent,
   openTaskCreateDialog,
   resumeTaskThread,
+  resumePlannerThread,
   clearActiveChat,
+  clearPlannerChat,
   startNewChatSession,
   messages,
   activeRuntime,
@@ -132,6 +134,9 @@ const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.val
 const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
 const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
 const workerChatKey = computed(() => `${activeProjectId.value}:${activeProject.value?.chatSessionId ?? "main"}`);
+const resumeThreadBlocked = computed(() =>
+  Boolean(queueStatus.value?.running) || tasks.value.some((t) => t.status === "planning" || t.status === "running"),
+);
 
 function refreshPlannerDrafts(): void {
   void loadTaskBundleDrafts(activeProjectId.value);
@@ -440,8 +445,6 @@ onBeforeUnmount(() => {
                 @retry="retryTask"
                 @delete="deleteTask"
                 @create="openTaskCreateDialogHandler"
-                @resumeThread="resumeTaskThread"
-                @newSession="startNewChatSession"
               />
             </div>
           </div>
@@ -462,9 +465,18 @@ onBeforeUnmount(() => {
           :active-agent-id="plannerActiveAgentId"
           :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
           :agent-delegations="plannerAgentDelegations"
+          :header-action="{ title: '清空上下文', ariaLabel: '清空 Planner 上下文', testId: 'planner-chat-clear-context' }"
+          :header-resume-action="{
+            title: '恢复上下文',
+            ariaLabel: '恢复 Planner 上下文',
+            testId: 'planner-chat-resume-thread',
+            disabled: resumeThreadBlocked,
+          }"
           @send="sendPlannerPrompt"
           @switchAgent="switchPlannerAgent"
           @setReasoningEffort="setPlannerModelReasoningEffort"
+          @newSession="clearPlannerChat"
+          @resumeThread="resumePlannerThread"
           @interrupt="interruptPlanner"
           @addImages="addPlannerPendingImages"
           @clearImages="clearPlannerPendingImages"
@@ -486,9 +498,18 @@ onBeforeUnmount(() => {
           :active-agent-id="workerActiveAgentId"
           :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
+          :header-action="{ title: '新会话', ariaLabel: '新会话', testId: 'worker-chat-new-session' }"
+          :header-resume-action="{
+            title: '恢复上下文',
+            ariaLabel: '恢复 Worker 上下文',
+            testId: 'worker-chat-resume-thread',
+            disabled: resumeThreadBlocked,
+          }"
           @send="sendMainPrompt"
           @switchAgent="switchMainAgent"
           @setReasoningEffort="setMainModelReasoningEffort"
+          @newSession="startNewChatSession"
+          @resumeThread="resumeTaskThread"
           @interrupt="interruptActive"
           @clear="clearActiveChat"
           @addImages="addPendingImages"
@@ -508,7 +529,35 @@ onBeforeUnmount(() => {
       <div class="workerDrawer">
         <div class="workerDrawerHeader">
           <div class="workerDrawerTitle">Worker</div>
-          <button type="button" class="workerDrawerClose" @click="workerDrawerOpen = false">Close</button>
+          <div class="workerDrawerActions">
+            <button
+              class="workerDrawerIconBtn"
+              type="button"
+              title="恢复上下文"
+              aria-label="恢复上下文"
+              :disabled="agentBusy || resumeThreadBlocked"
+              data-testid="worker-chat-resume-thread"
+              @click.stop="resumeTaskThread()"
+            >
+              <el-icon :size="16" aria-hidden="true">
+                <Refresh />
+              </el-icon>
+            </button>
+            <button
+              class="workerDrawerIconBtn"
+              type="button"
+              title="新会话"
+              aria-label="新会话"
+              :disabled="agentBusy"
+              data-testid="worker-chat-new-session"
+              @click.stop="startNewChatSession"
+            >
+              <el-icon :size="16" aria-hidden="true">
+                <ChatDotRound />
+              </el-icon>
+            </button>
+            <button type="button" class="workerDrawerClose" @click="workerDrawerOpen = false">Close</button>
+          </div>
         </div>
         <MainChatView
           :key="workerChatKey"

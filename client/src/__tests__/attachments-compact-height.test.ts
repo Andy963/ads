@@ -74,7 +74,7 @@ const AttachmentThumbStub = defineComponent({
 });
 
 describe("compact attachment UI", () => {
-  it("MainChat keeps the compact attachments bar and clear remains clickable", async () => {
+  it("MainChat renders thumbnail previews with clear action", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [],
@@ -91,18 +91,18 @@ describe("compact attachment UI", () => {
       attachTo: document.body,
     });
 
-    const pill = wrapper.find(".attachmentsPill");
-    expect(pill.exists()).toBe(true);
     const bar = wrapper.find(".attachmentsBar");
     expect(bar.exists()).toBe(true);
+    const thumb = wrapper.find(".attachmentsThumb");
+    expect(thumb.exists()).toBe(true);
 
     await wrapper.find(".attachmentsClear").trigger("click");
     expect(wrapper.emitted("clearImages")).toBeTruthy();
 
     const css = await readText("../components/MainChat.css");
-    expect(css).toMatch(/\.attachmentsBar\s*\{[\s\S]*height:\s*14px\s*;/);
-    expect(css).toMatch(/\.attachmentsPill\s*\{[\s\S]*height:\s*14px\s*;/);
-    expect(css).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*14px\s*;[\s\S]*height:\s*14px\s*;/);
+    expect(css).toMatch(/\.attachmentsBar\s*\{[\s\S]*min-height:\s*28px\s*;/);
+    expect(css).toMatch(/\.attachmentsThumb\s*\{[\s\S]*width:\s*42px\s*;[\s\S]*height:\s*28px\s*;/);
+    expect(css).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*26px\s*;[\s\S]*height:\s*26px\s*;/);
 
     wrapper.unmount();
   });
