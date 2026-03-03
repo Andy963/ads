@@ -207,6 +207,70 @@ describe("web/api/tasks create", () => {
     assert.equal(promoteCalls, 0);
   });
 
+  it("ignores legacy inheritContext field in create payload", async () => {
+    const req = createReq("POST", { prompt: "Hello", inheritContext: true });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks?workspace=/tmp/ws");
+
+    let createInput: Record<string, unknown> | null = null;
+
+    const taskCtx = {
+      sessionId: "s-1",
+      queueRunning: false,
+      metrics: { counts: {}, events: [] },
+      runController: {
+        getMode() {
+          return "manual";
+        },
+      },
+      taskQueue: {
+        notifyNewTask() {},
+      },
+      taskStore: {
+        createTask(input: Record<string, unknown>) {
+          createInput = input;
+          return { id: "t-1", title: "T", prompt: "Hello", model: "auto", status: "queued", priority: 0, queueOrder: 0, inheritContext: false, retryCount: 0, maxRetries: 0, createdAt: Date.now() } as any;
+        },
+        deleteTask() {},
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
+        },
+        assignAttachmentsToTask() {},
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as any,
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as any;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as any,
+      res: res as any,
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskRoutes(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 201);
+    assert.ok(createInput);
+    assert.equal(Object.prototype.hasOwnProperty.call(createInput, "inheritContext"), false);
+  });
+
   it("returns 400 for invalid JSON body", async () => {
     let createCalls = 0;
     const req: FakeReq = {

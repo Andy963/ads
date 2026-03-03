@@ -54,6 +54,7 @@ describe("TaskBoard edit modal", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("继承上下文");
 
     const promptEl = wrapper.find('[data-testid="task-edit-prompt"]');
     expect((promptEl.element as HTMLTextAreaElement).value).toBe(longPrompt);
@@ -74,7 +75,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        inheritContext: true,
       },
     });
 
@@ -147,7 +147,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        inheritContext: true,
       },
     });
 
@@ -190,7 +189,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        inheritContext: true,
       },
     });
 
@@ -290,7 +288,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        inheritContext: true,
         bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 },
       },
     });
@@ -339,7 +336,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        inheritContext: true,
         bootstrap: null,
       },
     });

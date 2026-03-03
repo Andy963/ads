@@ -105,7 +105,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         agentId: z.string().min(1).nullable().optional(),
         model: z.string().min(1).optional(),
         priority: z.number().finite().optional(),
-        inheritContext: z.boolean().optional(),
         maxRetries: z.number().int().min(0).optional(),
         bootstrap: bootstrapSchema,
       })
@@ -117,7 +116,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     }
     const parsed = updateResult.data;
     const keys = Object.keys(parsed).filter((k) =>
-      ["title", "prompt", "agentId", "model", "priority", "inheritContext", "maxRetries", "bootstrap"].includes(k),
+      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "bootstrap"].includes(k),
     );
     if (keys.length === 0) {
       sendJson(res, 400, { error: "No updates provided" });
@@ -140,7 +139,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     if (parsed.agentId !== undefined) updates.agentId = parsed.agentId == null ? null : parsed.agentId.trim();
     if (parsed.model !== undefined) updates.model = parsed.model;
     if (parsed.priority !== undefined) updates.priority = parsed.priority;
-    if (parsed.inheritContext !== undefined) updates.inheritContext = parsed.inheritContext;
     if (parsed.maxRetries !== undefined) updates.maxRetries = parsed.maxRetries;
     if (parsed.bootstrap !== undefined) {
       const base = (() => {

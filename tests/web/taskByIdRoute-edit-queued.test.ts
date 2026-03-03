@@ -123,6 +123,75 @@ describe("web/api/tasks/:id PATCH", () => {
     assert.equal((payload.task as Task).title, "Updated title");
   });
 
+  it("ignores legacy inheritContext field when updating queued tasks", async () => {
+    let task: Task = {
+      id: "t-queued",
+      title: "T",
+      prompt: "P",
+      model: "auto",
+      modelParams: null,
+      status: "queued",
+      priority: 0,
+      queueOrder: 0,
+      queuedAt: Date.now(),
+      inheritContext: true,
+      retryCount: 0,
+      maxRetries: 3,
+      createdAt: Date.now(),
+    };
+    let seenUpdates: Record<string, unknown> | null = null;
+
+    const req = createReq("PATCH", { title: "Updated title", inheritContext: false });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/t-queued");
+
+    const taskCtx = {
+      sessionId: "s",
+      queueRunning: false,
+      taskStore: {
+        getTask(id: string) {
+          return id === task.id ? task : null;
+        },
+        updateTask(id: string, updates: Record<string, unknown>) {
+          assert.equal(id, task.id);
+          seenUpdates = updates;
+          task = { ...task, ...(updates as Partial<Task>) };
+          return task;
+        },
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as unknown as ApiSharedDeps["logger"],
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as unknown as ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as unknown as ApiRouteContext["req"],
+      res: res as unknown as ApiRouteContext["res"],
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskByIdRoute(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.ok(seenUpdates);
+    assert.equal(Object.prototype.hasOwnProperty.call(seenUpdates, "inheritContext"), false);
+    assert.equal(task.inheritContext, true);
+  });
+
   it("updates task modelParams.bootstrap when provided", async () => {
     let task: Task = {
       id: "t-queued",

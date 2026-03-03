@@ -13,7 +13,7 @@ type BootstrapConfig = {
   maxIterations?: number;
 };
 
-type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "inheritContext" | "maxRetries">> & {
+type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries">> & {
   bootstrap?: BootstrapConfig | null;
 };
 
@@ -271,7 +271,6 @@ const editPrompt = ref("");
 const editAgentId = ref("");
 const editPriority = ref(0);
 const editMaxRetries = ref(3);
-const editInheritContext = ref(true);
 const editBootstrapEnabled = ref(false);
 const editBootstrapProject = ref("");
 const editBootstrapMaxIterations = ref(10);
@@ -304,7 +303,6 @@ function startEdit(task: Task): void {
   editAgentId.value = pickDefaultAgentId(task.agentId);
   editPriority.value = task.priority ?? 0;
   editMaxRetries.value = task.maxRetries ?? 3;
-  editInheritContext.value = task.inheritContext ?? true;
   const bootstrap = readBootstrapConfig(task);
   editBootstrapEnabled.value = Boolean(bootstrap);
   editBootstrapProject.value = bootstrap?.projectRef ?? "";
@@ -354,7 +352,6 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
       agentId: editAgentId.value.trim() ? editAgentId.value.trim() : null,
       priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
       maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
-      inheritContext: Boolean(editInheritContext.value),
       ...(editBootstrapEnabled.value
         ? { bootstrap: { enabled: true, projectRef, maxIterations } }
         : priorBootstrap
@@ -576,13 +573,6 @@ function toggleQueue(): void {
           <label class="field">
             <span class="label">最大重试</span>
             <input v-model.number="editMaxRetries" type="number" min="0" />
-          </label>
-          <label class="field">
-            <span class="label">继承上下文</span>
-            <select v-model="editInheritContext">
-              <option :value="true">是</option>
-              <option :value="false">否</option>
-            </select>
           </label>
         </div>
 

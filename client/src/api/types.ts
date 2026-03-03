@@ -74,7 +74,6 @@ export interface CreateTaskInput {
   agentId?: string | null;
   model?: string;
   priority?: number;
-  inheritContext?: boolean;
   maxRetries?: number;
   attachments?: string[];
   bootstrap?: BootstrapConfig;
