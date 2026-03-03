@@ -152,6 +152,25 @@ describe("CodexCliAdapter", () => {
     assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
   });
 
+  it("keeps real assistant output when compaction heads-up arrives later", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "cat >/dev/null || true",
+      'echo \'{"type":"thread.started","thread_id":"t-compaction"}\'',
+      'echo \'{"type":"turn.started"}\'',
+      'echo \'{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Actual answer"}}\'',
+      'echo \'{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."}}\'',
+      'echo \'{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary });
+    const result = await adapter.send("hi");
+    assert.equal(result.response, "Actual answer");
+  });
+
   it("passes model_reasoning_effort via --config when set", async () => {
     const binary = await createExecutableScript([
       "#!/usr/bin/env bash",

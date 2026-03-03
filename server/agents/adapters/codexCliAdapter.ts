@@ -139,6 +139,22 @@ function isResumeModelMismatchError(message: string): boolean {
   );
 }
 
+function isCompactionHeadsUp(text: string): boolean {
+  const normalized = text
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!normalized.startsWith("heads up:")) {
+    return false;
+  }
+  return (
+    normalized.includes("long threads") &&
+    normalized.includes("multiple compactions") &&
+    normalized.includes("less accurate") &&
+    normalized.includes("start a new thread")
+  );
+}
+
 export class CodexCliAdapter implements AgentAdapter {
   readonly id: string;
   readonly metadata: AgentMetadata;
@@ -307,7 +323,12 @@ export class CodexCliAdapter implements AgentAdapter {
           if (event.type === "item.updated" || event.type === "item.completed") {
             const item = (event as { item?: { type?: unknown; text?: unknown } }).item;
             if (item && item.type === "agent_message" && typeof item.text === "string") {
-              responseText = item.text;
+              const nextText = item.text;
+              // Codex can emit a post-response compaction advisory as an extra agent_message.
+              // Keep the latest real answer instead of replacing it with this advisory text.
+              if (!(responseText.trim() && isCompactionHeadsUp(nextText))) {
+                responseText = nextText;
+              }
             }
           }
 
