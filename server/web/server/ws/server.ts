@@ -70,6 +70,8 @@ export function attachWebSocketServer(deps: {
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
   syncWorkspaceTemplates: () => void;
+  scheduleCompiler?: import("../../../scheduler/compiler.js").ScheduleCompiler;
+  scheduler?: import("../../../scheduler/runtime.js").SchedulerRuntime;
   isOriginAllowed: (originHeader: unknown, allowedOrigins: Set<string>) => boolean;
   authenticateRequest: (req: import("node:http").IncomingMessage) => { ok: false } | { ok: true; userId: string };
 }): WebSocketServer {
@@ -517,6 +519,8 @@ export function attachWebSocketServer(deps: {
           ensureTaskContext: deps.ensureTaskContext,
           promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
           broadcastToSession: deps.broadcastToSession,
+          scheduleCompiler: deps.scheduleCompiler,
+          scheduler: deps.scheduler,
         });
         if (promptResult.handled) {
           orchestrator = promptResult.orchestrator;

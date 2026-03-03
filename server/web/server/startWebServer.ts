@@ -328,6 +328,8 @@ export async function startWebServer(): Promise<void> {
     runAdsCommandLine,
     sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
     syncWorkspaceTemplates,
+    scheduleCompiler,
+    scheduler,
     isOriginAllowed: (originHeader, allowed) => {
       const normalized =
         typeof originHeader === "string" || Array.isArray(originHeader)

@@ -37,12 +37,43 @@ import { normalizeCreateTaskInput } from "../planner/taskBundleApprover.js";
 import { detectBundleRisk } from "../planner/riskDetector.js";
 import { recordTaskQueueMetric, type TaskQueueContext } from "../taskQueue/manager.js";
 import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
+import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
+import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
+import { ScheduleStore } from "../../../scheduler/store.js";
+import { computeNextCronRunAt } from "../../../scheduler/cron.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
 type PatchFileStatLike = { added: number | null; removed: number | null };
 
 const HISTORY_INJECTION_MAX_ENTRIES = 20;
 const HISTORY_INJECTION_MAX_CHARS = 8_000;
+
+const SCHEDULE_FENCE_REGEX = /```ads-schedule\s*\n([\s\S]*?)\n```/g;
+
+function extractScheduleBlocks(text: string): string[] {
+  const raw = String(text ?? "").trim();
+  if (!raw) return [];
+  const blocks: string[] = [];
+  let match: RegExpExecArray | null = null;
+  while ((match = SCHEDULE_FENCE_REGEX.exec(raw)) !== null) {
+    const candidate = String(match[1] ?? "").trim();
+    if (candidate) blocks.push(candidate);
+  }
+  return blocks;
+}
+
+function stripScheduleCodeBlocks(text: string, candidates: Set<string>): { text: string; removed: number } {
+  const raw = String(text ?? "");
+  if (!raw.trim()) return { text: raw, removed: 0 };
+  let removed = 0;
+  const stripped = raw.replace(SCHEDULE_FENCE_REGEX, (full: string, inner: string) => {
+    const candidate = String(inner ?? "").trim();
+    if (!candidate || !candidates.has(candidate)) return full;
+    removed += 1;
+    return "";
+  });
+  return { text: stripped, removed };
+}
 
 function parseModelReasoningEffortFromPayload(payload: unknown): { present: boolean; effort?: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -184,6 +215,8 @@ export async function handlePromptMessage(deps: {
   ensureTaskContext?: (workspaceRoot: string) => TaskQueueContext;
   promoteQueuedTasksToPending?: (ctx: TaskQueueContext) => void;
   broadcastToSession?: (sessionId: string, payload: unknown) => void;
+  scheduleCompiler?: ScheduleCompiler;
+  scheduler?: SchedulerRuntime;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
@@ -754,6 +787,45 @@ export async function handlePromptMessage(deps: {
 
           const summary = parts.join("\n\n---\n").trim();
           outputForChat = base ? `${base}\n\n---\n${summary}` : summary;
+        }
+
+        const scheduleBlocks = extractScheduleBlocks(outputForChat);
+        if (scheduleBlocks.length > 0 && deps.scheduleCompiler && deps.scheduler) {
+          const scheduleStripCandidates = new Set<string>();
+          const scheduleSummaries: string[] = [];
+          for (const instruction of scheduleBlocks) {
+            try {
+              const compiled = await deps.scheduleCompiler.compile({ workspaceRoot: workspaceRootForDraft, instruction });
+              const hasQuestions = (compiled.questions?.length ?? 0) > 0;
+              const enabled = compiled.enabled && !hasQuestions;
+              let nextRunAt: number | null = null;
+              if (enabled) {
+                try {
+                  nextRunAt = computeNextCronRunAt({ cron: compiled.schedule.cron, timezone: compiled.schedule.timezone, afterMs: Date.now() });
+                } catch {
+                  // ignore
+                }
+              }
+              const store = new ScheduleStore({ workspacePath: workspaceRootForDraft });
+              const schedule = store.createSchedule({ instruction, spec: compiled, enabled, nextRunAt }, Date.now());
+              deps.scheduler.registerWorkspace(workspaceRootForDraft);
+              scheduleStripCandidates.add(instruction);
+              const statusNote = enabled ? `已启用 (${compiled.schedule.cron})` : `需确认：${(compiled.questions ?? []).join("；")}`;
+              scheduleSummaries.push(`✅ 定时任务「${compiled.name}」已创建 — ${statusNote}`);
+              deps.logger.info(`[PlannerSchedule] created schedule id=${schedule.id} name=${compiled.name} enabled=${enabled}`);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              deps.logger.warn(`[PlannerSchedule] Failed to compile schedule: ${message}`);
+              scheduleSummaries.push(`⚠️ 定时任务创建失败：${message}`);
+              scheduleStripCandidates.add(instruction);
+            }
+          }
+          if (scheduleStripCandidates.size > 0) {
+            const stripped = stripScheduleCodeBlocks(outputForChat, scheduleStripCandidates);
+            const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
+            const scheduleSummary = scheduleSummaries.join("\n");
+            outputForChat = base ? `${base}\n\n${scheduleSummary}` : scheduleSummary;
+          }
         }
       }
 

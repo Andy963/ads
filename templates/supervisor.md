@@ -88,3 +88,18 @@ TaskSpec 约束：
 
 - 输出 **一个且仅一个** `ads-tasks` fenced code block（TaskBundle JSON，`version=1`，包含 `tasks[]`，每个 task 至少有 `prompt`）。
 - 为避免重复草稿，优先在 bundle 顶层填写稳定的 `requestId`（例如 request/client message id）。
+
+## 5) 定时任务（Planner → Schedule）
+当用户的请求是**周期性/定时**任务（包含"每小时"、"每天"、"每周"、"定时"、"定期"、"提醒我"等时间触发语义），**不要**生成 `ads-tasks` TaskBundle，而是输出一个 `ads-schedule` fenced code block，内容为纯自然语言指令，系统会自动编译成 cron 定时任务并通过 Telegram 推送结果。
+
+示例：
+
+    ```ads-schedule
+    每小时给我报告一下天气
+    ```
+
+注意：
+- 仅当请求具有明确的周期/定时语义时才使用此格式。
+- 一次只输出一个 `ads-schedule` block。
+- 不要在 block 内包含 JSON，只需要写原始自然语言指令。
+- 你可以在 block 前后附加简短说明（例如告诉用户定时任务已创建）。
