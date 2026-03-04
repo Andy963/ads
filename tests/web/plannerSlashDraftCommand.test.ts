@@ -42,6 +42,10 @@ class FakeOrchestrator {
     // noop
   }
 
+  setModelReasoningEffort(_effort?: string): void {
+    // noop
+  }
+
   getActiveAgentId(): string {
     return "codex";
   }
@@ -76,14 +80,35 @@ class FakeOrchestrator {
   }
 }
 
-describe("web/ws/planner-draft-spec-guard", () => {
+function makeSpecBlock(): string {
+  return [
+    "<<<spec",
+    [
+      'title: "My Spec"',
+      'template_id: "unified"',
+      "files:",
+      "  requirements.md: |",
+      "    # Requirements",
+      "    - Goal: do it",
+      "  design.md: |",
+      "    # Design",
+      "    - Approach: simple",
+      "  implementation.md: |",
+      "    # Implementation",
+      "    - Steps: 1) do it",
+    ].join("\n"),
+    ">>>",
+  ].join("\n");
+}
+
+describe("web/ws/planner-slash-draft-command", () => {
   let tmpDir: string;
   let workspaceRoot: string;
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-planner-spec-guard-"));
-    workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-planner-workspace-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-planner-slash-draft-"));
+    workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-planner-slash-draft-workspace-"));
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     resetStateDatabaseForTests();
   });
@@ -103,286 +128,23 @@ describe("web/ws/planner-draft-spec-guard", () => {
     }
   });
 
-  it("recovers planner ads-tasks draft when specRef is missing", async () => {
+  it("hard-routes /draft to planner-slash-draft and persists exactly one draft task", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
-    const orchestrator = new FakeOrchestrator([
-      [
-        "Here is your draft.",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-      [
-        "Recovery pass.",
-        "<<<spec",
-        [
-          'title: "My Spec"',
-          'template_id: "unified"',
-          "files:",
-          "  requirements.md: |",
-          "    # Requirements",
-          "    - Goal: do it",
-          "  design.md: |",
-          "    # Design",
-          "    - Approach: simple",
-          "  implementation.md: |",
-          "    # Implementation",
-          "    - Steps: 1) do it",
-        ].join("\n"),
-        ">>>",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-    ]);
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-1",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
-
-    assert.equal(orchestrator.invokeCount, 2);
-
-    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
-    assert.ok(result);
-    const output = String((result as { output?: unknown }).output ?? "");
-    assert.match(output, /任务草稿已写入/);
-    assert.doesNotMatch(output, /```ads-tasks/);
-
-    const drafts = listTaskBundleDrafts({
-      authUserId: "test-user",
-      workspaceRoot,
-      limit: 10,
-    });
-    assert.equal(drafts.length, 1);
-    assert.ok(drafts[0]!.bundle);
-    assert.match(String(drafts[0]!.bundle?.specRef ?? ""), /^docs\/spec\//);
-    assert.equal(drafts[0]!.requestId, "req:req-1");
-    assert.ok(Array.isArray(clientMessages));
-  });
-
-  it("recovers planner ads-tasks draft when spec directory is missing", async () => {
-    const chatMessages: unknown[] = [];
-    const clientMessages: unknown[] = [];
-    const historyStore = new MemoryHistoryStore();
-    const orchestrator = new FakeOrchestrator([
-      [
-        "Here is your draft.",
-        "```ads-tasks",
-        '{"version":1,"specRef":"docs/spec/does-not-exist","tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-      [
-        "Recovery pass.",
-        "<<<spec",
-        [
-          'title: "My Spec"',
-          'template_id: "unified"',
-          "files:",
-          "  requirements.md: |",
-          "    # Requirements",
-          "    - Goal: do it",
-          "  design.md: |",
-          "    # Design",
-          "    - Approach: simple",
-          "  implementation.md: |",
-          "    # Implementation",
-          "    - Steps: 1) do it",
-        ].join("\n"),
-        ">>>",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-    ]);
-
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-2",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
-
-    assert.equal(orchestrator.invokeCount, 2);
-
-    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
-    assert.ok(result);
-    const output = String((result as { output?: unknown }).output ?? "");
-    assert.match(output, /任务草稿已写入/);
-    assert.doesNotMatch(output, /```ads-tasks/);
-
-    const drafts = listTaskBundleDrafts({
-      authUserId: "test-user",
-      workspaceRoot,
-      limit: 10,
-    });
-    assert.equal(drafts.length, 1);
-    assert.ok(Array.isArray(clientMessages));
-  });
-
-  it("stops after one recovery attempt when second pass still fails", async () => {
-    const chatMessages: unknown[] = [];
-    const clientMessages: unknown[] = [];
-    const historyStore = new MemoryHistoryStore();
-    const orchestrator = new FakeOrchestrator([
-      [
-        "Here is your draft.",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-      [
-        "Still broken.",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-    ]);
-
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-3",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
-
-    assert.equal(orchestrator.invokeCount, 2);
-
-    const draftUpserts = chatMessages.filter((message) => {
-      if (!message || typeof message !== "object") return false;
-      const rec = message as { type?: unknown; action?: unknown };
-      return rec.type === "task_bundle_draft" && rec.action === "upsert";
-    });
-    assert.equal(draftUpserts.length, 0);
-
-    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
-    assert.ok(result);
-    const output = String((result as { output?: unknown }).output ?? "");
-    assert.match(output, /任务草稿未写入/);
-    assert.match(output, /spec is required before draft/);
-    assert.doesNotMatch(output, /```ads-tasks/);
-
-    const drafts = listTaskBundleDrafts({
-      authUserId: "test-user",
-      workspaceRoot,
-      limit: 10,
-    });
-    assert.equal(drafts.length, 0);
-    assert.ok(Array.isArray(clientMessages));
-  });
-
-  it("does not retry on non-recoverable spec validation failures", async () => {
-    const chatMessages: unknown[] = [];
-    const clientMessages: unknown[] = [];
-    const historyStore = new MemoryHistoryStore();
     const orchestrator = new FakeOrchestrator(
       [
-        "Here is your draft.",
+        "Draft summary.",
+        makeSpecBlock(),
         "```ads-tasks",
-        '{"version":1,"specRef":"../escape","tasks":[{"title":"Task 1","prompt":"Do it"}]}',
+        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
         "```",
       ].join("\n"),
     );
 
     await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
+      parsed: { type: "prompt", payload: "/draft ship it" },
       ws: {} as any,
       safeJsonSend: (_ws, payload) => clientMessages.push(payload),
       broadcastJson: (payload) => chatMessages.push(payload),
@@ -394,7 +156,146 @@ describe("web/ws/planner-draft-spec-guard", () => {
         logEvent: () => {},
         attachThreadId: () => {},
       },
-      requestId: "req-4",
+      requestId: "req-draft-1",
+      clientMessageId: null,
+      traceWsDuplication: false,
+      receivedAt: Date.now(),
+      authUserId: "test-user",
+      sessionId: "s",
+      chatSessionId: "planner",
+      userId: 1,
+      historyKey: "h",
+      currentCwd: workspaceRoot,
+      allowedDirs: [workspaceRoot],
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map(),
+      historyStore: historyStore as any,
+      sessionManager: {
+        getOrCreate: () => orchestrator as any,
+        getSavedThreadId: () => undefined,
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: () => {},
+      } as any,
+      orchestrator: orchestrator as any,
+      sendWorkspaceState: () => {},
+    });
+
+    assert.equal(orchestrator.invokeCount, 1);
+    assert.match(String(orchestrator.invokeInputs[0] ?? ""), /\$planner-slash-draft/);
+
+    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+    assert.ok(result);
+    const output = String((result as { output?: unknown }).output ?? "");
+    assert.match(output, /任务草稿已写入/);
+    assert.doesNotMatch(output, /```ads-tasks/);
+    assert.doesNotMatch(output, /```ads-schedule/);
+
+    const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]!.requestId, "req:req-draft-1");
+    assert.ok(drafts[0]!.bundle);
+    assert.equal(drafts[0]!.bundle!.tasks.length, 1);
+    assert.equal(drafts[0]!.bundle!.autoApprove, undefined);
+  });
+
+  it("retries once on spec guard failure for /draft", async () => {
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+
+    const orchestrator = new FakeOrchestrator([
+      [
+        "First pass missing spec.",
+        "```ads-tasks",
+        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
+        "```",
+      ].join("\n"),
+      [
+        "Recovery pass.",
+        makeSpecBlock(),
+        "```ads-tasks",
+        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
+        "```",
+      ].join("\n"),
+    ]);
+
+    await handlePromptMessage({
+      parsed: { type: "prompt", payload: "/draft ship it" },
+      ws: {} as any,
+      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
+      broadcastJson: (payload) => chatMessages.push(payload),
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      requestId: "req-draft-2",
+      clientMessageId: null,
+      traceWsDuplication: false,
+      receivedAt: Date.now(),
+      authUserId: "test-user",
+      sessionId: "s",
+      chatSessionId: "planner",
+      userId: 1,
+      historyKey: "h",
+      currentCwd: workspaceRoot,
+      allowedDirs: [workspaceRoot],
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map(),
+      historyStore: historyStore as any,
+      sessionManager: {
+        getOrCreate: () => orchestrator as any,
+        getSavedThreadId: () => undefined,
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: () => {},
+      } as any,
+      orchestrator: orchestrator as any,
+      sendWorkspaceState: () => {},
+    });
+
+    assert.equal(orchestrator.invokeCount, 2);
+
+    const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]!.requestId, "req:req-draft-2");
+    assert.ok(drafts[0]!.bundle);
+    assert.equal(drafts[0]!.bundle!.tasks.length, 1);
+  });
+
+  it("rejects /draft output when tasks.length is not 1", async () => {
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+
+    const orchestrator = new FakeOrchestrator(
+      [
+        "Draft summary.",
+        makeSpecBlock(),
+        "```ads-tasks",
+        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"},{"title":"Task 2","prompt":"Do it too"}]}',
+        "```",
+      ].join("\n"),
+    );
+
+    await handlePromptMessage({
+      parsed: { type: "prompt", payload: "/draft ship it" },
+      ws: {} as any,
+      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
+      broadcastJson: (payload) => chatMessages.push(payload),
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      requestId: "req-draft-3",
       clientMessageId: null,
       traceWsDuplication: false,
       receivedAt: Date.now(),
@@ -421,59 +322,44 @@ describe("web/ws/planner-draft-spec-guard", () => {
 
     assert.equal(orchestrator.invokeCount, 1);
 
-    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
-    assert.ok(result);
-    const output = String((result as { output?: unknown }).output ?? "");
-    assert.match(output, /任务草稿未写入/);
-    assert.match(output, /Invalid specRef/);
-    assert.doesNotMatch(output, /```ads-tasks/);
+	    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+	    assert.ok(result);
+	    const output = String((result as { output?: unknown }).output ?? "");
+	    assert.match(output, /tasks\.length === 1/);
 
-    const drafts = listTaskBundleDrafts({
-      authUserId: "test-user",
-      workspaceRoot,
-      limit: 10,
-    });
+    const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
     assert.equal(drafts.length, 0);
-    assert.ok(Array.isArray(clientMessages));
   });
 
-  it("strips autoApprove during recovery even when passphrase is present", async () => {
+  it("does not compile schedule blocks for /draft (and strips schedule output)", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
-    const orchestrator = new FakeOrchestrator([
+
+    const orchestrator = new FakeOrchestrator(
       [
-        "Here is your draft.",
+        "Draft summary.",
+        makeSpecBlock(),
         "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
+        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
+        "```",
+        "```ads-schedule",
+        '{"name":"should-not-run"}',
         "```",
       ].join("\n"),
-      [
-        "Recovery pass with autoApprove.",
-        "<<<spec",
-        [
-          'title: "My Spec"',
-          'template_id: "unified"',
-          "files:",
-          "  requirements.md: |",
-          "    # Requirements",
-          "    - Goal: do it",
-          "  design.md: |",
-          "    # Design",
-          "    - Approach: simple",
-          "  implementation.md: |",
-          "    # Implementation",
-          "    - Steps: 1) do it",
-        ].join("\n"),
-        ">>>",
-        "```ads-tasks",
-        '{"version":1,"autoApprove":true,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-    ]);
+    );
+
+    let compileCalls = 0;
+    const scheduleCompiler = {
+      compile: async () => {
+        compileCalls += 1;
+        return { name: "X", enabled: false, schedule: { cron: "* * * * *", timezone: "UTC" }, questions: [] };
+      },
+    };
+    const scheduler = { registerWorkspace: () => {} };
 
     await handlePromptMessage({
-      parsed: { type: "prompt", payload: "ads:autoapprove add as a task" },
+      parsed: { type: "prompt", payload: "/draft ship it" },
       ws: {} as any,
       safeJsonSend: (_ws, payload) => clientMessages.push(payload),
       broadcastJson: (payload) => chatMessages.push(payload),
@@ -485,7 +371,7 @@ describe("web/ws/planner-draft-spec-guard", () => {
         logEvent: () => {},
         attachThreadId: () => {},
       },
-      requestId: "req-5",
+      requestId: "req-draft-4",
       clientMessageId: null,
       traceWsDuplication: false,
       receivedAt: Date.now(),
@@ -508,82 +394,32 @@ describe("web/ws/planner-draft-spec-guard", () => {
       } as any,
       orchestrator: orchestrator as any,
       sendWorkspaceState: () => {},
+      scheduleCompiler: scheduleCompiler as any,
+      scheduler: scheduler as any,
     });
 
-    assert.equal(orchestrator.invokeCount, 2);
+    assert.equal(compileCalls, 0);
 
-    const drafts = listTaskBundleDrafts({
-      authUserId: "test-user",
-      workspaceRoot,
-      limit: 10,
-    });
-    assert.equal(drafts.length, 1);
-    assert.ok(drafts[0]!.bundle);
-    assert.equal(drafts[0]!.bundle?.autoApprove, undefined);
+    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+    assert.ok(result);
+    const output = String((result as { output?: unknown }).output ?? "");
+    assert.doesNotMatch(output, /```ads-schedule/);
   });
 
-  it("keeps idempotency for the same requestId across retries", async () => {
+  it("keeps idempotency for /draft with the same requestId", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
-    const orchestrator = new FakeOrchestrator([
+
+    const orchestrator = new FakeOrchestrator(
       [
-        "Here is your draft.",
+        "Draft summary.",
+        makeSpecBlock(),
         "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
+        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
         "```",
       ].join("\n"),
-      [
-        "Recovery pass.",
-        "<<<spec",
-        [
-          'title: "My Spec"',
-          'template_id: "unified"',
-          "files:",
-          "  requirements.md: |",
-          "    # Requirements",
-          "    - Goal: do it",
-          "  design.md: |",
-          "    # Design",
-          "    - Approach: simple",
-          "  implementation.md: |",
-          "    # Implementation",
-          "    - Steps: 1) do it",
-        ].join("\n"),
-        ">>>",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-      [
-        "Here is your draft again.",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-      [
-        "Recovery pass again.",
-        "<<<spec",
-        [
-          'title: "My Spec 2"',
-          'template_id: "unified"',
-          "files:",
-          "  requirements.md: |",
-          "    # Requirements",
-          "    - Goal: do it",
-          "  design.md: |",
-          "    # Design",
-          "    - Approach: simple",
-          "  implementation.md: |",
-          "    # Implementation",
-          "    - Steps: 1) do it",
-        ].join("\n"),
-        ">>>",
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"}]}',
-        "```",
-      ].join("\n"),
-    ]);
+    );
 
     const makeDeps = () => ({
       ws: {} as any,
@@ -622,32 +458,22 @@ describe("web/ws/planner-draft-spec-guard", () => {
     });
 
     await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      requestId: "req-6",
+      parsed: { type: "prompt", payload: "/draft ship it" },
+      requestId: "req-draft-5",
       ...makeDeps(),
     });
 
-    const afterFirst = listTaskBundleDrafts({
-      authUserId: "test-user",
-      workspaceRoot,
-      limit: 10,
-    });
+    const afterFirst = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
     assert.equal(afterFirst.length, 1);
     const firstDraftId = afterFirst[0]!.id;
 
     await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      requestId: "req-6",
+      parsed: { type: "prompt", payload: "/draft ship it" },
+      requestId: "req-draft-5",
       ...makeDeps(),
     });
 
-    assert.equal(orchestrator.invokeCount, 4);
-
-    const afterSecond = listTaskBundleDrafts({
-      authUserId: "test-user",
-      workspaceRoot,
-      limit: 10,
-    });
+    const afterSecond = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
     assert.equal(afterSecond.length, 1);
     assert.equal(afterSecond[0]!.id, firstDraftId);
   });

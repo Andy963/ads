@@ -27,6 +27,8 @@ import {
   stripTaskBundleCodeBlocks,
 } from "../planner/taskBundle.js";
 import { validateTaskBundleSpec } from "../planner/specValidation.js";
+import { buildDraftRecoveryPrompt, summarizeDraftSpecValidationErrors } from "../planner/draftRecovery.js";
+import { injectPlannerDraftSkill, parsePlannerDraftSlashCommand } from "../planner/draftSlashCommand.js";
 import {
   approveTaskBundleDraft,
   getTaskBundleDraftByRequestId,
@@ -47,6 +49,8 @@ type PatchFileStatLike = { added: number | null; removed: number | null };
 
 const HISTORY_INJECTION_MAX_ENTRIES = 20;
 const HISTORY_INJECTION_MAX_CHARS = 8_000;
+
+const PLANNER_DRAFT_RECOVERY_MAX_ATTEMPTS = 1;
 
 const SCHEDULE_FENCE_REGEX = /```ads-schedule\s*\n([\s\S]*?)\n```/g;
 
@@ -253,7 +257,11 @@ export async function handlePromptMessage(deps: {
       });
     }
 
-    const inputToSend: Input = promptInput.input;
+    let inputToSend: Input = promptInput.input;
+    const isPlannerDraftCommand = deps.chatSessionId === "planner" && Boolean(parsePlannerDraftSlashCommand(inputToSend));
+    if (isPlannerDraftCommand) {
+      inputToSend = injectPlannerDraftSkill(inputToSend);
+    }
     const cleanupAfter = cleanupAttachments;
     const turnCwd = deps.currentCwd;
 
@@ -550,8 +558,8 @@ export async function handlePromptMessage(deps: {
         const message = error instanceof Error ? error.message : String(error);
         outputToSend = `${outputToSend}\n\n---\nSpec warning: failed to record spec (${message})`;
       }
-      const threadId = orchestrator.getThreadId();
-      const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
+      let threadId = orchestrator.getThreadId();
+      let threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
 
       if (deps.chatSessionId === "planner") {
@@ -562,19 +570,11 @@ export async function handlePromptMessage(deps: {
           // ignore
         }
 
-        const blocks = extractTaskBundleJsonBlocks(outputToSend);
-        const stripCandidates = new Set<string>();
-        const summaryTasks: Array<{ title: string; prompt: string }> = [];
-        const draftErrors: string[] = [];
         const defaultRequestId = (() => {
           const clientMessageId = String(deps.clientMessageId ?? "").trim();
           if (clientMessageId) return `cmid:${clientMessageId}`;
           const requestId = String(deps.requestId ?? "").trim();
           return requestId ? `req:${requestId}` : null;
-        })();
-        const defaultSpecRef = (() => {
-          const last = createdSpecRefs.length > 0 ? createdSpecRefs[createdSpecRefs.length - 1] : null;
-          return last ? String(last).trim() : null;
         })();
         const allowAutoApprove = (() => {
           const lowered = String(userLogEntry ?? "").toLowerCase();
@@ -585,251 +585,408 @@ export async function handlePromptMessage(deps: {
           return lowered.includes(passphrase);
         })();
 
-        for (const block of blocks) {
-          const parsedBundle = parseTaskBundle(block);
-          if (!parsedBundle.ok) {
-            deps.logger.warn(`[PlannerDraft] invalid bundle: ${parsedBundle.error}`);
-            continue;
-          }
-          try {
-            const originalRequestId = String(parsedBundle.bundle.requestId ?? "").trim();
-            let normalized = ensureTaskBundleIdempotency(parsedBundle.bundle, { defaultRequestId });
-            if (defaultSpecRef && !String(normalized.specRef ?? "").trim()) {
-              normalized = { ...normalized, specRef: defaultSpecRef };
-            }
-            if (normalized.autoApprove && !allowAutoApprove) {
-              normalized = { ...normalized, autoApprove: undefined };
-            }
-            const specRefValidation = validateTaskBundleSpec({
-              bundle: normalized,
-              workspaceRoot: workspaceRootForDraft,
-              requireFiles: false,
-            });
-            if (!specRefValidation.ok) {
-              draftErrors.push(specRefValidation.error);
-              deps.logger.warn(`[PlannerDraft] rejected bundle: ${specRefValidation.error}`);
-              stripCandidates.add(block);
-              continue;
-            }
-            if (specRefValidation.specRef !== String(normalized.specRef ?? "").trim()) {
-              normalized = { ...normalized, specRef: specRefValidation.specRef };
-            }
+	        let recoveryAttempts = 0;
+	        const processPlannerDraftOutput = async (args: {
+	          outputText: string;
+	          createdSpecRefs: string[];
+	          allowAutoApprove: boolean;
+	          forcedRequestId: string | null;
+	          disableAutoApprove: boolean;
+	          draftCommand: boolean;
+	        }): Promise<{
+	          outputForChat: string;
+	          blocks: string[];
+	          summaryTasks: Array<{ title: string; prompt: string }>;
+	          draftErrors: string[];
+          stableRequestId: string | null;
+        }> => {
+          const outputText = String(args.outputText ?? "");
+          const blocks = extractTaskBundleJsonBlocks(outputText);
+          const stripCandidates = new Set<string>();
+          const summaryTasks: Array<{ title: string; prompt: string }> = [];
+          const draftErrors: string[] = [];
+          let stableRequestId: string | null = null;
+	          const defaultSpecRef = (() => {
+	            const last = args.createdSpecRefs.length > 0 ? args.createdSpecRefs[args.createdSpecRefs.length - 1] : null;
+	            return last ? String(last).trim() : null;
+	          })();
 
-            const specFilesValidation = validateTaskBundleSpec({
-              bundle: normalized,
-              workspaceRoot: workspaceRootForDraft,
-              requireFiles: true,
-            });
-            if (!specFilesValidation.ok) {
-              draftErrors.push(specFilesValidation.error);
-              deps.logger.warn(`[PlannerDraft] rejected bundle: ${specFilesValidation.error}`);
-              stripCandidates.add(block);
-              continue;
-            }
-            const requestId = String(normalized.requestId ?? "").trim();
+	          const invalidDraftBlockCount = args.draftCommand && blocks.length !== 1;
+	          if (invalidDraftBlockCount) {
+	            if (blocks.length === 0) {
+	              draftErrors.push("`/draft` must emit exactly one `ads-tasks` block, but none were found.");
+	            } else {
+	              draftErrors.push(`\`/draft\` must emit exactly one \`ads-tasks\` block, but found ${blocks.length}.`);
+	            }
+	            for (const block of blocks) {
+	              stripCandidates.add(block);
+	            }
+	          }
 
-            if (!originalRequestId && requestId) {
-              const existing = getTaskBundleDraftByRequestId({
-                authUserId: deps.authUserId,
+	          for (const block of invalidDraftBlockCount ? [] : blocks) {
+	            const parsedBundle = parseTaskBundle(block);
+	            if (!parsedBundle.ok) {
+	              deps.logger.warn(`[PlannerDraft] invalid bundle: ${parsedBundle.error}`);
+	              continue;
+	            }
+            try {
+              const originalRequestId = String(parsedBundle.bundle.requestId ?? "").trim();
+              const baseBundle =
+                args.forcedRequestId
+                  ? { ...parsedBundle.bundle, requestId: args.forcedRequestId }
+                  : parsedBundle.bundle;
+              let normalized = ensureTaskBundleIdempotency(baseBundle, { defaultRequestId });
+              if (defaultSpecRef && !String(normalized.specRef ?? "").trim()) {
+                normalized = { ...normalized, specRef: defaultSpecRef };
+              }
+	              const requestIdCandidate = String(normalized.requestId ?? "").trim();
+	              if (!stableRequestId && requestIdCandidate) {
+	                stableRequestId = requestIdCandidate;
+	              }
+
+	              if (args.draftCommand && normalized.tasks.length !== 1) {
+	                draftErrors.push(`\`/draft\` requires tasks.length === 1 (got ${normalized.tasks.length}).`);
+	                deps.logger.warn(`[PlannerDraft] rejected /draft bundle: tasks.length=${normalized.tasks.length}`);
+	                stripCandidates.add(block);
+	                continue;
+	              }
+
+	              if (args.disableAutoApprove) {
+	                if (normalized.autoApprove !== undefined) {
+	                  normalized = { ...normalized, autoApprove: undefined };
+	                }
+	              } else if (normalized.autoApprove && !args.allowAutoApprove) {
+                normalized = { ...normalized, autoApprove: undefined };
+              }
+
+              const specRefValidation = validateTaskBundleSpec({
+                bundle: normalized,
                 workspaceRoot: workspaceRootForDraft,
-                requestId,
+                requireFiles: false,
               });
-              if (existing) {
-                sendToChat({ type: "task_bundle_draft", action: "upsert", draft: existing });
+              if (!specRefValidation.ok) {
+                draftErrors.push(specRefValidation.error);
+                deps.logger.warn(`[PlannerDraft] rejected bundle: ${specRefValidation.error}`);
                 stripCandidates.add(block);
-                for (const task of normalized.tasks ?? []) {
-                  summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
-                }
                 continue;
               }
-            }
+              if (specRefValidation.specRef !== String(normalized.specRef ?? "").trim()) {
+                normalized = { ...normalized, specRef: specRefValidation.specRef };
+              }
 
-            const draft = upsertTaskBundleDraft({
-              authUserId: deps.authUserId,
-              workspaceRoot: workspaceRootForDraft,
-              sourceChatSessionId: deps.chatSessionId,
-              sourceHistoryKey: deps.historyKey,
-              bundle: normalized,
-            });
+              const specFilesValidation = validateTaskBundleSpec({
+                bundle: normalized,
+                workspaceRoot: workspaceRootForDraft,
+                requireFiles: true,
+              });
+              if (!specFilesValidation.ok) {
+                draftErrors.push(specFilesValidation.error);
+                deps.logger.warn(`[PlannerDraft] rejected bundle: ${specFilesValidation.error}`);
+                stripCandidates.add(block);
+                continue;
+              }
+              const requestId = String(normalized.requestId ?? "").trim();
 
-            const riskResult = normalized.autoApprove ? detectBundleRisk(normalized) : null;
-            const shouldAutoApprove = normalized.autoApprove && !riskResult?.isHighRisk && deps.ensureTaskContext && deps.promoteQueuedTasksToPending && deps.broadcastToSession;
-            const autoApproveSpecValidation = shouldAutoApprove
-              ? validateTaskBundleSpec({
-                  bundle: normalized,
+              if (!originalRequestId && requestId) {
+                const existing = getTaskBundleDraftByRequestId({
+                  authUserId: deps.authUserId,
                   workspaceRoot: workspaceRootForDraft,
-                  requireFiles: true,
-                })
-              : null;
-
-            if (riskResult?.isHighRisk) {
-              const degradeReason = riskResult.reasons.join("；");
-              deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${degradeReason}`);
-              try {
-                setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: `降级为草稿：${degradeReason}` });
-              } catch {
-                // ignore
-              }
-              sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: `降级为草稿：${degradeReason}`, degradeReason } });
-            } else if (autoApproveSpecValidation && !autoApproveSpecValidation.ok) {
-              const message = autoApproveSpecValidation.error;
-              deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${message}`);
-              try {
-                setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: message });
-              } catch {
-                // ignore
-              }
-              sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: message } });
-            } else if (shouldAutoApprove) {
-              const ensureCtx = deps.ensureTaskContext!;
-              const promote = deps.promoteQueuedTasksToPending!;
-              const broadcast = deps.broadcastToSession!;
-              try {
-                const taskCtx = ensureCtx(workspaceRootForDraft);
-                const now = Date.now();
-                const createdTaskIds: string[] = [];
-                const taskTitles: string[] = [];
-
-                await taskCtx.lock.runExclusive(async () => {
-                  for (let i = 0; i < normalized.tasks.length; i++) {
-                    const specTask = normalized.tasks[i]!;
-                    const input = normalizeCreateTaskInput(draft.id, specTask, i);
-                    const { attachments: _attachments, ...createInput } = input;
-
-                    let created;
-                    try {
-                      created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
-                    } catch {
-                      const existingTask = taskCtx.taskStore.getTask(input.id);
-                      if (existingTask) {
-                        created = existingTask;
-                      } else {
-                        throw new Error(`Auto-approve: create task failed (idx=${i + 1})`);
-                      }
-                    }
-
-                    recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "auto_approve" });
-                    broadcast(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
-                    createdTaskIds.push(created.id);
-                    taskTitles.push(created.title ?? "");
-
-                    try {
-                      upsertTaskNotificationBinding({
-                        authUserId: deps.authUserId,
-                        workspaceRoot: workspaceRootForDraft,
-                        taskId: created.id,
-                        taskTitle: created.title,
-                        now,
-                        logger: deps.logger,
-                      });
-                    } catch {
-                      // ignore
-                    }
+                  requestId,
+                });
+                if (existing) {
+                  sendToChat({ type: "task_bundle_draft", action: "upsert", draft: existing });
+                  stripCandidates.add(block);
+                  for (const task of normalized.tasks ?? []) {
+                    summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
                   }
+                  continue;
+                }
+              }
 
-                  approveTaskBundleDraft({ authUserId: deps.authUserId, draftId: draft.id, approvedTaskIds: createdTaskIds, now });
+              const draft = upsertTaskBundleDraft({
+                authUserId: deps.authUserId,
+                workspaceRoot: workspaceRootForDraft,
+                sourceChatSessionId: deps.chatSessionId,
+                sourceHistoryKey: deps.historyKey,
+                bundle: normalized,
+              });
 
-                  taskCtx.runController.setModeAll();
-                  taskCtx.taskQueue.resume();
-                  taskCtx.queueRunning = true;
-                  promote(taskCtx);
-                });
+              const riskResult = normalized.autoApprove ? detectBundleRisk(normalized) : null;
+              const shouldAutoApprove = normalized.autoApprove && !riskResult?.isHighRisk && deps.ensureTaskContext && deps.promoteQueuedTasksToPending && deps.broadcastToSession;
+              const autoApproveSpecValidation = shouldAutoApprove
+                ? validateTaskBundleSpec({
+                    bundle: normalized,
+                    workspaceRoot: workspaceRootForDraft,
+                    requireFiles: true,
+                  })
+                : null;
 
-                sendToChat({
-                  type: "task_bundle_auto_approved",
-                  draftId: draft.id,
-                  createdTaskIds,
-                  taskTitles,
-                  specRef: String(normalized.specRef ?? "").trim() || null,
-                });
-                deps.logger.info(`[PlannerDraft] Auto-approved draft=${draft.id} tasks=${createdTaskIds.length}`);
-              } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                deps.logger.warn(`[PlannerDraft] Auto-approve failed draft=${draft.id}: ${message}`);
+              if (riskResult?.isHighRisk) {
+                const degradeReason = riskResult.reasons.join("；");
+                deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${degradeReason}`);
+                try {
+                  setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: `降级为草稿：${degradeReason}` });
+                } catch {
+                  // ignore
+                }
+                sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: `降级为草稿：${degradeReason}`, degradeReason } });
+              } else if (autoApproveSpecValidation && !autoApproveSpecValidation.ok) {
+                const message = autoApproveSpecValidation.error;
+                deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${message}`);
                 try {
                   setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: message });
                 } catch {
                   // ignore
                 }
+                sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: message } });
+              } else if (shouldAutoApprove) {
+                const ensureCtx = deps.ensureTaskContext!;
+                const promote = deps.promoteQueuedTasksToPending!;
+                const broadcast = deps.broadcastToSession!;
+                try {
+                  const taskCtx = ensureCtx(workspaceRootForDraft);
+                  const now = Date.now();
+                  const createdTaskIds: string[] = [];
+                  const taskTitles: string[] = [];
+
+                  await taskCtx.lock.runExclusive(async () => {
+                    for (let i = 0; i < normalized.tasks.length; i++) {
+                      const specTask = normalized.tasks[i]!;
+                      const input = normalizeCreateTaskInput(draft.id, specTask, i);
+                      const { attachments: _attachments, ...createInput } = input;
+
+                      let created;
+                      try {
+                        created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
+                      } catch {
+                        const existingTask = taskCtx.taskStore.getTask(input.id);
+                        if (existingTask) {
+                          created = existingTask;
+                        } else {
+                          throw new Error(`Auto-approve: create task failed (idx=${i + 1})`);
+                        }
+                      }
+
+                      recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "auto_approve" });
+                      broadcast(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
+                      createdTaskIds.push(created.id);
+                      taskTitles.push(created.title ?? "");
+
+                      try {
+                        upsertTaskNotificationBinding({
+                          authUserId: deps.authUserId,
+                          workspaceRoot: workspaceRootForDraft,
+                          taskId: created.id,
+                          taskTitle: created.title,
+                          now,
+                          logger: deps.logger,
+                        });
+                      } catch {
+                        // ignore
+                      }
+                    }
+
+                    approveTaskBundleDraft({ authUserId: deps.authUserId, draftId: draft.id, approvedTaskIds: createdTaskIds, now });
+
+                    taskCtx.runController.setModeAll();
+                    taskCtx.taskQueue.resume();
+                    taskCtx.queueRunning = true;
+                    promote(taskCtx);
+                  });
+
+                  sendToChat({
+                    type: "task_bundle_auto_approved",
+                    draftId: draft.id,
+                    createdTaskIds,
+                    taskTitles,
+                    specRef: String(normalized.specRef ?? "").trim() || null,
+                  });
+                  deps.logger.info(`[PlannerDraft] Auto-approved draft=${draft.id} tasks=${createdTaskIds.length}`);
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : String(error);
+                  deps.logger.warn(`[PlannerDraft] Auto-approve failed draft=${draft.id}: ${message}`);
+                  try {
+                    setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: message });
+                  } catch {
+                    // ignore
+                  }
+                  sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
+                }
+              } else {
                 sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
               }
-            } else {
-              sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
-            }
 
-            stripCandidates.add(block);
-            for (const task of normalized.tasks ?? []) {
-              summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            deps.logger.warn(`[PlannerDraft] Failed to persist bundle: ${message}`);
-          }
-        }
-
-        if (stripCandidates.size > 0) {
-          const stripped = stripTaskBundleCodeBlocks(outputToSend, { shouldStrip: (rawJson) => stripCandidates.has(rawJson) });
-          const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
-
-          const parts: string[] = [];
-          if (summaryTasks.length > 0) {
-            parts.push(formatTaskBundleSummaryMarkdown(summaryTasks));
-          }
-          if (draftErrors.length > 0) {
-            const uniqueErrors = Array.from(new Set(draftErrors));
-            parts.push(
-              [
-                "任务草稿未写入：",
-                ...uniqueErrors.map((message) => `- ${message}`),
-              ].join("\n"),
-            );
-          }
-
-          const summary = parts.join("\n\n---\n").trim();
-          outputForChat = base ? `${base}\n\n---\n${summary}` : summary;
-        }
-
-        const scheduleBlocks = extractScheduleBlocks(outputForChat);
-        if (scheduleBlocks.length > 0 && deps.scheduleCompiler && deps.scheduler) {
-          const scheduleStripCandidates = new Set<string>();
-          const scheduleSummaries: string[] = [];
-          for (const instruction of scheduleBlocks) {
-            try {
-              const compiled = await deps.scheduleCompiler.compile({ workspaceRoot: workspaceRootForDraft, instruction });
-              const hasQuestions = (compiled.questions?.length ?? 0) > 0;
-              const enabled = compiled.enabled && !hasQuestions;
-              let nextRunAt: number | null = null;
-              if (enabled) {
-                try {
-                  nextRunAt = computeNextCronRunAt({ cron: compiled.schedule.cron, timezone: compiled.schedule.timezone, afterMs: Date.now() });
-                } catch {
-                  // ignore
-                }
+              stripCandidates.add(block);
+              for (const task of normalized.tasks ?? []) {
+                summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
               }
-              const store = new ScheduleStore({ workspacePath: workspaceRootForDraft });
-              const schedule = store.createSchedule({ instruction, spec: compiled, enabled, nextRunAt }, Date.now());
-              deps.scheduler.registerWorkspace(workspaceRootForDraft);
-              scheduleStripCandidates.add(instruction);
-              const statusNote = enabled ? `已启用 (${compiled.schedule.cron})` : `需确认：${(compiled.questions ?? []).join("；")}`;
-              scheduleSummaries.push(`✅ 定时任务「${compiled.name}」已创建 — ${statusNote}`);
-              deps.logger.info(`[PlannerSchedule] created schedule id=${schedule.id} name=${compiled.name} enabled=${enabled}`);
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
-              deps.logger.warn(`[PlannerSchedule] Failed to compile schedule: ${message}`);
-              scheduleSummaries.push(`⚠️ 定时任务创建失败：${message}`);
-              scheduleStripCandidates.add(instruction);
+              deps.logger.warn(`[PlannerDraft] Failed to persist bundle: ${message}`);
             }
-          }
-          if (scheduleStripCandidates.size > 0) {
-            const stripped = stripScheduleCodeBlocks(outputForChat, scheduleStripCandidates);
-            const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
-            const scheduleSummary = scheduleSummaries.join("\n");
-            outputForChat = base ? `${base}\n\n${scheduleSummary}` : scheduleSummary;
-          }
-        }
-      }
+	          }
 
-      sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });
+	          let outputForChat = outputText;
+	          const shouldSummarize =
+	            stripCandidates.size > 0 || (args.draftCommand && (summaryTasks.length > 0 || draftErrors.length > 0));
+	          if (shouldSummarize) {
+	            const stripped =
+	              stripCandidates.size > 0
+	                ? stripTaskBundleCodeBlocks(outputText, { shouldStrip: (rawJson) => stripCandidates.has(rawJson) })
+	                : { text: outputText, removed: 0 };
+	            const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
+
+	            const parts: string[] = [];
+	            if (summaryTasks.length > 0) {
+	              parts.push(formatTaskBundleSummaryMarkdown(summaryTasks));
+	            }
+	            if (draftErrors.length > 0) {
+	              const uniqueErrors = Array.from(new Set(draftErrors));
+	              parts.push(
+	                [
+	                  "任务草稿未写入：",
+	                  ...uniqueErrors.map((message) => `- ${message}`),
+	                ].join("\n"),
+	              );
+	            }
+
+	            const summary = parts.join("\n\n---\n").trim();
+	            outputForChat = base ? `${base}\n\n---\n${summary}` : summary;
+	          }
+
+	          return { outputForChat, blocks, summaryTasks, draftErrors, stableRequestId };
+	        };
+
+	        const firstPass = await processPlannerDraftOutput({
+	          outputText: outputToSend,
+	          createdSpecRefs,
+	          allowAutoApprove,
+	          forcedRequestId: null,
+	          disableAutoApprove: isPlannerDraftCommand,
+	          draftCommand: isPlannerDraftCommand,
+	        });
+        outputForChat = firstPass.outputForChat;
+
+        const stableRequestId = firstPass.stableRequestId ?? defaultRequestId;
+        const recoverySummary = summarizeDraftSpecValidationErrors(firstPass.draftErrors);
+        const shouldRecover =
+          recoveryAttempts < PLANNER_DRAFT_RECOVERY_MAX_ATTEMPTS &&
+          firstPass.summaryTasks.length === 0 &&
+          recoverySummary.recoverable &&
+          firstPass.blocks.length > 0 &&
+          Boolean(stableRequestId);
+
+        if (shouldRecover) {
+          recoveryAttempts += 1;
+          const recoveryPrompt = buildDraftRecoveryPrompt({
+            userRequest: userLogEntry,
+            firstPassOutput: finalOutput,
+            taskBundleBlocks: firstPass.blocks,
+            validationErrors: firstPass.draftErrors,
+            requestId: stableRequestId,
+            specRefToUpdate: recoverySummary.specRefToUpdate,
+          });
+
+          const recoveryResult = await runCollaborativeTurn(orchestrator, recoveryPrompt, {
+            streaming: true,
+            signal: controller.signal,
+            onExploredEntry: handleExploredEntry,
+            hooks: {
+              onSupervisorRound: (round, directives) => deps.logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
+              onDelegationStart: ({ agentId, agentName, prompt }) => {
+                deps.logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
+              },
+              onDelegationResult: (summary) => {
+                deps.logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`);
+              },
+            },
+            cwd: turnCwd,
+            historyNamespace: "web",
+            historySessionId: deps.historyKey,
+          });
+
+          const rawRecoveryResponse =
+            typeof recoveryResult.response === "string"
+              ? recoveryResult.response
+              : String(recoveryResult.response ?? "");
+          const recoveryOutput = stripLeadingTranslation(rawRecoveryResponse);
+          let recoveryOutputToSend = recoveryOutput;
+          let recoveryCreatedSpecRefs: string[] = [];
+          try {
+            const adrProcessed = processAdrBlocks(recoveryOutputToSend, workspaceRootForAdr);
+            recoveryOutputToSend = adrProcessed.finalText || recoveryOutputToSend;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            recoveryOutputToSend = `${recoveryOutputToSend}\n\n---\nADR warning: failed to record ADR (${message})`;
+          }
+          try {
+            const specProcessed = await processSpecBlocks(recoveryOutputToSend, workspaceRootForAdr);
+            recoveryOutputToSend = specProcessed.finalText || recoveryOutputToSend;
+            recoveryCreatedSpecRefs = specProcessed.results.map((r) => r.specRef);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            recoveryOutputToSend = `${recoveryOutputToSend}\n\n---\nSpec warning: failed to record spec (${message})`;
+          }
+
+	          const secondPass = await processPlannerDraftOutput({
+	            outputText: recoveryOutputToSend,
+	            createdSpecRefs: recoveryCreatedSpecRefs,
+	            allowAutoApprove: false,
+	            forcedRequestId: stableRequestId,
+	            disableAutoApprove: true,
+	            draftCommand: isPlannerDraftCommand,
+	          });
+          outputForChat = secondPass.outputForChat;
+          threadId = orchestrator.getThreadId();
+          threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
+	        }
+
+	        const scheduleBlocks = extractScheduleBlocks(outputForChat);
+	        if (scheduleBlocks.length > 0) {
+	          if (isPlannerDraftCommand) {
+	            const stripped = stripScheduleCodeBlocks(outputForChat, new Set(scheduleBlocks));
+	            outputForChat = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
+	          } else if (deps.scheduleCompiler && deps.scheduler) {
+	            const scheduleStripCandidates = new Set<string>();
+	            const scheduleSummaries: string[] = [];
+	            for (const instruction of scheduleBlocks) {
+	              try {
+	                const compiled = await deps.scheduleCompiler.compile({ workspaceRoot: workspaceRootForDraft, instruction });
+	                const hasQuestions = (compiled.questions?.length ?? 0) > 0;
+	                const enabled = compiled.enabled && !hasQuestions;
+	                let nextRunAt: number | null = null;
+	                if (enabled) {
+	                  try {
+	                    nextRunAt = computeNextCronRunAt({ cron: compiled.schedule.cron, timezone: compiled.schedule.timezone, afterMs: Date.now() });
+	                  } catch {
+	                    // ignore
+	                  }
+	                }
+	                const store = new ScheduleStore({ workspacePath: workspaceRootForDraft });
+	                const schedule = store.createSchedule({ instruction, spec: compiled, enabled, nextRunAt }, Date.now());
+	                deps.scheduler.registerWorkspace(workspaceRootForDraft);
+	                scheduleStripCandidates.add(instruction);
+	                const statusNote = enabled ? `已启用 (${compiled.schedule.cron})` : `需确认：${(compiled.questions ?? []).join("；")}`;
+	                scheduleSummaries.push(`✅ 定时任务「${compiled.name}」已创建 — ${statusNote}`);
+	                deps.logger.info(`[PlannerSchedule] created schedule id=${schedule.id} name=${compiled.name} enabled=${enabled}`);
+	              } catch (error) {
+	                const message = error instanceof Error ? error.message : String(error);
+	                deps.logger.warn(`[PlannerSchedule] Failed to compile schedule: ${message}`);
+	                scheduleSummaries.push(`⚠️ 定时任务创建失败：${message}`);
+	                scheduleStripCandidates.add(instruction);
+	              }
+	            }
+	            if (scheduleStripCandidates.size > 0) {
+	              const stripped = stripScheduleCodeBlocks(outputForChat, scheduleStripCandidates);
+	              const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
+	              const scheduleSummary = scheduleSummaries.join("\n");
+	              outputForChat = base ? `${base}\n\n${scheduleSummary}` : scheduleSummary;
+	            }
+	          }
+	        }
+	      }
+
+	      sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });
       if (deps.sessionLogger) {
         deps.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.sessionLogger.logOutput(outputForChat);
