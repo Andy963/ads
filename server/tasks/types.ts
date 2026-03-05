@@ -10,7 +10,7 @@ export type TaskStatus =
 
 export type TaskRole = "system" | "user" | "assistant" | "tool";
 
-export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected";
+export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected" | "failed";
 
 export interface TaskContext {
   id?: number;

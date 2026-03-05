@@ -142,6 +142,16 @@
   color: rgba(71, 85, 105, 0.9);
   font-size: 12px;
   font-weight: 850;
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.stageHeader:hover {
+  opacity: 0.7;
 }
 
 .stageTitle {
@@ -149,6 +159,15 @@
   align-items: center;
   gap: 6px;
   white-space: nowrap;
+}
+
+.stageToggleIcon {
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.stageToggleIcon.collapsed {
+  transform: rotate(-90deg);
 }
 
 .stageCount {
@@ -329,10 +348,14 @@
   color: #b91c1c;
 }
 
+.badge[data-review="failed"] {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.28);
+  color: #b91c1c;
+}
+
 .item[data-status="completed"] .row-title {
-  text-decoration: line-through;
-  text-decoration-thickness: 2px;
-  text-decoration-color: var(--status-accent);
+  /* Removed strikethrough since tasks are already categorized by stage */
 }
 
 .row-actions {
@@ -627,6 +650,232 @@ textarea {
 
 .btnSecondary:active {
   background: rgba(79, 142, 247, 0.22);
+}
+
+.btnCompact {
+  min-height: 28px;
+  padding: 4px 10px;
+  font-size: 13px;
+  border-radius: 999px;
+}
+
+.detailModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(248, 250, 252, 0.95);
+}
+
+.detailModalHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detailModalTitle {
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailModalBody {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--surface);
+  min-height: 0;
+  max-height: calc(88vh - 60px);
+  overflow-y: auto;
+}
+
+.detailMetaGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.9);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.detailMetaRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.detailMetaKey {
+  font-size: 12px;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.detailMetaValue {
+  font-size: 12px;
+  color: #334155;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.detailMono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detailSectionTitle {
+  font-size: 12px;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.detailSectionTitle.sub {
+  margin-top: 2px;
+}
+
+.detailEmpty {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.preWrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.detailConclusion {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detailReviewActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Snapshot modal */
+
+.snapshotHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(248, 250, 252, 0.95);
+}
+
+.snapshotTitle {
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.snapshotBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  min-height: 0;
+}
+
+.snapshotMeta {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.9);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #334155;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.metaKey {
+  font-weight: 900;
+  color: #0f172a;
+  margin-right: 6px;
+}
+
+.snapshotError {
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #dc2626;
+}
+
+.snapshotEmpty {
+  padding: 12px;
+  font-size: 12px;
+  color: #64748b;
+  text-align: center;
+}
+
+.snapshotContent {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.snapshotSectionTitle {
+  font-size: 12px;
+  font-weight: 900;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+
+.snapshotFiles {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #334155;
+}
+
+.snapshotHint {
+  font-size: 12px;
+  color: #b45309;
+  margin-bottom: 6px;
+}
+
+.snapshotDiff {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.96);
+  color: rgba(226, 232, 240, 0.95);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: auto;
+  max-height: 48vh;
+  white-space: pre;
+}
+
+.snapshotEmptyInline {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.snapshotSummary {
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.5;
 }
 
 .task-list-enter-active,

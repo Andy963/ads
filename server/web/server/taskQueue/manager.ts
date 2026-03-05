@@ -378,8 +378,17 @@ export function createTaskQueueManager(deps: {
           if (!snapshot) {
             ctx.reviewStore.completeItem(item.id, { status: "failed", error: "snapshot_not_found" }, now);
             try {
-              const reverted = ctx.taskStore.updateTask(task.id, { reviewStatus: "pending" }, now);
-              deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: reverted, ts: now });
+              const latest = ctx.taskStore.getTask(task.id);
+              if (latest && latest.reviewStatus !== "passed") {
+                const existingConclusion = String(latest.reviewConclusion ?? "").trim();
+                const reviewConclusion = existingConclusion || "snapshot_not_found";
+                const reviewedAt =
+                  typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0
+                    ? latest.reviewedAt
+                    : now;
+                const failed = ctx.taskStore.updateTask(task.id, { reviewStatus: "failed", reviewConclusion, reviewedAt }, now);
+                deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failed, ts: now });
+              }
             } catch {
               // ignore
             }
@@ -414,8 +423,16 @@ export function createTaskQueueManager(deps: {
             const message = error instanceof Error ? error.message : String(error);
             ctx.reviewStore.completeItem(item.id, { status: "failed", error: message }, Date.now());
             try {
-              const reverted = ctx.taskStore.updateTask(task.id, { reviewStatus: "pending" }, Date.now());
-              deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: reverted, ts: Date.now() });
+              const latest = ctx.taskStore.getTask(task.id);
+              const ts = Date.now();
+              if (latest && latest.reviewStatus !== "passed") {
+                const existingConclusion = String(latest.reviewConclusion ?? "").trim();
+                const reviewConclusion = existingConclusion || message;
+                const reviewedAt =
+                  typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0 ? latest.reviewedAt : ts;
+                const failed = ctx.taskStore.updateTask(task.id, { reviewStatus: "failed", reviewConclusion, reviewedAt }, ts);
+                deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failed, ts });
+              }
             } catch {
               // ignore
             }
@@ -437,8 +454,16 @@ export function createTaskQueueManager(deps: {
             const errorMessage = `invalid_review_verdict_json:${parsed.error}`;
             ctx.reviewStore.completeItem(item.id, { status: "failed", error: errorMessage }, Date.now());
             try {
-              const reverted = ctx.taskStore.updateTask(task.id, { reviewStatus: "pending" }, Date.now());
-              deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: reverted, ts: Date.now() });
+              const latest = ctx.taskStore.getTask(task.id);
+              const ts = Date.now();
+              if (latest && latest.reviewStatus !== "passed") {
+                const existingConclusion = String(latest.reviewConclusion ?? "").trim();
+                const reviewConclusion = existingConclusion || errorMessage;
+                const reviewedAt =
+                  typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0 ? latest.reviewedAt : ts;
+                const failed = ctx.taskStore.updateTask(task.id, { reviewStatus: "failed", reviewConclusion, reviewedAt }, ts);
+                deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failed, ts });
+              }
             } catch {
               // ignore
             }
@@ -457,11 +482,25 @@ export function createTaskQueueManager(deps: {
 
           let updatedTask = runningTask;
           try {
-            updatedTask = ctx.taskStore.updateTask(
-              runningTask.id,
-              { reviewStatus: verdictStatus, reviewConclusion: conclusion, reviewedAt: Date.now() },
-              Date.now(),
-            );
+            const ts = Date.now();
+            const latest = ctx.taskStore.getTask(runningTask.id);
+            if (latest?.reviewStatus === "passed") {
+              const existingConclusion = String(latest.reviewConclusion ?? "").trim();
+              const shouldOverwriteManual =
+                !existingConclusion || existingConclusion === "manually marked as done";
+              const reviewConclusion = shouldOverwriteManual ? conclusion : existingConclusion;
+              const reviewedAt =
+                typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0
+                  ? latest.reviewedAt
+                  : ts;
+              updatedTask = ctx.taskStore.updateTask(runningTask.id, { reviewConclusion, reviewedAt }, ts);
+            } else {
+              updatedTask = ctx.taskStore.updateTask(
+                runningTask.id,
+                { reviewStatus: verdictStatus, reviewConclusion: conclusion, reviewedAt: ts },
+                ts,
+              );
+            }
           } catch {
             // ignore
           }
@@ -485,7 +524,7 @@ export function createTaskQueueManager(deps: {
       if (!task || !task.reviewRequired) {
         return;
       }
-      if (task.reviewStatus === "passed" || task.reviewStatus === "rejected") {
+      if (task.reviewStatus === "passed" || task.reviewStatus === "rejected" || task.reviewStatus === "failed") {
         return;
       }
 

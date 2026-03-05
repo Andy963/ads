@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
-import type { Task, TaskQueueStatus } from "../api/types";
+import type { ReviewSnapshot, Task, TaskQueueStatus } from "../api/types";
+import type { ApiClient } from "../api/client";
 import DraggableModal from "./DraggableModal.vue";
 import { deriveTaskStage, type TaskStage } from "../lib/task_stage";
 
@@ -36,6 +37,8 @@ const TASK_CARD_PALETTE = [
 
 const props = defineProps<{
   tasks: Task[];
+  api?: ApiClient;
+  workspaceRoot?: string | null;
   agents?: AgentOption[];
   activeAgentId?: string;
   selectedId?: string | null;
@@ -55,6 +58,7 @@ const emit = defineEmits<{
   (e: "runSingle", id: string): void;
   (e: "cancel", id: string): void;
   (e: "retry", id: string): void;
+  (e: "markDone", id: string): void;
   (e: "delete", id: string): void;
 }>();
 
@@ -243,18 +247,21 @@ function statusLabel(status: string): string {
 function reviewBadge(task: Task): { label: string; status: Task["reviewStatus"]; title?: string } | null {
   if (!task.reviewRequired) return null;
   const status = task.reviewStatus ?? "none";
+  const conclusion = String(task.reviewConclusion ?? "").trim() || undefined;
   switch (status) {
-    case "pending":
-      return { label: "Review: 待审", status };
     case "running":
-      return { label: "Review: 审核中", status };
+      return { label: "审核中", status };
     case "passed":
-      return { label: "Review: 通过", status, title: task.reviewConclusion ?? undefined };
+      return { label: "通过", status, title: conclusion };
     case "rejected":
-      return { label: "Review: 驳回", status, title: task.reviewConclusion ?? undefined };
+      return { label: "驳回", status, title: conclusion };
+    case "failed":
+      return { label: "失败", status, title: conclusion };
+    case "pending":
+      return { label: "待审", status };
     case "none":
     default:
-      return { label: "Review: 已开启", status: "none" };
+      return { label: "待审", status: status === "none" ? "pending" : status };
   }
 }
 
@@ -283,8 +290,8 @@ type TaskBoardAction = "reorder" | "runSingle" | "edit" | "rerun" | "cancel" | "
 const ALLOWED_ACTIONS_BY_STAGE: Record<TaskStage, TaskBoardAction[]> = {
   backlog: ["reorder", "runSingle", "edit", "delete"],
   in_progress: ["cancel", "retry", "rerun", "delete"],
-  in_review: ["rerun", "delete"],
-  done: ["rerun", "delete"],
+  in_review: ["delete"],
+  done: ["delete"],
 };
 
 function isActionAllowed(task: Task, action: TaskBoardAction): boolean {
@@ -469,6 +476,117 @@ const stageSections = computed((): TaskStageSection[] => {
 
 const totalVisibleTasks = computed(() => stageSections.value.reduce((sum, section) => sum + section.tasks.length, 0));
 
+const stageCollapsed = ref<Record<TaskStage, boolean>>({
+  backlog: false,
+  in_progress: false,
+  in_review: true,
+  done: true,
+});
+
+function toggleStageCollapse(stage: TaskStage): void {
+  stageCollapsed.value[stage] = !stageCollapsed.value[stage];
+}
+
+const detailId = ref<string | null>(null);
+const detailTask = computed(() => {
+  const id = String(detailId.value ?? "").trim();
+  if (!id) return null;
+  return props.tasks.find((t) => t.id === id) ?? null;
+});
+
+const detailTaskStage = computed(() => {
+  const task = detailTask.value;
+  if (!task) return null;
+  return deriveTaskStage(task);
+});
+
+const showTaskPromptInDetail = computed(() => {
+  return detailTaskStage.value !== "in_review";
+});
+
+const workspaceReady = computed(() => Boolean(String(props.workspaceRoot ?? "").trim()));
+
+const withWorkspaceQuery = (apiPath: string): string => {
+  const root = String(props.workspaceRoot ?? "").trim();
+  if (!root) return apiPath;
+  const joiner = apiPath.includes("?") ? "&" : "?";
+  return `${apiPath}${joiner}workspace=${encodeURIComponent(root)}`;
+};
+
+function closeDetail(): void {
+  detailId.value = null;
+  closeReviewSnapshot();
+}
+
+const reviewSnapshotOpen = ref(false);
+const reviewSnapshot = ref<ReviewSnapshot | null>(null);
+const reviewSnapshotBusy = ref(false);
+const reviewSnapshotError = ref<string | null>(null);
+
+const canViewReviewNotes = computed(() => {
+  const task = detailTask.value;
+  if (!task || !task.reviewRequired) return false;
+  const sid = String(task.reviewSnapshotId ?? "").trim();
+  if (!sid) return false;
+  return Boolean(props.api) && workspaceReady.value;
+});
+
+async function openReviewSnapshot(): Promise<void> {
+  reviewSnapshotOpen.value = true;
+  reviewSnapshot.value = null;
+  reviewSnapshotBusy.value = false;
+  reviewSnapshotError.value = null;
+
+  const task = detailTask.value;
+  const sid = String(task?.reviewSnapshotId ?? "").trim();
+  if (!sid) {
+    reviewSnapshotError.value = "No snapshot available";
+    return;
+  }
+  if (!props.api) {
+    reviewSnapshotError.value = "API client not available";
+    return;
+  }
+  if (!workspaceReady.value) {
+    reviewSnapshotError.value = "Workspace not selected";
+    return;
+  }
+
+  reviewSnapshotBusy.value = true;
+  try {
+    const snapshotId = encodeURIComponent(sid);
+    reviewSnapshot.value = await props.api.get<ReviewSnapshot>(withWorkspaceQuery(`/api/review-snapshots/${snapshotId}`));
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    reviewSnapshotError.value = msg;
+  } finally {
+    reviewSnapshotBusy.value = false;
+  }
+}
+
+function closeReviewSnapshot(): void {
+  reviewSnapshotOpen.value = false;
+  reviewSnapshot.value = null;
+  reviewSnapshotBusy.value = false;
+  reviewSnapshotError.value = null;
+}
+
+function formatTs(ts: number | null | undefined): string {
+  if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return "";
+  try {
+    return new Date(ts).toLocaleString();
+  } catch {
+    return String(ts);
+  }
+}
+
+const canMarkReviewDone = computed(() => {
+  const task = detailTask.value;
+  if (!task || !task.reviewRequired) return false;
+  if (task.status !== "completed") return false;
+  return task.reviewStatus !== "passed";
+});
+
 const editingId = ref<string | null>(null);
 const editTitle = ref("");
 const editPrompt = ref("");
@@ -595,6 +713,8 @@ function scheduleSuppressTaskRowClick(): void {
 function onTaskRowClick(taskId: string): void {
   if (suppressTaskRowClick) return;
   emit("select", taskId);
+  if (editingId.value) return;
+  detailId.value = taskId;
 }
 
 function canDragPendingTask(task: Task): boolean {
@@ -759,12 +879,17 @@ function toggleQueue(): void {
       <div class="mindmap">
         <div v-for="section in stageSections" :key="section.stage" class="stage" :data-stage="section.stage"
           :data-testid="section.testId">
-          <div class="stageHeader">
-            <span class="stageTitle">{{ section.title }}</span>
+          <button class="stageHeader" type="button" @click="toggleStageCollapse(section.stage)">
+            <span class="stageTitle">
+              <svg class="stageToggleIcon" :class="{ collapsed: stageCollapsed[section.stage] }" width="12" height="12" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
+              </svg>
+              {{ section.title }}
+            </span>
             <span class="stageCount">{{ section.tasks.length }}</span>
-          </div>
+          </button>
 
-          <TransitionGroup v-if="section.tasks.length > 0" name="task-list" tag="div" class="stageList">
+          <TransitionGroup v-if="section.tasks.length > 0 && !stageCollapsed[section.stage]" name="task-list" tag="div" class="stageList">
             <div v-for="t in section.tasks" :key="t.id" class="item" :data-stage="section.stage" :data-status="t.status"
               :data-task-id="t.id" :class="{
                 active: t.id === selectedId,
@@ -850,6 +975,121 @@ function toggleQueue(): void {
         </div>
       </div>
     </div>
+
+    <DraggableModal v-if="detailTask" card-variant="large" data-testid="task-detail-modal" @close="closeDetail">
+      <div class="detailModalHeader" data-drag-handle>
+        <div class="detailModalTitle">{{ detailTask.title || "(未命名任务)" }}</div>
+        <div class="detailModalHeaderActions">
+          <button v-if="canMarkReviewDone" class="btnPrimary btnCompact" type="button" data-testid="task-review-mark-done" @click="emit('markDone', detailTask.id)">
+            标记完成
+          </button>
+          <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-detail-close" @click="closeDetail">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd"
+                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                clip-rule="evenodd" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="detailModalBody">
+        <div class="detailMetaGrid">
+          <div class="detailMetaRow">
+            <span class="detailMetaKey">状态</span>
+            <span class="detailMetaValue">{{ statusLabel(detailTask.status) }}</span>
+          </div>
+          <div class="detailMetaRow">
+            <span class="detailMetaKey">模型</span>
+            <span class="detailMetaValue detailMono">{{ detailTask.model }}</span>
+          </div>
+          <div class="detailMetaRow">
+            <span class="detailMetaKey">ID</span>
+            <span class="detailMetaValue detailMono">{{ detailTask.id }}</span>
+          </div>
+        </div>
+
+        <div v-if="detailTask.reviewRequired" class="detailSection" data-testid="task-review-detail">
+          <div class="detailSectionTitle">审核</div>
+          <div class="detailMetaGrid">
+            <div class="detailMetaRow">
+              <span class="detailMetaKey">状态</span>
+              <span v-if="reviewBadge(detailTask)" class="badge" :data-review="reviewBadge(detailTask)!.status" :title="reviewBadge(detailTask)!.title">
+                {{ reviewBadge(detailTask)!.label }}
+              </span>
+              <span v-else class="detailMetaValue">-</span>
+            </div>
+            <div class="detailMetaRow">
+              <span class="detailMetaKey">时间</span>
+              <span class="detailMetaValue">{{ formatTs(detailTask.reviewedAt) || "-" }}</span>
+            </div>
+            <div class="detailMetaRow">
+              <span class="detailMetaKey">快照</span>
+              <span class="detailMetaValue detailMono">{{ detailTask.reviewSnapshotId ? detailTask.reviewSnapshotId.slice(0, 8) : "-" }}</span>
+              <button class="btnSecondary btnCompact" type="button" data-testid="task-review-view-notes" :disabled="!canViewReviewNotes" @click="openReviewSnapshot">
+                查看审核备注
+              </button>
+            </div>
+          </div>
+
+          <div class="detailConclusion">
+            <div class="detailSectionTitle sub">结论</div>
+            <pre v-if="detailTask.reviewConclusion" class="detailMono preWrap" data-testid="task-review-conclusion">{{ detailTask.reviewConclusion }}</pre>
+            <div v-else class="detailEmpty" data-testid="task-review-conclusion-empty">暂无审核结论</div>
+          </div>
+        </div>
+
+        <div v-if="showTaskPromptInDetail" class="detailSection">
+          <div class="detailSectionTitle">任务描述</div>
+          <pre class="detailMono preWrap" data-testid="task-detail-prompt">{{ detailTask.prompt }}</pre>
+        </div>
+      </div>
+    </DraggableModal>
+
+    <DraggableModal v-if="reviewSnapshotOpen" card-variant="large" data-testid="task-review-notes-modal" @close="closeReviewSnapshot">
+      <div class="snapshotHeader" data-drag-handle>
+        <div class="snapshotTitle">审核备注</div>
+        <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-review-notes-close" @click="closeReviewSnapshot">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd"
+              d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+              clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="snapshotBody">
+        <div class="snapshotMeta">
+          <div v-if="detailTask"><span class="metaKey">任务</span> <span class="detailMono">{{ detailTask.id }}</span></div>
+          <div v-if="detailTask?.reviewSnapshotId"><span class="metaKey">快照</span> <span class="detailMono">{{ detailTask.reviewSnapshotId }}</span></div>
+        </div>
+
+        <div v-if="reviewSnapshotError" class="snapshotError">{{ reviewSnapshotError }}</div>
+        <div v-else-if="reviewSnapshotBusy" class="snapshotEmpty">加载中…</div>
+        <div v-else-if="!reviewSnapshot" class="snapshotEmpty">未找到快照</div>
+        <div v-else class="snapshotContent">
+          <div class="snapshotSection">
+            <div class="snapshotSectionTitle">变更文件 ({{ reviewSnapshot.changedFiles.length }})</div>
+            <div v-if="reviewSnapshot.changedFiles.length === 0" class="snapshotEmptyInline">(none)</div>
+            <ul v-else class="snapshotFiles">
+              <li v-for="(p, idx) in reviewSnapshot.changedFiles" :key="idx" class="detailMono">{{ p }}</li>
+            </ul>
+          </div>
+
+          <div class="snapshotSection">
+            <div class="snapshotSectionTitle">Diff</div>
+            <div v-if="reviewSnapshot.patch?.truncated" class="snapshotHint">⚠️ diff is truncated</div>
+            <pre class="snapshotDiff detailMono">{{ reviewSnapshot.patch?.diff || "" }}</pre>
+          </div>
+
+          <div v-if="reviewSnapshot.lintSummary || reviewSnapshot.testSummary" class="snapshotSection">
+            <div class="snapshotSectionTitle">摘要</div>
+            <div v-if="reviewSnapshot.lintSummary" class="snapshotSummary"><span class="metaKey">Lint</span> {{ reviewSnapshot.lintSummary }}</div>
+            <div v-if="reviewSnapshot.testSummary" class="snapshotSummary"><span class="metaKey">Test</span> {{ reviewSnapshot.testSummary }}</div>
+          </div>
+        </div>
+      </div>
+    </DraggableModal>
 
     <DraggableModal v-if="editingTask" card-variant="large" data-testid="task-edit-modal" @close="stopEdit">
       <div class="modalHeader">

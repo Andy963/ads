@@ -8,7 +8,7 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected";
+export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected" | "failed";
 
 export interface Task {
   id: string;

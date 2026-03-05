@@ -326,6 +326,26 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     }
   };
 
+  const markTaskReviewDone = async (id: string): Promise<void> => {
+    apiError.value = null;
+    clearNotice();
+    const taskId = String(id ?? "").trim();
+    if (!taskId) return;
+    try {
+      const res = await api.post<{ success: boolean; task?: Task | null }>(
+        withWorkspaceQuery(`/api/tasks/${encodeURIComponent(taskId)}/review/mark-done`),
+      );
+      if (res?.task) {
+        upsertTask(res.task);
+      } else {
+        await loadTasks();
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      apiError.value = msg;
+    }
+  };
+
   const deleteTask = async (id: string): Promise<void> => {
     apiError.value = null;
     clearNotice();
@@ -626,6 +646,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     confirmDeleteTask,
     sendMainPrompt,
     sendPlannerPrompt,
+    markTaskReviewDone,
     switchMainAgent,
     switchPlannerAgent,
     interruptActive,

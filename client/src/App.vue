@@ -50,6 +50,7 @@ const {
   runSingleTask,
   cancelTask,
   retryTask,
+  markTaskReviewDone,
   deleteTask,
   onTaskEvent,
   openTaskCreateDialog,
@@ -416,14 +417,16 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
                 @delete="onDeleteDraft"
               />
 
-              <TaskBoard
-                class="taskBoard"
-                :tasks="tasks"
-                :agents="workerAgents"
-                :active-agent-id="workerActiveAgentId"
-                :selected-id="selectedId"
-                :queue-status="queueStatus"
-                :can-run-single="apiAuthorized"
+                <TaskBoard
+                  class="taskBoard"
+                  :tasks="tasks"
+                  :api="api"
+                  :workspace-root="resolveActiveWorkspaceRoot()"
+                  :agents="workerAgents"
+                  :active-agent-id="workerActiveAgentId"
+                  :selected-id="selectedId"
+                  :queue-status="queueStatus"
+                  :can-run-single="apiAuthorized"
                 :run-busy-ids="runBusyIds"
                 @select="select"
                 @update="({ id, updates }) => updateQueuedTask(id, updates)"
@@ -431,14 +434,15 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
                 @reorder="(ids) => reorderPendingTasks(ids)"
                 @queueRun="runTaskQueue"
                 @queuePause="pauseTaskQueue"
-                @runSingle="(id) => runSingleTask(id)"
-                @cancel="cancelTask"
-                @retry="retryTask"
-                @delete="deleteTask"
-                @create="openTaskCreateDialogHandler"
-              />
+                  @runSingle="(id) => runSingleTask(id)"
+                  @cancel="cancelTask"
+                  @retry="retryTask"
+                  @markDone="markTaskReviewDone"
+                  @delete="deleteTask"
+                  @create="openTaskCreateDialogHandler"
+                />
+              </div>
             </div>
-          </div>
         </div>
       </aside>
 
@@ -512,20 +516,6 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           @addImages="addPendingImages"
           @clearImages="clearPendingImages"
           @removeQueued="removeQueuedPrompt"
-        />
-      </section>
-
-      <section v-if="!isMobile" class="reviewerPane">
-        <MainChatView
-          :key="activeProjectId"
-          class="chatHost chatHost--reviewer"
-          title="Reviewer"
-          :messages="reviewerMessages"
-          :queued-prompts="[]"
-          :pending-images="[]"
-          :connected="reviewerConnected"
-          :busy="reviewerBusy"
-          :read-only="true"
         />
       </section>
     </main>

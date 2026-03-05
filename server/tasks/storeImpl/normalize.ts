@@ -31,6 +31,7 @@ export function normalizeTaskReviewStatus(value: unknown): TaskReviewStatus {
     case "running":
     case "passed":
     case "rejected":
+    case "failed":
       return raw;
     default:
       return "none";

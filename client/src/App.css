@@ -327,14 +327,14 @@
 }
 .layout {
   --sidebar-width: clamp(280px, 24vw, 360px);
+  --planner-width: clamp(360px, 32vw, 480px);
   --worker-width: clamp(320px, 28vw, 460px);
-  --reviewer-width: clamp(320px, 28vw, 460px);
   flex: 1;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--worker-width) var(--reviewer-width);
+  grid-template-columns: var(--sidebar-width) var(--planner-width) var(--worker-width);
   gap: 12px;
   padding: 12px 12px 8px 12px;
-  max-width: 2000px;
+  max-width: 1400px;
   width: 100%;
   margin: 0 auto;
   min-height: 0;
@@ -591,8 +591,7 @@
   min-height: 0;
 }
 .plannerPane,
-.workerPane,
-.reviewerPane {
+.workerPane {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -784,8 +783,7 @@
   }
   .left,
   .plannerPane,
-  .workerPane,
-  .reviewerPane {
+  .workerPane {
     display: none;
   }
   .layout[data-pane="tasks"] .left {
