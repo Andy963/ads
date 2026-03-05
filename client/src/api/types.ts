@@ -8,6 +8,8 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
+export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected";
+
 export interface Task {
   id: string;
   title: string;
@@ -27,6 +29,11 @@ export interface Task {
   error?: string | null;
   retryCount: number;
   maxRetries: number;
+  reviewRequired: boolean;
+  reviewStatus: TaskReviewStatus;
+  reviewSnapshotId?: string | null;
+  reviewConclusion?: string | null;
+  reviewedAt?: number | null;
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
@@ -75,6 +82,7 @@ export interface CreateTaskInput {
   model?: string;
   priority?: number;
   maxRetries?: number;
+  reviewRequired?: boolean;
   attachments?: string[];
   bootstrap?: BootstrapConfig;
 }
@@ -85,6 +93,7 @@ export interface ModelConfig {
   provider: string;
   isEnabled: boolean;
   isDefault: boolean;
+  configJson?: Record<string, unknown> | null;
 }
 
 export interface TaskQueueStatus {
@@ -106,6 +115,52 @@ export type TaskEventPayload =
   | { event: "message"; data: { taskId: string; role: string; content: string } }
   | { event: "message:delta"; data: { taskId: string; role: string; delta: string; modelUsed?: string | null; source?: "chat" | "step" } }
   | { event: "command"; data: { taskId: string; command: string } };
+
+export type ReviewQueueItemStatus = "pending" | "running" | "passed" | "rejected" | "failed";
+
+export type ReviewQueueItem = {
+  id: string;
+  taskId: string;
+  snapshotId: string;
+  status: ReviewQueueItemStatus;
+  error: string | null;
+  conclusion: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
+  taskTitle: string;
+  taskStatus: TaskStatus | null;
+  reviewRequired: boolean | null;
+  reviewStatus: TaskReviewStatus | null;
+  reviewConclusion: string | null;
+};
+
+export type ReviewQueueResponse = {
+  items: ReviewQueueItem[];
+};
+
+export type ReviewSnapshotPatchFile = {
+  path: string;
+  added: number | null;
+  removed: number | null;
+};
+
+export type ReviewSnapshotPatch = {
+  files: ReviewSnapshotPatchFile[];
+  diff: string;
+  truncated?: boolean;
+};
+
+export type ReviewSnapshot = {
+  id: string;
+  taskId: string;
+  specRef: string | null;
+  patch: ReviewSnapshotPatch | null;
+  changedFiles: string[];
+  lintSummary: string;
+  testSummary: string;
+  createdAt: number;
+};
 
 export type TaskBundleTask = {
   externalId?: string;

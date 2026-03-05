@@ -91,7 +91,11 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const status = parseTaskStatus(url.searchParams.get("status"));
     const limitRaw = url.searchParams.get("limit")?.trim();
     const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
-    const tasks = taskCtx.taskStore.listTasks({ status, limit }).filter((t) => t.archivedAt == null);
+    const includeArchived = (() => {
+      const raw = String(url.searchParams.get("includeArchived") ?? "").trim().toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes";
+    })();
+    const tasks = taskCtx.taskStore.listTasks({ status, limit }).filter((t) => includeArchived || t.archivedAt == null);
     const enriched = tasks.map((task) => ({
       ...task,
       attachments: buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore }),
@@ -132,6 +136,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         model: z.string().optional(),
         priority: z.number().optional(),
         maxRetries: z.number().optional(),
+        reviewRequired: z.boolean().optional(),
         attachments: z.array(z.string().min(1)).optional(),
         bootstrap: bootstrapSchema,
       })
@@ -161,6 +166,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           modelParams,
           priority: parsed.priority,
           maxRetries: parsed.maxRetries,
+          reviewRequired: parsed.reviewRequired,
           createdBy: "web",
         },
         now,
@@ -236,6 +242,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         priority: z.number().finite().optional(),
         inheritContext: z.boolean().optional(),
         maxRetries: z.number().int().min(0).optional(),
+        reviewRequired: z.boolean().optional(),
         bootstrap: bootstrapSchema,
       })
       .passthrough();
@@ -254,6 +261,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const priority = parsed.priority ?? source.priority;
     const inheritContext = parsed.inheritContext ?? source.inheritContext;
     const maxRetries = parsed.maxRetries ?? source.maxRetries;
+    const reviewRequired = parsed.reviewRequired ?? source.reviewRequired;
     const modelParams = (() => {
       const base = (() => {
         const raw = source.modelParams;
@@ -286,6 +294,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           inheritContext,
           parentTaskId: source.id,
           maxRetries,
+          reviewRequired,
           createdBy: "web",
         },
         now,
@@ -335,6 +344,15 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
     if (!taskCtx) return true;
     const taskId = retryMatch[1] ?? "";
+    const existing = taskCtx.taskStore.getTask(taskId);
+    if (!existing) {
+      sendJson(res, 404, { error: "Not Found" });
+      return true;
+    }
+    if (existing.status !== "failed") {
+      sendJson(res, 409, { error: `Task not retryable in status: ${existing.status}` });
+      return true;
+    }
     taskCtx.taskQueue.retry(taskId);
     const task = taskCtx.taskStore.getTask(taskId);
     if (task) {
@@ -401,7 +419,11 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       updated = taskCtx.taskStore.reorderPendingTasks(ids);
     } catch (error) {
       const message = getErrorMessage(error);
-      sendJson(res, 400, { error: message });
+      if (message.toLowerCase().includes("not pending")) {
+        sendJson(res, 409, { error: message });
+      } else {
+        sendJson(res, 400, { error: message });
+      }
       return true;
     }
     const enriched = updated.map((task) => {
@@ -425,6 +447,15 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
     const taskId = moveMatch[1] ?? "";
+    const existing = taskCtx.taskStore.getTask(taskId);
+    if (!existing) {
+      sendJson(res, 404, { error: "Not Found" });
+      return true;
+    }
+    if (existing.status !== "pending") {
+      sendJson(res, 409, { error: `Task not movable in status: ${existing.status}` });
+      return true;
+    }
     const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
     if (!bodyResult.ok) return true;
     const body = bodyResult.body;

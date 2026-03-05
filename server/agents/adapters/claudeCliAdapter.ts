@@ -16,6 +16,7 @@ import { extractTextFromInput } from "../../utils/inputText.js";
 import { createAbortError } from "../../utils/abort.js";
 
 const logger = createLogger("ClaudeCliAdapter");
+const CLAUDE_UNSET_ENV = ["CLAUDECODE"];
 
 export interface ClaudeCliAdapterOptions {
   binary?: string;
@@ -94,13 +95,18 @@ export class ClaudeCliAdapter implements AgentAdapter {
   setModel(model?: string): void {
     const normalized = String(model ?? "").trim();
     if (!normalized) {
+      if (!this.model) return;
       this.model = undefined;
+      this.reset();
       return;
     }
     const lower = normalized.toLowerCase();
-    if (lower.startsWith("claude") || lower === "sonnet" || lower === "opus" || lower === "haiku") {
-      this.model = normalized;
+    if (!(lower.startsWith("claude") || lower === "sonnet" || lower === "opus" || lower === "haiku")) {
+      return;
     }
+    if (this.model === normalized) return;
+    this.model = normalized;
+    this.reset();
   }
 
   getThreadId(): string | null {
@@ -165,6 +171,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
         args,
         cwd: this.workingDirectory,
         env: options?.env,
+        unsetEnv: CLAUDE_UNSET_ENV,
         stdinData: "\n",
         signal: options?.signal,
       },

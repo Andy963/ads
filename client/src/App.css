@@ -328,12 +328,13 @@
 .layout {
   --sidebar-width: clamp(280px, 24vw, 360px);
   --worker-width: clamp(320px, 28vw, 460px);
+  --reviewer-width: clamp(320px, 28vw, 460px);
   flex: 1;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--worker-width);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--worker-width) var(--reviewer-width);
   gap: 12px;
   padding: 12px 12px 8px 12px;
-  max-width: 1600px;
+  max-width: 2000px;
   width: 100%;
   margin: 0 auto;
   min-height: 0;
@@ -590,7 +591,8 @@
   min-height: 0;
 }
 .plannerPane,
-.workerPane {
+.workerPane,
+.reviewerPane {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -782,7 +784,8 @@
   }
   .left,
   .plannerPane,
-  .workerPane {
+  .workerPane,
+  .reviewerPane {
     display: none;
   }
   .layout[data-pane="tasks"] .left {

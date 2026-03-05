@@ -173,7 +173,7 @@ describe("App.removeProject", () => {
     expect(deleteCalls).toEqual(["/api/projects/p2"]);
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1", "p3"]);
     expect((wrapper.vm as any).activeProjectId).toBe("p1");
-    expect([...wsCloseCalls].sort()).toEqual(["p2:main", "p2:planner"].sort());
+    expect([...wsCloseCalls].sort()).toEqual(["p2:main", "p2:planner", "p2:reviewer"].sort());
 
     wrapper.unmount();
   });

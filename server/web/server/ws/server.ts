@@ -59,14 +59,18 @@ export function attachWebSocketServer(deps: {
   cwdStore: Map<string, string>;
   cwdStorePath: string;
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
-  sessionManager: SessionManager;
+  workerSessionManager: SessionManager;
   plannerSessionManager: SessionManager;
-  historyStore: HistoryStore;
+  reviewerSessionManager: SessionManager;
+  workerHistoryStore: HistoryStore;
+  plannerHistoryStore: HistoryStore;
+  reviewerHistoryStore: HistoryStore;
   ensureTaskContext: (workspaceRoot: string) => TaskQueueContext;
   promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   getPlannerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
+  getReviewerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
   syncWorkspaceTemplates: () => void;
@@ -173,8 +177,22 @@ export function attachWebSocketServer(deps: {
     const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: deps.workspaceRoot });
     const chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
     const isPlannerChat = chatSessionId === "planner";
-    const sessionManager = isPlannerChat ? deps.plannerSessionManager : deps.sessionManager;
-    const getWorkspaceLock = isPlannerChat ? deps.getPlannerWorkspaceLock : deps.getWorkspaceLock;
+    const isReviewerChat = chatSessionId === "reviewer";
+    const sessionManager = isPlannerChat
+      ? deps.plannerSessionManager
+      : isReviewerChat
+        ? deps.reviewerSessionManager
+        : deps.workerSessionManager;
+    const historyStore = isPlannerChat
+      ? deps.plannerHistoryStore
+      : isReviewerChat
+        ? deps.reviewerHistoryStore
+        : deps.workerHistoryStore;
+    const getWorkspaceLock = isPlannerChat
+      ? deps.getPlannerWorkspaceLock
+      : isReviewerChat
+        ? deps.getReviewerWorkspaceLock
+        : deps.getWorkspaceLock;
 
     if (Number.isFinite(deps.maxClients) && deps.maxClients > 0 && deps.clients.size >= deps.maxClients) {
       ws.close(4409, `max clients reached (${deps.maxClients})`);
@@ -262,7 +280,7 @@ export function attachWebSocketServer(deps: {
       // ignore
     }
 
-    const resumeThread = !sessionManager.hasSession(userId);
+    const resumeThread = !isReviewerChat && !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
     const contextRestored = resumeThread && !sessionManager.needsHistoryInjection(userId);
     const pendingInjection = sessionManager.needsHistoryInjection(userId);
@@ -326,7 +344,7 @@ export function attachWebSocketServer(deps: {
       threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()) ?? orchestrator.getThreadId(),
     });
 
-    const cachedHistory = deps.historyStore.get(historyKey);
+    const cachedHistory = historyStore.get(historyKey);
     if (cachedHistory.length > 0) {
       const sanitizedHistory = cachedHistory.map((entry) => {
         if (entry.role !== "ai") {
@@ -397,7 +415,7 @@ export function attachWebSocketServer(deps: {
         if (!textResult.ok) {
           return { enqueue: true };
         }
-        const inserted = deps.historyStore.add(historyKey, {
+        const inserted = historyStore.add(historyKey, {
           role: "user",
           text: textResult.text,
           ts: args.receivedAt,
@@ -420,7 +438,7 @@ export function attachWebSocketServer(deps: {
         if (!cmd.ok || !cmd.shouldPersist) {
           return { enqueue: true };
         }
-        const inserted = deps.historyStore.add(historyKey, {
+        const inserted = historyStore.add(historyKey, {
           role: "user",
           text: cmd.command,
           ts: args.receivedAt,
@@ -465,13 +483,17 @@ export function attachWebSocketServer(deps: {
         }
 
         if (parsed.type === "clear_history") {
-          deps.historyStore.clear(historyKey);
+          historyStore.clear(historyKey);
           sessionManager.reset(userId);
           safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
           return;
         }
 
         if (parsed.type === "task_resume") {
+          if (isReviewerChat) {
+            safeJsonSend(ws, { type: "error", message: "Reviewer lane does not support resuming threads." });
+            return;
+          }
           const resume = await handleTaskResumeMessage({
             parsed,
             ws,
@@ -479,7 +501,7 @@ export function attachWebSocketServer(deps: {
             historyKey,
             currentCwd,
             ensureTaskContext: deps.ensureTaskContext,
-            historyStore: deps.historyStore,
+            historyStore,
             sessionManager,
             safeJsonSend,
             logger: deps.logger,
@@ -512,7 +534,7 @@ export function attachWebSocketServer(deps: {
           allowedDirs: deps.allowedDirs,
           getWorkspaceLock,
           interruptControllers: deps.interruptControllers,
-          historyStore: deps.historyStore,
+          historyStore,
           sessionManager,
           orchestrator,
           sendWorkspaceState,
@@ -524,6 +546,11 @@ export function attachWebSocketServer(deps: {
         });
         if (promptResult.handled) {
           orchestrator = promptResult.orchestrator;
+          return;
+        }
+
+        if (isReviewerChat && (parsed.type === "command" || parsed.type === "set_agent")) {
+          safeJsonSend(ws, { type: "error", message: "Reviewer lane is read-only and does not accept commands." });
           return;
         }
 
@@ -548,7 +575,7 @@ export function attachWebSocketServer(deps: {
           cwdStorePath: deps.cwdStorePath,
           persistCwdStore: deps.persistCwdStore,
           sessionManager,
-          historyStore: deps.historyStore,
+          historyStore,
           interruptControllers: deps.interruptControllers,
           runAdsCommandLine: deps.runAdsCommandLine,
           sendWorkspaceState,

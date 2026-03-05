@@ -422,6 +422,83 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 13,
+    description: "Web review workflow - task review fields, review snapshots, review queue",
+    up: (db) => {
+      const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
+      const taskNames = new Set(taskColumns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      if (!taskNames.has("review_required")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!taskNames.has("review_status")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'none'`);
+      }
+      if (!taskNames.has("review_snapshot_id")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_snapshot_id TEXT`);
+      }
+      if (!taskNames.has("review_conclusion")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_conclusion TEXT`);
+      }
+      if (!taskNames.has("reviewed_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN reviewed_at INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET review_required = COALESCE(review_required, 0)
+        WHERE review_required IS NULL
+      `);
+      db.exec(`
+        UPDATE tasks
+        SET review_status = COALESCE(review_status, 'none')
+        WHERE review_status IS NULL OR TRIM(COALESCE(review_status, '')) = ''
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_review_status
+          ON tasks(review_status, completed_at DESC, created_at DESC, id DESC)
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS review_snapshots (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          spec_ref TEXT,
+          patch_json TEXT,
+          changed_files_json TEXT NOT NULL,
+          lint_summary TEXT NOT NULL DEFAULT '',
+          test_summary TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_snapshots_task_id
+          ON review_snapshots(task_id, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS review_queue_items (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          snapshot_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error TEXT,
+          conclusion TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(snapshot_id) REFERENCES review_snapshots(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_queue_status_created_at
+          ON review_queue_items(status, created_at ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_review_queue_task_id
+          ON review_queue_items(task_id, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_review_queue_snapshot_id
+          ON review_queue_items(snapshot_id);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

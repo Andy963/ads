@@ -67,12 +67,17 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         error,
         retry_count,
         max_retries,
+        review_required,
+        review_status,
+        review_snapshot_id,
+        review_conclusion,
+        reviewed_at,
         created_at,
         started_at,
         completed_at,
         archived_at,
         created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
 
     getTaskStmt: db.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`),
@@ -104,11 +109,11 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
     ),
 
     listTasksStmt: db.prepare(
-      `SELECT * FROM tasks ORDER BY priority DESC, queue_order ASC, created_at DESC LIMIT ?`,
+      `SELECT * FROM tasks ORDER BY (archived_at IS NOT NULL) ASC, priority DESC, queue_order ASC, created_at DESC LIMIT ?`,
     ),
 
     listTasksByStatusStmt: db.prepare(
-      `SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, queue_order ASC, created_at DESC LIMIT ?`,
+      `SELECT * FROM tasks WHERE status = ? ORDER BY (archived_at IS NOT NULL) ASC, priority DESC, queue_order ASC, created_at DESC LIMIT ?`,
     ),
 
     updateTaskStmt: db.prepare(`
@@ -130,6 +135,11 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         error = ?,
         retry_count = ?,
         max_retries = ?,
+        review_required = ?,
+        review_status = ?,
+        review_snapshot_id = ?,
+        review_conclusion = ?,
+        reviewed_at = ?,
         created_at = ?,
         started_at = ?,
         completed_at = ?,

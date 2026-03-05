@@ -118,6 +118,65 @@ function createHandler(rt: any) {
 }
 
 describe("ws patch diff dedup", () => {
+  it("merges multiple patch messages into a single system message within a turn", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "a.txt", added: 1, removed: 0 }],
+        diff: "diff --git a/a.txt b/a.txt\nindex 1111111..2222222 100644\n--- a/a.txt\n+++ b/a.txt\n",
+        truncated: false,
+      },
+    });
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "b.txt", added: 2, removed: 0 }],
+        diff: "diff --git a/b.txt b/b.txt\nindex 3333333..4444444 100644\n--- a/b.txt\n+++ b/b.txt\n",
+        truncated: false,
+      },
+    });
+
+    expect(rt.messages.value).toHaveLength(1);
+    const [msg] = rt.messages.value;
+    expect(String(msg.content)).toContain("Modified files:");
+    expect(String(msg.content)).toContain("`a.txt`");
+    expect(String(msg.content)).toContain("`b.txt`");
+    expect((String(msg.content).match(/```diff/g) ?? []).length).toBe(2);
+  });
+
+  it("overwrites the diff for a file when it is patched again", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "a.txt", added: 1, removed: 0 }],
+        diff: "diff --git a/a.txt b/a.txt\nindex 1111111..2222222 100644\n--- a/a.txt\n+++ b/a.txt\n",
+        truncated: false,
+      },
+    });
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "a.txt", added: 2, removed: 0 }],
+        diff: "diff --git a/a.txt b/a.txt\nindex 3333333..4444444 100644\n--- a/a.txt\n+++ b/a.txt\n",
+        truncated: false,
+      },
+    });
+
+    expect(rt.messages.value).toHaveLength(1);
+    const [msg] = rt.messages.value;
+    expect((String(msg.content).match(/`a\.txt`/g) ?? []).length).toBe(1);
+    expect(String(msg.content)).toContain("index 3333333..4444444");
+    expect(String(msg.content)).not.toContain("index 1111111..2222222");
+  });
+
   it("drops git diff execute preview when a patch diff is emitted later in the same turn", () => {
     const rt = createRuntime();
     const { handler } = createHandler(rt);

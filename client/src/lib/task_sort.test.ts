@@ -45,8 +45,8 @@ describe("task_sort", () => {
     expect(sorted).toEqual(["latest", "high-priority", "low-priority"]);
   });
 
-  it("hides completed tasks from task lists", () => {
-    expect(shouldDisplayTask(makeTask({ status: "completed" }))).toBe(false);
+  it("keeps completed tasks visible in task lists", () => {
+    expect(shouldDisplayTask(makeTask({ status: "completed" }))).toBe(true);
     expect(shouldDisplayTask(makeTask({ status: "pending" }))).toBe(true);
   });
 });

@@ -18,6 +18,8 @@ const {
   handleLoggedIn,
   isMobile,
   mobilePane,
+  api,
+  models,
   connected,
   openProjectDialog,
   projects,
@@ -59,6 +61,7 @@ const {
   messages,
   activeRuntime,
   activePlannerRuntime,
+  activeReviewerRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
@@ -69,6 +72,8 @@ const {
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
+  setMainModelId,
+  setPlannerModelId,
   setMainModelReasoningEffort,
   setPlannerModelReasoningEffort,
   switchMainAgent,
@@ -140,6 +145,10 @@ const workerQueuedPrompts = computed(() =>
 const resumeThreadBlocked = computed(() =>
   Boolean(queueStatus.value?.running) || tasks.value.some((t) => t.status === "planning" || t.status === "running"),
 );
+
+const reviewerMessages = computed(() => activeReviewerRuntime.value.messages.value);
+const reviewerConnected = computed(() => activeReviewerRuntime.value.connected.value);
+const reviewerBusy = computed(() => activeReviewerRuntime.value.busy.value);
 
 function refreshPlannerDrafts(): void {
   void loadTaskBundleDrafts(activeProjectId.value);
@@ -445,6 +454,8 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :busy="plannerBusy"
           :agents="plannerAgents"
           :active-agent-id="plannerActiveAgentId"
+          :models="models"
+          :model-id="activePlannerRuntime.modelId.value"
           :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
           :agent-delegations="plannerAgentDelegations"
           :header-action="{ title: '清空上下文', ariaLabel: '清空 Planner 上下文', testId: 'planner-chat-clear-context' }"
@@ -456,6 +467,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           }"
           @send="sendPlannerPrompt"
           @switchAgent="switchPlannerAgent"
+          @setModel="setPlannerModelId"
           @setReasoningEffort="setPlannerModelReasoningEffort"
           @newSession="clearPlannerChat"
           @resumeThread="resumePlannerThread"
@@ -478,6 +490,8 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :busy="agentBusy"
           :agents="workerAgents"
           :active-agent-id="workerActiveAgentId"
+          :models="models"
+          :model-id="activeRuntime.modelId.value"
           :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
           :header-action="{ title: '新会话', ariaLabel: '新会话', testId: 'worker-chat-new-session' }"
@@ -489,6 +503,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           }"
           @send="sendMainPrompt"
           @switchAgent="switchMainAgent"
+          @setModel="setMainModelId"
           @setReasoningEffort="setMainModelReasoningEffort"
           @newSession="startNewChatSession"
           @resumeThread="resumeTaskThread"
@@ -497,6 +512,20 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           @addImages="addPendingImages"
           @clearImages="clearPendingImages"
           @removeQueued="removeQueuedPrompt"
+        />
+      </section>
+
+      <section v-if="!isMobile" class="reviewerPane">
+        <MainChatView
+          :key="activeProjectId"
+          class="chatHost chatHost--reviewer"
+          title="Reviewer"
+          :messages="reviewerMessages"
+          :queued-prompts="[]"
+          :pending-images="[]"
+          :connected="reviewerConnected"
+          :busy="reviewerBusy"
+          :read-only="true"
         />
       </section>
     </main>
@@ -551,10 +580,13 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :busy="agentBusy"
           :agents="workerAgents"
           :active-agent-id="workerActiveAgentId"
+          :models="models"
+          :model-id="activeRuntime.modelId.value"
           :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
           @send="sendMainPrompt"
           @switchAgent="switchMainAgent"
+          @setModel="setMainModelId"
           @setReasoningEffort="setMainModelReasoningEffort"
           @interrupt="interruptActive"
           @clear="clearActiveChat"

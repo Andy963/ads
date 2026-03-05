@@ -430,10 +430,11 @@ export function createChatActions(ctx: AppContext) {
       state.pendingAckClientMessageId = next.clientMessageId;
       savePendingPrompt(state, next);
       const effort = String(state.modelReasoningEffort.value ?? "").trim() || "high";
+      const model = String(state.modelId.value ?? "").trim() || "auto";
       const payload =
         next.images.length > 0
-          ? { text: promptText, images: next.images, model_reasoning_effort: effort }
-          : { text: promptText, model_reasoning_effort: effort };
+          ? { text: promptText, images: next.images, model_reasoning_effort: effort, model }
+          : { text: promptText, model_reasoning_effort: effort, model };
       state.ws.sendPrompt(payload, next.clientMessageId);
     } catch {
       state.queuedPrompts.value = [next, ...state.queuedPrompts.value];

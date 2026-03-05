@@ -53,7 +53,7 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "planner") return;
+      if (chatSessionId === "planner" || chatSessionId === "reviewer") return;
       lastWs = this as unknown as typeof lastWs;
     }
 
@@ -148,4 +148,3 @@ describe("error placeholder cleanup", () => {
     wrapper.unmount();
   });
 });
-

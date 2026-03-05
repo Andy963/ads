@@ -60,6 +60,7 @@ describe("TaskCreateForm submit-and-run", () => {
       prompt: "Do something",
       priority: 0,
       maxRetries: 3,
+      reviewRequired: false,
     });
 
     wrapper.unmount();
@@ -83,6 +84,28 @@ describe("TaskCreateForm submit-and-run", () => {
     const emitted = wrapper.emitted("submit-and-run");
     expect(emitted).toBeTruthy();
     expect(emitted?.[0]?.[0]).toMatchObject({ agentId: "claude" });
+
+    wrapper.unmount();
+  });
+
+  it("renders only ready agents in the executor select", async () => {
+    const wrapper = mount(TaskCreateForm, {
+      props: {
+        workspaceRoot: "",
+        agents: [
+          { id: "codex", name: "Codex", ready: true },
+          { id: "gemini", name: "Gemini", ready: false, error: "missing api key" },
+        ],
+        activeAgentId: "gemini",
+      },
+    });
+
+    await nextTick();
+
+    const agentSelect = wrapper.find('[data-testid="task-create-agent"]');
+    const values = agentSelect.findAll("option").map((opt) => opt.attributes("value"));
+    expect(values).toEqual(["", "codex"]);
+    expect((agentSelect.element as HTMLSelectElement).value).toBe("codex");
 
     wrapper.unmount();
   });

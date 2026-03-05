@@ -103,13 +103,18 @@ export class GeminiCliAdapter implements AgentAdapter {
   setModel(model?: string): void {
     const normalized = String(model ?? "").trim();
     if (!normalized) {
+      if (!this.model) return;
       this.model = undefined;
+      this.reset();
       return;
     }
     const lower = normalized.toLowerCase();
-    if (lower.includes("gemini") || lower.startsWith("auto-gemini")) {
-      this.model = normalized;
+    if (!(lower.includes("gemini") || lower.startsWith("auto-gemini"))) {
+      return;
     }
+    if (this.model === normalized) return;
+    this.model = normalized;
+    this.reset();
   }
 
   getThreadId(): string | null {

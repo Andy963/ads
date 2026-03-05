@@ -1,4 +1,4 @@
-import type { ConversationStatus, TaskRole, TaskStatus } from "../types.js";
+import type { ConversationStatus, TaskReviewStatus, TaskRole, TaskStatus } from "../types.js";
 
 import { safeParseJsonFromUnknown } from "../../utils/json.js";
 
@@ -20,6 +20,20 @@ export function normalizeTaskStatus(value: unknown): TaskStatus {
       return raw;
     default:
       return "pending";
+  }
+}
+
+export function normalizeTaskReviewStatus(value: unknown): TaskReviewStatus {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (raw) {
+    case "none":
+    case "pending":
+    case "running":
+    case "passed":
+    case "rejected":
+      return raw;
+    default:
+      return "none";
   }
 }
 

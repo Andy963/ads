@@ -99,6 +99,23 @@ function parseModelReasoningEffortFromPayload(payload: unknown): { present: bool
   return { present: true, effort: normalized };
 }
 
+function parseModelFromPayload(payload: unknown): { present: boolean; model?: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { present: false };
+  }
+  const rec = payload as Record<string, unknown>;
+  const raw = rec["model"] ?? rec["model_id"] ?? rec["modelId"];
+  if (raw === undefined) {
+    return { present: false };
+  }
+  const normalized = typeof raw === "string" ? raw.trim() : "";
+  const lowered = normalized.toLowerCase();
+  if (!normalized || lowered === "auto" || lowered === "default") {
+    return { present: true, model: undefined };
+  }
+  return { present: true, model: normalized };
+}
+
 export function buildHistoryInjectionContext(entries: Array<{ role: string; text: string }>): string | null {
   const relevant = entries.filter((e) => e.role === "user" || e.role === "ai");
   if (relevant.length === 0) {
@@ -229,6 +246,11 @@ export async function handlePromptMessage(deps: {
     return { handled: false, orchestrator: deps.orchestrator };
   }
 
+  if (deps.chatSessionId === "reviewer") {
+    deps.safeJsonSend(deps.ws, { type: "error", message: "Reviewer lane is read-only. It only consumes immutable snapshots from the review queue." });
+    return { handled: true, orchestrator: deps.orchestrator };
+  }
+
   const sendToClient = (payload: unknown): void => deps.safeJsonSend(deps.ws, payload);
   const sendToChat = (payload: unknown): void => deps.broadcastJson(payload);
 
@@ -277,6 +299,10 @@ export async function handlePromptMessage(deps: {
       return;
     }
     orchestrator.setWorkingDirectory(turnCwd);
+    const modelOverride = parseModelFromPayload(deps.parsed.payload);
+    if (modelOverride.present) {
+      orchestrator.setModel(modelOverride.model);
+    }
     const reasoningEffort = parseModelReasoningEffortFromPayload(deps.parsed.payload);
     if (reasoningEffort.present) {
       orchestrator.setModelReasoningEffort(reasoningEffort.effort);

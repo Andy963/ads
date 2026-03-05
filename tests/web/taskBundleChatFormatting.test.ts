@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractTaskBundleJsonBlocks, formatTaskBundleSummaryMarkdown, stripTaskBundleCodeBlocks } from "../../server/web/server/planner/taskBundle.js";
+import { extractTaskBundleJsonBlocks, formatTaskBundleSummaryMarkdown, parseTaskBundle, stripTaskBundleCodeBlocks } from "../../server/web/server/planner/taskBundle.js";
 
 describe("planner task bundle chat formatting", () => {
   it("extracts ads-tasks blocks only", () => {
@@ -66,5 +66,14 @@ describe("planner task bundle chat formatting", () => {
     assert.ok(markdown.includes("My Task"));
     assert.ok(markdown.includes("Goal:"));
   });
-});
 
+  it("normalizes escaped newlines in task prompts", () => {
+    const raw = '{"version":1,"tasks":[{"prompt":"Goal:\\\\n- Do thing\\\\n- Do other"}]}';
+    const parsed = parseTaskBundle(raw);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.ok(parsed.bundle.tasks[0]!.prompt.includes("\n"));
+    assert.ok(!parsed.bundle.tasks[0]!.prompt.includes("\\n"));
+    assert.match(parsed.bundle.tasks[0]!.prompt, /Goal:\n- Do thing\n- Do other/);
+  });
+});

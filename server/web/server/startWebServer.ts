@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { parseAllowedOrigins, isOriginAllowed } from "../auth/origin.js";
@@ -12,12 +11,13 @@ import { matchesBroadcastSessionId } from "./ws/session.js";
 import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
 import { syncWorkspaceTemplates } from "../../workspace/service.js";
-import { resolveStateDbPath, closeAllStateDatabases } from "../../state/database.js";
+import { resolveStateDbPath, closeAllStateDatabases, getStateDatabase } from "../../state/database.js";
 import { closeAllWorkspaceDatabases } from "../../storage/database.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
 import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
 import { SessionManager } from "../../telegram/utils/sessionManager.js";
+import { prepareMigrationMarkerStatements } from "../../state/migrations.js";
 import { CliAgentAvailability } from "../../agents/health/agentAvailability.js";
 import { createTaskQueueManager } from "./taskQueue/manager.js";
 import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
@@ -50,20 +50,152 @@ const workspaceCache = new Map<string, string>();
 const interruptControllers = new Map<import("ws").WebSocket, AbortController>();
 const adsStateDir = resolveAdsStateDir();
 const stateDbPath = resolveStateDbPath();
-const webThreadStorage = new ThreadStorage({
-  namespace: "web",
-  storagePath: path.join(adsStateDir, "web-threads.json"),
+const LEGACY_WEB_NAMESPACE = "web";
+const WEB_WORKER_NAMESPACE = "web-worker";
+const WEB_PLANNER_NAMESPACE = "web-planner";
+const WEB_REVIEWER_NAMESPACE = "web-reviewer";
+
+function migrateLegacyWebLaneNamespaces(): void {
+  try {
+    // Best-effort: migrate legacy json stores into state.db under the legacy `web` namespace
+    // before copying into the new lane namespaces.
+    void new ThreadStorage({
+      namespace: LEGACY_WEB_NAMESPACE,
+      storagePath: path.join(adsStateDir, "web-threads.json"),
+      stateDbPath,
+    });
+  } catch {
+    // ignore
+  }
+  try {
+    void new HistoryStore({
+      storagePath: stateDbPath,
+      namespace: LEGACY_WEB_NAMESPACE,
+      migrateFromPaths: [path.join(adsStateDir, "web-history.json")],
+      maxEntriesPerSession: 200,
+      maxTextLength: 4000,
+    });
+  } catch {
+    // ignore
+  }
+
+  const db = getStateDatabase(stateDbPath);
+  const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
+  const marker = "web_lane_namespaces:v1";
+  let markerSet = false;
+  try {
+    const existing = getMigrationMarkerStmt.get(marker) as { value?: string } | undefined;
+    if (existing?.value) {
+      markerSet = true;
+    }
+  } catch {
+    // ignore
+  }
+
+  if (markerSet) {
+    try {
+      const existingLaneHistory = db
+        .prepare(
+          `SELECT 1 as one
+           FROM history_entries
+           WHERE namespace IN (?, ?)
+           LIMIT 1`,
+        )
+        .get(WEB_WORKER_NAMESPACE, WEB_PLANNER_NAMESPACE) as { one?: number } | undefined;
+      if (existingLaneHistory?.one) {
+        return;
+      }
+
+      const existingLegacyHistory = db
+        .prepare(
+          `SELECT 1 as one
+           FROM history_entries
+           WHERE namespace = ?
+           LIMIT 1`,
+        )
+        .get(LEGACY_WEB_NAMESPACE) as { one?: number } | undefined;
+      if (!existingLegacyHistory?.one) {
+        return;
+      }
+    } catch {
+      // If we cannot safely determine whether a backfill is needed, prefer to avoid duplicating history.
+      return;
+    }
+  }
+
+  const tx = db.transaction(() => {
+    const now = Date.now();
+
+    // Thread state: cannot partition by lane (user_hash is irreversible), so copy all.
+    for (const target of [WEB_WORKER_NAMESPACE, WEB_PLANNER_NAMESPACE, WEB_REVIEWER_NAMESPACE]) {
+      db.prepare(
+        `INSERT OR IGNORE INTO thread_state (namespace, user_hash, thread_id, cwd, updated_at)
+         SELECT ?, user_hash, thread_id, cwd, updated_at
+         FROM thread_state
+         WHERE namespace = ?`,
+      ).run(target, LEGACY_WEB_NAMESPACE);
+    }
+
+    // History: partition by chatSessionId suffix.
+    db.prepare(
+      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
+       SELECT ?, session_id, role, text, ts, kind
+       FROM history_entries
+       WHERE namespace = ?
+         AND session_id LIKE '%::planner'`,
+    ).run(WEB_PLANNER_NAMESPACE, LEGACY_WEB_NAMESPACE);
+
+    db.prepare(
+      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
+       SELECT ?, session_id, role, text, ts, kind
+       FROM history_entries
+       WHERE namespace = ?
+          AND session_id NOT LIKE '%::planner'`,
+    ).run(WEB_WORKER_NAMESPACE, LEGACY_WEB_NAMESPACE);
+
+    setMigrationMarkerStmt.run(marker, "1", now);
+  });
+
+  try {
+    tx();
+  } catch (error) {
+    logger.warn(`[Web] Failed to migrate legacy web lane namespaces: ${(error as Error).message}`);
+  }
+}
+
+migrateLegacyWebLaneNamespaces();
+
+const webWorkerThreadStorage = new ThreadStorage({
+  namespace: WEB_WORKER_NAMESPACE,
 });
-const PLANNER_CODEX_HOME =
-  process.env.ADS_PLANNER_CODEX_HOME?.trim() || path.join(os.homedir(), ".codex-planner");
+const webPlannerThreadStorage = new ThreadStorage({
+  namespace: WEB_PLANNER_NAMESPACE,
+});
+const webReviewerThreadStorage = new ThreadStorage({
+  namespace: WEB_REVIEWER_NAMESPACE,
+});
 const PLANNER_CODEX_MODEL = process.env.ADS_PLANNER_CODEX_MODEL?.trim() || undefined;
-const plannerCodexEnv: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: PLANNER_CODEX_HOME };
-const sessionManager = new SessionManager(0, 0, "danger-full-access", undefined, webThreadStorage);
-const plannerSessionManager = new SessionManager(0, 0, "read-only", PLANNER_CODEX_MODEL, webThreadStorage, plannerCodexEnv);
-const historyStore = new HistoryStore({
+const REVIEWER_CODEX_MODEL = process.env.ADS_REVIEWER_CODEX_MODEL?.trim() || undefined;
+
+const sessionManager = new SessionManager(0, 0, "danger-full-access", undefined, webWorkerThreadStorage);
+const plannerSessionManager = new SessionManager(0, 0, "read-only", PLANNER_CODEX_MODEL, webPlannerThreadStorage);
+const reviewerSessionManager = new SessionManager(0, 0, "read-only", REVIEWER_CODEX_MODEL, webReviewerThreadStorage);
+
+const workerHistoryStore = new HistoryStore({
   storagePath: stateDbPath,
-  namespace: "web",
-  migrateFromPaths: [path.join(adsStateDir, "web-history.json")],
+  namespace: WEB_WORKER_NAMESPACE,
+  maxEntriesPerSession: 200,
+  maxTextLength: 4000,
+});
+const plannerHistoryStore = new HistoryStore({
+  storagePath: stateDbPath,
+  namespace: WEB_PLANNER_NAMESPACE,
+  maxEntriesPerSession: 200,
+  maxTextLength: 4000,
+});
+const reviewerHistoryStore = new HistoryStore({
+  storagePath: stateDbPath,
+  namespace: WEB_REVIEWER_NAMESPACE,
   maxEntriesPerSession: 200,
   maxTextLength: 4000,
 });
@@ -152,8 +284,10 @@ export async function startWebServer(): Promise<void> {
   const allowedDirs = resolveAllowedDirs(workspaceRoot);
   const workspaceLocks = new WorkspaceLockPool();
   const plannerWorkspaceLocks = new WorkspaceLockPool();
+  const reviewerWorkspaceLocks = new WorkspaceLockPool();
   const getWorkspaceLock = (workspaceRootForLock: string) => workspaceLocks.get(workspaceRootForLock);
   const getPlannerWorkspaceLock = (workspaceRootForLock: string) => plannerWorkspaceLocks.get(workspaceRootForLock);
+  const getReviewerWorkspaceLock = (workspaceRootForLock: string) => reviewerWorkspaceLocks.get(workspaceRootForLock);
   const taskQueueAvailable = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
   const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
 
@@ -194,13 +328,16 @@ export async function startWebServer(): Promise<void> {
     safeSendText(ws, encoded);
   };
 
-  const isNonPlannerBroadcastTarget = (
+  const isWorkerChatSession = (chatSessionId: string): boolean => {
+    const chat = String(chatSessionId ?? "").trim();
+    return chat !== "planner" && chat !== "reviewer";
+  };
+
+  const isWorkerBroadcastTarget = (
     broadcastSessionId: string,
     meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
   ): boolean => {
-    if (meta.chatSessionId === "planner") {
-      return false;
-    }
+    if (!isWorkerChatSession(meta.chatSessionId)) return false;
     return matchesBroadcastSessionId({
       broadcastSessionId,
       connectionSessionId: meta.sessionId,
@@ -217,7 +354,37 @@ export async function startWebServer(): Promise<void> {
     }
 
     for (const [ws, meta] of clientMetaByWs.entries()) {
-      if (!isNonPlannerBroadcastTarget(sessionId, meta)) {
+      if (!isWorkerBroadcastTarget(sessionId, meta)) {
+        continue;
+      }
+      safeSendText(ws, encoded);
+    }
+  };
+
+  const isReviewerBroadcastTarget = (
+    broadcastSessionId: string,
+    meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
+  ): boolean => {
+    if (meta.chatSessionId !== "reviewer") {
+      return false;
+    }
+    return matchesBroadcastSessionId({
+      broadcastSessionId,
+      connectionSessionId: meta.sessionId,
+      connectionWorkspaceRoot: meta.workspaceRoot,
+    });
+  };
+
+  const broadcastToReviewerSession = (sessionId: string, payload: unknown): void => {
+    let encoded = "";
+    try {
+      encoded = JSON.stringify(payload);
+    } catch {
+      return;
+    }
+
+    for (const [ws, meta] of clientMetaByWs.entries()) {
+      if (!isReviewerBroadcastTarget(sessionId, meta)) {
         continue;
       }
       safeSendText(ws, encoded);
@@ -230,7 +397,7 @@ export async function startWebServer(): Promise<void> {
   ): void => {
     const written = new Set<string>();
     for (const meta of clientMetaByWs.values()) {
-      if (!isNonPlannerBroadcastTarget(sessionId, meta)) {
+      if (!isWorkerBroadcastTarget(sessionId, meta)) {
         continue;
       }
       if (written.has(meta.historyKey)) {
@@ -238,7 +405,28 @@ export async function startWebServer(): Promise<void> {
       }
       written.add(meta.historyKey);
       try {
-        historyStore.add(meta.historyKey, entry);
+        workerHistoryStore.add(meta.historyKey, entry);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const recordToReviewerHistories = (
+    sessionId: string,
+    entry: { role: string; text: string; ts: number; kind?: string },
+  ): void => {
+    const written = new Set<string>();
+    for (const meta of clientMetaByWs.values()) {
+      if (!isReviewerBroadcastTarget(sessionId, meta)) {
+        continue;
+      }
+      if (written.has(meta.historyKey)) {
+        continue;
+      }
+      written.add(meta.historyKey);
+      try {
+        reviewerHistoryStore.add(meta.historyKey, entry);
       } catch {
         // ignore
       }
@@ -255,6 +443,9 @@ export async function startWebServer(): Promise<void> {
     logger,
     broadcastToSession,
     recordToSessionHistories,
+    reviewSessionManager: reviewerSessionManager,
+    broadcastToReviewerSession,
+    recordToReviewerHistories,
   });
 
   startTaskTerminalTelegramRetryLoop({ logger });
@@ -269,7 +460,12 @@ export async function startWebServer(): Promise<void> {
   const agentAvailability = new CliAgentAvailability();
   const broadcastAgentsSnapshot = (): void => {
     for (const [ws, meta] of clientMetaByWs.entries()) {
-      const manager = meta.chatSessionId === "planner" ? plannerSessionManager : sessionManager;
+      const manager =
+        meta.chatSessionId === "planner"
+          ? plannerSessionManager
+          : meta.chatSessionId === "reviewer"
+            ? reviewerSessionManager
+            : sessionManager;
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
       const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
       const activeAgentId = orchestrator.getActiveAgentId();
@@ -335,14 +531,18 @@ export async function startWebServer(): Promise<void> {
     cwdStore,
     cwdStorePath,
     persistCwdStore,
-    sessionManager,
+    workerSessionManager: sessionManager,
     plannerSessionManager,
-    historyStore,
+    reviewerSessionManager,
+    workerHistoryStore,
+    plannerHistoryStore,
+    reviewerHistoryStore,
     ensureTaskContext: taskQueueManager.ensureTaskContext,
     promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
     broadcastToSession,
     getWorkspaceLock,
     getPlannerWorkspaceLock,
+    getReviewerWorkspaceLock,
     runAdsCommandLine,
     sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
     syncWorkspaceTemplates,

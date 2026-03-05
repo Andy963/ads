@@ -110,6 +110,121 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  type PatchFileStat = { added: number | null; removed: number | null };
+
+  let turnPatchSummaryMessageId: string | null = null;
+  let turnPatchSummaryTruncated = false;
+  const turnPatchFilesByPath = new Map<string, PatchFileStat>();
+  const turnPatchDiffByPath = new Map<string, string>();
+  const turnPatchOrder: string[] = [];
+
+  const resetTurnPatchSummary = (): void => {
+    turnPatchSummaryMessageId = null;
+    turnPatchSummaryTruncated = false;
+    turnPatchFilesByPath.clear();
+    turnPatchDiffByPath.clear();
+    turnPatchOrder.length = 0;
+  };
+
+  const isDevNullPath = (raw: string): boolean => {
+    const p = String(raw ?? "").trim();
+    return p === "dev/null" || p === "/dev/null";
+  };
+
+  const splitUnifiedDiffByPath = (raw: string): Map<string, string> => {
+    const diff = String(raw ?? "").trimEnd();
+    const out = new Map<string, string>();
+    if (!diff.trim()) return out;
+
+    const lines = diff.split("\n");
+    let currentPath: string | null = null;
+    let currentStart = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      if (!match) continue;
+
+      if (currentPath) {
+        const section = lines.slice(currentStart, i).join("\n").trimEnd();
+        if (section.trim()) out.set(currentPath, section);
+      }
+
+      const aPath = String(match[1] ?? "").trim();
+      const bPath = String(match[2] ?? "").trim();
+      const picked = bPath && !isDevNullPath(bPath) ? bPath : aPath;
+      currentPath = picked || null;
+      currentStart = i;
+    }
+
+    if (currentPath) {
+      const section = lines.slice(currentStart).join("\n").trimEnd();
+      if (section.trim()) out.set(currentPath, section);
+    }
+
+    if (out.size > 0) return out;
+    out.set("__all__", diff);
+    return out;
+  };
+
+  const buildTurnPatchSummaryContent = (): string => {
+    const fileLines = turnPatchOrder
+      .map((path) => {
+        const stat = turnPatchFilesByPath.get(path);
+        if (!stat) return "";
+        const added = stat.added;
+        const removed = stat.removed;
+        const label = added === null || removed === null ? "(binary)" : `(+${added} -${removed})`;
+        return `- \`${path}\` ${label}`;
+      })
+      .filter(Boolean);
+
+    let header = "";
+    if (fileLines.length > 0) {
+      const first = fileLines[0]?.replace(/^-\s+/, "") ?? "";
+      const rest = fileLines.slice(1);
+      header = rest.length ? `Modified files: ${first}\n${rest.join("\n")}\n\n` : `Modified files: ${first}\n\n`;
+    }
+
+    const diffBlocks = turnPatchOrder
+      .map((path) => {
+        const section = turnPatchDiffByPath.get(path);
+        if (!section) return "";
+        return `\`\`\`diff\n${section}\n\`\`\``;
+      })
+      .filter(Boolean)
+      .join("\n\n");
+
+    const note = turnPatchSummaryTruncated ? "\n\n_Diff was truncated to avoid flooding the UI._\n" : "";
+    return `${header}${diffBlocks}${note}`;
+  };
+
+  const upsertTurnPatchSummaryMessage = (content: string): void => {
+    const id = String(turnPatchSummaryMessageId ?? "").trim();
+    if (id) {
+      const existing = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
+      const idx = existing.findIndex((m) => String(m?.id ?? "") === id);
+      if (idx >= 0) {
+        const prev = existing[idx];
+        if (prev && prev.role === "system" && prev.kind === "text") {
+          existing[idx] = { ...prev, content };
+          rt.messages.value = existing;
+          return;
+        }
+      }
+    }
+
+    const beforeIds = new Set((Array.isArray(rt.messages.value) ? rt.messages.value : []).map((m) => String(m?.id ?? "")));
+    pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+    const inserted =
+      (Array.isArray(rt.messages.value) ? rt.messages.value : []).find(
+        (m) => !beforeIds.has(String(m?.id ?? "")) && m?.role === "system" && m?.kind === "text" && String(m?.content ?? "") === content,
+      ) ??
+      (Array.isArray(rt.messages.value) ? rt.messages.value : []).find((m) => !beforeIds.has(String(m?.id ?? ""))) ??
+      null;
+    turnPatchSummaryMessageId = inserted ? String(inserted.id ?? "") : null;
+  };
+
   const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object";
 
   const buildWorkspaceProjectUpdates = (
@@ -294,6 +409,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const handshakeReset = Boolean(msg.reset);
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       if (handshakeReset) {
+        resetTurnPatchSummary();
         threadReset(rt, {
           notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
           warning: "Context thread was reset by backend handshake. Chat history was cleared automatically.",
@@ -350,6 +466,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "thread_reset") {
+      resetTurnPatchSummary();
       threadReset(rt, {
         notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
         warning: "Context thread was reset by backend signal. Chat history was cleared automatically.",
@@ -449,27 +566,34 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       dropRedundantDiffExecuteBlocks();
 
       const files = Array.isArray(typed.files) ? (typed.files as Array<{ path?: unknown; added?: unknown; removed?: unknown }>) : [];
-      const fileLines = files
-        .map((f) => {
-          const filePath = String(f.path ?? "").trim();
-          if (!filePath) return "";
-          const added = typeof f.added === "number" && Number.isFinite(f.added) ? Math.max(0, Math.floor(f.added)) : null;
-          const removed = typeof f.removed === "number" && Number.isFinite(f.removed) ? Math.max(0, Math.floor(f.removed)) : null;
-          const stat = added === null || removed === null ? "(binary)" : `(+${added} -${removed})`;
-          return `- \`${filePath}\` ${stat}`;
-        })
-        .filter(Boolean);
+
+      for (const f of files) {
+        const filePath = String(f.path ?? "").trim();
+        if (!filePath) continue;
+        const added = typeof f.added === "number" && Number.isFinite(f.added) ? Math.max(0, Math.floor(f.added)) : null;
+        const removed = typeof f.removed === "number" && Number.isFinite(f.removed) ? Math.max(0, Math.floor(f.removed)) : null;
+        if (!turnPatchFilesByPath.has(filePath)) {
+          turnPatchOrder.push(filePath);
+        }
+        turnPatchFilesByPath.set(filePath, { added, removed });
+      }
+
+      const perFileDiff = splitUnifiedDiffByPath(diff);
+      for (const [path, section] of perFileDiff.entries()) {
+        if (!path || !section.trim()) continue;
+        if (!turnPatchDiffByPath.has(path) && !turnPatchOrder.includes(path)) {
+          turnPatchOrder.push(path);
+        }
+        turnPatchDiffByPath.set(path, section);
+      }
 
       const truncated = Boolean(typed.truncated);
-      let header = "";
-      if (fileLines.length > 0) {
-        const first = fileLines[0]?.replace(/^-\s+/, "") ?? "";
-        const rest = fileLines.slice(1);
-        header = rest.length ? `Modified files: ${first}\n${rest.join("\n")}\n\n` : `Modified files: ${first}\n\n`;
+      if (truncated) {
+        turnPatchSummaryTruncated = true;
       }
-      const note = truncated ? "\n\n_Diff was truncated to avoid flooding the UI._\n" : "";
-      const content = `${header}\`\`\`diff\n${diff}\n\`\`\`${note}`;
-      pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+
+      const content = buildTurnPatchSummaryContent();
+      upsertTurnPatchSummaryMessage(content);
       return;
     }
 
@@ -477,6 +601,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
+      resetTurnPatchSummary();
       rt.delegationsInFlight.value = [];
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
@@ -526,6 +651,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
+      resetTurnPatchSummary();
       rt.delegationsInFlight.value = [];
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);

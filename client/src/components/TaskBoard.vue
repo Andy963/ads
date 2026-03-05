@@ -3,7 +3,7 @@ import { computed, nextTick, ref } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
 import type { Task, TaskQueueStatus } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
-import { compareTasksForDisplay, shouldDisplayTask } from "../lib/task_sort";
+import { deriveTaskStage, type TaskStage } from "../lib/task_stage";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
@@ -13,7 +13,7 @@ type BootstrapConfig = {
   maxIterations?: number;
 };
 
-type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries">> & {
+type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries" | "reviewRequired">> & {
   bootstrap?: BootstrapConfig | null;
 };
 
@@ -49,6 +49,7 @@ const emit = defineEmits<{
   (e: "create"): void;
   (e: "update", payload: { id: string; updates: TaskUpdates }): void;
   (e: "update-and-run", payload: { id: string; updates: TaskUpdates }): void;
+  (e: "reorder", ids: string[]): void;
   (e: "queueRun"): void;
   (e: "queuePause"): void;
   (e: "runSingle", id: string): void;
@@ -71,6 +72,8 @@ const agentOptions = computed(() => {
     .filter(Boolean) as AgentOption[];
 });
 
+const readyAgentOptions = computed(() => agentOptions.value.filter((a) => a.ready));
+
 const normalizedActiveAgentId = computed(() => String(props.activeAgentId ?? "").trim());
 
 function formatAgentLabel(agent: AgentOption): string {
@@ -84,10 +87,13 @@ function formatAgentLabel(agent: AgentOption): string {
 }
 
 function pickDefaultAgentId(preferred?: string | null): string {
-  const options = agentOptions.value;
+  const options = readyAgentOptions.value;
   const preferredId = String(preferred ?? "").trim();
   if (preferredId) {
-    return preferredId;
+    if (options.some((a) => a.id === preferredId)) {
+      return preferredId;
+    }
+    return "";
   }
 
   const active = normalizedActiveAgentId.value;
@@ -95,8 +101,7 @@ function pickDefaultAgentId(preferred?: string | null): string {
     return active;
   }
 
-  const ready = options.find((a) => a.ready)?.id;
-  return ready ?? options[0]?.id ?? "";
+  return options[0]?.id ?? "";
 }
 
 type BootstrapTaskConfig = { projectRef: string; maxIterations: number };
@@ -235,6 +240,24 @@ function statusLabel(status: string): string {
   }
 }
 
+function reviewBadge(task: Task): { label: string; status: Task["reviewStatus"]; title?: string } | null {
+  if (!task.reviewRequired) return null;
+  const status = task.reviewStatus ?? "none";
+  switch (status) {
+    case "pending":
+      return { label: "Review: 待审", status };
+    case "running":
+      return { label: "Review: 审核中", status };
+    case "passed":
+      return { label: "Review: 通过", status, title: task.reviewConclusion ?? undefined };
+    case "rejected":
+      return { label: "Review: 驳回", status, title: task.reviewConclusion ?? undefined };
+    case "none":
+    default:
+      return { label: "Review: 已开启", status: "none" };
+  }
+}
+
 function formatPromptPreview(prompt: string, maxChars = 90): string {
   const normalized = String(prompt ?? "")
     .trim()
@@ -255,13 +278,196 @@ function deriveTaskTitleFromPrompt(prompt: string): string {
   return `${base.slice(0, maxLen)}…`;
 }
 
-const visibleTasks = computed(() => {
-  return props.tasks.filter((t) => t.archivedAt == null && shouldDisplayTask(t));
+type TaskBoardAction = "reorder" | "runSingle" | "edit" | "rerun" | "cancel" | "retry" | "delete";
+
+const ALLOWED_ACTIONS_BY_STAGE: Record<TaskStage, TaskBoardAction[]> = {
+  backlog: ["reorder", "runSingle", "edit", "delete"],
+  in_progress: ["cancel", "retry", "rerun", "delete"],
+  in_review: ["rerun", "delete"],
+  done: ["rerun", "delete"],
+};
+
+function isActionAllowed(task: Task, action: TaskBoardAction): boolean {
+  const stage = deriveTaskStage(task);
+  return ALLOWED_ACTIONS_BY_STAGE[stage].includes(action);
+}
+
+function stageTitle(stage: TaskStage): string {
+  switch (stage) {
+    case "backlog":
+      return "待办";
+    case "in_progress":
+      return "进行中";
+    case "in_review":
+      return "审核中";
+    case "done":
+      return "已完成";
+  }
+}
+
+function backlogStatusWeight(status: Task["status"]): number {
+  switch (status) {
+    case "pending":
+      return 0;
+    case "queued":
+      return 1;
+    case "paused":
+      return 2;
+    case "cancelled":
+      return 3;
+    default:
+      return 9;
+  }
+}
+
+function inProgressStatusWeight(status: Task["status"]): number {
+  switch (status) {
+    case "running":
+      return 0;
+    case "planning":
+      return 1;
+    case "failed":
+      return 2;
+    default:
+      return 9;
+  }
+}
+
+function inReviewStatusWeight(status: Task["reviewStatus"]): number {
+  switch (status) {
+    case "running":
+      return 0;
+    case "pending":
+      return 1;
+    case "rejected":
+      return 2;
+    case "none":
+      return 3;
+    case "passed":
+      return 9;
+    default:
+      return 9;
+  }
+}
+
+function finiteOrInfinity(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return Number.POSITIVE_INFINITY;
+}
+
+function finiteOrZero(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return 0;
+}
+
+function compareBacklogTasks(a: Task, b: Task): number {
+  const wa = backlogStatusWeight(a.status);
+  const wb = backlogStatusWeight(b.status);
+  if (wa !== wb) return wa - wb;
+  if (a.priority !== b.priority) return b.priority - a.priority;
+
+  if (a.status === "pending" && b.status === "pending") {
+    const aq = finiteOrInfinity(a.queueOrder);
+    const bq = finiteOrInfinity(b.queueOrder);
+    if (aq !== bq) return aq - bq;
+    const ac = finiteOrInfinity(a.createdAt);
+    const bc = finiteOrInfinity(b.createdAt);
+    if (ac !== bc) return ac - bc;
+    return a.id.localeCompare(b.id);
+  }
+
+  const aq = finiteOrInfinity(a.queueOrder);
+  const bq = finiteOrInfinity(b.queueOrder);
+  if (aq !== bq) return aq - bq;
+
+  const ac = finiteOrInfinity(a.createdAt);
+  const bc = finiteOrInfinity(b.createdAt);
+  if (ac !== bc) return bc - ac;
+  return a.id.localeCompare(b.id);
+}
+
+function compareInProgressTasks(a: Task, b: Task): number {
+  const wa = inProgressStatusWeight(a.status);
+  const wb = inProgressStatusWeight(b.status);
+  if (wa !== wb) return wa - wb;
+
+  const ar = finiteOrZero(a.startedAt);
+  const br = finiteOrZero(b.startedAt);
+  if (ar !== br) return br - ar;
+
+  const ac = finiteOrZero(a.completedAt);
+  const bc = finiteOrZero(b.completedAt);
+  if (ac !== bc) return bc - ac;
+
+  const createdA = finiteOrZero(a.createdAt);
+  const createdB = finiteOrZero(b.createdAt);
+  if (createdA !== createdB) return createdB - createdA;
+  return a.id.localeCompare(b.id);
+}
+
+function compareInReviewTasks(a: Task, b: Task): number {
+  const wa = inReviewStatusWeight(a.reviewStatus);
+  const wb = inReviewStatusWeight(b.reviewStatus);
+  if (wa !== wb) return wa - wb;
+
+  const reviewedA = finiteOrZero(a.reviewedAt);
+  const reviewedB = finiteOrZero(b.reviewedAt);
+  if (reviewedA !== reviewedB) return reviewedB - reviewedA;
+
+  const completedA = finiteOrZero(a.completedAt);
+  const completedB = finiteOrZero(b.completedAt);
+  if (completedA !== completedB) return completedB - completedA;
+
+  return a.id.localeCompare(b.id);
+}
+
+function compareDoneTasks(a: Task, b: Task): number {
+  const completedA = finiteOrZero(a.completedAt);
+  const completedB = finiteOrZero(b.completedAt);
+  if (completedA !== completedB) return completedB - completedA;
+  const createdA = finiteOrZero(a.createdAt);
+  const createdB = finiteOrZero(b.createdAt);
+  if (createdA !== createdB) return createdB - createdA;
+  return a.id.localeCompare(b.id);
+}
+
+const stageBuckets = computed(() => {
+  const buckets: Record<TaskStage, Task[]> = {
+    backlog: [],
+    in_progress: [],
+    in_review: [],
+    done: [],
+  };
+  for (const task of props.tasks) {
+    buckets[deriveTaskStage(task)].push(task);
+  }
+
+  buckets.backlog.sort(compareBacklogTasks);
+  buckets.in_progress.sort(compareInProgressTasks);
+  buckets.in_review.sort(compareInReviewTasks);
+  buckets.done.sort(compareDoneTasks);
+  return buckets;
 });
 
-const sorted = computed(() => {
-  return visibleTasks.value.slice().sort(compareTasksForDisplay);
+type TaskStageSection = {
+  stage: TaskStage;
+  title: string;
+  tasks: Task[];
+  testId: string;
+};
+
+const stageSections = computed((): TaskStageSection[] => {
+  const buckets = stageBuckets.value;
+  const stages: TaskStage[] = ["backlog", "in_progress", "in_review", "done"];
+  return stages.map((stage) => ({
+    stage,
+    title: stageTitle(stage),
+    tasks: buckets[stage],
+    testId: `task-stage-${stage}`,
+  }));
 });
+
+const totalVisibleTasks = computed(() => stageSections.value.reduce((sum, section) => sum + section.tasks.length, 0));
 
 const editingId = ref<string | null>(null);
 const editTitle = ref("");
@@ -269,6 +475,7 @@ const editPrompt = ref("");
 const editAgentId = ref("");
 const editPriority = ref(0);
 const editMaxRetries = ref(3);
+const editReviewRequired = ref(false);
 const editBootstrapEnabled = ref(false);
 const editBootstrapProject = ref("");
 const editBootstrapMaxIterations = ref(10);
@@ -276,15 +483,7 @@ const error = ref<string | null>(null);
 const editTitleEl = ref<HTMLInputElement | null>(null);
 
 const editAgentOptions = computed(() => {
-  const base = agentOptions.value;
-  const current = String(editAgentId.value ?? "").trim();
-  if (!current || base.some((a) => a.id === current)) {
-    return base;
-  }
-  return [
-    { id: current, name: current, ready: false, error: "不可用" },
-    ...base,
-  ] satisfies AgentOption[];
+  return readyAgentOptions.value;
 });
 
 const editingTask = computed(() => {
@@ -301,6 +500,7 @@ function startEdit(task: Task): void {
   editAgentId.value = pickDefaultAgentId(task.agentId);
   editPriority.value = task.priority ?? 0;
   editMaxRetries.value = task.maxRetries ?? 3;
+  editReviewRequired.value = Boolean(task.reviewRequired);
   const bootstrap = readBootstrapConfig(task);
   editBootstrapEnabled.value = Boolean(bootstrap);
   editBootstrapProject.value = bootstrap?.projectRef ?? "";
@@ -350,6 +550,7 @@ function saveEditWithEvent(task: Task, event: "update" | "update-and-run"): void
       agentId: editAgentId.value.trim() ? editAgentId.value.trim() : null,
       priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
       maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
+      reviewRequired: editReviewRequired.value,
       ...(editBootstrapEnabled.value
         ? { bootstrap: { enabled: true, projectRef, maxIterations } }
         : priorBootstrap
@@ -374,6 +575,109 @@ function isRunBusy(taskId: string): boolean {
   const id = String(taskId ?? "").trim();
   if (!id) return false;
   return props.runBusyIds?.has(id) ?? false;
+}
+
+const pendingBacklogIds = computed(() => stageBuckets.value.backlog.filter((t) => t.status === "pending").map((t) => t.id));
+const canReorderPending = computed(() => pendingBacklogIds.value.length > 1 && !queueIsRunning.value);
+
+const draggingPendingTaskId = ref<string | null>(null);
+const dropTargetPendingTaskId = ref<string | null>(null);
+const dropTargetPosition = ref<"before" | "after">("before");
+let suppressTaskRowClick = false;
+
+function scheduleSuppressTaskRowClick(): void {
+  suppressTaskRowClick = true;
+  setTimeout(() => {
+    suppressTaskRowClick = false;
+  }, 0);
+}
+
+function onTaskRowClick(taskId: string): void {
+  if (suppressTaskRowClick) return;
+  emit("select", taskId);
+}
+
+function canDragPendingTask(task: Task): boolean {
+  if (!canReorderPending.value) return false;
+  if (task.status !== "pending") return false;
+  return isActionAllowed(task, "reorder");
+}
+
+function onPendingTaskDragStart(ev: DragEvent, taskId: string): void {
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  if (!pendingBacklogIds.value.includes(id)) return;
+  if (!canReorderPending.value) return;
+
+  draggingPendingTaskId.value = id;
+  dropTargetPendingTaskId.value = null;
+  dropTargetPosition.value = "before";
+  try {
+    ev.dataTransfer?.setData("text/plain", id);
+    if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+  } catch {
+    // ignore
+  }
+}
+
+function onPendingTaskDragEnd(): void {
+  draggingPendingTaskId.value = null;
+  dropTargetPendingTaskId.value = null;
+  dropTargetPosition.value = "before";
+}
+
+function onPendingTaskDragOver(ev: DragEvent, targetTaskId: string): void {
+  const dragging = draggingPendingTaskId.value;
+  const targetId = String(targetTaskId ?? "").trim();
+  if (!dragging) return;
+  if (!canReorderPending.value) return;
+  if (!targetId) return;
+  if (dragging === targetId) return;
+  if (!pendingBacklogIds.value.includes(targetId)) return;
+
+  ev.preventDefault();
+  try {
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+  } catch {
+    // ignore
+  }
+
+  dropTargetPendingTaskId.value = targetId;
+  const el = ev.currentTarget as HTMLElement | null;
+  if (!el) {
+    dropTargetPosition.value = "before";
+    return;
+  }
+  const rect = el.getBoundingClientRect();
+  const midpoint = rect.top + rect.height / 2;
+  dropTargetPosition.value = ev.clientY > midpoint ? "after" : "before";
+}
+
+function onPendingTaskDrop(ev: DragEvent, targetTaskId: string): void {
+  const dragging = draggingPendingTaskId.value;
+  const targetId = String(targetTaskId ?? "").trim();
+  const position = dropTargetPosition.value;
+  if (dragging) scheduleSuppressTaskRowClick();
+  onPendingTaskDragEnd();
+
+  if (!dragging) return;
+  if (!canReorderPending.value) return;
+  if (!targetId) return;
+  if (!pendingBacklogIds.value.includes(targetId)) return;
+  if (dragging === targetId) return;
+
+  ev.preventDefault();
+
+  const ids = pendingBacklogIds.value.slice();
+  const fromIdx = ids.indexOf(dragging);
+  const toIdx = ids.indexOf(targetId);
+  if (fromIdx < 0 || toIdx < 0) return;
+
+  ids.splice(fromIdx, 1);
+  const adjustedTo = fromIdx < toIdx ? toIdx - 1 : toIdx;
+  const insertAt = position === "after" ? adjustedTo + 1 : adjustedTo;
+  ids.splice(Math.max(0, Math.min(ids.length, insertAt)), 0, dragging);
+  emit("reorder", ids);
 }
 
 function canRunSingleTask(task: Task): boolean {
@@ -446,75 +750,105 @@ function toggleQueue(): void {
       </div>
     </div>
 
-    <div v-if="visibleTasks.length === 0" class="empty">
+    <div v-if="totalVisibleTasks === 0" class="empty">
       <span>暂无任务</span>
       <span class="hint">点击 + 新建任务</span>
     </div>
 
     <div v-else class="list">
-      <TransitionGroup name="task-list" tag="div" class="mindmap">
-        <div v-for="t in sorted" :key="t.id" class="item" :data-status="t.status" :data-task-id="t.id"
-          :class="{ active: t.id === selectedId }" :style="taskColorVars(t)">
-          <div class="row">
-            <button class="row-main" type="button" @click="emit('select', t.id)">
-              <div class="row-top">
-                <div class="row-head">
-                  <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
+      <div class="mindmap">
+        <div v-for="section in stageSections" :key="section.stage" class="stage" :data-stage="section.stage"
+          :data-testid="section.testId">
+          <div class="stageHeader">
+            <span class="stageTitle">{{ section.title }}</span>
+            <span class="stageCount">{{ section.tasks.length }}</span>
+          </div>
+
+          <TransitionGroup v-if="section.tasks.length > 0" name="task-list" tag="div" class="stageList">
+            <div v-for="t in section.tasks" :key="t.id" class="item" :data-stage="section.stage" :data-status="t.status"
+              :data-task-id="t.id" :class="{
+                active: t.id === selectedId,
+                dropBefore: dropTargetPendingTaskId === t.id && dropTargetPosition === 'before',
+                dropAfter: dropTargetPendingTaskId === t.id && dropTargetPosition === 'after',
+              }" :style="taskColorVars(t)" @dragover="(ev) => onPendingTaskDragOver(ev, t.id)"
+              @drop="(ev) => onPendingTaskDrop(ev, t.id)">
+              <div class="row">
+                <button class="row-main" type="button" @click="onTaskRowClick(t.id)">
+                  <div class="row-top">
+                    <div class="row-head">
+                      <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
+                      <span v-if="reviewBadge(t)" class="badge" :data-review="reviewBadge(t)!.status"
+                        :title="reviewBadge(t)!.title">
+                        {{ reviewBadge(t)!.label }}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+                <div class="row-actions">
+                  <button v-if="canDragPendingTask(t)" class="iconBtn taskDragHandle" type="button" title="拖拽排序"
+                    aria-label="拖拽排序" data-testid="task-drag-handle" draggable="true"
+                    @dragstart="(ev) => onPendingTaskDragStart(ev, t.id)" @dragend="onPendingTaskDragEnd"
+                    @click.stop.prevent @mousedown.stop>
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path d="M4 6h12v2H4V6zm0 5h12v2H4v-2zm0 5h12v2H4v-2z" />
+                    </svg>
+                  </button>
+                  <button v-if="isActionAllowed(t, 'runSingle') && canRunSingleTask(t)" class="iconBtn primary"
+                    type="button" :disabled="!canRunSingleNow || isRunBusy(t.id)"
+                    :title="queueIsRunning ? '请先暂停队列，再单独运行' : '单独运行该任务'" aria-label="单独运行任务"
+                    @click.stop="emit('runSingle', t.id)">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path d="M7 4.5v11l9-5.5-9-5.5Z" />
+                    </svg>
+                  </button>
+                  <button v-if="isActionAllowed(t, 'rerun') && canRerunTask(t) && editingId !== t.id"
+                    class="iconBtn primary" type="button" title="重新执行" :disabled="Boolean(editingId)"
+                    @click.stop="startEdit(t)">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fill-rule="evenodd"
+                        d="M10 3a7 7 0 1 0 7 7 .75.75 0 0 0-1.5 0 5.5 5.5 0 1 1-1.38-3.65l-1.62 1.6a.75.75 0 0 0 .53 1.28H17a.75.75 0 0 0 .75-.75V3.5a.75.75 0 0 0-1.28-.53l-1.13 1.12A6.98 6.98 0 0 0 10 3Z"
+                        clip-rule="evenodd" />
+                    </svg>
+                  </button>
+                  <button v-if="isActionAllowed(t, 'edit') && canEditTask(t) && !canRerunTask(t) && editingId !== t.id"
+                    class="iconBtn" type="button" title="编辑" :disabled="Boolean(editingId)" data-testid="task-edit"
+                    @click.stop="startEdit(t)">
+                    <el-icon :size="16" aria-hidden="true" class="icon">
+                      <Edit />
+                    </el-icon>
+                  </button>
+                  <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑"
+                    @click.stop="stopEdit()">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fill-rule="evenodd"
+                        d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                        clip-rule="evenodd" />
+                    </svg>
+                  </button>
+                  <button v-if="isActionAllowed(t, 'cancel') && (t.status === 'running' || t.status === 'planning')"
+                    class="iconBtn danger" type="button" title="终止任务" @click.stop="emit('cancel', t.id)">
+                    <span class="interruptSpinner" aria-hidden="true" />
+                  </button>
+                  <button v-if="isActionAllowed(t, 'retry') && t.status === 'failed'" class="iconBtn" type="button"
+                    title="重试" @click.stop="emit('retry', t.id)">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fill-rule="evenodd"
+                        d="M10 4a6 6 0 0 0-5.2 9h2.1a1 1 0 0 1 .8 1.6l-2.4 3.2a1 1 0 0 1-1.6 0l-2.4-3.2A1 1 0 0 1 2.1 13h1.2A8 8 0 1 1 10 18a.75.75 0 0 1 0-1.5A6.5 6.5 0 1 0 3.62 10a.75.75 0 1 1-1.5 0A8 8 0 0 1 10 2a.75.75 0 0 1 0 1.5Z"
+                        clip-rule="evenodd" />
+                    </svg>
+                  </button>
+                  <button v-if="isActionAllowed(t, 'delete')" class="iconBtn danger" type="button" title="删除任务"
+                    :disabled="t.status === 'running' || t.status === 'planning'" @click.stop="emit('delete', t.id)">
+                    <el-icon :size="16" aria-hidden="true" class="icon">
+                      <Delete />
+                    </el-icon>
+                  </button>
                 </div>
               </div>
-            </button>
-            <div class="row-actions">
-              <button v-if="canRunSingleTask(t)" class="iconBtn primary" type="button"
-                :disabled="!canRunSingleNow || isRunBusy(t.id)" :title="queueIsRunning ? '请先暂停队列，再单独运行' : '单独运行该任务'"
-                aria-label="单独运行任务" @click.stop="emit('runSingle', t.id)">
-                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path d="M7 4.5v11l9-5.5-9-5.5Z" />
-                </svg>
-              </button>
-              <button v-if="canRerunTask(t) && editingId !== t.id" class="iconBtn primary" type="button" title="重新执行"
-                :disabled="Boolean(editingId)" @click.stop="startEdit(t)">
-                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd"
-                    d="M10 3a7 7 0 1 0 7 7 .75.75 0 0 0-1.5 0 5.5 5.5 0 1 1-1.38-3.65l-1.62 1.6a.75.75 0 0 0 .53 1.28H17a.75.75 0 0 0 .75-.75V3.5a.75.75 0 0 0-1.28-.53l-1.13 1.12A6.98 6.98 0 0 0 10 3Z"
-                    clip-rule="evenodd" />
-                </svg>
-              </button>
-              <button v-if="canEditTask(t) && !canRerunTask(t) && editingId !== t.id" class="iconBtn" type="button"
-                title="编辑" :disabled="Boolean(editingId)" data-testid="task-edit" @click.stop="startEdit(t)">
-                <el-icon :size="16" aria-hidden="true" class="icon">
-                  <Edit />
-                </el-icon>
-
-              </button>
-              <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑" @click.stop="stopEdit()">
-                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd"
-                    d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                    clip-rule="evenodd" />
-                </svg>
-              </button>
-              <button v-if="t.status === 'running' || t.status === 'planning'" class="iconBtn danger" type="button"
-                title="终止任务" @click.stop="emit('cancel', t.id)">
-                <span class="interruptSpinner" aria-hidden="true" />
-              </button>
-              <button v-if="t.status === 'failed'" class="iconBtn" type="button" title="重试"
-                @click.stop="emit('retry', t.id)">
-                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd"
-                    d="M10 4a6 6 0 0 0-5.2 9h2.1a1 1 0 0 1 .8 1.6l-2.4 3.2a1 1 0 0 1-1.6 0l-2.4-3.2A1 1 0 0 1 2.1 13h1.2A8 8 0 1 1 10 18a.75.75 0 0 1 0-1.5A6.5 6.5 0 1 0 3.62 10a.75.75 0 1 1-1.5 0A8 8 0 0 1 10 2a.75.75 0 0 1 0 1.5Z"
-                    clip-rule="evenodd" />
-                </svg>
-              </button>
-              <button class="iconBtn danger" type="button" title="删除任务"
-                :disabled="t.status === 'running' || t.status === 'planning'" @click.stop="emit('delete', t.id)">
-                <el-icon :size="16" aria-hidden="true" class="icon">
-                  <Delete />
-                </el-icon>
-              </button>
             </div>
-          </div>
+          </TransitionGroup>
         </div>
-      </TransitionGroup>
+      </div>
     </div>
 
     <DraggableModal v-if="editingTask" card-variant="large" data-testid="task-edit-modal" @close="stopEdit">
@@ -544,7 +878,7 @@ function toggleQueue(): void {
             <span class="label">执行器</span>
             <select v-model="editAgentId" data-testid="task-edit-agent">
               <option value="">自动</option>
-              <option v-for="a in editAgentOptions" :key="a.id" :value="a.id" :disabled="!a.ready">
+              <option v-for="a in editAgentOptions" :key="a.id" :value="a.id">
                 {{ formatAgentLabel(a) }}
               </option>
             </select>
@@ -556,6 +890,13 @@ function toggleQueue(): void {
           <label class="field">
             <span class="label">最大重试</span>
             <input v-model.number="editMaxRetries" type="number" min="0" />
+          </label>
+        </div>
+
+        <div class="configRow">
+          <label class="field bootstrapToggle">
+            <input type="checkbox" v-model="editReviewRequired" data-testid="task-edit-review-required" />
+            <span class="label" style="display:inline;margin:0 0 0 6px;">需要 Reviewer 审核</span>
           </label>
         </div>
 

@@ -15,9 +15,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     pendingSwitchProjectId,
     runtimeByProjectId,
     plannerRuntimeByProjectId,
+    reviewerRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
     getPlannerRuntime,
+    getReviewerRuntime,
     maxTurnCommands,
   } = ctx;
 
@@ -50,10 +52,21 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     return "high";
   };
 
+  const normalizeModelId = (value: unknown): string => {
+    const normalized = typeof value === "string" ? value.trim() : String(value ?? "").trim();
+    return normalized || "auto";
+  };
+
   const reasoningEffortStorageKey = (sessionId: string, chatSessionId: string): string => {
     const sid = String(sessionId ?? "").trim() || "unknown";
     const chat = String(chatSessionId ?? "").trim() || "main";
     return `ads.reasoningEffort.${sid}.${chat}`;
+  };
+
+  const modelIdStorageKey = (sessionId: string, chatSessionId: string): string => {
+    const sid = String(sessionId ?? "").trim() || "unknown";
+    const chat = String(chatSessionId ?? "").trim() || "main";
+    return `ads.modelId.${sid}.${chat}`;
   };
 
   const restoreReasoningEffort = (rt: ProjectRuntime): void => {
@@ -64,6 +77,20 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       const stored = localStorage.getItem(key);
       if (stored !== null) {
         rt.modelReasoningEffort.value = normalizeReasoningEffort(stored);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const restoreModelId = (rt: ProjectRuntime): void => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    if (!sessionId) return;
+    const key = modelIdStorageKey(sessionId, rt.chatSessionId);
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored !== null) {
+        rt.modelId.value = normalizeModelId(stored);
       }
     } catch {
       // ignore
@@ -97,6 +124,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       closeRuntimeConnection(rt);
     }
     for (const rt of plannerRuntimeByProjectId.values()) {
+      closeRuntimeConnection(rt);
+    }
+    for (const rt of reviewerRuntimeByProjectId.values()) {
       closeRuntimeConnection(rt);
     }
   };
@@ -149,6 +179,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
         plannerRuntimeByProjectId.delete(oldKey);
       }
+      const reviewerRt = reviewerRuntimeByProjectId.get(oldKey);
+      if (reviewerRt) {
+        if (!reviewerRuntimeByProjectId.has(nextKey)) {
+          reviewerRuntimeByProjectId.set(nextKey, reviewerRt);
+        }
+        reviewerRuntimeByProjectId.delete(oldKey);
+      }
     }
     deps.persistProjects();
   };
@@ -179,11 +216,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  type WsMode = "worker" | "planner";
+  type WsMode = "worker" | "planner" | "reviewer";
 
   const resolveChatSessionId = (project: ProjectTab, mode: WsMode): string => {
     if (mode === "planner") {
       return "planner";
+    }
+    if (mode === "reviewer") {
+      return "reviewer";
     }
     return String(project.chatSessionId ?? "").trim() || "main";
   };
@@ -203,11 +243,21 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.reconnectAttempts += 1;
     rt.reconnectTimer = window.setTimeout(() => {
       rt.reconnectTimer = null;
-      const connectFn = mode === "planner" ? connectPlannerWs : connectWs;
+      const connectFn = mode === "planner" ? connectPlannerWs : mode === "reviewer" ? connectReviewerWs : connectWs;
       void connectFn(projectId).catch(() => {
         scheduleReconnect(mode, projectId, rt, "connect failed");
       });
     }, delayMs);
+  };
+
+  const getRuntimeForMode = (mode: WsMode, pid: string): ProjectRuntime => {
+    if (mode === "planner") {
+      return getPlannerRuntime(pid);
+    }
+    if (mode === "reviewer") {
+      return getReviewerRuntime(pid);
+    }
+    return getRuntime(pid);
   };
 
   const connectWsInternal = async (mode: WsMode, projectId: string = activeProjectId.value): Promise<void> => {
@@ -217,11 +267,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     if (!project) return;
 
     const chatSessionId = resolveChatSessionId(project, mode);
-    const initialRt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
+    const initialRt = getRuntimeForMode(mode, pid);
     let rt = initialRt;
     rt.projectSessionId = String(project.sessionId ?? "").trim();
     rt.chatSessionId = chatSessionId;
     restoreReasoningEffort(rt);
+    restoreModelId(rt);
 
     clearReconnectTimer(rt);
 
@@ -256,10 +307,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       project = nextProject;
     }
 
-    rt = mode === "planner" ? getPlannerRuntime(pid) : getRuntime(pid);
+    rt = getRuntimeForMode(mode, pid);
     rt.projectSessionId = String(project.sessionId ?? "").trim();
     rt.chatSessionId = resolveChatSessionId(project, mode);
     restoreReasoningEffort(rt);
+    restoreModelId(rt);
 
     let wsInstance = provisionalWs;
     if (identityChanged || rt !== initialRt) {
@@ -403,11 +455,15 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const connectPlannerWs = async (projectId: string = activeProjectId.value): Promise<void> =>
     connectWsInternal("planner", projectId);
 
+  const connectReviewerWs = async (projectId: string = activeProjectId.value): Promise<void> =>
+    connectWsInternal("reviewer", projectId);
+
   return {
     clearReconnectTimer,
     closeRuntimeConnection,
     closeAllConnections,
     connectWs,
     connectPlannerWs,
+    connectReviewerWs,
   };
 }

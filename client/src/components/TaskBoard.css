@@ -127,6 +127,46 @@
   overflow-x: visible;
 }
 
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 0 2px;
+  color: rgba(71, 85, 105, 0.9);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.stageTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.stageCount {
+  background: rgba(226, 232, 240, 0.8);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 1px 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.stageList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .item {
   position: relative;
   border: 1.5px solid rgba(167, 139, 250, 0.55);
@@ -198,6 +238,14 @@
   background: rgba(239, 246, 255, 0.6);
 }
 
+.item.dropBefore {
+  box-shadow: 0 -3px 0 0 rgba(99, 102, 241, 0.65) inset, 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+.item.dropAfter {
+  box-shadow: 0 3px 0 0 rgba(99, 102, 241, 0.65) inset, 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
 .item.active .row::before {
   opacity: 1;
 }
@@ -237,6 +285,50 @@
   white-space: nowrap;
 }
 
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--task-ink-muted, #334155);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.badge[data-review="none"] {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.32);
+  color: rgba(51, 65, 85, 0.92);
+}
+
+.badge[data-review="pending"] {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.34);
+  color: #92400e;
+}
+
+.badge[data-review="running"] {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.28);
+  color: #1d4ed8;
+}
+
+.badge[data-review="passed"] {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.28);
+  color: #047857;
+}
+
+.badge[data-review="rejected"] {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.28);
+  color: #b91c1c;
+}
+
 .item[data-status="completed"] .row-title {
   text-decoration: line-through;
   text-decoration-thickness: 2px;
@@ -259,6 +351,14 @@
 .item:hover .row-actions,
 .item.active .row-actions {
   opacity: 1;
+}
+
+.taskDragHandle {
+  cursor: grab;
+}
+
+.taskDragHandle:active {
+  cursor: grabbing;
 }
 
 .btn {

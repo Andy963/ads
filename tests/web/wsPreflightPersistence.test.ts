@@ -85,9 +85,13 @@ describe("web/server/ws/preflight-persistence", () => {
         workspaceRoot?: string;
       }
     >();
-    const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
+    const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
     const plannerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
-    historyStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test" });
+    const reviewerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
+    const workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
+    const plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
+    const reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
+    historyStore = workerHistoryStore;
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
 
@@ -118,14 +122,18 @@ describe("web/server/ws/preflight-persistence", () => {
       cwdStore: new Map(),
       cwdStorePath: process.env.ADS_STATE_DB_PATH,
       persistCwdStore: () => {},
-      sessionManager,
+      workerSessionManager,
       plannerSessionManager,
-      historyStore,
+      reviewerSessionManager,
+      workerHistoryStore,
+      plannerHistoryStore,
+      reviewerHistoryStore,
       ensureTaskContext: () => ({} as unknown as any),
       promoteQueuedTasksToPending: () => {},
       broadcastToSession: () => {},
       getWorkspaceLock: () => lock,
       getPlannerWorkspaceLock: () => lock,
+      getReviewerWorkspaceLock: () => lock,
       runAdsCommandLine,
       sanitizeInput: (payload) => String(payload ?? ""),
       syncWorkspaceTemplates: () => {},

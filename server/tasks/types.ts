@@ -10,6 +10,8 @@ export type TaskStatus =
 
 export type TaskRole = "system" | "user" | "assistant" | "tool";
 
+export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected";
+
 export interface TaskContext {
   id?: number;
   taskId: string;
@@ -63,6 +65,11 @@ export interface Task {
   error?: string | null;
   retryCount: number;
   maxRetries: number;
+  reviewRequired: boolean;
+  reviewStatus: TaskReviewStatus;
+  reviewSnapshotId?: string | null;
+  reviewConclusion?: string | null;
+  reviewedAt?: number | null;
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
@@ -82,6 +89,7 @@ export interface CreateTaskInput {
   parentTaskId?: string | null;
   threadId?: string | null;
   maxRetries?: number;
+  reviewRequired?: boolean;
   createdBy?: string | null;
 }
 

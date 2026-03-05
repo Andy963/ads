@@ -26,6 +26,7 @@ const promptEl = ref<HTMLTextAreaElement | null>(null);
 const agentId = ref("");
 const priority = ref(0);
 const maxRetries = ref(3);
+const reviewRequired = ref(false);
 
 const bootstrapEnabled = ref(false);
 const bootstrapProject = ref("");
@@ -45,10 +46,12 @@ const agentOptions = computed(() => {
     .filter(Boolean) as AgentOption[];
 });
 
+const readyAgentOptions = computed(() => agentOptions.value.filter((a) => a.ready));
+
 const normalizedActiveAgentId = computed(() => String(props.activeAgentId ?? "").trim());
 
-watch([agentOptions, normalizedActiveAgentId], () => {
-  const options = agentOptions.value;
+watch([readyAgentOptions, normalizedActiveAgentId], () => {
+  const options = readyAgentOptions.value;
   const current = String(agentId.value ?? "").trim();
   if (current && options.some((a) => a.id === current)) {
     return;
@@ -57,12 +60,6 @@ watch([agentOptions, normalizedActiveAgentId], () => {
   const preferred = normalizedActiveAgentId.value;
   if (preferred && options.some((a) => a.id === preferred)) {
     agentId.value = preferred;
-    return;
-  }
-
-  const ready = options.find((a) => a.ready)?.id;
-  if (ready) {
-    agentId.value = ready;
     return;
   }
 
@@ -219,6 +216,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     ...(agentId.value ? { agentId: agentId.value } : {}),
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
+    reviewRequired: reviewRequired.value,
     attachments: uploadedIds.length ? uploadedIds : undefined,
     bootstrap: bootstrapConfig,
   });
@@ -228,6 +226,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   bootstrapEnabled.value = false;
   bootstrapProject.value = "";
   bootstrapMaxIterations.value = 10;
+  reviewRequired.value = false;
   clearAllAttachments();
 }
 
@@ -250,7 +249,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
           <span class="label-text">执行器</span>
           <select v-model="agentId" data-testid="task-create-agent">
             <option value="">自动</option>
-            <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.ready">
+            <option v-for="a in readyAgentOptions" :key="a.id" :value="a.id">
               {{ formatAgentLabel(a) }}
             </option>
           </select>
@@ -269,6 +268,13 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
         <label class="bootstrapToggle">
           <input type="checkbox" v-model="bootstrapEnabled" data-testid="task-create-bootstrap-toggle" />
           <span class="toggleLabel">自举模式（自动验证循环）</span>
+        </label>
+      </div>
+
+      <div class="form-row">
+        <label class="bootstrapToggle">
+          <input type="checkbox" v-model="reviewRequired" data-testid="task-create-review-required" />
+          <span class="toggleLabel">需要 Reviewer 审核</span>
         </label>
       </div>
 

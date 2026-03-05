@@ -18,6 +18,7 @@ import { handleTaskRoutes } from "./routes/tasks.js";
 import { handleTaskBundleDraftRoutes } from "./routes/taskBundleDrafts.js";
 import { handlePreferenceRoutes } from "./routes/preferences.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
+import { handleReviewQueueRoutes } from "./routes/reviewQueue.js";
 
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
@@ -98,6 +99,7 @@ export function createApiRequestHandler(deps: {
     )
       return true;
     if (await handleAttachmentRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext, buildAttachmentRawUrl })) return true;
+    if (await handleReviewQueueRoutes(routeCtx, sharedDeps)) return true;
     if (await handleTaskRoutes(routeCtx, sharedDeps)) return true;
 
     sendJson(res, 404, { error: "Not Found" });

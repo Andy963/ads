@@ -62,6 +62,37 @@ describe("ClaudeCliAdapter", () => {
     assert.equal(prompt, "hello\n\nworld\n\n");
   });
 
+  it("unsets CLAUDECODE env var when spawning Claude CLI", async () => {
+    const previous = process.env.CLAUDECODE;
+    process.env.CLAUDECODE = "1";
+
+    try {
+      const { binary } = await createExecutableScript([
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'if [[ -n "${CLAUDECODE:-}" ]]; then',
+        '  echo "Error: Claude Code cannot be launched inside another Claude Code session." >&2',
+        "  exit 1",
+        "fi",
+        "cat >/dev/null || true",
+        'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+        'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+        "exit 0",
+        "",
+      ].join("\n"));
+
+      const adapter = new ClaudeCliAdapter({ binary });
+      const result = await adapter.send("hello");
+      assert.equal(result.response, "OK");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CLAUDECODE;
+      } else {
+        process.env.CLAUDECODE = previous;
+      }
+    }
+  });
+
   it("captures session id and resumes it across sends", async () => {
     const sessionA = "11111111-1111-1111-1111-111111111111";
     const { binary, dir } = await createExecutableScript([

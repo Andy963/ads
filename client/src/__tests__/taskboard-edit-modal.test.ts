@@ -75,6 +75,7 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
+        reviewRequired: false,
       },
     });
 
@@ -147,6 +148,7 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
+        reviewRequired: false,
       },
     });
 
@@ -189,6 +191,7 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
+        reviewRequired: false,
       },
     });
 
@@ -218,7 +221,7 @@ describe("TaskBoard edit modal", () => {
     wrapper.unmount();
   });
 
-  it("hides completed tasks from the board", async () => {
+  it("keeps completed tasks visible in the Done stage", async () => {
     const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "completed" });
 
     const wrapper = mount(TaskBoard, {
@@ -235,8 +238,8 @@ describe("TaskBoard edit modal", () => {
     });
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.findAll(".item")).toHaveLength(0);
-    expect(wrapper.text()).toContain("暂无任务");
+    expect(wrapper.findAll(".item")).toHaveLength(1);
+    expect(wrapper.find('[data-testid="task-stage-done"]').text()).toContain("已完成");
 
     wrapper.unmount();
   });
@@ -288,6 +291,7 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
+        reviewRequired: false,
         bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 },
       },
     });
@@ -336,9 +340,41 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
+        reviewRequired: false,
         bootstrap: null,
       },
     });
+
+    wrapper.unmount();
+  });
+
+  it("falls back to Auto when the task agent is not ready", async () => {
+    const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending", agentId: "gemini" });
+
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task],
+        agents: [
+          { id: "gemini", name: "Gemini", ready: false, error: "missing api key" },
+          { id: "codex", name: "Codex", ready: true },
+        ],
+        activeAgentId: "codex",
+        selectedId: null,
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set<string>(),
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const agentSelect = wrapper.find('[data-testid="task-edit-agent"]');
+    expect((agentSelect.element as HTMLSelectElement).value).toBe("");
+
+    const values = agentSelect.findAll("option").map((opt) => opt.attributes("value"));
+    expect(values).toEqual(["", "codex"]);
 
     wrapper.unmount();
   });

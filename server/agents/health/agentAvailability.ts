@@ -76,10 +76,13 @@ async function runProbeCommandWithTimeout(options: {
 }): Promise<ProbeRunResult> {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.floor(options.timeoutMs)) : DEFAULT_PROBE_TIMEOUT_MS;
 
+  const probeEnv = { ...process.env };
+  delete probeEnv.CLAUDECODE;
+
   const child = spawn(options.binary, options.args, {
     stdio: ["ignore", "ignore", "pipe"],
     shell: false,
-    env: process.env,
+    env: probeEnv,
   });
 
   let timedOut = false;

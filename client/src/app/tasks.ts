@@ -114,7 +114,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
         ? Math.floor(options.limit)
         : 100;
     const status = String(options?.status ?? "").trim();
-    const base = `/api/tasks?limit=${encodeURIComponent(String(limit))}`;
+    const base = `/api/tasks?limit=${encodeURIComponent(String(limit))}&includeArchived=1`;
     const url = status ? `${base}&status=${encodeURIComponent(status)}` : base;
     const fetched = await api.get<Task[]>(withWorkspaceQueryFor(pid, url));
     if (options?.skipIfTasksNonEmpty && rt.tasks.value.length > 0) {
@@ -394,19 +394,42 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     return "high";
   };
 
+  const normalizeModelId = (value: unknown): string => {
+    const normalized = typeof value === "string" ? value.trim() : String(value ?? "").trim();
+    return normalized || "auto";
+  };
+
   const reasoningEffortStorageKey = (sessionId: string, chatSessionId: string): string => {
     const sid = String(sessionId ?? "").trim() || "unknown";
     const chat = String(chatSessionId ?? "").trim() || "main";
     return `ads.reasoningEffort.${sid}.${chat}`;
   };
 
+  const modelIdStorageKey = (sessionId: string, chatSessionId: string): string => {
+    const sid = String(sessionId ?? "").trim() || "unknown";
+    const chat = String(chatSessionId ?? "").trim() || "main";
+    return `ads.modelId.${sid}.${chat}`;
+  };
+
   const persistReasoningEffort = (rt: ProjectRuntime): void => {
-    const sessionId = String(rt.projectSessionId ?? "").trim();
+    const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
     if (!sessionId) return;
     const key = reasoningEffortStorageKey(sessionId, rt.chatSessionId);
     const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
     try {
       localStorage.setItem(key, effort);
+    } catch {
+      // ignore
+    }
+  };
+
+  const persistModelId = (rt: ProjectRuntime): void => {
+    const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
+    if (!sessionId) return;
+    const key = modelIdStorageKey(sessionId, rt.chatSessionId);
+    const modelId = normalizeModelId(rt.modelId.value);
+    try {
+      localStorage.setItem(key, modelId);
     } catch {
       // ignore
     }
@@ -419,11 +442,25 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     persistReasoningEffort(rt);
   };
 
+  const setMainModelId = (modelId: string): void => {
+    apiError.value = null;
+    const rt = activeRuntime.value;
+    rt.modelId.value = normalizeModelId(modelId);
+    persistModelId(rt);
+  };
+
   const setPlannerModelReasoningEffort = (effort: string): void => {
     apiError.value = null;
     const rt = activePlannerRuntime.value;
     rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
     persistReasoningEffort(rt);
+  };
+
+  const setPlannerModelId = (modelId: string): void => {
+    apiError.value = null;
+    const rt = activePlannerRuntime.value;
+    rt.modelId.value = normalizeModelId(modelId);
+    persistModelId(rt);
   };
 
   const switchMainAgent = (agentId: string): void => {
@@ -607,5 +644,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     removePlannerQueuedPrompt,
     setMainModelReasoningEffort,
     setPlannerModelReasoningEffort,
+    setMainModelId,
+    setPlannerModelId,
   };
 }

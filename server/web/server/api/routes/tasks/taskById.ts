@@ -72,6 +72,15 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         taskCtx.queueRunning = true;
         taskCtx.runController.setModeAll();
       } else if (parsed.action === "cancel") {
+        const existing = taskCtx.taskStore.getTask(taskId);
+        if (!existing) {
+          sendJson(res, 404, { error: "Not Found" });
+          return true;
+        }
+        if (existing.status !== "running" && existing.status !== "planning") {
+          sendJson(res, 409, { error: `Task not cancellable in status: ${existing.status}` });
+          return true;
+        }
         taskCtx.taskQueue.cancel(taskId);
         const task = taskCtx.taskStore.getTask(taskId);
         if (task) {
@@ -106,6 +115,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         model: z.string().min(1).optional(),
         priority: z.number().finite().optional(),
         maxRetries: z.number().int().min(0).optional(),
+        reviewRequired: z.boolean().optional(),
         bootstrap: bootstrapSchema,
       })
       .passthrough();
@@ -116,7 +126,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     }
     const parsed = updateResult.data;
     const keys = Object.keys(parsed).filter((k) =>
-      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "bootstrap"].includes(k),
+      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "reviewRequired", "bootstrap"].includes(k),
     );
     if (keys.length === 0) {
       sendJson(res, 400, { error: "No updates provided" });
@@ -140,6 +150,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     if (parsed.model !== undefined) updates.model = parsed.model;
     if (parsed.priority !== undefined) updates.priority = parsed.priority;
     if (parsed.maxRetries !== undefined) updates.maxRetries = parsed.maxRetries;
+    if (parsed.reviewRequired !== undefined) updates.reviewRequired = parsed.reviewRequired;
     if (parsed.bootstrap !== undefined) {
       const base = (() => {
         const raw = existing.modelParams;

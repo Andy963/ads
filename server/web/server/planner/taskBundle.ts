@@ -28,6 +28,65 @@ export const taskBundleSchema = z
 export type TaskBundle = z.infer<typeof taskBundleSchema>;
 export type TaskBundleTask = z.infer<typeof taskBundleTaskSchema>;
 
+function normalizeEscapedNewlines(text: string): string {
+  const raw = String(text ?? "");
+  if (!raw) return raw;
+
+  if (raw.includes("\n") || raw.includes("\r")) {
+    return raw.replace(/\r\n/g, "\n");
+  }
+
+  const escapedLfCount = raw.match(/\\n/g)?.length ?? 0;
+  const escapedCrCount = raw.match(/\\r/g)?.length ?? 0;
+  if (escapedLfCount + escapedCrCount === 0) {
+    return raw;
+  }
+
+  const likelyMultiline =
+    escapedLfCount + escapedCrCount >= 2 ||
+    raw.includes("\\n-") ||
+    raw.includes("\\n*") ||
+    raw.includes("\\n#") ||
+    raw.includes("\\n1)") ||
+    raw.includes("\\n2)") ||
+    raw.includes("\\n3)") ||
+    raw.includes("\\n4)");
+
+  if (!likelyMultiline) {
+    return raw;
+  }
+
+  return raw
+    .replaceAll("\\r\\n", "\n")
+    .replaceAll("\\n", "\n")
+    .replaceAll("\\r", "\n");
+}
+
+export function normalizeTaskBundleText(bundle: TaskBundle): TaskBundle {
+  let changed = false;
+  const tasks = bundle.tasks.map((task) => {
+    const promptRaw = task.prompt;
+    const prompt = normalizeEscapedNewlines(promptRaw);
+    const titleRaw = task.title;
+    const title = typeof titleRaw === "string" ? normalizeEscapedNewlines(titleRaw) : titleRaw;
+    if (prompt === promptRaw && title === titleRaw) {
+      return task;
+    }
+    changed = true;
+    return {
+      ...task,
+      prompt,
+      ...(title !== titleRaw ? { title } : {}),
+    };
+  });
+
+  if (!changed) {
+    return bundle;
+  }
+
+  return { ...bundle, tasks };
+}
+
 function normalizeRequestId(value: unknown): string | null {
   const raw = String(value ?? "").trim();
   return raw ? raw : null;
@@ -158,5 +217,5 @@ export function parseTaskBundle(rawJson: string): { ok: true; bundle: TaskBundle
     return { ok: false, error: "Invalid task bundle schema" };
   }
 
-  return { ok: true, bundle: result.data };
+  return { ok: true, bundle: normalizeTaskBundleText(result.data) };
 }

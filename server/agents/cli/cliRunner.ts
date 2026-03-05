@@ -13,6 +13,7 @@ export interface CliRunOptions {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  unsetEnv?: string[];
   stdinData?: string;
   signal?: AbortSignal;
 }
@@ -26,6 +27,20 @@ export interface CliRunResult {
 }
 
 let PIPE_STDIOS_SUPPORTED: boolean | null = null;
+
+function buildSpawnEnv(options: { env?: Record<string, string>; unsetEnv?: string[] }): NodeJS.ProcessEnv | undefined {
+  const hasOverrides = Boolean(options.env && Object.keys(options.env).length > 0);
+  const hasUnsets = Boolean(options.unsetEnv && options.unsetEnv.length > 0);
+  if (!hasOverrides && !hasUnsets) {
+    return undefined;
+  }
+
+  const merged: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}) };
+  for (const key of options.unsetEnv ?? []) {
+    delete merged[key];
+  }
+  return merged;
+}
 
 function supportsPipedStdios(): boolean {
   if (PIPE_STDIOS_SUPPORTED !== null) {
@@ -159,11 +174,11 @@ export async function runCli(
     return await runCliViaFiles(options, onLine);
   }
 
-  const { binary, args, cwd, env, stdinData, signal } = options;
+  const { binary, args, cwd, env, unsetEnv, stdinData, signal } = options;
 
   const child = spawn(binary, args, {
     cwd,
-    env: env ? { ...process.env, ...env } : undefined,
+    env: buildSpawnEnv({ env, unsetEnv }),
     stdio: ["pipe", "pipe", "pipe"],
     shell: false,
   });
@@ -221,7 +236,7 @@ async function runCliViaFiles(
   options: CliRunOptions,
   onLine: LineHandler,
 ): Promise<CliRunResult> {
-  const { binary, args, cwd, env, stdinData, signal } = options;
+  const { binary, args, cwd, env, unsetEnv, stdinData, signal } = options;
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-cli-runner-"));
   const stdoutPath = path.join(tmpDir, "stdout.txt");
@@ -240,7 +255,7 @@ async function runCliViaFiles(
   try {
     child = spawn(binary, args, {
       cwd,
-      env: env ? { ...process.env, ...env } : undefined,
+      env: buildSpawnEnv({ env, unsetEnv }),
       stdio: [stdinFd, stdoutFd, stderrFd],
       shell: false,
     });
@@ -310,11 +325,11 @@ export async function runCliRaw(
     return await runCliRawViaFiles(options);
   }
 
-  const { binary, args, cwd, env } = options;
+  const { binary, args, cwd, env, unsetEnv } = options;
 
   const child = spawn(binary, args, {
     cwd,
-    env: env ? { ...process.env, ...env } : undefined,
+    env: buildSpawnEnv({ env, unsetEnv }),
     stdio: ["pipe", "pipe", "pipe"],
     shell: false,
   });
@@ -348,7 +363,7 @@ export async function runCliRaw(
 async function runCliRawViaFiles(
   options: Omit<CliRunOptions, "signal">,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
-  const { binary, args, cwd, env, stdinData } = options;
+  const { binary, args, cwd, env, unsetEnv, stdinData } = options;
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-cli-raw-"));
   const stdoutPath = path.join(tmpDir, "stdout.txt");
@@ -367,7 +382,7 @@ async function runCliRawViaFiles(
   try {
     child = spawn(binary, args, {
       cwd,
-      env: env ? { ...process.env, ...env } : undefined,
+      env: buildSpawnEnv({ env, unsetEnv }),
       stdio: [stdinFd, stdoutFd, stderrFd],
       shell: false,
     });

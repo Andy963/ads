@@ -76,6 +76,7 @@ export function createAppContext() {
 
   const runtimeByProjectId = new Map<string, ProjectRuntime>();
   const plannerRuntimeByProjectId = new Map<string, ProjectRuntime>();
+  const reviewerRuntimeByProjectId = new Map<string, ProjectRuntime>();
 
   const normalizeProjectId = (id: string | null | undefined): string => {
     const trimmed = String(id ?? "").trim();
@@ -102,8 +103,19 @@ export function createAppContext() {
     return created;
   };
 
+  const getReviewerRuntime = (projectId: string | null | undefined): ProjectRuntime => {
+    const id = normalizeProjectId(projectId);
+    const existing = reviewerRuntimeByProjectId.get(id);
+    if (existing) return existing;
+    const created = createProjectRuntime({ maxLiveActivitySteps });
+    created.chatSessionId = "reviewer";
+    reviewerRuntimeByProjectId.set(id, created);
+    return created;
+  };
+
   const activeRuntime = computed(() => getRuntime(activeProjectId.value));
   const activePlannerRuntime = computed(() => getPlannerRuntime(activeProjectId.value));
+  const activeReviewerRuntime = computed(() => getReviewerRuntime(activeProjectId.value));
 
   type RefLike<T> = { value: T };
 
@@ -242,11 +254,14 @@ export function createAppContext() {
     activeProject,
     runtimeByProjectId,
     plannerRuntimeByProjectId,
+    reviewerRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
     getPlannerRuntime,
+    getReviewerRuntime,
     activeRuntime,
     activePlannerRuntime,
+    activeReviewerRuntime,
     connected,
     apiError,
     apiNotice,
@@ -356,21 +371,31 @@ export function createAppController() {
       clearRuntimeTimers(plannerRt);
       ctx.plannerRuntimeByProjectId.delete(pid);
     }
+
+    const reviewerRt = ctx.reviewerRuntimeByProjectId.get(pid);
+    if (reviewerRt) {
+      ws.closeRuntimeConnection(reviewerRt);
+      clearRuntimeTimers(reviewerRt);
+      ctx.reviewerRuntimeByProjectId.delete(pid);
+    }
   };
 
   const activateProject = async (projectId: string): Promise<void> => {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
     const plannerRt = ctx.getPlannerRuntime(pid);
+    const reviewerRt = ctx.getReviewerRuntime(pid);
     if (!ctx.loggedIn.value) return;
     rt.apiError.value = null;
     rt.wsError.value = null;
     plannerRt.wsError.value = null;
+    reviewerRt.wsError.value = null;
     try {
       await Promise.all([
         tasks.loadQueueStatus(pid),
         (!rt.ws || !rt.connected.value) ? ws.connectWs(pid) : Promise.resolve(),
         (!plannerRt.ws || !plannerRt.connected.value) ? ws.connectPlannerWs(pid) : Promise.resolve(),
+        (!reviewerRt.ws || !reviewerRt.connected.value) ? ws.connectReviewerWs(pid) : Promise.resolve(),
         drafts.loadTaskBundleDrafts(pid),
         tasks.loadTasks(pid),
       ]);
@@ -438,7 +463,7 @@ export function createAppController() {
 
   onBeforeUnmount(() => {
     window.removeEventListener("resize", ctx.updateIsMobile);
-    for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.plannerRuntimeByProjectId.values()]) {
+    for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.plannerRuntimeByProjectId.values(), ...ctx.reviewerRuntimeByProjectId.values()]) {
       if (rt.liveActivityTtlTimer === null) continue;
       window.clearTimeout(rt.liveActivityTtlTimer);
       rt.liveActivityTtlTimer = null;

@@ -6,7 +6,7 @@ import type { TaskStoreStatements } from "../storeStatements.js";
 import type { CreateTaskInput, Task, TaskFilter, TaskStatus } from "../types.js";
 
 import { toTask } from "./mappers.js";
-import { normalizeTaskStatus } from "./normalize.js";
+import { normalizeTaskReviewStatus, normalizeTaskStatus } from "./normalize.js";
 
 export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStoreStatements }) {
   const { db, stmts } = deps;
@@ -61,6 +61,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
         : status === "queued"
           ? now
           : null;
+    const reviewRequired = Boolean(input.reviewRequired);
 
     const task: Task = {
       id,
@@ -94,10 +95,15 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       error: null,
       retryCount: 0,
       maxRetries: typeof input.maxRetries === "number" ? Math.max(0, Math.floor(input.maxRetries)) : 3,
+      reviewRequired,
+      reviewStatus: "none",
+      reviewSnapshotId: null,
+      reviewConclusion: null,
+      reviewedAt: null,
       createdAt: now,
       startedAt: null,
       completedAt: null,
-      archivedAt: status === "completed" ? now : null,
+      archivedAt: status === "completed" && !reviewRequired ? now : null,
       createdBy: input.createdBy ?? null,
     };
 
@@ -119,6 +125,11 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.error ?? null,
       task.retryCount,
       task.maxRetries,
+      task.reviewRequired ? 1 : 0,
+      task.reviewStatus,
+      task.reviewSnapshotId ?? null,
+      task.reviewConclusion ?? null,
+      task.reviewedAt ?? null,
       task.createdAt,
       task.startedAt ?? null,
       task.completedAt ?? null,
@@ -178,6 +189,8 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
 
     merged.status = normalizeTaskStatus(merged.status);
     merged.inheritContext = Boolean(merged.inheritContext);
+    merged.reviewRequired = Boolean(merged.reviewRequired);
+    merged.reviewStatus = normalizeTaskReviewStatus(merged.reviewStatus);
     merged.agentId = (() => {
       const raw = merged.agentId == null ? "" : String(merged.agentId).trim();
       return raw || null;
@@ -190,6 +203,10 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.queuedAt != null && Number.isFinite(merged.queuedAt) ? merged.queuedAt : (existing.queuedAt ?? null);
     merged.retryCount = Number.isFinite(merged.retryCount) ? merged.retryCount : existing.retryCount;
     merged.maxRetries = Number.isFinite(merged.maxRetries) ? merged.maxRetries : existing.maxRetries;
+    merged.reviewSnapshotId = merged.reviewSnapshotId == null ? null : String(merged.reviewSnapshotId);
+    merged.reviewConclusion = merged.reviewConclusion == null ? null : String(merged.reviewConclusion);
+    merged.reviewedAt =
+      merged.reviewedAt != null && Number.isFinite(merged.reviewedAt) ? merged.reviewedAt : (existing.reviewedAt ?? null);
 
     if (!String(merged.title ?? "").trim()) {
       const prompt = String(merged.prompt ?? "");
@@ -206,7 +223,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.completedAt = now;
     }
     if (merged.status === "completed") {
-      merged.archivedAt = merged.archivedAt != null && Number.isFinite(merged.archivedAt) ? merged.archivedAt : now;
+      const shouldArchive = !merged.reviewRequired || merged.reviewStatus === "passed";
+      merged.archivedAt = shouldArchive
+        ? merged.archivedAt != null && Number.isFinite(merged.archivedAt)
+          ? merged.archivedAt
+          : now
+        : null;
     } else {
       merged.archivedAt = null;
     }
@@ -228,6 +250,11 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.error ?? null,
       merged.retryCount,
       merged.maxRetries,
+      merged.reviewRequired ? 1 : 0,
+      merged.reviewStatus,
+      merged.reviewSnapshotId ?? null,
+      merged.reviewConclusion ?? null,
+      merged.reviewedAt ?? null,
       merged.createdAt,
       merged.startedAt ?? null,
       merged.completedAt ?? null,

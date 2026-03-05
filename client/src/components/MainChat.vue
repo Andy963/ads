@@ -10,6 +10,7 @@ import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
 import { isPatchMessageMarkdown } from "../lib/patch_message";
 import { analyzeMarkdownOutline } from "../lib/markdown";
+import type { ModelConfig } from "../api/types";
 
 const props = defineProps<{
   title?: string;
@@ -18,8 +19,11 @@ const props = defineProps<{
   pendingImages: IncomingImage[];
   connected: boolean;
   busy: boolean;
+  readOnly?: boolean;
   agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
   activeAgentId?: string;
+  models?: ModelConfig[];
+  modelId?: string;
   modelReasoningEffort?: string;
   agentDelegations?: Array<{
     id: string;
@@ -43,6 +47,7 @@ const emit = defineEmits<{
   (e: "clearImages"): void;
   (e: "removeQueued", id: string): void;
   (e: "switchAgent", agentId: string): void;
+  (e: "setModel", modelId: string): void;
   (e: "setReasoningEffort", effort: string): void;
 }>();
 
@@ -263,33 +268,180 @@ const renderMessages = computed<RenderMessage[]>(() => {
   return props.messages.filter((m) => m.kind !== "command" && (m.kind !== "execute" || m.id === latestExecuteId));
 });
 
-const canInterrupt = computed(() => props.busy);
-const showActiveBorder = computed(() => props.busy);
+	const canInterrupt = computed(() => props.busy);
+	const showActiveBorder = computed(() => props.busy);
 
-const agentOptions = computed(() => (Array.isArray(props.agents) ? props.agents : []));
+	const agentOptions = computed(() => (Array.isArray(props.agents) ? props.agents : []));
+	const readyAgentOptions = computed(() => agentOptions.value.filter((a) => Boolean(a?.ready) && String(a?.id ?? "").trim()));
+	const modelOptions = computed(() => (Array.isArray(props.models) ? props.models : []));
 
-const selectedAgentId = computed(() => {
-  const active = String(props.activeAgentId ?? "").trim();
-  if (active) return active;
-  const fallback = agentOptions.value[0]?.id ?? "";
-  return String(fallback ?? "").trim();
-});
+	const selectedAgentId = computed(() => {
+	  const active = String(props.activeAgentId ?? "").trim();
+	  if (active && readyAgentOptions.value.some((a) => String(a.id ?? "").trim() === active)) {
+	    return active;
+	  }
+	  const fallback = readyAgentOptions.value[0]?.id ?? "";
+	  return String(fallback ?? "").trim();
+	});
 
-function formatAgentLabel(agent: { id: string; name: string; ready: boolean; error?: string }): string {
-  const id = String(agent.id ?? "").trim();
-  const name = String(agent.name ?? "").trim() || id;
+	function formatAgentLabel(agent: { id: string; name: string; ready: boolean; error?: string }): string {
+	  const id = String(agent.id ?? "").trim();
+	  const name = String(agent.name ?? "").trim() || id;
   if (!id) return name || "agent";
-  const base = `${name} (${id})`;
-  if (agent.ready) return base;
-  const suffix = String(agent.error ?? "").trim() || "unavailable";
-  return `${base} - ${suffix}`;
+  const base = name;
+  if (agent.ready) return base || "agent";
+	  const suffix = String(agent.error ?? "").trim() || "unavailable";
+	  return base ? `${base} - ${suffix}` : suffix;
+	}
+
+	const lastAutoSwitchedAgentId = ref<string | null>(null);
+
+	watch(
+	  () => [
+	    Boolean(props.connected),
+	    Boolean(props.busy),
+	    Boolean(props.readOnly),
+	    String(props.activeAgentId ?? "").trim(),
+	    readyAgentOptions.value.map((a) => String(a.id ?? "").trim()).join("\n"),
+	  ],
+	  () => {
+	    if (!props.connected || props.busy || props.readOnly) {
+	      lastAutoSwitchedAgentId.value = null;
+	      return;
+	    }
+
+	    const options = readyAgentOptions.value;
+	    if (options.length === 0) {
+	      lastAutoSwitchedAgentId.value = null;
+	      return;
+	    }
+
+	    const active = String(props.activeAgentId ?? "").trim();
+	    if (active && options.some((a) => String(a.id ?? "").trim() === active)) {
+	      lastAutoSwitchedAgentId.value = null;
+	      return;
+	    }
+
+	    const next = selectedAgentId.value;
+	    if (!next || next === active) return;
+	    if (lastAutoSwitchedAgentId.value === next) return;
+
+	    lastAutoSwitchedAgentId.value = next;
+	    emit("switchAgent", next);
+	  },
+	  { immediate: true },
+	);
+
+	function onAgentChange(ev: Event): void {
+	  const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
+	  const next = String(value ?? "").trim();
+	  if (!next) return;
+  emit("switchAgent", next);
 }
 
-function onAgentChange(ev: Event): void {
+function normalizeModelId(value: unknown): string {
+  return typeof value === "string" ? value.trim() : String(value ?? "").trim();
+}
+
+function isUnsetModelId(modelId: string): boolean {
+  const id = String(modelId ?? "").trim().toLowerCase();
+  return !id || id === "auto";
+}
+
+function modelAllowedAgents(model: ModelConfig): string[] | null {
+  const cfg = (model as ModelConfig & { configJson?: unknown }).configJson;
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return null;
+  const raw = (cfg as Record<string, unknown>).allowedAgents;
+  if (!Array.isArray(raw)) return null;
+  const agents = raw.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+  return agents.length > 0 ? agents : null;
+}
+
+function isClaudeModelId(modelId: string): boolean {
+  const id = modelId.trim().toLowerCase();
+  return id.startsWith("claude") || id === "sonnet" || id === "opus" || id === "haiku";
+}
+
+function isGeminiModelId(modelId: string): boolean {
+  const id = modelId.trim().toLowerCase();
+  return id.includes("gemini") || id.startsWith("auto-gemini");
+}
+
+function supportsAgentModel(args: { agentId: string; model: ModelConfig }): boolean {
+  const agentId = String(args.agentId ?? "").trim().toLowerCase();
+  if (!agentId) return true;
+
+  const allowed = modelAllowedAgents(args.model);
+  if (allowed) {
+    return allowed.map((id) => id.toLowerCase()).includes(agentId);
+  }
+
+  const provider = String(args.model.provider ?? "").trim().toLowerCase();
+  const modelId = String(args.model.id ?? "").trim();
+
+  if (agentId === "claude") {
+    if (provider.includes("anthropic")) return true;
+    return isClaudeModelId(modelId);
+  }
+  if (agentId === "gemini") {
+    if (provider.includes("google")) return true;
+    return isGeminiModelId(modelId);
+  }
+  if (agentId === "codex") {
+    if (provider.includes("anthropic") || provider.includes("google")) return false;
+    if (isClaudeModelId(modelId) || isGeminiModelId(modelId)) return false;
+    return true;
+  }
+
+  return true;
+}
+
+const filteredModelOptions = computed(() => {
+  const agentId = selectedAgentId.value;
+  return modelOptions.value.filter((model) => supportsAgentModel({ agentId, model }));
+});
+
+const effectiveModelId = computed(() => {
+  const options = filteredModelOptions.value;
+  if (options.length === 0) return "";
+  const current = normalizeModelId(props.modelId);
+  if (!isUnsetModelId(current) && options.some((m) => String(m.id ?? "").trim() === current)) {
+    return current;
+  }
+  return String(options[0]?.id ?? "").trim();
+});
+
+watch(
+  () => [selectedAgentId.value, props.modelId, filteredModelOptions.value.map((m) => String(m.id ?? "").trim()).join("\n")],
+  () => {
+    const options = filteredModelOptions.value;
+    if (options.length === 0) return;
+    const desired = String(options[0]?.id ?? "").trim();
+    if (!desired) return;
+
+    const current = normalizeModelId(props.modelId);
+    if (!isUnsetModelId(current) && options.some((m) => String(m.id ?? "").trim() === current)) {
+      return;
+    }
+
+    if (desired !== current) {
+      emit("setModel", desired);
+    }
+  },
+  { immediate: true },
+);
+
+function formatModelLabel(model: ModelConfig): string {
+  const id = String(model.id ?? "").trim();
+  const name = String(model.displayName ?? "").trim() || id;
+  return name || "model";
+}
+
+function onModelChange(ev: Event): void {
   const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
-  const next = String(value ?? "").trim();
-  if (!next) return;
-  emit("switchAgent", next);
+  const next = normalizeModelId(value);
+  if (!next || isUnsetModelId(next)) return;
+  emit("setModel", next);
 }
 
 const reasoningEffortValue = computed(() => {
@@ -718,7 +870,7 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       </button>
     </div>
 
-    <div class="composer">
+    <div v-if="!readOnly" class="composer">
       <div v-if="agentDelegationLabel" class="delegationBar" aria-label="Agent delegation status">
         <span class="delegationSpinner" aria-hidden="true" />
         <span class="delegationText">{{ agentDelegationLabel }}</span>
@@ -775,23 +927,40 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
         />
         <textarea v-model="input" ref="inputEl" rows="5" class="composer-input"
           placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）" @keydown="onInputKeydown" @paste="onPaste" />
-        <div class="inputToolbar">
-          <div class="inputToolbarLeft">
-            <button class="attachIcon" type="button" title="添加图片附件" @click="triggerFileInput">
+	        <div class="inputToolbar">
+	          <div class="inputToolbarLeft">
+	            <button class="attachIcon" type="button" title="添加图片附件" @click="triggerFileInput">
               <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path fill-rule="evenodd" d="M15.621 4.379a3.5 3.5 0 0 0-4.95 0l-7.07 7.07a5 5 0 0 0 7.07 7.072l4.95-4.95a.75.75 0 0 0-1.06-1.061l-4.95 4.95a3.5 3.5 0 1 1-4.95-4.95l7.07-7.07a2 2 0 1 1 2.83 2.828l-7.07 7.071a.5.5 0 0 1-.707-.707l4.95-4.95a.75.75 0 1 0-1.06-1.06l-4.95 4.95a2 2 0 0 0 2.828 2.828l7.07-7.071a3.5 3.5 0 0 0 0-4.95Z" clip-rule="evenodd" />
               </svg>
             </button>
+	            <div v-if="readyAgentOptions.length" class="agentSelect">
+	              <select
+	                class="agentSelectInput"
+	                :value="selectedAgentId"
+	                :disabled="!connected || busy"
+	                aria-label="Select agent"
+	                @change="onAgentChange"
+	              >
+	                <option v-for="a in readyAgentOptions" :key="a.id" :value="a.id">
+	                  {{ formatAgentLabel(a) }}
+	                </option>
+	              </select>
+	            </div>
             <div v-if="agentOptions.length" class="agentSelect">
               <select
                 class="agentSelectInput"
-                :value="selectedAgentId"
-                :disabled="!connected || busy"
-                aria-label="Select agent"
-                @change="onAgentChange"
+                :value="effectiveModelId"
+                :disabled="!connected || busy || filteredModelOptions.length === 0"
+                aria-label="Select model"
+                data-testid="chat-model-select"
+                @change="onModelChange"
               >
-                <option v-for="a in agentOptions" :key="a.id" :value="a.id" :disabled="!a.ready">
-                  {{ formatAgentLabel(a) }}
+                <option v-if="filteredModelOptions.length === 0" value="" disabled>
+                  No models
+                </option>
+                <option v-for="m in filteredModelOptions" :key="m.id" :value="m.id">
+                  {{ formatModelLabel(m) }}
                 </option>
               </select>
             </div>

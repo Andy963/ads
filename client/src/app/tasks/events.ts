@@ -101,16 +101,6 @@ export function createTaskEventActions(
     };
   };
 
-  const shouldHideTask = (task: Task): boolean => task.status === "completed" && task.archivedAt != null;
-
-  const upsertOrRemoveTask = (task: Task, state: ProjectRuntime): void => {
-    if (shouldHideTask(task)) {
-      removeTask(task.id, state);
-      return;
-    }
-    upsertTask(task, state);
-  };
-
   const startTaskTerminalCleanup = (taskId: string, state: ProjectRuntime): void => {
     markTaskChatStarted(taskId, state);
     clearStepLive(state);
@@ -171,7 +161,7 @@ export function createTaskEventActions(
       case "task:updated": {
         const task = parseTask(payload.data);
         if (!task) return;
-        upsertOrRemoveTask(task, state);
+        upsertTask(task, state);
         return;
       }
       case "command": {
@@ -222,7 +212,7 @@ export function createTaskEventActions(
         const task = parseTask(payload.data);
         if (!task) return;
         markTaskChatStarted(task.id, state);
-        upsertOrRemoveTask(task, state);
+        upsertTask(task, state);
         clearStepLive(state);
         finalizeCommandBlock(state);
         if (task.result && task.result.trim() && !hasAssistantAfterLastUser(state)) {

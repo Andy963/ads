@@ -4,7 +4,7 @@ import type { Database as DatabaseType, Statement as StatementType } from "bette
 
 import { getStateDatabase } from "../../../state/database.js";
 import { safeParseJsonFromUnknown } from "../../../utils/json.js";
-import { taskBundleSchema, type TaskBundle } from "./taskBundle.js";
+import { normalizeTaskBundleText, taskBundleSchema, type TaskBundle } from "./taskBundle.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
 type PreparedStatements = {
@@ -75,7 +75,7 @@ function mapRow(row: Record<string, unknown>): TaskBundleDraft {
   const bundle = (() => {
     if (!parsedBundle) return null;
     const result = taskBundleSchema.safeParse(parsedBundle);
-    return result.success ? result.data : null;
+    return result.success ? normalizeTaskBundleText(result.data) : null;
   })();
 
   return {

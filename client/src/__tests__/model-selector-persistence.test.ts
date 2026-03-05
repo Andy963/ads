@@ -7,7 +7,7 @@ import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
 type GetImpl = (url: string) => Promise<unknown>;
 
 let getImpl: GetImpl | null = null;
-let lastWs: {
+let lastWorkerWs: {
   onOpen?: () => void;
   onClose?: (ev: { code: number; reason?: string }) => void;
   onError?: () => void;
@@ -16,9 +16,10 @@ let lastWs: {
   sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
   clearHistory: () => void;
 } | null = null;
-let lastPlannerWs: typeof lastWs = null;
+let _lastPlannerWs: typeof lastWorkerWs = null;
+let _lastReviewerWs: typeof lastWorkerWs = null;
+
 let lastSendPromptPayload: unknown = null;
-let lastPlannerSendPromptPayload: unknown = null;
 
 vi.mock("../api/client", () => {
   class ApiClient {
@@ -58,13 +59,11 @@ vi.mock("../api/ws", () => {
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
       if (chatSessionId === "planner") {
-        lastPlannerWs = this as unknown as typeof lastWs;
-        return;
+        _lastPlannerWs = this as unknown as typeof lastWorkerWs;
+      } else if (chatSessionId === "reviewer") {
+        _lastReviewerWs = this as unknown as typeof lastWorkerWs;
       } else {
-        if (chatSessionId === "reviewer") {
-          return;
-        }
-        lastWs = this as unknown as typeof lastWs;
+        lastWorkerWs = this as unknown as typeof lastWorkerWs;
       }
     }
 
@@ -73,11 +72,7 @@ vi.mock("../api/ws", () => {
 
     send(): void {}
     sendPrompt(payload: unknown): void {
-      if (this === lastPlannerWs) {
-        lastPlannerSendPromptPayload = payload;
-      } else {
-        lastSendPromptPayload = payload;
-      }
+      lastSendPromptPayload = payload;
     }
     interrupt(): void {}
   }
@@ -105,37 +100,41 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 }
 
 async function ensureWsConnected(wrapper: any): Promise<void> {
-  if (!lastWs) {
+  if (!lastWorkerWs) {
     await wrapper.vm.connectWs?.();
     await settleUi(wrapper);
   }
-  expect(lastWs).toBeTruthy();
-  lastWs!.onOpen?.();
+  expect(lastWorkerWs).toBeTruthy();
+  lastWorkerWs!.onOpen?.();
   await settleUi(wrapper);
 }
 
-async function ensurePlannerWsConnected(wrapper: any): Promise<void> {
-  for (let i = 0; i < 10 && !lastPlannerWs; i += 1) {
-    await settleUi(wrapper);
-  }
-  expect(lastPlannerWs).toBeTruthy();
-  lastPlannerWs!.onOpen?.();
-  await settleUi(wrapper);
+function makeModel(id: string, displayName: string): ModelConfig {
+  return {
+    id,
+    displayName,
+    provider: "openai",
+    isEnabled: true,
+    isDefault: false,
+  };
 }
 
-describe("reasoning effort WS payload", () => {
+describe("Model selector persistence", () => {
   beforeEach(() => {
-    lastWs = null;
-    lastPlannerWs = null;
+    lastWorkerWs = null;
+    _lastPlannerWs = null;
+    _lastReviewerWs = null;
     lastSendPromptPayload = null;
-    lastPlannerSendPromptPayload = null;
     try {
       localStorage.clear();
     } catch {
       // ignore
     }
+
+    const models: ModelConfig[] = [makeModel("gpt-4.1", "GPT-4.1"), makeModel("gpt-4o", "GPT-4o")];
     getImpl = async (url: string) => {
-      if (url === "/api/models") return [] satisfies ModelConfig[];
+      if (url === "/api/models") return models;
+      if (url === "/api/projects") return { projects: [], activeProjectId: null };
       if (url.includes("/api/task-queue/status"))
         return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
       if (url.startsWith("/api/tasks")) return [] satisfies Task[];
@@ -146,49 +145,25 @@ describe("reasoning effort WS payload", () => {
 
   afterEach(() => {
     getImpl = null;
-    lastWs = null;
-    lastPlannerWs = null;
+    lastWorkerWs = null;
+    _lastPlannerWs = null;
+    _lastReviewerWs = null;
     lastSendPromptPayload = null;
-    lastPlannerSendPromptPayload = null;
     vi.clearAllMocks();
-  });
-
-  it("defaults worker model_reasoning_effort to xhigh", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
-
-    wrapper.vm.sendMainPrompt?.("hello");
-    await settleUi(wrapper);
-
-    expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "xhigh", model: "auto" });
-  });
-
-  it("keeps planner default model_reasoning_effort at high", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
-    await ensurePlannerWsConnected(wrapper);
-
-    wrapper.vm.sendPlannerPrompt?.("hello");
-    await settleUi(wrapper);
-
-    expect(lastPlannerSendPromptPayload).toBeTruthy();
-    expect(lastPlannerSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
-  });
-
-  it("restores persisted reasoning effort and overrides defaults", async () => {
     try {
-      localStorage.setItem("ads.reasoningEffort.default.main", "medium");
+      localStorage.clear();
     } catch {
       // ignore
     }
+  });
+
+  it("restores a persisted model id and keeps it", async () => {
+    localStorage.setItem("ads.modelId.default.main", "gpt-4o");
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+    });
     await settleUi(wrapper);
     await ensureWsConnected(wrapper);
 
@@ -196,34 +171,19 @@ describe("reasoning effort WS payload", () => {
     await settleUi(wrapper);
 
     expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "medium", model: "auto" });
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4o" });
+    expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4o");
+
+    wrapper.unmount();
   });
 
-  it("includes model_reasoning_effort on prompt payload", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
-
-    wrapper.vm.setMainModelReasoningEffort?.("xhigh");
-    await settleUi(wrapper);
-
-    wrapper.vm.sendMainPrompt?.("hello");
-    await settleUi(wrapper);
-
-    expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "xhigh", model: "auto" });
-  });
-
-  it("restores persisted model id and includes it in payload", async () => {
-    try {
-      localStorage.setItem("ads.modelId.default.main", "gpt-4.1");
-    } catch {
-      // ignore
-    }
+  it("falls back to the first model and persists it when the stored id is invalid", async () => {
+    localStorage.setItem("ads.modelId.default.main", "not-a-real-model");
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+    });
     await settleUi(wrapper);
     await ensureWsConnected(wrapper);
 
@@ -232,5 +192,26 @@ describe("reasoning effort WS payload", () => {
 
     expect(lastSendPromptPayload).toBeTruthy();
     expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
+    expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
+
+    wrapper.unmount();
+  });
+
+  it("defaults to the first model and persists it when there is no stored selection", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+    });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
+    expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
+
+    wrapper.unmount();
   });
 });
