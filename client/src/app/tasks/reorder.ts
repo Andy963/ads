@@ -110,6 +110,10 @@ export function createTaskReorderActions(
     }
 
     const ids = pendingIdsInQueueOrder();
+    if (!ids.includes(taskId)) {
+      await runTaskQueue();
+      return;
+    }
     const next = ids.filter((x) => x !== taskId);
     next.push(taskId);
     await reorderPendingTasks(next);

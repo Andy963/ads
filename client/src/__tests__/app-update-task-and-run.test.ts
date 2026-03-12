@@ -197,6 +197,52 @@ describe("App.updateQueuedTaskAndRun", () => {
     wrapper.unmount();
   }, 10_000);
 
+  it("patches a queued task and starts the queue without reordering pending tasks", async () => {
+    const calls: Array<{ method: "PATCH" | "POST"; url: string; body: unknown }> = [];
+
+    tasksFromApi = [
+      makeTask({ id: "t-1", status: "queued" }),
+      makeTask({ id: "t-2", queueOrder: 1, status: "pending" }),
+    ];
+
+    patchImpl = async (url: string, body: unknown) => {
+      calls.push({ method: "PATCH", url, body });
+      expect(url).toContain("/api/tasks/t-1");
+      expect(body).toEqual({ title: "Updated", prompt: "Updated prompt" });
+      const updated = makeTask({ id: "t-1", title: "Updated", prompt: "Updated prompt", status: "queued" });
+      return { success: true, task: updated };
+    };
+
+    postImpl = async (url: string, body: unknown) => {
+      calls.push({ method: "POST", url, body });
+      if (url.includes("/api/task-queue/run")) {
+        return { enabled: true, running: true, ready: true, streaming: false } satisfies TaskQueueStatus;
+      }
+      if (url.includes("/api/tasks/reorder")) {
+        throw new Error("reorder should not be called for non-pending tasks");
+      }
+      throw new Error(`unexpected url: ${url}`);
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await waitForTasks(wrapper, 2);
+
+    await (wrapper.vm as unknown as { updateQueuedTaskAndRun: (id: string, updates: unknown) => Promise<void> }).updateQueuedTaskAndRun(
+      "t-1",
+      { title: "Updated", prompt: "Updated prompt" },
+    );
+    await settleUi(wrapper);
+
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      expect.stringContaining("PATCH /api/tasks/t-1"),
+      expect.stringContaining("POST /api/task-queue/run"),
+    ]);
+
+    wrapper.unmount();
+  }, 10_000);
+
   it("patches a cancelled task and runs it via single-task run", async () => {
     const calls: Array<{ method: "PATCH" | "POST"; url: string; body: unknown }> = [];
 

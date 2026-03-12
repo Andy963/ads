@@ -327,14 +327,14 @@
 }
 .layout {
   --sidebar-width: clamp(280px, 24vw, 360px);
-  --planner-width: clamp(360px, 32vw, 480px);
-  --worker-width: clamp(320px, 28vw, 460px);
+  --planner-width: clamp(420px, 36vw, 560px);
+  --worker-width: clamp(380px, 32vw, 540px);
   flex: 1;
   display: grid;
   grid-template-columns: var(--sidebar-width) var(--planner-width) var(--worker-width);
   gap: 12px;
   padding: 12px 12px 8px 12px;
-  max-width: 1400px;
+  max-width: 1600px;
   width: 100%;
   margin: 0 auto;
   min-height: 0;

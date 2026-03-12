@@ -1,5 +1,7 @@
 import type { Input } from "../protocol/types.js";
 
+import path from "node:path";
+
 import type {
   AgentAdapter,
   AgentMetadata,
@@ -17,6 +19,45 @@ import { createAbortError } from "../../utils/abort.js";
 
 const logger = createLogger("ClaudeCliAdapter");
 const CLAUDE_UNSET_ENV = ["CLAUDECODE"];
+const DEFAULT_IMAGE_ONLY_PROMPT = "Please respond based on the attached image(s).";
+const EMPTY_RESPONSE_ERROR = "Claude CLI 成功退出但未返回最终消息";
+
+function extractLocalImagePaths(input: Input): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((part): part is { type: "local_image"; path: string } => part.type === "local_image")
+    .map((part) => part.path)
+    .filter((p): p is string => typeof p === "string" && p.trim().length > 0);
+}
+
+function uniq(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    const normalized = String(item ?? "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function appendImageReferencesToPrompt(args: { prompt: string; imagePaths: string[] }): string {
+  const imagePaths = uniq(args.imagePaths);
+  if (imagePaths.length === 0) return args.prompt;
+
+  const hasText = args.prompt.trim().length > 0;
+  const basePrompt = hasText ? args.prompt : DEFAULT_IMAGE_ONLY_PROMPT;
+  const lines = imagePaths.map((p) => `- @${p}`);
+  return `${basePrompt}\n\nAttached images (local paths):\n${lines.join("\n")}\n`;
+}
+
+function summarizeStderr(stderr: string, maxLength = 200): string {
+  const normalized = String(stderr ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "(empty)";
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3)}...`;
+}
 
 export interface ClaudeCliAdapterOptions {
   binary?: string;
@@ -138,7 +179,9 @@ export class ClaudeCliAdapter implements AgentAdapter {
 
   private async sendInner(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
     const prompt = extractTextFromInput(input, { trim: false });
-    if (!prompt.trim()) {
+    const imagePaths = extractLocalImagePaths(input);
+    const promptWithImages = appendImageReferencesToPrompt({ prompt, imagePaths });
+    if (!promptWithImages.trim()) {
       throw new Error("Prompt 不能为空");
     }
 
@@ -159,7 +202,13 @@ export class ClaudeCliAdapter implements AgentAdapter {
     if (this.model) {
       args.push("--model", this.model);
     }
-    args.push(prompt);
+    if (imagePaths.length > 0) {
+      const dirs = uniq(imagePaths.map((p) => path.dirname(p)));
+      if (dirs.length > 0) {
+        args.push("--add-dir", ...dirs);
+      }
+    }
+    args.push(promptWithImages);
 
     const parser = new ClaudeStreamParser();
     let sawTurnFailed = false;
@@ -190,7 +239,14 @@ export class ClaudeCliAdapter implements AgentAdapter {
       throw createAbortError("用户中断了请求");
     }
 
+    const finalMessage = parser.getFinalMessage();
+    const hasFinalMessage = finalMessage.length > 0;
+    const stderrSummary = summarizeStderr(result.stderr);
+
     if (result.exitCode !== 0 || sawTurnFailed) {
+      logger.warn(
+        `[Claude CLI] request failed session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+      );
       const message = parser.getLastError() ?? (result.stderr.trim() || `claude exited with code ${result.exitCode}`);
       throw new Error(message);
     }
@@ -202,8 +258,19 @@ export class ClaudeCliAdapter implements AgentAdapter {
       logger.warn("Claude CLI did not provide a session id; multi-turn resume will be unavailable");
     }
 
+    if (!hasFinalMessage) {
+      logger.warn(
+        `[Claude CLI] request completed without final message session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+      );
+      throw new Error(stderrSummary === "(empty)" ? EMPTY_RESPONSE_ERROR : `${EMPTY_RESPONSE_ERROR}（stderr: ${stderrSummary}）`);
+    }
+
+    logger.info(
+      `[Claude CLI] request completed session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+    );
+
     return {
-      response: parser.getFinalMessage(),
+      response: finalMessage,
       usage: null,
       agentId: this.id,
     };

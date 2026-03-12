@@ -30,14 +30,40 @@ async function waitForFile(filePath: string, timeoutMs = 2000): Promise<void> {
   }
 }
 
+async function captureConsole<T>(run: () => Promise<T>): Promise<{ result?: T; error?: unknown; info: string[]; warn: string[] }> {
+  const info: string[] = [];
+  const warn: string[] = [];
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
+
+  console.info = (...args: unknown[]) => {
+    info.push(args.map((arg) => String(arg)).join(" "));
+  };
+  console.warn = (...args: unknown[]) => {
+    warn.push(args.map((arg) => String(arg)).join(" "));
+  };
+
+  try {
+    const result = await run();
+    return { result, info, warn };
+  } catch (error) {
+    return { error, info, warn };
+  } finally {
+    console.info = originalInfo;
+    console.warn = originalWarn;
+  }
+}
+
 describe("ClaudeCliAdapter", () => {
-  it("passes prompt byte-for-byte (including trailing whitespace) when input is parts[]", async () => {
+  it("appends local_image paths to the prompt while preserving the text prefix", async () => {
     const { binary, dir } = await createExecutableScript([
       "#!/usr/bin/env bash",
       "set -euo pipefail",
       'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
       'prompt_file="$dir/prompt.txt"',
+      'args_file="$dir/args.txt"',
       'args=("$@")',
+      'printf "%s\\n" "${args[@]}" >"$args_file"',
       'prompt="${args[$(( ${#args[@]} - 1 ))]}"',
       'printf "%s" "$prompt" >"$prompt_file"',
       "cat >/dev/null || true",
@@ -54,12 +80,102 @@ describe("ClaudeCliAdapter", () => {
     ];
 
     const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send(input));
+    const result = captured.result;
+    assert.ok(result);
+    assert.equal(result.response, "OK");
+
+    const promptFile = path.join(dir, "prompt.txt");
+    const prompt = await fs.readFile(promptFile, "utf-8");
+    assert.equal(
+      prompt,
+      "hello\n\nworld\n\n\n\nAttached images (local paths):\n- @/tmp/a.png\n",
+    );
+
+    const argsFile = path.join(dir, "args.txt");
+    const args = (await fs.readFile(argsFile, "utf-8")).split(/\r?\n/).filter(Boolean);
+    assert.ok(args.includes("--add-dir"));
+    assert.ok(args.includes("/tmp"));
+    assert.ok(captured.info.some((line) => line.includes("[Claude CLI] request completed")));
+    assert.ok(captured.info.some((line) => line.includes("exitCode=0")));
+    assert.ok(captured.info.some((line) => line.includes("hasFinalMessage=true")));
+  });
+
+  it("allows image-only input by synthesizing a default prompt", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'prompt_file="$dir/prompt.txt"',
+      'args=("$@")',
+      'prompt="${args[$(( ${#args[@]} - 1 ))]}"',
+      'printf "%s" "$prompt" >"$prompt_file"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const input: Input = [{ type: "local_image", path: "/tmp/a.png" }];
+
+    const adapter = new ClaudeCliAdapter({ binary });
     const result = await adapter.send(input);
     assert.equal(result.response, "OK");
 
     const promptFile = path.join(dir, "prompt.txt");
     const prompt = await fs.readFile(promptFile, "utf-8");
-    assert.equal(prompt, "hello\n\nworld\n\n");
+    assert.equal(
+      prompt,
+      "Please respond based on the attached image(s).\n\nAttached images (local paths):\n- @/tmp/a.png\n",
+    );
+  });
+
+  it("throws an explicit error when Claude exits successfully without a final message", async () => {
+    const { binary } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":""}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    const error = captured.error;
+
+    assert.equal(captured.result, undefined);
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /Claude CLI 成功退出但未返回最终消息/);
+    assert.ok(captured.warn.some((line) => line.includes("[Claude CLI] request completed without final message")));
+    assert.ok(captured.warn.some((line) => line.includes("exitCode=0")));
+    assert.ok(captured.warn.some((line) => line.includes("hasFinalMessage=false")));
+  });
+
+  it("logs failure metadata when Claude exits with stderr", async () => {
+    const { binary } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "cat >/dev/null || true",
+      'echo "first stderr line" >&2',
+      'echo "second stderr line" >&2',
+      "exit 1",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    const error = captured.error;
+
+    assert.equal(captured.result, undefined);
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /first stderr line/);
+    assert.ok(captured.warn.some((line) => line.includes("[Claude CLI] request failed")));
+    assert.ok(captured.warn.some((line) => line.includes("exitCode=1")));
+    assert.ok(captured.warn.some((line) => line.includes("stderr=\"first stderr line second stderr line\"")));
+    assert.ok(captured.warn.some((line) => line.includes("hasFinalMessage=false")));
   });
 
   it("unsets CLAUDECODE env var when spawning Claude CLI", async () => {
