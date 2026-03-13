@@ -175,8 +175,12 @@ export function resolveWorkspaceRoot(workspacePath?: string | null): string {
   return detectWorkspaceFrom(normalized);
 }
 
+function resolveRequestedWorkspaceRoot(workspace?: string): string {
+  return workspace ? resolveWorkspaceRoot(workspace) : detectWorkspace();
+}
+
 export function getWorkspaceDbPath(workspace?: string): string {
-  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
 
   // 始终尊重环境变量覆盖（测试场景依赖 ADS_DATABASE_PATH）
@@ -201,7 +205,7 @@ export function getWorkspaceDbPath(workspace?: string): string {
 }
 
 export function getWorkspaceRulesDir(workspace?: string): string {
-  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
   const rulesDir = resolveWorkspaceStatePath(root, "rules");
   fs.mkdirSync(rulesDir, { recursive: true });
@@ -209,7 +213,7 @@ export function getWorkspaceRulesDir(workspace?: string): string {
 }
 
 export function getWorkspaceSpecsDir(workspace?: string): string {
-  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  const root = resolveRequestedWorkspaceRoot(workspace);
   const specDir = path.join(root, "docs", "spec");
   if (existsSync(specDir)) {
     return specDir;
@@ -234,7 +238,7 @@ export function getWorkspaceSpecsDir(workspace?: string): string {
 }
 
 export function isWorkspaceInitialized(workspace?: string): boolean {
-  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
   return (
     existsSync(resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE)) ||
@@ -243,7 +247,7 @@ export function isWorkspaceInitialized(workspace?: string): boolean {
 }
 
 export function initializeWorkspace(workspace?: string, name?: string): string {
-  const root = workspace ? resolveAbsolute(workspace) : resolveAbsolute(process.cwd());
+  const root = workspace ? resolveWorkspaceRoot(workspace) : resolveAbsolute(process.cwd());
   const workspaceName = name ?? path.basename(root);
 
   const stateConfigPath = resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE);
@@ -273,13 +277,13 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
 }
 
 export function ensureDefaultTemplates(workspace?: string): void {
-  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
   copyDefaultTemplates(root);
 }
 
 export function getWorkspaceInfo(workspace?: string): Record<string, unknown> {
-  const root = workspace ? resolveAbsolute(workspace) : detectWorkspace();
+  const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
   const configFile = resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE);
   const legacyConfigFile = resolveLegacyWorkspaceAdsPath(root, WORKSPACE_CONFIG_FILE);

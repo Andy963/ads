@@ -9,6 +9,7 @@ import {
   detectWorkspace,
   detectWorkspaceFrom,
   getWorkspaceDbPath,
+  getWorkspaceRulesDir,
   getWorkspaceSpecsDir,
   isWorkspaceInitialized,
   ensureDefaultTemplates,
@@ -96,6 +97,45 @@ describe("workspace/detector", () => {
         delete process.env.AD_WORKSPACE;
       } else {
         process.env.AD_WORKSPACE = prev;
+      }
+    }
+  });
+
+  it("normalizes nested workspace inputs across detector helpers", () => {
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    const nested = path.join(workspace, "nested", "dir");
+    fs.mkdirSync(nested, { recursive: true });
+
+    const previousDbPath = process.env.ADS_DATABASE_PATH;
+    delete process.env.ADS_DATABASE_PATH;
+    try {
+      const initializedRoot = initializeWorkspace(nested, "Nested Init Test");
+      assert.equal(initializedRoot, path.resolve(workspace));
+      assert.equal(isWorkspaceInitialized(nested), true);
+
+      const dbPath = getWorkspaceDbPath(nested);
+      const rulesDir = getWorkspaceRulesDir(nested);
+      const specsDir = getWorkspaceSpecsDir(nested);
+      ensureDefaultTemplates(nested);
+
+      assert.equal(dbPath, resolveWorkspaceStatePath(workspace, "ads.db"));
+      assert.equal(rulesDir, resolveWorkspaceStatePath(workspace, "rules"));
+      assert.equal(specsDir, path.join(workspace, "docs", "spec"));
+      assert.equal(
+        fs.existsSync(resolveWorkspaceStatePath(workspace, "templates", "instructions.md")),
+        true,
+        "templates should be populated under the workspace root state directory"
+      );
+      assert.equal(
+        fs.existsSync(path.join(nested, "docs", "spec")),
+        false,
+        "nested child directory should not get its own docs/spec"
+      );
+    } finally {
+      if (previousDbPath === undefined) {
+        delete process.env.ADS_DATABASE_PATH;
+      } else {
+        process.env.ADS_DATABASE_PATH = previousDbPath;
       }
     }
   });
