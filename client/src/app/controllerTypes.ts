@@ -43,11 +43,24 @@ export type AgentDescriptor = {
   error?: string;
 };
 
+export type ChatPatchFile = {
+  path: string;
+  added: number | null;
+  removed: number | null;
+};
+
+export type ChatPatch = {
+  files: ChatPatchFile[];
+  diff: string;
+  truncated?: boolean;
+};
+
 export type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute";
+  kind: "text" | "command" | "execute" | "patch";
   content: string;
+  patch?: ChatPatch;
   command?: string;
   hiddenLineCount?: number;
   // When commands are truncated for UI safety, preserve the real count so the UI can

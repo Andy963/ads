@@ -8,7 +8,6 @@ import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
-import { isPatchMessageMarkdown } from "../lib/patch_message";
 import { analyzeMarkdownOutline } from "../lib/markdown";
 import type { ModelConfig } from "../api/types";
 
@@ -56,6 +55,7 @@ const autoScroll = ref(true);
 const showScrollToBottom = ref(false);
 
 const openCommandTrees = ref<Set<string>>(new Set());
+const expandedPatchIds = ref<Set<string>>(new Set());
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
@@ -252,6 +252,55 @@ const liveStepCanToggleExpanded = computed(() => {
 function isLiveStepRenderMessage(m: RenderMessage): boolean {
   return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
 }
+
+function formatPatchStat(added: number | null | undefined, removed: number | null | undefined): string {
+  if (typeof added !== "number" || typeof removed !== "number") return "(binary)";
+  return `(+${added} -${removed})`;
+}
+
+function patchHeaderTitle(m: RenderMessage): string {
+  const files = Array.isArray(m.patch?.files) ? m.patch?.files : [];
+  const first = files[0];
+  if (!first?.path) return "补丁";
+  return first.path;
+}
+
+function patchHeaderMeta(m: RenderMessage): string {
+  const files = Array.isArray(m.patch?.files) ? m.patch?.files : [];
+  const first = files[0];
+  const hiddenCount = Math.max(0, files.length - 1);
+  const parts: string[] = [];
+  if (first) parts.push(formatPatchStat(first.added, first.removed));
+  if (hiddenCount > 0) parts.push(`另 ${hiddenCount} 个文件`);
+  return parts.join(" ");
+}
+
+function isPatchExpanded(id: string): boolean {
+  return expandedPatchIds.value.has(id);
+}
+
+function togglePatchExpanded(id: string): void {
+  const next = new Set(expandedPatchIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedPatchIds.value = next;
+}
+
+watch(
+  () =>
+    props.messages
+      .filter((m) => m.kind === "patch")
+      .map((m) => String(m.id ?? "").trim())
+      .filter(Boolean),
+  (ids) => {
+    const visibleIds = new Set(ids);
+    const next = new Set([...expandedPatchIds.value].filter((id) => visibleIds.has(id)));
+    if (next.size !== expandedPatchIds.value.size) {
+      expandedPatchIds.value = next;
+    }
+  },
+  { immediate: true },
+);
 
 const renderMessages = computed<RenderMessage[]>(() => {
   let latestExecuteId: string | null = null;
@@ -581,8 +630,7 @@ watch(
 
 function shouldShowMsgActions(m: RenderMessage): boolean {
   if (m.streaming && m.content.length === 0) return false;
-  // Patch diffs are machine-generated; hide copy/timestamp chrome to keep them compact.
-  if (m.kind === "text" && m.role === "system" && isPatchMessageMarkdown(m.content)) return false;
+  if (m.kind === "patch") return false;
   return true;
 }
 
@@ -809,6 +857,27 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
           </div>
           <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
           <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
+        </div>
+        <div v-else-if="m.kind === 'patch'" :class="['bubble', 'bubble--compact', 'patchCard']">
+          <div class="patchCardHeader">
+            <div class="patchCardSummary">
+              <div class="patchCardTitle" :title="patchHeaderTitle(m)">{{ patchHeaderTitle(m) }}</div>
+              <div v-if="patchHeaderMeta(m)" class="patchCardMeta">{{ patchHeaderMeta(m) }}</div>
+            </div>
+            <button
+              class="patchCardToggle"
+              type="button"
+              :aria-expanded="isPatchExpanded(m.id)"
+              :data-testid="`patch-toggle-${m.id}`"
+              @click.stop="togglePatchExpanded(m.id)"
+            >
+              {{ isPatchExpanded(m.id) ? "收起" : "展开" }}
+            </button>
+          </div>
+          <div v-if="isPatchExpanded(m.id)" class="patchCardBody">
+            <pre class="patchCardDiff">{{ m.patch?.diff || m.content }}</pre>
+            <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
+          </div>
         </div>
         <div v-else :class="[
           'bubble',

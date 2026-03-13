@@ -1,8 +1,11 @@
+import type { ChatPatch } from "../../app/controllerTypes";
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute";
+  kind: "text" | "command" | "execute" | "patch";
   content: string;
+  patch?: ChatPatch;
   command?: string;
   hiddenLineCount?: number;
   commandsTotal?: number;

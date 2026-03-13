@@ -142,10 +142,10 @@ describe("ws patch diff dedup", () => {
 
     expect(rt.messages.value).toHaveLength(1);
     const [msg] = rt.messages.value;
-    expect(String(msg.content)).toContain("Modified files:");
-    expect(String(msg.content)).toContain("`a.txt`");
-    expect(String(msg.content)).toContain("`b.txt`");
-    expect((String(msg.content).match(/```diff/g) ?? []).length).toBe(2);
+    expect(msg.kind).toBe("patch");
+    expect(msg.patch?.files.map((file: any) => file.path)).toEqual(["a.txt", "b.txt"]);
+    expect(String(msg.patch?.diff ?? "")).toContain("diff --git a/a.txt b/a.txt");
+    expect(String(msg.patch?.diff ?? "")).toContain("diff --git a/b.txt b/b.txt");
   });
 
   it("overwrites the diff for a file when it is patched again", () => {
@@ -172,9 +172,10 @@ describe("ws patch diff dedup", () => {
 
     expect(rt.messages.value).toHaveLength(1);
     const [msg] = rt.messages.value;
-    expect((String(msg.content).match(/`a\.txt`/g) ?? []).length).toBe(1);
-    expect(String(msg.content)).toContain("index 3333333..4444444");
-    expect(String(msg.content)).not.toContain("index 1111111..2222222");
+    expect(msg.kind).toBe("patch");
+    expect(msg.patch?.files.map((file: any) => file.path)).toEqual(["a.txt"]);
+    expect(String(msg.patch?.diff ?? "")).toContain("index 3333333..4444444");
+    expect(String(msg.patch?.diff ?? "")).not.toContain("index 1111111..2222222");
   });
 
   it("drops git diff execute preview when a patch diff is emitted later in the same turn", () => {
@@ -203,7 +204,7 @@ describe("ws patch diff dedup", () => {
 
     expect(rt.turnHasPatch).toBe(true);
     expect(rt.messages.value.some((m: any) => m.kind === "execute")).toBe(false);
-    expect(rt.messages.value.some((m: any) => m.kind === "text" && String(m.content).includes("```diff"))).toBe(true);
+    expect(rt.messages.value.some((m: any) => m.kind === "patch" && String(m.patch?.diff ?? "").includes("diff --git"))).toBe(true);
   });
 
   it("prevents git diff execute previews once a patch diff has already been emitted", () => {

@@ -1,11 +1,4 @@
-export type ChatItem = {
-  id: string;
-  role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute";
-  content: string;
-  ts?: number;
-  streaming?: boolean;
-};
+import type { ChatItem } from "../app/controllerTypes";
 
 type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string };
 

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { getDatabase, resetDatabaseForTests } from "../../server/storage/database.js";
 import { computeNextCronRunAt } from "../../server/scheduler/cron.js";
 import { ScheduleStore } from "../../server/scheduler/store.js";
 import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
@@ -99,5 +99,69 @@ describe("scheduler/store", () => {
     const fetched = store.getRunByExternalId(externalId);
     assert.ok(fetched);
     assert.equal(fetched?.externalId, externalId);
+  });
+
+  it("falls back to default list limit, trims external id lookups, and normalizes persisted run status", () => {
+    const afterMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const next = computeNextCronRunAt({ cron: "0 9 * * *", timezone: "UTC", afterMs });
+
+    const spec: ScheduleSpec = {
+      version: 1,
+      name: "daily-sample",
+      enabled: true,
+      schedule: { type: "cron", cron: "0 9 * * *", timezone: "UTC" },
+      instruction: "Every day at 09:00 UTC, produce a sample report.",
+      delivery: { channels: ["web"], web: { audience: "owner" }, telegram: { chatId: null } },
+      policy: {
+        workspaceWrite: false,
+        network: "deny",
+        maxDurationMs: 600000,
+        maxRetries: 0,
+        concurrencyKey: "schedule:{scheduleId}",
+        idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
+      },
+      compiledTask: {
+        title: "Produce a sample report",
+        prompt: "Return a single JSON object.",
+        expectedResultSchema: { type: "object" },
+        verification: { commands: [] },
+      },
+      questions: [],
+    };
+
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const schedule = store.createSchedule(
+      { instruction: spec.instruction, spec, enabled: true, nextRunAt: next },
+      1234,
+    );
+
+    const externalId = `sch:${schedule.id}:${new Date(next).toISOString()}`;
+    const taskId = `task-${schedule.id}`;
+    new TaskStore({ workspacePath: tmpDir }).createTask(
+      {
+        id: taskId,
+        title: "Sample",
+        prompt: "Return JSON.",
+        model: "auto",
+        inheritContext: false,
+        createdBy: "test",
+      },
+      1500,
+      { status: "pending" },
+    );
+    store.insertRun({ scheduleId: schedule.id, externalId, runAt: next, taskId, status: "queued" }, 2000);
+
+    assert.equal(store.listSchedules({ limit: 0 }).length, 1);
+    assert.equal(store.listRuns(schedule.id, { limit: Number.NaN }).length, 1);
+
+    const fetched = store.getRunByExternalId(`  ${externalId}  `);
+    assert.ok(fetched);
+    assert.equal(fetched?.externalId, externalId);
+
+    getDatabase(tmpDir).prepare(`UPDATE schedule_runs SET status = ? WHERE external_id = ?`).run("unknown", externalId);
+
+    const normalized = store.getRunByExternalId(externalId);
+    assert.ok(normalized);
+    assert.equal(normalized?.status, "queued");
   });
 });

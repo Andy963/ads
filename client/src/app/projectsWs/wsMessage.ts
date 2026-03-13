@@ -1,5 +1,5 @@
 import type { ChatActions } from "../chat";
-import type { ChatItem, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
+import type { ChatItem, ChatPatch, ChatPatchFile, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
 import type { TaskBundleDraft } from "../../api/types";
 
 import { deriveProjectNameFromPath } from "./projectName";
@@ -112,14 +112,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
   type PatchFileStat = { added: number | null; removed: number | null };
 
-  let turnPatchSummaryMessageId: string | null = null;
+  let turnPatchMessageId: string | null = null;
   let turnPatchSummaryTruncated = false;
   const turnPatchFilesByPath = new Map<string, PatchFileStat>();
   const turnPatchDiffByPath = new Map<string, string>();
   const turnPatchOrder: string[] = [];
 
   const resetTurnPatchSummary = (): void => {
-    turnPatchSummaryMessageId = null;
+    turnPatchMessageId = null;
     turnPatchSummaryTruncated = false;
     turnPatchFilesByPath.clear();
     turnPatchDiffByPath.clear();
@@ -167,47 +167,43 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     return out;
   };
 
-  const buildTurnPatchSummaryContent = (): string => {
-    const fileLines = turnPatchOrder
+  const buildTurnPatchFiles = (): ChatPatchFile[] =>
+    turnPatchOrder
       .map((path) => {
         const stat = turnPatchFilesByPath.get(path);
-        if (!stat) return "";
-        const added = stat.added;
-        const removed = stat.removed;
-        const label = added === null || removed === null ? "(binary)" : `(+${added} -${removed})`;
-        return `- \`${path}\` ${label}`;
+        return {
+          path,
+          added: stat?.added ?? null,
+          removed: stat?.removed ?? null,
+        } satisfies ChatPatchFile;
       })
-      .filter(Boolean);
+      .filter((file) => Boolean(file.path));
 
-    let header = "";
-    if (fileLines.length > 0) {
-      const first = fileLines[0]?.replace(/^-\s+/, "") ?? "";
-      const rest = fileLines.slice(1);
-      header = rest.length ? `Modified files: ${first}\n${rest.join("\n")}\n\n` : `Modified files: ${first}\n\n`;
-    }
-
-    const diffBlocks = turnPatchOrder
+  const buildTurnPatchDiff = (): string =>
+    turnPatchOrder
       .map((path) => {
         const section = turnPatchDiffByPath.get(path);
         if (!section) return "";
-        return `\`\`\`diff\n${section}\n\`\`\``;
+        return section;
       })
       .filter(Boolean)
       .join("\n\n");
 
-    const note = turnPatchSummaryTruncated ? "\n\n_Diff was truncated to avoid flooding the UI._\n" : "";
-    return `${header}${diffBlocks}${note}`;
-  };
+  const buildTurnPatchPayload = (): ChatPatch => ({
+    files: buildTurnPatchFiles(),
+    diff: buildTurnPatchDiff(),
+    truncated: turnPatchSummaryTruncated || undefined,
+  });
 
-  const upsertTurnPatchSummaryMessage = (content: string): void => {
-    const id = String(turnPatchSummaryMessageId ?? "").trim();
+  const upsertTurnPatchMessage = (patch: ChatPatch): void => {
+    const id = String(turnPatchMessageId ?? "").trim();
     if (id) {
       const existing = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
       const idx = existing.findIndex((m) => String(m?.id ?? "") === id);
       if (idx >= 0) {
         const prev = existing[idx];
-        if (prev && prev.role === "system" && prev.kind === "text") {
-          existing[idx] = { ...prev, content };
+        if (prev && prev.role === "system" && prev.kind === "patch") {
+          existing[idx] = { ...prev, content: patch.diff, patch };
           rt.messages.value = existing;
           return;
         }
@@ -215,14 +211,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     const beforeIds = new Set((Array.isArray(rt.messages.value) ? rt.messages.value : []).map((m) => String(m?.id ?? "")));
-    pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+    pushMessageBeforeLive({ role: "system", kind: "patch", content: patch.diff, patch }, rt);
     const inserted =
       (Array.isArray(rt.messages.value) ? rt.messages.value : []).find(
-        (m) => !beforeIds.has(String(m?.id ?? "")) && m?.role === "system" && m?.kind === "text" && String(m?.content ?? "") === content,
+        (m) => !beforeIds.has(String(m?.id ?? "")) && m?.role === "system" && m?.kind === "patch" && String(m?.content ?? "") === patch.diff,
       ) ??
       (Array.isArray(rt.messages.value) ? rt.messages.value : []).find((m) => !beforeIds.has(String(m?.id ?? ""))) ??
       null;
-    turnPatchSummaryMessageId = inserted ? String(inserted.id ?? "") : null;
+    turnPatchMessageId = inserted ? String(inserted.id ?? "") : null;
   };
 
   const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object";
@@ -592,8 +588,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         turnPatchSummaryTruncated = true;
       }
 
-      const content = buildTurnPatchSummaryContent();
-      upsertTurnPatchSummaryMessage(content);
+      const nextPatch = buildTurnPatchPayload();
+      upsertTurnPatchMessage(nextPatch);
       return;
     }
 
