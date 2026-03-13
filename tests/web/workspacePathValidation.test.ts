@@ -4,7 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { getProjectPathValidationErrorMessage, validateWorkspacePath } from "../../server/web/server/api/routes/workspacePath.js";
+import {
+  getProjectPathValidationErrorMessage,
+  resolveWorkspaceRootFromDirectory,
+  validateWorkspacePath,
+} from "../../server/web/server/api/routes/workspacePath.js";
 
 describe("web/workspacePath validation", () => {
   let tmpDir: string;
@@ -87,6 +91,61 @@ describe("web/workspacePath validation", () => {
       assert.equal(result.absolutePath, path.resolve(workspaceDir));
       assert.equal(result.resolvedPath, path.resolve(workspaceDir));
       assert.equal(result.workspaceRoot, path.resolve(workspaceDir));
+    }
+  });
+
+  it("normalizes nested directories back to git workspace root", () => {
+    fs.mkdirSync(path.join(tmpDir, ".git"));
+    const nestedDir = path.join(tmpDir, "packages", "worker");
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    const result = validateWorkspacePath({
+      candidatePath: nestedDir,
+      allowedDirs: [tmpDir],
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.resolvedPath, path.resolve(nestedDir));
+      assert.equal(result.workspaceRoot, path.resolve(tmpDir));
+    }
+    assert.equal(resolveWorkspaceRootFromDirectory(nestedDir), path.resolve(tmpDir));
+  });
+
+  it("falls back to the resolved directory when detected workspace root is outside the allow list", () => {
+    fs.mkdirSync(path.join(tmpDir, ".git"));
+    const allowedRoot = path.join(tmpDir, "sandbox");
+    const nestedDir = path.join(allowedRoot, "workspace");
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    const result = validateWorkspacePath({
+      candidatePath: nestedDir,
+      allowedDirs: [allowedRoot],
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.workspaceRoot, path.resolve(nestedDir));
+    }
+  });
+
+  it("can reject directories whose detected workspace root falls outside the allow list", () => {
+    fs.mkdirSync(path.join(tmpDir, ".git"));
+    const allowedRoot = path.join(tmpDir, "sandbox");
+    const nestedDir = path.join(allowedRoot, "workspace");
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    const result = validateWorkspacePath({
+      candidatePath: nestedDir,
+      allowedDirs: [allowedRoot],
+      allowWorkspaceRootFallback: false,
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, "not_allowed");
+      assert.equal(result.absolutePath, path.resolve(nestedDir));
+      assert.equal(result.resolvedPath, path.resolve(nestedDir));
     }
   });
 });

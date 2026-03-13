@@ -1,10 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import type { Logger } from "../../../utils/logger.js";
 import { safeParseJson } from "../../../utils/json.js";
-import { detectWorkspaceFrom } from "../../../workspace/detector.js";
-import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import { ThreadStorage } from "../../../telegram/utils/threadStorage.js";
 import { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import { deriveProjectSessionId } from "../projectSessionId.js";
@@ -20,6 +17,7 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { buildWorkspacePatch, type WorkspacePatchPayload } from "../../gitPatch.js";
 import { notifyTaskTerminalViaTelegram } from "../../taskNotifications/telegramNotifier.js";
 import { extractJsonPayload } from "../../../agents/tasks/schemas.js";
+import { validateWorkspacePath } from "../api/routes/workspacePath.js";
 import { z } from "zod";
 
 export type TaskQueueMetricName =
@@ -198,7 +196,6 @@ export function createTaskQueueManager(deps: {
   promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
 } {
   const taskContexts = new Map<string, TaskQueueContext>();
-  const allowedDirValidator = new DirectoryManager(deps.allowedDirs);
 
   const promoteQueuedTasksToPending = (ctx: TaskQueueContext): void => {
     if (!ctx.queueRunning) {
@@ -714,51 +711,28 @@ export function createTaskQueueManager(deps: {
       return deps.workspaceRoot;
     }
 
-    const absolute = path.resolve(rawWorkspace);
-    let resolved = absolute;
-    try {
-      resolved = fs.realpathSync(absolute);
-    } catch {
-      resolved = absolute;
-    }
-
-    if (!fs.existsSync(resolved)) {
-      throw new Error(`Workspace does not exist: ${resolved}`);
-    }
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(resolved);
-    } catch {
-      throw new Error(`Workspace not accessible: ${resolved}`);
-    }
-    if (!stat.isDirectory()) {
-      throw new Error(`Workspace is not a directory: ${resolved}`);
-    }
-
-    const workspaceRootCandidate = detectWorkspaceFrom(resolved);
-    let normalizedWorkspaceRoot = workspaceRootCandidate;
-    try {
-      normalizedWorkspaceRoot = fs.realpathSync(workspaceRootCandidate);
-    } catch {
-      normalizedWorkspaceRoot = workspaceRootCandidate;
-    }
-
-    if (!fs.existsSync(normalizedWorkspaceRoot)) {
-      throw new Error(`Workspace root does not exist: ${normalizedWorkspaceRoot}`);
-    }
-    try {
-      if (!fs.statSync(normalizedWorkspaceRoot).isDirectory()) {
-        throw new Error(`Workspace root is not a directory: ${normalizedWorkspaceRoot}`);
+    const validated = validateWorkspacePath({
+      candidatePath: rawWorkspace,
+      allowedDirs: deps.allowedDirs,
+      allowWorkspaceRootFallback: false,
+    });
+    if (!validated.ok) {
+      switch (validated.reason) {
+        case "missing_path":
+          return deps.workspaceRoot;
+        case "not_exists":
+          throw new Error(`Workspace does not exist: ${validated.absolutePath ?? path.resolve(rawWorkspace)}`);
+        case "not_directory":
+          throw new Error(
+            `Workspace is not a directory: ${validated.resolvedPath ?? validated.absolutePath ?? path.resolve(rawWorkspace)}`,
+          );
+        case "not_allowed":
+        default:
+          throw new Error("Workspace is not allowed");
       }
-    } catch {
-      throw new Error(`Workspace root not accessible: ${normalizedWorkspaceRoot}`);
     }
 
-    if (!allowedDirValidator.validatePath(normalizedWorkspaceRoot)) {
-      throw new Error("Workspace is not allowed");
-    }
-
-    return normalizedWorkspaceRoot;
+    return validated.workspaceRoot;
   };
 
   const resolveTaskContext = (url: URL): TaskQueueContext => {

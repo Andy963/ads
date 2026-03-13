@@ -54,6 +54,7 @@
 - `server/systemPrompt/manager.ts`：阅读（system prompt reinjection、workspace fallback、skill/soul 注入与缓存策略）。
 - `server/web/utils.ts`：重构（`deriveWebUserId()` 扩展到 48-bit 熵，并保留 legacy 32-bit 派生用于迁移）。
 - `server/web/server/ws/server.ts`：重构（WebSocket 建连时 best-effort 迁移 legacy `userId` 的 thread/cwd 状态，尽量保持“续聊/目录”体验不变）。
+- `server/web/server/ws/server.ts` / `server/web/server/taskQueue/manager.ts` / `server/web/server/api/routes/workspacePath.ts`：重构（抽取并复用共享 workspace root 归一化 helper，统一 `realpath -> detectWorkspaceFrom -> realpath` 链路；task queue 显式保留“detected root 越权即拒绝”，避免 API/WS/task-queue 三处规则漂移）。
 - `server/web/server/ws/session.ts`：重构（抽取 `parseProtocolToken()`，收敛 session/chat subprotocol token 解析重复逻辑并保持语义不变）。
 - `server/web/server/startWebServer.ts`：重构（抽取 safe send + broadcast target 判定 helper；`broadcastToSession()` 复用单次 `JSON.stringify()`；`recordToSessionHistories()` 避免构造中间数组并保持行为不变）。
 - `server/web/auth/cookies.ts`：重构（`serializeCookie()` 不再默认添加 `Secure`，避免未来 HTTP 场景误用）。
@@ -182,6 +183,7 @@
 - `docs/spec/20260313-2158-project-wide-refactor-pass-34/`：新增（前端 patch message 类型单源化 + MainChat patch 卡片状态收敛）。
 - `docs/spec/20260313-2213-project-wide-refactor-pass-35/`：新增（TaskStore 任务字段归一化 helper 收敛 + legacy row 清洗 + 回归测试补齐）。
 - `docs/spec/20260313-2335-project-wide-refactor-pass-36/`：新增（GraphNode sqlite row mapper/type alias 收敛，统一 graph CRUD 与 workspace workflow context 的节点反序列化语义）。
+- `docs/spec/20260313-2249-project-wide-refactor-pass-37/`：新增（web workspace path/root 归一化 helper 收敛，统一 API/task queue/WS metadata 的 workspace root 解析语义并补齐 nested-path 回归测试）。
 
 ### Tests
 
@@ -223,7 +225,8 @@
 - `client/src/lib/clipboard.test.ts`：新增（覆盖 clipboard 主路径、fallback 路径与 fallback 异常清理语义）。
 - `tests/graph/nodeRow.test.ts`：新增（锁定共享 `GraphNode` row mapper 的默认值、JSON/date/boolean/message id 解析与非法输入守卫）。
 - `tests/web/taskQueueRoute.test.ts`：新增（覆盖 task queue 路由 `status/metrics/run/pause`、queue disabled 与 resolve 失败分支）。
-- `tests/web/workspacePathValidation.test.ts`：新增（覆盖 workspace path 校验 helper 的 `missing/not_allowed/not_exists/not_directory/success` 语义与 projects 错误文案映射）。
+- `tests/web/workspacePathValidation.test.ts`：更新（新增 nested workspace root、fallback-to-resolved 与 strict reject 场景，锁定共享 workspace path/root helper 语义）。
+- `tests/web/taskQueueManager.test.ts`：新增（覆盖 task queue manager 对 nested workspace path 的 root 归一化，以及 detected workspace root 越权时继续拒绝的边界）。
 - `client/src/app/tasks/runHelpers.test.ts`：新增（锁定 `setTaskRunBusy()` 与 `mockSingleTaskRun()` 的状态迁移语义）。
 - `tests/web/tasksRoute-rerun-bootstrap.test.ts`：更新（新增 rerun 在 `queueRunning + all mode` 时触发一次 `promoteQueuedTasksToPending()` 的回归覆盖）。
 - `tests/scheduler/schedulerStore.test.ts`：更新（覆盖 invalid limit fallback、external id trim lookup 与 persisted invalid run status fallback）。

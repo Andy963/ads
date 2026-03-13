@@ -1,6 +1,4 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 
 import { WebSocketServer } from "ws";
 import type { RawData, WebSocket } from "ws";
@@ -9,7 +7,6 @@ import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
-import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 
 import { getStateDatabase } from "../../../state/database.js";
@@ -27,6 +24,7 @@ import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import { handlePromptMessage } from "./handlePrompt.js";
 import { handleCommandMessage } from "./handleCommand.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
+import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
@@ -83,21 +81,7 @@ export function attachWebSocketServer(deps: {
   const safeJsonSend = createSafeJsonSend(deps.logger);
 
   const normalizeWorkspaceRootForMeta = (cwd: string): string => {
-    const absolute = path.resolve(String(cwd ?? ""));
-    let resolved = absolute;
-    try {
-      resolved = fs.realpathSync(absolute);
-    } catch {
-      resolved = absolute;
-    }
-    const workspaceRootCandidate = detectWorkspaceFrom(resolved);
-    let normalized = workspaceRootCandidate;
-    try {
-      normalized = fs.realpathSync(workspaceRootCandidate);
-    } catch {
-      normalized = workspaceRootCandidate;
-    }
-    return normalized;
+    return resolveWorkspaceRootFromDirectory(cwd);
   };
 
   wss.on("error", (error) => {

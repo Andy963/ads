@@ -28,9 +28,25 @@ export type WorkspacePathValidationResult =
   | WorkspacePathValidationFailure
   | WorkspacePathValidationSuccess;
 
+function realpathOrOriginal(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return target;
+  }
+}
+
+export function resolveWorkspaceRootFromDirectory(candidatePath: string): string {
+  const absolutePath = path.resolve(String(candidatePath ?? ""));
+  const resolvedPath = realpathOrOriginal(absolutePath);
+  const workspaceRootCandidate = detectWorkspaceFrom(resolvedPath);
+  return realpathOrOriginal(workspaceRootCandidate);
+}
+
 export function validateWorkspacePath(args: {
   candidatePath: string;
   allowedDirs: string[];
+  allowWorkspaceRootFallback?: boolean;
 }): WorkspacePathValidationResult {
   const candidate = String(args.candidatePath ?? "").trim();
   if (!candidate) {
@@ -43,6 +59,7 @@ export function validateWorkspacePath(args: {
   }
 
   const directoryManager = new DirectoryManager(args.allowedDirs);
+  const allowWorkspaceRootFallback = args.allowWorkspaceRootFallback !== false;
   const absolutePath = path.resolve(candidate);
   if (!directoryManager.validatePath(absolutePath)) {
     return {
@@ -62,12 +79,7 @@ export function validateWorkspacePath(args: {
     };
   }
 
-  let resolvedPath = absolutePath;
-  try {
-    resolvedPath = fs.realpathSync(absolutePath);
-  } catch {
-    resolvedPath = absolutePath;
-  }
+  const resolvedPath = realpathOrOriginal(absolutePath);
 
   let isDirectory = false;
   try {
@@ -84,21 +96,29 @@ export function validateWorkspacePath(args: {
     };
   }
 
-  let workspaceRootCandidate = detectWorkspaceFrom(resolvedPath);
-  try {
-    workspaceRootCandidate = fs.realpathSync(workspaceRootCandidate);
-  } catch {
-    // keep detected path when realpath fails
-  }
-  if (!directoryManager.validatePath(workspaceRootCandidate)) {
-    workspaceRootCandidate = resolvedPath;
+  const workspaceRoot = resolveWorkspaceRootFromDirectory(resolvedPath);
+  if (!directoryManager.validatePath(workspaceRoot)) {
+    if (!allowWorkspaceRootFallback) {
+      return {
+        ok: false,
+        reason: "not_allowed",
+        absolutePath,
+        resolvedPath,
+      };
+    }
+    return {
+      ok: true,
+      absolutePath,
+      resolvedPath,
+      workspaceRoot: resolvedPath,
+    };
   }
 
   return {
     ok: true,
     absolutePath,
     resolvedPath,
-    workspaceRoot: workspaceRootCandidate,
+    workspaceRoot,
   };
 }
 
