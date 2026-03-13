@@ -1,6 +1,12 @@
 import { nextTick } from "vue";
 
 import { formatApiError, looksLikeNotFound } from "../lib/api_error";
+import {
+  buildModelIdStorageKey,
+  buildReasoningEffortStorageKey,
+  normalizeModelId,
+  normalizeReasoningEffort,
+} from "../lib/chatPreferences";
 
 import type { CreateTaskInput, ModelConfig, Task, TaskDetail, TaskQueueStatus } from "../api/types";
 import type { AppContext } from "./controller";
@@ -407,34 +413,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     enqueuePrompt(text, images, planner);
   };
 
-  const normalizeReasoningEffort = (value: string): string => {
-    const normalized = String(value ?? "").trim().toLowerCase();
-    if (normalized === "medium" || normalized === "high" || normalized === "xhigh") return normalized;
-    if (normalized === "low") return "medium";
-    return "high";
-  };
-
-  const normalizeModelId = (value: unknown): string => {
-    const normalized = typeof value === "string" ? value.trim() : String(value ?? "").trim();
-    return normalized || "auto";
-  };
-
-  const reasoningEffortStorageKey = (sessionId: string, chatSessionId: string): string => {
-    const sid = String(sessionId ?? "").trim() || "unknown";
-    const chat = String(chatSessionId ?? "").trim() || "main";
-    return `ads.reasoningEffort.${sid}.${chat}`;
-  };
-
-  const modelIdStorageKey = (sessionId: string, chatSessionId: string): string => {
-    const sid = String(sessionId ?? "").trim() || "unknown";
-    const chat = String(chatSessionId ?? "").trim() || "main";
-    return `ads.modelId.${sid}.${chat}`;
-  };
-
   const persistReasoningEffort = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
     if (!sessionId) return;
-    const key = reasoningEffortStorageKey(sessionId, rt.chatSessionId);
+    const key = buildReasoningEffortStorageKey(sessionId, rt.chatSessionId);
     const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
     try {
       localStorage.setItem(key, effort);
@@ -446,7 +428,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const persistModelId = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
     if (!sessionId) return;
-    const key = modelIdStorageKey(sessionId, rt.chatSessionId);
+    const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
     const modelId = normalizeModelId(rt.modelId.value);
     try {
       localStorage.setItem(key, modelId);

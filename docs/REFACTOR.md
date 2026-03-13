@@ -184,6 +184,7 @@
 - `docs/spec/20260313-2213-project-wide-refactor-pass-35/`：新增（TaskStore 任务字段归一化 helper 收敛 + legacy row 清洗 + 回归测试补齐）。
 - `docs/spec/20260313-2335-project-wide-refactor-pass-36/`：新增（GraphNode sqlite row mapper/type alias 收敛，统一 graph CRUD 与 workspace workflow context 的节点反序列化语义）。
 - `docs/spec/20260313-2249-project-wide-refactor-pass-37/`：新增（web workspace path/root 归一化 helper 收敛，统一 API/task queue/WS metadata 的 workspace root 解析语义并补齐 nested-path 回归测试）。
+- `docs/spec/20260313-2313-project-wide-refactor-pass-38/`：新增（前端 chat preference persist/restore 共享 helper 收敛，统一 `reasoningEffort` / `modelId` 的 normalize 与 localStorage key 语义）。
 
 ### Tests
 
@@ -233,6 +234,7 @@
 - `client/src/app/projectsWs/projectName.test.ts`：新增（覆盖路径 basename 推导、占位名回退与显式名称保留语义）。
 - `client/src/__tests__/ws-patch-diff-dedup.test.ts`：更新（patch WS 事件改为断言结构化 `patch` message，锁定 diff 聚合/覆盖与 execute-preview 去重语义）。
 - `client/src/__tests__/mainchat-patch-card.test.ts`：新增（覆盖 patch 卡片紧凑头部、展开收起与 truncated note 展示）。
+- `client/src/lib/chatPreferences.test.ts`：新增（覆盖 `reasoningEffort` / `modelId` normalize 与 localStorage key trim/fallback 语义）。
 - `server/skills/registryMetadata.ts`：重构（复用 `parseOptionalBooleanFlag()`；集中 `metadata.yaml` 相对路径常量，减少 path join 重复并保持 overlay 行为不变）。
 - `server/skills/creator.ts`：阅读（skill init/save/validate 逻辑；后续可考虑抽取共享 name/path 校验 helper）。
 - `server/tasks/storeImpl/taskOps.ts`：阅读（`createTask()` / `updateTask()` 内仍有字段归一化与默认值拼装重复，适合作为后续小步重构候选）。
@@ -244,6 +246,7 @@
 - `client/src/components/MainChat.vue`：修复（pending image viewer 避免同一元素上同时使用 `v-for` + `v-if`，修复 `img is not defined`/render 崩溃并稳定 `test:web`）。
 - `client/src/app/controllerTypes.ts` / `client/src/components/mainChat/types.ts` / `client/src/lib/chat_sync.ts`：重构（统一 `ChatPatch`/`ChatItem` 类型来源，减少前端消息模型重复定义）。
 - `client/src/components/MainChat.vue` / `client/src/app/projectsWs/wsMessage.ts`：重构（patch diff 改为结构化 `kind: "patch"` 卡片，并在消息收敛时清理展开状态，避免 UI state 与消息列表漂移）。
+- `client/src/app/tasks.ts` / `client/src/app/projectsWs/webSocketActions.ts` / `client/src/lib/chatPreferences.ts`：重构（统一 chat preference 的 `reasoningEffort` / `modelId` normalize 与 localStorage key 规则，避免 persist/restore 路径继续分叉）。
 - `client/src/__tests__/attachments-compact-height.test.ts`：更新（同步 `MainChat.css` 中 `attachmentsThumb` 尺寸断言，避免测试与样式漂移）。
 
 ## Refactor Opportunities (Backlog)
@@ -283,6 +286,7 @@
 - （已处理）`client/src/app/tasks/runHelpers.ts`：task/runtime 解析逻辑已收敛到 `resolveTaskRuntime()`，降低后续扩展 run 行为时的重复改动成本。
 - （已处理）`server/web/server/api/routes/tasks.ts`：create/rerun 分支共享副作用（错误提取、通知绑定、队列 promote）已收敛为 helper，降低路由内重复分支漂移风险。
 - （已处理）`client/src/app/projectsWs/projectName.ts`：占位名判定与文本归一已收敛为 helper，降低默认名规则扩展时的分支重复风险。
+- （已处理）`client/src/app/tasks.ts` / `client/src/app/projectsWs/webSocketActions.ts`：chat preference persist/restore 已统一复用 `client/src/lib/chatPreferences.ts`，降低 storage key 与 normalize 规则漂移风险。
 - （已处理）`server/workspace/detector.ts`：公开 helper 已统一走 workspace root 归一化，消除子目录入参导致的 state/spec/template 落点漂移。
 - （已处理）`server/tasks/storeImpl/{taskOps.ts,normalize.ts,mappers.ts}`：任务字段归一化已收敛为共享 helper，统一 create/update/read 的 `model` / nullable string 语义并补齐 legacy row 回归。
 - `server/storage/database.ts`：仍存在调用侧 `path.resolve()` 与 detector 内部 root 归一化双层收敛；后续可评估是否进一步内聚为单一 workspace path 解析入口，减少语义重复。
@@ -315,5 +319,5 @@
 
 - `client/src/app/`（除 `chatExecute.ts` / `chatStreaming.ts` / `taskBundleDrafts.ts` / `taskBundleDraftsState.ts` / `controller.ts` / `controllerTypes.ts` / `tasks.ts` / `tasks/localState.ts` / `tasks/selection.ts` / `tasks/reorder.ts` / `tasks/events.ts` / `tasks/notice.ts` / `tasks/runHelpers.ts` / `projectsWs/webSocketActions.ts` / `projectsWs/projectActions.ts` / `projectsWs/projectName.ts` / `projectsWs/wsMessage.ts` 外）
 - `client/src/components/`（除 `TaskDetail.vue` / `TaskBoard.vue` / `TaskList.vue` / `MainChat.vue` / `MarkdownContent.vue` / `mainChat/types.ts` / `mainChat/useCopyMessage.ts` / `LoginGate.vue` 外）
-- `client/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` / `live_activity.ts` / `markdown.ts` / `clipboard.ts` / `base64url.ts` / `dom.ts` / `viewport.ts` 外）
+- `client/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` / `live_activity.ts` / `markdown.ts` / `clipboard.ts` / `base64url.ts` / `dom.ts` / `viewport.ts` / `chatPreferences.ts` 外）
 - `client/src/__tests__/`（除 `execute-preview-queue-order.test.ts` 外）

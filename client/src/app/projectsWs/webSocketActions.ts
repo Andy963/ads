@@ -1,4 +1,10 @@
 import { AdsWebSocket } from "../../api/ws";
+import {
+  buildModelIdStorageKey,
+  buildReasoningEffortStorageKey,
+  normalizeModelId,
+  normalizeReasoningEffort,
+} from "../../lib/chatPreferences";
 
 import type { AppContext, PathValidateResponse, ProjectRuntime, ProjectTab } from "../controller";
 import type { ChatActions } from "../chat";
@@ -45,34 +51,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     ingestCommandActivity,
   } = ctx;
 
-  const normalizeReasoningEffort = (value: unknown): string => {
-    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-    if (normalized === "medium" || normalized === "high" || normalized === "xhigh") return normalized;
-    if (normalized === "low") return "medium";
-    return "high";
-  };
-
-  const normalizeModelId = (value: unknown): string => {
-    const normalized = typeof value === "string" ? value.trim() : String(value ?? "").trim();
-    return normalized || "auto";
-  };
-
-  const reasoningEffortStorageKey = (sessionId: string, chatSessionId: string): string => {
-    const sid = String(sessionId ?? "").trim() || "unknown";
-    const chat = String(chatSessionId ?? "").trim() || "main";
-    return `ads.reasoningEffort.${sid}.${chat}`;
-  };
-
-  const modelIdStorageKey = (sessionId: string, chatSessionId: string): string => {
-    const sid = String(sessionId ?? "").trim() || "unknown";
-    const chat = String(chatSessionId ?? "").trim() || "main";
-    return `ads.modelId.${sid}.${chat}`;
-  };
-
   const restoreReasoningEffort = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const key = reasoningEffortStorageKey(sessionId, rt.chatSessionId);
+    const key = buildReasoningEffortStorageKey(sessionId, rt.chatSessionId);
     try {
       const stored = localStorage.getItem(key);
       if (stored !== null) {
@@ -86,7 +68,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const restoreModelId = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const key = modelIdStorageKey(sessionId, rt.chatSessionId);
+    const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
     try {
       const stored = localStorage.getItem(key);
       if (stored !== null) {
