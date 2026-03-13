@@ -2,7 +2,7 @@
 
 本文件用于持续记录：已阅读/触达模块、可重构点（backlog）、尚未覆盖模块。每次重构落地请同步更新。
 
-最后更新：2026-03-13
+最后更新：2026-03-14
 
 ## Reviewed / Touched
 
@@ -62,6 +62,8 @@
 - `server/web/api/taskRun.ts` / `server/web/server/api/handler.ts`：阅读（web API 路由匹配/鉴权/分发顺序）。
 - `server/web/server/api/routes/attachments.ts`：阅读（图片附件上传与 raw 读取接口）。
 - `server/web/server/api/routes/{workspacePath.ts,projects.ts,paths.ts}`：重构（抽取并复用 workspace 路径校验 helper，统一 `missing/not_allowed/not_exists/not_directory` 判定并保持 projects/path-validate 路由响应语义不变）。
+- `server/web/projects/store.ts`：重构（抽取 row/field normalization helper，统一 list/get/update/upsert 的字符串与时间戳清洗语义，减少 Web Project 存储层重复实现）。
+- `server/web/server/api/routes/{projects.ts,models.ts}`：重构（路由写路径改为 `trim()` 后再校验非空，统一空白字符串处理语义并复用 model payload builder，避免 schema 通过后落库为空值）。
 - `server/web/server/api/routes/tasks/{shared.ts,tasks.ts,tasks/taskById.ts,tasks/chat.ts}`：重构（抽取并复用 task route 共享 helper：`resolveTaskContextOrSendBadRequest()` / `readJsonBodyOrSendBadRequest()`；`chat` 路由改用 `safeParse` 返回显式 `400`，避免异常冒泡）。
 - `server/web/server/api/routes/tasks.ts`：重构（抽取 create/rerun 共享副作用 helper：错误信息提取、通知绑定、`task:updated` 广播与队列 promote，减少重复分支并保持响应语义不变）。
 - `server/web/server/api/routes/schedules.ts`：重构（抽取并复用 body 读取/compile 错误处理/instruction 归一/spec 激活态组装 helper，减少 `POST/PATCH` 分支重复逻辑并保持响应语义不变）。
@@ -186,6 +188,7 @@
 - `docs/spec/20260313-2249-project-wide-refactor-pass-37/`：新增（web workspace path/root 归一化 helper 收敛，统一 API/task queue/WS metadata 的 workspace root 解析语义并补齐 nested-path 回归测试）。
 - `docs/spec/20260313-2313-project-wide-refactor-pass-38/`：新增（前端 chat preference persist/restore 共享 helper 收敛，统一 `reasoningEffort` / `modelId` 的 normalize 与 localStorage key 语义）。
 - `docs/spec/20260313-2350-project-wide-refactor-pass-40/`：新增（skill creator 内部 name/path 校验 helper 收敛，统一 skill init/save 规则来源并补齐 rollback 回归测试）。
+- `docs/spec/20260314-0018-project-wide-refactor-pass-41/`：新增（web project/model-config 写路径改为 trim 后再校验非空，并收敛 project store row normalization helper 与回归测试）。
 
 ### Tests
 
@@ -229,6 +232,8 @@
 - `tests/web/taskQueueRoute.test.ts`：新增（覆盖 task queue 路由 `status/metrics/run/pause`、queue disabled 与 resolve 失败分支）。
 - `tests/web/workspacePathValidation.test.ts`：更新（新增 nested workspace root、fallback-to-resolved 与 strict reject 场景，锁定共享 workspace path/root helper 语义）。
 - `tests/web/taskQueueManager.test.ts`：新增（覆盖 task queue manager 对 nested workspace path 的 root 归一化，以及 detected workspace root 越权时继续拒绝的边界）。
+- `tests/web/projectsOrder.test.ts`：更新（覆盖 project patch 的 trimmed field 更新与 blank-only payload 拒绝，锁定 Web Project 路由/store 的输入规范化语义）。
+- `tests/web/modelConfigRoutes.test.ts`：新增（覆盖 model-config create/patch 的 trimmed payload、未指定字段保留与 reserved/blank 输入拒绝语义）。
 - `client/src/app/tasks/runHelpers.test.ts`：新增（锁定 `setTaskRunBusy()` 与 `mockSingleTaskRun()` 的状态迁移语义）。
 - `tests/web/tasksRoute-rerun-bootstrap.test.ts`：更新（新增 rerun 在 `queueRunning + all mode` 时触发一次 `promoteQueuedTasksToPending()` 的回归覆盖）。
 - `tests/scheduler/schedulerStore.test.ts`：更新（覆盖 invalid limit fallback、external id trim lookup 与 persisted invalid run status fallback）。
@@ -238,7 +243,7 @@
 - `client/src/lib/chatPreferences.test.ts`：新增（覆盖 `reasoningEffort` / `modelId` normalize 与 localStorage key trim/fallback 语义）。
 - `server/skills/registryMetadata.ts`：重构（复用 `parseOptionalBooleanFlag()`；集中 `metadata.yaml` 相对路径常量，减少 path join 重复并保持 overlay 行为不变）。
 - `server/skills/creator.ts`：重构（抽取共享 skill name 校验与 workspace skill dir 解析 helper，统一 `initSkill()` / `saveSkillDraftFromBlock()` 规则来源并补齐 draft rollback 回归测试）。
-- `server/tasks/storeImpl/taskOps.ts`：阅读（`createTask()` / `updateTask()` 内仍有字段归一化与默认值拼装重复，适合作为后续小步重构候选）。
+- `server/tasks/storeImpl/taskOps.ts`：重构（任务写路径的字段归一化、write-once 与状态派生逻辑已收敛为共享 helper，后续新增字段时不易在 create/update 间漂移）。
 - `client/src/lib/dom.ts`：新增（共享 `isTextInputElement()`，用于 keyboard/viewport 状态判断去重；补充 `contentEditable` fallback 以兼容 jsdom 测试环境）。
 - `client/src/lib/dom.test.ts`：新增（覆盖 input/textarea/contenteditable/非文本 input 类型判定）。
 - `client/src/lib/viewport.ts`：新增（抽取 `visualViewport` 监听与 CSS vars 同步逻辑，保持行为不变）。
@@ -284,6 +289,7 @@
 - （已处理）`server/web/server/planner/taskBundleDraftStore.ts`：按 DB 实例缓存 prepared statements，减少高频草稿路径反复 prepare 的开销并降低维护复杂度。
 - （已处理）`client/src/app/tasks/notice.ts`：通知计时器清理逻辑收敛到共享 helper，减少重复代码与后续漂移风险。
 - （已处理）`server/web/server/api/routes/{projects.ts,paths.ts}`：workspace 路径校验逻辑已收敛到 `workspacePath.ts`，减少重复实现与路由间语义漂移风险。
+- （已处理）`server/web/projects/store.ts` / `server/web/server/api/routes/{projects.ts,models.ts}`：project/model-config 写路径已统一在 schema/store 边界执行 `trim + non-empty` 约束，减少“验证通过但落库为空字符串”的语义漂移。
 - （已处理）`client/src/app/tasks/runHelpers.ts`：task/runtime 解析逻辑已收敛到 `resolveTaskRuntime()`，降低后续扩展 run 行为时的重复改动成本。
 - （已处理）`server/web/server/api/routes/tasks.ts`：create/rerun 分支共享副作用（错误提取、通知绑定、队列 promote）已收敛为 helper，降低路由内重复分支漂移风险。
 - （已处理）`client/src/app/projectsWs/projectName.ts`：占位名判定与文本归一已收敛为 helper，降低默认名规则扩展时的分支重复风险。
@@ -315,7 +321,7 @@
 - `server/telegram/`（除 `utils/{threadStorage,sessionManager,urlHandler,fileHandler,imageHandler,transcriptCorrection}.ts` 外）
 - `server/types/`
 - `server/utils/`（除已列出的文件外）
-- `server/web/`（除 `utils.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/session.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/startWebServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/planner/specValidation.ts` / `server/api/routes/tasks.ts` / `server/api/routes/{workspacePath.ts,projects.ts,paths.ts}` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskQueue.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
+- `server/web/`（除 `utils.ts` / `projects/store.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/session.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/startWebServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/planner/specValidation.ts` / `server/api/routes/tasks.ts` / `server/api/routes/{workspacePath.ts,projects.ts,paths.ts,models.ts}` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskQueue.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
 - `server/workspace/`（除 `detector.ts` / `adsPaths.ts` / `service.ts` / `rulesService.ts` / `context/workflowContext/{db,types}.ts` 外）
 
 ### Frontend (`client/src/`)
