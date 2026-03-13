@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
+import { getDatabase } from "../../server/storage/database.js";
 import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { TaskStore } from "../../server/tasks/store.js";
 
@@ -263,6 +264,70 @@ describe("tasks/taskStore", () => {
     const t2 = store.createTask({ title: "B", prompt: "P2", inheritContext: true });
     assert.ok(t1.threadId);
     assert.equal(t2.threadId, t1.threadId);
+  });
+
+  it("should normalize task identity fields on create and update", () => {
+    const store = new TaskStore();
+    const parent = store.createTask({ title: "Parent", prompt: "Parent" });
+    const nextParent = store.createTask({ title: "Next Parent", prompt: "Next Parent" });
+    const created = store.createTask({
+      prompt: "Hello",
+      model: "   ",
+      agentId: "  codex  ",
+      parentTaskId: `  ${parent.id}  `,
+      threadId: "  thread-1  ",
+      createdBy: "  tester  ",
+    });
+
+    assert.equal(created.model, "auto");
+    assert.equal(created.agentId, "codex");
+    assert.equal(created.parentTaskId, parent.id);
+    assert.equal(created.threadId, "thread-1");
+    assert.equal(created.createdBy, "tester");
+
+    const updated = store.updateTask(
+      created.id,
+      {
+        model: "  gpt-5  ",
+        agentId: "   ",
+        parentTaskId: `  ${nextParent.id}  `,
+        threadId: "  thread-next  ",
+        createdBy: "  owner  ",
+        reviewSnapshotId: "  review-1  ",
+        reviewConclusion: "  passed  ",
+      },
+      Date.now(),
+    );
+
+    assert.equal(updated.model, "gpt-5");
+    assert.equal(updated.agentId, null);
+    assert.equal(updated.parentTaskId, nextParent.id);
+    assert.equal(updated.threadId, "thread-next");
+    assert.equal(updated.createdBy, "owner");
+    assert.equal(updated.reviewSnapshotId, "review-1");
+    assert.equal(updated.reviewConclusion, "passed");
+  });
+
+  it("should normalize legacy whitespace fields when reading tasks", () => {
+    const store = new TaskStore();
+    const created = store.createTask({ title: "Legacy", prompt: "Prompt" });
+    const db = getDatabase();
+
+    db.prepare(
+      `UPDATE tasks
+       SET model = ?, agent_id = ?, parent_task_id = ?, thread_id = ?, review_snapshot_id = ?, review_conclusion = ?, created_by = ?
+       WHERE id = ?`,
+    ).run("   ", "  codex  ", null, "  thread-legacy  ", "  review-legacy  ", "  done  ", "  owner  ", created.id);
+
+    const fetched = store.getTask(created.id);
+    assert.ok(fetched);
+    assert.equal(fetched.model, "auto");
+    assert.equal(fetched.agentId, "codex");
+    assert.equal(fetched.parentTaskId, null);
+    assert.equal(fetched.threadId, "thread-legacy");
+    assert.equal(fetched.reviewSnapshotId, "review-legacy");
+    assert.equal(fetched.reviewConclusion, "done");
+    assert.equal(fetched.createdBy, "owner");
   });
 
   it("should dequeue queued tasks in FIFO order and skip cancelled", () => {

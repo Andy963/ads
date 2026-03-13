@@ -1,5 +1,13 @@
 import type { Conversation, ConversationMessage, ModelConfig, Task, TaskMessage } from "../types.js";
-import { normalizeConversationStatus, normalizeRole, normalizeTaskReviewStatus, normalizeTaskStatus, parseJson } from "./normalize.js";
+import {
+  normalizeConversationStatus,
+  normalizeNullableString,
+  normalizeRole,
+  normalizeTaskModel,
+  normalizeTaskReviewStatus,
+  normalizeTaskStatus,
+  parseJson,
+} from "./normalize.js";
 
 function toNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" ? value : Number(value ?? fallback);
@@ -18,7 +26,7 @@ export function toTask(row: Record<string, unknown>): Task {
     id: String(row.id ?? ""),
     title: String(row.title ?? ""),
     prompt: String(row.prompt ?? ""),
-    model: String(row.model ?? "auto"),
+    model: normalizeTaskModel(row.model),
     modelParams: parseJson<Record<string, unknown>>(row.model_params),
     status: normalizeTaskStatus(row.status),
     priority: toNumber(row.priority),
@@ -26,23 +34,23 @@ export function toTask(row: Record<string, unknown>): Task {
     queuedAt: toNullableNumber(row.queued_at),
     promptInjectedAt: toNullableNumber(row.prompt_injected_at),
     inheritContext: Boolean(row.inherit_context),
-    agentId: row.agent_id == null ? null : (String(row.agent_id ?? "").trim() || null),
-    parentTaskId: row.parent_task_id == null ? null : String(row.parent_task_id),
-    threadId: row.thread_id == null ? null : String(row.thread_id),
+    agentId: normalizeNullableString(row.agent_id),
+    parentTaskId: normalizeNullableString(row.parent_task_id),
+    threadId: normalizeNullableString(row.thread_id),
     result: row.result == null ? null : String(row.result),
     error: row.error == null ? null : String(row.error),
     retryCount: toNumber(row.retry_count),
     maxRetries: toNumber(row.max_retries, 3),
     reviewRequired: Boolean(row.review_required),
     reviewStatus: normalizeTaskReviewStatus(row.review_status),
-    reviewSnapshotId: row.review_snapshot_id == null ? null : String(row.review_snapshot_id),
-    reviewConclusion: row.review_conclusion == null ? null : String(row.review_conclusion),
+    reviewSnapshotId: normalizeNullableString(row.review_snapshot_id),
+    reviewConclusion: normalizeNullableString(row.review_conclusion),
     reviewedAt: toNullableNumber(row.reviewed_at),
     createdAt,
     startedAt: toNullableNumber(row.started_at),
     completedAt: toNullableNumber(row.completed_at),
     archivedAt: toNullableNumber(row.archived_at),
-    createdBy: row.created_by == null ? null : String(row.created_by),
+    createdBy: normalizeNullableString(row.created_by),
   };
 }
 

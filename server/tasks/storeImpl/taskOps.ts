@@ -6,7 +6,7 @@ import type { TaskStoreStatements } from "../storeStatements.js";
 import type { CreateTaskInput, Task, TaskFilter, TaskStatus } from "../types.js";
 
 import { toTask } from "./mappers.js";
-import { normalizeTaskReviewStatus, normalizeTaskStatus } from "./normalize.js";
+import { normalizeNullableString, normalizeTaskModel, normalizeTaskReviewStatus, normalizeTaskStatus } from "./normalize.js";
 
 export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStoreStatements }) {
   const { db, stmts } = deps;
@@ -20,6 +20,44 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     const maxLen = 32;
     if (base.length <= maxLen) return base;
     return `${base.slice(0, maxLen)}…`;
+  };
+
+  const normalizeFiniteNumberOr = (value: unknown, fallback: number): number => {
+    const next = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(next) ? next : fallback;
+  };
+
+  const normalizeNullableFiniteNumber = (value: unknown): number | null => {
+    if (value == null) {
+      return null;
+    }
+    const next = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(next) ? next : null;
+  };
+
+  const normalizeTaskIdentityFields = (task: Task): void => {
+    task.model = normalizeTaskModel(task.model);
+    task.agentId = normalizeNullableString(task.agentId);
+    task.parentTaskId = normalizeNullableString(task.parentTaskId);
+    task.threadId = normalizeNullableString(task.threadId);
+    task.reviewSnapshotId = normalizeNullableString(task.reviewSnapshotId);
+    task.reviewConclusion = normalizeNullableString(task.reviewConclusion);
+    task.createdBy = normalizeNullableString(task.createdBy);
+  };
+
+  const resolveThreadId = (input: CreateTaskInput, taskId: string, inheritContext: boolean): string => {
+    const provided = normalizeNullableString(input.threadId);
+    if (provided) {
+      return provided;
+    }
+    if (inheritContext) {
+      const row = stmts.selectMostRecentThreadIdStmt.get() as { thread_id?: string } | undefined;
+      const inherited = normalizeNullableString(row?.thread_id);
+      if (inherited) {
+        return inherited;
+      }
+    }
+    return `conv-${taskId}`;
   };
 
   const getTask = (id: string): Task | null => {
@@ -45,10 +83,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     const title = rawTitle || deriveTaskTitle(prompt);
 
     const inheritContext = Boolean(input.inheritContext);
-    const agentId = (() => {
-      const raw = input.agentId == null ? "" : String(input.agentId).trim();
-      return raw || null;
-    })();
+    const agentId = normalizeNullableString(input.agentId);
 
     const queueOrderRow = stmts.selectNextQueueOrderStmt.get() as { next?: number } | undefined;
     const nextQueueOrder =
@@ -67,7 +102,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       id,
       title,
       prompt,
-      model: (input.model ?? "auto").trim() || "auto",
+      model: normalizeTaskModel(input.model),
       modelParams: input.modelParams ?? null,
       status,
       priority: typeof input.priority === "number" ? input.priority : 0,
@@ -76,21 +111,8 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       promptInjectedAt: null,
       inheritContext,
       agentId,
-      parentTaskId: input.parentTaskId ?? null,
-      threadId: (() => {
-        const provided = input.threadId == null ? "" : String(input.threadId).trim();
-        if (provided) {
-          return provided;
-        }
-        if (inheritContext) {
-          const row = stmts.selectMostRecentThreadIdStmt.get() as { thread_id?: string } | undefined;
-          const inherited = row?.thread_id == null ? "" : String(row.thread_id).trim();
-          if (inherited) {
-            return inherited;
-          }
-        }
-        return `conv-${id}`;
-      })(),
+      parentTaskId: normalizeNullableString(input.parentTaskId),
+      threadId: resolveThreadId(input, id, inheritContext),
       result: null,
       error: null,
       retryCount: 0,
@@ -104,8 +126,9 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       startedAt: null,
       completedAt: null,
       archivedAt: status === "completed" && !reviewRequired ? now : null,
-      createdBy: input.createdBy ?? null,
+      createdBy: normalizeNullableString(input.createdBy),
     };
+    normalizeTaskIdentityFields(task);
 
     stmts.insertTaskStmt.run(
       task.id,
@@ -191,22 +214,15 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     merged.inheritContext = Boolean(merged.inheritContext);
     merged.reviewRequired = Boolean(merged.reviewRequired);
     merged.reviewStatus = normalizeTaskReviewStatus(merged.reviewStatus);
-    merged.agentId = (() => {
-      const raw = merged.agentId == null ? "" : String(merged.agentId).trim();
-      return raw || null;
-    })();
+    normalizeTaskIdentityFields(merged);
     // promptInjectedAt is a write-once field controlled by markPromptInjected().
     merged.promptInjectedAt = existing.promptInjectedAt ?? null;
-    merged.priority = Number.isFinite(merged.priority) ? merged.priority : existing.priority;
-    merged.queueOrder = Number.isFinite(merged.queueOrder) ? merged.queueOrder : existing.queueOrder;
-    merged.queuedAt =
-      merged.queuedAt != null && Number.isFinite(merged.queuedAt) ? merged.queuedAt : (existing.queuedAt ?? null);
-    merged.retryCount = Number.isFinite(merged.retryCount) ? merged.retryCount : existing.retryCount;
-    merged.maxRetries = Number.isFinite(merged.maxRetries) ? merged.maxRetries : existing.maxRetries;
-    merged.reviewSnapshotId = merged.reviewSnapshotId == null ? null : String(merged.reviewSnapshotId);
-    merged.reviewConclusion = merged.reviewConclusion == null ? null : String(merged.reviewConclusion);
-    merged.reviewedAt =
-      merged.reviewedAt != null && Number.isFinite(merged.reviewedAt) ? merged.reviewedAt : (existing.reviewedAt ?? null);
+    merged.priority = normalizeFiniteNumberOr(merged.priority, existing.priority);
+    merged.queueOrder = normalizeFiniteNumberOr(merged.queueOrder, existing.queueOrder);
+    merged.queuedAt = normalizeNullableFiniteNumber(merged.queuedAt) ?? (existing.queuedAt ?? null);
+    merged.retryCount = normalizeFiniteNumberOr(merged.retryCount, existing.retryCount);
+    merged.maxRetries = normalizeFiniteNumberOr(merged.maxRetries, existing.maxRetries);
+    merged.reviewedAt = normalizeNullableFiniteNumber(merged.reviewedAt) ?? (existing.reviewedAt ?? null);
 
     if (!String(merged.title ?? "").trim()) {
       const prompt = String(merged.prompt ?? "");

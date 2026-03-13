@@ -89,6 +89,7 @@
 - `server/utils/activityTracker/text.ts`：重构（`safeJsonParse()` 改为代理到 `safeParseJson()`，收敛 JSON parse 语义）。
 - `server/tasks/storeImpl/normalize.ts`：重构（`parseJson()` 改为代理到 `safeParseJsonFromUnknown()`，删除本地重复实现）。
 - `server/tasks/storeImpl/taskOps.ts`：修复（`reorderPendingTasks()` 对传入 ids 做 pending 集合校验，避免静默部分重排）。
+- `server/tasks/storeImpl/{normalize.ts,mappers.ts,taskOps.ts}`：重构（收敛任务身份字段归一化 helper，统一 create/update/read 的 `model` 与 nullable string 语义，并清洗 legacy row）。
 - `server/tasks/storeImpl/{mappers.ts,conversationOps.ts,modelConfigOps.ts}`：重构（抽取并复用 Conversation/ModelConfig row mapper，收敛重复字段转换逻辑并保持行为不变）。
 - `server/tasks/store_impl.ts`：阅读（TaskStore facade 与 purge 逻辑）。
 - `server/audio/transcription.ts`：重构（一次 `transcribeAudioBuffer()` 调用内只 discovery skills 一次，并复用 lookup；临时音频文件名改用 `crypto.randomUUID()` 以降低碰撞概率）。
@@ -176,6 +177,8 @@
 - `docs/spec/20260304-0011-project-wide-refactor-pass-32/`：新增（CSV 解析 helper 收敛 + app controller computed proxy 去重 + 测试补齐）。
 - `docs/spec/20260313-2142-workspace-detector-root-normalization/`：新增（workspace detector 公开 helper 统一归一到 workspace root，避免子目录 state/spec/templates 漂移）。
 - `docs/spec/20260313-2142-project-wide-refactor-pass-33/`：新增（scheduler store 内部归一化 helper 收敛 + scheduler store 回归测试补齐）。
+- `docs/spec/20260313-2158-project-wide-refactor-pass-34/`：新增（前端 patch message 类型单源化 + MainChat patch 卡片状态收敛）。
+- `docs/spec/20260313-2213-project-wide-refactor-pass-35/`：新增（TaskStore 任务字段归一化 helper 收敛 + legacy row 清洗 + 回归测试补齐）。
 
 ### Tests
 
@@ -195,7 +198,7 @@
 - `tests/memory/soul.test.ts`：更新（补齐 Preferences section 后仍有其他 section 时的内容保留覆盖）。
 - `client/src/__tests__/execute-preview-queue-order.test.ts`：新增（覆盖 leading newlines 场景下 execute preview `$ <command>` 回显剥离）。
 - `client/src/lib/base64url.test.ts`：新增（覆盖 ASCII/UTF-8/超 chunk size 输入的 base64url 编码语义）。
-- `tests/tasks/taskStore.test.ts`：更新（新增 `reorderPendingTasks()` 拒绝非 pending id 覆盖；新增 model config upsert/list 映射回归覆盖）。
+- `tests/tasks/taskStore.test.ts`：更新（新增 `reorderPendingTasks()` 拒绝非 pending id 覆盖；新增 model config upsert/list 映射回归覆盖；补齐 task identity 字段 create/update 归一化与 legacy row 清洗回归）。
 - `tests/agents/claudeCliAdapter.test.ts`：更新（覆盖 Claude CLI `session_id` 捕获与 `--resume` 复用、in-flight reset 的延迟生效；并锁定 prompt 参数字节级传递语义）。
 - `tests/agents/geminiCliAdapter.test.ts`：新增（锁定 `--prompt` 参数字节级传递语义，覆盖 mixed `local_image` + trailing whitespace）。
 - `tests/agents/preferencesFlow.test.ts`：更新（新增 `invokeAgent()` 路径的 preference directives 保存/清洗覆盖）。
@@ -221,6 +224,8 @@
 - `tests/web/tasksRoute-rerun-bootstrap.test.ts`：更新（新增 rerun 在 `queueRunning + all mode` 时触发一次 `promoteQueuedTasksToPending()` 的回归覆盖）。
 - `tests/scheduler/schedulerStore.test.ts`：更新（覆盖 invalid limit fallback、external id trim lookup 与 persisted invalid run status fallback）。
 - `client/src/app/projectsWs/projectName.test.ts`：新增（覆盖路径 basename 推导、占位名回退与显式名称保留语义）。
+- `client/src/__tests__/ws-patch-diff-dedup.test.ts`：更新（patch WS 事件改为断言结构化 `patch` message，锁定 diff 聚合/覆盖与 execute-preview 去重语义）。
+- `client/src/__tests__/mainchat-patch-card.test.ts`：新增（覆盖 patch 卡片紧凑头部、展开收起与 truncated note 展示）。
 - `server/skills/registryMetadata.ts`：重构（复用 `parseOptionalBooleanFlag()`；集中 `metadata.yaml` 相对路径常量，减少 path join 重复并保持 overlay 行为不变）。
 - `server/skills/creator.ts`：阅读（skill init/save/validate 逻辑；后续可考虑抽取共享 name/path 校验 helper）。
 - `server/tasks/storeImpl/taskOps.ts`：阅读（`createTask()` / `updateTask()` 内仍有字段归一化与默认值拼装重复，适合作为后续小步重构候选）。
@@ -230,6 +235,8 @@
 - `client/src/main.ts`：重构（入口文件仅保留 app mount + 调用 `installViewportCssVars()`，降低维护成本）。
 - `client/src/components/LoginGate.vue`：重构（复用 `isTextInputElement()`，去除重复的 activeElement 类型判断）。
 - `client/src/components/MainChat.vue`：修复（pending image viewer 避免同一元素上同时使用 `v-for` + `v-if`，修复 `img is not defined`/render 崩溃并稳定 `test:web`）。
+- `client/src/app/controllerTypes.ts` / `client/src/components/mainChat/types.ts` / `client/src/lib/chat_sync.ts`：重构（统一 `ChatPatch`/`ChatItem` 类型来源，减少前端消息模型重复定义）。
+- `client/src/components/MainChat.vue` / `client/src/app/projectsWs/wsMessage.ts`：重构（patch diff 改为结构化 `kind: "patch"` 卡片，并在消息收敛时清理展开状态，避免 UI state 与消息列表漂移）。
 - `client/src/__tests__/attachments-compact-height.test.ts`：更新（同步 `MainChat.css` 中 `attachmentsThumb` 尺寸断言，避免测试与样式漂移）。
 
 ## Refactor Opportunities (Backlog)
@@ -258,6 +265,7 @@
 - （已处理）`server/web/server/api/routes/schedules.ts`：收敛 `POST/PATCH` 的 body 解析、compile 错误处理与 spec 激活态组装，降低重复分支漂移风险。
 - （已处理）`server/web/server/api/routes/taskQueue.ts`：收敛 `resolveTaskContext` 错误处理与 queue status payload 组装，降低 `status/run/pause` 分支重复实现风险。
 - （已处理）`client/src/lib/chat_sync.ts`：overlap 检测改为 key-based 匹配，降低历史合并复杂度并保持语义稳定。
+- `client/src/components/TaskDetail.vue` / `client/src/lib/patch_message.ts`：任务详情仍依赖 markdown heuristic 识别 patch；若后续要统一 patch 展示/复制策略，建议复用结构化 `ChatPatch` 模型，避免主聊天与任务详情的 patch 识别规则继续分叉。
 - （已处理）`server/web/taskNotifications/{store.ts,telegramNotifier.ts}`：终态状态来源、数值归一化与发送侧判定收敛，降低 store/notifier 规则漂移风险。
 - （已处理）`client/src/lib/live_activity.ts`：类别映射与命令绑定查找逻辑收敛到 helper，降低分支膨胀与后续维护成本。
 - （已处理）`server/workspace/adsPaths.ts`：legacy backfill 复制流程改为映射式 helper，减少规则扩展时的重复样板与漏改风险。
@@ -269,7 +277,7 @@
 - （已处理）`server/web/server/api/routes/tasks.ts`：create/rerun 分支共享副作用（错误提取、通知绑定、队列 promote）已收敛为 helper，降低路由内重复分支漂移风险。
 - （已处理）`client/src/app/projectsWs/projectName.ts`：占位名判定与文本归一已收敛为 helper，降低默认名规则扩展时的分支重复风险。
 - （已处理）`server/workspace/detector.ts`：公开 helper 已统一走 workspace root 归一化，消除子目录入参导致的 state/spec/template 落点漂移。
-- `server/tasks/storeImpl/taskOps.ts`：`createTask()` / `updateTask()` 仍重复处理 trimmed string、nullable field、queue/archive 时间戳默认值；建议下一轮抽取 task field normalization helper，保持 `TaskStore` API 不变。
+- （已处理）`server/tasks/storeImpl/{taskOps.ts,normalize.ts,mappers.ts}`：任务字段归一化已收敛为共享 helper，统一 create/update/read 的 `model` / nullable string 语义并补齐 legacy row 回归。
 - `server/storage/database.ts`：仍存在调用侧 `path.resolve()` 与 detector 内部 root 归一化双层收敛；后续可评估是否进一步内聚为单一 workspace path 解析入口，减少语义重复。
 - （部分处理）`client/src/App.vue`：已移除 viewport height 同步与 queued prompt mapping 重复逻辑；仍建议按域拆分 composables（`useProjectsUi()` / `useDraftsUi()` / `useTaskUi()`）并将对话/队列侧栏拆成子组件，降低耦合与重渲染风险。
 
@@ -298,7 +306,7 @@
 
 ### Frontend (`client/src/`)
 
-- `client/src/app/`（除 `chatExecute.ts` / `chatStreaming.ts` / `taskBundleDrafts.ts` / `taskBundleDraftsState.ts` / `controller.ts` / `tasks.ts` / `tasks/localState.ts` / `tasks/selection.ts` / `tasks/reorder.ts` / `tasks/events.ts` / `tasks/notice.ts` / `tasks/runHelpers.ts` / `projectsWs/webSocketActions.ts` / `projectsWs/projectActions.ts` / `projectsWs/projectName.ts` / `projectsWs/wsMessage.ts` 外）
-- `client/src/components/`（除 `TaskDetail.vue` / `TaskBoard.vue` / `TaskList.vue` / `MainChat.vue` / `MarkdownContent.vue` / `mainChat/useCopyMessage.ts` / `LoginGate.vue` 外）
+- `client/src/app/`（除 `chatExecute.ts` / `chatStreaming.ts` / `taskBundleDrafts.ts` / `taskBundleDraftsState.ts` / `controller.ts` / `controllerTypes.ts` / `tasks.ts` / `tasks/localState.ts` / `tasks/selection.ts` / `tasks/reorder.ts` / `tasks/events.ts` / `tasks/notice.ts` / `tasks/runHelpers.ts` / `projectsWs/webSocketActions.ts` / `projectsWs/projectActions.ts` / `projectsWs/projectName.ts` / `projectsWs/wsMessage.ts` 外）
+- `client/src/components/`（除 `TaskDetail.vue` / `TaskBoard.vue` / `TaskList.vue` / `MainChat.vue` / `MarkdownContent.vue` / `mainChat/types.ts` / `mainChat/useCopyMessage.ts` / `LoginGate.vue` 外）
 - `client/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` / `live_activity.ts` / `markdown.ts` / `clipboard.ts` / `base64url.ts` / `dom.ts` / `viewport.ts` 外）
 - `client/src/__tests__/`（除 `execute-preview-queue-order.test.ts` 外）

@@ -6,6 +6,18 @@ export function parseJson<T>(raw: unknown): T | null {
   return safeParseJsonFromUnknown<T>(raw);
 }
 
+export function normalizeNullableString(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+  const raw = String(value).trim();
+  return raw || null;
+}
+
+export function normalizeTaskModel(value: unknown): string {
+  return normalizeNullableString(value) ?? "auto";
+}
+
 export function normalizeTaskStatus(value: unknown): TaskStatus {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   switch (raw) {
