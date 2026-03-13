@@ -63,6 +63,12 @@ function makeTempWorkspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-cjk-"));
 }
 
+function enableWorkspaceSkills(workspaceRoot: string): void {
+  const skillsRoot = path.join(workspaceRoot, ".agent", "skills");
+  fs.mkdirSync(skillsRoot, { recursive: true });
+  fs.writeFileSync(path.join(skillsRoot, "metadata.yaml"), "enabled: true\n", "utf8");
+}
+
 function writeSkill(workspaceRoot: string, name: string, description: string): void {
   const skillDir = path.join(workspaceRoot, ".agent", "skills", name);
   fs.mkdirSync(skillDir, { recursive: true });
@@ -74,6 +80,7 @@ function writeSkill(workspaceRoot: string, name: string, description: string): v
 describe("agents/orchestrator skill autoload (CJK)", () => {
   it("infers requested skills from CJK keywords", async () => {
     const workspaceRoot = makeTempWorkspace();
+    enableWorkspaceSkills(workspaceRoot);
     writeSkill(workspaceRoot, "spec-wizard", "猫咪需求生成spec");
     writeSkill(workspaceRoot, "spec-to-task", "猫咪转换成任务");
 
