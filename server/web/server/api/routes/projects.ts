@@ -19,6 +19,8 @@ import {
 } from "../../../projects/store.js";
 import { getProjectPathValidationErrorMessage, validateWorkspacePath } from "./workspacePath.js";
 
+const trimmedNonEmptyString = z.string().trim().min(1);
+
 type ProjectsResponse = {
   projects: ReturnType<typeof listWebProjects>;
   activeProjectId: string | null;
@@ -42,7 +44,7 @@ export async function handleProjectRoutes(
 
   if (req.method === "POST" && pathname === "/api/projects") {
     const body = await readJsonBody(req);
-    const schema = z.object({ path: z.string().min(1), name: z.string().optional() }).passthrough();
+    const schema = z.object({ path: trimmedNonEmptyString, name: trimmedNonEmptyString.optional() }).passthrough();
     const parsed = schema.safeParse(body ?? {});
     if (!parsed.success) {
       sendJson(res, 400, { error: "Invalid payload" });
@@ -78,14 +80,14 @@ export async function handleProjectRoutes(
 
   if (req.method === "POST" && pathname === "/api/projects/reorder") {
     const body = await readJsonBody(req);
-    const schema = z.object({ ids: z.array(z.string().min(1)) }).passthrough();
+    const schema = z.object({ ids: z.array(trimmedNonEmptyString) }).passthrough();
     const parsed = schema.safeParse(body ?? {});
     if (!parsed.success) {
       sendJson(res, 400, { error: "Invalid payload" });
       return true;
     }
 
-    const ids = parsed.data.ids.map((id) => String(id ?? "").trim()).filter(Boolean);
+    const ids = parsed.data.ids;
 
     const db = getStateDatabase();
     ensureWebAuthTables(db);
@@ -127,14 +129,14 @@ export async function handleProjectRoutes(
 
   if (req.method === "PATCH" && pathname === "/api/projects/active") {
     const body = await readJsonBody(req);
-    const schema = z.object({ projectId: z.string().min(1).nullable() }).passthrough();
+    const schema = z.object({ projectId: trimmedNonEmptyString.nullable() }).passthrough();
     const parsed = schema.safeParse(body ?? {});
     if (!parsed.success) {
       sendJson(res, 400, { error: "Invalid payload" });
       return true;
     }
 
-    const projectId = parsed.data.projectId == null ? null : String(parsed.data.projectId).trim();
+    const projectId = parsed.data.projectId;
     const db = getStateDatabase();
     ensureWebAuthTables(db);
     ensureWebProjectTables(db);
@@ -153,8 +155,8 @@ export async function handleProjectRoutes(
     const body = await readJsonBody(req);
     const schema = z
       .object({
-        name: z.string().min(1).optional(),
-        chatSessionId: z.string().min(1).optional(),
+        name: trimmedNonEmptyString.optional(),
+        chatSessionId: trimmedNonEmptyString.optional(),
       })
       .passthrough();
     const parsed = schema.safeParse(body ?? {});

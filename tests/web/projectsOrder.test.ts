@@ -56,8 +56,8 @@ function createRes(): FakeRes {
   };
 }
 
-function parseJson(body: string): unknown {
-  return body ? (JSON.parse(body) as unknown) : null;
+function parseJson<T>(body: string): T {
+  return JSON.parse(body) as T;
 }
 
 describe("web/projects ordering", () => {
@@ -186,5 +186,93 @@ describe("web/projects ordering", () => {
       ["p3", "p1", "p2"],
     );
   });
-});
 
+  it("PATCH /api/projects/:id updates trimmed fields and preserves project metadata", async () => {
+    const db = getStateDatabase();
+    ensureWebAuthTables(db);
+    ensureWebProjectTables(db);
+
+    db.prepare(
+      `INSERT INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run("u", "u", "x", 1, 1);
+
+    const created = upsertWebProject(
+      db,
+      {
+        userId: "u",
+        projectId: "p1",
+        workspaceRoot: "/workspace/demo",
+        name: "Demo",
+        chatSessionId: "main",
+      },
+      10,
+    );
+
+    const patchReq = createReq("PATCH", { name: "  Renamed Demo  ", chatSessionId: "  review-session  " });
+    const patchRes = createRes();
+    const handled = await handleProjectRoutes(
+      {
+        req: patchReq as any,
+        res: patchRes as any,
+        url: new URL("http://localhost/api/projects/p1"),
+        pathname: "/api/projects/p1",
+        auth: { userId: "u", username: "u" },
+      } as any,
+      { allowedDirs: [] },
+    );
+    assert.equal(handled, true);
+    assert.equal(patchRes.statusCode, 200);
+
+    const payload = parseJson<{
+      success: boolean;
+      project: { id: string; workspaceRoot: string; name: string; chatSessionId: string; createdAt: number };
+    }>(patchRes.body);
+    assert.equal(payload.success, true);
+    assert.equal(payload.project.id, created.id);
+    assert.equal(payload.project.workspaceRoot, created.workspaceRoot);
+    assert.equal(payload.project.name, "Renamed Demo");
+    assert.equal(payload.project.chatSessionId, "review-session");
+    assert.equal(payload.project.createdAt, created.createdAt);
+
+    const listed = listWebProjects(db, "u");
+    assert.equal(listed[0]?.name, "Renamed Demo");
+    assert.equal(listed[0]?.chatSessionId, "review-session");
+  });
+
+  it("PATCH /api/projects/:id rejects blank-only fields after trim", async () => {
+    const db = getStateDatabase();
+    ensureWebAuthTables(db);
+    ensureWebProjectTables(db);
+
+    db.prepare(
+      `INSERT INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run("u", "u", "x", 1, 1);
+
+    upsertWebProject(
+      db,
+      {
+        userId: "u",
+        projectId: "p1",
+        workspaceRoot: "/workspace/demo",
+        name: "Demo",
+        chatSessionId: "main",
+      },
+      10,
+    );
+
+    const patchRes = createRes();
+    const handled = await handleProjectRoutes(
+      {
+        req: createReq("PATCH", { name: "   " }) as any,
+        res: patchRes as any,
+        url: new URL("http://localhost/api/projects/p1"),
+        pathname: "/api/projects/p1",
+        auth: { userId: "u", username: "u" },
+      } as any,
+      { allowedDirs: [] },
+    );
+    assert.equal(handled, true);
+    assert.equal(patchRes.statusCode, 400);
+    assert.deepEqual(parseJson<{ error: string }>(patchRes.body), { error: "Invalid payload" });
+  });
+});

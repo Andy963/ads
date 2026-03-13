@@ -103,6 +103,37 @@ export function normalizeSkillName(raw: string): string {
   return normalized;
 }
 
+function assertValidSkillName(skillName: string): string {
+  if (!skillName) {
+    throw new Error("Skill name becomes empty after normalization.");
+  }
+  if (skillName.length > MAX_SKILL_NAME_LENGTH) {
+    throw new Error(`Skill name is too long (${skillName.length}). Maximum is ${MAX_SKILL_NAME_LENGTH}.`);
+  }
+  if (!/^[a-z0-9-]+$/.test(skillName) || skillName.includes("--") || skillName.startsWith("-") || skillName.endsWith("-")) {
+    throw new Error(`Invalid skill name: ${skillName}`);
+  }
+  return skillName;
+}
+
+function normalizeValidatedSkillName(rawName: string): string {
+  return assertValidSkillName(normalizeSkillName(rawName));
+}
+
+function resolveSkillDirectory(workspaceRootInput: string, skillName: string): {
+  workspaceRoot: string;
+  skillsRoot: string;
+  skillDir: string;
+} {
+  const workspaceRoot = path.resolve(workspaceRootInput);
+  const skillsRoot = path.join(workspaceRoot, ".agent", "skills");
+  const skillDir = path.join(skillsRoot, skillName);
+  if (!skillDir.startsWith(`${skillsRoot}${path.sep}`) && skillDir !== skillsRoot) {
+    throw new Error("Skill path escapes workspace skills root.");
+  }
+  return { workspaceRoot, skillsRoot, skillDir };
+}
+
 export function titleCaseSkillName(skillName: string): string {
   return skillName
     .split("-")
@@ -142,24 +173,8 @@ export function initSkill(params: InitSkillParams): InitSkillResult {
     throw new Error("Skill name is required.");
   }
 
-  const skillName = normalizeSkillName(rawName);
-  if (!skillName) {
-    throw new Error("Skill name becomes empty after normalization.");
-  }
-  if (skillName.length > MAX_SKILL_NAME_LENGTH) {
-    throw new Error(`Skill name is too long (${skillName.length}). Maximum is ${MAX_SKILL_NAME_LENGTH}.`);
-  }
-  if (!/^[a-z0-9-]+$/.test(skillName) || skillName.includes("--") || skillName.startsWith("-") || skillName.endsWith("-")) {
-    throw new Error(`Invalid skill name: ${skillName}`);
-  }
-
-  const workspaceRoot = path.resolve(params.workspaceRoot);
-  const skillsRoot = path.join(workspaceRoot, ".agent", "skills");
-  const skillDir = path.join(skillsRoot, skillName);
-
-  if (!skillDir.startsWith(`${skillsRoot}${path.sep}`) && skillDir !== skillsRoot) {
-    throw new Error("Skill path escapes workspace skills root.");
-  }
+  const skillName = normalizeValidatedSkillName(rawName);
+  const { skillDir } = resolveSkillDirectory(params.workspaceRoot, skillName);
 
   if (fs.existsSync(skillDir)) {
     throw new Error(`Skill directory already exists: ${skillDir}`);
@@ -306,23 +321,8 @@ export function validateSkillDirectory(skillDir: string): ValidateSkillResult {
 }
 
 export function saveSkillDraftFromBlock(params: SaveSkillDraftParams): SavedSkillDraft {
-  const workspaceRoot = path.resolve(params.workspaceRoot);
-  const normalizedName = normalizeSkillName(params.name);
-  if (!normalizedName) {
-    throw new Error("Skill name becomes empty after normalization.");
-  }
-  if (!/^[a-z0-9-]+$/.test(normalizedName) || normalizedName.includes("--") || normalizedName.startsWith("-") || normalizedName.endsWith("-")) {
-    throw new Error(`Invalid skill name: ${normalizedName}`);
-  }
-  if (normalizedName.length > MAX_SKILL_NAME_LENGTH) {
-    throw new Error(`Skill name is too long (${normalizedName.length}). Maximum is ${MAX_SKILL_NAME_LENGTH}.`);
-  }
-
-  const skillsRoot = path.join(workspaceRoot, ".agent", "skills");
-  const skillDir = path.join(skillsRoot, normalizedName);
-  if (!skillDir.startsWith(`${skillsRoot}${path.sep}`) && skillDir !== skillsRoot) {
-    throw new Error("Skill path escapes workspace skills root.");
-  }
+  const normalizedName = normalizeValidatedSkillName(params.name);
+  const { skillDir } = resolveSkillDirectory(params.workspaceRoot, normalizedName);
 
   fs.mkdirSync(skillDir, { recursive: true });
 

@@ -185,6 +185,7 @@
 - `docs/spec/20260313-2335-project-wide-refactor-pass-36/`：新增（GraphNode sqlite row mapper/type alias 收敛，统一 graph CRUD 与 workspace workflow context 的节点反序列化语义）。
 - `docs/spec/20260313-2249-project-wide-refactor-pass-37/`：新增（web workspace path/root 归一化 helper 收敛，统一 API/task queue/WS metadata 的 workspace root 解析语义并补齐 nested-path 回归测试）。
 - `docs/spec/20260313-2313-project-wide-refactor-pass-38/`：新增（前端 chat preference persist/restore 共享 helper 收敛，统一 `reasoningEffort` / `modelId` 的 normalize 与 localStorage key 语义）。
+- `docs/spec/20260313-2350-project-wide-refactor-pass-40/`：新增（skill creator 内部 name/path 校验 helper 收敛，统一 skill init/save 规则来源并补齐 rollback 回归测试）。
 
 ### Tests
 
@@ -236,7 +237,7 @@
 - `client/src/__tests__/mainchat-patch-card.test.ts`：新增（覆盖 patch 卡片紧凑头部、展开收起与 truncated note 展示）。
 - `client/src/lib/chatPreferences.test.ts`：新增（覆盖 `reasoningEffort` / `modelId` normalize 与 localStorage key trim/fallback 语义）。
 - `server/skills/registryMetadata.ts`：重构（复用 `parseOptionalBooleanFlag()`；集中 `metadata.yaml` 相对路径常量，减少 path join 重复并保持 overlay 行为不变）。
-- `server/skills/creator.ts`：阅读（skill init/save/validate 逻辑；后续可考虑抽取共享 name/path 校验 helper）。
+- `server/skills/creator.ts`：重构（抽取共享 skill name 校验与 workspace skill dir 解析 helper，统一 `initSkill()` / `saveSkillDraftFromBlock()` 规则来源并补齐 draft rollback 回归测试）。
 - `server/tasks/storeImpl/taskOps.ts`：阅读（`createTask()` / `updateTask()` 内仍有字段归一化与默认值拼装重复，适合作为后续小步重构候选）。
 - `client/src/lib/dom.ts`：新增（共享 `isTextInputElement()`，用于 keyboard/viewport 状态判断去重；补充 `contentEditable` fallback 以兼容 jsdom 测试环境）。
 - `client/src/lib/dom.test.ts`：新增（覆盖 input/textarea/contenteditable/非文本 input 类型判定）。
@@ -289,7 +290,9 @@
 - （已处理）`client/src/app/tasks.ts` / `client/src/app/projectsWs/webSocketActions.ts`：chat preference persist/restore 已统一复用 `client/src/lib/chatPreferences.ts`，降低 storage key 与 normalize 规则漂移风险。
 - （已处理）`server/workspace/detector.ts`：公开 helper 已统一走 workspace root 归一化，消除子目录入参导致的 state/spec/template 落点漂移。
 - （已处理）`server/tasks/storeImpl/{taskOps.ts,normalize.ts,mappers.ts}`：任务字段归一化已收敛为共享 helper，统一 create/update/read 的 `model` / nullable string 语义并补齐 legacy row 回归。
+- （已处理）`server/skills/creator.ts`：skill name 校验与 workspace skill dir 解析已收敛到共享 helper，避免 `initSkill()` / `saveSkillDraftFromBlock()` 继续各自维护一份规则。
 - `server/storage/database.ts`：仍存在调用侧 `path.resolve()` 与 detector 内部 root 归一化双层收敛；后续可评估是否进一步内聚为单一 workspace path 解析入口，减少语义重复。
+- `server/skills/builtin/skill-creator/scripts/init-skill.ts`：仍保留与 `server/skills/creator.ts` 相近的 name/template 初始化语义；后续如要继续轻量化 skill 体系，可评估是否复用同一实现或明确拆分边界。
 - （部分处理）`client/src/App.vue`：已移除 viewport height 同步与 queued prompt mapping 重复逻辑；仍建议按域拆分 composables（`useProjectsUi()` / `useDraftsUi()` / `useTaskUi()`）并将对话/队列侧栏拆成子组件，降低耦合与重渲染风险。
 
 ### Performance
