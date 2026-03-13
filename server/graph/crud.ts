@@ -1,6 +1,6 @@
 import { getDatabase } from "../storage/database.js";
-import { parseOptionalSqliteInt, parseSqliteBoolean, parseSqliteJsonObject } from "../utils/sqlite.js";
 import type { GraphNode, GraphEdge } from "./types.js";
+import { mapNodeRow, normalizeNodeRow, normalizeSqlDate, type SqlDateValue } from "./nodeRow.js";
 
 interface CreateNodeInput {
   id: string;
@@ -15,29 +15,6 @@ interface CreateNodeInput {
 
 type NodeUpdateInput = Record<string, unknown>;
 
-type SqlDateValue = string | number | Date | null | undefined;
-
-export interface NodeRow {
-  id: string;
-  type: string;
-  label: string;
-  content?: string | null;
-  metadata?: string | Record<string, unknown> | null;
-  position?: string | Record<string, unknown> | null;
-  current_version?: number | null;
-  draft_content?: string | null;
-  draft_source_type?: string | null;
-  draft_conversation_id?: string | null;
-  draft_message_id?: number | string | null;
-  draft_based_on_version?: number | null;
-  draft_ai_original_content?: string | null;
-  draft_updated_at?: SqlDateValue;
-  is_draft?: number | boolean | null;
-  created_at?: SqlDateValue;
-  updated_at?: SqlDateValue;
-  workspace_id?: number | null;
-}
-
 interface EdgeRow {
   id: string;
   source: string;
@@ -49,26 +26,6 @@ interface EdgeRow {
   animated?: number | boolean | null;
   created_at?: SqlDateValue;
   updated_at?: SqlDateValue;
-}
-
-function normalizeNodeRow(raw: unknown): NodeRow {
-  if (!raw || typeof raw !== "object") {
-    throw new Error("Invalid node row: expected object");
-  }
-  const row = raw as Record<string, unknown>;
-  if (typeof row.id !== "string" || !row.id) {
-    throw new Error("Invalid node row: missing id");
-  }
-  if (typeof row.type !== "string" || !row.type) {
-    throw new Error(`Invalid node row ${row.id}: missing type`);
-  }
-
-  return {
-    ...(raw as NodeRow),
-    id: row.id,
-    type: row.type,
-    label: typeof row.label === "string" ? row.label : String(row.label ?? ""),
-  };
 }
 
 function normalizeEdgeRow(raw: unknown): EdgeRow {
@@ -92,42 +49,6 @@ function normalizeEdgeRow(raw: unknown): EdgeRow {
   return raw as EdgeRow;
 }
 
-function normalizeDate(value: SqlDateValue): Date | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (value instanceof Date) {
-    return value;
-  }
-  return new Date(value);
-}
-
-function mapNode(row: NodeRow): GraphNode {
-  const metadata = parseSqliteJsonObject(row.metadata, {});
-  const position = parseSqliteJsonObject(row.position, { x: 0, y: 0 });
-  const draftMessageId = parseOptionalSqliteInt(row.draft_message_id);
-
-  return {
-    id: row.id,
-    type: row.type,
-    label: row.label,
-    content: row.content ?? null,
-    metadata,
-    position,
-    currentVersion: row.current_version ?? 0,
-    draftContent: row.draft_content ?? null,
-    isDraft: parseSqliteBoolean(row.is_draft),
-    createdAt: normalizeDate(row.created_at),
-    updatedAt: normalizeDate(row.updated_at),
-    draftSourceType: row.draft_source_type ?? null,
-    draftConversationId: row.draft_conversation_id ?? null,
-    draftMessageId,
-    draftBasedOnVersion: row.draft_based_on_version ?? null,
-    draftAiOriginalContent: row.draft_ai_original_content ?? null,
-    draftUpdatedAt: normalizeDate(row.draft_updated_at),
-  };
-}
-
 function mapEdge(row: EdgeRow): GraphEdge {
   const animated =
     typeof row.animated === "boolean" ? row.animated : Number(row.animated) === 1;
@@ -141,15 +62,15 @@ function mapEdge(row: EdgeRow): GraphEdge {
     label: row.label ?? null,
     edgeType: row.edge_type,
     animated,
-    createdAt: normalizeDate(row.created_at),
-    updatedAt: normalizeDate(row.updated_at),
+    createdAt: normalizeSqlDate(row.created_at),
+    updatedAt: normalizeSqlDate(row.updated_at),
   };
 }
 
 export function getAllNodes(): GraphNode[] {
   const db = getDatabase();
   const rows = db.prepare("SELECT * FROM nodes ORDER BY created_at ASC").all() as unknown[];
-  return rows.map((row) => mapNode(normalizeNodeRow(row)));
+  return rows.map((row) => mapNodeRow(normalizeNodeRow(row)));
 }
 
 export function getNodeById(nodeId: string): GraphNode | null {
@@ -158,7 +79,7 @@ export function getNodeById(nodeId: string): GraphNode | null {
   if (!row) {
     return null;
   }
-  return mapNode(normalizeNodeRow(row));
+  return mapNodeRow(normalizeNodeRow(row));
 }
 
 export function createNode(input: CreateNodeInput): GraphNode {
@@ -433,7 +354,7 @@ export function getParentNodes(nodeId: string, recursive = true): GraphNode[] {
   `;
 
   const rows = db.prepare(sql).all(nodeId) as unknown[];
-  return rows.map((row) => mapNode(normalizeNodeRow(row)));
+  return rows.map((row) => mapNodeRow(normalizeNodeRow(row)));
 }
 
 export function getNodeContext(nodeId: string): { node: GraphNode; parents: GraphNode[] } | null {

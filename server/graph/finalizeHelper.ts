@@ -1,6 +1,6 @@
 import { getDatabase } from "../storage/database.js";
 import { getNodeById } from "./crud.js";
-import type { NodeRow } from "./crud.js";
+import type { NodeRow } from "./nodeRow.js";
 import type { GraphNode } from "./types.js";
 
 class NodeNotFoundError extends Error {}

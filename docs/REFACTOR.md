@@ -96,11 +96,13 @@
 - `server/scheduler/store.ts`：重构（复用 `server/utils/sqlite.ts` 的共享解析 helper，移除本地重复 parser，保持行为不变）。
 - `server/graph/fileManager.ts`：重构（优化 `syncAllNodes()` / `generateIndex()` 的批量路径：workflow 分组后复用 sequence/specDir，避免 per-node 重复序号计算与路径推导）。
 - `server/graph/{crud,service,workflowConfig,finalizeHelper,types}.ts`：阅读（graph 模块核心数据/配置与服务层）。
+- `server/graph/nodeRow.ts`：新增（统一 `GraphNode` sqlite row 类型、输入守卫与共享 mapper，供 graph CRUD 与 workspace workflow context 复用）。
 - `server/graph/crud.ts`：重构（复用 `server/utils/sqlite.ts` 统一 json column / `draft_message_id` / `is_draft` 解析语义，提升鲁棒性）。
+- `server/graph/crud.ts` / `server/workspace/context/workflowContext/{db,types}.ts`：重构（抽取并复用 `GraphNode` row mapper/type alias，统一 label/date/json/boolean 解析语义，避免 graph 主路径与 workspace 只读路径继续分叉）。
 - `server/memory/soul.ts`：重构（Preferences section 边界解析更直观，并补齐中间 section 场景测试覆盖）。
 - `server/memory/preferenceDirectives.ts`：阅读（偏好写入指令解析）。
 
-### Frontend (`web/`)
+### Frontend (`client/`)
 
 - `client/src/components/TaskDetail.vue`：统一中文 UI 文案，并补齐 `queued` / `paused` 的空态与占位提示。
 - `client/src/components/MainChat.vue`：修复/重构（补齐 scroll-to-bottom handler；command tree commands 解析引入 computed 缓存；保持 UI 不变）。
@@ -179,6 +181,7 @@
 - `docs/spec/20260313-2142-project-wide-refactor-pass-33/`：新增（scheduler store 内部归一化 helper 收敛 + scheduler store 回归测试补齐）。
 - `docs/spec/20260313-2158-project-wide-refactor-pass-34/`：新增（前端 patch message 类型单源化 + MainChat patch 卡片状态收敛）。
 - `docs/spec/20260313-2213-project-wide-refactor-pass-35/`：新增（TaskStore 任务字段归一化 helper 收敛 + legacy row 清洗 + 回归测试补齐）。
+- `docs/spec/20260313-2335-project-wide-refactor-pass-36/`：新增（GraphNode sqlite row mapper/type alias 收敛，统一 graph CRUD 与 workspace workflow context 的节点反序列化语义）。
 
 ### Tests
 
@@ -218,6 +221,7 @@
 - `tests/workspace/adsPaths.test.ts`：新增（覆盖 legacy backfill 的优先级、目录回填、幂等性与“不覆盖已有 state 文件”语义）。
 - `tests/workspace/detector.test.ts`：更新（覆盖 nested path 输入下 initialize/db/rules/spec/templates 均归一到 workspace git root，防止子目录 state/spec 分叉）。
 - `client/src/lib/clipboard.test.ts`：新增（覆盖 clipboard 主路径、fallback 路径与 fallback 异常清理语义）。
+- `tests/graph/nodeRow.test.ts`：新增（锁定共享 `GraphNode` row mapper 的默认值、JSON/date/boolean/message id 解析与非法输入守卫）。
 - `tests/web/taskQueueRoute.test.ts`：新增（覆盖 task queue 路由 `status/metrics/run/pause`、queue disabled 与 resolve 失败分支）。
 - `tests/web/workspacePathValidation.test.ts`：新增（覆盖 workspace path 校验 helper 的 `missing/not_allowed/not_exists/not_directory/success` 语义与 projects 错误文案映射）。
 - `client/src/app/tasks/runHelpers.test.ts`：新增（锁定 `setTaskRunBusy()` 与 `mockSingleTaskRun()` 的状态迁移语义）。
@@ -292,7 +296,7 @@
 - `server/agents/`（除 `orchestrator.ts` / `hub.ts` / `hub/delegations.ts` / `adapters/*CliAdapter.ts` / `cli/claudeStreamParser.ts` / `cli/cliRunner.ts` / `cli/stripAnsi.ts` / `tasks/taskCoordinator*` / `tasks/taskStore.ts` / `tasks/verificationRunner.ts` 外）
 - `server/bootstrap/`（除 `bootstrapLoop.ts` / `worktree.ts` / `agentRunner.ts` / `commandRunner.ts` / `artifacts.ts` / `review/reviewerRunner.ts` 外）
 - `server/codex/`（除 `errors.ts` / `events.ts` 外）
-- `server/graph/`（除 `crud.ts` / `fileManager.ts` / `service.ts` / `workflowConfig.ts` / `finalizeHelper.ts` / `types.ts` / `autoWorkflow.ts` 外）
+- `server/graph/`（除 `crud.ts` / `fileManager.ts` / `service.ts` / `workflowConfig.ts` / `finalizeHelper.ts` / `types.ts` / `autoWorkflow.ts` / `nodeRow.ts` 外）
 - `server/intake/`
 - `server/skills/`（除 `loader.ts` / `creator.ts` / `registryMetadata.ts` 外）
 - `server/state/`（除 `database.ts` / `migrations.ts` 外）
@@ -302,7 +306,7 @@
 - `server/types/`
 - `server/utils/`（除已列出的文件外）
 - `server/web/`（除 `utils.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/session.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/startWebServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/planner/specValidation.ts` / `server/api/routes/tasks.ts` / `server/api/routes/{workspacePath.ts,projects.ts,paths.ts}` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskQueue.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
-- `server/workspace/`（除 `detector.ts` / `adsPaths.ts` / `service.ts` / `rulesService.ts` 外）
+- `server/workspace/`（除 `detector.ts` / `adsPaths.ts` / `service.ts` / `rulesService.ts` / `context/workflowContext/{db,types}.ts` 外）
 
 ### Frontend (`client/src/`)
 
