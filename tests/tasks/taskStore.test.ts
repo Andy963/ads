@@ -374,6 +374,58 @@ describe("tasks/taskStore", () => {
     assert.equal(fetchedArchivedAt, now);
   });
 
+  it("should keep promptInjectedAt write-once during ordinary updates", () => {
+    const store = new TaskStore();
+    const created = store.createTask({ title: "T", prompt: "P" });
+    const injectedAt = Date.now();
+    store.markPromptInjected(created.id, injectedAt);
+
+    const updated = store.updateTask(
+      created.id,
+      {
+        title: "Updated",
+        promptInjectedAt: injectedAt + 1000,
+      },
+      injectedAt + 2000,
+    );
+
+    assert.equal(updated.promptInjectedAt, injectedAt);
+    const fetched = store.getTask(created.id);
+    assert.ok(fetched);
+    assert.equal(fetched.promptInjectedAt, injectedAt);
+  });
+
+  it("should preserve lifecycle timestamps after they are first assigned", () => {
+    const store = new TaskStore();
+    const created = store.createTask({ title: "T", prompt: "P" }, 100, { status: "queued" });
+    assert.equal(created.queuedAt, 100);
+
+    const running = store.updateTask(created.id, { status: "running" }, 200);
+    assert.equal(running.startedAt, 200);
+
+    const runningAgain = store.updateTask(created.id, { status: "running", startedAt: 999 }, 300);
+    assert.equal(runningAgain.startedAt, 999);
+
+    const completed = store.updateTask(created.id, { status: "completed" }, 400);
+    assert.equal(completed.completedAt, 400);
+
+    const completedAgain = store.updateTask(created.id, { status: "completed", completedAt: 1234 }, 500);
+    assert.equal(completedAgain.completedAt, 1234);
+  });
+
+  it("should only archive completed tasks created without pending review", () => {
+    const store = new TaskStore();
+    const now = Date.now();
+
+    const completed = store.createTask({ title: "No Review", prompt: "P" }, now, { status: "completed" });
+    assert.equal(completed.archivedAt, now);
+
+    const reviewPending = store.createTask({ title: "Review Required", prompt: "P", reviewRequired: true }, now, {
+      status: "completed",
+    });
+    assert.equal(reviewPending.archivedAt, null);
+  });
+
   it("should clear archivedAt when a completed task is reopened", () => {
     const store = new TaskStore();
     const created = store.createTask({ title: "T", prompt: "P" });

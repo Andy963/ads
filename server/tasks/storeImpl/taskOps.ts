@@ -45,6 +45,48 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     task.createdBy = normalizeNullableString(task.createdBy);
   };
 
+  const normalizeTaskWritableFields = (task: Task, existing?: Task): void => {
+    task.status = normalizeTaskStatus(task.status);
+    task.inheritContext = Boolean(task.inheritContext);
+    task.reviewRequired = Boolean(task.reviewRequired);
+    task.reviewStatus = normalizeTaskReviewStatus(task.reviewStatus);
+    normalizeTaskIdentityFields(task);
+    task.priority = normalizeFiniteNumberOr(task.priority, existing?.priority ?? 0);
+    task.queueOrder = normalizeFiniteNumberOr(task.queueOrder, existing?.queueOrder ?? task.createdAt);
+    task.queuedAt = normalizeNullableFiniteNumber(task.queuedAt) ?? (existing?.queuedAt ?? null);
+    task.retryCount = normalizeFiniteNumberOr(task.retryCount, existing?.retryCount ?? 0);
+    task.maxRetries = normalizeFiniteNumberOr(task.maxRetries, existing?.maxRetries ?? 3);
+    task.reviewedAt = normalizeNullableFiniteNumber(task.reviewedAt) ?? (existing?.reviewedAt ?? null);
+
+    if (!String(task.title ?? "").trim()) {
+      const prompt = String(task.prompt ?? "");
+      task.title = prompt.trim() ? deriveTaskTitle(prompt) : existing?.title ?? task.title;
+    }
+  };
+
+  const applyTaskLifecycleFields = (task: Task, now: number, existing?: Task): void => {
+    task.promptInjectedAt = existing?.promptInjectedAt ?? null;
+    task.startedAt = normalizeNullableFiniteNumber(task.startedAt) ?? (existing?.startedAt ?? null);
+    task.completedAt = normalizeNullableFiniteNumber(task.completedAt) ?? (existing?.completedAt ?? null);
+    task.archivedAt = normalizeNullableFiniteNumber(task.archivedAt) ?? (existing?.archivedAt ?? null);
+
+    if (task.status === "queued" && !task.queuedAt) {
+      task.queuedAt = existing?.queuedAt ?? now;
+    }
+    if (task.status === "running" && !task.startedAt) {
+      task.startedAt = existing?.startedAt ?? now;
+    }
+    if (["completed", "failed", "cancelled"].includes(task.status) && !task.completedAt) {
+      task.completedAt = existing?.completedAt ?? now;
+    }
+    if (task.status === "completed") {
+      const shouldArchive = !task.reviewRequired || task.reviewStatus === "passed";
+      task.archivedAt = shouldArchive ? task.archivedAt ?? now : null;
+    } else {
+      task.archivedAt = null;
+    }
+  };
+
   const resolveThreadId = (input: CreateTaskInput, taskId: string, inheritContext: boolean): string => {
     const provided = normalizeNullableString(input.threadId);
     if (provided) {
@@ -128,7 +170,8 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       archivedAt: status === "completed" && !reviewRequired ? now : null,
       createdBy: normalizeNullableString(input.createdBy),
     };
-    normalizeTaskIdentityFields(task);
+    normalizeTaskWritableFields(task);
+    applyTaskLifecycleFields(task, now);
 
     stmts.insertTaskStmt.run(
       task.id,
@@ -210,44 +253,8 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       id: existing.id,
     };
 
-    merged.status = normalizeTaskStatus(merged.status);
-    merged.inheritContext = Boolean(merged.inheritContext);
-    merged.reviewRequired = Boolean(merged.reviewRequired);
-    merged.reviewStatus = normalizeTaskReviewStatus(merged.reviewStatus);
-    normalizeTaskIdentityFields(merged);
-    // promptInjectedAt is a write-once field controlled by markPromptInjected().
-    merged.promptInjectedAt = existing.promptInjectedAt ?? null;
-    merged.priority = normalizeFiniteNumberOr(merged.priority, existing.priority);
-    merged.queueOrder = normalizeFiniteNumberOr(merged.queueOrder, existing.queueOrder);
-    merged.queuedAt = normalizeNullableFiniteNumber(merged.queuedAt) ?? (existing.queuedAt ?? null);
-    merged.retryCount = normalizeFiniteNumberOr(merged.retryCount, existing.retryCount);
-    merged.maxRetries = normalizeFiniteNumberOr(merged.maxRetries, existing.maxRetries);
-    merged.reviewedAt = normalizeNullableFiniteNumber(merged.reviewedAt) ?? (existing.reviewedAt ?? null);
-
-    if (!String(merged.title ?? "").trim()) {
-      const prompt = String(merged.prompt ?? "");
-      merged.title = prompt.trim() ? deriveTaskTitle(prompt) : existing.title;
-    }
-
-    if (merged.status === "queued" && !merged.queuedAt) {
-      merged.queuedAt = now;
-    }
-    if (merged.status === "running" && !merged.startedAt) {
-      merged.startedAt = existing.startedAt ?? now;
-    }
-    if (["completed", "failed", "cancelled"].includes(merged.status) && !merged.completedAt) {
-      merged.completedAt = now;
-    }
-    if (merged.status === "completed") {
-      const shouldArchive = !merged.reviewRequired || merged.reviewStatus === "passed";
-      merged.archivedAt = shouldArchive
-        ? merged.archivedAt != null && Number.isFinite(merged.archivedAt)
-          ? merged.archivedAt
-          : now
-        : null;
-    } else {
-      merged.archivedAt = null;
-    }
+    normalizeTaskWritableFields(merged, existing);
+    applyTaskLifecycleFields(merged, now, existing);
 
     stmts.updateTaskStmt.run(
       merged.title,
