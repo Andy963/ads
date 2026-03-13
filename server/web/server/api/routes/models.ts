@@ -1,7 +1,65 @@
 import { z } from "zod";
 
+import type { ModelConfig } from "../../../../tasks/types.js";
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
+
+const trimmedNonEmptyString = z.string().trim().min(1);
+
+const modelConfigFieldsSchema = {
+  displayName: trimmedNonEmptyString,
+  provider: trimmedNonEmptyString,
+  isEnabled: z.boolean().optional(),
+  isDefault: z.boolean().optional(),
+  configJson: z.record(z.unknown()).nullable().optional(),
+} as const;
+
+const createModelConfigSchema = z
+  .object({
+    id: trimmedNonEmptyString,
+    ...modelConfigFieldsSchema,
+  })
+  .passthrough();
+
+const updateModelConfigSchema = z
+  .object({
+    displayName: modelConfigFieldsSchema.displayName.optional(),
+    provider: modelConfigFieldsSchema.provider.optional(),
+    isEnabled: modelConfigFieldsSchema.isEnabled,
+    isDefault: modelConfigFieldsSchema.isDefault,
+    configJson: modelConfigFieldsSchema.configJson,
+  })
+  .passthrough();
+
+type CreateModelConfigInput = z.infer<typeof createModelConfigSchema>;
+type UpdateModelConfigInput = z.infer<typeof updateModelConfigSchema>;
+
+function normalizeString(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function normalizeModelConfigId(value: unknown): string | null {
+  const id = normalizeString(value);
+  if (!id || id.toLowerCase() === "auto") {
+    return null;
+  }
+  return id;
+}
+
+function buildModelConfigPayload(
+  modelId: string,
+  input: CreateModelConfigInput | UpdateModelConfigInput,
+  existing?: ModelConfig,
+): ModelConfig {
+  return {
+    id: modelId,
+    displayName: input.displayName ?? existing?.displayName ?? "",
+    provider: input.provider ?? existing?.provider ?? "",
+    isEnabled: input.isEnabled ?? existing?.isEnabled ?? true,
+    isDefault: input.isDefault ?? existing?.isDefault ?? false,
+    configJson: input.configJson === undefined ? (existing?.configJson ?? null) : input.configJson,
+  };
+}
 
 export async function handleModelRoutes(ctx: ApiRouteContext, deps: Pick<ApiSharedDeps, "resolveTaskContext">): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -21,34 +79,17 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: Pick<ApiShar
     }
     if (req.method === "POST") {
       const body = await readJsonBody(req);
-      const schema = z
-        .object({
-          id: z.string().min(1),
-          displayName: z.string().min(1),
-          provider: z.string().min(1),
-          isEnabled: z.boolean().optional(),
-          isDefault: z.boolean().optional(),
-          configJson: z.record(z.unknown()).nullable().optional(),
-        })
-        .passthrough();
-      const parsed = schema.safeParse(body ?? {});
+      const parsed = createModelConfigSchema.safeParse(body ?? {});
       if (!parsed.success) {
         sendJson(res, 400, { error: "Invalid payload" });
         return true;
       }
-      const modelId = parsed.data.id.trim();
-      if (!modelId || modelId.toLowerCase() === "auto") {
+      const modelId = normalizeModelConfigId(parsed.data.id);
+      if (!modelId) {
         sendJson(res, 400, { error: "Invalid model id" });
         return true;
       }
-      const saved = taskCtx.taskStore.upsertModelConfig({
-        id: modelId,
-        displayName: parsed.data.displayName.trim(),
-        provider: parsed.data.provider.trim(),
-        isEnabled: parsed.data.isEnabled ?? true,
-        isDefault: parsed.data.isDefault ?? false,
-        configJson: parsed.data.configJson ?? null,
-      });
+      const saved = taskCtx.taskStore.upsertModelConfig(buildModelConfigPayload(modelId, parsed.data));
       sendJson(res, 200, saved);
       return true;
     }
@@ -62,16 +103,7 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: Pick<ApiShar
 
     if (req.method === "PATCH") {
       const body = await readJsonBody(req);
-      const schema = z
-        .object({
-          displayName: z.string().min(1).optional(),
-          provider: z.string().min(1).optional(),
-          isEnabled: z.boolean().optional(),
-          isDefault: z.boolean().optional(),
-          configJson: z.record(z.unknown()).nullable().optional(),
-        })
-        .passthrough();
-      const parsed = schema.safeParse(body ?? {});
+      const parsed = updateModelConfigSchema.safeParse(body ?? {});
       if (!parsed.success) {
         sendJson(res, 400, { error: "Invalid payload" });
         return true;
@@ -83,14 +115,7 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: Pick<ApiShar
         return true;
       }
 
-      const saved = taskCtx.taskStore.upsertModelConfig({
-        ...existing,
-        displayName: parsed.data.displayName === undefined ? existing.displayName : parsed.data.displayName.trim(),
-        provider: parsed.data.provider === undefined ? existing.provider : parsed.data.provider.trim(),
-        isEnabled: parsed.data.isEnabled === undefined ? existing.isEnabled : parsed.data.isEnabled,
-        isDefault: parsed.data.isDefault === undefined ? existing.isDefault : parsed.data.isDefault,
-        configJson: parsed.data.configJson === undefined ? (existing.configJson ?? null) : parsed.data.configJson,
-      });
+      const saved = taskCtx.taskStore.upsertModelConfig(buildModelConfigPayload(modelId, parsed.data, existing));
       sendJson(res, 200, saved);
       return true;
     }
@@ -113,4 +138,3 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: Pick<ApiShar
 
   return false;
 }
-
