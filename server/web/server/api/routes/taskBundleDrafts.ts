@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { recordTaskQueueMetric } from "../../taskQueue/manager.js";
+import { startQueueInAllMode } from "../../../taskQueue/control.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { sendJson } from "../../http.js";
@@ -63,9 +64,7 @@ function maybePromoteApprovedDraftTasks(args: {
   const shouldStartQueue = args.ownedApproval && args.runQueue;
   const shouldPromoteQueuedTasks = shouldStartQueue || (args.taskCtx.queueRunning && args.taskCtx.runController.getMode() === "all");
   if (shouldStartQueue) {
-    args.taskCtx.runController.setModeAll();
-    args.taskCtx.taskQueue.resume();
-    args.taskCtx.queueRunning = true;
+    startQueueInAllMode(args.taskCtx);
   }
   if (!shouldPromoteQueuedTasks) {
     return;

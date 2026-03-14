@@ -12,6 +12,7 @@ import { OrchestratorTaskExecutor } from "../../../tasks/executor.js";
 import { ReviewStore } from "../../../tasks/reviewStore.js";
 import { AttachmentStore } from "../../../attachments/store.js";
 import { TaskRunController } from "../../taskRunController.js";
+import { pauseQueueInManualMode, startQueueInAllMode } from "../../taskQueue/control.js";
 import { broadcastTaskStart } from "../../taskStartBroadcast.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { buildWorkspacePatch, type WorkspacePatchPayload } from "../../gitPatch.js";
@@ -685,16 +686,13 @@ export function createTaskQueueManager(deps: {
     if (deps.available) {
       const status = getStatusOrchestrator().status();
       if (deps.autoStart) {
-        ctx.runController.setModeAll();
+        startQueueInAllMode(ctx);
         void taskQueue.start();
-        ctx.queueRunning = true;
         deps.logger.info(`[Web] TaskQueue started workspace=${key}`);
         promoteQueuedTasksToPending(ctx);
       } else {
-        ctx.runController.setModeManual();
-        taskQueue.pause("manual");
+        pauseQueueInManualMode(ctx, "manual");
         void taskQueue.start();
-        ctx.queueRunning = false;
         deps.logger.info(`[Web] TaskQueue paused workspace=${key}`);
       }
       if (!status.ready) {

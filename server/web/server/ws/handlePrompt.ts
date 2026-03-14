@@ -38,6 +38,7 @@ import {
 import { normalizeCreateTaskInput } from "../planner/taskBundleApprover.js";
 import { detectBundleRisk } from "../planner/riskDetector.js";
 import { recordTaskQueueMetric, type TaskQueueContext } from "../taskQueue/manager.js";
+import { startQueueInAllMode } from "../../taskQueue/control.js";
 import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
@@ -814,9 +815,7 @@ export async function handlePromptMessage(deps: {
 
                     approveTaskBundleDraft({ authUserId: deps.authUserId, draftId: draft.id, approvedTaskIds: createdTaskIds, now });
 
-                    taskCtx.runController.setModeAll();
-                    taskCtx.taskQueue.resume();
-                    taskCtx.queueRunning = true;
+                    startQueueInAllMode(taskCtx);
                     promote(taskCtx);
                   });
 

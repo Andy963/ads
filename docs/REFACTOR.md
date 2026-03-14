@@ -58,6 +58,7 @@
 - `server/web/server/ws/server.ts` / `server/web/server/taskQueue/manager.ts` / `server/web/server/api/routes/workspacePath.ts`：重构（抽取并复用共享 workspace root 归一化 helper，统一 `realpath -> detectWorkspaceFrom -> realpath` 链路；task queue 显式保留“detected root 越权即拒绝”，避免 API/WS/task-queue 三处规则漂移）。
 - `server/web/server/ws/session.ts`：重构（抽取 `parseProtocolToken()`，收敛 session/chat subprotocol token 解析重复逻辑并保持语义不变）。
 - `server/web/server/startWebServer.ts`：重构（抽取 safe send + broadcast target 判定 helper；`broadcastToSession()` 复用单次 `JSON.stringify()`；`recordToSessionHistories()` 避免构造中间数组并保持行为不变）。
+- `server/web/taskQueue/control.ts` / `server/web/server/{api/routes/taskQueue.ts,api/routes/taskBundleDrafts.ts,api/routes/tasks/taskById.ts,ws/handlePrompt.ts,taskQueue/manager.ts}`：重构（新增 queue lifecycle helper，统一 `start all mode` / `pause manual mode` 的 mode/resume/pause/`queueRunning` 编排，保持各入口副作用语义不变）。
 - `server/web/auth/cookies.ts`：重构（`serializeCookie()` 不再默认添加 `Secure`，避免未来 HTTP 场景误用）。
 - `server/web/auth/sessions.ts`：重构（`resolveSessionSlidingEnabled()` 复用 `parseBooleanFlag()`，并抽取 `normalizeSessionTtlSeconds()` 收敛 create/lookup/refresh 的 TTL 下限逻辑）。
 - `server/web/api/taskRun.ts` / `server/web/server/api/handler.ts`：阅读（web API 路由匹配/鉴权/分发顺序）。
@@ -195,6 +196,7 @@
 - `docs/spec/20260313-2332-project-wide-refactor-pass-39/`：新增（任务写路径生命周期 helper 收敛，统一 `createTask()` / `updateTask()` 的字段归一化与归档时间派生语义）。
 - `docs/spec/20260314-1213-project-wide-refactor-pass-40/`：新增（scheduler runtime 的 workspace root 归一化收敛，统一 runtime state 的 path identity 语义并补齐 nested-path 回归测试）。
 - `docs/spec/20260314-1243-project-wide-refactor-pass-41/`：新增（web route 通用 helper 收敛，统一 taskQueue/taskBundleDrafts 与 task 子路由的共享 request-handling 语义）。
+- `docs/spec/20260314-1600-project-wide-refactor-pass-42/`：新增（queue lifecycle helper 收敛，统一 HTTP route、WS auto-approve 与 manager 初始化的 queue state transition 语义）。
 - `docs/spec/20260313-2313-project-wide-refactor-pass-38/`：新增（前端 chat preference persist/restore 共享 helper 收敛，统一 `reasoningEffort` / `modelId` 的 normalize 与 localStorage key 语义）。
 
 ### Tests
@@ -239,6 +241,7 @@
 - `tests/web/taskQueueRoute.test.ts`：新增（覆盖 task queue 路由 `status/metrics/run/pause`、queue disabled 与 resolve 失败分支）。
 - `tests/web/workspacePathValidation.test.ts`：更新（新增 nested workspace root、fallback-to-resolved 与 strict reject 场景，锁定共享 workspace path/root helper 语义）。
 - `tests/web/taskQueueManager.test.ts`：新增（覆盖 task queue manager 对 nested workspace path 的 root 归一化，以及 detected workspace root 越权时继续拒绝的边界）。
+- `tests/web/taskQueueControl.test.ts`：新增（锁定 queue lifecycle helper 的 `start all mode` / `pause manual mode` 语义）。
 - `client/src/app/tasks/runHelpers.test.ts`：新增（锁定 `setTaskRunBusy()` 与 `mockSingleTaskRun()` 的状态迁移语义）。
 - `tests/web/tasksRoute-rerun-bootstrap.test.ts`：更新（新增 rerun 在 `queueRunning + all mode` 时触发一次 `promoteQueuedTasksToPending()` 的回归覆盖）。
 - `tests/scheduler/schedulerStore.test.ts`：更新（覆盖 invalid limit fallback、external id trim lookup 与 persisted invalid run status fallback）。
@@ -299,7 +302,7 @@
 - （已处理）`server/web/server/api/routes/{projects.ts,paths.ts}`：workspace 路径校验逻辑已收敛到 `workspacePath.ts`，减少重复实现与路由间语义漂移风险。
 - （已处理）`client/src/app/tasks/runHelpers.ts`：task/runtime 解析逻辑已收敛到 `resolveTaskRuntime()`，降低后续扩展 run 行为时的重复改动成本。
 - （已处理）`server/web/server/api/routes/tasks.ts`：create/rerun 分支共享副作用（错误提取、通知绑定、队列 promote）已收敛为 helper，降低路由内重复分支漂移风险。
-- `server/web/server/{api/routes/taskQueue.ts,api/routes/tasks/taskById.ts,api/routes/taskBundleDrafts.ts,ws/handlePrompt.ts,taskQueue/manager.ts}`：queue lifecycle 仍分散维护 `setModeAll()` / `resume()` / `queueRunning` / `promoteQueuedTasksToPending()` 编排；应收敛到单一入口，避免 run/resume/auto-approve 继续漂移。
+- （已处理）`server/web/server/{api/routes/taskQueue.ts,api/routes/tasks/taskById.ts,api/routes/taskBundleDrafts.ts,ws/handlePrompt.ts,taskQueue/manager.ts}`：queue lifecycle 已收敛到 `server/web/taskQueue/control.ts`，统一 `setModeAll()` / `setModeManual()` / `resume()` / `pause()` / `queueRunning` 编排，降低 run/resume/auto-approve 路径漂移风险。
 - `server/web/server/{api/routes/taskBundleDrafts.ts,ws/handlePrompt.ts}`：planner draft approval/materialization 仍各自编排 create task、attachments、broadcast、approve race 与 queue side effects；建议提取共享 helper，避免 HTTP 与 WS 路径继续分叉。
 - （已处理）`client/src/app/projectsWs/projectName.ts`：占位名判定与文本归一已收敛为 helper，降低默认名规则扩展时的分支重复风险。
 - （已处理）`client/src/app/tasks.ts` / `client/src/app/projectsWs/webSocketActions.ts`：chat preference persist/restore 已统一复用 `client/src/lib/chatPreferences.ts`，降低 storage key 与 normalize 规则漂移风险。
@@ -330,7 +333,7 @@
 - `server/telegram/`（除 `utils/{threadStorage,sessionManager,urlHandler,fileHandler,imageHandler,transcriptCorrection}.ts` 外）
 - `server/types/`
 - `server/utils/`（除已列出的文件外）
-- `server/web/`（除 `utils.ts` / `commandRouter.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/session.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/startWebServer.ts` / `server/api/handler.ts` / `server/api/routes/shared.ts` / `server/taskQueue/manager.ts` / `server/planner/{taskBundle.ts,taskBundleApprover.ts,taskBundleDraftStore.ts,specValidation.ts,riskDetector.ts,draftRecovery.ts}` / `server/api/routes/tasks.ts` / `server/api/routes/{workspacePath.ts,projects.ts,paths.ts}` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskQueue.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
+- `server/web/`（除 `utils.ts` / `commandRouter.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `taskQueue/control.ts` / `server/ws/server.ts` / `server/ws/session.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/startWebServer.ts` / `server/api/handler.ts` / `server/api/routes/shared.ts` / `server/taskQueue/manager.ts` / `server/planner/{taskBundle.ts,taskBundleApprover.ts,taskBundleDraftStore.ts,specValidation.ts,riskDetector.ts,draftRecovery.ts}` / `server/api/routes/tasks.ts` / `server/api/routes/{workspacePath.ts,projects.ts,paths.ts}` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskQueue.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
 - `server/workspace/`（除 `detector.ts` / `adsPaths.ts` / `service.ts` / `rulesService.ts` / `context/workflowContext/{db,types}.ts` 外）
 
 ### Frontend (`client/src/`)
