@@ -35,9 +35,9 @@ import {
   setTaskBundleDraftError,
   upsertTaskBundleDraft,
 } from "../planner/taskBundleDraftStore.js";
-import { normalizeCreateTaskInput } from "../planner/taskBundleApprover.js";
+import { buildWorkspaceAttachmentRawUrl, materializeTaskBundleTasks } from "../planner/taskBundleApprover.js";
 import { detectBundleRisk } from "../planner/riskDetector.js";
-import { recordTaskQueueMetric, type TaskQueueContext } from "../taskQueue/manager.js";
+import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { startQueueInAllMode } from "../../taskQueue/control.js";
 import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
@@ -773,45 +773,36 @@ export async function handlePromptMessage(deps: {
                 try {
                   const taskCtx = ensureCtx(workspaceRootForDraft);
                   const now = Date.now();
-                  const createdTaskIds: string[] = [];
-                  const taskTitles: string[] = [];
+                  let createdTaskIds: string[] = [];
+                  let taskTitles: string[] = [];
 
                   await taskCtx.lock.runExclusive(async () => {
-                    for (let i = 0; i < normalized.tasks.length; i++) {
-                      const specTask = normalized.tasks[i]!;
-                      const input = normalizeCreateTaskInput(draft.id, specTask, i);
-                      const { attachments: _attachments, ...createInput } = input;
-
-                      let created;
-                      try {
-                        created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
-                      } catch {
-                        const existingTask = taskCtx.taskStore.getTask(input.id);
-                        if (existingTask) {
-                          created = existingTask;
-                        } else {
-                          throw new Error(`Auto-approve: create task failed (idx=${i + 1})`);
+                    ({ createdTaskIds, taskTitles } = materializeTaskBundleTasks({
+                      draftId: draft.id,
+                      tasks: normalized.tasks,
+                      now,
+                      taskStore: taskCtx.taskStore,
+                      attachmentStore: taskCtx.attachmentStore,
+                      metrics: taskCtx.metrics,
+                      metricReason: "auto_approve",
+                      buildAttachmentUrl: (attachmentId) => buildWorkspaceAttachmentRawUrl(workspaceRootForDraft, attachmentId),
+                      createTaskErrorPrefix: "Auto-approve: create task failed",
+                      onTaskMaterialized: ({ task }) => {
+                        broadcast(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: now });
+                        try {
+                          upsertTaskNotificationBinding({
+                            authUserId: deps.authUserId,
+                            workspaceRoot: workspaceRootForDraft,
+                            taskId: task.id,
+                            taskTitle: task.title,
+                            now,
+                            logger: deps.logger,
+                          });
+                        } catch {
+                          // ignore
                         }
-                      }
-
-                      recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "auto_approve" });
-                      broadcast(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: created, ts: now });
-                      createdTaskIds.push(created.id);
-                      taskTitles.push(created.title ?? "");
-
-                      try {
-                        upsertTaskNotificationBinding({
-                          authUserId: deps.authUserId,
-                          workspaceRoot: workspaceRootForDraft,
-                          taskId: created.id,
-                          taskTitle: created.title,
-                          now,
-                          logger: deps.logger,
-                        });
-                      } catch {
-                        // ignore
-                      }
-                    }
+                      },
+                    }));
 
                     approveTaskBundleDraft({ authUserId: deps.authUserId, draftId: draft.id, approvedTaskIds: createdTaskIds, now });
 
