@@ -13,6 +13,7 @@ import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
 import { getErrorMessage } from "../utils/error.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
 
 import { computeNextCronRunAt } from "./cron.js";
 import { ScheduleStore } from "./store.js";
@@ -82,6 +83,11 @@ function hashTaskId(taskId: string): number {
 function buildQueueName(workspaceRoot: string): string {
   const digest = crypto.createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
   return `ads_scheduler_v1_${digest}`;
+}
+
+function normalizeWorkspaceRoot(workspaceRoot: string): string {
+  const normalized = String(workspaceRoot ?? "").trim();
+  return detectWorkspaceFrom(normalized || process.cwd());
 }
 
 function resolveLitequeDbPath(workspaceRoot: string): string {
@@ -167,7 +173,7 @@ export class SchedulerRuntime {
   }
 
   registerWorkspace(workspaceRoot: string): void {
-    const normalized = String(workspaceRoot ?? "").trim();
+    const normalized = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalized) return;
     this.workspaces.add(normalized);
     this.getState(normalized);
@@ -211,7 +217,7 @@ export class SchedulerRuntime {
   }
 
   private getState(workspaceRoot: string): WorkspaceSchedulerState {
-    const key = String(workspaceRoot ?? "").trim() || process.cwd();
+    const key = normalizeWorkspaceRoot(workspaceRoot);
     const existing = this.states.get(key);
     if (existing) {
       return existing;
@@ -286,7 +292,7 @@ export class SchedulerRuntime {
   }
 
   async tickWorkspace(workspaceRoot: string): Promise<void> {
-    const root = String(workspaceRoot ?? "").trim() || process.cwd();
+    const root = normalizeWorkspaceRoot(workspaceRoot);
     if (this.inFlight.has(root)) {
       return;
     }
@@ -470,7 +476,7 @@ export class SchedulerRuntime {
       return null;
     }
     const record = raw as Record<string, unknown>;
-    const workspaceRoot = String(record.workspaceRoot ?? "").trim();
+    const workspaceRoot = normalizeWorkspaceRoot(String(record.workspaceRoot ?? ""));
     const scheduleId = String(record.scheduleId ?? "").trim();
     const externalId = String(record.externalId ?? "").trim();
     const runAtRaw = Number(record.runAt);

@@ -74,6 +74,7 @@ describe("scheduler/runtime-liteque", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-scheduler-runtime-"));
+    fs.mkdirSync(path.join(tmpDir, ".git"));
     process.env.ADS_DATABASE_PATH = path.join(tmpDir, "ads.db");
     resetDatabaseForTests();
   });
@@ -222,5 +223,47 @@ describe("scheduler/runtime-liteque", () => {
     assert.ok(completed);
     assert.equal(completed?.status, "completed");
     assert.equal(completed?.result, "recovered");
+  });
+
+  it("normalizes nested workspace paths to one runtime state", async () => {
+    const nestedWorkspace = path.join(tmpDir, "packages", "demo");
+    fs.mkdirSync(nestedWorkspace, { recursive: true });
+
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Nested workspace path normalization",
+        spec: buildScheduleSpec(),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    let executions = 0;
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      tickMs: 60_000,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => {
+        executions += 1;
+        return { resultSummary: "normalized" };
+      },
+    });
+
+    runtime.registerWorkspace(nestedWorkspace);
+    runtime.registerWorkspace(tmpDir);
+    runtime.start();
+    await runtime.tickWorkspace(nestedWorkspace);
+
+    await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+    runtime.stop();
+
+    assert.equal(executions, 1);
+    const internal = runtime as unknown as { workspaces: Set<string>; states: Map<string, unknown> };
+    assert.deepEqual(Array.from(internal.workspaces), [tmpDir]);
+    assert.deepEqual(Array.from(internal.states.keys()), [tmpDir]);
   });
 });
