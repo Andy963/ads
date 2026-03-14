@@ -1,6 +1,66 @@
 import crypto from "node:crypto";
+
 import type { TaskBundleTask } from "./taskBundle.js";
-import type { CreateTaskInput } from "../../../tasks/types.js";
+import type { Attachment } from "../../../attachments/types.js";
+import type { CreateTaskInput, Task } from "../../../tasks/types.js";
+import { recordTaskQueueMetric, type TaskQueueMetrics } from "../taskQueue/manager.js";
+
+type TaskStoreLike = {
+  createTask: (input: CreateTaskInput, now: number, options: { status: "queued" }) => Task;
+  getTask: (id: string) => Task | null;
+  deleteTask: (id: string) => void;
+};
+
+type AttachmentStoreLike = {
+  assignAttachmentsToTask: (taskId: string, attachmentIds: string[]) => void;
+  listAttachmentsForTask: (taskId: string) => Attachment[];
+};
+
+export type TaskAttachmentPayload = {
+  id: string;
+  url: string;
+  sha256: string;
+  width: number;
+  height: number;
+  contentType: string;
+  sizeBytes: number;
+  filename: string | null;
+};
+
+export type MaterializedDraftTask = {
+  task: Task & { attachments?: TaskAttachmentPayload[] };
+  title: string;
+};
+
+function buildTaskAttachmentPayloads(
+  taskId: string,
+  attachmentStore: AttachmentStoreLike,
+  buildAttachmentUrl?: ((attachmentId: string) => string) | null,
+): TaskAttachmentPayload[] | undefined {
+  const attachments = attachmentStore.listAttachmentsForTask(taskId);
+  if (attachments.length === 0) {
+    return undefined;
+  }
+  return attachments.map((attachment) => ({
+    id: attachment.id,
+    url: buildAttachmentUrl ? buildAttachmentUrl(attachment.id) : "",
+    sha256: attachment.sha256,
+    width: attachment.width,
+    height: attachment.height,
+    contentType: attachment.contentType,
+    sizeBytes: attachment.sizeBytes,
+    filename: attachment.filename ?? null,
+  }));
+}
+
+export function buildWorkspaceAttachmentRawUrl(workspaceRoot: string, attachmentId: string): string {
+  const normalizedId = encodeURIComponent(String(attachmentId ?? "").trim());
+  const normalizedWorkspace = String(workspaceRoot ?? "").trim();
+  if (!normalizedWorkspace) {
+    return `/api/attachments/${normalizedId}/raw`;
+  }
+  return `/api/attachments/${normalizedId}/raw?workspace=${encodeURIComponent(normalizedWorkspace)}`;
+}
 
 export function deriveStableUuid(input: string): string {
   const hash = crypto.createHash("sha256").update(input).digest();
@@ -68,4 +128,81 @@ export function normalizeCreateTaskInput(
     createdBy: createdBy ?? "planner_draft",
     attachments: attachments.length ? attachments : undefined,
   };
+}
+
+export function materializeTaskBundleTasks(args: {
+  draftId: string;
+  tasks: TaskBundleTask[];
+  now: number;
+  taskStore: TaskStoreLike;
+  attachmentStore: AttachmentStoreLike;
+  metrics: TaskQueueMetrics;
+  metricReason: string;
+  buildAttachmentUrl?: (attachmentId: string) => string;
+  createTaskErrorPrefix?: string;
+  onTaskMaterialized?: (record: MaterializedDraftTask) => void;
+}): {
+  createdTaskIds: string[];
+  taskTitles: string[];
+  createdTasks: MaterializedDraftTask[];
+} {
+  const createdTaskIds: string[] = [];
+  const taskTitles: string[] = [];
+  const createdTasks: MaterializedDraftTask[] = [];
+
+  for (let i = 0; i < args.tasks.length; i++) {
+    const specTask = args.tasks[i]!;
+    const input = normalizeCreateTaskInput(args.draftId, specTask, i);
+    const attachmentIds = (input.attachments ?? []).slice();
+    const { attachments: _attachments, ...createInput } = input;
+
+    let task = null as Task | null;
+    let createdFresh = false;
+    try {
+      task = args.taskStore.createTask(createInput, args.now, { status: "queued" });
+      createdFresh = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const existingTask = args.taskStore.getTask(input.id);
+      if (!existingTask) {
+        const prefix = args.createTaskErrorPrefix ?? "Create task failed";
+        throw new Error(`${prefix} (idx=${i + 1}): ${message}`);
+      }
+      task = existingTask;
+    }
+
+    if (attachmentIds.length > 0) {
+      try {
+        args.attachmentStore.assignAttachmentsToTask(task.id, attachmentIds);
+      } catch (error) {
+        if (createdFresh) {
+          try {
+            args.taskStore.deleteTask(task.id);
+          } catch {
+            // ignore
+          }
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Assign attachments failed (idx=${i + 1}): ${message}`);
+      }
+    }
+
+    const attachments = buildTaskAttachmentPayloads(task.id, args.attachmentStore, args.buildAttachmentUrl);
+    const taskWithAttachments = attachments ? { ...task, attachments } : task;
+
+    recordTaskQueueMetric(args.metrics, "TASK_ADDED", {
+      ts: args.now,
+      taskId: task.id,
+      reason: args.metricReason,
+    });
+
+    const title = task.title ?? "";
+    const record: MaterializedDraftTask = { task: taskWithAttachments, title };
+    createdTaskIds.push(task.id);
+    taskTitles.push(title);
+    createdTasks.push(record);
+    args.onTaskMaterialized?.(record);
+  }
+
+  return { createdTaskIds, taskTitles, createdTasks };
 }

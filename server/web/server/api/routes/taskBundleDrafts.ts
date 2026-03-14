@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-import { recordTaskQueueMetric } from "../../taskQueue/manager.js";
 import { startQueueInAllMode } from "../../../taskQueue/control.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
@@ -17,12 +16,8 @@ import {
   updateTaskBundleDraft,
 } from "../../planner/taskBundleDraftStore.js";
 import { upsertTaskNotificationBinding } from "../../../taskNotifications/store.js";
-import { normalizeCreateTaskInput } from "../../planner/taskBundleApprover.js";
-import {
-  buildTaskAttachments,
-  readJsonBodyOrSendBadRequest,
-  resolveTaskContextOrSendBadRequest,
-} from "./shared.js";
+import { materializeTaskBundleTasks } from "../../planner/taskBundleApprover.js";
+import { readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./shared.js";
 
 const updateTaskBundleDraftSchema = z.object({ bundle: z.unknown() }).passthrough();
 const approveTaskBundleDraftSchema = z.object({ runQueue: z.boolean().optional() }).passthrough();
@@ -241,69 +236,36 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       sendJson(res, 400, { error: specValidation.error });
       return true;
     }
-    const createdTaskIds: string[] = [];
     let approvedDraft = existing;
     let ownedApproval = false;
 
     try {
-      for (let i = 0; i < bundle.tasks.length; i++) {
-        const specTask = bundle.tasks[i]!;
-        const input = normalizeCreateTaskInput(draftId, specTask, i);
-        const attachmentIds = (input.attachments ?? []).slice();
-        const { attachments: _attachments, ...createInput } = input;
-
-        let created;
-        try {
-          created = taskCtx.taskStore.createTask(createInput, now, { status: "queued" });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const existingTask = taskCtx.taskStore.getTask(input.id);
-          if (existingTask) {
-            created = existingTask;
-          } else {
-            throw new Error(`Create task failed (idx=${i + 1}): ${message}`);
-          }
-        }
-
-        if (attachmentIds.length > 0) {
+      const { createdTaskIds } = materializeTaskBundleTasks({
+        draftId,
+        tasks: bundle.tasks,
+        now,
+        taskStore: taskCtx.taskStore,
+        attachmentStore: taskCtx.attachmentStore,
+        metrics: taskCtx.metrics,
+        metricReason: "planner_draft",
+        buildAttachmentUrl: (attachmentId) => deps.buildAttachmentRawUrl(url, attachmentId),
+        onTaskMaterialized: ({ task }) => {
+          deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: now });
           try {
-            taskCtx.attachmentStore.assignAttachmentsToTask(created.id, attachmentIds);
+            upsertTaskNotificationBinding({
+              authUserId,
+              workspaceRoot: taskCtx.workspaceRoot,
+              taskId: task.id,
+              taskTitle: task.title,
+              now,
+              logger: deps.logger,
+            });
           } catch (error) {
-            try {
-              taskCtx.taskStore.deleteTask(created.id);
-            } catch {
-              // ignore
-            }
             const message = error instanceof Error ? error.message : String(error);
-            throw new Error(`Assign attachments failed (idx=${i + 1}): ${message}`);
+            deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${task.id} err=${message}`);
           }
-        }
-
-        const attachments = buildTaskAttachments({
-          taskId: created.id,
-          url,
-          deps,
-          attachmentStore: taskCtx.attachmentStore,
-        });
-
-        recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "planner_draft" });
-        deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: { ...created, attachments }, ts: now });
-        createdTaskIds.push(created.id);
-
-        try {
-          upsertTaskNotificationBinding({
-            authUserId,
-            workspaceRoot: taskCtx.workspaceRoot,
-            taskId: created.id,
-            taskTitle: created.title,
-            now,
-            logger: deps.logger,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          deps.logger.warn(`[Web][TaskNotifications] upsert binding failed taskId=${created.id} err=${message}`);
-        }
-      }
+        },
+      });
 
       const approved = approveTaskBundleDraft({ authUserId, draftId, approvedTaskIds: createdTaskIds, now });
       if (approved) {

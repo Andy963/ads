@@ -50,6 +50,33 @@ type AttachmentStoreLike = {
   }>;
 };
 
+export function mapTaskAttachments(params: {
+  taskId: string;
+  attachmentStore: AttachmentStoreLike;
+  buildAttachmentUrl: (attachmentId: string) => string;
+}): Array<{
+  id: string;
+  url: string;
+  sha256: string;
+  width: number;
+  height: number;
+  contentType: string;
+  sizeBytes: number;
+  filename: string | null;
+}> {
+  const attachments = params.attachmentStore.listAttachmentsForTask(params.taskId);
+  return attachments.map((a) => ({
+    id: a.id,
+    url: params.buildAttachmentUrl(a.id),
+    sha256: a.sha256,
+    width: a.width,
+    height: a.height,
+    contentType: a.contentType,
+    sizeBytes: a.sizeBytes,
+    filename: a.filename,
+  }));
+}
+
 export function buildTaskAttachments(params: {
   taskId: string;
   url: URL;
@@ -65,15 +92,9 @@ export function buildTaskAttachments(params: {
   sizeBytes: number;
   filename: string | null;
 }> {
-  const attachments = params.attachmentStore.listAttachmentsForTask(params.taskId);
-  return attachments.map((a) => ({
-    id: a.id,
-    url: params.deps.buildAttachmentRawUrl(params.url, a.id),
-    sha256: a.sha256,
-    width: a.width,
-    height: a.height,
-    contentType: a.contentType,
-    sizeBytes: a.sizeBytes,
-    filename: a.filename,
-  }));
+  return mapTaskAttachments({
+    taskId: params.taskId,
+    attachmentStore: params.attachmentStore,
+    buildAttachmentUrl: (attachmentId) => params.deps.buildAttachmentRawUrl(params.url, attachmentId),
+  });
 }
