@@ -88,6 +88,12 @@
 - `server/web/server/planner/specValidation.ts`：新增（task bundle 草稿/审批的 `specRef` 归一与目录/文件完整性校验）。
 - `server/web/server/ws/handlePrompt.ts`：更新（planner 草稿写入前校验 `specRef`；auto-approve 也校验 spec 文件完整性；并在 summary 中汇总未写入原因）。
 - `server/web/server/api/routes/taskBundleDrafts.ts`：更新（approve API 在执行前校验 `specRef` + spec 文件完整性，失败写入 lastError 并返回 400）。
+- `server/web/server/api/routes/shared.ts`：新增（抽取 route 级共享 helper：task context 解析、JSON body 读取、task attachments payload 组装）。
+- `server/web/server/api/routes/tasks/shared.ts`：重构（改为 re-export 通用 route helper，仅保留 task-specific status parsing，减少 helper 被困在 `tasks/` 子目录里的结构漂移）。
+- `server/web/server/api/routes/taskQueue.ts`：重构（复用通用 route helper，保持 `status/run/pause` 语义不变并减少跨路由重复实现）。
+- `server/web/server/api/routes/taskBundleDrafts.ts`：重构（复用通用 route helper，并收敛 draft id/workspace draft 校验、attachment payload 组装与 approve 后 queue promote 分支）。
+- `server/web/server/planner/{taskBundle.ts,taskBundleApprover.ts,riskDetector.ts,draftRecovery.ts}`：阅读（梳理 planner draft parse/approval/recovery/risk 边界，为后续 approval materialization 收敛做准备）。
+- `server/web/commandRouter.ts`：阅读（slash command 分发仍有参数解析/skill 命令输出样板重复，但本轮未改）。
 - `server/utils/activityTracker/text.ts`：重构（`safeJsonParse()` 改为代理到 `safeParseJson()`，收敛 JSON parse 语义）。
 - `server/tasks/storeImpl/normalize.ts`：重构（`parseJson()` 改为代理到 `safeParseJsonFromUnknown()`，删除本地重复实现）。
 - `server/tasks/storeImpl/taskOps.ts`：修复（`reorderPendingTasks()` 对传入 ids 做 pending 集合校验，避免静默部分重排）。
@@ -188,6 +194,7 @@
 - `docs/spec/20260313-2249-project-wide-refactor-pass-37/`：新增（web workspace path/root 归一化 helper 收敛，统一 API/task queue/WS metadata 的 workspace root 解析语义并补齐 nested-path 回归测试）。
 - `docs/spec/20260313-2332-project-wide-refactor-pass-39/`：新增（任务写路径生命周期 helper 收敛，统一 `createTask()` / `updateTask()` 的字段归一化与归档时间派生语义）。
 - `docs/spec/20260314-1213-project-wide-refactor-pass-40/`：新增（scheduler runtime 的 workspace root 归一化收敛，统一 runtime state 的 path identity 语义并补齐 nested-path 回归测试）。
+- `docs/spec/20260314-1243-project-wide-refactor-pass-41/`：新增（web route 通用 helper 收敛，统一 taskQueue/taskBundleDrafts 与 task 子路由的共享 request-handling 语义）。
 - `docs/spec/20260313-2313-project-wide-refactor-pass-38/`：新增（前端 chat preference persist/restore 共享 helper 收敛，统一 `reasoningEffort` / `modelId` 的 normalize 与 localStorage key 语义）。
 
 ### Tests
@@ -250,6 +257,7 @@
 - `client/src/main.ts`：重构（入口文件仅保留 app mount + 调用 `installViewportCssVars()`，降低维护成本）。
 - `client/src/components/LoginGate.vue`：重构（复用 `isTextInputElement()`，去除重复的 activeElement 类型判断）。
 - `client/src/components/MainChat.vue`：修复（pending image viewer 避免同一元素上同时使用 `v-for` + `v-if`，修复 `img is not defined`/render 崩溃并稳定 `test:web`）。
+- `client/src/components/TaskCreateForm.vue`：阅读（create/edit task form state、agent defaults 与 serializer 仍有重复，已记入 backlog）。
 - `client/src/app/controllerTypes.ts` / `client/src/components/mainChat/types.ts` / `client/src/lib/chat_sync.ts`：重构（统一 `ChatPatch`/`ChatItem` 类型来源，减少前端消息模型重复定义）。
 - `client/src/components/MainChat.vue` / `client/src/app/projectsWs/wsMessage.ts`：重构（patch diff 改为结构化 `kind: "patch"` 卡片，并在消息收敛时清理展开状态，避免 UI state 与消息列表漂移）。
 - `client/src/app/tasks.ts` / `client/src/app/projectsWs/webSocketActions.ts` / `client/src/lib/chatPreferences.ts`：重构（统一 chat preference 的 `reasoningEffort` / `modelId` normalize 与 localStorage key 规则，避免 persist/restore 路径继续分叉）。
@@ -291,12 +299,16 @@
 - （已处理）`server/web/server/api/routes/{projects.ts,paths.ts}`：workspace 路径校验逻辑已收敛到 `workspacePath.ts`，减少重复实现与路由间语义漂移风险。
 - （已处理）`client/src/app/tasks/runHelpers.ts`：task/runtime 解析逻辑已收敛到 `resolveTaskRuntime()`，降低后续扩展 run 行为时的重复改动成本。
 - （已处理）`server/web/server/api/routes/tasks.ts`：create/rerun 分支共享副作用（错误提取、通知绑定、队列 promote）已收敛为 helper，降低路由内重复分支漂移风险。
+- `server/web/server/{api/routes/taskQueue.ts,api/routes/tasks/taskById.ts,api/routes/taskBundleDrafts.ts,ws/handlePrompt.ts,taskQueue/manager.ts}`：queue lifecycle 仍分散维护 `setModeAll()` / `resume()` / `queueRunning` / `promoteQueuedTasksToPending()` 编排；应收敛到单一入口，避免 run/resume/auto-approve 继续漂移。
+- `server/web/server/{api/routes/taskBundleDrafts.ts,ws/handlePrompt.ts}`：planner draft approval/materialization 仍各自编排 create task、attachments、broadcast、approve race 与 queue side effects；建议提取共享 helper，避免 HTTP 与 WS 路径继续分叉。
 - （已处理）`client/src/app/projectsWs/projectName.ts`：占位名判定与文本归一已收敛为 helper，降低默认名规则扩展时的分支重复风险。
 - （已处理）`client/src/app/tasks.ts` / `client/src/app/projectsWs/webSocketActions.ts`：chat preference persist/restore 已统一复用 `client/src/lib/chatPreferences.ts`，降低 storage key 与 normalize 规则漂移风险。
 - （已处理）`server/workspace/detector.ts`：公开 helper 已统一走 workspace root 归一化，消除子目录入参导致的 state/spec/template 落点漂移。
 - （已处理）`server/tasks/storeImpl/{taskOps.ts,normalize.ts,mappers.ts}`：任务字段归一化已收敛为共享 helper，统一 create/update/read 的 `model` / nullable string 语义并补齐 legacy row 回归。
 - `server/storage/database.ts`：仍存在调用侧 `path.resolve()` 与 detector 内部 root 归一化双层收敛；后续可评估是否进一步内聚为单一 workspace path 解析入口，减少语义重复。
 - （部分处理）`client/src/App.vue`：已移除 viewport height 同步与 queued prompt mapping 重复逻辑；仍建议按域拆分 composables（`useProjectsUi()` / `useDraftsUi()` / `useTaskUi()`）并将对话/队列侧栏拆成子组件，降低耦合与重渲染风险。
+- `client/src/app/{controller.ts,projectsWs/webSocketActions.ts}`：worker/planner/reviewer runtime registry、迁移与关闭逻辑仍是三套并行分支；建议抽象成统一 mode/runtime registry，降低连接生命周期规则漂移风险。
+- `client/src/components/{TaskCreateForm.vue,TaskBoard.vue}`：create/edit task form model、agent default 与字段 serializer 仍重复；建议提取共享 task form model/composable，避免任务 schema 演进时双改漏改。
 
 ### Performance
 
@@ -318,12 +330,12 @@
 - `server/telegram/`（除 `utils/{threadStorage,sessionManager,urlHandler,fileHandler,imageHandler,transcriptCorrection}.ts` 外）
 - `server/types/`
 - `server/utils/`（除已列出的文件外）
-- `server/web/`（除 `utils.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/session.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/startWebServer.ts` / `server/api/handler.ts` / `server/taskQueue/manager.ts` / `server/planner/taskBundleDraftStore.ts` / `server/planner/specValidation.ts` / `server/api/routes/tasks.ts` / `server/api/routes/{workspacePath.ts,projects.ts,paths.ts}` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskQueue.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
+- `server/web/`（除 `utils.ts` / `commandRouter.ts` / `auth/cookies.ts` / `auth/sessions.ts` / `api/taskRun.ts` / `server/ws/server.ts` / `server/ws/session.ts` / `server/ws/handlePrompt.ts` / `server/ws/taskResume.ts` / `server/ws/handleTaskResume.ts` / `server/httpServer.ts` / `server/startWebServer.ts` / `server/api/handler.ts` / `server/api/routes/shared.ts` / `server/taskQueue/manager.ts` / `server/planner/{taskBundle.ts,taskBundleApprover.ts,taskBundleDraftStore.ts,specValidation.ts,riskDetector.ts,draftRecovery.ts}` / `server/api/routes/tasks.ts` / `server/api/routes/{workspacePath.ts,projects.ts,paths.ts}` / `server/api/routes/tasks/{tasks.ts,tasks/taskById.ts,tasks/shared.ts,tasks/chat.ts}` / `server/api/routes/schedules.ts` / `server/api/routes/taskQueue.ts` / `server/api/routes/taskBundleDrafts.ts` / `taskNotifications/{store.ts,telegramNotifier.ts,telegramConfig.ts,schema.ts}` 外）
 - `server/workspace/`（除 `detector.ts` / `adsPaths.ts` / `service.ts` / `rulesService.ts` / `context/workflowContext/{db,types}.ts` 外）
 
 ### Frontend (`client/src/`)
 
 - `client/src/app/`（除 `chatExecute.ts` / `chatStreaming.ts` / `taskBundleDrafts.ts` / `taskBundleDraftsState.ts` / `controller.ts` / `controllerTypes.ts` / `tasks.ts` / `tasks/localState.ts` / `tasks/selection.ts` / `tasks/reorder.ts` / `tasks/events.ts` / `tasks/notice.ts` / `tasks/runHelpers.ts` / `projectsWs/webSocketActions.ts` / `projectsWs/projectActions.ts` / `projectsWs/projectName.ts` / `projectsWs/wsMessage.ts` 外）
-- `client/src/components/`（除 `TaskDetail.vue` / `TaskBoard.vue` / `TaskList.vue` / `MainChat.vue` / `MarkdownContent.vue` / `mainChat/types.ts` / `mainChat/useCopyMessage.ts` / `LoginGate.vue` 外）
+- `client/src/components/`（除 `TaskDetail.vue` / `TaskBoard.vue` / `TaskList.vue` / `MainChat.vue` / `MarkdownContent.vue` / `TaskCreateForm.vue` / `mainChat/types.ts` / `mainChat/useCopyMessage.ts` / `LoginGate.vue` 外）
 - `client/src/lib/`（除 `task_sort.ts` / `chat_sync.ts` / `live_activity.ts` / `markdown.ts` / `clipboard.ts` / `base64url.ts` / `dom.ts` / `viewport.ts` / `chatPreferences.ts` 外）
 - `client/src/__tests__/`（除 `execute-preview-queue-order.test.ts` 外）

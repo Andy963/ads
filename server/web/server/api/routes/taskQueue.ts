@@ -1,21 +1,9 @@
 import type { TaskQueueContext } from "../../taskQueue/manager.js";
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { sendJson } from "../../http.js";
+import { resolveTaskContextOrSendBadRequest } from "./shared.js";
 
 type TaskQueueRouteDeps = Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending">;
-
-function resolveTaskContextOrSendBadRequest(
-  ctx: Pick<ApiRouteContext, "url" | "res">,
-  deps: Pick<TaskQueueRouteDeps, "resolveTaskContext">,
-): TaskQueueContext | null {
-  try {
-    return deps.resolveTaskContext(ctx.url);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendJson(ctx.res, 400, { error: message });
-    return null;
-  }
-}
 
 function ensureTaskQueueEnabled(
   ctx: Pick<ApiRouteContext, "res">,
@@ -56,7 +44,7 @@ export async function handleTaskQueueRoutes(
   const { req, res, pathname, url } = ctx;
 
   if (req.method === "GET" && pathname === "/api/task-queue/status") {
-    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
     if (!taskCtx) {
       return true;
     }
@@ -65,7 +53,7 @@ export async function handleTaskQueueRoutes(
   }
 
   if (req.method === "GET" && pathname === "/api/task-queue/metrics") {
-    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
     if (!taskCtx) {
       return true;
     }
@@ -77,7 +65,7 @@ export async function handleTaskQueueRoutes(
     if (!ensureTaskQueueEnabled({ res }, deps)) {
       return true;
     }
-    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
     if (!taskCtx) {
       return true;
     }
@@ -102,7 +90,7 @@ export async function handleTaskQueueRoutes(
     if (!ensureTaskQueueEnabled({ res }, deps)) {
       return true;
     }
-    const taskCtx = resolveTaskContextOrSendBadRequest({ url, res }, deps);
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
     if (!taskCtx) {
       return true;
     }

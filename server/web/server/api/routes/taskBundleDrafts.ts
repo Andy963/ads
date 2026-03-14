@@ -3,7 +3,7 @@ import { z } from "zod";
 import { recordTaskQueueMetric } from "../../taskQueue/manager.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
-import { readJsonBody, sendJson } from "../../http.js";
+import { sendJson } from "../../http.js";
 
 import { taskBundleSchema, type TaskBundle } from "../../planner/taskBundle.js";
 import { validateTaskBundleSpec } from "../../planner/specValidation.js";
@@ -16,9 +16,67 @@ import {
   updateTaskBundleDraft,
 } from "../../planner/taskBundleDraftStore.js";
 import { upsertTaskNotificationBinding } from "../../../taskNotifications/store.js";
+import { normalizeCreateTaskInput } from "../../planner/taskBundleApprover.js";
 import {
-  normalizeCreateTaskInput,
-} from "../../planner/taskBundleApprover.js";
+  buildTaskAttachments,
+  readJsonBodyOrSendBadRequest,
+  resolveTaskContextOrSendBadRequest,
+} from "./shared.js";
+
+const updateTaskBundleDraftSchema = z.object({ bundle: z.unknown() }).passthrough();
+const approveTaskBundleDraftSchema = z.object({ runQueue: z.boolean().optional() }).passthrough();
+
+function getDraftIdOrSendBadRequest(rawDraftId: unknown, res: ApiRouteContext["res"]): string | null {
+  const draftId = String(rawDraftId ?? "").trim();
+  if (draftId) {
+    return draftId;
+  }
+  sendJson(res, 400, { error: "draftId is required" });
+  return null;
+}
+
+function getDraftForWorkspaceOrSendError(args: {
+  authUserId: string;
+  draftId: string;
+  workspaceRoot: string;
+  res: ApiRouteContext["res"];
+}): ReturnType<typeof getTaskBundleDraft> {
+  const existing = getTaskBundleDraft({ authUserId: args.authUserId, draftId: args.draftId });
+  if (!existing) {
+    sendJson(args.res, 404, { error: "Not Found" });
+    return null;
+  }
+  if (existing.workspaceRoot !== args.workspaceRoot) {
+    sendJson(args.res, 409, { error: "Draft workspace mismatch" });
+    return null;
+  }
+  return existing;
+}
+
+function maybePromoteApprovedDraftTasks(args: {
+  deps: Pick<ApiSharedDeps, "logger" | "promoteQueuedTasksToPending">;
+  taskCtx: ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+  draftId: string;
+  runQueue: boolean;
+  ownedApproval: boolean;
+}): void {
+  const shouldStartQueue = args.ownedApproval && args.runQueue;
+  const shouldPromoteQueuedTasks = shouldStartQueue || (args.taskCtx.queueRunning && args.taskCtx.runController.getMode() === "all");
+  if (shouldStartQueue) {
+    args.taskCtx.runController.setModeAll();
+    args.taskCtx.taskQueue.resume();
+    args.taskCtx.queueRunning = true;
+  }
+  if (!shouldPromoteQueuedTasks) {
+    return;
+  }
+  try {
+    args.deps.promoteQueuedTasksToPending(args.taskCtx);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    args.deps.logger.warn(`[Web][TaskQueue] promote queued tasks after approve failed draftId=${args.draftId} err=${message}`);
+  }
+}
 
 export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url, auth } = ctx;
@@ -30,12 +88,8 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
 
   const listPath = "/api/task-bundle-drafts";
   if (req.method === "GET" && pathname === listPath) {
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) {
       return true;
     }
     const drafts = listTaskBundleDrafts({ authUserId, workspaceRoot: taskCtx.workspaceRoot });
@@ -45,30 +99,21 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
 
   const updateMatch = /^\/api\/task-bundle-drafts\/([^/]+)$/.exec(pathname);
   if (updateMatch && req.method === "PATCH") {
-    const draftId = String(updateMatch[1] ?? "").trim();
+    const draftId = getDraftIdOrSendBadRequest(updateMatch[1], res);
     if (!draftId) {
-      sendJson(res, 400, { error: "draftId is required" });
       return true;
     }
 
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) {
       return true;
     }
 
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
+    const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+    if (!bodyResult.ok) {
       return true;
     }
-    const schema = z.object({ bundle: z.unknown() }).passthrough();
-    const parsed = schema.safeParse(body ?? {});
+    const parsed = updateTaskBundleDraftSchema.safeParse(bodyResult.body ?? {});
     if (!parsed.success) {
       sendJson(res, 400, { error: "Invalid payload" });
       return true;
@@ -80,13 +125,13 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       return true;
     }
 
-    const existing = getTaskBundleDraft({ authUserId, draftId });
+    const existing = getDraftForWorkspaceOrSendError({
+      authUserId,
+      draftId,
+      workspaceRoot: taskCtx.workspaceRoot,
+      res,
+    });
     if (!existing) {
-      sendJson(res, 404, { error: "Not Found" });
-      return true;
-    }
-    if (existing.workspaceRoot !== taskCtx.workspaceRoot) {
-      sendJson(res, 409, { error: "Draft workspace mismatch" });
       return true;
     }
     if (existing.status !== "draft") {
@@ -105,28 +150,23 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
 
   const deleteMatch = /^\/api\/task-bundle-drafts\/([^/]+)$/.exec(pathname);
   if (deleteMatch && req.method === "DELETE") {
-    const draftId = String(deleteMatch[1] ?? "").trim();
+    const draftId = getDraftIdOrSendBadRequest(deleteMatch[1], res);
     if (!draftId) {
-      sendJson(res, 400, { error: "draftId is required" });
       return true;
     }
 
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) {
       return true;
     }
 
-    const existing = getTaskBundleDraft({ authUserId, draftId });
+    const existing = getDraftForWorkspaceOrSendError({
+      authUserId,
+      draftId,
+      workspaceRoot: taskCtx.workspaceRoot,
+      res,
+    });
     if (!existing) {
-      sendJson(res, 404, { error: "Not Found" });
-      return true;
-    }
-    if (existing.workspaceRoot !== taskCtx.workspaceRoot) {
-      sendJson(res, 409, { error: "Draft workspace mismatch" });
       return true;
     }
 
@@ -137,43 +177,34 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
 
   const approveMatch = /^\/api\/task-bundle-drafts\/([^/]+)\/approve$/.exec(pathname);
   if (approveMatch && req.method === "POST") {
-    const draftId = String(approveMatch[1] ?? "").trim();
+    const draftId = getDraftIdOrSendBadRequest(approveMatch[1], res);
     if (!draftId) {
-      sendJson(res, 400, { error: "draftId is required" });
       return true;
     }
 
-    let taskCtx;
-    try {
-      taskCtx = deps.resolveTaskContext(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) {
       return true;
     }
 
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
+    const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
+    if (!bodyResult.ok) {
       return true;
     }
-    const schema = z.object({ runQueue: z.boolean().optional() }).passthrough();
-    const parsed = schema.safeParse(body ?? {});
+    const parsed = approveTaskBundleDraftSchema.safeParse(bodyResult.body ?? {});
     if (!parsed.success) {
       sendJson(res, 400, { error: "Invalid payload" });
       return true;
     }
     const runQueue = Boolean(parsed.data.runQueue);
 
-    const existing = getTaskBundleDraft({ authUserId, draftId });
+    const existing = getDraftForWorkspaceOrSendError({
+      authUserId,
+      draftId,
+      workspaceRoot: taskCtx.workspaceRoot,
+      res,
+    });
     if (!existing) {
-      sendJson(res, 404, { error: "Not Found" });
-      return true;
-    }
-    if (existing.workspaceRoot !== taskCtx.workspaceRoot) {
-      sendJson(res, 409, { error: "Draft workspace mismatch" });
       return true;
     }
 
@@ -249,16 +280,12 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
           }
         }
 
-        const attachments = taskCtx.attachmentStore.listAttachmentsForTask(created.id).map((a) => ({
-          id: a.id,
-          url: deps.buildAttachmentRawUrl(url, a.id),
-          sha256: a.sha256,
-          width: a.width,
-          height: a.height,
-          contentType: a.contentType,
-          sizeBytes: a.sizeBytes,
-          filename: a.filename,
-        }));
+        const attachments = buildTaskAttachments({
+          taskId: created.id,
+          url,
+          deps,
+          attachmentStore: taskCtx.attachmentStore,
+        });
 
         recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: "planner_draft" });
         deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: { ...created, attachments }, ts: now });
@@ -297,24 +324,7 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
         ownedApproval = false;
       }
 
-      if (ownedApproval && runQueue) {
-        taskCtx.runController.setModeAll();
-        taskCtx.taskQueue.resume();
-        taskCtx.queueRunning = true;
-        try {
-          deps.promoteQueuedTasksToPending(taskCtx);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          deps.logger.warn(`[Web][TaskQueue] promote queued tasks after approve failed draftId=${draftId} err=${message}`);
-        }
-      } else if (taskCtx.queueRunning && taskCtx.runController.getMode() === "all") {
-        try {
-          deps.promoteQueuedTasksToPending(taskCtx);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          deps.logger.warn(`[Web][TaskQueue] promote queued tasks after approve failed draftId=${draftId} err=${message}`);
-        }
-      }
+      maybePromoteApprovedDraftTasks({ deps, taskCtx, draftId, runQueue, ownedApproval });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       try {
