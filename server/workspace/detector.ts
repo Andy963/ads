@@ -179,21 +179,28 @@ function resolveRequestedWorkspaceRoot(workspace?: string): string {
   return workspace ? resolveWorkspaceRoot(workspace) : detectWorkspace();
 }
 
+export function resolveConfiguredDatabasePath(): string | null {
+  const envDb = process.env.ADS_DATABASE_PATH || process.env.DATABASE_URL;
+  if (!envDb) {
+    return null;
+  }
+  const normalized = envDb.replace(/^sqlite:\/\//, "");
+  const resolved = path.isAbsolute(normalized) ? normalized : path.resolve(normalized);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  if (!existsSync(resolved)) {
+    fs.writeFileSync(resolved, "");
+  }
+  return resolved;
+}
+
 export function getWorkspaceDbPath(workspace?: string): string {
   const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
 
   // 始终尊重环境变量覆盖（测试场景依赖 ADS_DATABASE_PATH）
-  const envDb = process.env.ADS_DATABASE_PATH || process.env.DATABASE_URL;
-  if (envDb) {
-    const normalized = envDb.replace(/^sqlite:\/\//, "");
-    const resolved = path.isAbsolute(normalized) ? normalized : path.resolve(normalized);
-    const dir = path.dirname(resolved);
-    fs.mkdirSync(dir, { recursive: true });
-    if (!existsSync(resolved)) {
-      fs.writeFileSync(resolved, "");
-    }
-    return resolved;
+  const configuredPath = resolveConfiguredDatabasePath();
+  if (configuredPath) {
+    return configuredPath;
   }
 
   const dbPath = resolveWorkspaceStatePath(root, "ads.db");

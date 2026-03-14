@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { getDatabase, resetDatabaseForTests } from "../../server/storage/database.js";
+import { getDatabase, getDatabaseInfo, resetDatabaseForTests } from "../../server/storage/database.js";
+import { withWorkspaceContext } from "../../server/workspace/asyncWorkspaceContext.js";
+import { initializeWorkspace } from "../../server/workspace/detector.js";
+import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
+import { installTempAdsStateDir } from "../helpers/adsStateDir.js";
 
 describe("storage/database", () => {
   let tmpDir: string;
@@ -173,5 +177,64 @@ describe("storage/database", () => {
     const db2 = getDatabase();
     assert.ok(db2, "Second database should be created");
     assert.notStrictEqual(db1, db2, "Should be different instances after reset");
+  });
+
+  it("should normalize relative ADS_DATABASE_PATH in database info", () => {
+    const previousCwd = process.cwd();
+    const relativeDbPath = path.join("relative", "test.db");
+    fs.mkdirSync(path.join(tmpDir, "relative"), { recursive: true });
+    process.chdir(tmpDir);
+    process.env.ADS_DATABASE_PATH = relativeDbPath;
+    resetDatabaseForTests();
+
+    try {
+      const info = getDatabaseInfo();
+      assert.strictEqual(info.path, path.join(tmpDir, relativeDbPath));
+      assert.ok(fs.existsSync(info.path), "Relative override should be materialized as an absolute file path");
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it("should resolve nested workspace paths through workspace root in database info", () => {
+    const adsState = installTempAdsStateDir("ads-storage-db-test-");
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-storage-workspace-"));
+    fs.mkdirSync(path.join(workspaceDir, ".git"), { recursive: true });
+    const nestedDir = path.join(workspaceDir, "nested", "dir");
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    delete process.env.ADS_DATABASE_PATH;
+    resetDatabaseForTests();
+
+    try {
+      initializeWorkspace(workspaceDir, "Storage Workspace");
+      const info = getDatabaseInfo(nestedDir);
+      assert.strictEqual(info.path, resolveWorkspaceStatePath(workspaceDir, "ads.db"));
+      assert.ok(fs.existsSync(info.path), "Workspace database should be created under the resolved workspace root");
+    } finally {
+      adsState.restore();
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should resolve async workspace context through workspace root in database info", async () => {
+    const adsState = installTempAdsStateDir("ads-storage-db-context-");
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-storage-context-"));
+    fs.mkdirSync(path.join(workspaceDir, ".git"), { recursive: true });
+    const nestedDir = path.join(workspaceDir, "nested", "context");
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    delete process.env.ADS_DATABASE_PATH;
+    resetDatabaseForTests();
+
+    try {
+      initializeWorkspace(workspaceDir, "Storage Context Workspace");
+      const info = await withWorkspaceContext(nestedDir, () => getDatabaseInfo());
+      assert.strictEqual(info.path, resolveWorkspaceStatePath(workspaceDir, "ads.db"));
+      assert.ok(fs.existsSync(info.path), "Async workspace context should resolve to the workspace root database");
+    } finally {
+      adsState.restore();
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
   });
 });

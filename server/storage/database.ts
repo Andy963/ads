@@ -3,7 +3,7 @@ import path from "node:path";
 
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
-import { detectWorkspace, getWorkspaceDbPath } from "../workspace/detector.js";
+import { detectWorkspace, getWorkspaceDbPath, resolveConfiguredDatabasePath } from "../workspace/detector.js";
 import { getWorkspaceContextRoot } from "../workspace/asyncWorkspaceContext.js";
 import { parseNonNegativeIntFlag } from "../utils/flags.js";
 import { migrations } from "./migrations.js";
@@ -30,28 +30,26 @@ function readPackageName(): string | null {
 }
 
 function resolveDatabasePath(workspacePath?: string): string {
-  const envDb = process.env.ADS_DATABASE_PATH || process.env.DATABASE_URL;
-  if (envDb) {
-    return envDb.replace(/^sqlite:\/\//, "");
+  const configuredPath = resolveConfiguredDatabasePath();
+  if (configuredPath) {
+    return configuredPath;
   }
 
-  // If explicit workspace path provided, use it
-  if (workspacePath) {
-    return getWorkspaceDbPath(path.resolve(workspacePath));
+  const requestedWorkspace = String(workspacePath ?? "").trim();
+  if (requestedWorkspace) {
+    return getWorkspaceDbPath(requestedWorkspace);
   }
 
   const contextWorkspace = getWorkspaceContextRoot();
   if (contextWorkspace && fs.existsSync(contextWorkspace)) {
-    return getWorkspaceDbPath(path.resolve(contextWorkspace));
+    return getWorkspaceDbPath(contextWorkspace);
   }
 
-  // If AD_WORKSPACE env is set, use that workspace's database
   const envWorkspace = process.env.AD_WORKSPACE;
   if (envWorkspace) {
-    return getWorkspaceDbPath(path.resolve(envWorkspace));
+    return getWorkspaceDbPath(envWorkspace);
   }
 
-  // For ADS project itself (development), use project root database
   const projectName = readPackageName();
   if (projectName === "ads") {
     return path.join(PROJECT_ROOT, "ads.db");
@@ -61,7 +59,7 @@ function resolveDatabasePath(workspacePath?: string): string {
     const workspaceRoot = detectWorkspace();
     return getWorkspaceDbPath(workspaceRoot);
   } catch {
-    return path.join(process.cwd(), "ads.db");
+    return path.resolve(process.cwd(), "ads.db");
   }
 }
 
