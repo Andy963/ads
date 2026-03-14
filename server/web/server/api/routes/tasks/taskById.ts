@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
 import { sendJson } from "../../../http.js";
 import { notifyTaskTerminalViaTelegram } from "../../../../taskNotifications/telegramNotifier.js";
+import { pauseQueueInManualMode, startQueueInAllMode } from "../../../../taskQueue/control.js";
 import { buildTaskAttachments, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./shared.js";
 
 export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
@@ -64,13 +65,9 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       }
       const parsed = result.data;
       if (parsed.action === "pause") {
-        taskCtx.taskQueue.pause("api");
-        taskCtx.queueRunning = false;
-        taskCtx.runController.setModeManual();
+        pauseQueueInManualMode(taskCtx, "api");
       } else if (parsed.action === "resume") {
-        taskCtx.taskQueue.resume();
-        taskCtx.queueRunning = true;
-        taskCtx.runController.setModeAll();
+        startQueueInAllMode(taskCtx);
       } else if (parsed.action === "cancel") {
         const existing = taskCtx.taskStore.getTask(taskId);
         if (!existing) {

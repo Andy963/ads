@@ -1,6 +1,7 @@
 import type { TaskQueueContext } from "../../taskQueue/manager.js";
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { sendJson } from "../../http.js";
+import { pauseQueueInManualMode, startQueueInAllMode } from "../../../taskQueue/control.js";
 import { resolveTaskContextOrSendBadRequest } from "./shared.js";
 
 type TaskQueueRouteDeps = Pick<ApiSharedDeps, "taskQueueAvailable" | "resolveTaskContext" | "promoteQueuedTasksToPending">;
@@ -70,9 +71,7 @@ export async function handleTaskQueueRoutes(
       return true;
     }
     const action = async () => {
-      taskCtx.runController.setModeAll();
-      taskCtx.taskQueue.resume();
-      taskCtx.queueRunning = true;
+      startQueueInAllMode(taskCtx);
       deps.promoteQueuedTasksToPending(taskCtx);
       taskCtx.runController.maybePauseAfterDrain(taskCtx);
     };
@@ -94,9 +93,7 @@ export async function handleTaskQueueRoutes(
     if (!taskCtx) {
       return true;
     }
-    taskCtx.runController.setModeManual();
-    taskCtx.taskQueue.pause("manual");
-    taskCtx.queueRunning = false;
+    pauseQueueInManualMode(taskCtx, "manual");
     sendJson(res, 200, buildQueueStatusPayload({ taskCtx, enabled: deps.taskQueueAvailable, success: true }));
     return true;
   }
