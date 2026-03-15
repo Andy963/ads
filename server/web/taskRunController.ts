@@ -30,16 +30,9 @@ function shouldNormalizeToPending(status: TaskStatus): boolean {
 }
 
 function toFrontQueueOrder(store: TaskStore, now: number): number {
-  const pending = store.listTasks({ status: "pending", limit: 2000 });
-  if (pending.length === 0) {
+  const min = store.getMinPendingQueueOrder();
+  if (min == null) {
     return now;
-  }
-  let min = pending[0]?.queueOrder ?? now;
-  for (const task of pending) {
-    const order = typeof task.queueOrder === "number" && Number.isFinite(task.queueOrder) ? task.queueOrder : now;
-    if (order < min) {
-      min = order;
-    }
   }
   const next = min - 1;
   // Guard against NaN/Infinity. Also keep queueOrder in safe integer range.

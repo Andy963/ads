@@ -62,6 +62,16 @@ export class TaskStore {
     return this.taskOps.listTasks(filter);
   }
 
+  getMinPendingQueueOrder(): number | null {
+    const row = this.stmts.selectMinPendingQueueOrderStmt.get() as { min?: unknown } | undefined;
+    const value = row?.min;
+    if (value == null) {
+      return null;
+    }
+    const min = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(min) ? min : null;
+  }
+
   updateTask(id: string, updates: Partial<Omit<Task, "id">>, now = Date.now()): Task {
     return this.taskOps.updateTask(id, updates, now);
   }

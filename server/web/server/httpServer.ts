@@ -104,9 +104,17 @@ export function createHttpServer(options: {
   const distClientDir = fs.existsSync(path.join(PROJECT_ROOT, "server", "cli.js"))
     ? path.join(PROJECT_ROOT, "client")
     : path.join(PROJECT_ROOT, "dist", "client");
+  const distClientIndexPath = path.join(distClientDir, "index.html");
+  let distClientReady = false;
+
+  const isDistClientReady = (): boolean => {
+    if (distClientReady) return true;
+    distClientReady = fs.existsSync(distClientIndexPath);
+    return distClientReady;
+  };
 
   const serveTasksUi = (req: http.IncomingMessage, res: http.ServerResponse, url: string): boolean => {
-    if (!fs.existsSync(distClientDir)) {
+    if (!isDistClientReady()) {
       setSecurityHeaders(res);
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Web app not built. Run: npm run build:web\n");
@@ -125,7 +133,14 @@ export function createHttpServer(options: {
     }
 
     if (safeRel === "/" || safeRel === "") {
-      return serveFile(req, res, path.join(distClientDir, "index.html"));
+      if (serveFile(req, res, distClientIndexPath)) {
+        return true;
+      }
+      distClientReady = false;
+      setSecurityHeaders(res);
+      res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Web app not built. Run: npm run build:web\n");
+      return true;
     }
 
     if (serveFile(req, res, resolved)) {
@@ -133,7 +148,14 @@ export function createHttpServer(options: {
     }
 
     if (!path.posix.basename(safeRel).includes(".")) {
-      return serveFile(req, res, path.join(distClientDir, "index.html"));
+      if (serveFile(req, res, distClientIndexPath)) {
+        return true;
+      }
+      distClientReady = false;
+      setSecurityHeaders(res);
+      res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Web app not built. Run: npm run build:web\n");
+      return true;
     }
 
     setSecurityHeaders(res);

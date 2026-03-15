@@ -19,6 +19,7 @@ export type TaskStoreStatements = {
   promoteQueuedToPendingStmt: SqliteStatement;
 
   selectNextPendingStmt: SqliteStatement;
+  selectMinPendingQueueOrderStmt: SqliteStatement;
   claimTaskStmt: SqliteStatement;
 
   listPendingForReorderStmt: SqliteStatement;
@@ -158,6 +159,10 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
 
     selectNextPendingStmt: db.prepare(
       `SELECT id FROM tasks WHERE status = 'pending' ORDER BY queue_order ASC, created_at ASC LIMIT 1`,
+    ),
+
+    selectMinPendingQueueOrderStmt: db.prepare(
+      `SELECT MIN(queue_order) AS min FROM tasks WHERE status = 'pending'`,
     ),
 
     claimTaskStmt: db.prepare(

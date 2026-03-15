@@ -18,6 +18,11 @@ export interface Migration {
   up: (db: DatabaseType) => void;
 }
 
+function getTableColumnNames(db: DatabaseType, table: string): Set<string> {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+  return new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+}
+
 /**
  * 迁移列表 - 按版本号顺序排列
  * 新迁移添加到数组末尾
@@ -241,8 +246,7 @@ export const migrations: Migration[] = [
     version: 4,
     description: "Task ordering - add queue_order to tasks",
     up: (db) => {
-      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
-      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      const names = getTableColumnNames(db, "tasks");
       if (!names.has("queue_order")) {
         db.exec(`ALTER TABLE tasks ADD COLUMN queue_order INTEGER`);
       }
@@ -263,8 +267,7 @@ export const migrations: Migration[] = [
     version: 5,
     description: "Task queue - add queued_at to tasks for delayed enqueue UX",
     up: (db) => {
-      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
-      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      const names = getTableColumnNames(db, "tasks");
       if (!names.has("queued_at")) {
         db.exec(`ALTER TABLE tasks ADD COLUMN queued_at INTEGER`);
       }
@@ -309,8 +312,7 @@ export const migrations: Migration[] = [
     version: 7,
     description: "Task queue - add prompt_injected_at for delayed prompt injection idempotency",
     up: (db) => {
-      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
-      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      const names = getTableColumnNames(db, "tasks");
       if (!names.has("prompt_injected_at")) {
         db.exec(`ALTER TABLE tasks ADD COLUMN prompt_injected_at INTEGER`);
       }
@@ -325,8 +327,7 @@ export const migrations: Migration[] = [
     version: 8,
     description: "Attachments - store original filename",
     up: (db) => {
-      const columns = db.prepare(`PRAGMA table_info(attachments)`).all() as Array<{ name?: string }>;
-      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      const names = getTableColumnNames(db, "attachments");
       if (!names.has("filename")) {
         db.exec(`ALTER TABLE attachments ADD COLUMN filename TEXT`);
       }
@@ -341,8 +342,7 @@ export const migrations: Migration[] = [
     version: 10,
     description: "Tasks - add archived_at for completed task auto-archive + retention purge",
     up: (db) => {
-      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
-      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      const names = getTableColumnNames(db, "tasks");
       if (!names.has("archived_at")) {
         db.exec(`ALTER TABLE tasks ADD COLUMN archived_at INTEGER`);
       }
@@ -364,8 +364,7 @@ export const migrations: Migration[] = [
     version: 11,
     description: "Tasks - add agent_id for explicit CLI agent selection",
     up: (db) => {
-      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
-      const names = new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      const names = getTableColumnNames(db, "tasks");
       if (!names.has("agent_id")) {
         db.exec(`ALTER TABLE tasks ADD COLUMN agent_id TEXT`);
       }
@@ -426,8 +425,7 @@ export const migrations: Migration[] = [
     version: 13,
     description: "Web review workflow - task review fields, review snapshots, review queue",
     up: (db) => {
-      const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: string }>;
-      const taskNames = new Set(taskColumns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+      const taskNames = getTableColumnNames(db, "tasks");
       if (!taskNames.has("review_required")) {
         db.exec(`ALTER TABLE tasks ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0`);
       }
