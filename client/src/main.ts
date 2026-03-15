@@ -1,7 +1,7 @@
 import { createApp } from "vue";
 
-import ElementPlus from "element-plus";
-import "element-plus/dist/index.css";
+import { ElIcon } from "element-plus";
+import "element-plus/es/components/icon/style/css";
 
 import App from "./App.vue";
 import "./global.css";
@@ -11,5 +11,5 @@ import { installViewportCssVars } from "./lib/viewport";
 installViewportCssVars();
 
 const app = createApp(App);
-app.use(ElementPlus);
+app.component("ElIcon", ElIcon);
 app.mount("#app");
