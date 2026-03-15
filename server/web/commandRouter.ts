@@ -24,6 +24,16 @@ export interface CommandResult {
   output: string;
 }
 
+type CommandParams = Record<string, string>;
+
+interface CommandContext {
+  rawArgs: string[];
+  positional: string[];
+  params: CommandParams;
+}
+
+type CommandHandler = (context: CommandContext) => Promise<CommandResult>;
+
 function formatResponse(text: string): string {
   if (!text.trim()) {
     return "(无输出)";
@@ -44,6 +54,238 @@ function formatResponse(text: string): string {
     return text;
   }
 }
+
+const commandRegistry = new Map<string, CommandHandler>([
+  [
+    "ads.help",
+    async () => {
+      return { ok: true, output: buildAdsHelpMessage("cli") };
+    },
+  ],
+  [
+    "ads.init",
+    async ({ params, positional }) => {
+      const name = params.name ?? (positional.length > 0 ? positional.join(" ") : undefined);
+      const response = await initWorkspace({ name });
+      syncWorkspaceTemplates();
+      return { ok: true, output: formatResponse(response) };
+    },
+  ],
+  [
+    "ads.branch",
+    async ({ rawArgs }) => {
+      let deleteMode: "none" | "soft" | "hard" = "none";
+      let workflowArg: string | undefined;
+
+      for (let i = 0; i < rawArgs.length; i += 1) {
+        const token = rawArgs[i];
+        if (token === "-d" || token === "--delete-context") {
+          deleteMode = "soft";
+          workflowArg = rawArgs.slice(i + 1).join(" ") || workflowArg;
+          break;
+        }
+        if (token === "-D" || token === "--delete" || token === "--force-delete") {
+          deleteMode = "hard";
+          workflowArg = rawArgs.slice(i + 1).join(" ") || workflowArg;
+          break;
+        }
+      }
+
+      const operation = deleteMode === "hard" ? "force_delete" : deleteMode === "soft" ? "delete" : "list";
+      const workflow = deleteMode === "none" ? undefined : workflowArg?.trim().replace(/^['"]|['"]$/g, "");
+      const response = await listWorkflows({ operation, workflow });
+      return { ok: true, output: formatResponse(response) };
+    },
+  ],
+  [
+    "ads.checkout",
+    async ({ params, positional }) => {
+      const identifier = params.workflow_identifier ?? positional[0];
+      if (!identifier) {
+        return { ok: false, output: "❌ 需要提供工作流标识" };
+      }
+      const response = await checkoutWorkflow({ workflow_identifier: identifier, format: "cli" });
+      return { ok: true, output: formatResponse(response) };
+    },
+  ],
+  [
+    "ads.status",
+    async () => {
+      const response = await getWorkflowStatusSummary({ format: "cli" });
+      return { ok: true, output: normalizeOutput(response) };
+    },
+  ],
+  [
+    "ads.log",
+    async ({ positional, params }) => {
+      let limit: number | undefined;
+      let workflowFilter: string | undefined;
+      if (params.limit) {
+        const parsed = Number(params.limit);
+        if (Number.isFinite(parsed)) {
+          limit = parsed;
+        }
+      }
+      if (params.workflow) {
+        workflowFilter = params.workflow;
+      }
+      if (positional.length > 0) {
+        const candidate = Number(positional[0]);
+        if (Number.isFinite(candidate)) {
+          limit = candidate;
+          positional.shift();
+        }
+      }
+      if (!workflowFilter && positional.length > 0) {
+        workflowFilter = positional.join(" ");
+      }
+      const response = await listWorkflowLog({
+        limit: typeof limit === "number" && Number.isFinite(limit) ? limit : undefined,
+        workflow: workflowFilter,
+        format: "cli",
+      });
+      return { ok: true, output: normalizeOutput(response) };
+    },
+  ],
+  [
+    "ads.new",
+    async ({ params, positional }) => {
+      const titleArg = (params.title ?? positional.join(" ")).trim();
+      const templateArg = params.template_id?.trim();
+      if (!titleArg) {
+        return { ok: false, output: "❌ Missing title" };
+      }
+      const response = await createWorkflowFromTemplate({
+        template_id: templateArg,
+        title: titleArg,
+        description: params.description,
+        format: "cli",
+      });
+      return { ok: true, output: formatResponse(response) };
+    },
+  ],
+  [
+    "ads.commit",
+    async ({ params, positional }) => {
+      if (!params.step_name && positional.length > 0) {
+        params.step_name = positional.shift()!;
+      }
+      if (!params.step_name) {
+        return { ok: false, output: "❌ Missing step name" };
+      }
+      const response = await commitStep({
+        step_name: params.step_name,
+        change_description: params.change_description,
+        format: "cli",
+      });
+      return { ok: true, output: normalizeOutput(response) };
+    },
+  ],
+  [
+    "ads.rules",
+    async ({ params, positional }) => {
+      if (params.category || positional.length > 0) {
+        const category = params.category ?? positional.join(" ");
+        const response = await listRules({ category });
+        return { ok: true, output: formatResponse(response) };
+      }
+      const response = await readRules();
+      return { ok: true, output: normalizeOutput(response) };
+    },
+  ],
+  [
+    "ads.workspace",
+    async () => {
+      const response = await getCurrentWorkspace();
+      return { ok: true, output: formatResponse(response) };
+    },
+  ],
+  [
+    "ads.sync",
+    async () => {
+      const response = await syncAllNodesToFiles({});
+      return { ok: true, output: formatResponse(response) };
+    },
+  ],
+  [
+    "ads.skill.init",
+    async ({ params, positional }) => {
+      const name = (params.name ?? positional.join(" ")).trim();
+      if (!name) {
+        return {
+          ok: false,
+          output: "❌ Missing skill name",
+        };
+      }
+
+      const workspaceRoot = resolveAdsStateDir();
+      const includeExamples =
+        params.examples === "true" || params.examples === "1" || params.examples === "yes" || params.examples === "on";
+      const resources = parseResourceList(params.resources);
+      try {
+        const created = initSkill({ workspaceRoot, rawName: name, resources, includeExamples });
+        const relDir = path.relative(workspaceRoot, created.skillDir) || created.skillDir;
+        const relFiles = created.createdFiles.map((p) => path.relative(workspaceRoot, p) || p);
+        const output = [
+          `✅ Skill 已创建: ${created.skillName}`,
+          `目录: ${relDir}`,
+          relFiles.length ? `文件:\n${relFiles.map((p) => `- ${p}`).join("\n")}` : "",
+          "",
+          "提示：编辑 SKILL.md 完成 TODO，然后在对话中使用该 skill。",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return { ok: true, output };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { ok: false, output: `❌ 创建 skill 失败: ${message}` };
+      }
+    },
+  ],
+  [
+    "ads.skill.list",
+    async () => {
+      const workspaceRoot = detectWorkspace();
+      const skills = discoverSkills(workspaceRoot);
+      return { ok: true, output: renderSkillList(skills) };
+    },
+  ],
+  [
+    "ads.skill.load",
+    async ({ params, positional }) => {
+      const name = (params.name ?? positional.join(" ")).trim();
+      if (!name) {
+        return { ok: false, output: "❌ Missing skill name. Usage: /ads.skill.load <name>" };
+      }
+      const workspaceRoot = detectWorkspace();
+      const body = loadSkillBody(name, workspaceRoot);
+      if (!body) {
+        const skills = discoverSkills(workspaceRoot);
+        const available =
+          skills.length > 0 ? `可用 skill: ${skills.map((s) => s.name).join(", ")}` : "当前没有可用的 skill";
+        return { ok: false, output: `❌ Skill "${name}" 未找到。${available}` };
+      }
+      return { ok: true, output: body.trim() };
+    },
+  ],
+  [
+    "ads.skill.validate",
+    async ({ params, positional }) => {
+      const workspaceRoot = resolveAdsStateDir();
+      const arg = (params.path ?? positional.join(" ")).trim();
+      if (!arg) {
+        return { ok: false, output: "❌ Missing skill name/path" };
+      }
+
+      const looksLikePath = arg.includes("/") || arg.includes("\\") || arg.startsWith(".") || arg.startsWith("~");
+      const skillDir = looksLikePath ? arg : path.join(workspaceRoot, ".agent", "skills", normalizeSkillName(arg));
+      const result = validateSkillDirectory(skillDir);
+      const relDir = path.relative(workspaceRoot, result.skillDir) || result.skillDir;
+      const output = `${result.valid ? "✅" : "❌"} ${result.message}\n目录: ${relDir}`;
+      return { ok: result.valid, output };
+    },
+  ],
+]);
 
 export async function runAdsCommandLine(input: string): Promise<CommandResult> {
   const trimmed = input.trim();
@@ -76,209 +318,9 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
     positional.push(token.replace(/^['"]|['"]$/g, ""));
   }
 
-
-
-  switch (slash.command) {
-    case "ads.help":
-      return { ok: true, output: buildAdsHelpMessage("cli") };
-
-    case "ads.init": {
-      const name = params.name ?? (positional.length > 0 ? positional.join(" ") : undefined);
-      const response = await initWorkspace({ name });
-      syncWorkspaceTemplates();
-      return { ok: true, output: formatResponse(response) };
-    }
-
-    case "ads.branch": {
-      let deleteMode: "none" | "soft" | "hard" = "none";
-      let workflowArg: string | undefined;
-
-      for (let i = 0; i < rawArgs.length; i += 1) {
-        const token = rawArgs[i];
-        if (token === "-d" || token === "--delete-context") {
-          deleteMode = "soft";
-          workflowArg = rawArgs.slice(i + 1).join(" ") || workflowArg;
-          break;
-        }
-        if (token === "-D" || token === "--delete" || token === "--force-delete") {
-          deleteMode = "hard";
-          workflowArg = rawArgs.slice(i + 1).join(" ") || workflowArg;
-          break;
-        }
-      }
-
-      const operation = deleteMode === "hard" ? "force_delete" : deleteMode === "soft" ? "delete" : "list";
-      const workflow = deleteMode === "none" ? undefined : workflowArg?.trim().replace(/^['"]|['"]$/g, "");
-      const response = await listWorkflows({ operation, workflow });
-      return { ok: true, output: formatResponse(response) };
-    }
-
-    case "ads.checkout": {
-      const identifier = params.workflow_identifier ?? positional[0];
-      if (!identifier) {
-        return { ok: false, output: "❌ 需要提供工作流标识" };
-      }
-      const response = await checkoutWorkflow({ workflow_identifier: identifier, format: "cli" });
-      return { ok: true, output: formatResponse(response) };
-    }
-
-    case "ads.status": {
-      const response = await getWorkflowStatusSummary({ format: "cli" });
-      return { ok: true, output: normalizeOutput(response) };
-    }
-
-    case "ads.log": {
-      let limit: number | undefined;
-      let workflowFilter: string | undefined;
-      if (params.limit) {
-        const parsed = Number(params.limit);
-        if (Number.isFinite(parsed)) {
-          limit = parsed;
-        }
-      }
-      if (params.workflow) {
-        workflowFilter = params.workflow;
-      }
-      if (positional.length > 0) {
-        const candidate = Number(positional[0]);
-        if (Number.isFinite(candidate)) {
-          limit = candidate;
-          positional.shift();
-        }
-      }
-      if (!workflowFilter && positional.length > 0) {
-        workflowFilter = positional.join(" ");
-      }
-      const response = await listWorkflowLog({
-        limit: typeof limit === "number" && Number.isFinite(limit) ? limit : undefined,
-        workflow: workflowFilter,
-        format: "cli",
-      });
-      return { ok: true, output: normalizeOutput(response) };
-    }
-
-    case "ads.new": {
-      const titleArg = (params.title ?? positional.join(" ")).trim();
-      const templateArg = params.template_id?.trim();
-      if (!titleArg) {
-        return { ok: false, output: "❌ Missing title" };
-      }
-      const response = await createWorkflowFromTemplate({
-        template_id: templateArg,
-        title: titleArg,
-        description: params.description,
-        format: "cli",
-      });
-      return { ok: true, output: formatResponse(response) };
-    }
-
-    case "ads.commit": {
-      if (!params.step_name && positional.length > 0) {
-        params.step_name = positional.shift()!;
-      }
-      if (!params.step_name) {
-        return { ok: false, output: "❌ Missing step name" };
-      }
-      const response = await commitStep({ step_name: params.step_name, change_description: params.change_description, format: "cli" });
-      return { ok: true, output: normalizeOutput(response) };
-    }
-
-    case "ads.rules": {
-      if (params.category || positional.length > 0) {
-        const category = params.category ?? positional.join(" ");
-        const response = await listRules({ category });
-        return { ok: true, output: formatResponse(response) };
-      }
-      const response = await readRules();
-      return { ok: true, output: normalizeOutput(response) };
-    }
-
-    case "ads.workspace": {
-      const response = await getCurrentWorkspace();
-      return { ok: true, output: formatResponse(response) };
-    }
-
-    case "ads.sync": {
-      const response = await syncAllNodesToFiles({});
-      return { ok: true, output: formatResponse(response) };
-    }
-
-    case "ads.skill.init": {
-      const name = (params.name ?? positional.join(" ")).trim();
-      if (!name) {
-        return {
-          ok: false,
-          output: "❌ Missing skill name",
-        };
-      }
-
-      const workspaceRoot = resolveAdsStateDir();
-      const includeExamples =
-        params.examples === "true" || params.examples === "1" || params.examples === "yes" || params.examples === "on";
-      const resources = parseResourceList(params.resources);
-      try {
-        const created = initSkill({ workspaceRoot, rawName: name, resources, includeExamples });
-        const relDir = path.relative(workspaceRoot, created.skillDir) || created.skillDir;
-        const relFiles = created.createdFiles.map((p) => path.relative(workspaceRoot, p) || p);
-        const output = [
-          `✅ Skill 已创建: ${created.skillName}`,
-          `目录: ${relDir}`,
-          relFiles.length ? `文件:\n${relFiles.map((p) => `- ${p}`).join("\n")}` : "",
-          "",
-          "提示：编辑 SKILL.md 完成 TODO，然后在对话中使用该 skill。",
-        ]
-          .filter(Boolean)
-          .join("\n");
-        return { ok: true, output };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { ok: false, output: `❌ 创建 skill 失败: ${message}` };
-      }
-    }
-
-    case "ads.skill.list": {
-      const workspaceRoot = detectWorkspace();
-      const skills = discoverSkills(workspaceRoot);
-      return { ok: true, output: renderSkillList(skills) };
-    }
-
-    case "ads.skill.load": {
-      const name = (params.name ?? positional.join(" ")).trim();
-      if (!name) {
-        return { ok: false, output: "❌ Missing skill name. Usage: /ads.skill.load <name>" };
-      }
-      const workspaceRoot = detectWorkspace();
-      const body = loadSkillBody(name, workspaceRoot);
-      if (!body) {
-        const skills = discoverSkills(workspaceRoot);
-        const available = skills.length > 0
-          ? `可用 skill: ${skills.map((s) => s.name).join(", ")}`
-          : "当前没有可用的 skill";
-        return { ok: false, output: `❌ Skill "${name}" 未找到。${available}` };
-      }
-      return { ok: true, output: body.trim() };
-    }
-
-    case "ads.skill.validate": {
-      const workspaceRoot = resolveAdsStateDir();
-      const arg = (params.path ?? positional.join(" ")).trim();
-      if (!arg) {
-        return { ok: false, output: "❌ Missing skill name/path" };
-      }
-
-      const looksLikePath = arg.includes("/") || arg.includes("\\") || arg.startsWith(".") || arg.startsWith("~");
-      const skillDir = looksLikePath
-        ? arg
-        : path.join(workspaceRoot, ".agent", "skills", normalizeSkillName(arg));
-      const result = validateSkillDirectory(skillDir);
-      const relDir = path.relative(workspaceRoot, result.skillDir) || result.skillDir;
-      const output = `${result.valid ? "✅" : "❌"} ${result.message}\n目录: ${relDir}`;
-      return { ok: result.valid, output };
-    }
-
-
-
-    default:
-      return { ok: false, output: `❓ Unknown command: ${slash.command}` };
+  const handler = commandRegistry.get(slash.command);
+  if (!handler) {
+    return { ok: false, output: `❓ Unknown command: ${slash.command}` };
   }
+  return handler({ rawArgs, positional, params });
 }
