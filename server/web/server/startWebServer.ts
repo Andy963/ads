@@ -6,7 +6,6 @@ import { createHttpServer } from "./httpServer.js";
 import { createApiRequestHandler } from "./api/handler.js";
 import { authenticateRequest as authenticateWebRequest } from "./auth.js";
 import { attachWebSocketServer } from "./ws/server.js";
-import { matchesBroadcastSessionId } from "./ws/session.js";
 
 import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
@@ -29,6 +28,7 @@ import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegra
 import { AgentScheduleCompiler } from "../../scheduler/compiler.js";
 import { SchedulerRuntime } from "../../scheduler/runtime.js";
 import { parseBooleanFlag } from "../../utils/flags.js";
+import { createWebSocketHub } from "./start/webSocketHub.js";
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
 const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
@@ -291,147 +291,8 @@ export async function startWebServer(): Promise<void> {
   const taskQueueAvailable = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
   const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
 
-  const WS_READY_STATE_OPEN = 1;
-  const clients: Set<import("ws").WebSocket> = new Set();
   const traceWsDuplication = parseBooleanFlag(process.env.ADS_TRACE_WS_DUPLICATION, false);
-  const clientMetaByWs = new Map<
-    import("ws").WebSocket,
-    {
-      historyKey: string;
-      sessionId: string;
-      chatSessionId: string;
-      connectionId: string;
-      authUserId: string;
-      sessionUserId: number;
-      workspaceRoot?: string;
-    }
-  >();
-
-  const safeSendText = (ws: import("ws").WebSocket, text: string): void => {
-    if ((ws as { readyState?: number }).readyState !== WS_READY_STATE_OPEN) {
-      return;
-    }
-    try {
-      ws.send(text);
-    } catch {
-      // ignore
-    }
-  };
-
-  const safeSendJson = (ws: import("ws").WebSocket, payload: unknown): void => {
-    let encoded = "";
-    try {
-      encoded = JSON.stringify(payload);
-    } catch {
-      return;
-    }
-    safeSendText(ws, encoded);
-  };
-
-  const isWorkerChatSession = (chatSessionId: string): boolean => {
-    const chat = String(chatSessionId ?? "").trim();
-    return chat !== "planner" && chat !== "reviewer";
-  };
-
-  const isWorkerBroadcastTarget = (
-    broadcastSessionId: string,
-    meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
-  ): boolean => {
-    if (!isWorkerChatSession(meta.chatSessionId)) return false;
-    return matchesBroadcastSessionId({
-      broadcastSessionId,
-      connectionSessionId: meta.sessionId,
-      connectionWorkspaceRoot: meta.workspaceRoot,
-    });
-  };
-
-  const broadcastToSession = (sessionId: string, payload: unknown): void => {
-    let encoded = "";
-    try {
-      encoded = JSON.stringify(payload);
-    } catch {
-      return;
-    }
-
-    for (const [ws, meta] of clientMetaByWs.entries()) {
-      if (!isWorkerBroadcastTarget(sessionId, meta)) {
-        continue;
-      }
-      safeSendText(ws, encoded);
-    }
-  };
-
-  const isReviewerBroadcastTarget = (
-    broadcastSessionId: string,
-    meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
-  ): boolean => {
-    if (meta.chatSessionId !== "reviewer") {
-      return false;
-    }
-    return matchesBroadcastSessionId({
-      broadcastSessionId,
-      connectionSessionId: meta.sessionId,
-      connectionWorkspaceRoot: meta.workspaceRoot,
-    });
-  };
-
-  const broadcastToReviewerSession = (sessionId: string, payload: unknown): void => {
-    let encoded = "";
-    try {
-      encoded = JSON.stringify(payload);
-    } catch {
-      return;
-    }
-
-    for (const [ws, meta] of clientMetaByWs.entries()) {
-      if (!isReviewerBroadcastTarget(sessionId, meta)) {
-        continue;
-      }
-      safeSendText(ws, encoded);
-    }
-  };
-
-  const recordToSessionHistories = (
-    sessionId: string,
-    entry: { role: string; text: string; ts: number; kind?: string },
-  ): void => {
-    const written = new Set<string>();
-    for (const meta of clientMetaByWs.values()) {
-      if (!isWorkerBroadcastTarget(sessionId, meta)) {
-        continue;
-      }
-      if (written.has(meta.historyKey)) {
-        continue;
-      }
-      written.add(meta.historyKey);
-      try {
-        workerHistoryStore.add(meta.historyKey, entry);
-      } catch {
-        // ignore
-      }
-    }
-  };
-
-  const recordToReviewerHistories = (
-    sessionId: string,
-    entry: { role: string; text: string; ts: number; kind?: string },
-  ): void => {
-    const written = new Set<string>();
-    for (const meta of clientMetaByWs.values()) {
-      if (!isReviewerBroadcastTarget(sessionId, meta)) {
-        continue;
-      }
-      if (written.has(meta.historyKey)) {
-        continue;
-      }
-      written.add(meta.historyKey);
-      try {
-        reviewerHistoryStore.add(meta.historyKey, entry);
-      } catch {
-        // ignore
-      }
-    }
-  };
+  const wsHub = createWebSocketHub({ workerHistoryStore, reviewerHistoryStore });
 
   const taskQueueManager = createTaskQueueManager({
     workspaceRoot,
@@ -441,11 +302,11 @@ export async function startWebServer(): Promise<void> {
     available: taskQueueAvailable,
     autoStart: taskQueueAutoStart,
     logger,
-    broadcastToSession,
-    recordToSessionHistories,
+    broadcastToSession: wsHub.broadcastToSession,
+    recordToSessionHistories: wsHub.recordToSessionHistories,
     reviewSessionManager: reviewerSessionManager,
-    broadcastToReviewerSession,
-    recordToReviewerHistories,
+    broadcastToReviewerSession: wsHub.broadcastToReviewerSession,
+    recordToReviewerHistories: wsHub.recordToReviewerHistories,
   });
 
   startTaskTerminalTelegramRetryLoop({ logger });
@@ -459,7 +320,7 @@ export async function startWebServer(): Promise<void> {
 
   const agentAvailability = new CliAgentAvailability();
   const broadcastAgentsSnapshot = (): void => {
-    for (const [ws, meta] of clientMetaByWs.entries()) {
+    for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
       const manager =
         meta.chatSessionId === "planner"
           ? plannerSessionManager
@@ -469,7 +330,7 @@ export async function startWebServer(): Promise<void> {
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
       const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
       const activeAgentId = orchestrator.getActiveAgentId();
-      safeSendJson(ws, {
+      wsHub.safeSendJson(ws, {
         type: "agents",
         activeAgentId,
         agents: orchestrator.listAgents().map((entry) => {
@@ -505,7 +366,7 @@ export async function startWebServer(): Promise<void> {
     resolveTaskWorkspaceRoot: taskQueueManager.resolveTaskWorkspaceRoot,
     resolveTaskContext: taskQueueManager.resolveTaskContext,
     promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
-    broadcastToSession,
+    broadcastToSession: wsHub.broadcastToSession,
     scheduleWorkspacePurge: (ctx) => purgeScheduler.schedule(ctx),
     scheduleCompiler,
     scheduler,
@@ -526,8 +387,8 @@ export async function startWebServer(): Promise<void> {
     allowedDirs,
     workspaceCache,
     interruptControllers,
-    clientMetaByWs,
-    clients,
+    clientMetaByWs: wsHub.clientMetaByWs,
+    clients: wsHub.clients,
     cwdStore,
     cwdStorePath,
     persistCwdStore,
@@ -539,7 +400,7 @@ export async function startWebServer(): Promise<void> {
     reviewerHistoryStore,
     ensureTaskContext: taskQueueManager.ensureTaskContext,
     promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
-    broadcastToSession,
+    broadcastToSession: wsHub.broadcastToSession,
     getWorkspaceLock,
     getPlannerWorkspaceLock,
     getReviewerWorkspaceLock,
