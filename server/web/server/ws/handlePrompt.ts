@@ -776,7 +776,7 @@ export async function handlePromptMessage(deps: {
                   let createdTaskIds: string[] = [];
                   let taskTitles: string[] = [];
 
-                  await taskCtx.lock.runExclusive(async () => {
+                  await taskCtx.getLock().runExclusive(async () => {
                     ({ createdTaskIds, taskTitles } = materializeTaskBundleTasks({
                       draftId: draft.id,
                       tasks: normalized.tasks,

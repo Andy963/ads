@@ -607,11 +607,15 @@ describe("web/ws/planner-draft-spec-guard", () => {
       } as any,
       orchestrator: orchestrator as any,
       sendWorkspaceState: () => {},
-      ensureTaskContext: () =>
-        ({
+      ensureTaskContext: () => {
+        const lock = {
+          isBusy: () => false,
+          runExclusive: async (fn: () => Promise<void>) => await fn(),
+        };
+        return {
           workspaceRoot,
           sessionId: "planner-session",
-          lock: { runExclusive: async (fn: () => Promise<void>) => await fn() },
+          getLock: () => lock,
           taskStore: {
             createTask(input: { id: string; prompt: string; title?: string }, now: number, opts: { status: string }) {
               if (tasksById.has(input.id)) {
@@ -676,7 +680,8 @@ describe("web/ws/planner-draft-spec-guard", () => {
           getTaskQueueOrchestrator() {
             return {} as any;
           },
-        }) as any,
+        } as any;
+      },
       promoteQueuedTasksToPending: () => {
         promoteCalled += 1;
       },

@@ -426,8 +426,9 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return result;
     };
 
-    if (taskCtx.lock.isBusy()) {
-      void taskCtx.lock.runExclusive(run).catch((error) => {
+    const lock = taskCtx.getLock();
+    if (lock.isBusy()) {
+      void lock.runExclusive(run).catch((error: unknown) => {
         const message = getErrorMessage(error);
         deps.logger.warn(`[Web][Tasks] background single-task run failed taskId=${runSingleTaskId} err=${message}`);
       });
@@ -435,7 +436,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
 
-    const result = await taskCtx.lock.runExclusive(run);
+    const result = await lock.runExclusive(run);
     sendJson(res, result.status, { ...result.body, queued: false });
     return true;
   }

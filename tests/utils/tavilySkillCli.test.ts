@@ -21,13 +21,15 @@ function makeTempScript(): { cwd: string; scriptPath: string; cleanup: () => voi
 }
 
 describe("utils/tavilySkillCli", () => {
-  it("detects Tavily API keys from env", () => {
+  it("detects Tavily config from env", () => {
     assert.equal(hasTavilyApiKey({} as NodeJS.ProcessEnv), false);
-    assert.equal(hasTavilyApiKey({ TAVILY_API_KEY: "k" } as NodeJS.ProcessEnv), true);
-    assert.equal(hasTavilyApiKey({ TAVILY_API_KEYS: "k1,k2" } as NodeJS.ProcessEnv), true);
+    assert.equal(
+      hasTavilyApiKey({ TAVILY_BASE_URL: "https://example.com", TAVILY_API_TOKEN: "t" } as NodeJS.ProcessEnv),
+      true,
+    );
   });
 
-  it("builds args and maps TAVILY_API_KEYS to TAVILY_API_KEY for child process", async () => {
+  it("builds args and passes Tavily env for child process", async () => {
     const tmp = makeTempScript();
     let seenRequest: CommandRunRequest | null = null;
     const runner = async (request: CommandRunRequest): Promise<CommandRunResult> => {
@@ -45,7 +47,7 @@ describe("utils/tavilySkillCli", () => {
       };
     };
 
-    const env = { TAVILY_API_KEYS: "k1,k2" } as NodeJS.ProcessEnv;
+    const env = { TAVILY_BASE_URL: "https://example.com", TAVILY_API_TOKEN: "t" } as NodeJS.ProcessEnv;
     const res = await runTavilyCli(
       { cmd: "search", query: "hello world", maxResults: 3 },
       { cwd: tmp.cwd, scriptPath: tmp.scriptPath, env, runner },
@@ -56,13 +58,14 @@ describe("utils/tavilySkillCli", () => {
     assert.deepEqual(seenRequest?.args?.slice(0, 4), [tmp.scriptPath, "search", "--query", "hello world"]);
     assert.ok(seenRequest?.args?.includes("--maxResults"));
     assert.ok(seenRequest?.args?.includes("3"));
-    assert.equal(seenRequest?.env?.TAVILY_API_KEY, "k1");
+    assert.equal(seenRequest?.env?.TAVILY_BASE_URL, "https://example.com");
+    assert.equal(seenRequest?.env?.TAVILY_API_TOKEN, "t");
 
     assert.deepEqual(res.json, { results: [] });
     tmp.cleanup();
   });
 
-  it("fails fast when Tavily API key is missing", async () => {
+  it("fails fast when Tavily config is missing", async () => {
     const tmp = makeTempScript();
     const runner = async (): Promise<CommandRunResult> => {
       throw new Error("should not be called");
@@ -70,10 +73,9 @@ describe("utils/tavilySkillCli", () => {
 
     await assert.rejects(
       () => runTavilyCli({ cmd: "search", query: "hello" }, { cwd: tmp.cwd, scriptPath: tmp.scriptPath, env: {} as NodeJS.ProcessEnv, runner }),
-      /Missing Tavily API key/,
+      /Missing Tavily config/,
     );
 
     tmp.cleanup();
   });
 });
-

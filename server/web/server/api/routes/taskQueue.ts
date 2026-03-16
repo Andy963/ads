@@ -75,12 +75,13 @@ export async function handleTaskQueueRoutes(
       deps.promoteQueuedTasksToPending(taskCtx);
       taskCtx.runController.maybePauseAfterDrain(taskCtx);
     };
-    if (taskCtx.lock.isBusy()) {
-      void taskCtx.lock.runExclusive(action);
+    const lock = taskCtx.getLock();
+    if (lock.isBusy()) {
+      void lock.runExclusive(action);
       sendJson(res, 202, buildQueueStatusPayload({ taskCtx, enabled: deps.taskQueueAvailable, success: true, queued: true }));
       return true;
     }
-    await taskCtx.lock.runExclusive(action);
+    await lock.runExclusive(action);
     sendJson(res, 200, buildQueueStatusPayload({ taskCtx, enabled: deps.taskQueueAvailable, success: true, queued: false }));
     return true;
   }

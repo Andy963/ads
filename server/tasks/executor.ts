@@ -100,6 +100,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
   private readonly store: TaskStore;
   private readonly autoModelOverride?: string;
   private readonly lock?: AsyncLock;
+  private readonly getLock?: () => AsyncLock;
 
   constructor(options: {
     getOrchestrator: (task: Task) => HybridOrchestrator;
@@ -107,12 +108,14 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     store: TaskStore;
     autoModelOverride?: string;
     lock?: AsyncLock;
+    getLock?: () => AsyncLock;
   }) {
     this.getOrchestrator = options.getOrchestrator;
     this.getAgentEnv = options.getAgentEnv;
     this.store = options.store;
     this.autoModelOverride = String(options.autoModelOverride ?? "").trim() || undefined;
     this.lock = options.lock;
+    this.getLock = options.getLock;
   }
 
   private resolveModelOverride(task: Task): { modelOverride?: string; modelForSelection: string; modelForStorage: string | null } {
@@ -394,6 +397,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       return { resultSummary: truncate(lastOutput, 1600) };
     };
 
-    return this.lock ? this.lock.runExclusive(run) : run();
+    const lock = this.lock ?? this.getLock?.();
+    return lock ? lock.runExclusive(run) : run();
   }
 }

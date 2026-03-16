@@ -92,13 +92,15 @@ function createTaskContext(args?: {
   const queueRunning = Boolean(args?.queueRunning);
   const status = args?.status ?? { mode: "all", activeTaskId: null };
 
+  const lock = {
+    isBusy: () => busy,
+    runExclusive: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  };
+
   const taskCtx = {
     workspaceRoot: "/tmp/ws",
     sessionId: "default",
-    lock: {
-      isBusy: () => busy,
-      runExclusive: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
-    },
+    getLock: () => lock,
     taskStore: {} as any,
     attachmentStore: {} as any,
     taskQueue: {

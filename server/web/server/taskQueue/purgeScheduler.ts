@@ -82,7 +82,7 @@ export class WorkspacePurgeScheduler {
     const cutoffMs = Date.now() - ARCHIVE_RETENTION_MS;
 
     for (;;) {
-      const batch = await ctx.lock.runExclusive(async () => {
+      const batch = await ctx.getLock().runExclusive(async () => {
         return ctx.taskStore.purgeArchivedCompletedTasksBatch(cutoffMs, { limit: PURGE_BATCH_SIZE });
       });
 
@@ -114,4 +114,3 @@ export class WorkspacePurgeScheduler {
     });
   }
 }
-

@@ -70,7 +70,8 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
     ts: Date.now(),
   });
 
-  void taskCtx.lock.runExclusive(async () => {
+  const lock = taskCtx.getLock();
+  void lock.runExclusive(async () => {
     const latest = taskCtx.taskStore.getTask(taskId);
     if (!latest || latest.status === "cancelled") {
       return;

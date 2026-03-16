@@ -52,15 +52,19 @@ describe("web/api/tasks/:id/run", () => {
     const taskId = "t-1";
     const warned: string[] = [];
 
+    const lock = {
+      isBusy() {
+        return true;
+      },
+      runExclusive() {
+        return Promise.reject(new Error("boom"));
+      },
+    };
+
     const taskCtx = {
       sessionId: "s-1",
-      lock: {
-        isBusy() {
-          return true;
-        },
-        runExclusive() {
-          return Promise.reject(new Error("boom"));
-        },
+      getLock() {
+        return lock;
       },
       taskStore: {
         getTask(id: string) {
@@ -112,4 +116,3 @@ describe("web/api/tasks/:id/run", () => {
     assert.ok(warned[0]?.includes("background single-task run failed"));
   });
 });
-

@@ -46,34 +46,21 @@ export interface TavilyCliRunOptions {
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 
-function parseEnvApiKeys(env: NodeJS.ProcessEnv): string[] {
-  const keys: string[] = [];
-  const list = env.TAVILY_API_KEYS ?? "";
-  for (const raw of list.split(",")) {
-    const trimmed = raw.trim();
-    if (trimmed) keys.push(trimmed);
-  }
-  const single = (env.TAVILY_API_KEY ?? "").trim();
-  if (keys.length === 0 && single) keys.push(single);
-  return keys;
+function hasTavilyConfig(env: NodeJS.ProcessEnv): boolean {
+  const baseUrl = String(env.TAVILY_BASE_URL ?? "").trim();
+  const token = String(env.TAVILY_API_TOKEN ?? "").trim();
+  return Boolean(baseUrl && token);
 }
 
 export function hasTavilyApiKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return parseEnvApiKeys(env).length > 0;
+  return hasTavilyConfig(env);
 }
 
 function buildEnvForChild(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const keys = parseEnvApiKeys(env);
-  if (keys.length === 0) {
-    throw new Error("Missing Tavily API key(s). Set TAVILY_API_KEY or TAVILY_API_KEYS.");
+  if (!hasTavilyConfig(env)) {
+    throw new Error("Missing Tavily config. Set TAVILY_BASE_URL and TAVILY_API_TOKEN.");
   }
-
-  const single = (env.TAVILY_API_KEY ?? "").trim();
-  if (single) {
-    return env;
-  }
-
-  return { ...env, TAVILY_API_KEY: keys[0] };
+  return env;
 }
 
 function resolveDefaultScriptPath(cwd: string): string {

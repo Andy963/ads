@@ -43,7 +43,7 @@ export type TaskQueueMetrics = {
 export type TaskQueueContext = {
   workspaceRoot: string;
   sessionId: string;
-  lock: AsyncLock;
+  getLock: () => AsyncLock;
   taskStore: QueueTaskStore;
   attachmentStore: AttachmentStore;
   taskQueue: TaskQueue;
@@ -239,7 +239,7 @@ export function createTaskQueueManager(deps: {
       return existing;
     }
 
-    const lock = deps.lockForWorkspace(key);
+    const getLock = () => deps.lockForWorkspace(key);
     const sessionId = deriveProjectSessionId(key);
     const taskStore = new QueueTaskStore({ workspacePath: key });
     const attachmentStore = new AttachmentStore({ workspacePath: key });
@@ -268,14 +268,14 @@ export function createTaskQueueManager(deps: {
       getOrchestrator: getTaskQueueOrchestrator,
       store: taskStore,
       autoModelOverride: taskQueueModelOverride,
-      lock,
+      getLock,
     });
     const taskQueue = new TaskQueue({ store: taskStore, executor });
 
     const ctx: TaskQueueContext = {
       workspaceRoot: key,
       sessionId,
-      lock,
+      getLock,
       taskStore,
       attachmentStore,
       taskQueue,
