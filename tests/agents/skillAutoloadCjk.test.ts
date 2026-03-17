@@ -69,6 +69,11 @@ function writeSkill(workspaceRoot: string, name: string, description: string): v
   const skillFile = path.join(skillDir, "SKILL.md");
   const content = ["---", `name: ${name}`, `description: "${description}"`, "---", "", `# ${name}`, ""].join("\n");
   fs.writeFileSync(skillFile, content, "utf8");
+
+  const metadataPath = path.join(workspaceRoot, ".agent", "skills", "metadata.yaml");
+  if (!fs.existsSync(metadataPath)) {
+    fs.writeFileSync(metadataPath, "", "utf8");
+  }
 }
 
 describe("agents/orchestrator skill autoload (CJK)", () => {
