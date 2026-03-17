@@ -582,16 +582,6 @@ function toggleExpanded(): void {
       <div class="editorViewport" data-testid="task-bundle-draft-viewport">
         <div v-if="currentTabIsTask" class="editorPanel editorPanel--task" data-testid="task-bundle-draft-task-panel">
           <label class="field">
-            <span class="fieldLabel">Title</span>
-            <input
-              :value="editingTask.title"
-              class="fieldInput"
-              placeholder="任务标题"
-              data-testid="task-bundle-draft-task-title"
-              @input="updateTaskTitle(($event.target as HTMLInputElement).value)"
-            />
-          </label>
-          <label class="field">
             <span class="fieldLabel">Description</span>
             <textarea
               :value="editingTask.prompt"

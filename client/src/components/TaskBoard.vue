@@ -1092,6 +1092,7 @@ function toggleQueue(): void {
     </DraggableModal>
 
     <DraggableModal v-if="editingTask" card-variant="large" data-testid="task-edit-modal" @close="stopEdit">
+      <div class="editModalInner">
       <div class="modalHeader">
         <div class="modalTitle" data-drag-handle>编辑任务</div>
         <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-edit-modal-cancel"
@@ -1133,14 +1134,11 @@ function toggleQueue(): void {
           </label>
         </div>
 
-        <div class="configRow">
+        <div class="configRow configRowCheckboxes">
           <label class="field bootstrapToggle">
             <input type="checkbox" v-model="editReviewRequired" data-testid="task-edit-review-required" />
             <span class="label" style="display:inline;margin:0 0 0 6px;">需要 Reviewer 审核</span>
           </label>
-        </div>
-
-        <div class="configRow">
           <label class="field bootstrapToggle">
             <input type="checkbox" v-model="editBootstrapEnabled" data-testid="task-edit-bootstrap-toggle" />
             <span class="label" style="display:inline;margin:0 0 0 6px;">自举模式</span>
@@ -1158,9 +1156,9 @@ function toggleQueue(): void {
           </label>
         </div>
 
-        <label class="field">
+        <label class="field editPromptField">
           <span class="label">任务描述</span>
-          <textarea v-model="editPrompt" rows="6" data-testid="task-edit-prompt" />
+          <textarea v-model="editPrompt" data-testid="task-edit-prompt" />
         </label>
 
         <div class="actions">
@@ -1174,6 +1172,7 @@ function toggleQueue(): void {
             {{ editPrimaryLabel }}
           </button>
         </div>
+      </div>
       </div>
     </DraggableModal>
   </div>
