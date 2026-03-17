@@ -10,7 +10,7 @@ import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 
 import { createAppController } from "./app/controller";
-import type { TaskBundle } from "./api/types";
+import type { TaskBundle, TaskBundleDraftSpecFileKey, TaskBundleDraftSpecFileUpdate } from "./api/types";
 import { ChatDotRound, CirclePlus, Refresh } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
@@ -70,6 +70,9 @@ const {
   updateTaskBundleDraft,
   deleteTaskBundleDraft,
   approveTaskBundleDraft,
+  loadTaskBundleDraftSpecSummary,
+  loadTaskBundleDraftSpecFile,
+  saveTaskBundleDraftSpecFile,
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
@@ -165,6 +168,18 @@ function onUpdateDraft(payload: { id: string; bundle: TaskBundle }): void {
 
 function onDeleteDraft(id: string): void {
   void deleteTaskBundleDraft(id, activeProjectId.value);
+}
+
+async function onLoadDraftSpecSummary(id: string) {
+  return await loadTaskBundleDraftSpecSummary(id, activeProjectId.value);
+}
+
+async function onLoadDraftSpecFile(payload: { id: string; file: TaskBundleDraftSpecFileKey }) {
+  return await loadTaskBundleDraftSpecFile(payload.id, payload.file, activeProjectId.value);
+}
+
+async function onSaveDraftSpecFile(payload: { id: string; file: TaskBundleDraftSpecFileKey; update: TaskBundleDraftSpecFileUpdate }) {
+  return await saveTaskBundleDraftSpecFile(payload.id, payload.file, payload.update, activeProjectId.value);
 }
 
 const projectRemoveConfirmOpen = ref(false);
@@ -411,6 +426,9 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
                 :drafts="plannerDrafts"
                 :busy="plannerDraftsBusy"
                 :error="plannerDraftsError"
+                :load-spec-summary="onLoadDraftSpecSummary"
+                :load-spec-file="onLoadDraftSpecFile"
+                :save-spec-file="onSaveDraftSpecFile"
                 @refresh="refreshPlannerDrafts"
                 @approve="onApproveDraft"
                 @update="onUpdateDraft"

@@ -135,8 +135,6 @@
   gap: 6px;
 }
 
-/* --- Draft row (compact clickable item) --- */
-
 .draftRow {
   display: flex;
   align-items: center;
@@ -203,38 +201,11 @@
   cursor: not-allowed;
 }
 
-/* --- Modal --- */
-
-.taskFormHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
-  cursor: grab;
-}
-
-.taskFormTitleInput {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 0;
-  border: none;
-  border-bottom: 1px solid transparent;
-  background: transparent;
-  font-size: 15px;
-  font-weight: 800;
-  color: #0f172a;
-  outline: none;
-  transition: border-color 0.15s;
-}
-
-.taskFormTitleInput:focus {
-  border-bottom-color: rgba(37, 99, 235, 0.5);
-}
-
-.taskFormTitleInput::placeholder {
-  color: #94a3b8;
-  font-weight: 600;
+.draftRowDegraded {
+  font-size: 0.75rem;
+  color: #e6a23c;
+  margin-left: 6px;
+  cursor: help;
 }
 
 .iconBtn {
@@ -258,9 +229,41 @@
 
 .modalBody {
   padding: 14px 16px;
-  overflow-y: auto;
-  max-height: 70vh;
-  scrollbar-width: thin;
+  height: min(78vh, 820px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editorHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.editorTitleBlock {
+  min-width: 0;
+}
+
+.editorTitle {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.editorMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 .modalError {
@@ -272,22 +275,126 @@
   font-size: 13px;
   color: #dc2626;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
-.taskFormList {
+.modalWarning {
+  background: rgba(230, 162, 60, 0.15);
+  border: 1px solid rgba(230, 162, 60, 0.3);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #b45309;
+  flex-shrink: 0;
+}
+
+.editorTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.editorTab {
+  min-width: 120px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.88);
+  color: #334155;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, transform 0.15s;
+}
+
+.editorTab:hover {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: rgba(239, 246, 255, 0.92);
+  transform: translateY(-1px);
+}
+
+.editorTab--active {
+  border-color: rgba(37, 99, 235, 0.38);
+  background: rgba(219, 234, 254, 0.86);
+  color: #1d4ed8;
+}
+
+.editorTab--dirty {
+  border-color: rgba(245, 158, 11, 0.34);
+}
+
+.editorTabBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.editorToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.editorToolbarHint {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.editorToolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editorViewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.72);
+  padding: 14px;
+  overflow: hidden;
+}
+
+.editorPanel {
+  height: 100%;
+  min-height: 0;
+}
+
+.editorPanel--task,
+.editorPanel--spec {
   display: flex;
   flex-direction: column;
-  gap: 16px;
 }
 
-.taskFormCard {
-  padding: 12px 14px;
-  background: rgba(241, 245, 249, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 12px;
+.editorPanel--task .field:last-of-type {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
 }
 
-
+.editorPanel--task .field:last-of-type .fieldTextarea,
+.editorPanel--spec .fieldTextarea {
+  flex: 1 1 auto;
+}
 
 .field {
   display: block;
@@ -333,10 +440,11 @@
   background: var(--surface);
   color: #1e293b;
   box-sizing: border-box;
-  resize: vertical;
-  min-height: 180px;
-  line-height: 1.5;
+  resize: none;
+  min-height: 0;
+  line-height: 1.55;
   transition: border-color 0.15s, box-shadow 0.15s;
+  overflow: auto;
 }
 
 .fieldTextarea:focus {
@@ -345,13 +453,36 @@
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
+.fieldTextarea--spec {
+  flex: 1 1 auto;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.specEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 0;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  border-radius: 14px;
+  padding: 16px;
+  font-size: 12px;
+  color: #64748b;
+  background: rgba(248, 250, 252, 0.7);
+  text-align: center;
+}
+
 .modalActions {
   display: flex;
   justify-content: flex-end;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 20px;
+  margin-top: 18px;
+  flex-shrink: 0;
 }
 
 .btnPrimary {
@@ -404,19 +535,55 @@
   cursor: not-allowed;
 }
 
-.draftRowDegraded {
-  font-size: 0.75rem;
-  color: #e6a23c;
-  margin-left: 6px;
-  cursor: help;
+.btnGhost {
+  border-radius: 12px;
+  padding: 8px 14px;
+  min-height: 36px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  white-space: nowrap;
+  transition: border-color 0.15s, background-color 0.15s, transform 0.15s;
 }
 
-.modalWarning {
-  background: rgba(230, 162, 60, 0.15);
-  border: 1px solid rgba(230, 162, 60, 0.3);
-  border-radius: 6px;
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  font-size: 0.85rem;
-  color: #e6a23c;
+.btnGhost:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.24);
+  background: rgba(239, 246, 255, 0.96);
+  transform: translateY(-1px);
+}
+
+.btnGhost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  .editorTabs {
+    flex-direction: column;
+  }
+
+  .editorTab {
+    width: 100%;
+  }
+
+  .editorToolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .editorToolbarActions {
+    width: 100%;
+  }
+
+  .editorViewport,
+  .specEmpty {
+    min-height: 0;
+  }
+
+  .fieldTextarea--spec {
+    min-height: 0;
+  }
 }

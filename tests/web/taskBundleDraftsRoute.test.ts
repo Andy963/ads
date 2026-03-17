@@ -261,6 +261,128 @@ describe("web/api/task-bundle-drafts", () => {
     assert.deepEqual(parseJson<{ error: string }>(res.body), { error: "Invalid JSON body" });
   });
 
+  it("loads and updates spec files for a draft", async () => {
+    const auth = { userId: "u-1", username: "u" };
+    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "workspace-"));
+    const specRef = ensureSpecFiles(workspaceRoot, "draft-spec-edit");
+    fs.writeFileSync(path.join(workspaceRoot, specRef, "requirements.md"), "# Requirements\nOld req\n", "utf8");
+    fs.writeFileSync(path.join(workspaceRoot, specRef, "design.md"), "# Design\nOld design\n", "utf8");
+    fs.writeFileSync(path.join(workspaceRoot, specRef, "implementation.md"), "# Implementation\nOld impl\n", "utf8");
+
+    const inserted = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk-spec",
+      bundle: { version: 1, requestId: "r-spec", specRef, tasks: [{ prompt: "p1" }] },
+      now: 10,
+    });
+
+    const deps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} },
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext(url: URL) {
+        const w = url.searchParams.get("workspace") || "";
+        return {
+          workspaceRoot: w,
+          sessionId: "default",
+          lock: { runExclusive: async (fn: () => Promise<void>) => fn() },
+          taskStore: {} as any,
+          attachmentStore: {} as any,
+          taskQueue: {} as any,
+          queueRunning: false,
+          dequeueInProgress: false,
+          metrics: createMetrics(),
+          runController: {} as any,
+          getStatusOrchestrator() {
+            return {} as any;
+          },
+          getTaskQueueOrchestrator() {
+            return {} as any;
+          },
+        };
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const summaryReq = createReq("GET");
+    const summaryRes = createRes();
+    const summaryUrl = new URL(
+      `http://localhost/api/task-bundle-drafts/${inserted.id}/spec?workspace=${encodeURIComponent(workspaceRoot)}`,
+    );
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: summaryReq as any, res: summaryRes as any, url: summaryUrl, pathname: `/api/task-bundle-drafts/${inserted.id}/spec`, auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(summaryRes.statusCode, 200);
+    const summary = parseJson<{
+      spec: { specRef: string; files: Array<{ key: string; fileName: string; missing: boolean }> };
+    }>(summaryRes.body).spec;
+    assert.equal(summary.specRef, specRef);
+    assert.deepEqual(summary.files, [
+      { key: "requirements", fileName: "requirements.md", missing: false },
+      { key: "design", fileName: "design.md", missing: false },
+      { key: "implementation", fileName: "implementation.md", missing: false },
+    ]);
+
+    const loadReq = createReq("GET");
+    const loadRes = createRes();
+    const loadUrl = new URL(
+      `http://localhost/api/task-bundle-drafts/${inserted.id}/spec/design?workspace=${encodeURIComponent(workspaceRoot)}`,
+    );
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: loadReq as any, res: loadRes as any, url: loadUrl, pathname: `/api/task-bundle-drafts/${inserted.id}/spec/design`, auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(loadRes.statusCode, 200);
+    const loaded = parseJson<{
+      file: { specRef: string; key: string; fileName: string; content: string; missing: boolean };
+    }>(loadRes.body).file;
+    assert.equal(loaded.specRef, specRef);
+    assert.equal(loaded.key, "design");
+    assert.equal(loaded.fileName, "design.md");
+    assert.match(loaded.content, /Old design/);
+    assert.equal(loaded.missing, false);
+
+    const saveReq = createReq("PUT", { content: "# Design\nNew design" });
+    const saveRes = createRes();
+    const saveUrl = new URL(
+      `http://localhost/api/task-bundle-drafts/${inserted.id}/spec/design?workspace=${encodeURIComponent(workspaceRoot)}`,
+    );
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        { req: saveReq as any, res: saveRes as any, url: saveUrl, pathname: `/api/task-bundle-drafts/${inserted.id}/spec/design`, auth } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(saveRes.statusCode, 200);
+    const saved = parseJson<{
+      success: boolean;
+      file: { key: string; fileName: string; content: string; missing: boolean };
+    }>(saveRes.body);
+    assert.equal(saved.success, true);
+    assert.equal(saved.file.key, "design");
+    assert.equal(saved.file.fileName, "design.md");
+    assert.match(saved.file.content, /New design/);
+    assert.equal(saved.file.missing, false);
+    assert.equal(fs.readFileSync(path.join(workspaceRoot, specRef, "requirements.md"), "utf8"), "# Requirements\nOld req\n");
+    assert.equal(fs.readFileSync(path.join(workspaceRoot, specRef, "design.md"), "utf8"), "# Design\nNew design\n");
+    assert.equal(fs.readFileSync(path.join(workspaceRoot, specRef, "implementation.md"), "utf8"), "# Implementation\nOld impl\n");
+  });
+
   it("rejects approval when draft bundle has no specRef", async () => {
     const auth = { userId: "u-1", username: "u" };
     const workspaceRoot = "/tmp/ws-no-spec-ref";

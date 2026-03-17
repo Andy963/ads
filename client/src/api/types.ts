@@ -184,6 +184,31 @@ export type TaskBundle = {
   tasks: TaskBundleTask[];
 };
 
+export type TaskBundleDraftSpecFileKey = "requirements" | "design" | "implementation";
+
+export type TaskBundleDraftSpecFileMeta = {
+  key: TaskBundleDraftSpecFileKey;
+  fileName: string;
+  missing: boolean;
+};
+
+export type TaskBundleDraftSpecSummary = {
+  specRef: string;
+  files: TaskBundleDraftSpecFileMeta[];
+};
+
+export type TaskBundleDraftSpecDocument = {
+  specRef: string;
+  key: TaskBundleDraftSpecFileKey;
+  fileName: string;
+  content: string;
+  missing: boolean;
+};
+
+export type TaskBundleDraftSpecFileUpdate = {
+  content: string;
+};
+
 export type TaskBundleDraftStatus = "draft" | "approved" | "deleted";
 
 export type TaskBundleDraft = {

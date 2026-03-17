@@ -1,5 +1,12 @@
 import type { ApiClient } from "../api/client";
-import type { TaskBundle, TaskBundleDraft } from "../api/types";
+import type {
+  TaskBundle,
+  TaskBundleDraft,
+  TaskBundleDraftSpecDocument,
+  TaskBundleDraftSpecFileKey,
+  TaskBundleDraftSpecFileUpdate,
+  TaskBundleDraftSpecSummary,
+} from "../api/types";
 
 import type { ProjectRuntime } from "./controllerTypes";
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "./taskBundleDraftsState";
@@ -63,6 +70,27 @@ export function createTaskBundleDraftActions(deps: {
     } catch (error) {
       rt.taskBundleDraftsError.value = toErrorMessage(error);
       return fallback;
+    } finally {
+      rt.taskBundleDraftsBusy.value = false;
+    }
+  };
+
+  const runDraftRequest = async <T>(
+    projectId: string | null | undefined,
+    run: (ctx: { pid: string; rt: ProjectRuntime }) => Promise<T>,
+  ): Promise<T> => {
+    if (!deps.loggedIn.value) {
+      throw new Error("Unauthorized");
+    }
+    const { pid, rt } = resolveRuntime(projectId);
+    rt.taskBundleDraftsError.value = null;
+    rt.taskBundleDraftsBusy.value = true;
+    try {
+      return await run({ pid, rt });
+    } catch (error) {
+      const message = toErrorMessage(error);
+      rt.taskBundleDraftsError.value = message;
+      throw error;
     } finally {
       rt.taskBundleDraftsBusy.value = false;
     }
@@ -134,10 +162,59 @@ export function createTaskBundleDraftActions(deps: {
     });
   };
 
+  const loadTaskBundleDraftSpecSummary = async (
+    draftId: string,
+    projectId: string = deps.activeProjectId.value,
+  ): Promise<TaskBundleDraftSpecSummary | null> => {
+    const id = normalizeDraftId(draftId);
+    if (!id) return null;
+    return await runDraftRequest(projectId, async ({ pid }) => {
+      const res = await deps.api.get<{ spec?: TaskBundleDraftSpecSummary | null }>(
+        deps.withWorkspaceQueryFor(pid, `/api/task-bundle-drafts/${encodeURIComponent(id)}/spec`),
+      );
+      return res?.spec ?? null;
+    });
+  };
+
+  const loadTaskBundleDraftSpecFile = async (
+    draftId: string,
+    file: TaskBundleDraftSpecFileKey,
+    projectId: string = deps.activeProjectId.value,
+  ): Promise<TaskBundleDraftSpecDocument | null> => {
+    const id = normalizeDraftId(draftId);
+    if (!id) return null;
+    return await runDraftRequest(projectId, async ({ pid }) => {
+      const res = await deps.api.get<{ file?: TaskBundleDraftSpecDocument | null }>(
+        deps.withWorkspaceQueryFor(pid, `/api/task-bundle-drafts/${encodeURIComponent(id)}/spec/${encodeURIComponent(file)}`),
+      );
+      return res?.file ?? null;
+    });
+  };
+
+  const saveTaskBundleDraftSpecFile = async (
+    draftId: string,
+    file: TaskBundleDraftSpecFileKey,
+    payload: TaskBundleDraftSpecFileUpdate,
+    projectId: string = deps.activeProjectId.value,
+  ): Promise<TaskBundleDraftSpecDocument | null> => {
+    const id = normalizeDraftId(draftId);
+    if (!id) return null;
+    return await runDraftRequest(projectId, async ({ pid }) => {
+      const res = await deps.api.put<{ success: boolean; file?: TaskBundleDraftSpecDocument | null }>(
+        deps.withWorkspaceQueryFor(pid, `/api/task-bundle-drafts/${encodeURIComponent(id)}/spec/${encodeURIComponent(file)}`),
+        payload,
+      );
+      return res?.file ?? null;
+    });
+  };
+
   return {
     loadTaskBundleDrafts,
     updateTaskBundleDraft,
     deleteTaskBundleDraft,
     approveTaskBundleDraft,
+    loadTaskBundleDraftSpecSummary,
+    loadTaskBundleDraftSpecFile,
+    saveTaskBundleDraftSpecFile,
   };
 }
