@@ -75,9 +75,26 @@
   min-height: 0;
 }
 
-.hint {
+.hintBtn {
+  background: transparent;
+  border: none;
   color: #94a3b8;
   font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.15s ease;
+}
+
+.hintBtn:hover {
+  color: #64748b;
+}
+
+.hintBtn:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.4);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .list {

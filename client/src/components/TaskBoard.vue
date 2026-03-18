@@ -872,7 +872,7 @@ function toggleQueue(): void {
 
     <div v-if="totalVisibleTasks === 0" class="empty">
       <span>暂无任务</span>
-      <span class="hint">点击 + 新建任务</span>
+      <button class="hintBtn" type="button" @click.stop="emit('create')">点击 + 新建任务</button>
     </div>
 
     <div v-else class="list">
