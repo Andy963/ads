@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount } from "vue";
+import DOMPurify from "dompurify";
 import { renderMarkdownToHtml } from "../lib/markdown";
 import { copyTextToClipboard } from "../lib/clipboard";
 
@@ -49,7 +50,7 @@ async function onClick(ev: MouseEvent): Promise<void> {
   }, 1400);
 }
 
-const html = computed(() => renderMarkdownToHtml(props.content));
+const html = computed(() => DOMPurify.sanitize(renderMarkdownToHtml(props.content)));
 </script>
 
 <template>
