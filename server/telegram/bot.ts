@@ -1,106 +1,33 @@
 import '../utils/logSink.js';
 import '../utils/env.js';
 
-import { spawn } from 'node:child_process';
-import { Bot, InlineKeyboard, type Context } from 'grammy';
+import { Bot } from 'grammy';
 import { loadTelegramConfig, validateConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
 import { resolveCodexConfig } from '../codexConfig.js';
 import { SessionManager } from './utils/sessionManager.js';
 import { DirectoryManager } from './utils/directoryManager.js';
-import { handleCodexMessage, interruptExecution, hasActiveCodexRequest } from './adapters/codex.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
-import { getDailyNoteFilePath } from './utils/noteLogger.js';
-import { detectWorkspaceFrom } from '../workspace/detector.js';
-import { closeAllStateDatabases } from '../state/database.js';
-import { listPreferences, setPreference, deletePreference } from '../memory/soul.js';
-import { closeAllWorkspaceDatabases } from '../storage/database.js';
 import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag } from './botSetup.js';
-import { escapeTelegramMarkdownV2 } from '../utils/markdown.js';
-import { transcribeTelegramVoiceMessage } from './utils/voiceTranscription.js';
 import { PendingTranscriptionStore } from './utils/pendingTranscriptions.js';
+import { createGracefulCleanup } from './utils/gracefulCleanup.js';
+import { registerTelegramCommandMenu, registerTelegramControlCommands } from './commands/registerControlCommands.js';
+import { registerTelegramMessageHandlers } from './commands/registerMessageHandlers.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
-const TELEGRAM_CONTROL_COMMANDS = new Set([
-  'start',
-  'help',
-  'status',
-  'esc',
-  'reset',
-  'resume',
-  'mark',
-  'pwd',
-  'cd',
-  'pref',
-]);
-
-let crashHandlingStarted = false;
-
-function gracefulShutdownAndExit(reason: string, error: unknown): void {
-  if (crashHandlingStarted) {
-    return;
-  }
-  crashHandlingStarted = true;
-
-  logger.error(`[Crash] ${reason}`, error);
-
-  const timeoutMsRaw = Number(process.env.ADS_SHUTDOWN_TIMEOUT_MS ?? 1500);
-  const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(100, Math.floor(timeoutMsRaw)) : 1500;
-  const timer = setTimeout(() => {
-    process.exit(1);
-  }, timeoutMs);
-  timer.unref?.();
-
-  try {
-    closeAllWorkspaceDatabases();
-  } catch (closeError) {
-    logger.warn(`[Crash] closeAllWorkspaceDatabases failed: ${closeError instanceof Error ? closeError.message : String(closeError)}`);
-  }
-  try {
-    closeAllStateDatabases();
-  } catch (closeError) {
-    logger.warn(`[Crash] closeAllStateDatabases failed: ${closeError instanceof Error ? closeError.message : String(closeError)}`);
-  }
-
-  clearTimeout(timer);
-  process.exit(1);
-}
+let cleanup = createGracefulCleanup({ logger });
 
 process.once('unhandledRejection', (reason) => {
-  gracefulShutdownAndExit('Unhandled promise rejection', reason);
+  cleanup.crash('Unhandled promise rejection', reason);
 });
 
 process.once('uncaughtException', (error) => {
-  gracefulShutdownAndExit('Uncaught exception', error);
+  cleanup.crash('Uncaught exception', error);
 });
-
-async function requireUserId(ctx: Context, action: string): Promise<number | null> {
-  const userId = ctx.from?.id;
-  if (typeof userId === 'number') {
-    return userId;
-  }
-  logger.warn(`[Telegram] Missing ctx.from for ${action}`);
-  if (ctx.chat) {
-    await ctx.reply('❌ 无法识别用户信息（可能是匿名/频道消息），请用普通用户身份发送消息后重试。');
-  }
-  return null;
-}
-
-async function requirePrivateChat(ctx: Context, action: string): Promise<boolean> {
-  const chatType = ctx.chat?.type;
-  if (chatType === 'private') {
-    return true;
-  }
-  logger.warn(`[Telegram] Non-private chat blocked for ${action}: type=${String(chatType ?? '')}`);
-  if (ctx.chat) {
-    await ctx.reply('❌ 该功能仅支持私聊（private chat）。');
-  }
-  return false;
-}
 
 async function main() {
   logger.info('Starting Telegram Bot...');
@@ -143,75 +70,8 @@ async function main() {
   const directoryManager = new DirectoryManager(config.allowedDirs);
   const pendingTranscriptions = new PendingTranscriptionStore({ ttlMs: 5 * 60 * 1000 });
 
-	  const formatTranscriptionPreview = (args: { text: string; state: "pending" | "submitted" | "discarded" }): string => {
-    const safeText = args.text.replace(/```/g, '`​``');
-    const stateLabel =
-      args.state === "pending"
-        ? "📝 转录预览（不会自动发送）"
-        : args.state === "submitted"
-          ? "✅ 转录预览（已提交）"
-          : "🗑️ 转录预览（已丢弃）";
-
-    const footer =
-      args.state === "pending"
-        ? "点击 `Submit` 发送给 Codex；点击 `Discard` 丢弃。\n如需编辑：复制后修改，再发送新消息。\n有效期：5 分钟。"
-        : "如需编辑：复制后修改，再发送新消息。";
-
-	    return `${stateLabel}\n\n\`\`\`text\n${safeText || "\u200b"}\n\`\`\`\n\n${footer}`;
-	  };
-
-	  type RestartScope = "self" | "web" | "all";
-
-	  const parseRestartIntent = (raw: string): { scope: RestartScope } | null => {
-	    const input = String(raw ?? "").trim();
-	    if (!input) return null;
-	    if (input.length > 64) return null;
-
-	    const normalized = input.toLowerCase().replace(/\s+/g, " ").trim();
-	    const token = normalized.replace(/\s+/g, "");
-
-	    const self = new Set([
-	      "restart",
-	      "reboot",
-	      "restartbot",
-	      "restarttelegram",
-	      "restarttg",
-	      "重启",
-	      "重启一下",
-	      "重启下",
-	      "重启bot",
-	      "重启telegram",
-	      "重启tg",
-	    ]);
-	    const web = new Set(["restartweb", "rebootweb", "重启web"]);
-	    const all = new Set(["restartall", "rebootall", "重启全部", "全部重启", "重启所有"]);
-
-	    if (all.has(token)) return { scope: "all" };
-	    if (web.has(token)) return { scope: "web" };
-	    if (self.has(token)) return { scope: "self" };
-	    return null;
-	  };
-
-	  const restartPm2Apps = async (apps: string[]): Promise<void> => {
-	    const args = apps.map((app) => String(app ?? "").trim()).filter(Boolean);
-	    if (args.length === 0) {
-	      throw new Error("pm2 app name is required");
-	    }
-	    await new Promise<void>((resolve, reject) => {
-	      const child = spawn("pm2", ["restart", ...args], { stdio: "ignore" });
-	      child.once("error", (error) => reject(error));
-	      child.once("exit", (code) => {
-	        if (code === 0) {
-	          resolve();
-	          return;
-	        }
-	        reject(new Error(`pm2 restart failed (exit=${code ?? "null"})`));
-	      });
-	    });
-	  };
-
-	  // 启动时设置默认工作目录（单用户）
-	  const userId = config.allowedUsers[0];
+  // 启动时设置默认工作目录（单用户）
+  const userId = config.allowedUsers[0];
   const defaultDir = config.allowedDirs[0];
   directoryManager.setUserCwd(userId, defaultDir);
   sessionManager.setUserCwd(userId, defaultDir);
@@ -239,538 +99,20 @@ async function main() {
   bot.use(createAuthMiddleware(config.allowedUsers));
   bot.use(createRateLimitMiddleware(config.maxRequestsPerMinute));
 
-  // 注册命令列表（显示在 Telegram 输入框）
-  try {
-	    await bot.api.setMyCommands([
-	      { command: 'start', description: '欢迎信息' },
-	      { command: 'help', description: '命令帮助' },
-	      { command: 'status', description: '系统状态' },
-	      { command: 'esc', description: '中断当前任务' },
-	      { command: 'reset', description: '开始新对话' },
-	      { command: 'resume', description: '恢复之前的对话' },
-	      { command: 'mark', description: '记录对话到笔记' },
-	      { command: 'pwd', description: '当前目录' },
-	      { command: 'cd', description: '切换目录' },
-	      { command: 'pref', description: '管理偏好设置' },
-	    ]);
-	    logger.info('Telegram commands registered');
-	  } catch (error) {
-	    logger.warn(`Failed to register Telegram commands (will continue): ${(error as Error).message}`);
-	  }
+  await registerTelegramCommandMenu(bot, logger);
 
-  // 基础命令
-	  bot.command('start', async (ctx) => {
-	    await ctx.reply(
-	      '👋 欢迎使用 Codex Telegram Bot!\n\n' +
-	      '可用命令：\n' +
-	      '/help - 查看所有命令\n' +
-	      '/status - 查看系统状态\n' +
-	      '/reset - 重置会话\n' +
-	      '/mark - 切换对话标记，记录到当天 note\n' +
-	      '/pref - 管理偏好设置（长期记忆）\n' +
-	      '/pwd - 查看当前目录\n' +
-	      '/cd <path> - 切换目录\n\n' +
-	      '直接发送文本与 Codex 对话'
-	    );
-	  });
+  const runtime = {
+    logger,
+    config,
+    sessionManager,
+    directoryManager,
+    pendingTranscriptions,
+    silentNotifications,
+    markStates,
+  };
 
-	  bot.command('help', async (ctx) => {
-	    await ctx.reply(
-	      '📖 Codex Telegram Bot 命令列表\n\n' +
-	      '🔧 系统命令：\n' +
-	      '/start - 欢迎信息\n' +
-	      '/help - 显示此帮助\n' +
-	      '/status - 系统状态\n' +
-	      '/reset - 重置会话（开始新对话）\n' +
-	      '/resume - 恢复之前的对话\n' +
-	      '/mark - 切换对话标记（记录每日 note）\n' +
-	      '/pref [list|add|del] - 管理偏好设置（长期记忆）\n' +
-	      '/esc - 中断当前任务（Agent 保持运行）\n\n' +
-	      '📁 目录管理：\n' +
-	      '/pwd - 当前工作目录\n' +
-	      '/cd <path> - 切换目录\n\n' +
-	      '💬 对话：\n' +
-	      '直接发送消息与 Codex AI 对话\n' +
-	      '发送图片可让 Codex 分析图像\n' +
-	      '发送文件让 Codex 处理文件\n' +
-	      '执行过程中可用 /esc 中断当前任务'
-	    );
-	  });
-
-  bot.command('status', async (ctx) => {
-    const userId = await requireUserId(ctx, '/status');
-    if (userId === null) return;
-    const stats = sessionManager.getStats();
-    const cwd = directoryManager.getUserCwd(userId);
-    const currentModel = sessionManager.getUserModel(userId);
-
-    const sandboxEmoji = {
-      'read-only': '🔒',
-      'workspace-write': '✏️',
-      'danger-full-access': '⚠️'
-    }[stats.sandboxMode];
-
-    await ctx.reply(
-      '📊 系统状态\n\n' +
-      `💬 会话统计: ${stats.active} 活跃 / ${stats.total} 总数\n` +
-      `${sandboxEmoji} 沙箱模式: ${stats.sandboxMode}\n` +
-      `🤖 当前模型: ${currentModel}\n` +
-      `🧠 当前代理: Codex\n` +
-      `📁 当前目录: ${cwd}`
-    );
-  });
-
-  bot.command('reset', async (ctx) => {
-    const userId = await requireUserId(ctx, '/reset');
-    if (userId === null) return;
-    sessionManager.reset(userId);
-    await ctx.reply('✅ 代理会话已重置，新对话已开始');
-  });
-
-  bot.command('resume', async (ctx) => {
-    const userId = await requireUserId(ctx, '/resume');
-    if (userId === null) return;
-    // Simplified version doesn't persist threads
-    await ctx.reply('❌ 精简版不支持恢复对话，请使用 /reset 开始新对话');
-  });
-
-  bot.command('mark', async (ctx) => {
-    const userId = await requireUserId(ctx, '/mark');
-    if (userId === null) return;
-    const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
-    const current = markStates.get(userId) ?? false;
-    let nextState: boolean | null = null;
-
-    if (args.length === 0) {
-      nextState = !current;
-    } else {
-      const normalized = args[0].toLowerCase();
-      if (['on', 'enable', 'start', 'true', '1'].includes(normalized)) {
-        nextState = true;
-      } else if (['off', 'disable', 'stop', 'false', '0'].includes(normalized)) {
-        nextState = false;
-      } else if (['status', '?'].includes(normalized)) {
-        await ctx.reply(current ? '📝 标记模式：开启' : '📝 标记模式：关闭');
-        return;
-      } else {
-        await ctx.reply('用法: /mark [on|off]\n省略参数将切换当前状态');
-        return;
-      }
-    }
-
-    markStates.set(userId, nextState);
-    if (nextState) {
-      const cwd = directoryManager.getUserCwd(userId);
-      const notePath = getDailyNoteFilePath(cwd);
-      await ctx.reply(`📝 标记模式已开启\n将在 ${notePath} 记录后续对话`);
-    } else {
-      await ctx.reply('📝 标记模式已关闭');
-    }
-  });
-
-  bot.command('esc', async (ctx) => {
-    const userId = await requireUserId(ctx, '/esc');
-    if (userId === null) return;
-    const interrupted = interruptExecution(userId);
-    if (interrupted) {
-      await ctx.reply('⛔️ 已中断当前任务\n✅ Agent 仍在运行，可以发送新指令');
-    } else {
-      await ctx.reply('ℹ️ 当前没有正在执行的任务');
-    }
-  });
-
-  bot.command('pwd', async (ctx) => {
-    const userId = await requireUserId(ctx, '/pwd');
-    if (userId === null) return;
-    const cwd = directoryManager.getUserCwd(userId);
-    await ctx.reply(`📁 当前工作目录: ${cwd}`);
-  });
-
-	  bot.command('pref', async (ctx) => {
-	    const userId = await requireUserId(ctx, '/pref');
-	    if (userId === null) return;
-    const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
-    const sub = args[0]?.toLowerCase();
-    const cwd = directoryManager.getUserCwd(userId);
-    const workspaceRoot = detectWorkspaceFrom(cwd);
-
-    if (!sub || sub === 'list') {
-      const prefs = listPreferences(workspaceRoot);
-      if (prefs.length === 0) {
-        await ctx.reply('📋 暂无偏好设置\n\n用法: /pref add <key> <value>');
-        return;
-      }
-      const lines = prefs.map((p) => `• **${p.key}**: ${p.value}`);
-      await ctx.reply(`📋 偏好设置 (${prefs.length})\n\n${lines.join('\n')}`);
-      return;
-    }
-
-    if (sub === 'add' || sub === 'set') {
-      const key = args[1];
-      const value = args.slice(2).join(' ').trim();
-      if (!key || !value) {
-        await ctx.reply('用法: /pref add <key> <value>');
-        return;
-      }
-      setPreference(workspaceRoot, key, value);
-      await ctx.reply(`✅ 偏好已保存: **${key}** = ${value}`);
-      return;
-    }
-
-    if (sub === 'del' || sub === 'delete' || sub === 'rm') {
-      const key = args[1];
-      if (!key) {
-        await ctx.reply('用法: /pref del <key>');
-        return;
-      }
-      const deleted = deletePreference(workspaceRoot, key);
-      if (deleted) {
-        await ctx.reply(`✅ 已删除偏好: ${key}`);
-      } else {
-        await ctx.reply(`❌ 未找到偏好: ${key}`);
-      }
-      return;
-    }
-
-    await ctx.reply(
-      '📖 偏好设置命令\n\n' +
-      '/pref list — 列出所有偏好\n' +
-      '/pref add <key> <value> — 添加/更新偏好\n' +
-      '/pref del <key> — 删除偏好'
-    );
-  });
-
-	  bot.command('cd', async (ctx) => {
-	    const userId = await requireUserId(ctx, '/cd');
-	    if (userId === null) return;
-	    const args = ctx.message?.text?.split(/\s+/).slice(1);
-
-    if (!args || args.length === 0) {
-      await ctx.reply('用法: /cd <path>');
-      return;
-    }
-
-    const targetPath = args.join(' ');
-    const prevCwd = directoryManager.getUserCwd(userId);
-    const result = directoryManager.setUserCwd(userId, targetPath);
-
-    if (result.success) {
-      const newCwd = directoryManager.getUserCwd(userId);
-      sessionManager.setUserCwd(userId, newCwd);
-      let replyMessage = `✅ 已切换到: ${newCwd}`;
-      if (prevCwd !== newCwd) {
-        replyMessage += `\n💡 代理上下文已切换到新目录`;
-      } else {
-        replyMessage += `\nℹ️ 已在相同目录，无需重置会话`;
-      }
-
-      await ctx.reply(replyMessage);
-    } else {
-      await ctx.reply(`❌ ${result.error}`);
-	    }
-	  });
-
-	  // 处理带图片的消息
-	  bot.on('message:photo', async (ctx) => {
-	    const caption = ctx.message.caption || '请描述这张图片';
-    const photos = ctx.message.photo;
-    const userId = await requireUserId(ctx, 'message:photo');
-    if (userId === null) return;
-    const cwd = directoryManager.getUserCwd(userId);
-
-    // 获取最高分辨率的图片
-    const photo = photos[photos.length - 1];
-
-    await handleCodexMessage(
-      ctx,
-      caption,
-      sessionManager,
-      config.streamUpdateIntervalMs,
-      [photo.file_id],
-      undefined,
-      cwd,
-      {
-        markNoteEnabled: markStates.get(userId) ?? false,
-        silentNotifications,
-        replyToMessageId: ctx.message.message_id,
-      }
-    );
-  });
-
-  // 处理文档文件
-  bot.on('message:document', async (ctx) => {
-    const doc = ctx.message.document;
-    const caption = ctx.message.caption || '';
-    const userId = await requireUserId(ctx, 'message:document');
-    if (userId === null) return;
-    const cwd = directoryManager.getUserCwd(userId);
-
-    // 检查文件大小
-    if (doc.file_size && doc.file_size > 20 * 1024 * 1024) {
-      await ctx.reply('❌ 文件过大，限制 20MB');
-      return;
-    }
-
-    await handleCodexMessage(
-      ctx,
-      caption,
-      sessionManager,
-      config.streamUpdateIntervalMs,
-      undefined,
-      doc.file_id,
-      cwd,
-      {
-        markNoteEnabled: markStates.get(userId) ?? false,
-        silentNotifications,
-        replyToMessageId: ctx.message.message_id,
-      }
-    );
-  });
-
-  // 处理语音消息
-  bot.on('message:voice', async (ctx) => {
-    const voice = ctx.message.voice;
-    const caption = ctx.message.caption || '';
-    const userId = await requireUserId(ctx, 'message:voice');
-    if (userId === null) return;
-
-    if (voice.file_size && voice.file_size > 20 * 1024 * 1024) {
-      await ctx.reply('❌ 文件过大，限制 20MB');
-      return;
-    }
-
-    try {
-      const chatId = ctx.chat?.id;
-      if (typeof chatId !== 'number') {
-        await ctx.reply('❌ 无法识别 chat.id');
-        return;
-      }
-
-      const mimeType = typeof voice.mime_type === 'string' ? voice.mime_type : 'audio/ogg';
-      const text = await transcribeTelegramVoiceMessage({
-        api: ctx.api,
-        fileId: voice.file_id,
-        mimeType,
-        caption,
-      });
-
-      const keyboard = new InlineKeyboard().text('Submit', 'vt:submit').text('Discard', 'vt:discard');
-      const previewMarkdown = formatTranscriptionPreview({ text, state: "pending" });
-      const previewText = escapeTelegramMarkdownV2(previewMarkdown);
-
-      const preview = await ctx.reply(previewText, {
-        parse_mode: 'MarkdownV2',
-        reply_markup: keyboard,
-        disable_notification: silentNotifications,
-        reply_parameters: { message_id: ctx.message.message_id },
-        link_preview_options: { is_disabled: true },
-      });
-
-      pendingTranscriptions.add({ chatId, previewMessageId: preview.message_id, text });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`❌ 语音识别失败: ${message}`, {
-        disable_notification: silentNotifications,
-        reply_parameters: { message_id: ctx.message.message_id },
-      });
-    }
-  });
-
-  bot.callbackQuery(/^vt:(submit|discard)$/, async (ctx) => {
-    const userId = await requireUserId(ctx, 'callbackQuery:vt');
-    if (userId === null) {
-      return;
-    }
-
-    const chatId = ctx.chat?.id;
-    if (typeof chatId !== 'number') {
-      await ctx.answerCallbackQuery({ text: '❌ 无法识别 chat.id', show_alert: true }).catch(() => undefined);
-      return;
-    }
-
-    const previewMessageId = ctx.callbackQuery.message?.message_id;
-    if (typeof previewMessageId !== 'number') {
-      await ctx.answerCallbackQuery({ text: '❌ 无法识别预览消息', show_alert: true }).catch(() => undefined);
-      return;
-    }
-
-    const data = String(ctx.callbackQuery.data ?? '');
-    const action = data.split(':')[1] ?? '';
-
-    if (action === 'discard') {
-      const result = pendingTranscriptions.discard({ chatId, previewMessageId });
-      if (result.status === 'expired' || result.status === 'missing') {
-        await ctx.answerCallbackQuery({ text: '⏱️ 已过期', show_alert: false }).catch(() => undefined);
-        return;
-      }
-      if (result.status === 'already_discarded') {
-        await ctx.answerCallbackQuery({ text: '🗑️ 已丢弃', show_alert: false }).catch(() => undefined);
-        return;
-      }
-      if (result.status === 'already_submitted') {
-        await ctx.answerCallbackQuery({ text: '✅ 已提交', show_alert: false }).catch(() => undefined);
-        return;
-      }
-
-      await ctx.answerCallbackQuery({ text: '🗑️ 已丢弃', show_alert: false }).catch(() => undefined);
-
-      const record = pendingTranscriptions.get({ chatId, previewMessageId });
-      const text = record?.text ?? '';
-      const updated = escapeTelegramMarkdownV2(formatTranscriptionPreview({ text, state: "discarded" }));
-      await ctx
-        .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
-        .catch(() => undefined);
-      return;
-    }
-
-    if (action !== 'submit') {
-      await ctx.answerCallbackQuery({ text: '❌ Unknown action', show_alert: true }).catch(() => undefined);
-      return;
-    }
-
-    if (hasActiveCodexRequest(userId)) {
-      await ctx
-        .answerCallbackQuery({ text: '⚠️ 已有请求正在执行，请稍后再提交（或用 /esc 中断）', show_alert: false })
-        .catch(() => undefined);
-      return;
-    }
-
-    const record = pendingTranscriptions.get({ chatId, previewMessageId });
-    if (!record) {
-      await ctx.answerCallbackQuery({ text: '⏱️ 已过期', show_alert: false }).catch(() => undefined);
-      return;
-    }
-
-    const consume = pendingTranscriptions.consume({ chatId, previewMessageId });
-    if (consume.status === 'expired' || consume.status === 'missing') {
-      await ctx.answerCallbackQuery({ text: '⏱️ 已过期', show_alert: false }).catch(() => undefined);
-      return;
-    }
-    if (consume.status === 'already_submitted') {
-      await ctx.answerCallbackQuery({ text: '✅ 已提交', show_alert: false }).catch(() => undefined);
-      return;
-    }
-    if (consume.status === 'already_discarded') {
-      await ctx.answerCallbackQuery({ text: '🗑️ 已丢弃', show_alert: false }).catch(() => undefined);
-      return;
-    }
-
-    await ctx.answerCallbackQuery({ text: '✅ 已提交', show_alert: false }).catch(() => undefined);
-
-    const updated = escapeTelegramMarkdownV2(formatTranscriptionPreview({ text: consume.text, state: "submitted" }));
-    await ctx
-      .editMessageText(updated, { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] }, link_preview_options: { is_disabled: true } })
-      .catch(() => undefined);
-
-    const cwd = directoryManager.getUserCwd(userId);
-    await handleCodexMessage(
-      ctx,
-      consume.text,
-      sessionManager,
-      config.streamUpdateIntervalMs,
-      undefined,
-      undefined,
-      cwd,
-      {
-        markNoteEnabled: markStates.get(userId) ?? false,
-        silentNotifications,
-        replyToMessageId: previewMessageId,
-      },
-    );
-  });
-
-  // 处理普通文本消息 - Codex 对话
-	  bot.on('message:text', async (ctx) => {
-	    const text = ctx.message.text;
-	    const userId = await requireUserId(ctx, 'message:text');
-	    if (userId === null) return;
-
-	    const trimmed = text.trim();
-	    if (trimmed.startsWith('/')) {
-	      const firstToken = trimmed.split(/\s+/)[0] ?? '';
-	      const withoutSlash = firstToken.slice(1);
-	      const command = withoutSlash.split('@')[0]?.toLowerCase() ?? '';
-	      if (command && TELEGRAM_CONTROL_COMMANDS.has(command)) {
-	        return;
-	      }
-	      if (command) {
-	        await ctx.reply(`❌ 未知命令: /${command}\n用 /help 查看可用命令`);
-	        return;
-	      }
-	    }
-
-	    const restart = parseRestartIntent(trimmed);
-	    if (restart) {
-	      if (!(await requirePrivateChat(ctx, "restart"))) return;
-
-	      const underPm2 = typeof process.env.pm_id === "string" && process.env.pm_id.trim().length > 0;
-	      const allowRestart = parseBooleanFlag(process.env.ADS_TG_ALLOW_SUICIDE_RESTART, false);
-	      if (!underPm2 && !allowRestart) {
-	        await ctx.reply("❌ 当前未启用重启：仅在 pm2 下可用（或设置 ADS_TG_ALLOW_SUICIDE_RESTART=true）。");
-	        return;
-	      }
-
-	      const triggerSelfRestart = (): void => {
-	        const timer = setTimeout(() => {
-	          try {
-	            process.kill(process.pid, "SIGTERM");
-	          } catch {
-	            process.exit(0);
-	          }
-	        }, 250);
-	        timer.unref?.();
-	      };
-
-	      if (restart.scope === "self") {
-	        await ctx.reply("♻️ 正在重启 Telegram 服务…");
-	        logger.warn(`[Telegram] Suicide restart requested scope=self user=${userId} pm2=${underPm2}`);
-	        triggerSelfRestart();
-	        return;
-	      }
-
-	      const webApp = String(process.env.ADS_PM2_APP_WEB ?? "").trim();
-	      if (!webApp) {
-	        await ctx.reply("❌ 未配置 ADS_PM2_APP_WEB，无法重启 Web（示例：ADS_PM2_APP_WEB=ads-web）。");
-	        return;
-	      }
-
-	      try {
-	        await restartPm2Apps([webApp]);
-	      } catch (error) {
-	        const message = error instanceof Error ? error.message : String(error);
-	        await ctx.reply(`❌ 重启失败: ${message}`);
-	        return;
-	      }
-
-	      if (restart.scope === "web") {
-	        await ctx.reply("♻️ 已请求重启 Web 服务。");
-	        logger.warn(`[Telegram] pm2 restart requested scope=web user=${userId} app=${webApp}`);
-	        return;
-	      }
-
-	      await ctx.reply("♻️ 已请求重启 Web 服务，正在重启 Telegram 服务…");
-	      logger.warn(`[Telegram] Suicide restart requested scope=all user=${userId} app=${webApp} pm2=${underPm2}`);
-	      triggerSelfRestart();
-	      return;
-	    }
-
-	    const cwd = directoryManager.getUserCwd(userId);
-
-	    await handleCodexMessage(
-	      ctx,
-	      text,
-      sessionManager,
-      config.streamUpdateIntervalMs,
-      undefined,
-      undefined,
-      cwd,
-      {
-        markNoteEnabled: markStates.get(userId) ?? false,
-        silentNotifications,
-        replyToMessageId: ctx.message.message_id,
-      }
-    );
-  });
+  registerTelegramControlCommands(bot, runtime);
+  registerTelegramMessageHandlers(bot, runtime);
 
   // 启动 Bot
   logger.info('Starting long polling...');
@@ -780,53 +122,21 @@ async function main() {
     },
   });
 
-  // 优雅退出
+  cleanup = createGracefulCleanup({
+    logger,
+    destroySessionManager: () => sessionManager.destroy(),
+    stopBot: () => bot.stop(),
+  });
+
   process.once('SIGINT', () => {
-    logger.info('Shutting down...');
-    sessionManager.destroy();
-    bot.stop();
-    try {
-      closeAllWorkspaceDatabases();
-    } catch {
-      // ignore
-    }
-    try {
-      closeAllStateDatabases();
-    } catch {
-      // ignore
-    }
-    process.exit(0);
+    cleanup.shutdown();
   });
 
   process.once('SIGTERM', () => {
-    logger.info('Shutting down...');
-    sessionManager.destroy();
-    bot.stop();
-    try {
-      closeAllWorkspaceDatabases();
-    } catch {
-      // ignore
-    }
-    try {
-      closeAllStateDatabases();
-    } catch {
-      // ignore
-    }
-    process.exit(0);
+    cleanup.shutdown();
   });
 }
 
 main().catch((error) => {
-  logger.error('Fatal error', error);
-  try {
-    closeAllWorkspaceDatabases();
-  } catch {
-    // ignore
-  }
-  try {
-    closeAllStateDatabases();
-  } catch {
-    // ignore
-  }
-  process.exit(1);
+  cleanup.crash('Fatal error', error);
 });
