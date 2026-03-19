@@ -46,24 +46,20 @@
     "ads-telegram": "./dist/server/cli.js"
   },
   "dependencies": {
-    "@element-plus/icons-vue": "^2.3.2",
     "@grammyjs/types": "^3.22.2",
     "@tavily/core": "^0.5.4",
     "better-sqlite3": "^12.6.2",
-    "element-plus": "^2.13.2",
     "grammy": "^1.38.3",
-    "highlight.js": "^11.11.1",
     "liteque": "^0.8.0",
-    "markdown-it": "^14.1.0",
     "picocolors": "^1.0.0",
     "telegramify-markdown": "^1.3.0",
     "toml": "^3.0.0",
-    "vue": "^3.5.13",
     "ws": "^8.18.0",
     "yaml": "^2.6.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.5.0",
     "@types/ws": "^8.5.12",
@@ -73,14 +69,18 @@
     "@vue/test-utils": "^2.4.6",
     "c8": "^9.1.0",
     "dotenv": "^16.4.5",
+    "element-plus": "^2.13.2",
     "esbuild": "^0.27.3",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
+    "highlight.js": "^11.11.1",
     "jsdom": "^27.4.0",
+    "markdown-it": "^14.1.0",
     "tsx": "^4.16.0",
     "typescript": "^5.5.4",
     "typescript-eslint": "^8.46.4",
     "vite": "^6.0.11",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "vue": "^3.5.13"
   }
 }
