@@ -2,9 +2,9 @@ import type { Input } from "./protocol/types.js";
 
 import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
+import { resolveAgentConfig } from "../config.js";
 import { createAbortError } from "../utils/abort.js";
 import { createLogger } from "../utils/logger.js";
-import { parsePositiveIntFlag } from "../utils/flags.js";
 import { ActivityTracker, resolveExploredConfig } from "../utils/activityTracker.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
@@ -88,10 +88,7 @@ export async function runCollaborativeTurn(
       isCoordinatorEnabled();
 
     if (coordinatorEnabled) {
-      const maxParallelDelegations = parsePositiveIntFlag(process.env.ADS_TASK_MAX_PARALLEL, 3);
-      const taskTimeoutMs = parsePositiveIntFlag(process.env.ADS_TASK_TIMEOUT_MS, 2 * 60 * 1000);
-      const maxTaskAttempts = parsePositiveIntFlag(process.env.ADS_TASK_MAX_ATTEMPTS, 2);
-      const retryBackoffMs = parsePositiveIntFlag(process.env.ADS_TASK_RETRY_BACKOFF_MS, 1200);
+      const agentConfig = resolveAgentConfig();
 
       const coordinator = new TaskCoordinator(orchestrator, {
         workspaceRoot,
@@ -103,10 +100,10 @@ export async function runCollaborativeTurn(
         supervisorName,
         maxSupervisorRounds,
         maxDelegations,
-        maxParallelDelegations,
-        taskTimeoutMs,
-        maxTaskAttempts,
-        retryBackoffMs,
+        maxParallelDelegations: agentConfig.taskMaxParallel,
+        taskTimeoutMs: agentConfig.taskTimeoutMs,
+        maxTaskAttempts: agentConfig.taskMaxAttempts,
+        retryBackoffMs: agentConfig.taskRetryBackoffMs,
         verificationCwd: cwd,
         signal: options.signal,
         hooks: options.hooks,

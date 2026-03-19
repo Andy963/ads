@@ -20,31 +20,17 @@ import { CliAgentAvailability } from "../../agents/health/agentAvailability.js";
 import { createTaskQueueManager } from "./taskQueue/manager.js";
 import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
 import { WorkspaceLockPool } from "./workspaceLockPool.js";
-import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, resolveAllowedDirs, wait, sanitizeInput } from "../utils.js";
+import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
 import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions.js";
 import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegramNotifier.js";
 import { AgentScheduleCompiler } from "../../scheduler/compiler.js";
 import { SchedulerRuntime } from "../../scheduler/runtime.js";
-import { parseBooleanFlag } from "../../utils/flags.js";
+import { resolveSharedConfig, resolveWebConfig } from "../../config.js";
 import { closeSharedDatabases } from "../../utils/shutdown.js";
 import { createWebSocketHub } from "./start/webSocketHub.js";
 
-const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
-const HOST = process.env.ADS_WEB_HOST || "127.0.0.1";
-// The web UI opens one WebSocket per project/session. Default to a value that enables
-// cross-project parallelism out of the box while still being bounded.
-const maxClientsRaw = Number(process.env.ADS_WEB_MAX_CLIENTS ?? 32);
-const MAX_CLIENTS = Number.isFinite(maxClientsRaw) ? Math.max(1, Math.floor(maxClientsRaw)) : 32;
-const pingIntervalMsRaw = Number(process.env.ADS_WEB_WS_PING_INTERVAL_MS ?? 15_000);
-const WS_PING_INTERVAL_MS = Number.isFinite(pingIntervalMsRaw) ? Math.max(0, pingIntervalMsRaw) : 15_000;
-const maxMissedPongsRaw = Number(process.env.ADS_WEB_WS_MAX_MISSED_PONGS ?? 3);
-const WS_MAX_MISSED_PONGS = Number.isFinite(maxMissedPongsRaw) ? Math.max(0, Math.floor(maxMissedPongsRaw)) : 3;
-
 const logger = createLogger("WebSocket");
-const allowedOrigins = parseAllowedOrigins(process.env.ADS_WEB_ALLOWED_ORIGINS);
-const sessionTtlSeconds = resolveSessionTtlSeconds();
-const sessionPepper = resolveSessionPepper();
 
 const workspaceCache = new Map<string, string>();
 const interruptControllers = new Map<string, AbortController>();
@@ -174,12 +160,6 @@ const webPlannerThreadStorage = new ThreadStorage({
 const webReviewerThreadStorage = new ThreadStorage({
   namespace: WEB_REVIEWER_NAMESPACE,
 });
-const PLANNER_CODEX_MODEL = process.env.ADS_PLANNER_CODEX_MODEL?.trim() || undefined;
-const REVIEWER_CODEX_MODEL = process.env.ADS_REVIEWER_CODEX_MODEL?.trim() || undefined;
-
-const sessionManager = new SessionManager(0, 0, "danger-full-access", undefined, webWorkerThreadStorage);
-const plannerSessionManager = new SessionManager(0, 0, "read-only", PLANNER_CODEX_MODEL, webPlannerThreadStorage);
-const reviewerSessionManager = new SessionManager(0, 0, "read-only", REVIEWER_CODEX_MODEL, webReviewerThreadStorage);
 
 const workerHistoryStore = new HistoryStore({
   storagePath: stateDbPath,
@@ -272,17 +252,37 @@ async function ensureWebPidFile(): Promise<string> {
 
 export async function startWebServer(): Promise<void> {
   const workspaceRoot = detectWorkspace();
-  const allowedDirs = resolveAllowedDirs(workspaceRoot);
+  const sharedConfig = resolveSharedConfig({
+    fallbackAllowedDir: workspaceRoot,
+    resolveAllowedDirPaths: true,
+    fallbackWhenAllowedDirsEmpty: true,
+  });
+  const webConfig = resolveWebConfig();
+  const allowedDirs = sharedConfig.allowedDirs;
+  const allowedOrigins = parseAllowedOrigins(webConfig.allowedOriginsRaw);
+  const sessionTtlSeconds = resolveSessionTtlSeconds();
+  const sessionPepper = resolveSessionPepper();
   const workspaceLocks = new WorkspaceLockPool();
   const plannerWorkspaceLocks = new WorkspaceLockPool();
   const reviewerWorkspaceLocks = new WorkspaceLockPool();
   const getWorkspaceLock = (workspaceRootForLock: string) => workspaceLocks.get(workspaceRootForLock);
   const getPlannerWorkspaceLock = (workspaceRootForLock: string) => plannerWorkspaceLocks.get(workspaceRootForLock);
   const getReviewerWorkspaceLock = (workspaceRootForLock: string) => reviewerWorkspaceLocks.get(workspaceRootForLock);
-  const taskQueueAvailable = parseBooleanFlag(process.env.TASK_QUEUE_ENABLED, true);
-  const taskQueueAutoStart = parseBooleanFlag(process.env.TASK_QUEUE_AUTO_START, false);
-
-  const traceWsDuplication = parseBooleanFlag(process.env.ADS_TRACE_WS_DUPLICATION, false);
+  const sessionManager = new SessionManager(0, 0, "danger-full-access", undefined, webWorkerThreadStorage);
+  const plannerSessionManager = new SessionManager(
+    0,
+    0,
+    "read-only",
+    webConfig.plannerCodexModel,
+    webPlannerThreadStorage,
+  );
+  const reviewerSessionManager = new SessionManager(
+    0,
+    0,
+    "read-only",
+    webConfig.reviewerCodexModel,
+    webReviewerThreadStorage,
+  );
   const wsHub = createWebSocketHub({ workerHistoryStore, reviewerHistoryStore });
 
   const taskQueueManager = createTaskQueueManager({
@@ -290,8 +290,8 @@ export async function startWebServer(): Promise<void> {
     allowedDirs,
     adsStateDir,
     lockForWorkspace: getWorkspaceLock,
-    available: taskQueueAvailable,
-    autoStart: taskQueueAutoStart,
+    available: webConfig.taskQueueEnabled,
+    autoStart: webConfig.taskQueueAutoStart,
     logger,
     broadcastToSession: wsHub.broadcastToSession,
     recordToSessionHistories: wsHub.recordToSessionHistories,
@@ -353,7 +353,7 @@ export async function startWebServer(): Promise<void> {
     workspaceRoot,
     sessionTtlSeconds,
     sessionPepper,
-    taskQueueAvailable,
+    taskQueueAvailable: webConfig.taskQueueEnabled,
     resolveTaskWorkspaceRoot: taskQueueManager.resolveTaskWorkspaceRoot,
     resolveTaskContext: taskQueueManager.resolveTaskContext,
     promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
@@ -370,11 +370,11 @@ export async function startWebServer(): Promise<void> {
     workspaceRoot,
     allowedOrigins,
     agentAvailability,
-    maxClients: MAX_CLIENTS,
-    pingIntervalMs: WS_PING_INTERVAL_MS,
-    maxMissedPongs: WS_MAX_MISSED_PONGS,
+    maxClients: webConfig.maxClients,
+    pingIntervalMs: webConfig.wsPingIntervalMs,
+    maxMissedPongs: webConfig.wsMaxMissedPongs,
     logger,
-    traceWsDuplication,
+    traceWsDuplication: webConfig.traceWsDuplication,
     allowedDirs,
     workspaceCache,
     interruptControllers,
@@ -420,8 +420,8 @@ export async function startWebServer(): Promise<void> {
   }
   await ensureWebPidFile();
 
-  server.listen(PORT, HOST, () => {
-    logger.info(`WebSocket server listening on ws://${HOST}:${PORT}`);
+  server.listen(webConfig.port, webConfig.host, () => {
+    logger.info(`WebSocket server listening on ws://${webConfig.host}:${webConfig.port}`);
     logger.info(`Workspace: ${workspaceRoot}`);
   });
 

@@ -13,9 +13,9 @@ import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills } from "../skills/loader.js";
 import { loadSkillRegistry } from "../skills/registryMetadata.js";
 import { saveSkillDraftFromBlock, type SavedSkillDraft } from "../skills/creator.js";
+import { resolveAgentConfig } from "../config.js";
 import { setPreference } from "../memory/soul.js";
 import { extractPreferenceDirectives, type PreferenceDirective } from "../memory/preferenceDirectives.js";
-import { parseBooleanFlag } from "../utils/flags.js";
 
 interface AgentEntry {
   adapter: AgentAdapter;
@@ -50,10 +50,11 @@ export class HybridOrchestrator {
     if (!options.adapters.length) {
       throw new Error("HybridOrchestrator requires at least one agent adapter");
     }
+    const agentConfig = resolveAgentConfig();
     this.systemPromptManager = options.systemPromptManager;
-    this.skillAutoloadEnabled = parseBooleanFlag(process.env.ADS_SKILLS_AUTOLOAD, true);
-    this.skillAutosaveEnabled = parseBooleanFlag(process.env.ADS_SKILLS_AUTOSAVE, true);
-    this.preferenceDirectiveEnabled = parseBooleanFlag(process.env.ADS_PREFERENCE_DIRECTIVES, true);
+    this.skillAutoloadEnabled = agentConfig.skillAutoloadEnabled;
+    this.skillAutosaveEnabled = agentConfig.skillAutosaveEnabled;
+    this.preferenceDirectiveEnabled = agentConfig.preferenceDirectiveEnabled;
 
     for (const adapter of options.adapters) {
       this.registerAdapter(adapter);
