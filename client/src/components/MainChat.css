@@ -255,17 +255,17 @@
   white-space: nowrap;
 }
 
-.patchCardStatAdd {
+.patchCardMeta :deep(.patchCardStatAdd) {
   color: #16a34a;
   font-weight: 800;
 }
 
-.patchCardStatDel {
+.patchCardMeta :deep(.patchCardStatDel) {
   color: #b91c1c;
   font-weight: 800;
 }
 
-.patchCardStatBinary {
+.patchCardMeta :deep(.patchCardStatBinary) {
   color: #64748b;
   font-weight: 700;
 }
@@ -311,19 +311,19 @@
   white-space: pre;
 }
 
-.patchCardDiffLine--add {
+.patchCardDiff :deep(.patchCardDiffLine--add) {
   color: #15803d;
 }
 
-.patchCardDiffLine--del {
+.patchCardDiff :deep(.patchCardDiffLine--del) {
   color: #b91c1c;
 }
 
-.patchCardDiffLine--meta {
+.patchCardDiff :deep(.patchCardDiffLine--meta) {
   color: #64748b;
 }
 
-.patchCardDiffLine--hunk {
+.patchCardDiff :deep(.patchCardDiffLine--hunk) {
   color: #7c3aed;
 }
 
