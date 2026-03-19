@@ -10,8 +10,7 @@ import { attachWebSocketServer } from "./ws/server.js";
 import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
 import { syncWorkspaceTemplates } from "../../workspace/service.js";
-import { resolveStateDbPath, closeAllStateDatabases, getStateDatabase } from "../../state/database.js";
-import { closeAllWorkspaceDatabases } from "../../storage/database.js";
+import { resolveStateDbPath, getStateDatabase } from "../../state/database.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
 import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
@@ -28,6 +27,7 @@ import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegra
 import { AgentScheduleCompiler } from "../../scheduler/compiler.js";
 import { SchedulerRuntime } from "../../scheduler/runtime.js";
 import { parseBooleanFlag } from "../../utils/flags.js";
+import { closeSharedDatabases } from "../../utils/shutdown.js";
 import { createWebSocketHub } from "./start/webSocketHub.js";
 
 const PORT = Number(process.env.ADS_WEB_PORT) || 8787;
@@ -252,16 +252,7 @@ async function ensureWebPidFile(): Promise<string> {
       return;
     }
     shutdownHandled = true;
-    try {
-      closeAllWorkspaceDatabases();
-    } catch {
-      // ignore
-    }
-    try {
-      closeAllStateDatabases();
-    } catch {
-      // ignore
-    }
+    closeSharedDatabases(logger);
     cleanup();
   };
   process.once("exit", shutdown);

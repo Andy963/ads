@@ -1,38 +1,21 @@
 import "../utils/env.js";
 import "../utils/logSink.js";
 
-import { closeAllStateDatabases } from "../state/database.js";
-import { closeAllWorkspaceDatabases } from "../storage/database.js";
 import { createLogger } from "../utils/logger.js";
+import { createGracefulCleanup } from "../utils/shutdown.js";
 import { startWebServer } from "./server/startWebServer.js";
 
 const logger = createLogger("WebSocket");
-
-function gracefulCleanup(): void {
-  try {
-    closeAllWorkspaceDatabases();
-  } catch {
-    // ignore
-  }
-  try {
-    closeAllStateDatabases();
-  } catch {
-    // ignore
-  }
-}
+const cleanup = createGracefulCleanup({ logger });
 
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled promise rejection", reason);
 });
 
 process.on("uncaughtException", (error) => {
-  logger.error("Uncaught exception", error);
-  gracefulCleanup();
-  process.exit(1);
+  cleanup.crash("Uncaught exception", error);
 });
 
 startWebServer().catch((error) => {
-  logger.error("[web] fatal error", error);
-  gracefulCleanup();
-  process.exit(1);
+  cleanup.crash("[web] fatal error", error);
 });

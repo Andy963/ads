@@ -10,10 +10,10 @@ import { SessionManager } from './utils/sessionManager.js';
 import { DirectoryManager } from './utils/directoryManager.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
+import { createGracefulCleanup } from '../utils/shutdown.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
 import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag } from './botSetup.js';
 import { PendingTranscriptionStore } from './utils/pendingTranscriptions.js';
-import { createGracefulCleanup } from './utils/gracefulCleanup.js';
 import { registerTelegramCommandMenu, registerTelegramControlCommands } from './commands/registerControlCommands.js';
 import { registerTelegramMessageHandlers } from './commands/registerMessageHandlers.js';
 

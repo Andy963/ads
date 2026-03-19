@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { createGracefulCleanup } from '../../server/telegram/utils/gracefulCleanup.js';
+import { createGracefulCleanup } from '../../server/utils/shutdown.js';
 
 describe('telegram graceful cleanup', () => {
   it('runs shutdown cleanup once and exits with code 0', () => {
