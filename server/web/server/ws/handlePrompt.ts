@@ -1,6 +1,4 @@
-import type { Input, InputTextPart, ThreadEvent } from "../../../agents/protocol/types.js";
-
-import fs from "node:fs";
+import type { Input } from "../../../agents/protocol/types.js";
 
 import type { AgentEvent } from "../../../codex/events.js";
 import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";
@@ -9,7 +7,6 @@ import { processAdrBlocks } from "../../../utils/adrRecording.js";
 import { processSpecBlocks } from "../../../utils/specRecording.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { truncateForLog } from "../../utils.js";
-import { buildWorkspacePatch } from "../../gitPatch.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
@@ -17,192 +14,22 @@ import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runCollaborativeTurn } from "../../../agents/hub.js";
-import { extractCommandPayload } from "./utils.js";
 import type { WsMessage } from "./schema.js";
-import {
-  ensureTaskBundleIdempotency,
-  extractTaskBundleJsonBlocks,
-  formatTaskBundleSummaryMarkdown,
-  parseTaskBundle,
-  stripTaskBundleCodeBlocks,
-} from "../planner/taskBundle.js";
-import { validateTaskBundleSpec } from "../planner/specValidation.js";
-import { buildDraftRecoveryPrompt, summarizeDraftSpecValidationErrors } from "../planner/draftRecovery.js";
 import { injectPlannerDraftSkill, parsePlannerDraftSlashCommand } from "../planner/draftSlashCommand.js";
-import {
-  approveTaskBundleDraft,
-  getTaskBundleDraftByRequestId,
-  setTaskBundleDraftError,
-  upsertTaskBundleDraft,
-} from "../planner/taskBundleDraftStore.js";
-import { buildWorkspaceAttachmentRawUrl, materializeTaskBundleTasks } from "../planner/taskBundleApprover.js";
-import { detectBundleRisk } from "../planner/riskDetector.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
-import { startQueueInAllMode } from "../../taskQueue/control.js";
-import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
-import { ScheduleStore } from "../../../scheduler/store.js";
-import { computeNextCronRunAt } from "../../../scheduler/cron.js";
+import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
+import {
+  buildHistoryInjectionContext,
+  parseModelFromPayload,
+  parseModelReasoningEffortFromPayload,
+  prependContextToInput,
+} from "./promptModelConfig.js";
+import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
 
-type FileChangeLike = { kind?: unknown; path?: unknown };
-type PatchFileStatLike = { added: number | null; removed: number | null };
-
-const HISTORY_INJECTION_MAX_ENTRIES = 20;
-const HISTORY_INJECTION_MAX_CHARS = 8_000;
-
-const PLANNER_DRAFT_RECOVERY_MAX_ATTEMPTS = 1;
-
-const SCHEDULE_FENCE_REGEX = /```ads-schedule\s*\n([\s\S]*?)\n```/g;
-
-function extractScheduleBlocks(text: string): string[] {
-  const raw = String(text ?? "").trim();
-  if (!raw) return [];
-  const blocks: string[] = [];
-  let match: RegExpExecArray | null = null;
-  while ((match = SCHEDULE_FENCE_REGEX.exec(raw)) !== null) {
-    const candidate = String(match[1] ?? "").trim();
-    if (candidate) blocks.push(candidate);
-  }
-  return blocks;
-}
-
-function stripScheduleCodeBlocks(text: string, candidates: Set<string>): { text: string; removed: number } {
-  const raw = String(text ?? "");
-  if (!raw.trim()) return { text: raw, removed: 0 };
-  let removed = 0;
-  const stripped = raw.replace(SCHEDULE_FENCE_REGEX, (full: string, inner: string) => {
-    const candidate = String(inner ?? "").trim();
-    if (!candidate || !candidates.has(candidate)) return full;
-    removed += 1;
-    return "";
-  });
-  return { text: stripped, removed };
-}
-
-function parseModelReasoningEffortFromPayload(payload: unknown): { present: boolean; effort?: string } {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { present: false };
-  }
-  const rec = payload as Record<string, unknown>;
-  const raw = rec["model_reasoning_effort"] ?? rec["modelReasoningEffort"];
-  if (raw === undefined) {
-    return { present: false };
-  }
-  const normalized = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!normalized || normalized === "default") {
-    return { present: true, effort: undefined };
-  }
-  const allow = new Set(["low", "medium", "high", "xhigh"]);
-  if (!allow.has(normalized)) {
-    return { present: true, effort: undefined };
-  }
-  return { present: true, effort: normalized };
-}
-
-function parseModelFromPayload(payload: unknown): { present: boolean; model?: string } {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { present: false };
-  }
-  const rec = payload as Record<string, unknown>;
-  const raw = rec["model"] ?? rec["model_id"] ?? rec["modelId"];
-  if (raw === undefined) {
-    return { present: false };
-  }
-  const normalized = typeof raw === "string" ? raw.trim() : "";
-  const lowered = normalized.toLowerCase();
-  if (!normalized || lowered === "auto" || lowered === "default") {
-    return { present: true, model: undefined };
-  }
-  return { present: true, model: normalized };
-}
-
-export function buildHistoryInjectionContext(entries: Array<{ role: string; text: string }>): string | null {
-  const relevant = entries.filter((e) => e.role === "user" || e.role === "ai");
-  if (relevant.length === 0) {
-    return null;
-  }
-  const recent = relevant.slice(-HISTORY_INJECTION_MAX_ENTRIES);
-  const lines: string[] = [];
-  for (const entry of recent) {
-    const role = entry.role === "user" ? "User" : "Assistant";
-    const text = String(entry.text ?? "").trim();
-    if (!text) continue;
-    const maxPerEntry = 800;
-    const truncated = text.length <= maxPerEntry ? text : `${text.slice(0, maxPerEntry)}…`;
-    lines.push(`${role}: ${truncated}`);
-  }
-  if (lines.length === 0) {
-    return null;
-  }
-  let transcript = lines.join("\n");
-  if (transcript.length > HISTORY_INJECTION_MAX_CHARS) {
-    transcript = transcript.slice(transcript.length - HISTORY_INJECTION_MAX_CHARS);
-  }
-  return [
-    "[Context restore] Recent chat history (for reference only). Do not repeat it; answer the user's next request directly:",
-    "",
-    transcript,
-    "",
-    "---",
-    "",
-  ].join("\n");
-}
-
-export function prependContextToInput(context: string, input: Input): Input {
-  if (typeof input === "string") {
-    return `${context}${input}`;
-  }
-  if (Array.isArray(input)) {
-    const prefix: InputTextPart = { type: "text", text: context };
-    return [prefix, ...input];
-  }
-  return `${context}${String(input ?? "")}`;
-}
-
-export function formatWriteExploredSummary(
-  changes: FileChangeLike[],
-  patchFiles?: PatchFileStatLike[],
-): string {
-  const safeChanges = Array.isArray(changes) ? changes : [];
-
-  const diffstat = (() => {
-    const files = Array.isArray(patchFiles) ? patchFiles : [];
-    let added = 0;
-    let removed = 0;
-    let hasKnown = false;
-    for (const file of files) {
-      if (typeof file.added === "number" && typeof file.removed === "number") {
-        added += file.added;
-        removed += file.removed;
-        hasKnown = true;
-      }
-    }
-    if (!hasKnown) return "";
-    return `(+${added} -${removed})`;
-  })();
-
-  const toBaseName = (p: string): string => {
-    const rawPath = String(p ?? "").trim();
-    if (!rawPath) return "";
-    const parts = rawPath.split(/[\\/]/).filter(Boolean);
-    return parts.length ? parts[parts.length - 1]! : rawPath;
-  };
-
-  const formatted = safeChanges
-    .map((c) => {
-      const kind = String(c.kind ?? "").trim();
-      const path = String(c.path ?? "").trim();
-      if (!kind || !path) return "";
-      const label = path.length <= 60 ? path : toBaseName(path);
-      return `${kind} ${label}`;
-    })
-    .filter(Boolean);
-  const shown = formatted.slice(0, 4);
-  const hidden = Math.max(0, formatted.length - shown.length);
-  const coreSummary = shown.join(", ") + (hidden ? ` (+${hidden} more)` : "");
-  return coreSummary && diffstat ? `${coreSummary} ${diffstat}` : coreSummary;
-}
+export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
+export { formatWriteExploredSummary } from "./workerPromptHandler.js";
 
 export async function handlePromptMessage(deps: {
   parsed: WsMessage;
@@ -308,171 +135,15 @@ export async function handlePromptMessage(deps: {
     if (reasoningEffort.present) {
       orchestrator.setModelReasoningEffort(reasoningEffort.effort);
     }
-    const formatStepTraceLine = (event: AgentEvent): string | null => {
-      const title = String(event.title ?? "").trim();
-      if (!title) {
-        return null;
-      }
-      const phase = String(event.phase ?? "").trim();
-      const prefix = phase ? `[${phase}] ` : "";
-      const detail = phase === "analysis" ? "" : String(event.detail ?? "").trim();
-      return detail ? `${prefix}${title}: ${detail}\n` : `${prefix}${title}\n`;
-    };
-    let lastRespondingText = "";
-    let lastReasoningText = "";
-    const lastCommandOutputsByKey = new Map<string, string>();
-    const announcedCommandKeys = new Set<string>();
-    let hasCommandOutput = false;
-    const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-      deps.sessionLogger?.logEvent(event);
-      deps.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
-      const raw = event.raw as ThreadEvent;
-      if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
-        const next = event.delta;
-        let delta = next;
-        if (lastRespondingText && next.startsWith(lastRespondingText)) {
-          delta = next.slice(lastRespondingText.length);
-        }
-        if (next.length >= lastRespondingText.length) {
-          lastRespondingText = next;
-        }
-        if (delta) {
-          sendToChat({ type: "delta", delta });
-        }
-        return;
-      }
-      const rawItem = (raw as { item?: { type?: unknown } }).item;
-      const rawItemType = rawItem && typeof rawItem === "object" ? String((rawItem as { type?: unknown }).type ?? "").trim() : "";
-      if (raw.type === "item.completed" && rawItemType === "file_change") {
-        const item = rawItem as { changes?: unknown };
-        const changes = Array.isArray(item.changes) ? (item.changes as Array<{ kind?: unknown; path?: unknown }>) : [];
-        const paths = changes.map((c) => String(c.path ?? "").trim()).filter(Boolean);
-        const patch = buildWorkspacePatch(turnCwd, paths);
-        const summary = formatWriteExploredSummary(changes, patch?.files);
-        if (summary) {
-          sendToChat({
-            type: "explored",
-            header: false,
-            entry: { category: "Write", summary },
-          });
-        }
-
-        if (patch) {
-          sendToChat({ type: "patch", patch });
-        }
-      }
-      if (rawItemType === "reasoning" && typeof event.delta === "string" && event.delta) {
-        const next = event.delta;
-        const prev = lastReasoningText;
-        let delta = next;
-        if (prev && next.startsWith(prev)) {
-          delta = next.slice(prev.length);
-        }
-        lastReasoningText = next;
-        if (delta) {
-          const payload = prev ? delta : `[analysis] ${delta}`;
-          sendToChat({ type: "delta", delta: payload, source: "step" });
-        }
-        return;
-      }
-      if (
-        event.phase === "boot" ||
-        event.phase === "analysis" ||
-        event.phase === "context" ||
-        event.phase === "editing" ||
-        event.phase === "tool" ||
-        event.phase === "connection"
-      ) {
-        const line = formatStepTraceLine(event);
-        if (line) {
-          sendToChat({ type: "delta", delta: line, source: "step" });
-        }
-      }
-      if (event.phase === "command") {
-        const commandPayload = extractCommandPayload(event);
-        deps.logger.info(
-          `[Command Event] ${JSON.stringify({
-            detail: event.detail ?? event.title,
-            command: commandPayload
-              ? { id: commandPayload.id, command: commandPayload.command, status: commandPayload.status, exit_code: commandPayload.exit_code }
-              : null,
-          })}`,
-        );
-
-        const commandLine = commandPayload?.command ? String(commandPayload.command).trim() : "";
-        // Some runtimes may reuse a command_execution id while changing the command string (e.g. batched execution).
-        // Track deltas per (id, command) so "new commands" are detected correctly and output deltas don't bleed
-        // across unrelated commands that happen to share an id.
-        const commandKey = commandLine
-          ? (commandPayload?.id ? `id:${commandPayload.id}:cmd:${commandLine}` : `cmd:${commandLine}`)
-          : "";
-
-        if (!commandPayload || !commandLine || !commandKey) {
-          return;
-        }
-
-        let outputDelta: string | undefined;
-        const nextOutput = String(commandPayload.aggregated_output ?? "");
-        const prevOutput = lastCommandOutputsByKey.get(commandKey) ?? "";
-        if (nextOutput !== prevOutput) {
-          if (prevOutput && nextOutput.startsWith(prevOutput)) {
-            outputDelta = nextOutput.slice(prevOutput.length);
-          } else {
-            outputDelta = nextOutput;
-          }
-          lastCommandOutputsByKey.set(commandKey, nextOutput);
-        }
-
-        const isNewCommand = !announcedCommandKeys.has(commandKey);
-        if (isNewCommand) {
-          announcedCommandKeys.add(commandKey);
-          const header = `${hasCommandOutput ? "\n" : ""}$ ${commandLine}\n`;
-          outputDelta = header + (outputDelta ?? "");
-          hasCommandOutput = true;
-        } else if (outputDelta) {
-          hasCommandOutput = true;
-        }
-
-        if (!isNewCommand && !outputDelta) {
-          return;
-        }
-
-        sendToChat({
-          type: "command",
-          detail: event.detail ?? event.title,
-          command: {
-            id: commandPayload.id,
-            command: commandLine,
-            status: commandPayload.status,
-            exit_code: commandPayload.exit_code,
-            outputDelta,
-          },
-        });
-
-        if (isNewCommand) {
-          deps.historyStore.add(deps.historyKey, {
-            role: "status",
-            text: `$ ${commandLine}`,
-            ts: Date.now(),
-            kind: "command",
-          });
-        }
-        return;
-      }
-      if (event.phase === "error") {
-        sendToChat({ type: "error", message: event.detail ?? event.title });
-      }
+    const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
+      orchestrator,
+      turnCwd,
+      historyKey: deps.historyKey,
+      historyStore: deps.historyStore,
+      sendToChat,
+      logger: deps.logger,
+      sessionLogger: deps.sessionLogger,
     });
-
-    let exploredHeaderSent = false;
-    const handleExploredEntry = (entry: ExploredEntry) => {
-      sendToChat({
-        type: "explored",
-        header: !exploredHeaderSent,
-        entry: { category: entry.category, summary: entry.summary },
-      });
-      exploredHeaderSent = true;
-    };
 
     try {
       const expectedThreadId = deps.sessionManager.getSavedThreadId(deps.userId, orchestrator.getActiveAgentId());
@@ -590,419 +261,37 @@ export async function handlePromptMessage(deps: {
       let outputForChat = outputToSend;
 
       if (deps.chatSessionId === "planner") {
-        let workspaceRootForDraft = workspaceRootForAdr;
-        try {
-          workspaceRootForDraft = fs.realpathSync(workspaceRootForDraft);
-        } catch {
-          // ignore
-        }
+        const plannerHandled = await handlePlannerPromptOutput({
+          outputToSend,
+          finalOutput,
+          createdSpecRefs,
+          userLogEntry,
+          requestId: deps.requestId,
+          clientMessageId: deps.clientMessageId,
+          authUserId: deps.authUserId,
+          chatSessionId: deps.chatSessionId,
+          historyKey: deps.historyKey,
+          workspaceRoot: workspaceRootForAdr,
+          turnCwd,
+          controller,
+          orchestrator,
+          expectedThreadId,
+          logger: deps.logger,
+          sendToChat,
+          handleExploredEntry,
+          ensureTaskContext: deps.ensureTaskContext,
+          promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
+          broadcastToSession: deps.broadcastToSession,
+          scheduleCompiler: deps.scheduleCompiler,
+          scheduler: deps.scheduler,
+          draftCommand: isPlannerDraftCommand,
+        });
+        outputForChat = plannerHandled.outputForChat;
+        threadId = plannerHandled.threadId;
+        threadReset = plannerHandled.threadReset;
+      }
 
-        const defaultRequestId = (() => {
-          const clientMessageId = String(deps.clientMessageId ?? "").trim();
-          if (clientMessageId) return `cmid:${clientMessageId}`;
-          const requestId = String(deps.requestId ?? "").trim();
-          return requestId ? `req:${requestId}` : null;
-        })();
-        const allowAutoApprove = (() => {
-          const lowered = String(userLogEntry ?? "").toLowerCase();
-          const passphrase = String(process.env.ADS_PLANNER_AUTO_APPROVE_PASSPHRASE ?? "ads:autoapprove").trim().toLowerCase();
-          if (!passphrase) {
-            return false;
-          }
-          return lowered.includes(passphrase);
-        })();
-
-	        let recoveryAttempts = 0;
-	        const processPlannerDraftOutput = async (args: {
-	          outputText: string;
-	          createdSpecRefs: string[];
-	          allowAutoApprove: boolean;
-	          forcedRequestId: string | null;
-	          disableAutoApprove: boolean;
-	          draftCommand: boolean;
-	        }): Promise<{
-	          outputForChat: string;
-	          blocks: string[];
-	          summaryTasks: Array<{ title: string; prompt: string }>;
-	          draftErrors: string[];
-          stableRequestId: string | null;
-        }> => {
-          const outputText = String(args.outputText ?? "");
-          const blocks = extractTaskBundleJsonBlocks(outputText);
-          const stripCandidates = new Set<string>();
-          const summaryTasks: Array<{ title: string; prompt: string }> = [];
-          const draftErrors: string[] = [];
-          let stableRequestId: string | null = null;
-	          const defaultSpecRef = (() => {
-	            const last = args.createdSpecRefs.length > 0 ? args.createdSpecRefs[args.createdSpecRefs.length - 1] : null;
-	            return last ? String(last).trim() : null;
-	          })();
-
-	          const invalidDraftBlockCount = args.draftCommand && blocks.length !== 1;
-	          if (invalidDraftBlockCount) {
-	            if (blocks.length === 0) {
-	              draftErrors.push("`/draft` must emit exactly one `ads-tasks` block, but none were found.");
-	            } else {
-	              draftErrors.push(`\`/draft\` must emit exactly one \`ads-tasks\` block, but found ${blocks.length}.`);
-	            }
-	            for (const block of blocks) {
-	              stripCandidates.add(block);
-	            }
-	          }
-
-	          for (const block of invalidDraftBlockCount ? [] : blocks) {
-	            const parsedBundle = parseTaskBundle(block);
-	            if (!parsedBundle.ok) {
-	              deps.logger.warn(`[PlannerDraft] invalid bundle: ${parsedBundle.error}`);
-	              continue;
-	            }
-            try {
-              const originalRequestId = String(parsedBundle.bundle.requestId ?? "").trim();
-              const baseBundle =
-                args.forcedRequestId
-                  ? { ...parsedBundle.bundle, requestId: args.forcedRequestId }
-                  : parsedBundle.bundle;
-              let normalized = ensureTaskBundleIdempotency(baseBundle, { defaultRequestId });
-              if (defaultSpecRef && !String(normalized.specRef ?? "").trim()) {
-                normalized = { ...normalized, specRef: defaultSpecRef };
-              }
-	              const requestIdCandidate = String(normalized.requestId ?? "").trim();
-	              if (!stableRequestId && requestIdCandidate) {
-	                stableRequestId = requestIdCandidate;
-	              }
-
-	              if (args.draftCommand && normalized.tasks.length !== 1) {
-	                draftErrors.push(`\`/draft\` requires tasks.length === 1 (got ${normalized.tasks.length}).`);
-	                deps.logger.warn(`[PlannerDraft] rejected /draft bundle: tasks.length=${normalized.tasks.length}`);
-	                stripCandidates.add(block);
-	                continue;
-	              }
-
-	              if (args.disableAutoApprove) {
-	                if (normalized.autoApprove !== undefined) {
-	                  normalized = { ...normalized, autoApprove: undefined };
-	                }
-	              } else if (normalized.autoApprove && !args.allowAutoApprove) {
-                normalized = { ...normalized, autoApprove: undefined };
-              }
-
-              const specRefValidation = validateTaskBundleSpec({
-                bundle: normalized,
-                workspaceRoot: workspaceRootForDraft,
-                requireFiles: false,
-              });
-              if (!specRefValidation.ok) {
-                draftErrors.push(specRefValidation.error);
-                deps.logger.warn(`[PlannerDraft] rejected bundle: ${specRefValidation.error}`);
-                stripCandidates.add(block);
-                continue;
-              }
-              if (specRefValidation.specRef !== String(normalized.specRef ?? "").trim()) {
-                normalized = { ...normalized, specRef: specRefValidation.specRef };
-              }
-
-              const specFilesValidation = validateTaskBundleSpec({
-                bundle: normalized,
-                workspaceRoot: workspaceRootForDraft,
-                requireFiles: true,
-              });
-              if (!specFilesValidation.ok) {
-                draftErrors.push(specFilesValidation.error);
-                deps.logger.warn(`[PlannerDraft] rejected bundle: ${specFilesValidation.error}`);
-                stripCandidates.add(block);
-                continue;
-              }
-              const requestId = String(normalized.requestId ?? "").trim();
-
-              if (!originalRequestId && requestId) {
-                const existing = getTaskBundleDraftByRequestId({
-                  authUserId: deps.authUserId,
-                  workspaceRoot: workspaceRootForDraft,
-                  requestId,
-                });
-                if (existing) {
-                  sendToChat({ type: "task_bundle_draft", action: "upsert", draft: existing });
-                  stripCandidates.add(block);
-                  for (const task of normalized.tasks ?? []) {
-                    summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
-                  }
-                  continue;
-                }
-              }
-
-              const draft = upsertTaskBundleDraft({
-                authUserId: deps.authUserId,
-                workspaceRoot: workspaceRootForDraft,
-                sourceChatSessionId: deps.chatSessionId,
-                sourceHistoryKey: deps.historyKey,
-                bundle: normalized,
-              });
-
-              const riskResult = normalized.autoApprove ? detectBundleRisk(normalized) : null;
-              const shouldAutoApprove = normalized.autoApprove && !riskResult?.isHighRisk && deps.ensureTaskContext && deps.promoteQueuedTasksToPending && deps.broadcastToSession;
-              const autoApproveSpecValidation = shouldAutoApprove
-                ? validateTaskBundleSpec({
-                    bundle: normalized,
-                    workspaceRoot: workspaceRootForDraft,
-                    requireFiles: true,
-                  })
-                : null;
-
-              if (riskResult?.isHighRisk) {
-                const degradeReason = riskResult.reasons.join("；");
-                deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${degradeReason}`);
-                try {
-                  setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: `降级为草稿：${degradeReason}` });
-                } catch {
-                  // ignore
-                }
-                sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: `降级为草稿：${degradeReason}`, degradeReason } });
-              } else if (autoApproveSpecValidation && !autoApproveSpecValidation.ok) {
-                const message = autoApproveSpecValidation.error;
-                deps.logger.info(`[PlannerDraft] Auto-approve degraded to draft: ${message}`);
-                try {
-                  setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: message });
-                } catch {
-                  // ignore
-                }
-                sendToChat({ type: "task_bundle_draft", action: "upsert", draft: { ...draft, lastError: message } });
-              } else if (shouldAutoApprove) {
-                const ensureCtx = deps.ensureTaskContext!;
-                const promote = deps.promoteQueuedTasksToPending!;
-                const broadcast = deps.broadcastToSession!;
-                try {
-                  const taskCtx = ensureCtx(workspaceRootForDraft);
-                  const now = Date.now();
-                  let createdTaskIds: string[] = [];
-                  let taskTitles: string[] = [];
-
-                  await taskCtx.getLock().runExclusive(async () => {
-                    ({ createdTaskIds, taskTitles } = materializeTaskBundleTasks({
-                      draftId: draft.id,
-                      tasks: normalized.tasks,
-                      now,
-                      taskStore: taskCtx.taskStore,
-                      attachmentStore: taskCtx.attachmentStore,
-                      metrics: taskCtx.metrics,
-                      metricReason: "auto_approve",
-                      buildAttachmentUrl: (attachmentId) => buildWorkspaceAttachmentRawUrl(workspaceRootForDraft, attachmentId),
-                      createTaskErrorPrefix: "Auto-approve: create task failed",
-                      onTaskMaterialized: ({ task }) => {
-                        broadcast(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: now });
-                        try {
-                          upsertTaskNotificationBinding({
-                            authUserId: deps.authUserId,
-                            workspaceRoot: workspaceRootForDraft,
-                            taskId: task.id,
-                            taskTitle: task.title,
-                            now,
-                            logger: deps.logger,
-                          });
-                        } catch {
-                          // ignore
-                        }
-                      },
-                    }));
-
-                    approveTaskBundleDraft({ authUserId: deps.authUserId, draftId: draft.id, approvedTaskIds: createdTaskIds, now });
-
-                    startQueueInAllMode(taskCtx);
-                    promote(taskCtx);
-                  });
-
-                  sendToChat({
-                    type: "task_bundle_auto_approved",
-                    draftId: draft.id,
-                    createdTaskIds,
-                    taskTitles,
-                    specRef: String(normalized.specRef ?? "").trim() || null,
-                  });
-                  deps.logger.info(`[PlannerDraft] Auto-approved draft=${draft.id} tasks=${createdTaskIds.length}`);
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : String(error);
-                  deps.logger.warn(`[PlannerDraft] Auto-approve failed draft=${draft.id}: ${message}`);
-                  try {
-                    setTaskBundleDraftError({ authUserId: deps.authUserId, draftId: draft.id, error: message });
-                  } catch {
-                    // ignore
-                  }
-                  sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
-                }
-              } else {
-                sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
-              }
-
-              stripCandidates.add(block);
-              for (const task of normalized.tasks ?? []) {
-                summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              deps.logger.warn(`[PlannerDraft] Failed to persist bundle: ${message}`);
-            }
-	          }
-
-	          let outputForChat = outputText;
-	          const shouldSummarize =
-	            stripCandidates.size > 0 || (args.draftCommand && (summaryTasks.length > 0 || draftErrors.length > 0));
-	          if (shouldSummarize) {
-	            const stripped =
-	              stripCandidates.size > 0
-	                ? stripTaskBundleCodeBlocks(outputText, { shouldStrip: (rawJson) => stripCandidates.has(rawJson) })
-	                : { text: outputText, removed: 0 };
-	            const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
-
-	            const parts: string[] = [];
-	            if (summaryTasks.length > 0) {
-	              parts.push(formatTaskBundleSummaryMarkdown(summaryTasks));
-	            }
-	            if (draftErrors.length > 0) {
-	              const uniqueErrors = Array.from(new Set(draftErrors));
-	              parts.push(
-	                [
-	                  "任务草稿未写入：",
-	                  ...uniqueErrors.map((message) => `- ${message}`),
-	                ].join("\n"),
-	              );
-	            }
-
-	            const summary = parts.join("\n\n---\n").trim();
-	            outputForChat = base ? `${base}\n\n---\n${summary}` : summary;
-	          }
-
-	          return { outputForChat, blocks, summaryTasks, draftErrors, stableRequestId };
-	        };
-
-	        const firstPass = await processPlannerDraftOutput({
-	          outputText: outputToSend,
-	          createdSpecRefs,
-	          allowAutoApprove,
-	          forcedRequestId: null,
-	          disableAutoApprove: isPlannerDraftCommand,
-	          draftCommand: isPlannerDraftCommand,
-	        });
-        outputForChat = firstPass.outputForChat;
-
-        const stableRequestId = firstPass.stableRequestId ?? defaultRequestId;
-        const recoverySummary = summarizeDraftSpecValidationErrors(firstPass.draftErrors);
-        const shouldRecover =
-          recoveryAttempts < PLANNER_DRAFT_RECOVERY_MAX_ATTEMPTS &&
-          firstPass.summaryTasks.length === 0 &&
-          recoverySummary.recoverable &&
-          firstPass.blocks.length > 0 &&
-          Boolean(stableRequestId);
-
-        if (shouldRecover) {
-          recoveryAttempts += 1;
-          const recoveryPrompt = buildDraftRecoveryPrompt({
-            userRequest: userLogEntry,
-            firstPassOutput: finalOutput,
-            taskBundleBlocks: firstPass.blocks,
-            validationErrors: firstPass.draftErrors,
-            requestId: stableRequestId,
-            specRefToUpdate: recoverySummary.specRefToUpdate,
-          });
-
-          const recoveryResult = await runCollaborativeTurn(orchestrator, recoveryPrompt, {
-            streaming: true,
-            signal: controller.signal,
-            onExploredEntry: handleExploredEntry,
-            hooks: {
-              onSupervisorRound: (round, directives) => deps.logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
-              onDelegationStart: ({ agentId, agentName, prompt }) => {
-                deps.logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
-              },
-              onDelegationResult: (summary) => {
-                deps.logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`);
-              },
-            },
-            cwd: turnCwd,
-            historyNamespace: "web",
-            historySessionId: deps.historyKey,
-          });
-
-          const rawRecoveryResponse =
-            typeof recoveryResult.response === "string"
-              ? recoveryResult.response
-              : String(recoveryResult.response ?? "");
-          const recoveryOutput = stripLeadingTranslation(rawRecoveryResponse);
-          let recoveryOutputToSend = recoveryOutput;
-          let recoveryCreatedSpecRefs: string[] = [];
-          try {
-            const adrProcessed = processAdrBlocks(recoveryOutputToSend, workspaceRootForAdr);
-            recoveryOutputToSend = adrProcessed.finalText || recoveryOutputToSend;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            recoveryOutputToSend = `${recoveryOutputToSend}\n\n---\nADR warning: failed to record ADR (${message})`;
-          }
-          try {
-            const specProcessed = await processSpecBlocks(recoveryOutputToSend, workspaceRootForAdr);
-            recoveryOutputToSend = specProcessed.finalText || recoveryOutputToSend;
-            recoveryCreatedSpecRefs = specProcessed.results.map((r) => r.specRef);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            recoveryOutputToSend = `${recoveryOutputToSend}\n\n---\nSpec warning: failed to record spec (${message})`;
-          }
-
-	          const secondPass = await processPlannerDraftOutput({
-	            outputText: recoveryOutputToSend,
-	            createdSpecRefs: recoveryCreatedSpecRefs,
-	            allowAutoApprove: false,
-	            forcedRequestId: stableRequestId,
-	            disableAutoApprove: true,
-	            draftCommand: isPlannerDraftCommand,
-	          });
-          outputForChat = secondPass.outputForChat;
-          threadId = orchestrator.getThreadId();
-          threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
-	        }
-
-	        const scheduleBlocks = extractScheduleBlocks(outputForChat);
-	        if (scheduleBlocks.length > 0) {
-	          if (isPlannerDraftCommand) {
-	            const stripped = stripScheduleCodeBlocks(outputForChat, new Set(scheduleBlocks));
-	            outputForChat = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
-	          } else if (deps.scheduleCompiler && deps.scheduler) {
-	            const scheduleStripCandidates = new Set<string>();
-	            const scheduleSummaries: string[] = [];
-	            for (const instruction of scheduleBlocks) {
-	              try {
-	                const compiled = await deps.scheduleCompiler.compile({ workspaceRoot: workspaceRootForDraft, instruction });
-	                const hasQuestions = (compiled.questions?.length ?? 0) > 0;
-	                const enabled = compiled.enabled && !hasQuestions;
-	                let nextRunAt: number | null = null;
-	                if (enabled) {
-	                  try {
-	                    nextRunAt = computeNextCronRunAt({ cron: compiled.schedule.cron, timezone: compiled.schedule.timezone, afterMs: Date.now() });
-	                  } catch {
-	                    // ignore
-	                  }
-	                }
-	                const store = new ScheduleStore({ workspacePath: workspaceRootForDraft });
-	                const schedule = store.createSchedule({ instruction, spec: compiled, enabled, nextRunAt }, Date.now());
-	                deps.scheduler.registerWorkspace(workspaceRootForDraft);
-	                scheduleStripCandidates.add(instruction);
-	                const statusNote = enabled ? `已启用 (${compiled.schedule.cron})` : `需确认：${(compiled.questions ?? []).join("；")}`;
-	                scheduleSummaries.push(`✅ 定时任务「${compiled.name}」已创建 — ${statusNote}`);
-	                deps.logger.info(`[PlannerSchedule] created schedule id=${schedule.id} name=${compiled.name} enabled=${enabled}`);
-	              } catch (error) {
-	                const message = error instanceof Error ? error.message : String(error);
-	                deps.logger.warn(`[PlannerSchedule] Failed to compile schedule: ${message}`);
-	                scheduleSummaries.push(`⚠️ 定时任务创建失败：${message}`);
-	                scheduleStripCandidates.add(instruction);
-	              }
-	            }
-	            if (scheduleStripCandidates.size > 0) {
-	              const stripped = stripScheduleCodeBlocks(outputForChat, scheduleStripCandidates);
-	              const base = String(stripped.text ?? "").replace(/\n{3,}/g, "\n\n").trim();
-	              const scheduleSummary = scheduleSummaries.join("\n");
-	              outputForChat = base ? `${base}\n\n${scheduleSummary}` : scheduleSummary;
-	            }
-	          }
-	        }
-	      }
-
-	      sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });
+      sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });
       if (deps.sessionLogger) {
         deps.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.sessionLogger.logOutput(outputForChat);
