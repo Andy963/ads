@@ -44,6 +44,8 @@ describe("MainChat patch card", () => {
     expect(wrapper.find(".patchCard").exists()).toBe(true);
     expect(wrapper.find(".patchCardTitle").text()).toContain("tests/agents/claudeCliAdapter.test.ts");
     expect(wrapper.find(".patchCardMeta").text()).toContain("(+118 -2)");
+    expect(wrapper.find(".patchCardMeta .patchCardStatAdd").exists()).toBe(true);
+    expect(wrapper.find(".patchCardMeta .patchCardStatDel").exists()).toBe(true);
     expect(wrapper.find(".patchCardDiff").exists()).toBe(false);
 
     const toggle = wrapper.find('[data-testid="patch-toggle-patch-1"]');
@@ -55,6 +57,8 @@ describe("MainChat patch card", () => {
 
     expect(wrapper.find(".patchCardDiff").exists()).toBe(true);
     expect(wrapper.find(".patchCardDiff").text()).toContain("diff --git a/tests/agents/claudeCliAdapter.test.ts");
+    expect(wrapper.find(".patchCardDiff .patchCardDiffLine--meta").exists()).toBe(true);
+    expect(wrapper.find(".patchCardDiff .patchCardDiffLine--add").exists()).toBe(true);
     expect(wrapper.find('[data-testid="patch-toggle-patch-1"]').text()).toContain("收起");
 
     wrapper.unmount();
@@ -94,6 +98,7 @@ describe("MainChat patch card", () => {
     await settleUi(wrapper);
 
     expect(wrapper.find(".patchCardMeta").text()).toContain("另 1 个文件");
+    expect(wrapper.find(".patchCardMeta .patchCardMetaExtra").exists()).toBe(true);
 
     await wrapper.find('[data-testid="patch-toggle-patch-2"]').trigger("click");
     await settleUi(wrapper);

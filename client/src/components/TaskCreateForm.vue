@@ -233,20 +233,18 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 </script>
 
 <template>
-  <div class="card">
-    <h3 class="form-title" data-drag-handle>新建任务</h3>
+  <div class="createModalInner">
+    <div class="modalBody">
+      <div class="modalTitle" data-drag-handle>新建任务</div>
 
-    <div class="fields">
-      <div class="form-row">
-        <label class="form-field">
-          <span class="label-text">标题（可选）</span>
-          <input v-model="title" placeholder="不填会自动生成" />
-        </label>
-      </div>
+      <label class="field">
+        <span class="label">标题（可选）</span>
+        <input v-model="title" placeholder="不填会自动生成" />
+      </label>
 
-      <div class="form-row form-row-3">
-        <label class="form-field">
-          <span class="label-text">执行器</span>
+      <div class="configRow">
+        <label class="field">
+          <span class="label">执行器</span>
           <select v-model="agentId" data-testid="task-create-agent">
             <option value="">自动</option>
             <option v-for="a in readyAgentOptions" :key="a.id" :value="a.id">
@@ -254,182 +252,176 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
             </option>
           </select>
         </label>
-        <label class="form-field">
-          <span class="label-text">优先级</span>
+        <label class="field">
+          <span class="label">优先级</span>
           <input v-model.number="priority" type="number" />
         </label>
-        <label class="form-field">
-          <span class="label-text">最大重试</span>
+        <label class="field">
+          <span class="label">最大重试</span>
           <input v-model.number="maxRetries" type="number" min="0" />
         </label>
       </div>
 
-      <div class="form-row">
-        <label class="bootstrapToggle">
-          <input type="checkbox" v-model="bootstrapEnabled" data-testid="task-create-bootstrap-toggle" />
-          <span class="toggleLabel">自举模式（自动验证循环）</span>
-        </label>
-      </div>
-
-      <div class="form-row">
-        <label class="bootstrapToggle">
+      <div class="configRow configRowCheckboxes">
+        <label class="field bootstrapToggle">
           <input type="checkbox" v-model="reviewRequired" data-testid="task-create-review-required" />
-          <span class="toggleLabel">需要 Reviewer 审核</span>
+          <span class="label" style="display:inline;margin:0 0 0 6px;">需要 Reviewer 审核</span>
+        </label>
+        <label class="field bootstrapToggle">
+          <input type="checkbox" v-model="bootstrapEnabled" data-testid="task-create-bootstrap-toggle" />
+          <span class="label" style="display:inline;margin:0 0 0 6px;">自举模式</span>
         </label>
       </div>
 
-      <div v-if="bootstrapEnabled" class="form-row form-row-bootstrap">
-        <label class="form-field" style="flex:1;">
-          <span class="label-text">项目路径 / Git URL</span>
+      <div v-if="bootstrapEnabled" class="configRow">
+        <label class="field" style="flex:1;">
+          <span class="label">项目路径 / Git URL</span>
           <input v-model="bootstrapProject" placeholder="/path/to/project 或 https://..." data-testid="task-create-bootstrap-project" />
         </label>
-        <label class="form-field" style="width:100px;">
-          <span class="label-text">最大迭代</span>
+        <label class="field" style="width:100px;">
+          <span class="label">最大迭代</span>
           <input v-model.number="bootstrapMaxIterations" type="number" min="1" max="10" data-testid="task-create-bootstrap-max-iterations" />
         </label>
       </div>
 
-      <div class="form-row prompt-row">
-        <label class="form-field">
-          <span class="label-text">任务描述</span>
-          <div
-            class="promptInputWrap"
-            :class="{
-              voiceEnabled,
-              voiceExpanded: voiceOverlayExpanded,
-            }"
-          >
-            <textarea
-              v-model="prompt"
-              ref="promptEl"
-              rows="10"
-              placeholder="描述任务内容..."
-              :disabled="recording || transcribing"
-              @keydown="onPromptKeydown"
-              @paste="onPromptPaste"
-            />
-            <div v-if="voiceEnabled" class="voiceAffordance">
-              <div v-if="recording || transcribing || (lastAudioBlob && lastTranscriptionFailed)" class="voiceRow">
-                <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
-                  <div class="voiceBars">
-                    <span class="bar" />
-                    <span class="bar" />
-                    <span class="bar" />
-                  </div>
-                  <span class="voiceTime">{{ recordingTimeText }}</span>
+      <label class="field promptField">
+        <span class="label">任务描述</span>
+        <div
+          class="promptInputWrap"
+          :class="{
+            voiceEnabled,
+            voiceExpanded: voiceOverlayExpanded,
+          }"
+        >
+          <textarea
+            v-model="prompt"
+            ref="promptEl"
+            placeholder="描述任务内容..."
+            :disabled="recording || transcribing"
+            @keydown="onPromptKeydown"
+            @paste="onPromptPaste"
+          />
+          <div v-if="voiceEnabled" class="voiceAffordance">
+            <div v-if="recording || transcribing || (lastAudioBlob && lastTranscriptionFailed)" class="voiceRow">
+              <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
+                <div class="voiceBars">
+                  <span class="bar" />
+                  <span class="bar" />
+                  <span class="bar" />
                 </div>
-                <div v-else-if="transcribing" class="voiceIndicator transcribing" aria-hidden="true">
-                  <span class="voiceSpinner" />
-                </div>
-                <button
-                  v-if="lastAudioBlob && lastTranscriptionFailed && !recording && !transcribing"
-                  class="voiceAuxBtn voiceRetryBtn"
-                  type="button"
-                  title="Retry transcription"
-                  aria-label="Retry transcription"
-                  @click="retryTranscription"
-                >
-                  <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                    <path
-                      fill-rule="evenodd"
-                      d="M10 4a6 6 0 1 0 5.61 8.13.75.75 0 0 1 1.4.52A7.5 7.5 0 1 1 10 2.5c1.6 0 3.08.5 4.29 1.36V2.75a.75.75 0 0 1 1.5 0V6.5a.75.75 0 0 1-.75.75H11.25a.75.75 0 0 1 0-1.5h2.06A5.98 5.98 0 0 0 10 4Z"
-                      clip-rule="evenodd"
-                    />
-                  </svg>
-                </button>
+                <span class="voiceTime">{{ recordingTimeText }}</span>
               </div>
-
-              <div class="voiceRow">
-                <button
-                  v-if="recording || transcribing"
-                  class="voiceAuxBtn voiceCancelBtn"
-                  type="button"
-                  title="Cancel voice input"
-                  aria-label="Cancel voice input"
-                  @click="cancelVoiceInput"
-                >
-                  <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                    <path
-                      fill-rule="evenodd"
-                      d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                      clip-rule="evenodd"
-                    />
-                  </svg>
-                </button>
-                <button
-                  class="micIcon"
-                  :class="{ recording, transcribing }"
-                  type="button"
-                  :disabled="transcribing"
-                  :title="recording ? 'Stop recording' : 'Start voice input'"
-                  aria-label="Voice input"
-                  @click="toggleVoiceInput"
-                >
-                  <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                    <path d="M10 13.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v4.5a3 3 0 0 0 3 3Z" />
-                    <path
-                      d="M5.5 10.5a.75.75 0 0 1 .75.75 3.75 3.75 0 1 0 7.5 0 .75.75 0 0 1 1.5 0 5.25 5.25 0 0 1-4.5 5.19V18a.75.75 0 0 1-1.5 0v-1.56a5.25 5.25 0 0 1-4.5-5.19.75.75 0 0 1 .75-.75Z"
-                    />
-                  </svg>
-                </button>
+              <div v-else-if="transcribing" class="voiceIndicator transcribing" aria-hidden="true">
+                <span class="voiceSpinner" />
               </div>
+              <button
+                v-if="lastAudioBlob && lastTranscriptionFailed && !recording && !transcribing"
+                class="voiceAuxBtn voiceRetryBtn"
+                type="button"
+                title="Retry transcription"
+                aria-label="Retry transcription"
+                @click="retryTranscription"
+              >
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path
+                    fill-rule="evenodd"
+                    d="M10 4a6 6 0 1 0 5.61 8.13.75.75 0 0 1 1.4.52A7.5 7.5 0 1 1 10 2.5c1.6 0 3.08.5 4.29 1.36V2.75a.75.75 0 0 1 1.5 0V6.5a.75.75 0 0 1-.75.75H11.25a.75.75 0 0 1 0-1.5h2.06A5.98 5.98 0 0 0 10 4Z"
+                    clip-rule="evenodd"
+                  />
+                </svg>
+              </button>
             </div>
-            <div
-              v-if="(voiceStatusKind === 'ok' || voiceStatusKind === 'error') && voiceStatusMessage"
-              class="voiceToast"
-              :class="voiceStatusKind"
-              role="status"
-              aria-live="polite"
-            >
-              <span class="voiceToastText">{{ voiceStatusMessage }}</span>
+
+            <div class="voiceRow">
+              <button
+                v-if="recording || transcribing"
+                class="voiceAuxBtn voiceCancelBtn"
+                type="button"
+                title="Cancel voice input"
+                aria-label="Cancel voice input"
+                @click="cancelVoiceInput"
+              >
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path
+                    fill-rule="evenodd"
+                    d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                    clip-rule="evenodd"
+                  />
+                </svg>
+              </button>
+              <button
+                class="micIcon"
+                :class="{ recording, transcribing }"
+                type="button"
+                :disabled="transcribing"
+                :title="recording ? 'Stop recording' : 'Start voice input'"
+                aria-label="Voice input"
+                @click="toggleVoiceInput"
+              >
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M10 13.5a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v4.5a3 3 0 0 0 3 3Z" />
+                  <path
+                    d="M5.5 10.5a.75.75 0 0 1 .75.75 3.75 3.75 0 1 0 7.5 0 .75.75 0 0 1 1.5 0 5.25 5.25 0 0 1-4.5 5.19V18a.75.75 0 0 1-1.5 0v-1.56a5.25 5.25 0 0 1-4.5-5.19.75.75 0 0 1 .75-.75Z"
+                  />
+                </svg>
+              </button>
             </div>
           </div>
-        </label>
-      </div>
+          <div
+            v-if="(voiceStatusKind === 'ok' || voiceStatusKind === 'error') && voiceStatusMessage"
+            class="voiceToast"
+            :class="voiceStatusKind"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="voiceToastText">{{ voiceStatusMessage }}</span>
+          </div>
+        </div>
+      </label>
 
       <div v-if="attachmentError" class="errorBox">附件：{{ attachmentError }}</div>
 
       <div v-if="attachments.length" class="attachments">
-          <div v-for="a in attachments" :key="a.localId" class="thumbCard" :data-status="a.status">
-            <div class="thumbWrap">
-              <a
-                v-if="a.uploaded?.url"
-                class="thumbLink"
-                :href="withTokenQuery(a.uploaded.url)"
-                target="_blank"
-                rel="noreferrer"
-                @click.stop
-              >
-                <img class="thumbImg" :src="a.previewUrl" alt="" />
-              </a>
-              <img v-else class="thumbImg" :src="a.previewUrl" alt="" />
+        <div v-for="a in attachments" :key="a.localId" class="thumbCard" :data-status="a.status">
+          <div class="thumbWrap">
+            <a
+              v-if="a.uploaded?.url"
+              class="thumbLink"
+              :href="withTokenQuery(a.uploaded.url)"
+              target="_blank"
+              rel="noreferrer"
+              @click.stop
+            >
+              <img class="thumbImg" :src="a.previewUrl" alt="" />
+            </a>
+            <img v-else class="thumbImg" :src="a.previewUrl" alt="" />
 
-              <div v-if="a.status === 'uploading'" class="overlay">
-                <div class="progressRow">
-                  <div class="progressBar">
-                    <div class="progressFill" :style="{ width: `${Math.round(a.progress * 100)}%` }" />
-                  </div>
-                  <span class="progressText">{{ Math.round(a.progress * 100) }}%</span>
+            <div v-if="a.status === 'uploading'" class="overlay">
+              <div class="progressRow">
+                <div class="progressBar">
+                  <div class="progressFill" :style="{ width: `${Math.round(a.progress * 100)}%` }" />
                 </div>
+                <span class="progressText">{{ Math.round(a.progress * 100) }}%</span>
               </div>
-
-              <div v-else-if="a.status === 'error'" class="overlay error">
-                <div class="errorText">{{ a.error || "上传失败" }}</div>
-                <button class="retryBtn" type="button" @click="retryUpload(a.localId)">重试</button>
-              </div>
-
-              <button class="removeBtn" type="button" title="移除" @click="removeAttachment(a.localId)">×</button>
             </div>
-          </div>
-      </div>
-    </div>
 
-    <div class="actions">
-      <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
-      <button class="btnSecondary" type="button" :disabled="!canSubmit" @click="submit">保存</button>
-      <button class="btnPrimary" type="button" :disabled="!canSubmit" data-testid="task-create-submit-and-run" @click="submitAndRun">
-        保存并提交
-      </button>
+            <div v-else-if="a.status === 'error'" class="overlay error">
+              <div class="errorText">{{ a.error || "上传失败" }}</div>
+              <button class="retryBtn" type="button" @click="retryUpload(a.localId)">重试</button>
+            </div>
+
+            <button class="removeBtn" type="button" title="移除" @click="removeAttachment(a.localId)">×</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
+        <button class="btnSecondary" type="button" :disabled="!canSubmit" @click="submit">保存</button>
+        <button class="btnPrimary" type="button" :disabled="!canSubmit" data-testid="task-create-submit-and-run" @click="submitAndRun">
+          保存并提交
+        </button>
+      </div>
     </div>
   </div>
 </template>

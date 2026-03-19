@@ -609,9 +609,8 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
 
-    <DraggableModal v-if="taskCreateDialogOpen" card-variant="wide" @close="closeTaskCreateDialog">
+    <DraggableModal v-if="taskCreateDialogOpen" card-variant="large" @close="closeTaskCreateDialog">
       <TaskCreateForm
-        class="taskCreateModal"
         :workspace-root="resolveActiveWorkspaceRoot() || ''"
         :agents="workerAgents"
         :active-agent-id="workerActiveAgentId"

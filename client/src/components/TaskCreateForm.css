@@ -1,88 +1,51 @@
-.card {
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 12px 14px;
-  background: var(--surface);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+.createModalInner {
   display: flex;
   flex-direction: column;
+  height: min(680px, 80vh);
+  overflow: hidden;
+}
+
+.modalBody {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  flex: 1;
+  overflow-y: auto;
   min-height: 0;
 }
-.form-title {
-  margin: 0 0 8px 0;
+
+.modalTitle {
   font-size: 18px;
   font-weight: 800;
-  color: var(--text);
+  color: #0f172a;
   text-align: center;
   letter-spacing: 0.02em;
+  margin: 0 0 2px 0;
 }
-.form-row {
-  margin-bottom: 16px;
-}
-.bootstrapToggle {
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-  user-select: none;
-}
-.bootstrapToggle input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  cursor: pointer;
-  accent-color: #2563eb;
-}
-.toggleLabel {
-  font-size: 14px;
-  font-weight: 700;
-  color: #1f2937;
-  margin-left: 8px;
-}
-.form-row-bootstrap {
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
-}
-.fields {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-.prompt-row {
-  flex: 0 0 auto;
-  margin-bottom: 8px;
-}
-.prompt-row .form-field {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.form-row-3 {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-.form-field {
+
+.field {
   display: block;
+  min-width: 0;
 }
-.label-text {
+
+.label {
   display: block;
   font-size: 14px;
   font-weight: 700;
   color: #1f2937;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
+
 input,
 select,
 textarea {
-  display: block;
   width: 100%;
-  padding: 12px 14px;
+  padding: 8px 10px;
   border-radius: 14px;
   border: 1px solid var(--border);
-  font-size: 15px;
+  font-size: 14px;
   background: rgba(248, 250, 252, 0.95);
   color: #1e293b;
   box-sizing: border-box;
@@ -106,16 +69,61 @@ input::placeholder,
 textarea::placeholder {
   color: #94a3b8;
 }
+
+.configRow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  align-items: end;
+  flex-wrap: nowrap;
+}
+
+.configRowCheckboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  align-items: center;
+}
+
+.bootstrapToggle {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+.bootstrapToggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+
+.promptField {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 textarea {
   resize: none;
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 1;
+  min-height: 120px;
   max-height: none;
   overflow-y: auto;
-  min-height: 180px;
 }
+
 .promptInputWrap {
   position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.promptInputWrap textarea {
+  flex: 1;
+  min-height: 120px;
 }
 .promptInputWrap.voiceEnabled textarea {
   padding-right: 62px;
@@ -125,6 +133,7 @@ textarea {
   padding-right: 160px;
   padding-bottom: 78px;
 }
+
 .voiceAffordance {
   position: absolute;
   right: 10px;
@@ -253,22 +262,18 @@ textarea {
 }
 .micIcon.recording {
   color: #dc2626;
-}
-.micIcon.transcribing {
-  color: #2563eb;
+  background: rgba(239, 68, 68, 0.06);
 }
 .voiceToast {
   position: absolute;
-  right: 10px;
-  bottom: 82px;
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  bottom: 44px;
+  right: 8px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
   font-size: 12px;
+  font-weight: 600;
   color: #475569;
   max-width: min(72vw, 380px);
   pointer-events: none;
@@ -296,53 +301,40 @@ textarea {
     height: 4px;
     opacity: 0.55;
   }
-
   50% {
     height: 14px;
     opacity: 1;
   }
 }
-
 @keyframes voiceSpin {
   to {
     transform: rotate(360deg);
   }
 }
-
 @keyframes voiceToastIn {
   from {
     transform: translateY(4px);
     opacity: 0;
   }
-
   to {
     transform: translateY(0);
     opacity: 1;
   }
 }
+
 .errorBox {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
   background: #fee2e2;
   color: #991b1b;
   font-size: 13px;
   font-weight: 600;
 }
+
 .attachments {
-  margin-top: 4px;
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-}
-.thumbGrid {
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 0;
-  scrollbar-gutter: stable;
-  overscroll-behavior-inline: contain;
 }
 .thumbCard {
   display: block;
@@ -377,11 +369,6 @@ textarea {
   padding: 4px;
   background: rgba(15, 23, 42, 0.35);
   color: white;
-}
-.overlay.ready {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.45));
-  align-items: end;
-  justify-items: end;
 }
 .overlay.error {
   background: rgba(127, 29, 29, 0.75);
@@ -446,13 +433,13 @@ textarea {
 .removeBtn:hover {
   background: white;
 }
+
 .actions {
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: 32px;
-  margin-top: auto;
-  padding-top: 12px;
+  margin-top: 12px;
 }
 .btnPrimary {
   border-radius: 14px;
@@ -497,19 +484,11 @@ textarea {
 .btnSecondary:active {
   background: rgba(79, 142, 247, 0.22);
 }
+
 @media (max-width: 600px) {
-  .form-row-3 {
+  .configRow {
     grid-template-columns: 1fr;
-    gap: 16px;
-  }
-  .thumbGrid {
-    gap: 6px;
-  }
-  .thumbCard {
-    width: 44px;
-  }
-  .thumbWrap {
-    height: 32px;
+    gap: 8px;
   }
   .actions {
     flex-direction: column;

@@ -253,9 +253,25 @@ function isLiveStepRenderMessage(m: RenderMessage): boolean {
   return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
 }
 
-function formatPatchStat(added: number | null | undefined, removed: number | null | undefined): string {
-  if (typeof added !== "number" || typeof removed !== "number") return "(binary)";
-  return `(+${added} -${removed})`;
+function escapeHtml(text: string): string {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatPatchStatHtml(added: number | null | undefined, removed: number | null | undefined): string {
+  if (typeof added !== "number" || typeof removed !== "number") {
+    return `<span class="patchCardStatBinary">(binary)</span>`;
+  }
+  return (
+    `<span class="patchCardStat">(` +
+    `<span class="patchCardStatAdd">+${added}</span> ` +
+    `<span class="patchCardStatDel">-${removed}</span>` +
+    `)</span>`
+  );
 }
 
 function patchHeaderTitle(m: RenderMessage): string {
@@ -270,9 +286,40 @@ function patchHeaderMeta(m: RenderMessage): string {
   const first = files[0];
   const hiddenCount = Math.max(0, files.length - 1);
   const parts: string[] = [];
-  if (first) parts.push(formatPatchStat(first.added, first.removed));
-  if (hiddenCount > 0) parts.push(`另 ${hiddenCount} 个文件`);
+  if (first) parts.push(formatPatchStatHtml(first.added, first.removed));
+  if (hiddenCount > 0) parts.push(`<span class="patchCardMetaExtra">${escapeHtml(`另 ${hiddenCount} 个文件`)}</span>`);
   return parts.join(" ");
+}
+
+function patchDiffLineKind(line: string): "add" | "del" | "meta" | "hunk" | "ctx" {
+  if (!line) return "ctx";
+  if (line.startsWith("diff --git ")) return "meta";
+  if (line.startsWith("index ")) return "meta";
+  if (line.startsWith("new file mode ")) return "meta";
+  if (line.startsWith("deleted file mode ")) return "meta";
+  if (line.startsWith("similarity index ")) return "meta";
+  if (line.startsWith("rename from ")) return "meta";
+  if (line.startsWith("rename to ")) return "meta";
+  if (line.startsWith("Binary files ")) return "meta";
+  if (line.startsWith("--- ") || line.startsWith("+++ ")) return "meta";
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "ctx";
+}
+
+function renderPatchDiffHtml(raw: unknown): string {
+  const text = String(raw ?? "");
+  if (!text) return "";
+
+  const normalized = text.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  return lines
+    .map((line) => {
+      const kind = patchDiffLineKind(line);
+      return `<span class="patchCardDiffLine patchCardDiffLine--${kind}">${escapeHtml(line)}</span>`;
+    })
+    .join("\n");
 }
 
 function isPatchExpanded(id: string): boolean {
@@ -862,7 +909,7 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
           <div class="patchCardHeader">
             <div class="patchCardSummary">
               <div class="patchCardTitle" :title="patchHeaderTitle(m)">{{ patchHeaderTitle(m) }}</div>
-              <div v-if="patchHeaderMeta(m)" class="patchCardMeta">{{ patchHeaderMeta(m) }}</div>
+              <div v-if="patchHeaderMeta(m)" class="patchCardMeta" v-html="patchHeaderMeta(m)"></div>
             </div>
             <button
               class="patchCardToggle"
@@ -875,7 +922,7 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
             </button>
           </div>
           <div v-if="isPatchExpanded(m.id)" class="patchCardBody">
-            <pre class="patchCardDiff">{{ m.patch?.diff || m.content }}</pre>
+            <pre class="patchCardDiff" v-html="renderPatchDiffHtml(m.patch?.diff || m.content)"></pre>
             <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
           </div>
         </div>

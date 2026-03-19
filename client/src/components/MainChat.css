@@ -255,6 +255,25 @@
   white-space: nowrap;
 }
 
+.patchCardStatAdd {
+  color: #16a34a;
+  font-weight: 800;
+}
+
+.patchCardStatDel {
+  color: #b91c1c;
+  font-weight: 800;
+}
+
+.patchCardStatBinary {
+  color: #64748b;
+  font-weight: 700;
+}
+
+.patchCardMetaExtra {
+  color: #64748b;
+}
+
 .patchCardToggle {
   flex: 0 0 auto;
   border: 1px solid rgba(148, 163, 184, 0.35);
@@ -290,6 +309,22 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   overflow: auto;
   white-space: pre;
+}
+
+.patchCardDiffLine--add {
+  color: #15803d;
+}
+
+.patchCardDiffLine--del {
+  color: #b91c1c;
+}
+
+.patchCardDiffLine--meta {
+  color: #64748b;
+}
+
+.patchCardDiffLine--hunk {
+  color: #7c3aed;
 }
 
 .patchCardNote {
