@@ -230,18 +230,11 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
       <TaskCreateFormConfigFields
         :title="title"
-        :agent-id="agentId"
-        :priority="priority"
-        :max-retries="maxRetries"
         :review-required="reviewRequired"
         :bootstrap-enabled="bootstrapEnabled"
         :bootstrap-project="bootstrapProject"
         :bootstrap-max-iterations="bootstrapMaxIterations"
-        :ready-agent-options="readyAgentOptions"
         @update:title="title = $event"
-        @update:agent-id="agentId = $event"
-        @update:priority="priority = $event"
-        @update:max-retries="maxRetries = $event"
         @update:review-required="reviewRequired = $event"
         @update:bootstrap-enabled="bootstrapEnabled = $event"
         @update:bootstrap-project="bootstrapProject = $event"
@@ -380,11 +373,46 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
       </div>
 
       <div class="actions">
-        <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
-        <button class="btnSecondary" type="button" :disabled="!canSubmit" @click="submit">保存</button>
-        <button class="btnPrimary" type="button" :disabled="!canSubmit" data-testid="task-create-submit-and-run" @click="submitAndRun">
-          保存并提交
-        </button>
+        <div class="actionsLeft">
+          <label class="inlineToggle">
+            <input type="checkbox" :checked="reviewRequired" @change="reviewRequired = ($event.target as HTMLInputElement).checked" data-testid="task-create-review-required" />
+            <span class="toggleLabel">需要审核</span>
+          </label>
+          <label class="inlineToggle">
+            <input type="checkbox" :checked="bootstrapEnabled" @change="bootstrapEnabled = ($event.target as HTMLInputElement).checked" data-testid="task-create-bootstrap-toggle" />
+            <span class="toggleLabel">自举模式</span>
+          </label>
+        </div>
+        <div class="actionsRight">
+          <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
+          <button class="btnSecondary" type="button" :disabled="!canSubmit" @click="submit">保存</button>
+          <button class="btnPrimary" type="button" :disabled="!canSubmit" data-testid="task-create-submit-and-run" @click="submitAndRun">
+            保存并提交
+          </button>
+        </div>
+      </div>
+
+      <div v-if="bootstrapEnabled" class="bootstrapConfig">
+        <label class="field bootstrapProjectField">
+          <span class="label">项目路径 / Git URL</span>
+          <input
+            :value="bootstrapProject"
+            placeholder="/path/to/project 或 https://..."
+            data-testid="task-create-bootstrap-project"
+            @input="bootstrapProject = ($event.target as HTMLInputElement).value"
+          />
+        </label>
+        <label class="field bootstrapIterationsField">
+          <span class="label">最大迭代</span>
+          <input
+            :value="bootstrapMaxIterations"
+            type="number"
+            min="1"
+            max="10"
+            data-testid="task-create-bootstrap-max-iterations"
+            @input="bootstrapMaxIterations = Number(($event.target as HTMLInputElement).value)"
+          />
+        </label>
       </div>
     </div>
   </div>
@@ -845,10 +873,85 @@ textarea {
 
 .actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.actionsLeft {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.actionsRight {
+  display: flex;
   align-items: center;
   gap: 32px;
-  margin-top: 12px;
+}
+
+.inlineToggle {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.inlineToggle input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+
+.toggleLabel {
+  margin-left: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.bootstrapConfig {
+  display: grid;
+  grid-template-columns: 1fr 100px;
+  gap: 12px;
+  align-items: end;
+}
+
+.bootstrapProjectField {
+  min-width: 0;
+}
+
+.bootstrapIterationsField {
+  min-width: 0;
+}
+
+.bootstrapConfig .label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+.bootstrapConfig input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  background: rgba(248, 250, 252, 0.95);
+  color: #1e293b;
+  box-sizing: border-box;
+}
+
+.bootstrapConfig input:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.8);
+  background: white;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .btnPrimary {
@@ -906,8 +1009,21 @@ textarea {
     align-items: stretch;
   }
 
-  .actions button {
+  .actionsLeft {
+    justify-content: flex-start;
+  }
+
+  .actionsRight {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .actionsRight button {
     width: 100%;
+  }
+
+  .bootstrapConfig {
+    grid-template-columns: 1fr;
   }
 }
 </style>

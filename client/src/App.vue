@@ -35,7 +35,6 @@ const {
   queueStatus,
   apiError,
   wsError,
-  threadWarning,
   tasks,
   selectedId,
   apiAuthorized,
@@ -142,6 +141,8 @@ const workerAgents = computed(() => activeRuntime.value.availableAgents.value);
 const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.value);
 const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
 const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
+const plannerThreadWarning = computed(() => activePlannerRuntime.value.threadWarning.value);
+const workerThreadWarning = computed(() => activeRuntime.value.threadWarning.value);
 const workerChatKey = computed(() => `${activeProjectId.value}:${activeProject.value?.chatSessionId ?? "main"}`);
 const workerQueuedPrompts = computed(() =>
   queuedPrompts.value.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length })),
@@ -419,8 +420,6 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
               </div>
               <div v-if="apiError" class="error">API: {{ apiError }}</div>
               <div v-if="wsError" class="error">WS: {{ wsError }}</div>
-              <div v-if="threadWarning" class="warning">{{ threadWarning }}</div>
-
               <TaskBundleDraftPanel
                 v-if="plannerDrafts.length > 0 || plannerDraftsError"
                 :drafts="plannerDrafts"
@@ -480,6 +479,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :model-id="activePlannerRuntime.modelId.value"
           :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
           :agent-delegations="plannerAgentDelegations"
+          :thread-warning="plannerThreadWarning"
           :header-action="{ title: '清空上下文', ariaLabel: '清空 Planner 上下文', testId: 'planner-chat-clear-context' }"
           :header-resume-action="{
             title: '恢复上下文',
@@ -516,6 +516,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :model-id="activeRuntime.modelId.value"
           :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
+          :thread-warning="workerThreadWarning"
           :header-action="{ title: '新会话', ariaLabel: '新会话', testId: 'worker-chat-new-session' }"
           :header-resume-action="{
             title: '恢复上下文',
@@ -592,6 +593,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :model-id="activeRuntime.modelId.value"
           :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
+          :thread-warning="workerThreadWarning"
           @send="sendMainPrompt"
           @switchAgent="switchMainAgent"
           @setModel="setMainModelId"

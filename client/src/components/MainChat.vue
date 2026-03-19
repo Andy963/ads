@@ -32,6 +32,7 @@ const props = defineProps<{
   apiToken?: string;
   headerAction?: { title: string; ariaLabel?: string; testId?: string };
   headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
+  threadWarning?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -342,6 +343,7 @@ onBeforeUnmount(() => {
       @new-session="emit('newSession')"
       @resume-thread="emit('resumeThread')"
     />
+    <div v-if="threadWarning" class="threadWarningBanner">{{ threadWarning }}</div>
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <MainChatMessageList
         :messages="messages"

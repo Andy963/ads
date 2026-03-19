@@ -41,6 +41,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     getPlannerRuntime,
     activeRuntime,
     activePlannerRuntime,
+    activeReviewerRuntime,
     apiError,
     models,
     withWorkspaceQueryFor,
@@ -76,6 +77,41 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const loadModels = async (): Promise<void> => {
     models.value = await api.get<ModelConfig[]>("/api/models");
+
+    const enabledModels = models.value.filter((m) => m.isEnabled);
+    if (enabledModels.length === 0) return;
+    const enabledIds = new Set(enabledModels.map((m) => m.id));
+    const defaultModelId = enabledModels[0]!.id;
+
+    const ensureRuntimeModelId = (rt: ProjectRuntime): void => {
+      const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
+      const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
+      let stored: string | null = null;
+      try {
+        stored = localStorage.getItem(key);
+      } catch {
+        // ignore
+      }
+
+      const storedModelId = stored === null ? null : normalizeModelId(stored);
+      let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
+      if (candidate === "auto" || !enabledIds.has(candidate)) {
+        candidate = defaultModelId;
+      }
+
+      rt.modelId.value = candidate;
+      if (storedModelId !== candidate) {
+        try {
+          localStorage.setItem(key, candidate);
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    ensureRuntimeModelId(activeRuntime.value);
+    ensureRuntimeModelId(activePlannerRuntime.value);
+    ensureRuntimeModelId(activeReviewerRuntime.value);
   };
 
   const loadQueueStatus = async (projectId: string = activeProjectId.value): Promise<void> => {

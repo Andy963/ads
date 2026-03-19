@@ -88,7 +88,7 @@ describe("TaskCreateForm submit-and-run", () => {
     wrapper.unmount();
   });
 
-  it("renders only ready agents in the executor select", async () => {
+  it("falls back to the first ready agent when activeAgentId is not ready", async () => {
     const wrapper = mount(TaskCreateForm, {
       props: {
         workspaceRoot: "",
@@ -102,10 +102,12 @@ describe("TaskCreateForm submit-and-run", () => {
 
     await nextTick();
 
-    const agentSelect = wrapper.find('[data-testid="task-create-agent"]');
-    const values = agentSelect.findAll("option").map((opt) => opt.attributes("value"));
-    expect(values).toEqual(["", "codex"]);
-    expect((agentSelect.element as HTMLSelectElement).value).toBe("codex");
+    await wrapper.find("textarea").setValue("Do something");
+    await wrapper.find('[data-testid="task-create-submit-and-run"]').trigger("click");
+
+    const emitted = wrapper.emitted("submit-and-run");
+    expect(emitted).toBeTruthy();
+    expect(emitted?.[0]?.[0]).toMatchObject({ agentId: "codex" });
 
     wrapper.unmount();
   });

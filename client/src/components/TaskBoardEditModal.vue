@@ -38,7 +38,7 @@ const emit = defineEmits<{
   (e: "update:bootstrapEnabled", value: boolean): void;
   (e: "update:bootstrapProject", value: string): void;
   (e: "update:bootstrapMaxIterations", value: number): void;
-}>();
+}>(); 
 
 const editTitleEl = ref<HTMLInputElement | null>(null);
 
@@ -124,38 +124,49 @@ onMounted(() => {
           <input ref="editTitleEl" v-model="titleModel" data-testid="task-edit-title" />
         </label>
 
-        <div class="configRow">
-          <label class="field">
-            <span class="label">执行器</span>
-            <select v-model="agentIdModel" data-testid="task-edit-agent">
-              <option value="">自动</option>
-              <option v-for="a in props.agentOptions" :key="a.id" :value="a.id">
-                {{ a.label }}
-              </option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="label">优先级</span>
-            <input v-model.number="priorityModel" type="number" />
-          </label>
-          <label class="field">
-            <span class="label">最大重试</span>
-            <input v-model.number="maxRetriesModel" type="number" min="0" />
-          </label>
+        <label class="field editPromptField">
+          <span class="label">任务描述</span>
+          <textarea v-model="promptModel" data-testid="task-edit-prompt" />
+        </label>
+
+        <div class="actions">
+          <div class="actionsLeft">
+            <label class="inlineToggle">
+              <input v-model="reviewRequiredModel" type="checkbox" data-testid="task-edit-review-required" />
+              <span class="toggleLabel">需要审核</span>
+            </label>
+            <label class="inlineToggle">
+              <input v-model="bootstrapEnabledModel" type="checkbox" data-testid="task-edit-bootstrap-toggle" />
+              <span class="toggleLabel">自举模式</span>
+            </label>
+          </div>
+          <div class="actionsRight">
+            <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="emit('close')">
+              取消
+            </button>
+            <button
+              v-if="props.showSaveButton"
+              class="btnSecondary"
+              type="button"
+              :disabled="!props.task"
+              data-testid="task-edit-modal-save"
+              @click="emit('save')"
+            >
+              保存
+            </button>
+            <button
+              class="btnPrimary"
+              type="button"
+              :disabled="!props.task"
+              data-testid="task-edit-modal-save-and-run"
+              @click="emit('saveAndRun')"
+            >
+              {{ props.primaryLabel }}
+            </button>
+          </div>
         </div>
 
-        <div class="configRow configRowCheckboxes">
-          <label class="field bootstrapToggle">
-            <input v-model="reviewRequiredModel" type="checkbox" data-testid="task-edit-review-required" />
-            <span class="checkboxLabel">需要 Reviewer 审核</span>
-          </label>
-          <label class="field bootstrapToggle">
-            <input v-model="bootstrapEnabledModel" type="checkbox" data-testid="task-edit-bootstrap-toggle" />
-            <span class="checkboxLabel">自举模式</span>
-          </label>
-        </div>
-
-        <div v-if="bootstrapEnabledModel" class="configRow">
+        <div v-if="bootstrapEnabledModel" class="bootstrapConfig">
           <label class="field projectField">
             <span class="label">项目路径 / Git URL</span>
             <input
@@ -174,36 +185,6 @@ onMounted(() => {
               data-testid="task-edit-bootstrap-max-iterations"
             />
           </label>
-        </div>
-
-        <label class="field editPromptField">
-          <span class="label">任务描述</span>
-          <textarea v-model="promptModel" data-testid="task-edit-prompt" />
-        </label>
-
-        <div class="actions">
-          <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="emit('close')">
-            取消
-          </button>
-          <button
-            v-if="props.showSaveButton"
-            class="btnSecondary"
-            type="button"
-            :disabled="!props.task"
-            data-testid="task-edit-modal-save"
-            @click="emit('save')"
-          >
-            保存
-          </button>
-          <button
-            class="btnPrimary"
-            type="button"
-            :disabled="!props.task"
-            data-testid="task-edit-modal-save-and-run"
-            @click="emit('saveAndRun')"
-          >
-            {{ props.primaryLabel }}
-          </button>
         </div>
       </div>
     </div>
@@ -365,58 +346,71 @@ textarea {
   color: #dc2626;
 }
 
-.configRow {
+.bootstrapConfig {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: 1fr 100px;
+  gap: 12px;
   align-items: end;
-  flex-wrap: nowrap;
 }
 
-.configRowCheckboxes {
+.projectField {
+  min-width: 0;
+}
+
+.iterationsField {
+  min-width: 0;
+}
+
+.bootstrapConfig .label {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.bootstrapConfig input {
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 24px;
+  justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  margin-top: 12px;
 }
 
-.bootstrapToggle {
+.actionsLeft {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.actionsRight {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+
+.inlineToggle {
   display: flex;
   align-items: center;
   cursor: pointer;
   user-select: none;
 }
 
-.bootstrapToggle input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
+.inlineToggle input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
   margin: 0;
   cursor: pointer;
   accent-color: #2563eb;
 }
 
-.checkboxLabel {
-  display: inline;
-  margin: 0 0 0 6px;
-  font-size: 14px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.projectField {
-  flex: 1;
-}
-
-.iterationsField {
-  width: 100px;
-}
-
-.actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 32px;
-  margin-top: 12px;
+.toggleLabel {
+  margin-left: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
 }
 
 .btnPrimary {

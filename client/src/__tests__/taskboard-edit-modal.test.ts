@@ -370,11 +370,15 @@ describe("TaskBoard edit modal", () => {
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
-    const agentSelect = wrapper.find('[data-testid="task-edit-agent"]');
-    expect((agentSelect.element as HTMLSelectElement).value).toBe("");
+    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
+    await wrapper.vm.$nextTick();
 
-    const values = agentSelect.findAll("option").map((opt) => opt.attributes("value"));
-    expect(values).toEqual(["", "codex"]);
+    const updates = wrapper.emitted("update");
+    expect(updates).toBeTruthy();
+    expect(updates?.[0]?.[0]).toMatchObject({
+      id: "t-1",
+      updates: expect.objectContaining({ agentId: null }),
+    });
 
     wrapper.unmount();
   });
