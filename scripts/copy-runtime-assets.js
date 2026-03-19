@@ -26,7 +26,6 @@ const requiredFiles = new Set([
   "design.md",
   "implementation.md",
   "task.md",
-  "workflow.yaml",
 ]);
 const allowedDirs = new Set(["skills"]);
 const unexpectedDirs = entries.filter((entry) => entry.isDirectory() && !allowedDirs.has(entry.name));

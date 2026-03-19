@@ -229,7 +229,7 @@ export async function handlePromptMessage(deps: {
   currentCwd: string;
   allowedDirs: string[];
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  interruptControllers: Map<import("ws").WebSocket, AbortController>;
+  interruptControllers: Map<string, AbortController>;
   historyStore: HistoryStore;
   sessionManager: SessionManager;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
@@ -289,13 +289,13 @@ export async function handlePromptMessage(deps: {
     const turnCwd = deps.currentCwd;
 
     const controller = new AbortController();
-    deps.interruptControllers.set(deps.ws, controller);
+    deps.interruptControllers.set(deps.historyKey, controller);
     orchestrator = deps.sessionManager.getOrCreate(deps.userId, turnCwd);
     const status = orchestrator.status();
     if (!status.ready) {
       deps.sessionLogger?.logError(status.error ?? "代理未启用");
       sendToClient({ type: "error", message: status.error ?? "代理未启用，请配置凭证" });
-      deps.interruptControllers.delete(deps.ws);
+      deps.interruptControllers.delete(deps.historyKey);
       cleanupAfter();
       return;
     }
@@ -1048,7 +1048,7 @@ export async function handlePromptMessage(deps: {
       }
     } finally {
       unsubscribe();
-      deps.interruptControllers.delete(deps.ws);
+      deps.interruptControllers.delete(deps.historyKey);
       cleanupAfter();
     }
   });

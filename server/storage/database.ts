@@ -81,14 +81,20 @@ function getSchemaVersion(db: DatabaseType): number {
     | undefined;
 
   if (!row) {
-    // 检查是否是已有数据库（有 nodes 表但没有版本记录）
-    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'").get();
-    if (tables) {
-      // 已有数据库，假设是版本 1
+    // Legacy compatibility: historical ADS databases may have workflow/graph tables
+    // but no schema_version row. Treat them as schema v1 and continue forward.
+    const legacyTables = db
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type='table' AND name IN ('nodes', 'edges', 'node_versions', 'workflow_commits')
+         LIMIT 1`
+      )
+      .get();
+    if (legacyTables) {
       db.prepare("INSERT INTO schema_version (id, version) VALUES (1, 1)").run();
       return 1;
     }
-    // 新数据库，版本为 0
+
     db.prepare("INSERT INTO schema_version (id, version) VALUES (1, 0)").run();
     return 0;
   }

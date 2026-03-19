@@ -3,17 +3,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 
-AI-driven specification-based development workflow automation with Telegram bot support. Built with Node.js/TypeScript.
+AI-driven specification-based development with planner drafts, task execution, and Telegram support. Built with Node.js/TypeScript.
 
 ## ✨ Features
 
-- 📱 **Telegram Bot**: Remote control your development workflow via Telegram from anywhere
+- 📱 **Telegram Bot**: Remote access to planner and task execution flows from anywhere
 - 🌐 **Web Console**: Browser-based console with streaming responses and directory safeguards
-- 🔄 **Workflow Automation**: Template-based workflow management and execution
-- 💾 **SQLite Workspace**: Persistent graph-based project state tracking
+- 🧾 **Spec-First Planning**: `docs/spec/*` as the canonical planning artifact
+- 💾 **SQLite Workspace**: Persistent task, review, and scheduler state tracking
 - 🎯 **Context Management**: Intelligent context injection and reinjection
 - 🔍 **Review Workflow**: Automated code review before delivery with AI agents
-- 🔧 **Extensible**: Plugin-friendly architecture for custom tools and workflows
+- 🔧 **Extensible**: Plugin-friendly architecture for custom tools and skills
 
 ## 🚀 Quick Start
 
@@ -49,7 +49,7 @@ Comprehensive documentation is being migrated into this repository. Until those 
 
 - `docs/spec/**` — canonical specifications describing features (requirements, design, implementation).
 - `docs/pm2.md` — recommended pm2 deployment (web + telegram as separate apps).
-- `templates/` — the workspace templates synced into centralized `.ads/workspaces/<workspaceId>/templates/`, useful for understanding prompts and workflows.
+- `templates/` — the workspace templates synced into centralized `.ads/workspaces/<workspaceId>/templates/`, useful for understanding prompts and spec scaffolding.
 - Inline comments in `server/telegram/**` for Telegram bot behavior, including workspace initialization prompts.
 
 Missing guides referenced elsewhere will be restored once the documentation migration completes.
@@ -93,14 +93,14 @@ Missing guides referenced elsewhere will be restored once the documentation migr
 
 ### Template Layout
 
-ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建时复制到 `dist/templates`）。目录内仅包含 6 个扁平文件：
+ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建时复制到 `dist/templates`）。目录内包含以下扁平文件：
 
 - `instructions.md` – 系统提示与工作流指引
 - `rules.md` – 默认工作区规则
 - `requirement.md` – 需求文档模板
 - `design.md` – 设计文档模板
 - `implementation.md` – 实施/验证模板
-- `workflow.yaml` – 工作流步骤定义
+- `task.md` – 单任务模板
 
 ADS 会在工作区初始化与 Web Console 启动/切换目录时同步 `templates/` 到 `.ads/workspaces/<workspaceId>/templates/`，如需自定义模板只需编辑这些文件。
 
@@ -276,7 +276,6 @@ See [SECURITY.md](SECURITY.md) for complete security guidelines.
 ```
 ads/
 ├── server/           # Backend (Node.js, TypeScript)
-│   ├── graph/        # Graph persistence & workflow logic
 │   ├── workspace/    # Workspace management
 │   ├── telegram/     # Telegram bot implementation
 │   └── web/          # Web Console backend

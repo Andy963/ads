@@ -55,50 +55,17 @@ describe("storage/database", () => {
     assert.strictEqual(db1, db2, "Should return same cached instance");
   });
 
-  it("should create nodes table with correct schema", () => {
+  it("should not create legacy workflow/graph tables for a fresh database", () => {
     const db = getDatabase();
-    const tableInfo = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string; type: string }>;
-    
-    const columnNames = tableInfo.map(col => col.name);
-    assert.ok(columnNames.includes("id"), "Should have id column");
-    assert.ok(columnNames.includes("type"), "Should have type column");
-    assert.ok(columnNames.includes("label"), "Should have label column");
-    assert.ok(columnNames.includes("content"), "Should have content column");
-    assert.ok(columnNames.includes("current_version"), "Should have current_version column");
-    assert.ok(columnNames.includes("is_draft"), "Should have is_draft column");
-  });
+    const legacyTables = db
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type='table' AND name IN ('nodes', 'edges', 'node_versions', 'workflow_commits')
+         ORDER BY name ASC`
+      )
+      .all() as Array<{ name: string }>;
 
-  it("should create edges table with correct schema", () => {
-    const db = getDatabase();
-    const tableInfo = db.prepare("PRAGMA table_info(edges)").all() as Array<{ name: string; type: string }>;
-    
-    const columnNames = tableInfo.map(col => col.name);
-    assert.ok(columnNames.includes("id"), "Should have id column");
-    assert.ok(columnNames.includes("source"), "Should have source column");
-    assert.ok(columnNames.includes("target"), "Should have target column");
-    assert.ok(columnNames.includes("edge_type"), "Should have edge_type column");
-  });
-
-  it("should create node_versions table with correct schema", () => {
-    const db = getDatabase();
-    const tableInfo = db.prepare("PRAGMA table_info(node_versions)").all() as Array<{ name: string; type: string }>;
-    
-    const columnNames = tableInfo.map(col => col.name);
-    assert.ok(columnNames.includes("node_id"), "Should have node_id column");
-    assert.ok(columnNames.includes("version"), "Should have version column");
-    assert.ok(columnNames.includes("content"), "Should have content column");
-    assert.ok(columnNames.includes("source_type"), "Should have source_type column");
-  });
-
-  it("should create workflow_commits table with correct schema", () => {
-    const db = getDatabase();
-    const tableInfo = db.prepare("PRAGMA table_info(workflow_commits)").all() as Array<{ name: string; type: string }>;
-    
-    const columnNames = tableInfo.map(col => col.name);
-    assert.ok(columnNames.includes("workflow_id"), "Should have workflow_id column");
-    assert.ok(columnNames.includes("node_id"), "Should have node_id column");
-    assert.ok(columnNames.includes("step_name"), "Should have step_name column");
-    assert.ok(columnNames.includes("version"), "Should have version column");
+    assert.deepStrictEqual(legacyTables, [], "Fresh database should not create removed workflow/graph tables");
   });
 
   it("should enable WAL mode", () => {
@@ -119,44 +86,34 @@ describe("storage/database", () => {
     assert.strictEqual(timeoutMs, 1234, "Busy timeout should match configuration");
   });
 
-  it("should allow inserting and querying nodes", () => {
-    const db = getDatabase();
+  it("should upgrade legacy workflow databases without schema_version metadata", () => {
+    resetDatabaseForTests();
+    const seedDb = getDatabase();
     const now = new Date().toISOString();
-    
-    db.prepare(`
+    seedDb.exec(`
+      CREATE TABLE IF NOT EXISTS nodes (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        label TEXT NOT NULL,
+        content TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    seedDb.prepare(`
       INSERT INTO nodes (id, type, label, content, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run("test-node-1", "requirement", "Test Node", "Test content", now, now);
-    
-    const node = db.prepare("SELECT * FROM nodes WHERE id = ?").get("test-node-1") as { id: string; label: string };
-    assert.strictEqual(node.id, "test-node-1");
-    assert.strictEqual(node.label, "Test Node");
-  });
+    `).run("legacy-node-1", "requirement", "Legacy Node", "legacy content", now, now);
+    seedDb.exec("DROP TABLE schema_version");
 
-  it("should allow inserting and querying edges", () => {
+    resetDatabaseForTests();
     const db = getDatabase();
-    const now = new Date().toISOString();
-    
-    // 先插入节点
-    db.prepare(`
-      INSERT INTO nodes (id, type, label, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run("node-a", "requirement", "Node A", now, now);
-    
-    db.prepare(`
-      INSERT INTO nodes (id, type, label, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run("node-b", "design", "Node B", now, now);
-    
-    // 插入边
-    db.prepare(`
-      INSERT INTO edges (id, source, target, edge_type, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run("edge-1", "node-a", "node-b", "next", now, now);
-    
-    const edge = db.prepare("SELECT * FROM edges WHERE id = ?").get("edge-1") as { source: string; target: string };
-    assert.strictEqual(edge.source, "node-a");
-    assert.strictEqual(edge.target, "node-b");
+    const info = getDatabaseInfo();
+    const node = db.prepare("SELECT id, label FROM nodes WHERE id = ?").get("legacy-node-1") as { id: string; label: string };
+
+    assert.strictEqual(info.needsMigration, false);
+    assert.strictEqual(node.id, "legacy-node-1");
+    assert.strictEqual(node.label, "Legacy Node");
   });
 
   it("should create model_configs table without hardcoded seeds", () => {

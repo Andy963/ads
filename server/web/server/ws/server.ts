@@ -40,7 +40,7 @@ export function attachWebSocketServer(deps: {
   traceWsDuplication: boolean;
   allowedDirs: string[];
   workspaceCache: Map<string, string>;
-  interruptControllers: Map<WebSocket, AbortController>;
+  interruptControllers: Map<string, AbortController>;
   clientMetaByWs: Map<
     WebSocket,
     {
@@ -272,7 +272,7 @@ export function attachWebSocketServer(deps: {
     deps.logger.info(
       `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}${pendingInjection ? " (pending history injection)" : ""}${contextRestored ? " (thread resumed)" : ""}`,
     );
-    const inFlight = deps.interruptControllers.has(ws);
+    const inFlight = deps.interruptControllers.has(historyKey);
 
     const broadcastJson = (payload: unknown): void => {
       for (const [candidate, meta] of deps.clientMetaByWs.entries()) {
@@ -284,23 +284,16 @@ export function attachWebSocketServer(deps: {
     };
 
     const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean => {
-      let found = false;
-      for (const [candidate, meta] of deps.clientMetaByWs.entries()) {
-        if (meta.historyKey !== targetHistoryKey) {
-          continue;
-        }
-        const controller = deps.interruptControllers.get(candidate);
-        if (!controller) {
-          continue;
-        }
-        found = true;
-        try {
-          controller.abort();
-        } catch {
-          // ignore
-        }
+      const controller = deps.interruptControllers.get(targetHistoryKey);
+      if (!controller) {
+        return false;
       }
-      return found;
+      try {
+        controller.abort();
+      } catch {
+        // ignore
+      }
+      return true;
     };
 
     safeJsonSend(ws, {
@@ -652,7 +645,6 @@ export function attachWebSocketServer(deps: {
 
     ws.on("close", (code, reason) => {
       deps.clients.delete(ws);
-      deps.interruptControllers.delete(ws);
       const meta = deps.clientMetaByWs.get(ws);
       deps.clientMetaByWs.delete(ws);
       const reasonText = formatCloseReason(reason);

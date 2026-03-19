@@ -32,7 +32,7 @@ export async function handleCommandMessage(deps: {
   sessionManager: SessionManager;
   agentAvailability: AgentAvailability;
   historyStore: HistoryStore;
-  interruptControllers: Map<WebSocket, AbortController>;
+  interruptControllers: Map<string, AbortController>;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sendWorkspaceState: (ws: WebSocket, workspaceRoot: string) => void;
   syncWorkspaceTemplates: () => void;
@@ -187,7 +187,7 @@ export async function handleCommandMessage(deps: {
     }
 
     const controller = new AbortController();
-    deps.interruptControllers.set(deps.ws, controller);
+    deps.interruptControllers.set(deps.historyKey, controller);
 
     let runPromise: Promise<{ ok: boolean; output: string }> | undefined;
     try {
@@ -228,7 +228,7 @@ export async function handleCommandMessage(deps: {
         deps.sessionLogger?.logError(message);
       }
     } finally {
-      deps.interruptControllers.delete(deps.ws);
+      deps.interruptControllers.delete(deps.historyKey);
     }
   });
 

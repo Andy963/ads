@@ -1,20 +1,10 @@
 import path from "node:path";
 
 import { parseSlashCommand } from "../codexConfig.js";
-import { createWorkflowFromTemplate } from "../workflow/templateService.js";
-import {
-  listWorkflows,
-  checkoutWorkflow,
-  getWorkflowStatusSummary,
-  commitStep,
-  listWorkflowLog,
-} from "../workflow/service.js";
-import { buildAdsHelpMessage } from "../workflow/commands.js";
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
 import { detectWorkspace } from "../workspace/detector.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
-import { syncAllNodesToFiles } from "../graph/service.js";
 import { normalizeOutput } from "../utils/text.js";
 import { initSkill, normalizeSkillName, parseResourceList, validateSkillDirectory } from "../skills/creator.js";
 import { discoverSkills, loadSkillBody, renderSkillList } from "../skills/loader.js";
@@ -55,11 +45,15 @@ function formatResponse(text: string): string {
   }
 }
 
+function buildAdsHelpMessage(): string {
+  return "User-facing slash commands are disabled. Use the Web UI and skills to drive specs, drafts, and tasks.";
+}
+
 const commandRegistry = new Map<string, CommandHandler>([
   [
     "ads.help",
     async () => {
-      return { ok: true, output: buildAdsHelpMessage("cli") };
+      return { ok: true, output: buildAdsHelpMessage() };
     },
   ],
   [
@@ -69,116 +63,6 @@ const commandRegistry = new Map<string, CommandHandler>([
       const response = await initWorkspace({ name });
       syncWorkspaceTemplates();
       return { ok: true, output: formatResponse(response) };
-    },
-  ],
-  [
-    "ads.branch",
-    async ({ rawArgs }) => {
-      let deleteMode: "none" | "soft" | "hard" = "none";
-      let workflowArg: string | undefined;
-
-      for (let i = 0; i < rawArgs.length; i += 1) {
-        const token = rawArgs[i];
-        if (token === "-d" || token === "--delete-context") {
-          deleteMode = "soft";
-          workflowArg = rawArgs.slice(i + 1).join(" ") || workflowArg;
-          break;
-        }
-        if (token === "-D" || token === "--delete" || token === "--force-delete") {
-          deleteMode = "hard";
-          workflowArg = rawArgs.slice(i + 1).join(" ") || workflowArg;
-          break;
-        }
-      }
-
-      const operation = deleteMode === "hard" ? "force_delete" : deleteMode === "soft" ? "delete" : "list";
-      const workflow = deleteMode === "none" ? undefined : workflowArg?.trim().replace(/^['"]|['"]$/g, "");
-      const response = await listWorkflows({ operation, workflow });
-      return { ok: true, output: formatResponse(response) };
-    },
-  ],
-  [
-    "ads.checkout",
-    async ({ params, positional }) => {
-      const identifier = params.workflow_identifier ?? positional[0];
-      if (!identifier) {
-        return { ok: false, output: "❌ 需要提供工作流标识" };
-      }
-      const response = await checkoutWorkflow({ workflow_identifier: identifier, format: "cli" });
-      return { ok: true, output: formatResponse(response) };
-    },
-  ],
-  [
-    "ads.status",
-    async () => {
-      const response = await getWorkflowStatusSummary({ format: "cli" });
-      return { ok: true, output: normalizeOutput(response) };
-    },
-  ],
-  [
-    "ads.log",
-    async ({ positional, params }) => {
-      let limit: number | undefined;
-      let workflowFilter: string | undefined;
-      if (params.limit) {
-        const parsed = Number(params.limit);
-        if (Number.isFinite(parsed)) {
-          limit = parsed;
-        }
-      }
-      if (params.workflow) {
-        workflowFilter = params.workflow;
-      }
-      if (positional.length > 0) {
-        const candidate = Number(positional[0]);
-        if (Number.isFinite(candidate)) {
-          limit = candidate;
-          positional.shift();
-        }
-      }
-      if (!workflowFilter && positional.length > 0) {
-        workflowFilter = positional.join(" ");
-      }
-      const response = await listWorkflowLog({
-        limit: typeof limit === "number" && Number.isFinite(limit) ? limit : undefined,
-        workflow: workflowFilter,
-        format: "cli",
-      });
-      return { ok: true, output: normalizeOutput(response) };
-    },
-  ],
-  [
-    "ads.new",
-    async ({ params, positional }) => {
-      const titleArg = (params.title ?? positional.join(" ")).trim();
-      const templateArg = params.template_id?.trim();
-      if (!titleArg) {
-        return { ok: false, output: "❌ Missing title" };
-      }
-      const response = await createWorkflowFromTemplate({
-        template_id: templateArg,
-        title: titleArg,
-        description: params.description,
-        format: "cli",
-      });
-      return { ok: true, output: formatResponse(response) };
-    },
-  ],
-  [
-    "ads.commit",
-    async ({ params, positional }) => {
-      if (!params.step_name && positional.length > 0) {
-        params.step_name = positional.shift()!;
-      }
-      if (!params.step_name) {
-        return { ok: false, output: "❌ Missing step name" };
-      }
-      const response = await commitStep({
-        step_name: params.step_name,
-        change_description: params.change_description,
-        format: "cli",
-      });
-      return { ok: true, output: normalizeOutput(response) };
     },
   ],
   [
@@ -197,13 +81,6 @@ const commandRegistry = new Map<string, CommandHandler>([
     "ads.workspace",
     async () => {
       const response = await getCurrentWorkspace();
-      return { ok: true, output: formatResponse(response) };
-    },
-  ],
-  [
-    "ads.sync",
-    async () => {
-      const response = await syncAllNodesToFiles({});
       return { ok: true, output: formatResponse(response) };
     },
   ],

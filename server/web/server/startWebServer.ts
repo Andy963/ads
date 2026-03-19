@@ -47,7 +47,7 @@ const sessionTtlSeconds = resolveSessionTtlSeconds();
 const sessionPepper = resolveSessionPepper();
 
 const workspaceCache = new Map<string, string>();
-const interruptControllers = new Map<import("ws").WebSocket, AbortController>();
+const interruptControllers = new Map<string, AbortController>();
 const adsStateDir = resolveAdsStateDir();
 const stateDbPath = resolveStateDbPath();
 const LEGACY_WEB_NAMESPACE = "web";

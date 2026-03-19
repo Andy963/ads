@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 
 import yaml from "yaml";
 
-import { createWorkflowFromTemplate } from "../workflow/templateService.js";
+import { getWorkspaceSpecsDir } from "../workspace/detector.js";
 
 export interface SpecWriteResult {
   specRef: string;
@@ -128,44 +128,74 @@ function buildNotice(results: SpecWriteResult[], warnings: string[]): string {
   return lines.length ? `\n\n---\n${lines.join("\n")}` : "";
 }
 
-async function createSpecWorkflow(args: {
+function sanitizeSlug(title: string | undefined | null): string {
+  if (!title) {
+    return "spec";
+  }
+  const normalized = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+  return normalized || "spec";
+}
+
+async function ensureSpecDirectory(args: {
+  workspaceRoot: string;
+  title: string;
+}): Promise<{ specRef: string; absoluteDir: string }> {
+  const specsDir = getWorkspaceSpecsDir(args.workspaceRoot);
+  const now = new Date();
+  const folderTimestamp = `${now.getFullYear()}${(now.getMonth() + 1)
+    .toString()
+    .padStart(2, "0")}${now.getDate().toString().padStart(2, "0")}-${now
+    .getHours()
+    .toString()
+    .padStart(2, "0")}${now.getMinutes().toString().padStart(2, "0")}`;
+  const slug = sanitizeSlug(args.title);
+  let folderName = `${folderTimestamp}-${slug}`;
+  let absoluteDir = path.join(specsDir, folderName);
+  let attempt = 1;
+
+  while (true) {
+    try {
+      await fs.mkdir(absoluteDir, { recursive: false });
+      return {
+        specRef: normalizeSpecRef(path.join("docs", "spec", folderName)),
+        absoluteDir,
+      };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") {
+        throw error;
+      }
+      attempt += 1;
+      folderName = `${folderTimestamp}-${slug}-${attempt}`;
+      absoluteDir = path.join(specsDir, folderName);
+    }
+  }
+}
+
+async function createSpecDirectory(args: {
   workspaceRoot: string;
   title: string;
   templateId?: string | null;
   description?: string | null;
 }): Promise<{ specRef: string; absoluteDir: string } | { error: string }> {
-  const response = await createWorkflowFromTemplate({
-    template_id: args.templateId ?? undefined,
-    title: args.title,
-    description: args.description ?? undefined,
-    workspace_path: args.workspaceRoot,
-    format: "cli",
-  });
-
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(response) as unknown;
-  } catch {
-    return { error: "workflow create returned non-JSON response" };
+    void args.templateId;
+    void args.description;
+    const created = await ensureSpecDirectory({
+      workspaceRoot: args.workspaceRoot,
+      title: args.title,
+    });
+    if (!isSafeSpecDir(args.workspaceRoot, created.absoluteDir)) {
+      return { error: `invalid spec dir resolved outside docs/spec: ${created.specRef}` };
+    }
+    return created;
+  } catch (error) {
+    return { error: (error as Error).message };
   }
-
-  const record = parsed as { error?: unknown; workflow?: unknown };
-  if (record?.error) {
-    return { error: String(record.error) };
-  }
-
-  const workflow = record?.workflow as { spec_dir?: unknown } | null;
-  const specDir = toNonEmptyString(workflow?.spec_dir);
-  if (!specDir) {
-    return { error: "workflow create response missing workflow.spec_dir" };
-  }
-
-  const specRef = normalizeSpecRef(specDir);
-  const absoluteDir = path.resolve(args.workspaceRoot, specRef);
-  if (!isSafeSpecDir(args.workspaceRoot, absoluteDir)) {
-    return { error: `invalid spec dir resolved outside docs/spec: ${specRef}` };
-  }
-  return { specRef, absoluteDir };
 }
 
 export async function processSpecBlocks(text: string, workspaceRoot: string): Promise<SpecProcessingResult> {
@@ -229,14 +259,14 @@ export async function processSpecBlocks(text: string, workspaceRoot: string): Pr
         continue;
       }
     } else {
-      const createdResult = await createSpecWorkflow({
+      const createdResult = await createSpecDirectory({
         workspaceRoot,
         title,
         templateId,
         description,
       });
       if ("error" in createdResult) {
-        warnings.push(`failed to create workflow spec: ${createdResult.error}`);
+        warnings.push(`failed to create spec directory: ${createdResult.error}`);
         continue;
       }
       ({ specRef, absoluteDir } = createdResult);
@@ -266,4 +296,3 @@ export async function processSpecBlocks(text: string, workspaceRoot: string): Pr
   const finalText = cleanedText + buildNotice(results, warnings);
   return { cleanedText, results, warnings, finalText };
 }
-
