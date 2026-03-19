@@ -1,24 +1,18 @@
 import type { Input } from "../../../agents/protocol/types.js";
 
-import type { AgentEvent } from "../../../codex/events.js";
 import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import { processAdrBlocks } from "../../../utils/adrRecording.js";
 import { processSpecBlocks } from "../../../utils/specRecording.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { truncateForLog } from "../../utils.js";
-import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import type { HistoryStore } from "../../../utils/historyStore.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runCollaborativeTurn } from "../../../agents/hub.js";
-import type { WsMessage } from "./schema.js";
 import { injectPlannerDraftSkill, parsePlannerDraftSlashCommand } from "../planner/draftSlashCommand.js";
-import type { TaskQueueContext } from "../taskQueue/manager.js";
-import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
-import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
+import type { WsPromptHandlerDeps } from "./deps.js";
 import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
 import {
   buildHistoryInjectionContext,
@@ -31,122 +25,94 @@ import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
 
-export async function handlePromptMessage(deps: {
-  parsed: WsMessage;
-  ws: import("ws").WebSocket;
-  safeJsonSend: (ws: import("ws").WebSocket, payload: unknown) => void;
-  broadcastJson: (payload: unknown) => void;
-  logger: { info: (msg: string) => void; warn: (msg: string) => void; debug: (msg: string) => void };
-  sessionLogger: {
-    logInput: (text: string) => void;
-    logOutput: (text: string) => void;
-    logError: (text: string) => void;
-    logEvent: (event: AgentEvent) => void;
-    attachThreadId: (threadId?: string) => void;
-  } | null;
-  requestId: string;
-  clientMessageId: string | null;
-  traceWsDuplication: boolean;
-  receivedAt: number;
-  authUserId: string;
-  sessionId: string;
-  chatSessionId: string;
-  userId: number;
-  historyKey: string;
-  currentCwd: string;
-  allowedDirs: string[];
-  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  interruptControllers: Map<string, AbortController>;
-  historyStore: HistoryStore;
-  sessionManager: SessionManager;
-  orchestrator: ReturnType<SessionManager["getOrCreate"]>;
-  sendWorkspaceState: (ws: import("ws").WebSocket, workspaceRoot: string) => void;
-  ensureTaskContext?: (workspaceRoot: string) => TaskQueueContext;
-  promoteQueuedTasksToPending?: (ctx: TaskQueueContext) => void;
-  broadcastToSession?: (sessionId: string, payload: unknown) => void;
-  scheduleCompiler?: ScheduleCompiler;
-  scheduler?: SchedulerRuntime;
-}): Promise<{
+export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }> {
-  if (deps.parsed.type !== "prompt") {
-    return { handled: false, orchestrator: deps.orchestrator };
+  if (deps.request.parsed.type !== "prompt") {
+    return { handled: false, orchestrator: deps.sessions.orchestrator };
   }
 
-  if (deps.chatSessionId === "reviewer") {
-    deps.safeJsonSend(deps.ws, { type: "error", message: "Reviewer lane is read-only. It only consumes immutable snapshots from the review queue." });
-    return { handled: true, orchestrator: deps.orchestrator };
+  if (deps.context.chatSessionId === "reviewer") {
+    deps.transport.safeJsonSend(deps.transport.ws, {
+      type: "error",
+      message: "Reviewer lane is read-only. It only consumes immutable snapshots from the review queue.",
+    });
+    return { handled: true, orchestrator: deps.sessions.orchestrator };
   }
 
-  const sendToClient = (payload: unknown): void => deps.safeJsonSend(deps.ws, payload);
-  const sendToChat = (payload: unknown): void => deps.broadcastJson(payload);
+  const sendToClient = (payload: unknown): void => deps.transport.safeJsonSend(deps.transport.ws, payload);
+  const sendToChat = (payload: unknown): void => deps.transport.broadcastJson(payload);
 
-  let orchestrator = deps.orchestrator;
+  let orchestrator = deps.sessions.orchestrator;
 
-  const workspaceRoot = detectWorkspaceFrom(deps.currentCwd);
-  const lock = deps.getWorkspaceLock(workspaceRoot);
+  const workspaceRoot = detectWorkspaceFrom(deps.context.currentCwd);
+  const lock = deps.sessions.getWorkspaceLock(workspaceRoot);
 
   await lock.runExclusive(async () => {
     const imageDir = resolveWorkspaceStatePath(workspaceRoot, "temp", "web-images");
-    const promptInput = buildPromptInput(deps.parsed.payload, imageDir);
+    const promptInput = buildPromptInput(deps.request.parsed.payload, imageDir);
     if (!promptInput.ok) {
-      deps.sessionLogger?.logError(promptInput.message);
+      deps.observability.sessionLogger?.logError(promptInput.message);
       sendToClient({ type: "error", message: promptInput.message });
       return;
     }
     const tempAttachments = promptInput.attachments || [];
     const cleanupAttachments = () => cleanupTempFiles(tempAttachments);
-    const userLogEntry = buildUserLogEntry(promptInput.input, deps.currentCwd);
-    deps.sessionLogger?.logInput(userLogEntry);
-    if (!deps.clientMessageId) {
-      deps.historyStore.add(deps.historyKey, {
+    const userLogEntry = buildUserLogEntry(promptInput.input, deps.context.currentCwd);
+    deps.observability.sessionLogger?.logInput(userLogEntry);
+    if (!deps.request.clientMessageId) {
+      deps.history.historyStore.add(deps.context.historyKey, {
         role: "user",
         text: userLogEntry,
-        ts: deps.receivedAt,
+        ts: deps.request.receivedAt,
       });
     }
 
     let inputToSend: Input = promptInput.input;
-    const isPlannerDraftCommand = deps.chatSessionId === "planner" && Boolean(parsePlannerDraftSlashCommand(inputToSend));
+    const isPlannerDraftCommand =
+      deps.context.chatSessionId === "planner" && Boolean(parsePlannerDraftSlashCommand(inputToSend));
     if (isPlannerDraftCommand) {
       inputToSend = injectPlannerDraftSkill(inputToSend);
     }
     const cleanupAfter = cleanupAttachments;
-    const turnCwd = deps.currentCwd;
+    const turnCwd = deps.context.currentCwd;
 
     const controller = new AbortController();
-    deps.interruptControllers.set(deps.historyKey, controller);
-    orchestrator = deps.sessionManager.getOrCreate(deps.userId, turnCwd);
+    deps.sessions.interruptControllers.set(deps.context.historyKey, controller);
+    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, turnCwd);
     const status = orchestrator.status();
     if (!status.ready) {
-      deps.sessionLogger?.logError(status.error ?? "代理未启用");
+      deps.observability.sessionLogger?.logError(status.error ?? "代理未启用");
       sendToClient({ type: "error", message: status.error ?? "代理未启用，请配置凭证" });
-      deps.interruptControllers.delete(deps.historyKey);
+      deps.sessions.interruptControllers.delete(deps.context.historyKey);
       cleanupAfter();
       return;
     }
     orchestrator.setWorkingDirectory(turnCwd);
-    const modelOverride = parseModelFromPayload(deps.parsed.payload);
+    const modelOverride = parseModelFromPayload(deps.request.parsed.payload);
     if (modelOverride.present) {
       orchestrator.setModel(modelOverride.model);
     }
-    const reasoningEffort = parseModelReasoningEffortFromPayload(deps.parsed.payload);
+    const reasoningEffort = parseModelReasoningEffortFromPayload(deps.request.parsed.payload);
     if (reasoningEffort.present) {
       orchestrator.setModelReasoningEffort(reasoningEffort.effort);
     }
     const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
       orchestrator,
       turnCwd,
-      historyKey: deps.historyKey,
-      historyStore: deps.historyStore,
+      historyKey: deps.context.historyKey,
+      historyStore: deps.history.historyStore,
       sendToChat,
-      logger: deps.logger,
-      sessionLogger: deps.sessionLogger,
+      logger: deps.observability.logger,
+      sessionLogger: deps.observability.sessionLogger,
     });
 
     try {
-      const expectedThreadId = deps.sessionManager.getSavedThreadId(deps.userId, orchestrator.getActiveAgentId());
+      const expectedThreadId = deps.sessions.sessionManager.getSavedThreadId(
+        deps.context.userId,
+        orchestrator.getActiveAgentId(),
+      );
 
       const delegationIdsByFingerprint = new Map<string, string[]>();
       const delegationFingerprint = (agentId: string, prompt: string): string =>
@@ -172,16 +138,18 @@ export async function handlePromptMessage(deps: {
       };
 
       let effectiveInput: Input = inputToSend;
-      if (deps.sessionManager.needsHistoryInjection(deps.userId)) {
-        const historyEntries = deps.historyStore.get(deps.historyKey).filter((entry) => entry.ts <= deps.receivedAt);
+      if (deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId)) {
+        const historyEntries = deps.history.historyStore
+          .get(deps.context.historyKey)
+          .filter((entry) => entry.ts <= deps.request.receivedAt);
         const injectionContext = buildHistoryInjectionContext(historyEntries);
         if (injectionContext) {
           effectiveInput = prependContextToInput(injectionContext, inputToSend);
-          deps.logger.info(
-            `[ContextRestore] Injected ${historyEntries.length} history entries for user=${deps.userId} session=${deps.sessionId}`,
+          deps.observability.logger.info(
+            `[ContextRestore] Injected ${historyEntries.length} history entries for user=${deps.context.userId} session=${deps.context.sessionId}`,
           );
         }
-        deps.sessionManager.clearHistoryInjection(deps.userId);
+        deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
 
       const result = await runCollaborativeTurn(orchestrator, effectiveInput, {
@@ -189,9 +157,10 @@ export async function handlePromptMessage(deps: {
         signal: controller.signal,
         onExploredEntry: handleExploredEntry,
         hooks: {
-          onSupervisorRound: (round, directives) => deps.logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
+          onSupervisorRound: (round, directives) =>
+            deps.observability.logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
           onDelegationStart: ({ agentId, agentName, prompt }) => {
-            deps.logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
+            deps.observability.logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
             // The LiveActivity UI is intentionally short-lived (TTL). Emit a structured message so
             // the frontend can keep a persistent "agents in progress" indicator while delegations run.
             const delegationId = stashDelegationId(agentId, prompt);
@@ -212,7 +181,9 @@ export async function handlePromptMessage(deps: {
             } as ExploredEntry);
           },
           onDelegationResult: (summary) => {
-            deps.logger.info(`[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`);
+            deps.observability.logger.info(
+              `[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`,
+            );
             const delegationId = popDelegationId(summary.agentId, summary.prompt);
             sendToChat({
               type: "agent",
@@ -233,7 +204,7 @@ export async function handlePromptMessage(deps: {
         },
         cwd: turnCwd,
         historyNamespace: "web",
-        historySessionId: deps.historyKey,
+        historySessionId: deps.context.historyKey,
       });
 
       const rawResponse = typeof result.response === "string" ? result.response : String(result.response ?? "");
@@ -260,30 +231,30 @@ export async function handlePromptMessage(deps: {
       let threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
 
-      if (deps.chatSessionId === "planner") {
+      if (deps.context.chatSessionId === "planner") {
         const plannerHandled = await handlePlannerPromptOutput({
           outputToSend,
           finalOutput,
           createdSpecRefs,
           userLogEntry,
-          requestId: deps.requestId,
-          clientMessageId: deps.clientMessageId,
-          authUserId: deps.authUserId,
-          chatSessionId: deps.chatSessionId,
-          historyKey: deps.historyKey,
+          requestId: deps.request.requestId,
+          clientMessageId: deps.request.clientMessageId,
+          authUserId: deps.context.authUserId,
+          chatSessionId: deps.context.chatSessionId,
+          historyKey: deps.context.historyKey,
           workspaceRoot: workspaceRootForAdr,
           turnCwd,
           controller,
           orchestrator,
           expectedThreadId,
-          logger: deps.logger,
+          logger: deps.observability.logger,
           sendToChat,
           handleExploredEntry,
-          ensureTaskContext: deps.ensureTaskContext,
-          promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
-          broadcastToSession: deps.broadcastToSession,
-          scheduleCompiler: deps.scheduleCompiler,
-          scheduler: deps.scheduler,
+          ensureTaskContext: deps.tasks.ensureTaskContext,
+          promoteQueuedTasksToPending: deps.tasks.promoteQueuedTasksToPending,
+          broadcastToSession: deps.tasks.broadcastToSession,
+          scheduleCompiler: deps.scheduler.scheduleCompiler,
+          scheduler: deps.scheduler.scheduler,
           draftCommand: isPlannerDraftCommand,
         });
         outputForChat = plannerHandled.outputForChat;
@@ -292,16 +263,16 @@ export async function handlePromptMessage(deps: {
       }
 
       sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });
-      if (deps.sessionLogger) {
-        deps.sessionLogger.attachThreadId(threadId ?? undefined);
-        deps.sessionLogger.logOutput(outputForChat);
+      if (deps.observability.sessionLogger) {
+        deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
+        deps.observability.sessionLogger.logOutput(outputForChat);
       }
-      deps.historyStore.add(deps.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
+      deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
 
       if (threadId) {
-        deps.sessionManager.saveThreadId(deps.userId, threadId, orchestrator.getActiveAgentId());
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
       }
-      deps.sendWorkspaceState(deps.ws, turnCwd);
+      deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
     } catch (error) {
       const aborted = controller.signal.aborted;
       if (aborted) {
@@ -314,10 +285,12 @@ export async function handlePromptMessage(deps: {
 
         const logMessage = `[${errorInfo.code}] ${errorInfo.message}`;
         const stack = error instanceof Error ? error.stack : undefined;
-        deps.sessionLogger?.logError(stack ? `${logMessage}\n${stack}` : logMessage);
-        deps.logger.warn(`[Prompt Error] code=${errorInfo.code} retryable=${errorInfo.retryable} needsReset=${errorInfo.needsReset} message=${errorInfo.message}`);
+        deps.observability.sessionLogger?.logError(stack ? `${logMessage}\n${stack}` : logMessage);
+        deps.observability.logger.warn(
+          `[Prompt Error] code=${errorInfo.code} retryable=${errorInfo.retryable} needsReset=${errorInfo.needsReset} message=${errorInfo.message}`,
+        );
 
-        deps.historyStore.add(deps.historyKey, {
+        deps.history.historyStore.add(deps.context.historyKey, {
           role: "status",
           text: `[${errorInfo.code}] ${errorInfo.userHint}`,
           ts: Date.now(),
@@ -337,7 +310,7 @@ export async function handlePromptMessage(deps: {
       }
     } finally {
       unsubscribe();
-      deps.interruptControllers.delete(deps.historyKey);
+      deps.sessions.interruptControllers.delete(deps.context.historyKey);
       cleanupAfter();
     }
   });

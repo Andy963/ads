@@ -3,11 +3,9 @@ import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { RawData, WebSocket } from "ws";
 
-import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import type { HistoryStore } from "../../../utils/historyStore.js";
+import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
-import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 
 import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
@@ -15,9 +13,8 @@ import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
 
 import { deriveLegacyWebUserId, deriveWebUserId, getWorkspaceState } from "../../utils.js";
-import type { AsyncLock } from "../../../utils/asyncLock.js";
-import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { wsMessageSchema } from "./schema.js";
+import type { AttachWebSocketServerDeps } from "./deps.js";
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, formatCloseReason, summarizeWsPayloadForLog } from "./utils.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
@@ -28,57 +25,10 @@ import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.j
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
-export function attachWebSocketServer(deps: {
-  server: import("node:http").Server;
-  workspaceRoot: string;
-  allowedOrigins: Set<string>;
-  agentAvailability: AgentAvailability;
-  maxClients: number;
-  pingIntervalMs: number;
-  maxMissedPongs: number;
-  logger: { info: (msg: string) => void; warn: (msg: string) => void; debug: (msg: string) => void };
-  traceWsDuplication: boolean;
-  allowedDirs: string[];
-  workspaceCache: Map<string, string>;
-  interruptControllers: Map<string, AbortController>;
-  clientMetaByWs: Map<
-    WebSocket,
-    {
-      historyKey: string;
-      sessionId: string;
-      chatSessionId: string;
-      connectionId: string;
-      authUserId: string;
-      sessionUserId: number;
-      workspaceRoot?: string;
-    }
-  >;
-  clients: Set<WebSocket>;
-  cwdStore: Map<string, string>;
-  cwdStorePath: string;
-  persistCwdStore: (storePath: string, store: Map<string, string>) => void;
-  workerSessionManager: SessionManager;
-  plannerSessionManager: SessionManager;
-  reviewerSessionManager: SessionManager;
-  workerHistoryStore: HistoryStore;
-  plannerHistoryStore: HistoryStore;
-  reviewerHistoryStore: HistoryStore;
-  ensureTaskContext: (workspaceRoot: string) => TaskQueueContext;
-  promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
-  broadcastToSession: (sessionId: string, payload: unknown) => void;
-  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  getPlannerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  getReviewerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
-  sanitizeInput: (payload: unknown) => string;
-  syncWorkspaceTemplates: () => void;
-  scheduleCompiler?: import("../../../scheduler/compiler.js").ScheduleCompiler;
-  scheduler?: import("../../../scheduler/runtime.js").SchedulerRuntime;
-  isOriginAllowed: (originHeader: unknown, allowedOrigins: Set<string>) => boolean;
-  authenticateRequest: (req: import("node:http").IncomingMessage) => { ok: false } | { ok: true; userId: string };
-}): WebSocketServer {
+export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocketServer {
+  const { auth, agents, commands, config, history, logger, scheduler, sessions, state, tasks } = deps;
   const wss = new WebSocketServer({ server: deps.server });
-  const safeJsonSend = createSafeJsonSend(deps.logger);
+  const safeJsonSend = createSafeJsonSend(logger);
 
   const normalizeWorkspaceRootForMeta = (cwd: string): string => {
     return resolveWorkspaceRootFromDirectory(cwd);
@@ -86,7 +36,7 @@ export function attachWebSocketServer(deps: {
 
   wss.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error);
-    deps.logger.warn(`[WebSocket] server error: ${message}`);
+    logger.warn(`[WebSocket] server error: ${message}`);
   });
 
   const sendWorkspaceState = (ws: WebSocket, workspaceRoot: string): void => {
@@ -99,18 +49,18 @@ export function attachWebSocketServer(deps: {
   };
 
   const pingTimer =
-    deps.pingIntervalMs > 0
+    config.pingIntervalMs > 0
       ? setInterval(() => {
-          for (const ws of deps.clients) {
+          for (const ws of state.clients) {
             const candidate = ws as AliveWebSocket;
             if (candidate.readyState !== 1) {
               continue;
             }
             if (candidate.isAlive === false) {
               candidate.missedPongs = (candidate.missedPongs ?? 0) + 1;
-              if (deps.maxMissedPongs > 0 && candidate.missedPongs >= deps.maxMissedPongs) {
-                deps.logger.warn(
-                  `[WebSocket] terminating stale client connection missedPongs=${candidate.missedPongs} maxMissedPongs=${deps.maxMissedPongs}`,
+              if (config.maxMissedPongs > 0 && candidate.missedPongs >= config.maxMissedPongs) {
+                logger.warn(
+                  `[WebSocket] terminating stale client connection missedPongs=${candidate.missedPongs} maxMissedPongs=${config.maxMissedPongs}`,
                 );
                 try {
                   candidate.terminate();
@@ -129,7 +79,7 @@ export function attachWebSocketServer(deps: {
               // ignore
             }
           }
-        }, deps.pingIntervalMs)
+        }, config.pingIntervalMs)
       : null;
 
   pingTimer?.unref?.();
@@ -147,42 +97,42 @@ export function attachWebSocketServer(deps: {
         ? protocolHeader.split(",").map((p) => p.trim()).filter(Boolean)
         : [];
 
-    if (!deps.isOriginAllowed(req.headers["origin"], deps.allowedOrigins)) {
+    if (!auth.isOriginAllowed(req.headers["origin"], auth.allowedOrigins)) {
       ws.close(4403, "forbidden");
       return;
     }
 
-    const auth = deps.authenticateRequest(req);
-    if (!auth.ok) {
+    const authResult = auth.authenticateRequest(req);
+    if (!authResult.ok) {
       ws.close(4401, "unauthorized");
       return;
     }
 
-    const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: deps.workspaceRoot });
+    const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: config.workspaceRoot });
     const chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
     const isPlannerChat = chatSessionId === "planner";
     const isReviewerChat = chatSessionId === "reviewer";
     const sessionManager = isPlannerChat
-      ? deps.plannerSessionManager
+      ? sessions.plannerSessionManager
       : isReviewerChat
-        ? deps.reviewerSessionManager
-        : deps.workerSessionManager;
+        ? sessions.reviewerSessionManager
+        : sessions.workerSessionManager;
     const historyStore = isPlannerChat
-      ? deps.plannerHistoryStore
+      ? history.plannerHistoryStore
       : isReviewerChat
-        ? deps.reviewerHistoryStore
-        : deps.workerHistoryStore;
+        ? history.reviewerHistoryStore
+        : history.workerHistoryStore;
     const getWorkspaceLock = isPlannerChat
-      ? deps.getPlannerWorkspaceLock
+      ? sessions.getPlannerWorkspaceLock
       : isReviewerChat
-        ? deps.getReviewerWorkspaceLock
-        : deps.getWorkspaceLock;
+        ? sessions.getReviewerWorkspaceLock
+        : sessions.getWorkspaceLock;
 
-    if (Number.isFinite(deps.maxClients) && deps.maxClients > 0 && deps.clients.size >= deps.maxClients) {
-      ws.close(4409, `max clients reached (${deps.maxClients})`);
+    if (Number.isFinite(config.maxClients) && config.maxClients > 0 && state.clients.size >= config.maxClients) {
+      ws.close(4409, `max clients reached (${config.maxClients})`);
       return;
     }
-    deps.clients.add(ws);
+    state.clients.add(ws);
     const aliveWs = ws as AliveWebSocket;
     aliveWs.isAlive = true;
     aliveWs.missedPongs = 0;
@@ -191,14 +141,14 @@ export function attachWebSocketServer(deps: {
       aliveWs.missedPongs = 0;
     });
 
-    const authUserId = String(auth.userId ?? "").trim();
+    const authUserId = String(authResult.userId ?? "").trim();
     const chatKey = `${sessionId}:${chatSessionId}`;
     const legacyUserId = deriveLegacyWebUserId(authUserId, chatKey);
     const userId = deriveWebUserId(authUserId, chatKey);
     sessionManager.maybeMigrateThreadState(legacyUserId, userId);
     const historyKey = `${authUserId}::${sessionId}::${chatSessionId}`;
     const connectionId = crypto.randomBytes(3).toString("hex");
-    deps.clientMetaByWs.set(ws, {
+    state.clientMetaByWs.set(ws, {
       historyKey,
       sessionId,
       chatSessionId,
@@ -206,27 +156,27 @@ export function attachWebSocketServer(deps: {
       authUserId,
       sessionUserId: userId,
     });
-    const directoryManager = new DirectoryManager(deps.allowedDirs);
+    const directoryManager = new DirectoryManager(config.allowedDirs);
 
     ws.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
-      deps.logger.warn(
+      logger.warn(
         `[WebSocket] socket error conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId}: ${message}`,
       );
     });
 
     const cacheKey = `${authUserId}::${sessionId}`;
-    const cachedWorkspace = deps.workspaceCache.get(cacheKey);
+    const cachedWorkspace = state.workspaceCache.get(cacheKey);
     const userCwdKey = String(userId);
-    if (!deps.cwdStore.has(userCwdKey)) {
-      const legacyCwd = deps.cwdStore.get(String(legacyUserId));
+    if (!state.cwdStore.has(userCwdKey)) {
+      const legacyCwd = state.cwdStore.get(String(legacyUserId));
       if (legacyCwd && legacyCwd.trim()) {
-        deps.cwdStore.set(userCwdKey, legacyCwd);
-        deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
+        state.cwdStore.set(userCwdKey, legacyCwd);
+        state.persistCwdStore(state.cwdStorePath, state.cwdStore);
       }
     }
     const savedState = sessionManager.getSavedState(userId);
-    const storedCwd = deps.cwdStore.get(userCwdKey);
+    const storedCwd = state.cwdStore.get(userCwdKey);
     let currentCwd = directoryManager.getUserCwd(userId);
     const preferredProjectCwd = (() => {
       try {
@@ -243,20 +193,20 @@ export function attachWebSocketServer(deps: {
     if (preferredCwd) {
       const restoreResult = directoryManager.setUserCwd(userId, preferredCwd);
       if (!restoreResult.success) {
-        deps.logger.warn(`[Web][WorkspaceRestore] failed path=${preferredCwd} reason=${restoreResult.error}`);
+        logger.warn(`[Web][WorkspaceRestore] failed path=${preferredCwd} reason=${restoreResult.error}`);
       } else {
         currentCwd = directoryManager.getUserCwd(userId);
-        deps.cwdStore.set(String(userId), currentCwd);
-        deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
+        state.cwdStore.set(String(userId), currentCwd);
+        state.persistCwdStore(state.cwdStorePath, state.cwdStore);
       }
     }
-    deps.workspaceCache.set(cacheKey, currentCwd);
+    state.workspaceCache.set(cacheKey, currentCwd);
     sessionManager.setUserCwd(userId, currentCwd);
-    deps.cwdStore.set(String(userId), currentCwd);
-    deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
+    state.cwdStore.set(String(userId), currentCwd);
+    state.persistCwdStore(state.cwdStorePath, state.cwdStore);
 
     try {
-      const meta = deps.clientMetaByWs.get(ws);
+      const meta = state.clientMetaByWs.get(ws);
       if (meta) {
         meta.workspaceRoot = normalizeWorkspaceRootForMeta(currentCwd);
       }
@@ -269,13 +219,13 @@ export function attachWebSocketServer(deps: {
     const contextRestored = resumeThread && !sessionManager.needsHistoryInjection(userId);
     const pendingInjection = sessionManager.needsHistoryInjection(userId);
 
-    deps.logger.info(
-      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${deps.clients.size}${pendingInjection ? " (pending history injection)" : ""}${contextRestored ? " (thread resumed)" : ""}`,
+    logger.info(
+      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size}${pendingInjection ? " (pending history injection)" : ""}${contextRestored ? " (thread resumed)" : ""}`,
     );
-    const inFlight = deps.interruptControllers.has(historyKey);
+    const inFlight = state.interruptControllers.has(historyKey);
 
     const broadcastJson = (payload: unknown): void => {
-      for (const [candidate, meta] of deps.clientMetaByWs.entries()) {
+      for (const [candidate, meta] of state.clientMetaByWs.entries()) {
         if (meta.historyKey !== historyKey) {
           continue;
         }
@@ -284,7 +234,7 @@ export function attachWebSocketServer(deps: {
     };
 
     const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean => {
-      const controller = deps.interruptControllers.get(targetHistoryKey);
+      const controller = state.interruptControllers.get(targetHistoryKey);
       if (!controller) {
         return false;
       }
@@ -310,7 +260,7 @@ export function attachWebSocketServer(deps: {
       type: "agents",
       activeAgentId: orchestrator.getActiveAgentId(),
       agents: orchestrator.listAgents().map((entry) => {
-        const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+        const merged = agents.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
         return {
           id: entry.metadata.id,
           name: entry.metadata.name,
@@ -360,7 +310,7 @@ export function attachWebSocketServer(deps: {
     };
 
     const shouldPersistCommandMessage = (payload: unknown): { ok: boolean; command: string; shouldPersist: boolean } => {
-      const commandRaw = deps.sanitizeInput(payload);
+      const commandRaw = commands.sanitizeInput(payload);
       if (!commandRaw) {
         return { ok: false, command: "", shouldPersist: false };
       }
@@ -388,7 +338,7 @@ export function attachWebSocketServer(deps: {
       }
       const entryKind = `client_message_id:${args.clientMessageId}`;
       if (args.parsed.type === "prompt") {
-        const textResult = buildPromptHistoryText(args.parsed.payload, deps.sanitizeInput);
+        const textResult = buildPromptHistoryText(args.parsed.payload, commands.sanitizeInput);
         if (!textResult.ok) {
           return { enqueue: true };
         }
@@ -400,8 +350,8 @@ export function attachWebSocketServer(deps: {
         });
         safeJsonSend(ws, { type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
         if (!inserted) {
-          if (deps.traceWsDuplication) {
-            deps.logger.warn(
+          if (config.traceWsDuplication) {
+            logger.warn(
               `[WebSocket][Dedupe] req=${args.requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${args.clientMessageId}`,
             );
           }
@@ -423,8 +373,8 @@ export function attachWebSocketServer(deps: {
         });
         safeJsonSend(ws, { type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
         if (!inserted) {
-          if (deps.traceWsDuplication) {
-            deps.logger.warn(
+          if (config.traceWsDuplication) {
+            logger.warn(
               `[WebSocket][Dedupe] req=${args.requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${args.clientMessageId}`,
             );
           }
@@ -447,7 +397,7 @@ export function attachWebSocketServer(deps: {
           sessionLogger = sessionManager.ensureLogger(userId) ?? null;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          deps.logger.warn(`[WebSocket] Failed to initialize session logger: ${message}`);
+          logger.warn(`[WebSocket] Failed to initialize session logger: ${message}`);
           sessionLogger = null;
         }
 
@@ -472,18 +422,32 @@ export function attachWebSocketServer(deps: {
             return;
           }
           const resume = await handleTaskResumeMessage({
-            parsed,
-            ws,
-            userId,
-            historyKey,
-            currentCwd,
-            ensureTaskContext: deps.ensureTaskContext,
-            historyStore,
-            sessionManager,
-            safeJsonSend,
-            logger: deps.logger,
-            getWorkspaceLock,
-            orchestrator,
+            request: {
+              parsed,
+            },
+            transport: {
+              ws,
+              safeJsonSend,
+            },
+            observability: {
+              logger,
+            },
+            context: {
+              userId,
+              historyKey,
+              currentCwd,
+            },
+            sessions: {
+              sessionManager,
+              orchestrator,
+              getWorkspaceLock,
+            },
+            history: {
+              historyStore,
+            },
+            tasks: {
+              ensureTaskContext: tasks.ensureTaskContext,
+            },
           });
           if (resume.orchestrator) {
             orchestrator = resume.orchestrator;
@@ -492,34 +456,46 @@ export function attachWebSocketServer(deps: {
         }
 
         const promptResult = await handlePromptMessage({
-          parsed,
-          ws,
-          safeJsonSend,
-          broadcastJson,
-          logger: deps.logger,
-          sessionLogger,
-          requestId,
-          clientMessageId,
-          traceWsDuplication: deps.traceWsDuplication,
-          receivedAt: msg.receivedAt,
-          authUserId,
-          sessionId,
-          chatSessionId,
-          userId,
-          historyKey,
-          currentCwd,
-          allowedDirs: deps.allowedDirs,
-          getWorkspaceLock,
-          interruptControllers: deps.interruptControllers,
-          historyStore,
-          sessionManager,
-          orchestrator,
-          sendWorkspaceState,
-          ensureTaskContext: deps.ensureTaskContext,
-          promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
-          broadcastToSession: deps.broadcastToSession,
-          scheduleCompiler: deps.scheduleCompiler,
-          scheduler: deps.scheduler,
+          request: {
+            parsed,
+            requestId,
+            clientMessageId,
+            receivedAt: msg.receivedAt,
+          },
+          transport: {
+            ws,
+            safeJsonSend,
+            broadcastJson,
+            sendWorkspaceState,
+          },
+          observability: {
+            logger,
+            sessionLogger,
+            traceWsDuplication: config.traceWsDuplication,
+          },
+          context: {
+            authUserId,
+            sessionId,
+            chatSessionId,
+            userId,
+            historyKey,
+            currentCwd,
+          },
+          sessions: {
+            sessionManager,
+            orchestrator,
+            getWorkspaceLock,
+            interruptControllers: state.interruptControllers,
+          },
+          history: {
+            historyStore,
+          },
+          tasks: {
+            ensureTaskContext: tasks.ensureTaskContext,
+            promoteQueuedTasksToPending: tasks.promoteQueuedTasksToPending,
+            broadcastToSession: tasks.broadcastToSession,
+          },
+          scheduler,
         });
         if (promptResult.handled) {
           orchestrator = promptResult.orchestrator;
@@ -532,41 +508,54 @@ export function attachWebSocketServer(deps: {
         }
 
         const commandResult = await handleCommandMessage({
-          parsed,
-          ws,
-          safeJsonSend,
-          broadcastJson,
-          logger: deps.logger,
-          sessionLogger,
-          requestId,
-          sessionId,
-          userId,
-          historyKey,
-          clientMessageId,
-          traceWsDuplication: deps.traceWsDuplication,
-          agentAvailability: deps.agentAvailability,
-          directoryManager,
-          cacheKey,
-          workspaceCache: deps.workspaceCache,
-          cwdStore: deps.cwdStore,
-          cwdStorePath: deps.cwdStorePath,
-          persistCwdStore: deps.persistCwdStore,
-          sessionManager,
-          historyStore,
-          interruptControllers: deps.interruptControllers,
-          runAdsCommandLine: deps.runAdsCommandLine,
-          sendWorkspaceState,
-          syncWorkspaceTemplates: deps.syncWorkspaceTemplates,
-          sanitizeInput: deps.sanitizeInput,
-          currentCwd,
-          orchestrator,
-          getWorkspaceLock,
+          request: {
+            parsed,
+            clientMessageId,
+          },
+          transport: {
+            ws,
+            safeJsonSend,
+            broadcastJson,
+            sendWorkspaceState,
+          },
+          observability: {
+            logger,
+            sessionLogger,
+            traceWsDuplication: config.traceWsDuplication,
+          },
+          context: {
+            sessionId,
+            userId,
+            historyKey,
+            currentCwd,
+          },
+          agents: {
+            agentAvailability: agents.agentAvailability,
+          },
+          state: {
+            directoryManager,
+            cacheKey,
+            workspaceCache: state.workspaceCache,
+            cwdStore: state.cwdStore,
+            cwdStorePath: state.cwdStorePath,
+            persistCwdStore: state.persistCwdStore,
+          },
+          sessions: {
+            sessionManager,
+            orchestrator,
+            getWorkspaceLock,
+            interruptControllers: state.interruptControllers,
+          },
+          history: {
+            historyStore,
+          },
+          commands,
         });
         if (commandResult.handled) {
           orchestrator = commandResult.orchestrator;
           currentCwd = commandResult.currentCwd;
           try {
-            const meta = deps.clientMetaByWs.get(ws);
+            const meta = state.clientMetaByWs.get(ws);
             if (meta) {
               meta.workspaceRoot = normalizeWorkspaceRootForMeta(currentCwd);
             }
@@ -579,7 +568,7 @@ export function attachWebSocketServer(deps: {
         safeJsonSend(ws, { type: "error", message: "Unsupported message type" });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        deps.logger.warn(`[WebSocket] Message handler error: ${message}`);
+        logger.warn(`[WebSocket] Message handler error: ${message}`);
         safeJsonSend(ws, { type: "error", message: "Internal server error" });
       }
     };
@@ -622,10 +611,10 @@ export function attachWebSocketServer(deps: {
       const requestId = crypto.randomBytes(4).toString("hex");
       const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
       const clientMessageId = clientMessageIdRaw || null;
-      if (deps.traceWsDuplication) {
-        const meta = deps.clientMetaByWs.get(ws);
+      if (config.traceWsDuplication) {
+        const meta = state.clientMetaByWs.get(ws);
         const payloadPreview = summarizeWsPayloadForLog(parsed.payload);
-        deps.logger.info(
+        logger.info(
           `[WebSocket][Recv] req=${requestId} conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} type=${parsed.type} client_message_id=${clientMessageId ?? ""} payload=${payloadPreview}`,
         );
       }
@@ -638,18 +627,18 @@ export function attachWebSocketServer(deps: {
       const msg: IncomingWsMessage = { parsed, requestId, clientMessageId, receivedAt };
       messageChain = messageChain.then(() => handleOneMessage(msg)).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        deps.logger.warn(`[WebSocket] Message chain error: ${message}`);
+        logger.warn(`[WebSocket] Message chain error: ${message}`);
         safeJsonSend(ws, { type: "error", message: "Internal server error" });
       });
     });
 
     ws.on("close", (code, reason) => {
-      deps.clients.delete(ws);
-      const meta = deps.clientMetaByWs.get(ws);
-      deps.clientMetaByWs.delete(ws);
+      state.clients.delete(ws);
+      const meta = state.clientMetaByWs.get(ws);
+      state.clientMetaByWs.delete(ws);
       const reasonText = formatCloseReason(reason);
       const suffix = reasonText ? ` reason=${reasonText}` : "";
-      deps.logger.info(
+      logger.info(
         `client disconnected conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} code=${code}${suffix}`,
       );
     });

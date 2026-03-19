@@ -367,49 +367,67 @@ export async function startWebServer(): Promise<void> {
 
   attachWebSocketServer({
     server,
-    workspaceRoot,
-    allowedOrigins,
-    agentAvailability,
-    maxClients: webConfig.maxClients,
-    pingIntervalMs: webConfig.wsPingIntervalMs,
-    maxMissedPongs: webConfig.wsMaxMissedPongs,
     logger,
-    traceWsDuplication: webConfig.traceWsDuplication,
-    allowedDirs,
-    workspaceCache,
-    interruptControllers,
-    clientMetaByWs: wsHub.clientMetaByWs,
-    clients: wsHub.clients,
-    cwdStore,
-    cwdStorePath,
-    persistCwdStore,
-    workerSessionManager: sessionManager,
-    plannerSessionManager,
-    reviewerSessionManager,
-    workerHistoryStore,
-    plannerHistoryStore,
-    reviewerHistoryStore,
-    ensureTaskContext: taskQueueManager.ensureTaskContext,
-    promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
-    broadcastToSession: wsHub.broadcastToSession,
-    getWorkspaceLock,
-    getPlannerWorkspaceLock,
-    getReviewerWorkspaceLock,
-    runAdsCommandLine,
-    sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
-    syncWorkspaceTemplates,
-    scheduleCompiler,
-    scheduler,
-    isOriginAllowed: (originHeader, allowed) => {
-      const normalized =
-        typeof originHeader === "string" || Array.isArray(originHeader)
-          ? (originHeader as string | string[])
-          : undefined;
-      return isOriginAllowed(normalized, allowed);
+    config: {
+      workspaceRoot,
+      allowedDirs,
+      maxClients: webConfig.maxClients,
+      pingIntervalMs: webConfig.wsPingIntervalMs,
+      maxMissedPongs: webConfig.wsMaxMissedPongs,
+      traceWsDuplication: webConfig.traceWsDuplication,
     },
-    authenticateRequest: (req) => {
-      const auth = authenticateWebRequest(req, { sessionTtlSeconds, sessionPepper });
-      return auth.ok ? { ok: true as const, userId: auth.userId } : { ok: false as const };
+    auth: {
+      allowedOrigins,
+      isOriginAllowed: (originHeader, allowed) => {
+        const normalized =
+          typeof originHeader === "string" || Array.isArray(originHeader)
+            ? (originHeader as string | string[])
+            : undefined;
+        return isOriginAllowed(normalized, allowed);
+      },
+      authenticateRequest: (req) => {
+        const auth = authenticateWebRequest(req, { sessionTtlSeconds, sessionPepper });
+        return auth.ok ? { ok: true as const, userId: auth.userId } : { ok: false as const };
+      },
+    },
+    agents: {
+      agentAvailability,
+    },
+    state: {
+      workspaceCache,
+      interruptControllers,
+      clientMetaByWs: wsHub.clientMetaByWs,
+      clients: wsHub.clients,
+      cwdStore,
+      cwdStorePath,
+      persistCwdStore,
+    },
+    sessions: {
+      workerSessionManager: sessionManager,
+      plannerSessionManager,
+      reviewerSessionManager,
+      getWorkspaceLock,
+      getPlannerWorkspaceLock,
+      getReviewerWorkspaceLock,
+    },
+    history: {
+      workerHistoryStore,
+      plannerHistoryStore,
+      reviewerHistoryStore,
+    },
+    tasks: {
+      ensureTaskContext: taskQueueManager.ensureTaskContext,
+      promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
+      broadcastToSession: wsHub.broadcastToSession,
+    },
+    commands: {
+      runAdsCommandLine,
+      sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
+      syncWorkspaceTemplates,
+    },
+    scheduler: {
+      scheduleCompiler,
+      scheduler,
     },
   });
 

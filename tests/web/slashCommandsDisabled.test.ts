@@ -104,6 +104,138 @@ async function withTempWorkspace(prefix: string, fn: (workspaceRoot: string) => 
   }
 }
 
+function sanitizeCommandPayload(payload: unknown): string {
+  if (typeof payload === "string") return payload;
+  if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
+    return String((payload as Record<string, unknown>).command ?? "");
+  }
+  return "";
+}
+
+function createPromptDeps(args: {
+  payload: string;
+  workspaceRoot: string;
+  chatMessages: unknown[];
+  clientMessages: unknown[];
+  historyStore: MemoryHistoryStore;
+  orchestrator: FakeOrchestrator;
+}) {
+  return {
+    request: {
+      parsed: { type: "prompt" as const, payload: args.payload },
+      requestId: "req",
+      clientMessageId: null,
+      receivedAt: Date.now(),
+    },
+    transport: {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => args.clientMessages.push(payload),
+      broadcastJson: (payload: unknown) => args.chatMessages.push(payload),
+      sendWorkspaceState: () => {},
+    },
+    observability: {
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      traceWsDuplication: false,
+    },
+    context: {
+      authUserId: "test",
+      sessionId: "s",
+      chatSessionId: "main" as const,
+      userId: 1,
+      historyKey: "h",
+      currentCwd: args.workspaceRoot,
+    },
+    sessions: {
+      sessionManager: {
+        getOrCreate: () => args.orchestrator as any,
+        getSavedThreadId: () => undefined,
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: () => {},
+      } as any,
+      orchestrator: args.orchestrator as any,
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map<string, AbortController>(),
+    },
+    history: {
+      historyStore: args.historyStore as any,
+    },
+    tasks: {},
+    scheduler: {},
+  };
+}
+
+function createCommandDeps(args: {
+  parsed: { type: "command" | "set_agent"; payload: unknown };
+  workspaceRoot: string;
+  clientMessages: unknown[];
+  chatMessages: unknown[];
+  historyStore?: MemoryHistoryStore;
+  sessionManager?: Record<string, unknown>;
+  orchestrator?: unknown;
+  directoryManager?: unknown;
+  agentAvailability?: unknown;
+  runAdsCommandLine?: (command: string) => Promise<{ ok: boolean; output: string }>;
+  sendWorkspaceState?: (_ws: unknown, root: string) => void;
+  syncWorkspaceTemplates?: () => void;
+}) {
+  return {
+    request: {
+      parsed: args.parsed,
+      clientMessageId: null,
+    },
+    transport: {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => args.clientMessages.push(payload),
+      broadcastJson: (payload: unknown) => args.chatMessages.push(payload),
+      sendWorkspaceState: args.sendWorkspaceState ?? (() => {}),
+    },
+    observability: {
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: null,
+      traceWsDuplication: false,
+    },
+    context: {
+      sessionId: "s",
+      userId: 1,
+      historyKey: "h",
+      currentCwd: args.workspaceRoot,
+    },
+    agents: {
+      agentAvailability: (args.agentAvailability ?? {}) as any,
+    },
+    state: {
+      directoryManager: (args.directoryManager ?? {}) as any,
+      cacheKey: "k",
+      workspaceCache: new Map(),
+      cwdStore: new Map(),
+      cwdStorePath: "",
+      persistCwdStore: () => {},
+    },
+    sessions: {
+      sessionManager: (args.sessionManager ?? {}) as any,
+      orchestrator: (args.orchestrator ?? ({} as any)) as any,
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map<string, AbortController>(),
+    },
+    history: {
+      historyStore: (args.historyStore ?? new MemoryHistoryStore()) as any,
+    },
+    commands: {
+      runAdsCommandLine: args.runAdsCommandLine ?? (async () => ({ ok: true, output: "" })),
+      sanitizeInput: sanitizeCommandPayload,
+      syncWorkspaceTemplates: args.syncWorkspaceTemplates ?? (() => {}),
+    },
+  };
+}
+
 async function runPromptThrough(payload: string): Promise<{
   chatMessages: unknown[];
   clientMessages: unknown[];
@@ -115,42 +247,16 @@ async function runPromptThrough(payload: string): Promise<{
   const historyStore = new MemoryHistoryStore();
 
   await withTempWorkspace("ads-web-prompt-", async (workspaceRoot) => {
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      authUserId: "test",
-      sessionId: "s",
-      chatSessionId: "main",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
+    await handlePromptMessage(
+      createPromptDeps({
+        payload,
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
   });
 
   return { chatMessages, clientMessages, orchestrator };
@@ -218,46 +324,19 @@ describe("web slash commands", () => {
       const historyStore = new MemoryHistoryStore();
       let called = false;
 
-      const result = await handleCommandMessage({
-        parsed: { type: "command", payload: "/search hello world" },
-        ws: {} as any,
-        safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-        broadcastJson: (payload) => chatMessages.push(payload),
-        logger: { info: () => {}, warn: () => {}, debug: () => {} },
-        sessionLogger: null,
-        requestId: "req",
-        sessionId: "s",
-        userId: 1,
-        historyKey: "h",
-        clientMessageId: null,
-        traceWsDuplication: false,
-        directoryManager: {} as any,
-        cacheKey: "k",
-        workspaceCache: new Map(),
-        cwdStore: new Map(),
-        cwdStorePath: "",
-        persistCwdStore: () => {},
-        sessionManager: {} as any,
-        agentAvailability: {} as any,
-        historyStore: historyStore as any,
-        interruptControllers: new Map(),
-        runAdsCommandLine: async () => {
-          called = true;
-          return { ok: true, output: "unexpected" };
-        },
-        sendWorkspaceState: () => {},
-        syncWorkspaceTemplates: () => {},
-        sanitizeInput: (payload) => {
-          if (typeof payload === "string") return payload;
-          if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
-            return String((payload as Record<string, unknown>).command ?? "");
-          }
-          return "";
-        },
-        currentCwd: workspaceRoot,
-        orchestrator: {} as any,
-        getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      });
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/search hello world" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
 
       assert.equal(result.handled, true);
       assert.equal(called, false);
@@ -273,46 +352,19 @@ describe("web slash commands", () => {
       const historyStore = new MemoryHistoryStore();
       let called = false;
 
-      const result = await handleCommandMessage({
-        parsed: { type: "command", payload: "/bootstrap some repo goal" },
-        ws: {} as any,
-        safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-        broadcastJson: (payload) => chatMessages.push(payload),
-        logger: { info: () => {}, warn: () => {}, debug: () => {} },
-        sessionLogger: null,
-        requestId: "req",
-        sessionId: "s",
-        userId: 1,
-        historyKey: "h",
-        clientMessageId: null,
-        traceWsDuplication: false,
-        directoryManager: {} as any,
-        cacheKey: "k",
-        workspaceCache: new Map(),
-        cwdStore: new Map(),
-        cwdStorePath: "",
-        persistCwdStore: () => {},
-        sessionManager: {} as any,
-        agentAvailability: {} as any,
-        historyStore: historyStore as any,
-        interruptControllers: new Map(),
-        runAdsCommandLine: async () => {
-          called = true;
-          return { ok: true, output: "unexpected" };
-        },
-        sendWorkspaceState: () => {},
-        syncWorkspaceTemplates: () => {},
-        sanitizeInput: (payload) => {
-          if (typeof payload === "string") return payload;
-          if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
-            return String((payload as Record<string, unknown>).command ?? "");
-          }
-          return "";
-        },
-        currentCwd: workspaceRoot,
-        orchestrator: {} as any,
-        getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      });
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/bootstrap some repo goal" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
 
       assert.equal(result.handled, true);
       assert.equal(called, false);
@@ -328,46 +380,19 @@ describe("web slash commands", () => {
       const historyStore = new MemoryHistoryStore();
       let called = false;
 
-      const result = await handleCommandMessage({
-        parsed: { type: "command", payload: "/vsearch hello world" },
-        ws: {} as any,
-        safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-        broadcastJson: (payload) => chatMessages.push(payload),
-        logger: { info: () => {}, warn: () => {}, debug: () => {} },
-        sessionLogger: null,
-        requestId: "req",
-        sessionId: "s",
-        userId: 1,
-        historyKey: "h",
-        clientMessageId: null,
-        traceWsDuplication: false,
-        directoryManager: {} as any,
-        cacheKey: "k",
-        workspaceCache: new Map(),
-        cwdStore: new Map(),
-        cwdStorePath: "",
-        persistCwdStore: () => {},
-        sessionManager: {} as any,
-        agentAvailability: {} as any,
-        historyStore: historyStore as any,
-        interruptControllers: new Map(),
-        runAdsCommandLine: async () => {
-          called = true;
-          return { ok: true, output: "unexpected" };
-        },
-        sendWorkspaceState: () => {},
-        syncWorkspaceTemplates: () => {},
-        sanitizeInput: (payload) => {
-          if (typeof payload === "string") return payload;
-          if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
-            return String((payload as Record<string, unknown>).command ?? "");
-          }
-          return "";
-        },
-        currentCwd: workspaceRoot,
-        orchestrator: {} as any,
-        getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      });
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/vsearch hello world" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
 
       assert.equal(result.handled, true);
       assert.equal(called, false);
@@ -383,46 +408,19 @@ describe("web slash commands", () => {
       const historyStore = new MemoryHistoryStore();
       let called = false;
 
-      const result = await handleCommandMessage({
-        parsed: { type: "command", payload: "/review looks good" },
-        ws: {} as any,
-        safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-        broadcastJson: (payload) => chatMessages.push(payload),
-        logger: { info: () => {}, warn: () => {}, debug: () => {} },
-        sessionLogger: null,
-        requestId: "req",
-        sessionId: "s",
-        userId: 1,
-        historyKey: "h",
-        clientMessageId: null,
-        traceWsDuplication: false,
-        directoryManager: {} as any,
-        cacheKey: "k",
-        workspaceCache: new Map(),
-        cwdStore: new Map(),
-        cwdStorePath: "",
-        persistCwdStore: () => {},
-        sessionManager: {} as any,
-        agentAvailability: {} as any,
-        historyStore: historyStore as any,
-        interruptControllers: new Map(),
-        runAdsCommandLine: async () => {
-          called = true;
-          return { ok: true, output: "unexpected" };
-        },
-        sendWorkspaceState: () => {},
-        syncWorkspaceTemplates: () => {},
-        sanitizeInput: (payload) => {
-          if (typeof payload === "string") return payload;
-          if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
-            return String((payload as Record<string, unknown>).command ?? "");
-          }
-          return "";
-        },
-        currentCwd: workspaceRoot,
-        orchestrator: {} as any,
-        getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      });
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/review looks good" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
 
       assert.equal(result.handled, true);
       assert.equal(called, false);
@@ -438,46 +436,19 @@ describe("web slash commands", () => {
       const historyStore = new MemoryHistoryStore();
       let called = false;
 
-      const result = await handleCommandMessage({
-        parsed: { type: "command", payload: "/ads.status" },
-        ws: {} as any,
-        safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-        broadcastJson: (payload) => chatMessages.push(payload),
-        logger: { info: () => {}, warn: () => {}, debug: () => {} },
-        sessionLogger: null,
-        requestId: "req",
-        sessionId: "s",
-        userId: 1,
-        historyKey: "h",
-        clientMessageId: null,
-        traceWsDuplication: false,
-        directoryManager: {} as any,
-        cacheKey: "k",
-        workspaceCache: new Map(),
-        cwdStore: new Map(),
-        cwdStorePath: "",
-        persistCwdStore: () => {},
-        sessionManager: {} as any,
-        agentAvailability: {} as any,
-        historyStore: historyStore as any,
-        interruptControllers: new Map(),
-        runAdsCommandLine: async () => {
-          called = true;
-          return { ok: true, output: "unexpected" };
-        },
-        sendWorkspaceState: () => {},
-        syncWorkspaceTemplates: () => {},
-        sanitizeInput: (payload) => {
-          if (typeof payload === "string") return payload;
-          if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
-            return String((payload as Record<string, unknown>).command ?? "");
-          }
-          return "";
-        },
-        currentCwd: workspaceRoot,
-        orchestrator: {} as any,
-        getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      });
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/ads.status" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
 
       assert.equal(result.handled, true);
       assert.equal(called, false);
@@ -498,61 +469,38 @@ describe("web slash commands", () => {
       let sessionManagerCwd: string | null = null;
       let called = false;
 
-      const result = await handleCommandMessage({
-        parsed: { type: "command", payload: { command: "/cd next", silent: true } as any },
-        ws: {} as any,
-        safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-        broadcastJson: (payload) => chatMessages.push(payload),
-        logger: { info: () => {}, warn: () => {}, debug: () => {} },
-        sessionLogger: null,
-        requestId: "req",
-        sessionId: "s",
-        userId: 1,
-        historyKey: "h",
-        clientMessageId: null,
-        traceWsDuplication: false,
-        directoryManager: {
-          setUserCwd: (_userId: number, _targetPath: string) => {
-            setUserCwdCalled += 1;
-            cwd = nextCwd;
-            return { success: true };
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: { command: "/cd next", silent: true } as any },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore: new MemoryHistoryStore(),
+          directoryManager: {
+            setUserCwd: (_userId: number, _targetPath: string) => {
+              setUserCwdCalled += 1;
+              cwd = nextCwd;
+              return { success: true };
+            },
+            getUserCwd: () => cwd,
+          } as any,
+          sessionManager: {
+            setUserCwd: (_userId: number, value: string) => {
+              sessionManagerCwd = value;
+            },
+            getOrCreate: () => new FakeOrchestrator() as any,
+            getSavedThreadId: () => undefined,
+          } as any,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
           },
-          getUserCwd: () => cwd,
-        } as any,
-        cacheKey: "k",
-        workspaceCache: new Map(),
-        cwdStore: new Map(),
-        cwdStorePath: "",
-        persistCwdStore: () => {},
-        sessionManager: {
-          setUserCwd: (_userId: number, value: string) => {
-            sessionManagerCwd = value;
+          sendWorkspaceState: (_ws: unknown, root: string) => clientMessages.push({ type: "workspace", root }),
+          syncWorkspaceTemplates: () => {
+            syncCalled += 1;
           },
-          getOrCreate: () => new FakeOrchestrator() as any,
-          getSavedThreadId: () => undefined,
-        } as any,
-        agentAvailability: {} as any,
-        historyStore: new MemoryHistoryStore() as any,
-        interruptControllers: new Map(),
-        runAdsCommandLine: async () => {
-          called = true;
-          return { ok: true, output: "unexpected" };
-        },
-        sendWorkspaceState: (_ws: any, root: string) => clientMessages.push({ type: "workspace", root }),
-        syncWorkspaceTemplates: () => {
-          syncCalled += 1;
-        },
-        sanitizeInput: (payload) => {
-          if (typeof payload === "string") return payload;
-          if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
-            return String((payload as Record<string, unknown>).command ?? "");
-          }
-          return "";
-        },
-        currentCwd: workspaceRoot,
-        orchestrator: {} as any,
-        getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      });
+        }),
+      );
 
       assert.equal(result.handled, true);
       assert.equal(called, false);
@@ -573,53 +521,29 @@ describe("web slash commands", () => {
       let switched: { userId: number; agentId: string } | null = null;
       const orchestrator = new FakeOrchestrator();
 
-      const result = await handleCommandMessage({
-        parsed: { type: "set_agent", payload: { agentId: "codex" } as any },
-        ws: {} as any,
-        safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-        broadcastJson: (payload) => chatMessages.push(payload),
-        logger: { info: () => {}, warn: () => {}, debug: () => {} },
-        sessionLogger: null,
-        requestId: "req",
-        sessionId: "s",
-        userId: 1,
-        historyKey: "h",
-        clientMessageId: null,
-        traceWsDuplication: false,
-        directoryManager: {} as any,
-        cacheKey: "k",
-        workspaceCache: new Map(),
-        cwdStore: new Map(),
-        cwdStorePath: "",
-        persistCwdStore: () => {},
-        sessionManager: {
-          switchAgent: (userId: number, agentId: string) => {
-            switched = { userId, agentId };
-            return { success: true, message: "ok" };
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "set_agent", payload: { agentId: "codex" } as any },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore: new MemoryHistoryStore(),
+          sessionManager: {
+            switchAgent: (userId: number, agentId: string) => {
+              switched = { userId, agentId };
+              return { success: true, message: "ok" };
+            },
+            getOrCreate: () => orchestrator as any,
+            getSavedThreadId: () => undefined,
+          } as any,
+          orchestrator: {} as any,
+          agentAvailability: { mergeStatus: (_agentId: string, status: any) => status } as any,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
           },
-          getOrCreate: () => orchestrator as any,
-          getSavedThreadId: () => undefined,
-        } as any,
-        agentAvailability: { mergeStatus: (_agentId: string, status: any) => status } as any,
-        historyStore: new MemoryHistoryStore() as any,
-        interruptControllers: new Map(),
-        runAdsCommandLine: async () => {
-          called = true;
-          return { ok: true, output: "unexpected" };
-        },
-        sendWorkspaceState: () => {},
-        syncWorkspaceTemplates: () => {},
-        sanitizeInput: (payload) => {
-          if (typeof payload === "string") return payload;
-          if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
-            return String((payload as Record<string, unknown>).command ?? "");
-          }
-          return "";
-        },
-        currentCwd: workspaceRoot,
-        orchestrator: {} as any,
-        getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      });
+        }),
+      );
 
       assert.equal(result.handled, true);
       assert.equal(called, false);

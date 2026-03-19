@@ -1,12 +1,11 @@
 import { runCli } from "../../../agents/cli/cliRunner.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import type { HistoryStore } from "../../../utils/historyStore.js";
-import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import { truncateForLog } from "../../utils.js";
-import type { WsMessage } from "./schema.js";
-import type { TaskQueueContext } from "../taskQueue/manager.js";
+import type {
+  WsTaskResumeHandlerDeps,
+} from "./deps.js";
 import { parseTaskResumeRequest, selectTaskResumeThread } from "./taskResume.js";
 
 function normalizeSpawnEnv(
@@ -98,40 +97,29 @@ async function assertCodexThreadResumable(args: {
   }
 }
 
-export async function handleTaskResumeMessage(deps: {
-  parsed: WsMessage;
-  ws: import("ws").WebSocket;
-  userId: number;
-  historyKey: string;
-  currentCwd: string;
-  ensureTaskContext: (workspaceRoot: string) => TaskQueueContext;
-  historyStore: HistoryStore;
-  sessionManager: SessionManager;
-  safeJsonSend: (ws: import("ws").WebSocket, payload: unknown) => void;
-  logger: { warn: (msg: string) => void };
-  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  orchestrator: ReturnType<SessionManager["getOrCreate"]>;
-}): Promise<{ handled: boolean; orchestrator?: ReturnType<SessionManager["getOrCreate"]> }> {
-  if (deps.parsed.type !== "task_resume") {
+export async function handleTaskResumeMessage(
+  deps: WsTaskResumeHandlerDeps,
+): Promise<{ handled: boolean; orchestrator?: ReturnType<SessionManager["getOrCreate"]> }> {
+  if (deps.request.parsed.type !== "task_resume") {
     return { handled: false };
   }
 
-  let orchestrator = deps.orchestrator;
-  const resumeWorkspaceRoot = detectWorkspaceFrom(deps.currentCwd);
-  const lock = deps.getWorkspaceLock(resumeWorkspaceRoot);
+  let orchestrator = deps.sessions.orchestrator;
+  const resumeWorkspaceRoot = detectWorkspaceFrom(deps.context.currentCwd);
+  const lock = deps.sessions.getWorkspaceLock(resumeWorkspaceRoot);
 
   await lock.runExclusive(async () => {
-    const taskCtx = deps.ensureTaskContext(resumeWorkspaceRoot);
+    const taskCtx = deps.tasks.ensureTaskContext(resumeWorkspaceRoot);
 
     if (taskCtx.queueRunning || taskCtx.taskStore.getActiveTaskId()) {
-      deps.safeJsonSend(deps.ws, { type: "error", message: "任务执行中，无法恢复上下文" });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: "任务执行中，无法恢复上下文" });
       return;
     }
 
     const sendHistorySnapshot = () => {
-      const cachedHistory = deps.historyStore.get(deps.historyKey);
+      const cachedHistory = deps.history.historyStore.get(deps.context.historyKey);
       if (cachedHistory.length === 0) {
-        deps.safeJsonSend(deps.ws, { type: "history", items: [] });
+        deps.transport.safeJsonSend(deps.transport.ws, { type: "history", items: [] });
         return;
       }
       const sanitizedHistory = cachedHistory.map((entry) => {
@@ -158,16 +146,16 @@ export async function handleTaskResumeMessage(deps: {
         lastCdIndex >= 0
           ? sanitizedHistory.filter((entry, idx) => !isCdCommand(entry) || idx === lastCdIndex)
           : sanitizedHistory;
-      deps.safeJsonSend(deps.ws, { type: "history", items: filteredHistory });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "history", items: filteredHistory });
     };
 
     const activeAgentId = orchestrator.getActiveAgentId();
-    const request = parseTaskResumeRequest(deps.parsed.payload);
+    const request = parseTaskResumeRequest(deps.request.parsed.payload);
     const selection = selectTaskResumeThread({
       request,
       currentThreadId: orchestrator.getThreadId(),
-      savedThreadId: deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId),
-      savedResumeThreadId: deps.sessionManager.getSavedResumeThreadId(deps.userId),
+      savedThreadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId),
+      savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
     });
     const threadIdToResume = selection.threadId;
 
@@ -179,30 +167,30 @@ export async function handleTaskResumeMessage(deps: {
 
         await assertCodexThreadResumable({
           threadId: threadIdToResume,
-          cwd: deps.currentCwd,
-          sandboxMode: deps.sessionManager.getSandboxMode(),
-          env: deps.sessionManager.getCodexEnv(),
+          cwd: deps.context.currentCwd,
+          sandboxMode: deps.sessions.sessionManager.getSandboxMode(),
+          env: deps.sessions.sessionManager.getCodexEnv(),
         });
 
-        deps.historyStore.clear(deps.historyKey);
-        deps.historyStore.add(deps.historyKey, {
+        deps.history.historyStore.clear(deps.context.historyKey);
+        deps.history.historyStore.add(deps.context.historyKey, {
           role: "status",
           text: "已通过 thread ID 恢复上下文",
           ts: Date.now(),
         });
 
-        deps.sessionManager.saveThreadId(deps.userId, threadIdToResume, activeAgentId);
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadIdToResume, activeAgentId);
         if (selection.source === "saved") {
-          deps.sessionManager.clearSavedResumeThreadId(deps.userId);
+          deps.sessions.sessionManager.clearSavedResumeThreadId(deps.context.userId);
         }
-        deps.sessionManager.dropSession(deps.userId);
+        deps.sessions.sessionManager.dropSession(deps.context.userId);
 
-        orchestrator = deps.sessionManager.getOrCreate(deps.userId, deps.currentCwd, true);
-        orchestrator.setWorkingDirectory(deps.currentCwd);
+        orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, true);
+        orchestrator.setWorkingDirectory(deps.context.currentCwd);
 
         const status = orchestrator.status();
         if (!status.ready) {
-          deps.safeJsonSend(deps.ws, { type: "error", message: status.error ?? "代理未启用" });
+          deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: status.error ?? "代理未启用" });
           return;
         }
 
@@ -210,7 +198,7 @@ export async function handleTaskResumeMessage(deps: {
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        deps.logger.warn(
+        deps.observability.logger.warn(
           `[Web][task_resume] resumeThread failed thread=${threadIdToResume} err=${truncateForLog(message)}`,
         );
       }
@@ -231,7 +219,7 @@ export async function handleTaskResumeMessage(deps: {
         })[0] ?? null;
 
     if (!mostRecentTask) {
-      deps.safeJsonSend(deps.ws, { type: "error", message: "未找到可用于恢复的任务历史" });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: "未找到可用于恢复的任务历史" });
       return;
     }
 
@@ -248,20 +236,20 @@ export async function handleTaskResumeMessage(deps: {
     const maxChars = 10_000;
     const transcript = rawTranscript.length <= maxChars ? rawTranscript : rawTranscript.slice(rawTranscript.length - maxChars);
 
-    deps.historyStore.clear(deps.historyKey);
-    deps.historyStore.add(deps.historyKey, {
+    deps.history.historyStore.clear(deps.context.historyKey);
+    deps.history.historyStore.add(deps.context.historyKey, {
       role: "status",
       text: `已从最近任务恢复上下文：${String(mostRecentTask.title ?? mostRecentTask.id ?? "").trim()}`,
       ts: Date.now(),
     });
 
-    deps.sessionManager.dropSession(deps.userId, { clearSavedThread: true });
-    orchestrator = deps.sessionManager.getOrCreate(deps.userId, deps.currentCwd, false);
-    orchestrator.setWorkingDirectory(deps.currentCwd);
+    deps.sessions.sessionManager.dropSession(deps.context.userId, { clearSavedThread: true });
+    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, false);
+    orchestrator.setWorkingDirectory(deps.context.currentCwd);
 
     const status = orchestrator.status();
     if (!status.ready) {
-      deps.safeJsonSend(deps.ws, { type: "error", message: status.error ?? "代理未启用" });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: status.error ?? "代理未启用" });
       return;
     }
     try {
@@ -276,11 +264,11 @@ export async function handleTaskResumeMessage(deps: {
       await orchestrator.send(prompt, { streaming: false });
       const threadId = orchestrator.getThreadId();
       if (threadId) {
-        deps.sessionManager.saveThreadId(deps.userId, threadId, orchestrator.getActiveAgentId());
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      deps.safeJsonSend(deps.ws, { type: "error", message: `恢复失败: ${message}` });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: `恢复失败: ${message}` });
       return;
     }
 

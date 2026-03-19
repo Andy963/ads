@@ -99,6 +99,68 @@ function createMetrics() {
   };
 }
 
+function createPlannerPromptDeps(args: {
+  payload: unknown;
+  requestId: string;
+  workspaceRoot: string;
+  chatMessages: unknown[];
+  clientMessages: unknown[];
+  historyStore: MemoryHistoryStore;
+  orchestrator: FakeOrchestrator;
+  tasks?: Record<string, unknown>;
+}) {
+  return {
+    request: {
+      parsed: { type: "prompt" as const, payload: args.payload },
+      requestId: args.requestId,
+      clientMessageId: null,
+      receivedAt: Date.now(),
+    },
+    transport: {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => args.clientMessages.push(payload),
+      broadcastJson: (payload: unknown) => args.chatMessages.push(payload),
+      sendWorkspaceState: () => {},
+    },
+    observability: {
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      traceWsDuplication: false,
+    },
+    context: {
+      authUserId: "test-user",
+      sessionId: "s",
+      chatSessionId: "planner" as const,
+      userId: 1,
+      historyKey: "h",
+      currentCwd: args.workspaceRoot,
+    },
+    sessions: {
+      sessionManager: {
+        getOrCreate: () => args.orchestrator as any,
+        getSavedThreadId: () => undefined,
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: () => {},
+      } as any,
+      orchestrator: args.orchestrator as any,
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map<string, AbortController>(),
+    },
+    history: {
+      historyStore: args.historyStore as any,
+    },
+    tasks: (args.tasks ?? {}) as any,
+    scheduler: {},
+  };
+}
+
 describe("web/ws/planner-draft-spec-guard", () => {
   let tmpDir: string;
   let workspaceRoot: string;
@@ -161,43 +223,17 @@ describe("web/ws/planner-draft-spec-guard", () => {
       ].join("\n"),
     ]);
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-1",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "add as a task",
+        requestId: "req-1",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
 
     assert.equal(orchestrator.invokeCount, 2);
 
@@ -254,43 +290,17 @@ describe("web/ws/planner-draft-spec-guard", () => {
       ].join("\n"),
     ]);
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-2",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "add as a task",
+        requestId: "req-2",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
 
     assert.equal(orchestrator.invokeCount, 2);
 
@@ -328,43 +338,17 @@ describe("web/ws/planner-draft-spec-guard", () => {
       ].join("\n"),
     ]);
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-3",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "add as a task",
+        requestId: "req-3",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
 
     assert.equal(orchestrator.invokeCount, 2);
 
@@ -404,43 +388,17 @@ describe("web/ws/planner-draft-spec-guard", () => {
       ].join("\n"),
     );
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-4",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "add as a task",
+        requestId: "req-4",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
 
     assert.equal(orchestrator.invokeCount, 1);
 
@@ -495,43 +453,17 @@ describe("web/ws/planner-draft-spec-guard", () => {
       ].join("\n"),
     ]);
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "ads:autoapprove add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-5",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "ads:autoapprove add as a task",
+        requestId: "req-5",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
 
     assert.equal(orchestrator.invokeCount, 2);
 
@@ -571,46 +503,20 @@ describe("web/ws/planner-draft-spec-guard", () => {
     let resumeCalled = 0;
     let promoteCalled = 0;
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "ads:autoapprove add as a task" },
-      ws: {} as any,
-      safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-      broadcastJson: (payload) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      requestId: "req-auto-approve-1",
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-      ensureTaskContext: () => {
-        const lock = {
-          isBusy: () => false,
-          runExclusive: async (fn: () => Promise<void>) => await fn(),
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "ads:autoapprove add as a task",
+        requestId: "req-auto-approve-1",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+        tasks: {
+          ensureTaskContext: () => {
+            const lock = {
+              isBusy: () => false,
+              runExclusive: async (fn: () => Promise<void>) => await fn(),
         };
         return {
           workspaceRoot,
@@ -680,15 +586,17 @@ describe("web/ws/planner-draft-spec-guard", () => {
           getTaskQueueOrchestrator() {
             return {} as any;
           },
-        } as any;
-      },
-      promoteQueuedTasksToPending: () => {
-        promoteCalled += 1;
-      },
-      broadcastToSession: (sessionId, payload) => {
-        sessionPayloads.push({ sessionId, payload });
-      },
-    });
+            } as any;
+          },
+          promoteQueuedTasksToPending: () => {
+            promoteCalled += 1;
+          },
+          broadcastToSession: (sessionId: string, payload: unknown) => {
+            sessionPayloads.push({ sessionId, payload });
+          },
+        },
+      }),
+    );
 
     const autoApproved = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "task_bundle_auto_approved");
     assert.ok(autoApproved);
@@ -785,47 +693,18 @@ describe("web/ws/planner-draft-spec-guard", () => {
       ].join("\n"),
     ]);
 
-    const makeDeps = () => ({
-      ws: {} as any,
-      safeJsonSend: (_ws: any, payload: unknown) => clientMessages.push(payload),
-      broadcastJson: (payload: unknown) => chatMessages.push(payload),
-      logger: { info: () => {}, warn: () => {}, debug: () => {} },
-      sessionLogger: {
-        logInput: () => {},
-        logOutput: () => {},
-        logError: () => {},
-        logEvent: () => {},
-        attachThreadId: () => {},
-      },
-      clientMessageId: null,
-      traceWsDuplication: false,
-      receivedAt: Date.now(),
-      authUserId: "test-user",
-      sessionId: "s",
-      chatSessionId: "planner",
-      userId: 1,
-      historyKey: "h",
-      currentCwd: workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
-      interruptControllers: new Map(),
-      historyStore: historyStore as any,
-      sessionManager: {
-        getOrCreate: () => orchestrator as any,
-        getSavedThreadId: () => undefined,
-        needsHistoryInjection: () => false,
-        clearHistoryInjection: () => {},
-        saveThreadId: () => {},
-      } as any,
-      orchestrator: orchestrator as any,
-      sendWorkspaceState: () => {},
-    });
+    const makeDeps = () =>
+      createPlannerPromptDeps({
+        payload: "add as a task",
+        requestId: "req-6",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      });
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      requestId: "req-6",
-      ...makeDeps(),
-    });
+    await handlePromptMessage(makeDeps());
 
     const afterFirst = listTaskBundleDrafts({
       authUserId: "test-user",
@@ -835,11 +714,7 @@ describe("web/ws/planner-draft-spec-guard", () => {
     assert.equal(afterFirst.length, 1);
     const firstDraftId = afterFirst[0]!.id;
 
-    await handlePromptMessage({
-      parsed: { type: "prompt", payload: "add as a task" },
-      requestId: "req-6",
-      ...makeDeps(),
-    });
+    await handlePromptMessage(makeDeps());
 
     assert.equal(orchestrator.invokeCount, 4);
 

@@ -1,58 +1,24 @@
-import type { WebSocket } from "ws";
-
 import { parseSlashCommand } from "../../../codexConfig.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { withWorkspaceContext } from "../../../workspace/asyncWorkspaceContext.js";
-import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import type { HistoryStore } from "../../../utils/historyStore.js";
-import type { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
-import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
-import type { WsMessage } from "./schema.js";
+import type {
+  WsCommandHandlerDeps,
+} from "./deps.js";
 
-export async function handleCommandMessage(deps: {
-  parsed: WsMessage;
-  ws: WebSocket;
-  safeJsonSend: (ws: WebSocket, payload: unknown) => void;
-  broadcastJson: (payload: unknown) => void;
-  logger: { info: (msg: string) => void; warn: (msg: string) => void; debug: (msg: string) => void };
-  sessionLogger: { logInput: (text: string) => void; logOutput: (text: string) => void; logError: (text: string) => void } | null;
-  requestId: string;
-  sessionId: string;
-  userId: number;
-  historyKey: string;
-  clientMessageId: string | null;
-  traceWsDuplication: boolean;
-  directoryManager: DirectoryManager;
-  cacheKey: string;
-  workspaceCache: Map<string, string>;
-  cwdStore: Map<string, string>;
-  cwdStorePath: string;
-  persistCwdStore: (storePath: string, store: Map<string, string>) => void;
-  sessionManager: SessionManager;
-  agentAvailability: AgentAvailability;
-  historyStore: HistoryStore;
-  interruptControllers: Map<string, AbortController>;
-  runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
-  sendWorkspaceState: (ws: WebSocket, workspaceRoot: string) => void;
-  syncWorkspaceTemplates: () => void;
-  sanitizeInput: (payload: unknown) => string;
-  currentCwd: string;
-  orchestrator: ReturnType<SessionManager["getOrCreate"]>;
-  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-}): Promise<{
+export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   currentCwd: string;
 }> {
-  const sendToClient = (payload: unknown): void => deps.safeJsonSend(deps.ws, payload);
-  const sendToChat = (payload: unknown): void => deps.broadcastJson(payload);
+  const sendToClient = (payload: unknown): void => deps.transport.safeJsonSend(deps.transport.ws, payload);
+  const sendToChat = (payload: unknown): void => deps.transport.broadcastJson(payload);
 
-  let orchestrator = deps.orchestrator;
-  let currentCwd = deps.currentCwd;
+  let orchestrator = deps.sessions.orchestrator;
+  let currentCwd = deps.context.currentCwd;
 
-  if (deps.parsed.type === "set_agent") {
-    const payload = deps.parsed.payload;
+  if (deps.request.parsed.type === "set_agent") {
+    const payload = deps.request.parsed.payload;
     const agentId =
       payload && typeof payload === "object" && !Array.isArray(payload)
         ? String((payload as Record<string, unknown>).agentId ?? "").trim()
@@ -63,19 +29,19 @@ export async function handleCommandMessage(deps: {
       return { handled: true, orchestrator, currentCwd };
     }
 
-    const switchResult = deps.sessionManager.switchAgent(deps.userId, agentId);
+    const switchResult = deps.sessions.sessionManager.switchAgent(deps.context.userId, agentId);
     if (!switchResult.success) {
       sendToClient({ type: "error", message: switchResult.message });
       return { handled: true, orchestrator, currentCwd };
     }
 
-    orchestrator = deps.sessionManager.getOrCreate(deps.userId, currentCwd);
+    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, currentCwd);
     const activeAgentId = orchestrator.getActiveAgentId();
     sendToClient({
       type: "agents",
       activeAgentId,
       agents: orchestrator.listAgents().map((entry) => {
-        const merged = deps.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+        const merged = deps.agents.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
         return {
           id: entry.metadata.id,
           name: entry.metadata.name,
@@ -83,12 +49,12 @@ export async function handleCommandMessage(deps: {
           error: merged.error,
         };
       }),
-      threadId: deps.sessionManager.getSavedThreadId(deps.userId, activeAgentId) ?? orchestrator.getThreadId(),
+      threadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId) ?? orchestrator.getThreadId(),
     });
     return { handled: true, orchestrator, currentCwd };
   }
 
-  if (deps.parsed.type !== "command") {
+  if (deps.request.parsed.type !== "command") {
     return {
       handled: false,
       orchestrator,
@@ -96,19 +62,19 @@ export async function handleCommandMessage(deps: {
     };
   }
 
-  const lock = deps.getWorkspaceLock(detectWorkspaceFrom(currentCwd));
+  const lock = deps.sessions.getWorkspaceLock(detectWorkspaceFrom(currentCwd));
   await lock.runExclusive(async () => {
-    const commandRaw = deps.sanitizeInput(deps.parsed.payload);
+    const commandRaw = deps.commands.sanitizeInput(deps.request.parsed.payload);
     if (!commandRaw) {
       sendToClient({ type: "error", message: "Payload must be a command string" });
       return;
     }
     const command = commandRaw.trim();
     const isSilentCommandPayload =
-      deps.parsed.payload !== null &&
-      typeof deps.parsed.payload === "object" &&
-      !Array.isArray(deps.parsed.payload) &&
-      (deps.parsed.payload as Record<string, unknown>).silent === true;
+      deps.request.parsed.payload !== null &&
+      typeof deps.request.parsed.payload === "object" &&
+      !Array.isArray(deps.request.parsed.payload) &&
+      (deps.request.parsed.payload as Record<string, unknown>).silent === true;
 
     const slash = parseSlashCommand(command);
     const normalizedSlash = slash?.command?.toLowerCase();
@@ -116,9 +82,9 @@ export async function handleCommandMessage(deps: {
     const shouldBroadcast = !isSilentCommandPayload && !isCdCommand;
     const sendToCommandScope = (payload: unknown): void => (shouldBroadcast ? sendToChat(payload) : sendToClient(payload));
     if (!isSilentCommandPayload && !isCdCommand) {
-      deps.sessionLogger?.logInput(command);
-      if (!deps.clientMessageId) {
-        deps.historyStore.add(deps.historyKey, {
+      deps.observability.sessionLogger?.logInput(command);
+      if (!deps.request.clientMessageId) {
+        deps.history.historyStore.add(deps.context.historyKey, {
           role: "user",
           text: command,
           ts: Date.now(),
@@ -129,8 +95,8 @@ export async function handleCommandMessage(deps: {
     if (slash?.command === "pwd") {
       const output = `当前工作目录: ${currentCwd}`;
       sendToCommandScope({ type: "result", ok: true, output });
-      deps.sessionLogger?.logOutput(output);
-      deps.historyStore.add(deps.historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
+      deps.observability.sessionLogger?.logOutput(output);
+      deps.history.historyStore.add(deps.context.historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
       return;
     }
 
@@ -141,24 +107,24 @@ export async function handleCommandMessage(deps: {
       }
       const targetPath = slash.body;
       const prevCwd = currentCwd;
-      const result = deps.directoryManager.setUserCwd(deps.userId, targetPath);
+      const result = deps.state.directoryManager.setUserCwd(deps.context.userId, targetPath);
       if (!result.success) {
         const output = `错误: ${result.error}`;
         sendToCommandScope({ type: "result", ok: false, output });
-        deps.sessionLogger?.logError(output);
+        deps.observability.sessionLogger?.logError(output);
         return;
       }
-      currentCwd = deps.directoryManager.getUserCwd(deps.userId);
-      deps.workspaceCache.set(deps.cacheKey, currentCwd);
-      deps.cwdStore.set(String(deps.userId), currentCwd);
-      deps.persistCwdStore(deps.cwdStorePath, deps.cwdStore);
-      deps.sessionManager.setUserCwd(deps.userId, currentCwd);
+      currentCwd = deps.state.directoryManager.getUserCwd(deps.context.userId);
+      deps.state.workspaceCache.set(deps.state.cacheKey, currentCwd);
+      deps.state.cwdStore.set(String(deps.context.userId), currentCwd);
+      deps.state.persistCwdStore(deps.state.cwdStorePath, deps.state.cwdStore);
+      deps.sessions.sessionManager.setUserCwd(deps.context.userId, currentCwd);
       try {
-        deps.syncWorkspaceTemplates();
+        deps.commands.syncWorkspaceTemplates();
       } catch (error) {
-        deps.logger.warn(`[Web] Failed to sync templates after cd: ${(error as Error).message}`);
+        deps.observability.logger.warn(`[Web] Failed to sync templates after cd: ${(error as Error).message}`);
       }
-      orchestrator = deps.sessionManager.getOrCreate(deps.userId, currentCwd);
+      orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, currentCwd);
 
       let message = `已切换到: ${currentCwd}`;
       if (prevCwd !== currentCwd) {
@@ -168,9 +134,9 @@ export async function handleCommandMessage(deps: {
       }
       if (!isSilentCommandPayload) {
         sendToCommandScope({ type: "result", ok: true, output: message });
-        deps.sessionLogger?.logOutput(message);
+        deps.observability.sessionLogger?.logOutput(message);
       }
-      deps.sendWorkspaceState(deps.ws, currentCwd);
+      deps.transport.sendWorkspaceState(deps.transport.ws, currentCwd);
       return;
     }
 
@@ -187,11 +153,11 @@ export async function handleCommandMessage(deps: {
     }
 
     const controller = new AbortController();
-    deps.interruptControllers.set(deps.historyKey, controller);
+    deps.sessions.interruptControllers.set(deps.context.historyKey, controller);
 
     let runPromise: Promise<{ ok: boolean; output: string }> | undefined;
     try {
-      runPromise = withWorkspaceContext(currentCwd, () => deps.runAdsCommandLine(command));
+      runPromise = withWorkspaceContext(currentCwd, () => deps.commands.runAdsCommandLine(command));
       const abortPromise = new Promise<never>((_, reject) => {
         controller.signal.addEventListener(
           "abort",
@@ -203,14 +169,14 @@ export async function handleCommandMessage(deps: {
       });
       const result = await Promise.race([runPromise, abortPromise]);
       sendToCommandScope({ type: "result", ok: result.ok, output: result.output });
-      deps.sessionLogger?.logOutput(result.output);
-      deps.historyStore.add(deps.historyKey, {
+      deps.observability.sessionLogger?.logOutput(result.output);
+      deps.history.historyStore.add(deps.context.historyKey, {
         role: result.ok ? "ai" : "status",
         text: result.output,
         ts: Date.now(),
         kind: result.ok ? undefined : "command",
       });
-      deps.sendWorkspaceState(deps.ws, currentCwd);
+      deps.transport.sendWorkspaceState(deps.transport.ws, currentCwd);
     } catch (error) {
       const aborted = controller.signal.aborted;
       const message = (error as Error).message ?? String(error);
@@ -218,17 +184,17 @@ export async function handleCommandMessage(deps: {
         if (runPromise) {
           void runPromise.catch((innerError) => {
             const detail = innerError instanceof Error ? innerError.message : String(innerError);
-            deps.logger.debug(`[Web] runAdsCommandLine settled after abort: ${detail}`);
+            deps.observability.logger.debug(`[Web] runAdsCommandLine settled after abort: ${detail}`);
           });
         }
         sendToCommandScope({ type: "error", message: "已中断，输出可能不完整" });
-        deps.sessionLogger?.logError("已中断，输出可能不完整");
+        deps.observability.sessionLogger?.logError("已中断，输出可能不完整");
       } else {
         sendToCommandScope({ type: "error", message });
-        deps.sessionLogger?.logError(message);
+        deps.observability.sessionLogger?.logError(message);
       }
     } finally {
-      deps.interruptControllers.delete(deps.historyKey);
+      deps.sessions.interruptControllers.delete(deps.context.historyKey);
     }
   });
 
