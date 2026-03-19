@@ -108,7 +108,7 @@ describe("Project switch clears chat composer draft", () => {
   it("does not leak unsubmitted draft across projects", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {
-      global: { stubs: { LoginGate: false, MainChatView: false } },
+      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false } },
     });
     await settleUi(wrapper);
 

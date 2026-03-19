@@ -1,18 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { defineComponent } from "vue";
 import { mount } from "@vue/test-utils";
-import { readFile } from "node:fs/promises";
 
 import MainChat from "../components/MainChat.vue";
 import TaskBoard from "../components/TaskBoard.vue";
 import TaskDetail from "../components/TaskDetail.vue";
 import type { Attachment, Task, TaskDetail as TaskDetailType } from "../api/types";
 import { readSfc } from "./readSfc";
-
-async function readText(relativeToThisTest: string): Promise<string> {
-  const url = new URL(relativeToThisTest, import.meta.url);
-  return readFile(url, "utf8");
-}
 
 function makeAttachment(id: string): Attachment {
   return {
@@ -99,10 +93,10 @@ describe("compact attachment UI", () => {
     await wrapper.find(".attachmentsClear").trigger("click");
     expect(wrapper.emitted("clearImages")).toBeTruthy();
 
-    const css = await readText("../components/MainChat.css");
-    expect(css).toMatch(/\.attachmentsBar\s*\{[\s\S]*min-height:\s*28px\s*;/);
-    expect(css).toMatch(/\.attachmentsThumb\s*\{[\s\S]*width:\s*36px\s*;[\s\S]*height:\s*24px\s*;/);
-    expect(css).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*26px\s*;[\s\S]*height:\s*26px\s*;/);
+    const sfc = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
+    expect(sfc).toMatch(/\.attachmentsBar\s*\{[\s\S]*min-height:\s*28px\s*;/);
+    expect(sfc).toMatch(/\.attachmentsThumb\s*\{[\s\S]*width:\s*36px\s*;[\s\S]*height:\s*24px\s*;/);
+    expect(sfc).toMatch(/\.attachmentsClear\s*\{[\s\S]*width:\s*26px\s*;[\s\S]*height:\s*26px\s*;/);
 
     wrapper.unmount();
   });
