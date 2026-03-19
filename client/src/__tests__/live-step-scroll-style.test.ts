@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { defineComponent } from "vue";
 import { mount } from "@vue/test-utils";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import MainChat from "../components/MainChat.vue";
+import { readSfc } from "./readSfc";
 
 const MarkdownContentStub = defineComponent({
   name: "MarkdownContent",
@@ -15,14 +13,8 @@ const MarkdownContentStub = defineComponent({
   template: `<div class="md">{{ content }}</div>`,
 });
 
-function readUtf8(relFromThisFile: string): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const p = path.resolve(here, relFromThisFile);
-  return fs.readFileSync(p, "utf8");
-}
-
 describe("live-step reasoning scroll style", () => {
-  it("renders a stable hook and keeps the clamp constraint in CSS", () => {
+  it("renders a stable hook and keeps the clamp constraint in CSS", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -48,7 +40,7 @@ describe("live-step reasoning scroll style", () => {
     expect(live.find(".liveStepBody").exists()).toBe(true);
     expect(live.find(".md").exists()).toBe(true);
 
-    const css = readUtf8("../components/MainChat.css");
+    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
     expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.liveStepBody\s+:deep\(\.md\)\s*\{[\s\S]*?\}/);
     expect(css).toMatch(
       /\.msg\[data-id="live-step"\]\s+\.liveStepBody\s+:deep\(\.md\)\s*\{[\s\S]*?font-style:\s*italic\s*;[\s\S]*?\}/,

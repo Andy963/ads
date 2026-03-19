@@ -1,17 +1,9 @@
 import { describe, expect, it } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-function readUtf8(relFromThisFile: string): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const p = path.resolve(here, relFromThisFile);
-  return fs.readFileSync(p, "utf8");
-}
+import { readSfc } from "./readSfc";
 
 describe("main chat patch style regression", () => {
-  it("keeps patch diff colors reachable from scoped styles", () => {
-    const css = readUtf8("../components/MainChat.css");
+  it("keeps patch diff colors reachable from scoped styles", async () => {
+    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
 
     expect(css).toMatch(/\.patchCardMeta\s*:deep\(\.patchCardStatAdd\)\s*\{/);
     expect(css).toMatch(/\.patchCardMeta\s*:deep\(\.patchCardStatDel\)\s*\{/);

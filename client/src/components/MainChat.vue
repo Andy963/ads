@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import MarkdownContent from "./MarkdownContent.vue";
 import MainChatComposerPanel from "./MainChatComposerPanel.vue";
 import MainChatHeader from "./MainChatHeader.vue";
+import MainChatMessageList from "./MainChatMessageList.vue";
 
-import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./mainChat/types";
+import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { analyzeMarkdownOutline } from "../lib/markdown";
 import type { ModelConfig } from "../api/types";
@@ -51,9 +51,6 @@ const emit = defineEmits<{
 const listRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const showScrollToBottom = ref(false);
-
-const openCommandTrees = ref<Set<string>>(new Set());
-const expandedPatchIds = ref<Set<string>>(new Set());
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
@@ -206,22 +203,6 @@ function toggleLiveStepExpanded(): void {
   void updateLiveStepOverflow();
 }
 
-function isCommandTreeOpen(id: string, commandsCount: number): boolean {
-  void commandsCount;
-  return openCommandTrees.value.has(id);
-}
-
-function toggleCommandTree(id: string): void {
-  const next = new Set(openCommandTrees.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  openCommandTrees.value = next;
-}
-
-function caretPath(open: boolean): string {
-  return open ? "M6 8l4 4 4-4" : "M8 6l4 4-4 4";
-}
-
 const liveStepMessage = computed(
   () =>
     props.messages.find((m) => m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text") ?? null,
@@ -246,135 +227,9 @@ const liveStepCanToggleExpanded = computed(() => {
   if (liveStepCollapsedTrivialOutline.value) return false;
   return liveStepHasMeaningfulBody.value || liveStepOutlineHiddenCount.value > 0 || liveStepHasOverflow.value;
 });
-
-function isLiveStepRenderMessage(m: RenderMessage): boolean {
-  return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
-}
-
-function escapeHtml(text: string): string {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function formatPatchStatHtml(added: number | null | undefined, removed: number | null | undefined): string {
-  if (typeof added !== "number" || typeof removed !== "number") {
-    return `<span class="patchCardStatBinary">(binary)</span>`;
-  }
-  return (
-    `<span class="patchCardStat">(` +
-    `<span class="patchCardStatAdd">+${added}</span> ` +
-    `<span class="patchCardStatDel">-${removed}</span>` +
-    `)</span>`
-  );
-}
-
-function patchHeaderTitle(m: RenderMessage): string {
-  const files = Array.isArray(m.patch?.files) ? m.patch?.files : [];
-  const first = files[0];
-  if (!first?.path) return "补丁";
-  return first.path;
-}
-
-function patchHeaderMeta(m: RenderMessage): string {
-  const files = Array.isArray(m.patch?.files) ? m.patch?.files : [];
-  const first = files[0];
-  const hiddenCount = Math.max(0, files.length - 1);
-  const parts: string[] = [];
-  if (first) parts.push(formatPatchStatHtml(first.added, first.removed));
-  if (hiddenCount > 0) parts.push(`<span class="patchCardMetaExtra">${escapeHtml(`另 ${hiddenCount} 个文件`)}</span>`);
-  return parts.join(" ");
-}
-
-function patchDiffLineKind(line: string): "add" | "del" | "meta" | "hunk" | "ctx" {
-  if (!line) return "ctx";
-  if (line.startsWith("diff --git ")) return "meta";
-  if (line.startsWith("index ")) return "meta";
-  if (line.startsWith("new file mode ")) return "meta";
-  if (line.startsWith("deleted file mode ")) return "meta";
-  if (line.startsWith("similarity index ")) return "meta";
-  if (line.startsWith("rename from ")) return "meta";
-  if (line.startsWith("rename to ")) return "meta";
-  if (line.startsWith("Binary files ")) return "meta";
-  if (line.startsWith("--- ") || line.startsWith("+++ ")) return "meta";
-  if (line.startsWith("@@")) return "hunk";
-  if (line.startsWith("+")) return "add";
-  if (line.startsWith("-")) return "del";
-  return "ctx";
-}
-
-function renderPatchDiffHtml(raw: unknown): string {
-  const text = String(raw ?? "");
-  if (!text) return "";
-
-  const normalized = text.replace(/\r\n/g, "\n");
-  const lines = normalized.split("\n");
-  return lines
-    .map((line) => {
-      const kind = patchDiffLineKind(line);
-      return `<span class="patchCardDiffLine patchCardDiffLine--${kind}">${escapeHtml(line)}</span>`;
-    })
-    .join("\n");
-}
-
-function isPatchExpanded(id: string): boolean {
-  return expandedPatchIds.value.has(id);
-}
-
-function togglePatchExpanded(id: string): void {
-  const next = new Set(expandedPatchIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  expandedPatchIds.value = next;
-}
-
-watch(
-  () =>
-    props.messages
-      .filter((m) => m.kind === "patch")
-      .map((m) => String(m.id ?? "").trim())
-      .filter(Boolean),
-  (ids) => {
-    const visibleIds = new Set(ids);
-    const next = new Set([...expandedPatchIds.value].filter((id) => visibleIds.has(id)));
-    if (next.size !== expandedPatchIds.value.size) {
-      expandedPatchIds.value = next;
-    }
-  },
-  { immediate: true },
-);
-
-const renderMessages = computed<RenderMessage[]>(() => {
-  let latestExecuteId: string | null = null;
-  for (let i = props.messages.length - 1; i >= 0; i--) {
-    const m = props.messages[i]!;
-    if (m.kind === "execute") {
-      latestExecuteId = m.id;
-      break;
-    }
-  }
-
-  // Execute previews are only meaningful while the agent is running; finalized command
-  // trees are no longer shown, so we also suppress command summary items here.
-  return props.messages.filter((m) => m.kind !== "command" && (m.kind !== "execute" || m.id === latestExecuteId));
-});
 const showActiveBorder = computed(() => props.busy);
 
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
-
-function shouldShowMsgActions(m: RenderMessage): boolean {
-  if (m.streaming && m.content.length === 0) return false;
-  if (m.kind === "patch") return false;
-  return true;
-}
-
-function shouldUseCompactBubble(m: RenderMessage): boolean {
-  // Compact layout when we don't render footer actions.
-  return !shouldShowMsgActions(m);
-}
 
 function handleScroll() {
   if (!listRef.value) return;
@@ -474,41 +329,6 @@ onBeforeUnmount(() => {
   }
 });
 
-function getCommands(content: string): string[] {
-  return content
-    .split("\n")
-    .filter((line) => line.match(/^\$\s*/))
-    .map((line) => line.replace(/^\$\s*/, ""));
-}
-
-const commandTreeCommandsById = computed(() => {
-  const map = new Map<string, string[]>();
-  for (const m of renderMessages.value) {
-    if (m.kind !== "command") continue;
-    map.set(m.id, getCommands(m.content));
-  }
-  return map;
-});
-
-function getCommandTreeCommands(m: RenderMessage): string[] {
-  return commandTreeCommandsById.value.get(m.id) ?? [];
-}
-
-function getCommandTreeShownCount(m: RenderMessage): number {
-  if (typeof m.commandsShown === "number" && Number.isFinite(m.commandsShown) && m.commandsShown >= 0) return m.commandsShown;
-  return getCommandTreeCommands(m).length;
-}
-
-function getCommandTreeTotalCount(m: RenderMessage): number {
-  const shown = getCommandTreeShownCount(m);
-  if (typeof m.commandsTotal === "number" && Number.isFinite(m.commandsTotal) && m.commandsTotal >= 0) return m.commandsTotal;
-  return shown;
-}
-
-function hasCommandTreeOverflow(m: RenderMessage): boolean {
-  return getCommandTreeTotalCount(m) > getCommandTreeShownCount(m);
-}
-
 </script>
 
 <template>
@@ -523,114 +343,19 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       @resume-thread="emit('resumeThread')"
     />
     <div ref="listRef" class="chat" @scroll="handleScroll">
-      <div v-if="messages.length === 0" class="chat-empty">
-        <span>直接开始对话…</span>
-      </div>
-      <div v-for="m in renderMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
-        <div v-if="m.kind === 'command'" class="command-block">
-          <button class="command-tree-header" type="button" aria-label="Toggle commands"
-            :aria-expanded="isCommandTreeOpen(m.id, getCommandTreeCommands(m).length)" @click="toggleCommandTree(m.id)">
-            <span v-if="getCommandTreeCommands(m).length > 0" class="command-caret" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path :d="caretPath(isCommandTreeOpen(m.id, getCommandTreeCommands(m).length))" />
-              </svg>
-            </span>
-            <span class="prompt-tag">Executes</span>
-            <span class="command-count">
-              {{ getCommandTreeTotalCount(m) }} 条命令<span v-if="hasCommandTreeOverflow(m)">
-                (showing last {{ getCommandTreeShownCount(m) }})</span>
-            </span>
-          </button>
-          <div v-if="isCommandTreeOpen(m.id, getCommandTreeCommands(m).length)" class="command-tree">
-            <div v-for="(cmd, cIdx) in getCommandTreeCommands(m)" :key="cIdx" class="command-tree-item">
-              <span class="command-tree-branch">├─</span>
-              <span class="command-cmd">{{ cmd }}</span>
-            </div>
-          </div>
-        </div>
-        <div v-else-if="m.kind === 'execute'" :class="['bubble', 'bubble--compact', 'execute-block']">
-          <div class="execute-header">
-            <div class="execute-left">
-              <span class="prompt-tag">&gt;_</span>
-              <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
-            </div>
-          </div>
-          <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
-          <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
-        </div>
-        <div v-else-if="m.kind === 'patch'" :class="['bubble', 'bubble--compact', 'patchCard']">
-          <div class="patchCardHeader">
-            <div class="patchCardSummary">
-              <div class="patchCardTitle" :title="patchHeaderTitle(m)">{{ patchHeaderTitle(m) }}</div>
-              <div v-if="patchHeaderMeta(m)" class="patchCardMeta" v-html="patchHeaderMeta(m)"></div>
-            </div>
-            <button
-              class="patchCardToggle"
-              type="button"
-              :aria-expanded="isPatchExpanded(m.id)"
-              :data-testid="`patch-toggle-${m.id}`"
-              @click.stop="togglePatchExpanded(m.id)"
-            >
-              {{ isPatchExpanded(m.id) ? "收起" : "展开" }}
-            </button>
-          </div>
-          <div v-if="isPatchExpanded(m.id)" class="patchCardBody">
-            <pre class="patchCardDiff" v-html="renderPatchDiffHtml(m.patch?.diff || m.content)"></pre>
-            <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
-          </div>
-        </div>
-        <div v-else :class="[
-          'bubble',
-          {
-            'bubble--compact': shouldUseCompactBubble(m),
-          },
-        ]">
-          <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0"
-            class="typing" aria-label="AI is thinking">
-            <span class="thinkingText">thinking</span>
-          </div>
-          <div v-else-if="isLiveStepRenderMessage(m)" class="liveStep">
-            <div class="liveStepBody" :data-expanded="String(liveStepExpanded)"
-              :data-outline-only="String(!liveStepExpanded && liveStepOutlineItems.length > 0)"
-              :data-trivial-outline="String(liveStepCollapsedTrivialOutline)"
-              :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded && liveStepCanToggleExpanded }">
-              <MarkdownContent :content="m.content" />
-              <div v-if="!liveStepExpanded && liveStepOutlineItems.length > 0" class="liveStepOutline" aria-hidden="true">
-                <div v-for="(title, idx) in liveStepOutlineItems" :key="idx" class="liveStepOutlineItem" :title="title">
-                  <span class="liveStepOutlineBullet" aria-hidden="true">•</span>
-                  <span class="liveStepOutlineText">{{ title }}</span>
-                </div>
-                <div v-if="liveStepOutlineHiddenCount > 0" class="liveStepOutlineMore">
-                  +{{ liveStepOutlineHiddenCount }} more
-                </div>
-              </div>
-            </div>
-            <div v-if="liveStepCanToggleExpanded" class="liveStepToggleRow">
-              <button class="liveStepToggleBtn" type="button" :aria-expanded="liveStepExpanded"
-                @click.stop="toggleLiveStepExpanded">
-                {{ liveStepExpanded ? "Collapse" : "Expand" }}
-              </button>
-            </div>
-          </div>
-          <MarkdownContent v-else :content="m.content" />
-          <div v-if="shouldShowMsgActions(m)" class="msgActions">
-            <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="onCopyMessage(m)">
-              <svg v-if="copiedMessageId === m.id" width="14" height="14" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                aria-hidden="true">
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
-              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="9" y="9" width="11" height="11" rx="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            </button>
-            <span v-if="m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
-          </div>
-        </div>
-      </div>
+      <MainChatMessageList
+        :messages="messages"
+        :copied-message-id="copiedMessageId"
+        :format-message-ts="formatMessageTs"
+        :live-step-expanded="liveStepExpanded"
+        :live-step-has-overflow="liveStepHasOverflow"
+        :live-step-can-toggle-expanded="liveStepCanToggleExpanded"
+        :live-step-outline-items="liveStepOutlineItems"
+        :live-step-outline-hidden-count="liveStepOutlineHiddenCount"
+        :live-step-collapsed-trivial-outline="liveStepCollapsedTrivialOutline"
+        @copy-message="onCopyMessage($event)"
+        @toggle-live-step-expanded="toggleLiveStepExpanded"
+      />
       <button v-if="showScrollToBottom" class="scrollToBottom" type="button" aria-label="Scroll to bottom" title="回到底部"
         @click="scrollToBottom">
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
