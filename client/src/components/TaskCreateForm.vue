@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import type { CreateTaskInput } from "../api/types";
 
+import TaskCreateFormConfigFields from "./TaskCreateFormConfigFields.vue";
 import { useImageAttachments } from "./taskCreateForm/useImageAttachments";
 import { useVoiceInput } from "./taskCreateForm/useVoiceInput";
 
@@ -65,16 +66,6 @@ watch([readyAgentOptions, normalizedActiveAgentId], () => {
 
   agentId.value = options[0]?.id ?? "";
 }, { immediate: true });
-
-function formatAgentLabel(agent: AgentOption): string {
-  const id = String(agent.id ?? "").trim();
-  const name = String(agent.name ?? "").trim() || id;
-  if (!id) return name || "agent";
-  const base = name === id ? id : `${name} (${id})`;
-  if (agent.ready) return base;
-  const suffix = String(agent.error ?? "").trim() || "不可用";
-  return `${base}（不可用：${suffix}）`;
-}
 
 async function insertIntoPrompt(text: string): Promise<void> {
   const normalized = String(text ?? "").trim();
@@ -237,52 +228,25 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     <div class="modalBody">
       <div class="modalTitle" data-drag-handle>新建任务</div>
 
-      <label class="field">
-        <span class="label">标题（可选）</span>
-        <input v-model="title" placeholder="不填会自动生成" />
-      </label>
-
-      <div class="configRow">
-        <label class="field">
-          <span class="label">执行器</span>
-          <select v-model="agentId" data-testid="task-create-agent">
-            <option value="">自动</option>
-            <option v-for="a in readyAgentOptions" :key="a.id" :value="a.id">
-              {{ formatAgentLabel(a) }}
-            </option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="label">优先级</span>
-          <input v-model.number="priority" type="number" />
-        </label>
-        <label class="field">
-          <span class="label">最大重试</span>
-          <input v-model.number="maxRetries" type="number" min="0" />
-        </label>
-      </div>
-
-      <div class="configRow configRowCheckboxes">
-        <label class="field bootstrapToggle">
-          <input type="checkbox" v-model="reviewRequired" data-testid="task-create-review-required" />
-          <span class="label" style="display:inline;margin:0 0 0 6px;">需要 Reviewer 审核</span>
-        </label>
-        <label class="field bootstrapToggle">
-          <input type="checkbox" v-model="bootstrapEnabled" data-testid="task-create-bootstrap-toggle" />
-          <span class="label" style="display:inline;margin:0 0 0 6px;">自举模式</span>
-        </label>
-      </div>
-
-      <div v-if="bootstrapEnabled" class="configRow">
-        <label class="field" style="flex:1;">
-          <span class="label">项目路径 / Git URL</span>
-          <input v-model="bootstrapProject" placeholder="/path/to/project 或 https://..." data-testid="task-create-bootstrap-project" />
-        </label>
-        <label class="field" style="width:100px;">
-          <span class="label">最大迭代</span>
-          <input v-model.number="bootstrapMaxIterations" type="number" min="1" max="10" data-testid="task-create-bootstrap-max-iterations" />
-        </label>
-      </div>
+      <TaskCreateFormConfigFields
+        :title="title"
+        :agent-id="agentId"
+        :priority="priority"
+        :max-retries="maxRetries"
+        :review-required="reviewRequired"
+        :bootstrap-enabled="bootstrapEnabled"
+        :bootstrap-project="bootstrapProject"
+        :bootstrap-max-iterations="bootstrapMaxIterations"
+        :ready-agent-options="readyAgentOptions"
+        @update:title="title = $event"
+        @update:agent-id="agentId = $event"
+        @update:priority="priority = $event"
+        @update:max-retries="maxRetries = $event"
+        @update:review-required="reviewRequired = $event"
+        @update:bootstrap-enabled="bootstrapEnabled = $event"
+        @update:bootstrap-project="bootstrapProject = $event"
+        @update:bootstrap-max-iterations="bootstrapMaxIterations = $event"
+      />
 
       <label class="field promptField">
         <span class="label">任务描述</span>
@@ -426,4 +390,524 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   </div>
 </template>
 
-<style src="./TaskCreateForm.css" scoped></style>
+<style scoped>
+.createModalInner {
+  display: flex;
+  flex-direction: column;
+  height: min(680px, 80vh);
+  overflow: hidden;
+}
+
+.modalBody {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.modalTitle {
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+  text-align: center;
+  letter-spacing: 0.02em;
+  margin: 0 0 2px 0;
+}
+
+.field {
+  display: block;
+  min-width: 0;
+}
+
+.label {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  font-size: 14px;
+  background: rgba(248, 250, 252, 0.95);
+  color: #1e293b;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+textarea:hover {
+  border-color: rgba(148, 163, 184, 0.8);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+textarea:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.8);
+  background: white;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+textarea::placeholder {
+  color: #94a3b8;
+}
+
+.promptField {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+textarea {
+  resize: none;
+  flex: 1;
+  min-height: 120px;
+  max-height: none;
+  overflow-y: auto;
+}
+
+.promptInputWrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.promptInputWrap textarea {
+  flex: 1;
+  min-height: 120px;
+}
+
+.promptInputWrap.voiceEnabled textarea {
+  padding-right: 62px;
+  padding-bottom: 44px;
+}
+
+.promptInputWrap.voiceEnabled.voiceExpanded textarea {
+  padding-right: 160px;
+  padding-bottom: 78px;
+}
+
+.voiceAffordance {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.voiceRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.voiceIndicator {
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voiceIndicator.recording {
+  color: #dc2626;
+}
+
+.voiceIndicator.transcribing {
+  color: #2563eb;
+}
+
+.voiceBars {
+  display: flex;
+  gap: 2px;
+  align-items: flex-end;
+  height: 14px;
+}
+
+.voiceBars .bar {
+  width: 3px;
+  border-radius: 3px;
+  background: currentColor;
+  animation: voiceBars 0.45s ease-in-out infinite;
+}
+
+.voiceBars .bar:nth-child(2) {
+  animation-delay: 0.08s;
+}
+
+.voiceBars .bar:nth-child(3) {
+  animation-delay: 0.16s;
+}
+
+.voiceSpinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(37, 99, 235, 0.22);
+  border-top-color: currentColor;
+  animation: voiceSpin 0.75s linear infinite;
+}
+
+.voiceTime {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: currentColor;
+}
+
+.voiceAuxBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 0.15s, transform 0.1s, background-color 0.15s, border-color 0.15s;
+}
+
+.voiceAuxBtn:hover:not(:disabled) {
+  color: #0f172a;
+  border-color: rgba(148, 163, 184, 0.7);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.voiceAuxBtn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.voiceAuxBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.voiceCancelBtn {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.voiceCancelBtn:hover:not(:disabled) {
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.voiceRetryBtn {
+  color: #2563eb;
+  border-color: rgba(37, 99, 235, 0.25);
+  background: rgba(37, 99, 235, 0.05);
+}
+
+.voiceRetryBtn:hover:not(:disabled) {
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.4);
+  background: rgba(37, 99, 235, 0.07);
+}
+
+.micIcon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(15, 23, 42, 0.02);
+  color: #64748b;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 0.15s, transform 0.1s, background-color 0.15s;
+}
+
+.micIcon:hover:not(:disabled) {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.micIcon:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.micIcon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.micIcon.recording {
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.voiceToast {
+  position: absolute;
+  bottom: 44px;
+  right: 8px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  max-width: min(72vw, 380px);
+  pointer-events: none;
+  animation: voiceToastIn 0.14s ease-out;
+}
+
+.voiceToast.ok {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+  color: #059669;
+}
+
+.voiceToast.error {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.06);
+  color: #dc2626;
+}
+
+.voiceToastText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes voiceBars {
+  0%,
+  100% {
+    height: 4px;
+    opacity: 0.55;
+  }
+
+  50% {
+    height: 14px;
+    opacity: 1;
+  }
+}
+
+@keyframes voiceSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes voiceToastIn {
+  from {
+    transform: translateY(4px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.errorBox {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.attachments {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.thumbCard {
+  display: block;
+  flex: 0 0 auto;
+  width: 80px;
+}
+
+.thumbWrap {
+  position: relative;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  background: white;
+  width: 100%;
+  height: 24px;
+}
+
+.thumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumbLink {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  background: rgba(15, 23, 42, 0.35);
+  color: white;
+}
+
+.overlay.error {
+  background: rgba(127, 29, 29, 0.75);
+  place-items: center;
+  gap: 8px;
+}
+
+.errorText {
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.2;
+  max-height: 3.6em;
+  overflow: hidden;
+}
+
+.retryBtn {
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.95);
+  color: #0f172a;
+}
+
+.retryBtn:hover {
+  background: white;
+}
+
+.progressRow {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+}
+
+.progressBar {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.progressText {
+  font-size: 9px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.removeBtn {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  font-weight: 900;
+  cursor: pointer;
+  line-height: 12px;
+}
+
+.removeBtn:hover {
+  background: white;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 32px;
+  margin-top: 12px;
+}
+
+.btnPrimary {
+  border-radius: 14px;
+  padding: 8px 12px;
+  min-height: 38px;
+  line-height: 1.1;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  background: linear-gradient(90deg, #4f8ef7 0%, #7aa9ff 100%);
+  color: white;
+  box-shadow: 0 10px 20px rgba(79, 142, 247, 0.35);
+  transition: background-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.btnPrimary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btnSecondary {
+  border-radius: 14px;
+  padding: 8px 12px;
+  min-height: 38px;
+  line-height: 1.1;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid rgba(79, 142, 247, 0.35);
+  background: rgba(79, 142, 247, 0.12);
+  color: #2563eb;
+  transition: border-color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.btnSecondary:hover {
+  border-color: rgba(79, 142, 247, 0.6);
+  background: rgba(79, 142, 247, 0.18);
+  transform: translateY(-1px);
+}
+
+.btnSecondary:active {
+  background: rgba(79, 142, 247, 0.22);
+}
+
+@media (max-width: 600px) {
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .actions button {
+    width: 100%;
+  }
+}
+</style>
