@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChatDotRound, Refresh } from "@element-plus/icons-vue";
 import MarkdownContent from "./MarkdownContent.vue";
-import DraggableModal from "./DraggableModal.vue";
+import MainChatHeader from "./MainChatHeader.vue";
+import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt, RenderMessage } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
@@ -835,39 +835,15 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
 
 <template>
   <div class="detail" :class="{ 'detail--active': showActiveBorder }">
-    <div v-if="title" class="paneHeader">
-      <div class="paneTitle">{{ title }}</div>
-      <div class="paneHeaderActions">
-        <button
-          v-if="headerResumeAction"
-          class="paneHeaderIconBtn"
-          type="button"
-          :title="headerResumeAction.title"
-          :aria-label="headerResumeAction.ariaLabel || headerResumeAction.title"
-          :disabled="busy || Boolean(headerResumeAction.disabled)"
-          :data-testid="headerResumeAction.testId"
-          @click.stop="emit('resumeThread')"
-        >
-          <el-icon :size="16" aria-hidden="true">
-            <Refresh />
-          </el-icon>
-        </button>
-        <button
-          v-if="headerAction"
-          class="paneHeaderIconBtn"
-          type="button"
-          :title="headerAction.title"
-          :aria-label="headerAction.ariaLabel || headerAction.title"
-          :disabled="busy"
-          :data-testid="headerAction.testId"
-          @click.stop="emit('newSession')"
-        >
-          <el-icon :size="16" aria-hidden="true">
-            <ChatDotRound />
-          </el-icon>
-        </button>
-      </div>
-    </div>
+    <MainChatHeader
+      v-if="title"
+      :title="title"
+      :busy="busy"
+      :header-action="headerAction"
+      :header-resume-action="headerResumeAction"
+      @new-session="emit('newSession')"
+      @resume-thread="emit('resumeThread')"
+    />
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <div v-if="messages.length === 0" class="chat-empty">
         <span>直接开始对话…</span>
@@ -1146,27 +1122,11 @@ function hasCommandTreeOverflow(m: RenderMessage): boolean {
       </div>
     </div>
 
-    <DraggableModal v-if="pendingImageViewerOpen" card-variant="large" @close="closePendingImageViewer">
-      <div class="attachmentsViewer">
-        <div class="attachmentsViewerHeader" data-drag-handle>
-          <div class="attachmentsViewerTitle">附件预览</div>
-          <button class="attachmentsViewerClose" type="button" @click="closePendingImageViewer">
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd"
-                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                clip-rule="evenodd" />
-            </svg>
-          </button>
-        </div>
-        <div class="attachmentsViewerBody">
-          <div class="attachmentsViewerImages">
-            <template v-for="img in pendingImagePreviews" :key="img.key">
-              <img v-if="img.src" class="attachmentsViewerImg" :src="img.src" alt="" />
-            </template>
-          </div>
-        </div>
-      </div>
-    </DraggableModal>
+    <MainChatPendingImageViewer
+      v-if="pendingImageViewerOpen"
+      :previews="pendingImagePreviews"
+      @close="closePendingImageViewer"
+    />
   </div>
 </template>
 
