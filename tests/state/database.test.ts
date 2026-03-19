@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import {
+  getStateDatabase,
+  getStateDatabaseInfo,
+  resetStateDatabaseForTests,
+} from "../../server/state/database.js";
 
 describe("state/database", () => {
   let tmpDir: string;
@@ -63,6 +67,38 @@ describe("state/database", () => {
     const msgColumns = msgInfo.map((col) => col.name);
     assert.ok(msgColumns.includes("task_id"));
     assert.ok(msgColumns.includes("payload"));
+  });
+
+  it("should record schema version metadata for a fresh database", () => {
+    getStateDatabase();
+
+    const info = getStateDatabaseInfo();
+    assert.strictEqual(info.schemaVersion, info.latestVersion);
+    assert.strictEqual(info.needsMigration, false);
+  });
+
+  it("should upgrade legacy state databases without schema_version metadata", () => {
+    const seedDb = getStateDatabase();
+    seedDb.prepare(
+      `INSERT INTO kv_state (namespace, key, value, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run("test", "legacy-key", "legacy-value", 123);
+    seedDb.exec("DROP TABLE schema_version");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const info = getStateDatabaseInfo();
+    const row = db.prepare(
+      `SELECT value, updated_at
+       FROM kv_state
+       WHERE namespace = ? AND key = ?`,
+    ).get("test", "legacy-key") as { value: string; updated_at: number };
+
+    assert.strictEqual(info.needsMigration, false);
+    assert.strictEqual(info.schemaVersion, info.latestVersion);
+    assert.strictEqual(row.value, "legacy-value");
+    assert.strictEqual(row.updated_at, 123);
   });
 
   it("should enable WAL mode", () => {
