@@ -12,12 +12,15 @@ import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
 import { getErrorMessage } from "../utils/error.js";
+import { createLogger, type Logger } from "../utils/logger.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 
 import { computeNextCronRunAt } from "./cron.js";
 import { ScheduleStore } from "./store.js";
 import type { StoredSchedule } from "./store.js";
+
+const defaultLogger = createLogger("SchedulerRuntime");
 
 function renderIdempotencyKey(template: string, scheduleId: string, runAtIso: string): string {
   const t = String(template ?? "").trim();
@@ -52,6 +55,16 @@ type SchedulerExecutionResult = {
 };
 
 type SchedulerExecuteRun = (input: SchedulerExecutionInput) => Promise<SchedulerExecutionResult>;
+
+type SchedulerRuntimeLogger = Pick<Logger, "warn" | "debug">;
+
+type SchedulerWarningContext = {
+  stage: string;
+  workspaceRoot: string;
+  scheduleId: string;
+  externalId?: string | null;
+  taskId?: string | null;
+};
 
 type WorkspaceSchedulerState = {
   store: ScheduleStore;
@@ -138,6 +151,7 @@ export class SchedulerRuntime {
   private readonly runnerConcurrency: number;
   private readonly adsStateDir: string;
   private readonly executeRun: SchedulerExecuteRun;
+  private readonly logger: SchedulerRuntimeLogger;
 
   private interval: NodeJS.Timeout | null = null;
   private readonly workspaces = new Set<string>();
@@ -156,6 +170,7 @@ export class SchedulerRuntime {
     runnerConcurrency?: number;
     adsStateDir?: string;
     executeRun?: SchedulerExecuteRun;
+    logger?: SchedulerRuntimeLogger;
   }) {
     this.enabled = options?.enabled ?? parseBooleanFlag(process.env.ADS_SCHEDULER_ENABLED, true);
     this.tickMs = options?.tickMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_TICK_MS, 5000);
@@ -170,6 +185,7 @@ export class SchedulerRuntime {
       options?.runnerConcurrency ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RUNNER_CONCURRENCY, 1);
     this.adsStateDir = options?.adsStateDir ?? resolveAdsStateDir();
     this.executeRun = options?.executeRun ?? (async (input) => await this.defaultExecuteRun(input));
+    this.logger = options?.logger ?? defaultLogger;
   }
 
   registerWorkspace(workspaceRoot: string): void {
@@ -316,8 +332,15 @@ export class SchedulerRuntime {
           // Ensure lease is released even on failures.
           try {
             store.releaseScheduleLease({ scheduleId, leaseOwner: this.ownerId }, Date.now());
-          } catch {
-            // ignore
+          } catch (error) {
+            this.warnScheduler(
+              {
+                stage: "release-lease",
+                workspaceRoot: root,
+                scheduleId,
+              },
+              error,
+            );
           }
         }
       }
@@ -358,6 +381,7 @@ export class SchedulerRuntime {
       );
     }
 
+    let nextRunError: unknown = null;
     const nextRunAt = (() => {
       try {
         return computeNextCronRunAt({
@@ -365,12 +389,22 @@ export class SchedulerRuntime {
           timezone: schedule.spec.schedule.timezone,
           afterMs: runAt,
         });
-      } catch {
+      } catch (error) {
+        nextRunError = error;
         return null;
       }
     })();
 
     if (nextRunAt == null) {
+      this.warnScheduler(
+        {
+          stage: "compute-next-run",
+          workspaceRoot: root,
+          scheduleId: schedule.id,
+          externalId,
+        },
+        nextRunError ?? new Error("computeNextCronRunAt returned null and schedule will be disabled"),
+      );
       const disabledSpec = {
         ...schedule.spec,
         enabled: false,
@@ -397,8 +431,15 @@ export class SchedulerRuntime {
     }
     state.runnerPromise = state.runner
       .run()
-      .catch(() => {
-        // ignore; next tick/register can restart runner.
+      .catch((error) => {
+        this.warnScheduler(
+          {
+            stage: "runner-crash",
+            workspaceRoot,
+            scheduleId: "n/a",
+          },
+          error,
+        );
       })
       .finally(() => {
         state.runnerPromise = null;
@@ -521,6 +562,22 @@ export class SchedulerRuntime {
     return await state.executor.execute(input.task, { signal: input.signal });
   }
 
+  private warnScheduler(context: SchedulerWarningContext, error: unknown): void {
+    const fields = [
+      `stage=${context.stage}`,
+      `workspaceRoot=${context.workspaceRoot}`,
+      `scheduleId=${context.scheduleId}`,
+    ];
+    if (context.externalId) {
+      fields.push(`externalId=${context.externalId}`);
+    }
+    if (context.taskId) {
+      fields.push(`taskId=${context.taskId}`);
+    }
+    fields.push(`err=${getErrorMessage(error)}`);
+    this.logger.warn(fields.join(" "), error);
+  }
+
   private async runScheduledJob(rawPayload: unknown, signal: AbortSignal): Promise<SchedulerExecutionResult> {
     const payload = this.parsePayload(rawPayload);
     if (!payload) {
@@ -541,8 +598,16 @@ export class SchedulerRuntime {
           },
           now,
         );
-      } catch {
-        // ignore
+      } catch (persistError) {
+        this.warnScheduler(
+          {
+            stage: "mark-run-cancelled",
+            workspaceRoot: payload.workspaceRoot,
+            scheduleId: payload.scheduleId,
+            externalId: payload.externalId,
+          },
+          persistError,
+        );
       }
       return {};
     }
@@ -579,8 +644,17 @@ export class SchedulerRuntime {
         },
         now,
       );
-    } catch {
-      // ignore
+    } catch (persistError) {
+      this.warnScheduler(
+        {
+          stage: "mark-run-running",
+          workspaceRoot: payload.workspaceRoot,
+          scheduleId: payload.scheduleId,
+          externalId: payload.externalId,
+          taskId: runningTask.id,
+        },
+        persistError,
+      );
     }
 
     return await this.executeRun({
@@ -611,8 +685,17 @@ export class SchedulerRuntime {
         },
         now,
       );
-    } catch {
-      // ignore
+    } catch (persistError) {
+      this.warnScheduler(
+        {
+          stage: "mark-run-completed",
+          workspaceRoot: payload.workspaceRoot,
+          scheduleId: payload.scheduleId,
+          externalId: payload.externalId,
+          taskId: payload.externalId,
+        },
+        persistError,
+      );
     }
 
     const task = state.taskStore.getTask(payload.externalId);
@@ -633,12 +716,30 @@ export class SchedulerRuntime {
       if (completed.result && completed.result.trim()) {
         try {
           state.taskStore.saveContext(completed.id, { contextType: "summary", content: completed.result }, now);
-        } catch {
-          // ignore
+        } catch (persistError) {
+          this.warnScheduler(
+            {
+              stage: "save-summary",
+              workspaceRoot: payload.workspaceRoot,
+              scheduleId: payload.scheduleId,
+              externalId: payload.externalId,
+              taskId: completed.id,
+            },
+            persistError,
+          );
         }
       }
-    } catch {
-      // ignore
+    } catch (persistError) {
+      this.warnScheduler(
+        {
+          stage: "mark-task-completed",
+          workspaceRoot: payload.workspaceRoot,
+          scheduleId: payload.scheduleId,
+          externalId: payload.externalId,
+          taskId: task.id,
+        },
+        persistError,
+      );
     }
   }
 
@@ -653,6 +754,7 @@ export class SchedulerRuntime {
       return;
     }
     const state = this.getState(payload.workspaceRoot);
+    const task = state.taskStore.getTask(payload.externalId);
     const now = Date.now();
     const terminal = numRetriesLeft <= 0;
     const message = getErrorMessage(error);
@@ -667,11 +769,19 @@ export class SchedulerRuntime {
         },
         now,
       );
-    } catch {
-      // ignore
+    } catch (persistError) {
+      this.warnScheduler(
+        {
+          stage: terminal ? "mark-run-failed" : "mark-run-queued",
+          workspaceRoot: payload.workspaceRoot,
+          scheduleId: payload.scheduleId,
+          externalId: payload.externalId,
+          taskId: task?.id ?? null,
+        },
+        persistError,
+      );
     }
 
-    const task = state.taskStore.getTask(payload.externalId);
     if (!task) {
       return;
     }
@@ -691,12 +801,30 @@ export class SchedulerRuntime {
       if (terminal) {
         try {
           state.taskStore.saveContext(updated.id, { contextType: "summary", content: `[Failed]\n${message}` }, now);
-        } catch {
-          // ignore
+        } catch (persistError) {
+          this.warnScheduler(
+            {
+              stage: "save-summary",
+              workspaceRoot: payload.workspaceRoot,
+              scheduleId: payload.scheduleId,
+              externalId: payload.externalId,
+              taskId: updated.id,
+            },
+            persistError,
+          );
         }
       }
-    } catch {
-      // ignore
+    } catch (persistError) {
+      this.warnScheduler(
+        {
+          stage: terminal ? "mark-task-failed" : "mark-task-pending",
+          workspaceRoot: payload.workspaceRoot,
+          scheduleId: payload.scheduleId,
+          externalId: payload.externalId,
+          taskId: task.id,
+        },
+        persistError,
+      );
     }
   }
 }

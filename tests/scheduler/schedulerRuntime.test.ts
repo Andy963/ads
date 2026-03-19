@@ -68,6 +68,30 @@ async function waitFor(check: () => boolean, timeoutMs = 8000): Promise<void> {
   throw new Error("Timed out waiting for scheduler condition");
 }
 
+function createLoggerSpy(): {
+  warns: Array<{ message: string; args: unknown[] }>;
+  debugs: Array<{ message: string; args: unknown[] }>;
+  logger: {
+    warn(message: string, ...args: unknown[]): void;
+    debug(message: string, ...args: unknown[]): void;
+  };
+} {
+  const warns: Array<{ message: string; args: unknown[] }> = [];
+  const debugs: Array<{ message: string; args: unknown[] }> = [];
+  return {
+    warns,
+    debugs,
+    logger: {
+      warn(message: string, ...args: unknown[]) {
+        warns.push({ message, args });
+      },
+      debug(message: string, ...args: unknown[]) {
+        debugs.push({ message, args });
+      },
+    },
+  };
+}
+
 describe("scheduler/runtime-liteque", () => {
   let tmpDir: string;
   const originalEnv = { ...process.env };
@@ -265,5 +289,112 @@ describe("scheduler/runtime-liteque", () => {
     const internal = runtime as unknown as { workspaces: Set<string>; states: Map<string, unknown> };
     assert.deepEqual(Array.from(internal.workspaces), [tmpDir]);
     assert.deepEqual(Array.from(internal.states.keys()), [tmpDir]);
+  });
+
+  it("warns on summary persistence failure without breaking completion flow", async () => {
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Summary persistence warning",
+        spec: buildScheduleSpec(),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    const loggerSpy = createLoggerSpy();
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      tickMs: 60_000,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      logger: loggerSpy.logger,
+      executeRun: async () => ({ resultSummary: "summary-ok" }),
+    });
+    runtime.registerWorkspace(tmpDir);
+
+    const internal = runtime as unknown as {
+      states: Map<string, { taskStore: TaskStore }>;
+    };
+    const state = internal.states.get(tmpDir);
+    assert.ok(state);
+
+    const originalSaveContext = state.taskStore.saveContext.bind(state.taskStore);
+    state.taskStore.saveContext = ((taskId, context, savedAt) => {
+      void taskId;
+      void context;
+      void savedAt;
+      throw new Error("summary write failed");
+    }) as typeof state.taskStore.saveContext;
+
+    try {
+      runtime.start();
+      await runtime.tickWorkspace(tmpDir);
+      await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+    } finally {
+      state.taskStore.saveContext = originalSaveContext;
+      runtime.stop();
+    }
+
+    const run = store.listRuns(schedule.id, { limit: 1 })[0];
+    assert.ok(run);
+    assert.equal(run?.status, "completed");
+
+    const task = new TaskStore({ workspacePath: tmpDir }).getTask(run?.taskId ?? "");
+    assert.ok(task);
+    assert.equal(task?.status, "completed");
+    assert.equal(task?.result, "summary-ok");
+
+    const warning = loggerSpy.warns.find((entry) => entry.message.includes("stage=save-summary"));
+    assert.ok(warning);
+    assert.ok(warning.message.includes(`workspaceRoot=${tmpDir}`));
+    assert.ok(warning.message.includes(`scheduleId=${schedule.id}`));
+    assert.ok(warning.message.includes(`externalId=${run?.externalId}`));
+    assert.ok(warning.message.includes(`taskId=${run?.taskId}`));
+    assert.ok(warning.message.includes("err=summary write failed"));
+  });
+
+  it("warns and disables schedule when cron cannot be computed", async () => {
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Invalid cron should disable schedule",
+        spec: buildScheduleSpec({ schedule: { cron: "0 9 1 * *" } }),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    const loggerSpy = createLoggerSpy();
+    const runtime = new SchedulerRuntime({
+      enabled: false,
+      logger: loggerSpy.logger,
+    });
+    runtime.registerWorkspace(tmpDir);
+
+    try {
+      await runtime.tickWorkspace(tmpDir);
+    } finally {
+      runtime.stop();
+    }
+
+    const updated = store.getSchedule(schedule.id);
+    assert.ok(updated);
+    assert.equal(updated?.enabled, false);
+    assert.equal(updated?.nextRunAt, null);
+
+    const run = store.listRuns(schedule.id, { limit: 1 })[0];
+    assert.ok(run);
+
+    const warning = loggerSpy.warns.find((entry) => entry.message.includes("stage=compute-next-run"));
+    assert.ok(warning);
+    assert.ok(warning.message.includes(`workspaceRoot=${tmpDir}`));
+    assert.ok(warning.message.includes(`scheduleId=${schedule.id}`));
+    assert.ok(warning.message.includes(`externalId=${run?.externalId}`));
+    assert.ok(warning.message.includes("err=Only dom='*' and mon='*' are supported"));
   });
 });
