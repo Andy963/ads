@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, ref } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
 import type { ReviewSnapshot, Task, TaskQueueStatus } from "../api/types";
 import type { ApiClient } from "../api/client";
-import DraggableModal from "./DraggableModal.vue";
+import TaskBoardDetailModal from "./TaskBoardDetailModal.vue";
+import TaskBoardReviewSnapshotModal from "./TaskBoardReviewSnapshotModal.vue";
+import TaskBoardEditModal from "./TaskBoardEditModal.vue";
 import { deriveTaskStage, type TaskStage } from "../lib/task_stage";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
@@ -479,8 +481,8 @@ const totalVisibleTasks = computed(() => stageSections.value.reduce((sum, sectio
 const stageCollapsed = ref<Record<TaskStage, boolean>>({
   backlog: false,
   in_progress: false,
-  in_review: true,
-  done: true,
+  in_review: false,
+  done: false,
 });
 
 function toggleStageCollapse(stage: TaskStage): void {
@@ -598,10 +600,12 @@ const editBootstrapEnabled = ref(false);
 const editBootstrapProject = ref("");
 const editBootstrapMaxIterations = ref(10);
 const error = ref<string | null>(null);
-const editTitleEl = ref<HTMLInputElement | null>(null);
 
 const editAgentOptions = computed(() => {
-  return readyAgentOptions.value;
+  return readyAgentOptions.value.map((agent) => ({
+    id: agent.id,
+    label: formatAgentLabel(agent),
+  }));
 });
 
 const editingTask = computed(() => {
@@ -624,9 +628,6 @@ function startEdit(task: Task): void {
   editBootstrapProject.value = bootstrap?.projectRef ?? "";
   editBootstrapMaxIterations.value = bootstrap?.maxIterations ?? 10;
   error.value = null;
-  void nextTick(() => {
-    editTitleEl.value?.focus();
-  });
 }
 
 function stopEdit(): void {
@@ -976,205 +977,59 @@ function toggleQueue(): void {
       </div>
     </div>
 
-    <DraggableModal v-if="detailTask" card-variant="large" data-testid="task-detail-modal" @close="closeDetail">
-      <div class="detailModalHeader" data-drag-handle>
-        <div class="detailModalTitle">{{ detailTask.title || "(未命名任务)" }}</div>
-        <div class="detailModalHeaderActions">
-          <button v-if="canMarkReviewDone" class="btnPrimary btnCompact" type="button" data-testid="task-review-mark-done" @click="emit('markDone', detailTask.id)">
-            标记完成
-          </button>
-          <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-detail-close" @click="closeDetail">
-            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd"
-                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-                clip-rule="evenodd" />
-            </svg>
-          </button>
-        </div>
-      </div>
+    <TaskBoardDetailModal
+      v-if="detailTask"
+      :task="detailTask"
+      :status-label="statusLabel(detailTask.status)"
+      :reviewed-at-text="formatTs(detailTask.reviewedAt)"
+      :review-badge="reviewBadge(detailTask)"
+      :can-mark-review-done="canMarkReviewDone"
+      :can-view-review-notes="canViewReviewNotes"
+      :show-task-prompt="showTaskPromptInDetail"
+      @close="closeDetail"
+      @mark-done="emit('markDone', $event)"
+      @view-review-notes="openReviewSnapshot"
+    />
 
-      <div class="detailModalBody">
-        <div class="detailMetaGrid">
-          <div class="detailMetaRow">
-            <span class="detailMetaKey">状态</span>
-            <span class="detailMetaValue">{{ statusLabel(detailTask.status) }}</span>
-          </div>
-          <div class="detailMetaRow">
-            <span class="detailMetaKey">模型</span>
-            <span class="detailMetaValue detailMono">{{ detailTask.model }}</span>
-          </div>
-          <div class="detailMetaRow">
-            <span class="detailMetaKey">ID</span>
-            <span class="detailMetaValue detailMono">{{ detailTask.id }}</span>
-          </div>
-        </div>
+    <TaskBoardReviewSnapshotModal
+      v-if="reviewSnapshotOpen"
+      :task-id="detailTask?.id ?? null"
+      :snapshot-id="detailTask?.reviewSnapshotId ?? null"
+      :snapshot="reviewSnapshot"
+      :busy="reviewSnapshotBusy"
+      :error="reviewSnapshotError"
+      @close="closeReviewSnapshot"
+    />
 
-        <div v-if="detailTask.reviewRequired" class="detailSection" data-testid="task-review-detail">
-          <div class="detailSectionTitle">审核</div>
-          <div class="detailMetaGrid">
-            <div class="detailMetaRow">
-              <span class="detailMetaKey">状态</span>
-              <span v-if="reviewBadge(detailTask)" class="badge" :data-review="reviewBadge(detailTask)!.status" :title="reviewBadge(detailTask)!.title">
-                {{ reviewBadge(detailTask)!.label }}
-              </span>
-              <span v-else class="detailMetaValue">-</span>
-            </div>
-            <div class="detailMetaRow">
-              <span class="detailMetaKey">时间</span>
-              <span class="detailMetaValue">{{ formatTs(detailTask.reviewedAt) || "-" }}</span>
-            </div>
-            <div class="detailMetaRow">
-              <span class="detailMetaKey">快照</span>
-              <span class="detailMetaValue detailMono">{{ detailTask.reviewSnapshotId ? detailTask.reviewSnapshotId.slice(0, 8) : "-" }}</span>
-              <button class="btnSecondary btnCompact" type="button" data-testid="task-review-view-notes" :disabled="!canViewReviewNotes" @click="openReviewSnapshot">
-                查看审核备注
-              </button>
-            </div>
-          </div>
-
-          <div class="detailConclusion">
-            <div class="detailSectionTitle sub">结论</div>
-            <pre v-if="detailTask.reviewConclusion" class="detailMono preWrap" data-testid="task-review-conclusion">{{ detailTask.reviewConclusion }}</pre>
-            <div v-else class="detailEmpty" data-testid="task-review-conclusion-empty">暂无审核结论</div>
-          </div>
-        </div>
-
-        <div v-if="showTaskPromptInDetail" class="detailSection">
-          <div class="detailSectionTitle">任务描述</div>
-          <pre class="detailMono preWrap" data-testid="task-detail-prompt">{{ detailTask.prompt }}</pre>
-        </div>
-      </div>
-    </DraggableModal>
-
-    <DraggableModal v-if="reviewSnapshotOpen" card-variant="large" data-testid="task-review-notes-modal" @close="closeReviewSnapshot">
-      <div class="snapshotHeader" data-drag-handle>
-        <div class="snapshotTitle">审核备注</div>
-        <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-review-notes-close" @click="closeReviewSnapshot">
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path fill-rule="evenodd"
-              d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-              clip-rule="evenodd" />
-          </svg>
-        </button>
-      </div>
-
-      <div class="snapshotBody">
-        <div class="snapshotMeta">
-          <div v-if="detailTask"><span class="metaKey">任务</span> <span class="detailMono">{{ detailTask.id }}</span></div>
-          <div v-if="detailTask?.reviewSnapshotId"><span class="metaKey">快照</span> <span class="detailMono">{{ detailTask.reviewSnapshotId }}</span></div>
-        </div>
-
-        <div v-if="reviewSnapshotError" class="snapshotError">{{ reviewSnapshotError }}</div>
-        <div v-else-if="reviewSnapshotBusy" class="snapshotEmpty">加载中…</div>
-        <div v-else-if="!reviewSnapshot" class="snapshotEmpty">未找到快照</div>
-        <div v-else class="snapshotContent">
-          <div class="snapshotSection">
-            <div class="snapshotSectionTitle">变更文件 ({{ reviewSnapshot.changedFiles.length }})</div>
-            <div v-if="reviewSnapshot.changedFiles.length === 0" class="snapshotEmptyInline">(none)</div>
-            <ul v-else class="snapshotFiles">
-              <li v-for="(p, idx) in reviewSnapshot.changedFiles" :key="idx" class="detailMono">{{ p }}</li>
-            </ul>
-          </div>
-
-          <div class="snapshotSection">
-            <div class="snapshotSectionTitle">Diff</div>
-            <div v-if="reviewSnapshot.patch?.truncated" class="snapshotHint">⚠️ diff is truncated</div>
-            <pre class="snapshotDiff detailMono">{{ reviewSnapshot.patch?.diff || "" }}</pre>
-          </div>
-
-          <div v-if="reviewSnapshot.lintSummary || reviewSnapshot.testSummary" class="snapshotSection">
-            <div class="snapshotSectionTitle">摘要</div>
-            <div v-if="reviewSnapshot.lintSummary" class="snapshotSummary"><span class="metaKey">Lint</span> {{ reviewSnapshot.lintSummary }}</div>
-            <div v-if="reviewSnapshot.testSummary" class="snapshotSummary"><span class="metaKey">Test</span> {{ reviewSnapshot.testSummary }}</div>
-          </div>
-        </div>
-      </div>
-    </DraggableModal>
-
-    <DraggableModal v-if="editingTask" card-variant="large" data-testid="task-edit-modal" @close="stopEdit">
-      <div class="editModalInner">
-      <div class="modalHeader">
-        <div class="modalTitle" data-drag-handle>编辑任务</div>
-        <button class="iconBtn" type="button" aria-label="关闭" title="关闭" data-testid="task-edit-modal-cancel"
-          @click="stopEdit">
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path fill-rule="evenodd"
-              d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-              clip-rule="evenodd" />
-          </svg>
-        </button>
-      </div>
-
-      <div class="modalBody">
-        <div class="modalTitle main" data-drag-handle>编辑任务</div>
-        <div v-if="error" class="err">{{ error }}</div>
-
-        <label class="field">
-          <span class="label">标题</span>
-          <input ref="editTitleEl" v-model="editTitle" data-testid="task-edit-title" />
-        </label>
-
-        <div class="configRow">
-          <label class="field">
-            <span class="label">执行器</span>
-            <select v-model="editAgentId" data-testid="task-edit-agent">
-              <option value="">自动</option>
-              <option v-for="a in editAgentOptions" :key="a.id" :value="a.id">
-                {{ formatAgentLabel(a) }}
-              </option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="label">优先级</span>
-            <input v-model.number="editPriority" type="number" />
-          </label>
-          <label class="field">
-            <span class="label">最大重试</span>
-            <input v-model.number="editMaxRetries" type="number" min="0" />
-          </label>
-        </div>
-
-        <div class="configRow configRowCheckboxes">
-          <label class="field bootstrapToggle">
-            <input type="checkbox" v-model="editReviewRequired" data-testid="task-edit-review-required" />
-            <span class="label" style="display:inline;margin:0 0 0 6px;">需要 Reviewer 审核</span>
-          </label>
-          <label class="field bootstrapToggle">
-            <input type="checkbox" v-model="editBootstrapEnabled" data-testid="task-edit-bootstrap-toggle" />
-            <span class="label" style="display:inline;margin:0 0 0 6px;">自举模式</span>
-          </label>
-        </div>
-
-        <div v-if="editBootstrapEnabled" class="configRow">
-          <label class="field" style="flex:1;">
-            <span class="label">项目路径 / Git URL</span>
-            <input v-model="editBootstrapProject" placeholder="/path/to/project 或 https://..." data-testid="task-edit-bootstrap-project" />
-          </label>
-          <label class="field" style="width:100px;">
-            <span class="label">最大迭代</span>
-            <input v-model.number="editBootstrapMaxIterations" type="number" min="1" max="10" data-testid="task-edit-bootstrap-max-iterations" />
-          </label>
-        </div>
-
-        <label class="field editPromptField">
-          <span class="label">任务描述</span>
-          <textarea v-model="editPrompt" data-testid="task-edit-prompt" />
-        </label>
-
-        <div class="actions">
-          <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="stopEdit">取消</button>
-          <button v-if="showEditSaveButton" class="btnSecondary" type="button" :disabled="!editingTask"
-            data-testid="task-edit-modal-save" @click="saveEdit(editingTask)">
-            保存
-          </button>
-          <button class="btnPrimary" type="button" :disabled="!editingTask" data-testid="task-edit-modal-save-and-run"
-            @click="editingTask && saveEditAndRun(editingTask)">
-            {{ editPrimaryLabel }}
-          </button>
-        </div>
-      </div>
-      </div>
-    </DraggableModal>
+    <TaskBoardEditModal
+      v-if="editingTask"
+      :task="editingTask"
+      :error="error"
+      :title="editTitle"
+      :prompt="editPrompt"
+      :agent-id="editAgentId"
+      :priority="editPriority"
+      :max-retries="editMaxRetries"
+      :review-required="editReviewRequired"
+      :bootstrap-enabled="editBootstrapEnabled"
+      :bootstrap-project="editBootstrapProject"
+      :bootstrap-max-iterations="editBootstrapMaxIterations"
+      :agent-options="editAgentOptions"
+      :show-save-button="showEditSaveButton"
+      :primary-label="editPrimaryLabel"
+      @close="stopEdit"
+      @save="saveEdit(editingTask)"
+      @save-and-run="saveEditAndRun(editingTask)"
+      @update:title="editTitle = $event"
+      @update:prompt="editPrompt = $event"
+      @update:agent-id="editAgentId = $event"
+      @update:priority="editPriority = $event"
+      @update:max-retries="editMaxRetries = $event"
+      @update:review-required="editReviewRequired = $event"
+      @update:bootstrap-enabled="editBootstrapEnabled = $event"
+      @update:bootstrap-project="editBootstrapProject = $event"
+      @update:bootstrap-max-iterations="editBootstrapMaxIterations = $event"
+    />
   </div>
 </template>
 <style src="./TaskBoard.css" scoped></style>
