@@ -340,10 +340,10 @@ onBeforeUnmount(() => {
       :busy="busy"
       :header-action="headerAction"
       :header-resume-action="headerResumeAction"
+      :thread-warning="threadWarning"
       @new-session="emit('newSession')"
       @resume-thread="emit('resumeThread')"
     />
-    <div v-if="threadWarning" class="threadWarningBanner">{{ threadWarning }}</div>
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <MainChatMessageList
         :messages="messages"

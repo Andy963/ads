@@ -182,4 +182,27 @@ describe("MainChat header UI", () => {
     expect(btn.attributes("disabled")).toBeDefined();
     wrapper.unmount();
   });
+
+  it("renders thread warnings inside the header instead of a separate banner", () => {
+    const warning = "Context thread was reset. Chat history may not match model context.";
+    const wrapper = mount(MainChat, {
+      props: {
+        title: "Worker",
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        threadWarning: warning,
+      },
+      global: { stubs: { MarkdownContent: true } },
+    });
+
+    const headerWarning = wrapper.find('[data-testid="main-chat-thread-warning"]');
+    expect(headerWarning.exists()).toBe(true);
+    expect(headerWarning.text()).toContain(warning);
+    expect(wrapper.findComponent({ name: "MainChatHeader" }).text()).toContain(warning);
+    expect(wrapper.find(".threadWarningBanner").exists()).toBe(false);
+    wrapper.unmount();
+  });
 });

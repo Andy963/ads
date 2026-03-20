@@ -9,6 +9,7 @@ const props = defineProps<{
   busy: boolean;
   headerAction?: HeaderAction;
   headerResumeAction?: HeaderResumeAction;
+  threadWarning?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -18,8 +19,13 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="paneHeader">
-    <div class="paneTitle">{{ props.title }}</div>
+  <div class="paneHeader" :class="{ 'paneHeader--withWarning': Boolean(props.threadWarning) }">
+    <div class="paneHeaderMain">
+      <div class="paneTitle">{{ props.title }}</div>
+      <div v-if="props.threadWarning" class="paneHeaderWarning" data-testid="main-chat-thread-warning">
+        {{ props.threadWarning }}
+      </div>
+    </div>
     <div class="paneHeaderActions">
       <button
         v-if="props.headerResumeAction"
@@ -59,9 +65,19 @@ const emit = defineEmits<{
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+}
+
+.paneHeader--withWarning {
+  align-items: flex-start;
+}
+
+.paneHeaderMain {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .paneTitle {
@@ -71,10 +87,24 @@ const emit = defineEmits<{
   letter-spacing: 0.02em;
 }
 
+.paneHeaderWarning {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #c2410c;
+  word-break: break-word;
+}
+
 .paneHeaderActions {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
+}
+
+.paneHeader--withWarning .paneHeaderActions {
+  padding-top: 1px;
+  align-self: flex-start;
 }
 
 .paneHeaderIconBtn {

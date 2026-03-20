@@ -14,16 +14,6 @@
   border-top-color: #22c55e;
 }
 
-.threadWarningBanner {
-  flex: 0 0 auto;
-  border-bottom: 1px solid rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.12);
-  padding: 8px 12px;
-  font-size: 13px;
-  color: #b45309;
-  word-break: break-word;
-}
-
 .chat {
   flex: 1 1 auto;
   overflow-y: auto;
