@@ -104,6 +104,51 @@ describe("DraggableModal", () => {
     expect(y).toBeLessThanOrEqual(402);
   });
 
+  it("does not close when a gesture starts inside the card and ends on the overlay", async () => {
+    const wrapper = mount(DraggableModal, {
+      props: { cardVariant: "default" },
+      slots: {
+        default: `
+          <div>
+            <div>Body</div>
+            <textarea data-testid="modal-textarea"></textarea>
+          </div>
+        `,
+      },
+    });
+
+    await nextTick();
+
+    const overlay = wrapper.find(".draggableOverlay");
+    const textarea = wrapper.find("[data-testid='modal-textarea']");
+
+    dispatchPointerEvent(textarea.element, "pointerdown", { button: 0, pointerId: 3, clientX: 100, clientY: 100 });
+    dispatchPointerEvent(overlay.element, "pointerup", { pointerId: 3, clientX: 900, clientY: 900 });
+    await overlay.trigger("click");
+
+    expect(wrapper.emitted("close")).toBeFalsy();
+  });
+
+  it("closes when the gesture starts on the overlay itself", async () => {
+    const wrapper = mount(DraggableModal, {
+      props: { cardVariant: "default" },
+      slots: {
+        default: `<div>Modal Content</div>`,
+      },
+    });
+
+    await nextTick();
+
+    const overlay = wrapper.find(".draggableOverlay");
+
+    dispatchPointerEvent(overlay.element, "pointerdown", { button: 0, pointerId: 4, clientX: 20, clientY: 20 });
+    dispatchPointerEvent(overlay.element, "pointerup", { pointerId: 4, clientX: 20, clientY: 20 });
+    await overlay.trigger("click");
+
+    expect(wrapper.emitted("close")).toBeTruthy();
+    expect(wrapper.emitted("close")?.length).toBe(1);
+  });
+
   it("emits close when Escape key is pressed", async () => {
     const wrapper = mount(DraggableModal, {
       props: { cardVariant: "default" },
@@ -114,7 +159,6 @@ describe("DraggableModal", () => {
 
     await nextTick();
 
-    // Dispatch keydown event on window
     const escapeEvent = new KeyboardEvent("keydown", { key: "Escape" });
     window.dispatchEvent(escapeEvent);
 

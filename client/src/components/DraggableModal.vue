@@ -34,6 +34,7 @@ let minOffsetY = -Infinity;
 let maxOffsetY = Infinity;
 let draggedThisGesture = false;
 let suppressOverlayClick = false;
+let allowOverlayCloseForGesture = false;
 
 const MIN_VISIBLE_X_PX = 48;
 const MIN_VISIBLE_TOP_PX = 64;
@@ -89,6 +90,7 @@ function updateBounds(): void {
 }
 
 function onPointerDown(ev: PointerEvent): void {
+  allowOverlayCloseForGesture = ev.target === ev.currentTarget;
   if (!isDraggableStart(ev)) return;
   const root = ev.currentTarget as HTMLElement | null;
   if (!root?.setPointerCapture) return;
@@ -155,7 +157,7 @@ function onWindowKeydown(ev: KeyboardEvent): void {
 }
 
 function onOverlayClick(): void {
-  if (suppressOverlayClick) {
+  if (suppressOverlayClick || !allowOverlayCloseForGesture) {
     return;
   }
   emit("close");
