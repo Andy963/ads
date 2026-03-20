@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
 import type { ReviewSnapshot, Task, TaskQueueStatus } from "../api/types";
 import type { ApiClient } from "../api/client";
@@ -478,12 +478,24 @@ const stageSections = computed((): TaskStageSection[] => {
 
 const totalVisibleTasks = computed(() => stageSections.value.reduce((sum, section) => sum + section.tasks.length, 0));
 
-const stageCollapsed = ref<Record<TaskStage, boolean>>({
-  backlog: false,
-  in_progress: false,
-  in_review: false,
-  done: false,
-});
+function defaultStageCollapsed(): Record<TaskStage, boolean> {
+  return {
+    backlog: true,
+    in_progress: true,
+    in_review: true,
+    done: true,
+  };
+}
+
+const stageCollapsed = ref<Record<TaskStage, boolean>>(defaultStageCollapsed());
+
+watch(
+  () => String(props.workspaceRoot ?? "").trim(),
+  (next, prev) => {
+    if (next === prev) return;
+    stageCollapsed.value = defaultStageCollapsed();
+  },
+);
 
 function toggleStageCollapse(stage: TaskStage): void {
   stageCollapsed.value[stage] = !stageCollapsed.value[stage];

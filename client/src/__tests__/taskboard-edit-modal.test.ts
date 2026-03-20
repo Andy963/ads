@@ -30,6 +30,12 @@ function makeTask(overrides: Partial<Task>): Task {
   };
 }
 
+async function expandStage(wrapper: ReturnType<typeof mount>, stage: "backlog" | "in_progress" | "in_review" | "done"): Promise<void> {
+  const container = wrapper.get(`[data-testid="task-stage-${stage}"]`);
+  await container.get("button.stageHeader").trigger("click");
+  await wrapper.vm.$nextTick();
+}
+
 describe("TaskBoard edit modal", () => {
   const agents = [{ id: "codex", name: "Codex", ready: true }];
 
@@ -50,6 +56,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -84,6 +91,61 @@ describe("TaskBoard edit modal", () => {
     wrapper.unmount();
   });
 
+  it("starts with all task stages collapsed", async () => {
+    const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending" });
+
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task],
+        agents,
+        activeAgentId: "codex",
+        selectedId: null,
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set<string>(),
+      },
+      attachTo: document.body,
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.findAll(".item")).toHaveLength(0);
+    expect(wrapper.get('[data-testid="task-stage-backlog"] .stageToggleIcon').classes()).toContain("collapsed");
+    expect(wrapper.get('[data-testid="task-stage-backlog"]').text()).toContain("待办");
+    expect(wrapper.get('[data-testid="task-stage-backlog"]').text()).toContain("1");
+
+    wrapper.unmount();
+  });
+
+  it("re-collapses stages after workspace switch", async () => {
+    const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending" });
+
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task],
+        workspaceRoot: "/tmp/ws-a",
+        agents,
+        activeAgentId: "codex",
+        selectedId: null,
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set<string>(),
+      },
+      attachTo: document.body,
+    });
+    await wrapper.vm.$nextTick();
+
+    await expandStage(wrapper, "backlog");
+    expect(wrapper.findAll(".item")).toHaveLength(1);
+
+    await wrapper.setProps({ workspaceRoot: "/tmp/ws-b" });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.findAll(".item")).toHaveLength(0);
+    expect(wrapper.get('[data-testid="task-stage-backlog"] .stageToggleIcon').classes()).toContain("collapsed");
+
+    wrapper.unmount();
+  });
+
   it("closes without emitting updates on cancel", async () => {
     const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending" });
 
@@ -100,6 +162,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -130,6 +193,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -171,6 +235,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -214,6 +279,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -238,6 +304,7 @@ describe("TaskBoard edit modal", () => {
     });
     await wrapper.vm.$nextTick();
 
+    await expandStage(wrapper, "done");
     expect(wrapper.findAll(".item")).toHaveLength(1);
     expect(wrapper.find('[data-testid="task-stage-done"]').text()).toContain("已完成");
 
@@ -266,6 +333,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -321,6 +389,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 
@@ -367,6 +436,7 @@ describe("TaskBoard edit modal", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "backlog");
     await wrapper.find('[data-testid="task-edit"]').trigger("click");
     await wrapper.vm.$nextTick();
 

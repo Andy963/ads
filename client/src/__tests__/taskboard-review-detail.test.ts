@@ -40,6 +40,12 @@ function makeTask(overrides: Partial<Task>): Task {
   };
 }
 
+async function expandStage(wrapper: ReturnType<typeof mount>, stage: "backlog" | "in_progress" | "in_review" | "done"): Promise<void> {
+  const container = wrapper.get(`[data-testid="task-stage-${stage}"]`);
+  await container.get("button.stageHeader").trigger("click");
+  await wrapper.vm.$nextTick();
+}
+
 describe("TaskBoard review detail", () => {
   it("renders compact review badge, opens detail modal, and emits markDone", async () => {
     const task = makeTask({
@@ -85,6 +91,7 @@ describe("TaskBoard review detail", () => {
       attachTo: document.body,
     });
 
+    await expandStage(wrapper, "in_review");
     expect(wrapper.text()).toContain("驳回");
     expect(wrapper.text()).not.toContain("Review:");
     expect(wrapper.find('button[title="重新执行"]').exists()).toBe(false);
@@ -113,4 +120,3 @@ describe("TaskBoard review detail", () => {
     wrapper.unmount();
   });
 });
-
