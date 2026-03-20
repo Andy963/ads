@@ -1,0 +1,3 @@
+## 2026-03-20 - Graph Edge Queries Suffer Without Appropriate Indexes
+**Learning:** The graph implementation frequently relies on specific combined lookups like `(source, edge_type)` and `(target)` when executing operations such as `getParentNodes`, `getNextNode`, and `getEdgesFromNode`. However, the initial schema didn't contain indexes for these frequently hit combinations, creating an N+1 scaling bottleneck as graph sizes grow since it would result in a full table scan.
+**Action:** Always ensure that relationship-heavy tables (like `edges` linking `nodes`) have appropriate compound or targeted indexes matching their query patterns.

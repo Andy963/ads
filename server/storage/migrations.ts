@@ -497,6 +497,19 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 14,
+    description: "Graph edges - add indexes for source and target queries",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_edges_source_edge_type
+          ON edges(source, edge_type);
+
+        CREATE INDEX IF NOT EXISTS idx_edges_target
+          ON edges(target);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,
