@@ -1024,8 +1024,7 @@ export async function handlePromptMessage(deps: {
             : classifyError(error);
 
         const logMessage = `[${errorInfo.code}] ${errorInfo.message}`;
-        const stack = error instanceof Error ? error.stack : undefined;
-        deps.sessionLogger?.logError(stack ? `${logMessage}\n${stack}` : logMessage);
+        deps.sessionLogger?.logError(logMessage);
         deps.logger.warn(`[Prompt Error] code=${errorInfo.code} retryable=${errorInfo.retryable} needsReset=${errorInfo.needsReset} message=${errorInfo.message}`);
 
         deps.historyStore.add(deps.historyKey, {

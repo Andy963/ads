@@ -97,7 +97,7 @@ export async function handleCodexMessage(
     const timestamp = new Date().toISOString();
     const detail = error
       ? error instanceof Error
-        ? error.stack ?? error.message
+        ? error.message
         : String(error)
       : '';
     try {
