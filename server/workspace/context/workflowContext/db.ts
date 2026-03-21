@@ -38,37 +38,45 @@ export function getParentNodesFromWorkspace(nodeId: string, workspace: string, r
   const db = new Database(dbPath, { readonly: true });
 
   try {
-    const parents: GraphNode[] = [];
-    const seen = new Set<string>();
-    let current = nodeId;
-
-    while (true) {
+    if (!recursive) {
       const edge = db
         .prepare("SELECT source FROM edges WHERE target = ? AND source != ? LIMIT 1")
-        .get(current, current) as { source?: string } | undefined;
+        .get(nodeId, nodeId) as { source?: string } | undefined;
+
       if (!edge?.source) {
-        break;
-      }
-      if (seen.has(edge.source)) {
-        break;
+        return [];
       }
 
       const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(edge.source) as NodeDbRow | undefined;
-      if (!row) {
-        break;
-      }
-
-      const node = mapNodeRow(row);
-      parents.push(node);
-      seen.add(node.id);
-
-      if (!recursive) {
-        break;
-      }
-      current = node.id;
+      return row ? [mapNodeRow(row)] : [];
     }
 
-    return parents;
+    const sql = `
+      WITH RECURSIVE lineage AS (
+        -- Anchor: find all parents of the start node
+        SELECT source, target, 1 as depth, '/' || target || '/' || source || '/' as path
+        FROM edges
+        WHERE target = ? AND source != target
+
+        UNION ALL
+
+        -- Recursive: find parents of the previous parents
+        SELECT e.source, e.target, l.depth + 1, l.path || e.source || '/'
+        FROM edges e
+        JOIN lineage l ON e.target = l.source
+        WHERE e.source != e.target
+          AND l.depth < 100
+          AND l.path NOT LIKE '%/' || e.source || '/%'
+      )
+      SELECT n.*
+      FROM lineage l
+      JOIN nodes n ON n.id = l.source
+      GROUP BY n.id
+      ORDER BY min(l.depth) ASC;
+    `;
+
+    const rows = db.prepare(sql).all(nodeId) as NodeDbRow[];
+    return rows.map((row) => mapNodeRow(row));
   } finally {
     db.close();
   }
