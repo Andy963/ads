@@ -927,7 +927,7 @@ function toggleQueue(): void {
                     </svg>
                   </button>
                   <button v-if="isActionAllowed(t, 'rerun') && canRerunTask(t) && editingId !== t.id"
-                    class="iconBtn primary" type="button" title="重新执行" :disabled="Boolean(editingId)"
+                    class="iconBtn primary" type="button" title="重新执行" aria-label="重新执行" :disabled="Boolean(editingId)"
                     @click.stop="startEdit(t)">
                     <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                       <path fill-rule="evenodd"
@@ -936,13 +936,13 @@ function toggleQueue(): void {
                     </svg>
                   </button>
                   <button v-if="isActionAllowed(t, 'edit') && canEditTask(t) && !canRerunTask(t) && editingId !== t.id"
-                    class="iconBtn" type="button" title="编辑" :disabled="Boolean(editingId)" data-testid="task-edit"
+                    class="iconBtn" type="button" title="编辑" aria-label="编辑" :disabled="Boolean(editingId)" data-testid="task-edit"
                     @click.stop="startEdit(t)">
                     <el-icon :size="16" aria-hidden="true" class="icon">
                       <Edit />
                     </el-icon>
                   </button>
-                  <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑"
+                  <button v-if="editingId === t.id" class="iconBtn" type="button" title="取消编辑" aria-label="取消编辑"
                     @click.stop="stopEdit()">
                     <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                       <path fill-rule="evenodd"
@@ -951,18 +951,18 @@ function toggleQueue(): void {
                     </svg>
                   </button>
                   <button v-if="isActionAllowed(t, 'cancel') && (t.status === 'running' || t.status === 'planning')"
-                    class="iconBtn danger" type="button" title="终止任务" @click.stop="emit('cancel', t.id)">
+                    class="iconBtn danger" type="button" title="终止任务" aria-label="终止任务" @click.stop="emit('cancel', t.id)">
                     <span class="interruptSpinner" aria-hidden="true" />
                   </button>
                   <button v-if="isActionAllowed(t, 'retry') && t.status === 'failed'" class="iconBtn" type="button"
-                    title="重试" @click.stop="emit('retry', t.id)">
+                    title="重试" aria-label="重试" @click.stop="emit('retry', t.id)">
                     <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                       <path fill-rule="evenodd"
                         d="M10 4a6 6 0 0 0-5.2 9h2.1a1 1 0 0 1 .8 1.6l-2.4 3.2a1 1 0 0 1-1.6 0l-2.4-3.2A1 1 0 0 1 2.1 13h1.2A8 8 0 1 1 10 18a.75.75 0 0 1 0-1.5A6.5 6.5 0 1 0 3.62 10a.75.75 0 1 1-1.5 0A8 8 0 0 1 10 2a.75.75 0 0 1 0 1.5Z"
                         clip-rule="evenodd" />
                     </svg>
                   </button>
-                  <button v-if="isActionAllowed(t, 'delete')" class="iconBtn danger" type="button" title="删除任务"
+                  <button v-if="isActionAllowed(t, 'delete')" class="iconBtn danger" type="button" title="删除任务" aria-label="删除任务"
                     :disabled="t.status === 'running' || t.status === 'planning'" @click.stop="emit('delete', t.id)">
                     <el-icon :size="16" aria-hidden="true" class="icon">
                       <Delete />
