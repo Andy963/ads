@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 import { deriveProjectSessionId } from "../../projectSessionId.js";
 import { validateWorkspacePath } from "./workspacePath.js";
 
@@ -6,6 +8,27 @@ import { sendJson } from "../../http.js";
 
 export async function handlePathRoutes(ctx: ApiRouteContext, deps: { allowedDirs: string[] }): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
+  if (req.method === "GET" && pathname === "/api/paths/subdirs") {
+    const dirs: string[] = [];
+    for (const allowedDir of deps.allowedDirs) {
+      try {
+        const entries = fs.readdirSync(allowedDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && !entry.name.startsWith(".")) {
+            dirs.push(entry.name);
+          }
+        }
+      } catch {
+        // ignore dirs that don't exist
+      }
+    }
+    sendJson(res, 200, {
+      dirs: [...new Set(dirs)],
+      allowedDirs: deps.allowedDirs,
+    });
+    return true;
+  }
+
   if (req.method !== "GET" || pathname !== "/api/paths/validate") {
     return false;
   }

@@ -58,9 +58,24 @@ export function validateWorkspacePath(args: {
     };
   }
 
+  let resolvedCandidate = candidate;
+  if (!path.isAbsolute(resolvedCandidate)) {
+    for (const dir of args.allowedDirs) {
+      const joined = path.join(dir, resolvedCandidate);
+      try {
+        if (fs.existsSync(joined) && fs.statSync(joined).isDirectory()) {
+          resolvedCandidate = joined;
+          break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   const directoryManager = new DirectoryManager(args.allowedDirs);
   const allowWorkspaceRootFallback = args.allowWorkspaceRootFallback !== false;
-  const absolutePath = path.resolve(candidate);
+  const absolutePath = path.resolve(resolvedCandidate);
   if (!directoryManager.validatePath(absolutePath)) {
     return {
       ok: false,

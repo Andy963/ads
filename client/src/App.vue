@@ -101,6 +101,7 @@ const {
   projectDialogError,
   projectDialogPathStatus,
   projectDialogPathMessage,
+  projectDialogSubdirs,
   workspacePath,
   projectPathEl,
   projectNameEl,
@@ -629,13 +630,14 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
         <div class="modalDesc">每个项目会对应一个独立会话（session），对话和工作目录互不串。</div>
 
         <div class="modalForm">
-          <label class="modalLabel" for="project-path">项目目录路径（PC 上的路径）</label>
+          <label class="modalLabel" for="project-path">项目目录（可输入名称或完整路径）</label>
           <input
             id="project-path"
             v-model="projectDialogPath"
             ref="projectPathEl"
             class="modalInput"
-            placeholder="例如: /home/andy/ads"
+            placeholder="输入目录名或完整路径，如: ads"
+            list="project-subdirs"
             autocomplete="off"
             autocapitalize="off"
             spellcheck="false"
@@ -643,6 +645,9 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
             @blur="validateProjectDialogPath()"
             @input="onProjectDialogPathInput"
           />
+          <datalist id="project-subdirs">
+            <option v-for="d in projectDialogSubdirs" :key="d" :value="d" />
+          </datalist>
           <div class="modalHintRow">
             <div
               v-if="projectDialogPathStatus !== 'idle' && projectDialogPathMessage"

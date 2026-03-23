@@ -1,4 +1,4 @@
-import { nextTick } from "vue";
+import { nextTick, ref } from "vue";
 
 import type { AppContext, PathValidateResponse, ProjectTab } from "../controller";
 import type { ChatActions } from "../chat";
@@ -51,6 +51,17 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     switchConfirmOpen,
     pendingSwitchProjectId,
   } = ctx;
+
+  const projectDialogSubdirs = ref<string[]>([]);
+
+  const loadProjectSubdirs = async (): Promise<void> => {
+    try {
+      const result = await api.get<{ dirs: string[]; allowedDirs: string[] }>("/api/paths/subdirs");
+      projectDialogSubdirs.value = result.dirs ?? [];
+    } catch {
+      projectDialogSubdirs.value = [];
+    }
+  };
 
   let projectPathValidationSeq = 0;
 
@@ -445,6 +456,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     projectDialogPathMessage.value = "";
     lastValidatedProjectPath.value = "";
     projectDialogOpen.value = true;
+    void loadProjectSubdirs();
     void nextTick(() => projectPathEl.value?.focus());
   };
 
@@ -454,6 +466,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     projectDialogPathStatus.value = "idle";
     projectDialogPathMessage.value = "";
     lastValidatedProjectPath.value = "";
+    projectDialogSubdirs.value = [];
   };
 
   const useCurrentWorkspacePath = (): void => {
@@ -615,5 +628,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     submitProjectDialog,
     loadProjectsFromServer,
     startNewChatSession,
+    projectDialogSubdirs,
+    loadProjectSubdirs,
   };
 }
