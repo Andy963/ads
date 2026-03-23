@@ -497,6 +497,16 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 13,
+    description: "Scheduler - add idx_edges_source and idx_edges_target for performance",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
+        CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,
