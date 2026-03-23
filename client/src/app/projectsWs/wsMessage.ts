@@ -408,7 +408,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         resetTurnPatchSummary();
         threadReset(rt, {
           notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
-          warning: "Context thread was reset by backend handshake. Chat history was cleared automatically.",
+          warning: null,
           keepLatestTurn: false,
           clearBackendHistory: false,
           resetThreadId: true,
@@ -465,7 +465,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       resetTurnPatchSummary();
       threadReset(rt, {
         notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
-        warning: "Context thread was reset by backend signal. Chat history was cleared automatically.",
+        warning: null,
         keepLatestTurn: false,
         clearBackendHistory: false,
         resetThreadId: true,
@@ -622,9 +622,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const detail = expectedThreadId && threadId ? ` (expected=${expectedThreadId}, actual=${threadId})` : "";
         threadReset(rt, {
           notice: "Context thread was reset. Chat history was cleared to start a new conversation.",
-          warning:
-            `Context thread was reset${detail}. Chat history may not match model context. ` +
-            "History was cleared automatically.",
+          warning: detail ? `Context thread was reset${detail}.` : null,
           keepLatestTurn: true,
           clearBackendHistory: true,
           resetThreadId: true,

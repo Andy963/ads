@@ -184,7 +184,7 @@ describe("MainChat header UI", () => {
   });
 
   it("renders thread warnings inside the header instead of a separate banner", () => {
-    const warning = "Context thread was reset. Chat history may not match model context.";
+    const warning = "Context thread was reset (expected=thread-old, actual=thread-new).";
     const wrapper = mount(MainChat, {
       props: {
         title: "Worker",
