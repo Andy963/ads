@@ -1,0 +1,4 @@
+## 2024-03-24 - [Path Traversal bypass with startsWith]
+**Vulnerability:** A path traversal vulnerability was present in the web server static file serving logic. It checked that the requested path was within the target directory by using `resolved.startsWith(distClientDir)`. However, if `distClientDir` was `/app/dist/client`, and the resolved path was `/app/dist/client-secrets/key.json`, the `startsWith` check succeeded despite pointing to an external directory.
+**Learning:** Checking directory containment with string prefix matching (`startsWith`) on paths without an trailing directory separator (`path.sep`) is vulnerable to matching siblings with the same prefix.
+**Prevention:** Ensure the base path ends with `path.sep` before performing a `startsWith` prefix check for path traversal mitigation.

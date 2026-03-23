@@ -126,7 +126,8 @@ export function createHttpServer(options: {
     const normalized = path.posix.normalize(rel);
     const safeRel = normalized.startsWith("/") ? normalized : `/${normalized}`;
     const resolved = path.resolve(distClientDir, "." + safeRel);
-    if (!resolved.startsWith(distClientDir)) {
+    const expectedDist = distClientDir.endsWith(path.sep) ? distClientDir : distClientDir + path.sep;
+    if (!resolved.startsWith(expectedDist) && resolved !== distClientDir) {
       setSecurityHeaders(res);
       res.writeHead(403).end("Forbidden");
       return true;

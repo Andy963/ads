@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
+    "@eslint/js": "^10.0.1",
     "@grammyjs/types": "^3.22.2",
     "@tavily/core": "^0.5.4",
     "better-sqlite3": "^12.6.2",
