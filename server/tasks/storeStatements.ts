@@ -209,7 +209,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
     ),
 
     listModelConfigsStmt: db.prepare(
-      `SELECT * FROM model_configs ORDER BY is_default DESC, display_name ASC`,
+      `SELECT * FROM model_configs ORDER BY is_default DESC, updated_at DESC, display_name ASC`,
     ),
 
     getModelConfigStmt: db.prepare(

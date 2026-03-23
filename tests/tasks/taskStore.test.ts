@@ -231,6 +231,57 @@ describe("tasks/taskStore", () => {
     assert.equal(listed[0]?.updatedAt, now);
   });
 
+  it("should sort model configs by default first, otherwise by most recently updated", () => {
+    const store = new TaskStore();
+
+    store.upsertModelConfig(
+      {
+        id: "older",
+        displayName: "Older",
+        provider: "openai",
+        isEnabled: true,
+        isDefault: false,
+        configJson: null,
+      },
+      100,
+    );
+    store.upsertModelConfig(
+      {
+        id: "newer",
+        displayName: "Newer",
+        provider: "openai",
+        isEnabled: true,
+        isDefault: false,
+        configJson: null,
+      },
+      200,
+    );
+
+    let listed = store.listModelConfigs();
+    assert.deepEqual(
+      listed.map((model) => model.id),
+      ["newer", "older"],
+    );
+
+    store.upsertModelConfig(
+      {
+        id: "default-model",
+        displayName: "Default Model",
+        provider: "openai",
+        isEnabled: true,
+        isDefault: true,
+        configJson: null,
+      },
+      150,
+    );
+
+    listed = store.listModelConfigs();
+    assert.deepEqual(
+      listed.map((model) => model.id),
+      ["default-model", "newer", "older"],
+    );
+  });
+
   it("should persist conversation messages", () => {
     const store = new TaskStore();
     const task = store.createTask({ title: "T", prompt: "P" });
