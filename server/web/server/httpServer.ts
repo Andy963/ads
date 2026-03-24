@@ -126,7 +126,9 @@ export function createHttpServer(options: {
     const normalized = path.posix.normalize(rel);
     const safeRel = normalized.startsWith("/") ? normalized : `/${normalized}`;
     const resolved = path.resolve(distClientDir, "." + safeRel);
-    if (!resolved.startsWith(distClientDir)) {
+    // Sentinel Security Fix: Directory-prefix match instead of string-prefix match
+    // Prevents path traversal vulnerabilities where '/app/dist/client-secrets.txt' starts with '/app/dist/client'
+    if (!resolved.startsWith(distClientDir + path.sep) && resolved !== distClientDir) {
       setSecurityHeaders(res);
       res.writeHead(403).end("Forbidden");
       return true;
