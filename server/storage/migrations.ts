@@ -497,9 +497,19 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 14,
+    description: "Add indexes to edges table on source and target for optimized recursive CTE traversals",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
+        CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
-  //   version: 13,
+  //   version: 15,
   //   description: "Add tags column to nodes",
   //   up: (db) => {
   //     // 检查列是否存在

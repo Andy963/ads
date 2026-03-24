@@ -1,0 +1,3 @@
+## 2024-03-24 - Missing Database Indexes for Graph Traversals
+**Learning:** For graph traversals in SQLite using recursive CTEs, adjacency list-style tables like `edges` must have explicit database indexes on both foreign keys (`source` and `target`) to avoid O(N) sequential table scans that severely impact performance.
+**Action:** Always verify that frequently queried relational foreign keys, especially those in graph connections and edge structures used in recursive queries, have corresponding indexes.
