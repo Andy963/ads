@@ -25,7 +25,7 @@ function parseSingleTelegramAllowedUserIdFromList(raw: string): string | null {
   return parsePositiveIntString(ids[0] ?? "");
 }
 
-function resolveAllowedChatIdFromEnv(): string {
+export function resolveTaskNotificationDefaultTelegramChatIdFromEnv(): string {
   const singleUserRaw = normalizeEnvValue(process.env.TELEGRAM_ALLOWED_USER_ID);
   const legacyAllowedUsersRaw = normalizeEnvValue(process.env.TELEGRAM_ALLOWED_USERS);
 
@@ -49,9 +49,13 @@ function resolveAllowedChatIdFromEnv(): string {
   return "";
 }
 
+export function resolveTaskNotificationTelegramBotTokenFromEnv(): string {
+  return normalizeEnvValue(process.env.TELEGRAM_BOT_TOKEN);
+}
+
 export function resolveTaskNotificationTelegramConfigFromEnv(): TelegramNotifyConfig {
-  const botToken = normalizeEnvValue(process.env.TELEGRAM_BOT_TOKEN);
-  const chatId = resolveAllowedChatIdFromEnv();
+  const botToken = resolveTaskNotificationTelegramBotTokenFromEnv();
+  const chatId = resolveTaskNotificationDefaultTelegramChatIdFromEnv();
 
   if (botToken && chatId) {
     return { ok: true, botToken, chatId };

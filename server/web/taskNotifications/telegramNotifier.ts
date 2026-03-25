@@ -1,4 +1,6 @@
 import type { Logger } from "../../utils/logger.js";
+import { TaskStore } from "../../tasks/store.js";
+import { safeParseJson } from "../../utils/json.js";
 
 import {
   claimTaskNotificationSendLease,
@@ -9,17 +11,32 @@ import {
   recordTaskNotificationFailure,
   recordTaskTerminalStatus,
 } from "./store.js";
-import { resolveTaskNotificationTelegramConfigFromEnv } from "./telegramConfig.js";
+import {
+  resolveTaskNotificationDefaultTelegramChatIdFromEnv,
+  resolveTaskNotificationTelegramBotTokenFromEnv,
+} from "./telegramConfig.js";
 
 type TelegramSendError = { ok: false; error: string; retryAfterSeconds?: number };
 type TelegramSendOk = { ok: true };
 export type TelegramSendResult = TelegramSendOk | TelegramSendError;
 
 export type TelegramSender = (args: { botToken: string; chatId: string; text: string }) => Promise<TelegramSendResult>;
+type TaskNotificationLogger = Pick<Logger, "info" | "warn" | "debug">;
 
 const DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE = "Asia/Shanghai";
 const telegramTimestampFormatterCache = new Map<string, Intl.DateTimeFormat>();
 const pendingTaskResults = new Map<string, string>();
+const TELEGRAM_TEXT_LIMIT = 4000;
+
+type StructuredSchedulerResult = {
+  status?: unknown;
+  summary?: unknown;
+  outputs?: {
+    telegram?: {
+      text?: unknown;
+    };
+  } | null;
+};
 
 function resolveTelegramNotifyTimeZoneFromEnv(): string {
   const raw = String(process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE ?? "").trim();
@@ -132,6 +149,50 @@ function buildTelegramText(row: {
   return lines.join("\n");
 }
 
+function truncateTelegramText(text: string): string {
+  const normalized = String(text ?? "");
+  if (normalized.length <= TELEGRAM_TEXT_LIMIT) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, TELEGRAM_TEXT_LIMIT - 1))}…`;
+}
+
+function loadPersistedTaskResult(workspaceRoot: string, taskId: string): string | null {
+  const root = String(workspaceRoot ?? "").trim();
+  const id = String(taskId ?? "").trim();
+  if (!root || !id) {
+    return null;
+  }
+  try {
+    const result = new TaskStore({ workspacePath: root }).getTask(id)?.result;
+    const normalized = String(result ?? "").trim();
+    return normalized || null;
+  } catch {
+    return null;
+  }
+}
+
+function interpretStructuredSchedulerTelegramResult(
+  result: string | null,
+): { kind: "direct"; text: string } | { kind: "skip" } | null {
+  const parsed = safeParseJson<StructuredSchedulerResult>(result);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(parsed, "outputs")) {
+    return null;
+  }
+  const outputs = parsed.outputs;
+  if (!outputs || typeof outputs !== "object" || Array.isArray(outputs)) {
+    return null;
+  }
+  const text = String(outputs.telegram?.text ?? "").trim();
+  if (text) {
+    return { kind: "direct", text: truncateTelegramText(text) };
+  }
+  return { kind: "skip" };
+}
+
 function computeBackoffNextRetryAt(now: number, retryCount: number): number {
   const baseMs = 5_000;
   const maxMs = 30 * 60_000;
@@ -183,7 +244,7 @@ async function defaultTelegramSender(args: { botToken: string; chatId: string; t
 }
 
 export async function attemptSendTaskTerminalTelegramNotification(args: {
-  logger: Logger;
+  logger: TaskNotificationLogger;
   taskId: string;
   leaseMs?: number;
   maxRetries?: number;
@@ -194,8 +255,8 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
     return "skipped";
   }
 
-  const telegram = resolveTaskNotificationTelegramConfigFromEnv();
-  if (!telegram.ok) {
+  const botToken = resolveTaskNotificationTelegramBotTokenFromEnv();
+  if (!botToken) {
     return "skipped";
   }
 
@@ -211,22 +272,37 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
   if (!row.completedAt || !isTaskTerminalStatus(row.status)) {
     return "skipped";
   }
+  const chatId = String(row.telegramChatId ?? "").trim() || resolveTaskNotificationDefaultTelegramChatIdFromEnv();
+  if (!chatId) {
+    return "skipped";
+  }
 
   const cachedResult = pendingTaskResults.get(taskId) ?? null;
   pendingTaskResults.delete(taskId);
+  const persistedResult = cachedResult ?? loadPersistedTaskResult(row.workspaceRoot, taskId);
+  const structuredDelivery = interpretStructuredSchedulerTelegramResult(persistedResult);
+
+  if (structuredDelivery?.kind === "skip") {
+    markTaskNotificationNotified({ taskId });
+    args.logger.info(`[Web][TaskNotifications] Telegram skipped taskId=${taskId} status=${row.status} reason=no_telegram_output`);
+    return "skipped";
+  }
 
   const sender = args.sender ?? defaultTelegramSender;
-  const text = buildTelegramText({
-    projectName: row.projectName,
-    taskTitle: row.taskTitle,
-    status: row.status,
-    startedAt: row.startedAt,
-    completedAt: row.completedAt,
-    taskId: row.taskId,
-    result: cachedResult,
-  });
+  const text =
+    structuredDelivery?.kind === "direct"
+      ? structuredDelivery.text
+      : buildTelegramText({
+          projectName: row.projectName,
+          taskTitle: row.taskTitle,
+          status: row.status,
+          startedAt: row.startedAt,
+          completedAt: row.completedAt,
+          taskId: row.taskId,
+          result: persistedResult,
+        });
 
-  const result = await sender({ botToken: telegram.botToken, chatId: telegram.chatId, text });
+  const result = await sender({ botToken, chatId, text });
   if (result.ok) {
     markTaskNotificationNotified({ taskId });
     args.logger.info(`[Web][TaskNotifications] Telegram notified taskId=${taskId} status=${row.status}`);
@@ -249,7 +325,7 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
 }
 
 export function notifyTaskTerminalViaTelegram(args: {
-  logger: Logger;
+  logger: TaskNotificationLogger;
   workspaceRoot: string;
   task: { id: string; title?: string | null; status?: string | null; startedAt?: number | null; completedAt?: number | null; result?: string | null };
   terminalStatus: "completed" | "failed" | "cancelled";
@@ -293,7 +369,7 @@ export function notifyTaskTerminalViaTelegram(args: {
 }
 
 export function startTaskTerminalTelegramRetryLoop(args: {
-  logger: Logger;
+  logger: TaskNotificationLogger;
   intervalMs?: number;
   limit?: number;
   maxRetries?: number;
@@ -309,8 +385,7 @@ export function startTaskTerminalTelegramRetryLoop(args: {
   let inProgress = false;
   const tick = async () => {
     if (inProgress) return;
-    const telegram = resolveTaskNotificationTelegramConfigFromEnv();
-    if (!telegram.ok) {
+    if (!resolveTaskNotificationTelegramBotTokenFromEnv()) {
       return;
     }
 

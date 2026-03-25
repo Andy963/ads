@@ -8,7 +8,10 @@ import { ensureWebProjectTables } from "../projects/schema.js";
 import { deriveProjectSessionId } from "../server/projectSessionId.js";
 
 import { ensureTaskNotificationTables } from "./schema.js";
-import { resolveTaskNotificationTelegramConfigFromEnv } from "./telegramConfig.js";
+import {
+  resolveTaskNotificationDefaultTelegramChatIdFromEnv,
+  resolveTaskNotificationTelegramBotTokenFromEnv,
+} from "./telegramConfig.js";
 
 export type TaskTerminalStatus = "completed" | "failed" | "cancelled";
 
@@ -88,6 +91,24 @@ function resolvePositiveInteger(value: unknown, fallback: number): number {
   return normalized > 0 ? normalized : fallback;
 }
 
+function resolveEffectiveTelegramChatId(value: unknown): string {
+  const explicit = normalizeText(value);
+  if (explicit) {
+    return explicit;
+  }
+  return resolveTaskNotificationDefaultTelegramChatIdFromEnv();
+}
+
+function resolveTaskNotificationTelegramEnvState(telegramChatId?: string | null): { botToken: string; chatId: string; ok: boolean } {
+  const botToken = resolveTaskNotificationTelegramBotTokenFromEnv();
+  const chatId = resolveEffectiveTelegramChatId(telegramChatId);
+  return {
+    botToken,
+    chatId,
+    ok: Boolean(botToken && chatId),
+  };
+}
+
 export function isTaskTerminalStatus(status: string): status is TaskTerminalStatus {
   const normalized = normalizeText(status).toLowerCase();
   return TERMINAL_TASK_STATUS_SET.has(normalized);
@@ -158,6 +179,7 @@ export function upsertTaskNotificationBinding(args: {
   workspaceRoot: string;
   taskId: string;
   taskTitle: string;
+  telegramChatId?: string | null;
   now?: number;
   logger?: { warn: (msg: string) => void };
 }): void {
@@ -170,7 +192,7 @@ export function upsertTaskNotificationBinding(args: {
   const taskTitle = normalizeText(args.taskTitle);
   const projectId = deriveProjectSessionId(workspaceRoot);
   const projectName = resolveProjectNameAtCreate(db, args.authUserId, workspaceRoot);
-  const telegram = resolveTaskNotificationTelegramConfigFromEnv();
+  const telegram = resolveTaskNotificationTelegramEnvState(args.telegramChatId);
 
   if (!taskId || !workspaceRoot) {
     return;
@@ -229,6 +251,7 @@ export function recordTaskTerminalStatus(args: {
   status: TaskTerminalStatus;
   startedAt: number | null | undefined;
   completedAt: number | null | undefined;
+  telegramChatId?: string | null;
   now?: number;
   logger?: { warn: (msg: string) => void };
 }): void {
@@ -243,7 +266,7 @@ export function recordTaskTerminalStatus(args: {
   const completedAt = parseOptionalTimestamp(args.completedAt) ?? now;
   const startedAt = parseOptionalTimestamp(args.startedAt) ?? completedAt;
   const projectId = deriveProjectSessionId(workspaceRoot);
-  const telegram = resolveTaskNotificationTelegramConfigFromEnv();
+  const telegram = resolveTaskNotificationTelegramEnvState(args.telegramChatId);
 
   if (!taskId || !workspaceRoot) {
     return;

@@ -212,6 +212,44 @@ describe("web/taskNotifications telegram", () => {
     assert.equal(calls, 1);
   });
 
+  it("prefers task-bound telegram chat id over env default", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
+
+    const db = getStateDatabase();
+    upsertTaskNotificationBinding({
+      db,
+      authUserId: "u1",
+      workspaceRoot: "/tmp/ws",
+      taskId: "t5b",
+      taskTitle: "Task 5b",
+      telegramChatId: "456",
+      now: 1_000,
+    });
+    recordTaskTerminalStatus({
+      db,
+      workspaceRoot: "/tmp/ws",
+      taskId: "t5b",
+      taskTitle: "Task 5b",
+      status: "completed",
+      startedAt: 1_000,
+      completedAt: 2_000,
+      telegramChatId: "456",
+      now: 2_000,
+    });
+
+    const sender = async (args: { botToken: string; chatId: string; text: string }) => {
+      assert.equal(args.botToken, "test-token");
+      assert.equal(args.chatId, "456");
+      assert.ok(args.text.includes("Task 5b"));
+      return { ok: true as const };
+    };
+
+    const logger = { info() {}, warn() {}, debug() {}, error() {} } as any;
+    const outcome = await attemptSendTaskTerminalTelegramNotification({ logger, taskId: "t5b", sender });
+    assert.equal(outcome, "sent");
+  });
+
   it("formats timestamps in Asia/Shanghai and omits TaskId line", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "test-token";
     process.env.TELEGRAM_ALLOWED_USER_ID = "123";

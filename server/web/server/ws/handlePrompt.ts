@@ -14,6 +14,7 @@ import { runCollaborativeTurn } from "../../../agents/hub.js";
 import { injectPlannerDraftSkill, parsePlannerDraftSlashCommand } from "../planner/draftSlashCommand.js";
 import type { WsPromptHandlerDeps } from "./deps.js";
 import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
+import { processScheduleOutput } from "../planner/scheduleHandler.js";
 import {
   buildHistoryInjectionContext,
   parseModelFromPayload,
@@ -260,6 +261,16 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         outputForChat = plannerHandled.outputForChat;
         threadId = plannerHandled.threadId;
         threadReset = plannerHandled.threadReset;
+      } else {
+        outputForChat = await processScheduleOutput({
+          outputForChat,
+          isDraftCommand: false,
+          workspaceRoot: workspaceRootForAdr,
+          scheduleCompiler: deps.scheduler.scheduleCompiler,
+          scheduler: deps.scheduler.scheduler,
+          logger: deps.observability.logger,
+          source: deps.context.chatSessionId || "worker",
+        });
       }
 
       sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });

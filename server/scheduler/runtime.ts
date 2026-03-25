@@ -15,6 +15,8 @@ import { getErrorMessage } from "../utils/error.js";
 import { createLogger, type Logger } from "../utils/logger.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { upsertTaskNotificationBinding } from "../web/taskNotifications/store.js";
+import { notifyTaskTerminalViaTelegram } from "../web/taskNotifications/telegramNotifier.js";
 
 import { computeNextCronRunAt } from "./cron.js";
 import { ScheduleStore } from "./store.js";
@@ -34,6 +36,26 @@ function renderIdempotencyKey(template: string, scheduleId: string, runAtIso: st
 function buildExternalId(schedule: StoredSchedule, runAtMs: number): string {
   const runAtIso = new Date(runAtMs).toISOString();
   return renderIdempotencyKey(schedule.spec.policy.idempotencyKeyTemplate, schedule.id, runAtIso);
+}
+
+function buildEffectiveTaskPrompt(payload: SchedulerJobPayload, schedule: StoredSchedule): string {
+  const runAtIso = new Date(payload.runAt).toISOString();
+  const timezone = String(schedule.spec.schedule?.timezone ?? "").trim() || "UTC";
+  const compiledPrompt = String(schedule.spec.compiledTask.prompt ?? "");
+  return [
+    "Scheduler runtime context:",
+    `- scheduleId: ${schedule.id}`,
+    `- externalId: ${payload.externalId}`,
+    `- runAtIso: ${runAtIso}`,
+    `- runAtMs: ${payload.runAt}`,
+    `- timezone: ${timezone}`,
+    `- idempotencyKey: ${payload.externalId}`,
+    "",
+    "Use the trigger values above as authoritative for this run.",
+    "Do not ask the user for missing schedule trigger metadata when it is provided here.",
+    "",
+    compiledPrompt,
+  ].join("\n");
 }
 
 type SchedulerJobPayload = {
@@ -56,7 +78,7 @@ type SchedulerExecutionResult = {
 
 type SchedulerExecuteRun = (input: SchedulerExecutionInput) => Promise<SchedulerExecutionResult>;
 
-type SchedulerRuntimeLogger = Pick<Logger, "warn" | "debug">;
+type SchedulerRuntimeLogger = Pick<Logger, "warn" | "debug" | "info">;
 
 type SchedulerWarningContext = {
   stage: string;
@@ -137,6 +159,15 @@ function normalizeQuestions(questions: string[]): string[] {
     out.push(trimmed);
   }
   return out;
+}
+
+function scheduleRequestsTelegramDelivery(schedule: StoredSchedule): boolean {
+  return Array.isArray(schedule.spec.delivery?.channels) && schedule.spec.delivery.channels.includes("telegram");
+}
+
+function resolveScheduleTelegramChatId(schedule: StoredSchedule): string | null {
+  const chatId = String(schedule.spec.delivery?.telegram?.chatId ?? "").trim();
+  return chatId || null;
 }
 
 export class SchedulerRuntime {
@@ -367,6 +398,16 @@ export class SchedulerRuntime {
       if (!existingRun) {
         store.insertRun({ scheduleId: schedule.id, externalId, runAt, taskId: null, status: "queued" }, options.nowMs);
       }
+      this.ensureTaskForRun(
+        {
+          workspaceRoot: root,
+          scheduleId: schedule.id,
+          externalId,
+          runAt,
+        },
+        schedule,
+        options.nowMs,
+      );
       await state.queue.enqueue(
         {
           workspaceRoot: root,
@@ -534,12 +575,13 @@ export class SchedulerRuntime {
     if (existing) {
       return existing;
     }
+    const effectivePrompt = buildEffectiveTaskPrompt(payload, schedule);
     try {
       return state.taskStore.createTask(
         {
           id: payload.externalId,
           title: schedule.spec.compiledTask.title,
-          prompt: schedule.spec.compiledTask.prompt,
+          prompt: effectivePrompt,
           model: "auto",
           inheritContext: false,
           maxRetries: Math.max(0, schedule.spec.policy.maxRetries),
@@ -621,8 +663,6 @@ export class SchedulerRuntime {
     const runningTask = state.taskStore.updateTask(
       task.id,
       {
-        title: schedule.spec.compiledTask.title,
-        prompt: schedule.spec.compiledTask.prompt,
         status: "running",
         error: null,
         result: null,
@@ -657,6 +697,31 @@ export class SchedulerRuntime {
       );
     }
 
+    if (scheduleRequestsTelegramDelivery(schedule)) {
+      try {
+        upsertTaskNotificationBinding({
+          authUserId: "",
+          workspaceRoot: payload.workspaceRoot,
+          taskId: runningTask.id,
+          taskTitle: runningTask.title,
+          telegramChatId: resolveScheduleTelegramChatId(schedule),
+          now,
+          logger: this.logger,
+        });
+      } catch (persistError) {
+        this.warnScheduler(
+          {
+            stage: "bind-task-telegram",
+            workspaceRoot: payload.workspaceRoot,
+            scheduleId: payload.scheduleId,
+            externalId: payload.externalId,
+            taskId: runningTask.id,
+          },
+          persistError,
+        );
+      }
+    }
+
     return await this.executeRun({
       workspaceRoot: payload.workspaceRoot,
       schedule,
@@ -673,6 +738,7 @@ export class SchedulerRuntime {
     const state = this.getState(payload.workspaceRoot);
     const now = Date.now();
     const resultSummary = String(result.resultSummary ?? "").trim() || null;
+    const schedule = state.store.getSchedule(payload.scheduleId);
 
     try {
       state.store.updateRunByExternalId(
@@ -729,6 +795,15 @@ export class SchedulerRuntime {
           );
         }
       }
+      if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
+        notifyTaskTerminalViaTelegram({
+          logger: this.logger,
+          workspaceRoot: payload.workspaceRoot,
+          task: completed,
+          terminalStatus: "completed",
+          eventTs: now,
+        });
+      }
     } catch (persistError) {
       this.warnScheduler(
         {
@@ -755,6 +830,7 @@ export class SchedulerRuntime {
     }
     const state = this.getState(payload.workspaceRoot);
     const task = state.taskStore.getTask(payload.externalId);
+    const schedule = state.store.getSchedule(payload.scheduleId);
     const now = Date.now();
     const terminal = numRetriesLeft <= 0;
     const message = getErrorMessage(error);
@@ -812,6 +888,15 @@ export class SchedulerRuntime {
             },
             persistError,
           );
+        }
+        if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
+          notifyTaskTerminalViaTelegram({
+            logger: this.logger,
+            workspaceRoot: payload.workspaceRoot,
+            task: updated,
+            terminalStatus: "failed",
+            eventTs: now,
+          });
         }
       }
     } catch (persistError) {

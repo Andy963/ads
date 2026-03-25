@@ -9,6 +9,8 @@ import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
 import { ScheduleStore } from "../../server/scheduler/store.js";
 import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { TaskStore } from "../../server/tasks/store.js";
+import { getTaskNotificationRow } from "../../server/web/taskNotifications/store.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
 
 function buildScheduleSpec(overrides?: Partial<ScheduleSpec>): ScheduleSpec {
   const base: ScheduleSpec = {
@@ -71,17 +73,24 @@ async function waitFor(check: () => boolean, timeoutMs = 8000): Promise<void> {
 function createLoggerSpy(): {
   warns: Array<{ message: string; args: unknown[] }>;
   debugs: Array<{ message: string; args: unknown[] }>;
+  infos: Array<{ message: string; args: unknown[] }>;
   logger: {
+    info(message: string, ...args: unknown[]): void;
     warn(message: string, ...args: unknown[]): void;
     debug(message: string, ...args: unknown[]): void;
   };
 } {
   const warns: Array<{ message: string; args: unknown[] }> = [];
   const debugs: Array<{ message: string; args: unknown[] }> = [];
+  const infos: Array<{ message: string; args: unknown[] }> = [];
   return {
     warns,
     debugs,
+    infos,
     logger: {
+      info(message: string, ...args: unknown[]) {
+        infos.push({ message, args });
+      },
       warn(message: string, ...args: unknown[]) {
         warns.push({ message, args });
       },
@@ -100,11 +109,16 @@ describe("scheduler/runtime-liteque", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-scheduler-runtime-"));
     fs.mkdirSync(path.join(tmpDir, ".git"));
     process.env.ADS_DATABASE_PATH = path.join(tmpDir, "ads.db");
+    process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
+    delete process.env.TELEGRAM_ALLOWED_USER_ID;
+    delete process.env.TELEGRAM_ALLOWED_USERS;
     resetDatabaseForTests();
+    resetStateDatabaseForTests();
   });
 
   afterEach(() => {
     resetDatabaseForTests();
+    resetStateDatabaseForTests();
     process.env = { ...originalEnv };
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -155,6 +169,151 @@ describe("scheduler/runtime-liteque", () => {
     assert.equal(task?.status, "completed");
   });
 
+  it("binds scheduler telegram delivery and sends direct telegram output to explicit chat id", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "bot-token";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "111";
+
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Send jokes to TG",
+        spec: buildScheduleSpec({
+          delivery: { channels: ["telegram"], telegram: { chatId: "222" } },
+        }),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    const fetchCalls: Array<{ url: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      fetchCalls.push({
+        url: String(input),
+        body: typeof init?.body === "string" ? init.body : "",
+      });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      tickMs: 60_000,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => ({
+        resultSummary: JSON.stringify({
+          status: "ok",
+          summary: "sent",
+          outputs: { telegram: { text: "起来活动一下" } },
+        }),
+      }),
+    });
+    runtime.registerWorkspace(tmpDir);
+
+    try {
+      runtime.start();
+      await runtime.tickWorkspace(tmpDir);
+      await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+      await waitFor(() => fetchCalls.length === 1);
+    } finally {
+      runtime.stop();
+      globalThis.fetch = originalFetch;
+    }
+
+    const run = store.listRuns(schedule.id, { limit: 1 })[0];
+    assert.ok(run?.taskId);
+
+    const notification = getTaskNotificationRow({ taskId: run.taskId! });
+    assert.ok(notification);
+    assert.equal(notification?.telegramChatId, "222");
+    assert.equal(notification?.status, "completed");
+    assert.ok(notification?.notifiedAt != null);
+
+    assert.equal(fetchCalls.length, 1);
+    const payload = JSON.parse(fetchCalls[0]!.body) as { chat_id: string; text: string };
+    assert.equal(payload.chat_id, "222");
+    assert.equal(payload.text, "起来活动一下");
+  });
+
+  it("marks scheduler runs with empty telegram outputs as handled without sending terminal summaries", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "bot-token";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "111";
+
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Send movement reminder only within active window",
+        spec: buildScheduleSpec({
+          delivery: { channels: ["telegram"], telegram: { chatId: "222" } },
+        }),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    const fetchCalls: Array<{ url: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      fetchCalls.push({
+        url: String(input),
+        body: typeof init?.body === "string" ? init.body : "",
+      });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      tickMs: 60_000,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => ({
+        resultSummary: JSON.stringify({
+          status: "ok",
+          summary: "outside active hour window",
+          outputs: {},
+        }),
+      }),
+    });
+    runtime.registerWorkspace(tmpDir);
+
+    try {
+      runtime.start();
+      await runtime.tickWorkspace(tmpDir);
+      await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+      await waitFor(() => {
+        const run = store.listRuns(schedule.id, { limit: 1 })[0];
+        if (!run?.taskId) {
+          return false;
+        }
+        return getTaskNotificationRow({ taskId: run.taskId })?.notifiedAt != null;
+      });
+    } finally {
+      runtime.stop();
+      globalThis.fetch = originalFetch;
+    }
+
+    const run = store.listRuns(schedule.id, { limit: 1 })[0];
+    assert.ok(run?.taskId);
+
+    const notification = getTaskNotificationRow({ taskId: run.taskId! });
+    assert.ok(notification);
+    assert.equal(notification?.telegramChatId, "222");
+    assert.equal(notification?.status, "completed");
+    assert.ok(notification?.notifiedAt != null);
+
+    assert.equal(fetchCalls.length, 0);
+  });
+
   it("retries worker execution and keeps one effective run per schedule window", async () => {
     const store = new ScheduleStore({ workspacePath: tmpDir });
     const now = Date.now();
@@ -196,6 +355,134 @@ describe("scheduler/runtime-liteque", () => {
     assert.equal(runs.length, 1);
     assert.equal(runs[0]?.status, "completed");
     assert.equal(runs[0]?.result, "retry-ok");
+  });
+
+  it("injects deterministic trigger metadata into the scheduled task prompt", async () => {
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const dueRunAt = Date.now() - 1000;
+    const now = dueRunAt + 1000;
+    const compiledPrompt = "  Use runAtIso to decide whether the reminder should be sent for this trigger.  ";
+    const schedule = store.createSchedule(
+      {
+        instruction: "Send movement reminder",
+        spec: buildScheduleSpec({
+          schedule: { timezone: "Asia/Shanghai" },
+          compiledTask: {
+            prompt: compiledPrompt,
+          },
+        }),
+        enabled: true,
+        nextRunAt: dueRunAt,
+      },
+      now,
+    );
+
+    let seenPrompt = "";
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      tickMs: 60_000,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async ({ task }) => {
+        seenPrompt = task.prompt;
+        return { resultSummary: "prompt-ok" };
+      },
+    });
+    runtime.registerWorkspace(tmpDir);
+    runtime.start();
+    await runtime.tickWorkspace(tmpDir);
+
+    await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+    runtime.stop();
+
+    const runAtIso = new Date(dueRunAt).toISOString();
+    const externalId = `sch:${schedule.id}:${runAtIso}`;
+    assert.ok(seenPrompt.includes("Scheduler runtime context:"));
+    assert.ok(seenPrompt.includes(`- scheduleId: ${schedule.id}`));
+    assert.ok(seenPrompt.includes(`- externalId: ${externalId}`));
+    assert.ok(seenPrompt.includes(`- runAtIso: ${runAtIso}`));
+    assert.ok(seenPrompt.includes(`- timezone: Asia/Shanghai`));
+    assert.ok(seenPrompt.endsWith(compiledPrompt));
+
+    const run = store.listRuns(schedule.id, { limit: 1 })[0];
+    assert.ok(run?.taskId);
+    const task = new TaskStore({ workspacePath: tmpDir }).getTask(run?.taskId ?? "");
+    assert.ok(task);
+    assert.equal(task?.prompt, seenPrompt);
+  });
+
+  it("freezes the queued run prompt before execution even if the schedule spec changes later", async () => {
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const dueRunAt = Date.now() - 1000;
+    const now = dueRunAt + 1000;
+    const originalCompiledPrompt = "Use the original compiled prompt for this queued run.";
+    const rewrittenCompiledPrompt = "Use the rewritten compiled prompt instead.";
+    const schedule = store.createSchedule(
+      {
+        instruction: "Send movement reminder",
+        spec: buildScheduleSpec({
+          schedule: { timezone: "Asia/Shanghai" },
+          compiledTask: {
+            prompt: originalCompiledPrompt,
+          },
+        }),
+        enabled: true,
+        nextRunAt: dueRunAt,
+      },
+      now,
+    );
+
+    const queueOnlyRuntime = new SchedulerRuntime({
+      enabled: false,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => ({ resultSummary: "should-not-run" }),
+    });
+    queueOnlyRuntime.registerWorkspace(tmpDir);
+    await queueOnlyRuntime.tickWorkspace(tmpDir);
+    queueOnlyRuntime.stop();
+
+    const runAtIso = new Date(dueRunAt).toISOString();
+    const externalId = `sch:${schedule.id}:${runAtIso}`;
+    const queuedTask = new TaskStore({ workspacePath: tmpDir }).getTask(externalId);
+    assert.ok(queuedTask);
+    assert.ok(queuedTask?.prompt.includes(originalCompiledPrompt));
+
+    const queuedSchedule = store.getSchedule(schedule.id);
+    assert.ok(queuedSchedule);
+    store.updateSchedule(
+      schedule.id,
+      {
+        spec: {
+          ...queuedSchedule!.spec,
+          compiledTask: {
+            ...queuedSchedule!.spec.compiledTask,
+            prompt: rewrittenCompiledPrompt,
+          },
+        },
+      },
+      Date.now(),
+    );
+
+    let seenPrompt = "";
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      tickMs: 60_000,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async ({ task }) => {
+        seenPrompt = task.prompt;
+        return { resultSummary: "prompt-frozen" };
+      },
+    });
+    runtime.registerWorkspace(tmpDir);
+    runtime.start();
+
+    await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+    runtime.stop();
+
+    assert.ok(seenPrompt.includes(originalCompiledPrompt));
+    assert.ok(!seenPrompt.includes(rewrittenCompiledPrompt));
   });
 
   it("recovers queued liteque jobs after runtime restart", async () => {

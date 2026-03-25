@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import { SessionManager } from "../telegram/utils/sessionManager.js";
 import { parsePositiveIntFlag } from "../utils/flags.js";
+import { resolveTaskNotificationDefaultTelegramChatIdFromEnv } from "../web/taskNotifications/telegramConfig.js";
 
 import { ScheduleSpecSchema, type ScheduleSpec } from "./scheduleSpec.js";
 import { parseSupportedCron, validateTimeZone } from "./cron.js";
@@ -48,7 +49,7 @@ function normalizeQuestions(questions: string[]): string[] {
   return out;
 }
 
-function normalizeCompiledSpec(spec: ScheduleSpec, instruction: string): ScheduleSpec {
+export function normalizeCompiledScheduleSpec(spec: ScheduleSpec, instruction: string): ScheduleSpec {
   const normalizedInstruction = String(instruction ?? "").trim();
   const merged: ScheduleSpec = { ...spec, instruction: normalizedInstruction, questions: normalizeQuestions(spec.questions ?? []) };
 
@@ -69,6 +70,22 @@ function normalizeCompiledSpec(spec: ScheduleSpec, instruction: string): Schedul
     const cronParsed = parseSupportedCron(cron);
     if (!cronParsed.ok) {
       merged.questions = normalizeQuestions([...merged.questions, `Cron expression is not supported by runtime: ${cron}`]);
+    }
+  }
+
+  const deliveryChannels = Array.isArray(merged.delivery?.channels) ? merged.delivery.channels : [];
+  if (deliveryChannels.includes("telegram")) {
+    const explicitChatId = String(merged.delivery?.telegram?.chatId ?? "").trim();
+    const chatId = explicitChatId || resolveTaskNotificationDefaultTelegramChatIdFromEnv();
+    merged.delivery = {
+      ...merged.delivery,
+      telegram: {
+        ...(merged.delivery?.telegram ?? {}),
+        chatId: chatId || null,
+      },
+    };
+    if (!chatId) {
+      merged.questions = normalizeQuestions([...merged.questions, "Which Telegram chatId should receive the schedule result?"]);
     }
   }
 
@@ -177,7 +194,7 @@ export class AgentScheduleCompiler implements ScheduleCompiler {
           if (!validated.success) {
             throw new Error("ScheduleSpec schema validation failed");
           }
-          return normalizeCompiledSpec(validated.data, instruction);
+          return normalizeCompiledScheduleSpec(validated.data, instruction);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           lastError = message;

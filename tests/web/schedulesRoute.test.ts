@@ -67,6 +67,8 @@ describe("web/api/schedules", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-schedules-route-"));
     process.env.ADS_DATABASE_PATH = path.join(tmpDir, "ads.db");
+    delete process.env.TELEGRAM_ALLOWED_USER_ID;
+    delete process.env.TELEGRAM_ALLOWED_USERS;
     resetDatabaseForTests();
   });
 
@@ -297,5 +299,124 @@ describe("web/api/schedules", () => {
     assert.equal(resEnable.statusCode, 409);
     const payload = parseJson<{ error: string; questions: string[] }>(resEnable.body);
     assert.equal(payload.questions.length, 1);
+  });
+
+  it("normalizes telegram delivery with env default chat id on create", async () => {
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123456";
+
+    const workspaceRoot = tmpDir;
+    const baseSpec: ScheduleSpec = {
+      version: 1,
+      name: "telegram-default-chat",
+      enabled: true,
+      schedule: { type: "cron", cron: "*/5 * * * *", timezone: "Asia/Shanghai" },
+      instruction: "每 5 分钟给我在 TG 发一个笑话，时区为 Asia/Shanghai",
+      delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: null } },
+      policy: {
+        workspaceWrite: false,
+        network: "deny",
+        maxDurationMs: 600000,
+        maxRetries: 0,
+        concurrencyKey: "schedule:{scheduleId}",
+        idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
+      },
+      compiledTask: {
+        title: "Tell a joke",
+        prompt: "Return a single JSON object.",
+        expectedResultSchema: { type: "object" },
+        verification: { commands: [] },
+      },
+      questions: [],
+    };
+
+    const deps = {
+      resolveWorkspaceRoot() {
+        return workspaceRoot;
+      },
+      scheduleCompiler: {
+        async compile() {
+          return { ...baseSpec };
+        },
+      } as any,
+      scheduler: new SchedulerRuntime({ enabled: false }),
+    };
+
+    const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
+    const resCreate = createRes();
+    const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
+    assert.equal(
+      await handleScheduleRoutes(
+        { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
+        deps as any,
+      ),
+      true,
+    );
+
+    assert.equal(resCreate.statusCode, 201);
+    const created = parseJson<{ schedule: { enabled: boolean; spec: ScheduleSpec } }>(resCreate.body).schedule;
+    assert.equal(created.enabled, true);
+    assert.equal(created.spec.enabled, true);
+    assert.equal(created.spec.delivery.telegram.chatId, "123456");
+    assert.deepEqual(created.spec.questions, []);
+  });
+
+  it("disables telegram delivery schedules when chat id cannot be resolved", async () => {
+    delete process.env.TELEGRAM_ALLOWED_USER_ID;
+    delete process.env.TELEGRAM_ALLOWED_USERS;
+
+    const workspaceRoot = tmpDir;
+    const baseSpec: ScheduleSpec = {
+      version: 1,
+      name: "telegram-missing-chat",
+      enabled: true,
+      schedule: { type: "cron", cron: "*/5 * * * *", timezone: "Asia/Shanghai" },
+      instruction: "每 5 分钟给我在 TG 发一个笑话，时区为 Asia/Shanghai",
+      delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: null } },
+      policy: {
+        workspaceWrite: false,
+        network: "deny",
+        maxDurationMs: 600000,
+        maxRetries: 0,
+        concurrencyKey: "schedule:{scheduleId}",
+        idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
+      },
+      compiledTask: {
+        title: "Tell a joke",
+        prompt: "Return a single JSON object.",
+        expectedResultSchema: { type: "object" },
+        verification: { commands: [] },
+      },
+      questions: [],
+    };
+
+    const deps = {
+      resolveWorkspaceRoot() {
+        return workspaceRoot;
+      },
+      scheduleCompiler: {
+        async compile() {
+          return { ...baseSpec };
+        },
+      } as any,
+      scheduler: new SchedulerRuntime({ enabled: false }),
+    };
+
+    const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
+    const resCreate = createRes();
+    const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
+    assert.equal(
+      await handleScheduleRoutes(
+        { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
+        deps as any,
+      ),
+      true,
+    );
+
+    assert.equal(resCreate.statusCode, 201);
+    const created = parseJson<{ schedule: { enabled: boolean; spec: ScheduleSpec } }>(resCreate.body).schedule;
+    assert.equal(created.enabled, false);
+    assert.equal(created.spec.enabled, false);
+    assert.equal(created.spec.delivery.telegram.chatId, null);
+    assert.ok(created.spec.questions.includes("Which Telegram chatId should receive the schedule result?"));
   });
 });

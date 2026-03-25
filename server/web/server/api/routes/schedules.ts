@@ -5,7 +5,7 @@ import type { ApiRouteContext } from "../types.js";
 
 import { computeNextCronRunAt } from "../../../../scheduler/cron.js";
 import { ScheduleStore } from "../../../../scheduler/store.js";
-import type { ScheduleCompiler } from "../../../../scheduler/compiler.js";
+import { normalizeCompiledScheduleSpec, type ScheduleCompiler } from "../../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../../scheduler/runtime.js";
 
 const createScheduleBodySchema = z
@@ -81,7 +81,8 @@ export async function handleScheduleRoutes(
 
   const compileScheduleOrSendError = async (workspaceRoot: string, instruction: string): Promise<CompiledSchedule | null> => {
     try {
-      return await deps.scheduleCompiler.compile({ workspaceRoot, instruction });
+      const compiled = await deps.scheduleCompiler.compile({ workspaceRoot, instruction });
+      return normalizeCompiledScheduleSpec(compiled, instruction);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, 500, { error: message });
