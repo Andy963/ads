@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { createTelegramCodexStatusUpdater } from "../../server/telegram/adapters/codex/statusUpdater.js";
+import { createTelegramCodexStatusUpdater, createTelegramTypingOnlyStatusUpdater } from "../../server/telegram/adapters/codex/statusUpdater.js";
 import type { AgentEvent } from "../../server/codex/events.js";
 
 function createCommandEvent(params: {
@@ -132,5 +132,38 @@ describe("telegram statusUpdater", () => {
     assert.equal((last.match(/cmd1/g) ?? []).length, 1);
 
     await updater.cleanup();
+  });
+
+  it("typing-only updater does not send visible status messages", async () => {
+    const replies: string[] = [];
+    let chatActions = 0;
+
+    const ctx = {
+      reply: async (text: string) => {
+        replies.push(text);
+        return { message_id: 1, text };
+      },
+      api: {
+        sendChatAction: async () => {
+          chatActions += 1;
+          return true;
+        },
+      },
+    } as unknown as Parameters<typeof createTelegramTypingOnlyStatusUpdater>[0]["ctx"];
+
+    const updater = createTelegramTypingOnlyStatusUpdater({
+      ctx,
+      chatId: 1,
+      logWarning: () => {},
+    });
+
+    updater.startTyping();
+    updater.queueEvent(createCommandEvent({ id: "c1", command: "cmd1" }));
+    await updater.finalize();
+    await flush();
+    await updater.cleanup();
+
+    assert.equal(replies.length, 0);
+    assert.ok(chatActions >= 1);
   });
 });

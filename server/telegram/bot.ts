@@ -10,16 +10,37 @@ import { SessionManager } from './utils/sessionManager.js';
 import { DirectoryManager } from './utils/directoryManager.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
-import { createGracefulCleanup } from '../utils/shutdown.js';
+import { closeSharedDatabases, createGracefulCleanup } from '../utils/shutdown.js';
 import { HttpsProxyAgent } from './utils/proxyAgent.js';
 import { installApiDebugLogging, installSilentReplyMiddleware, parseBooleanFlag } from './botSetup.js';
 import { PendingTranscriptionStore } from './utils/pendingTranscriptions.js';
 import { registerTelegramCommandMenu, registerTelegramControlCommands } from './commands/registerControlCommands.js';
 import { registerTelegramMessageHandlers } from './commands/registerMessageHandlers.js';
+import { AgentScheduleCompiler } from '../scheduler/compiler.js';
+import { SchedulerRuntime } from '../scheduler/runtime.js';
 
 const logger = createLogger('Bot');
 const markStates = new Map<number, boolean>();
 let cleanup = createGracefulCleanup({ logger });
+
+const TELEGRAM_POLLING_CONFLICT_EXIT_CODE = 75;
+
+type TelegramApiErrorLike = {
+  error_code?: unknown;
+  description?: unknown;
+  method?: unknown;
+};
+
+function isTelegramPollingConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const record = error as TelegramApiErrorLike;
+  const errorCode = Number(record.error_code);
+  const description = String(record.description ?? '');
+  const method = String(record.method ?? '');
+  return errorCode === 409 && method === 'getUpdates' && /terminated by other getUpdates request/i.test(description);
+}
 
 process.once('unhandledRejection', (reason) => {
   cleanup.crash('Unhandled promise rejection', reason);
@@ -69,12 +90,16 @@ async function main() {
   );
   const directoryManager = new DirectoryManager(config.allowedDirs);
   const pendingTranscriptions = new PendingTranscriptionStore({ ttlMs: 5 * 60 * 1000 });
+  const scheduleCompiler = new AgentScheduleCompiler();
+  const scheduler = new SchedulerRuntime();
 
   // 启动时设置默认工作目录（单用户）
   const userId = config.allowedUsers[0];
   const defaultDir = config.allowedDirs[0];
   directoryManager.setUserCwd(userId, defaultDir);
   sessionManager.setUserCwd(userId, defaultDir);
+  scheduler.registerWorkspace(defaultDir);
+  scheduler.start();
   logger.info(`[Workspace] Using default cwd: ${defaultDir}`);
 
   // 创建 Bot 实例
@@ -109,23 +134,37 @@ async function main() {
     pendingTranscriptions,
     silentNotifications,
     markStates,
+    scheduleCompiler,
+    scheduler,
   };
 
   registerTelegramControlCommands(bot, runtime);
   registerTelegramMessageHandlers(bot, runtime);
 
-  // 启动 Bot
-  logger.info('Starting long polling...');
-  bot.start({
-    onStart: () => {
-      logger.info('✅ Bot is running!');
-    },
-  });
+  const shutdownTasks = (): void => {
+    try {
+      sessionManager.destroy();
+    } catch (error) {
+      logger.warn(`[Cleanup] destroySessionManager failed: ${(error as Error).message}`);
+    }
+    try {
+      bot.stop();
+    } catch (error) {
+      logger.warn(`[Cleanup] stopBot failed: ${(error as Error).message}`);
+    }
+    closeSharedDatabases(logger);
+    try {
+      scheduler.stop();
+    } catch (error) {
+      logger.warn(`[Cleanup] stopScheduler failed: ${(error as Error).message}`);
+    }
+  };
 
   cleanup = createGracefulCleanup({
     logger,
     destroySessionManager: () => sessionManager.destroy(),
     stopBot: () => bot.stop(),
+    tasks: [{ label: 'stopScheduler', run: () => scheduler.stop() }],
   });
 
   process.once('SIGINT', () => {
@@ -135,6 +174,26 @@ async function main() {
   process.once('SIGTERM', () => {
     cleanup.shutdown();
   });
+
+  // 启动 Bot
+  logger.info('Starting long polling...');
+  try {
+    await bot.start({
+      onStart: () => {
+        logger.info('✅ Bot is running!');
+      },
+    });
+  } catch (error) {
+    if (isTelegramPollingConflict(error)) {
+      logger.error(
+        'Telegram polling conflict: another bot instance is already using this token. Stopping this service to avoid duplicate replies.',
+        error,
+      );
+      shutdownTasks();
+      process.exit(TELEGRAM_POLLING_CONFLICT_EXIT_CODE);
+    }
+    throw error;
+  }
 }
 
 main().catch((error) => {

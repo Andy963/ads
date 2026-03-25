@@ -15,16 +15,19 @@ import { stripLeadingTranslation } from '../../utils/assistantText.js';
 import { processAdrBlocks } from '../../utils/adrRecording.js';
 import { detectWorkspaceFrom } from '../../workspace/detector.js';
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from '../../workspace/adsPaths.js';
+import { parseBooleanFlag } from '../../utils/flags.js';
 import {
   CODEX_THREAD_RESET_HINT,
   CodexThreadCorruptedError,
   shouldResetThread,
 } from '../../codex/errors.js';
 import { createLogger } from '../../utils/logger.js';
-import { createTelegramCodexStatusUpdater } from './codex/statusUpdater.js';
-import { chunkMessage } from './codex/chunkMessage.js';
-import { renderTelegramOutbound } from './codex/renderOutbound.js';
+import { createTelegramCodexStatusUpdater, createTelegramTypingOnlyStatusUpdater } from './codex/statusUpdater.js';
+import { sendRenderedTelegramReply } from './codex/sendRenderedReply.js';
 import { transcribeTelegramVoiceMessage } from '../utils/voiceTranscription.js';
+import type { ScheduleCompiler } from '../../scheduler/compiler.js';
+import type { SchedulerRuntime } from '../../scheduler/runtime.js';
+import { processScheduleOutput } from '../../web/server/planner/scheduleHandler.js';
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 const adapterLogger = createLogger('TelegramCodexAdapter');
@@ -36,7 +39,13 @@ export async function handleCodexMessage(
   imageFileIds?: string[],
   documentFileId?: string,
   cwd?: string,
-  options?: { markNoteEnabled?: boolean; silentNotifications?: boolean; replyToMessageId?: number },
+  options?: {
+    markNoteEnabled?: boolean;
+    silentNotifications?: boolean;
+    replyToMessageId?: number;
+    scheduleCompiler?: ScheduleCompiler;
+    scheduler?: SchedulerRuntime;
+  },
   voiceFileId?: string,
 ) {
   const workingDirectory = cwd ? path.resolve(cwd) : process.cwd();
@@ -47,6 +56,7 @@ export async function handleCodexMessage(
   const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
   const markNoteEnabled = options?.markNoteEnabled ?? false;
   const silentNotifications = options?.silentNotifications ?? true;
+  const statusUpdatesEnabled = parseBooleanFlag(process.env.ADS_TELEGRAM_STATUS_UPDATES, false);
   const replyToMessageId = options?.replyToMessageId;
   const replyParameters =
     typeof replyToMessageId === 'number' ? { reply_parameters: { message_id: replyToMessageId } } : {};
@@ -166,16 +176,22 @@ export async function handleCodexMessage(
   // 注册请求
   const signal = interruptManager.registerRequest(userId).signal;
 
-  const statusUpdater = await createTelegramCodexStatusUpdater({
-    ctx,
-    chatId,
-    activeAgentLabel,
-    silentNotifications,
-    streamUpdateIntervalMs,
-    isActiveRequest: () => interruptManager.hasActiveRequest(userId),
-    logWarning,
-    replyToMessageId,
-  });
+  const statusUpdater = statusUpdatesEnabled
+    ? await createTelegramCodexStatusUpdater({
+        ctx,
+        chatId,
+        activeAgentLabel,
+        silentNotifications,
+        streamUpdateIntervalMs,
+        isActiveRequest: () => interruptManager.hasActiveRequest(userId),
+        logWarning,
+        replyToMessageId,
+      })
+    : createTelegramTypingOnlyStatusUpdater({
+        ctx,
+        chatId,
+        logWarning,
+      });
 
   function formatCodeBlock(text: string): string {
     const safe = text.replace(/```/g, '`​``');
@@ -393,6 +409,18 @@ export async function handleCodexMessage(
       outputToSend = `${cleanedOutput}\n\n---\nADR warning: failed to record ADR (${message})`;
     }
 
+    outputToSend = await processScheduleOutput({
+      outputForChat: outputToSend,
+      isDraftCommand: false,
+      workspaceRoot: workspaceRootForAdr,
+      scheduleCompiler: options?.scheduleCompiler,
+      scheduler: options?.scheduler,
+      logger: adapterLogger,
+      source: 'telegram',
+      telegramChatId: String(chatId),
+      preferTelegramDelivery: true,
+    });
+
     if (markNoteEnabled && userLogEntry) {
       try {
         appendMarkNoteEntry(workspaceRoot, userLogEntry, outputToSend);
@@ -401,54 +429,14 @@ export async function handleCodexMessage(
       }
     }
 
-    // 发送最终响应
-    const renderText = outputToSend;
-    let fallbackNotified = false;
-    const notifyFallback = async () => {
-      if (fallbackNotified) return;
-      fallbackNotified = true;
-      await ctx.reply('⚠️ MarkdownV2 渲染失败，已降级为纯文本发送，详情已记录。', {
-        disable_notification: silentNotifications,
-        ...replyParameters,
-      }).catch((error) => {
-        logWarning('[Telegram] Failed to send markdown fallback notice', error);
-      });
-    };
-    
-    const chunks = chunkMessage(renderText);
-    if (chunks.length === 0) {
-      chunks.push('');
-    }
-
-    const sentChunks = new Set<string>();
-    for (let i = 0; i < chunks.length; i++) {
-      if (i > 0) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      const chunkText = chunks[i];
-      if (sentChunks.has(chunkText)) {
-        continue;
-      }
-      const outbound = renderTelegramOutbound(chunkText);
-      await ctx.reply(outbound.text, {
-        parse_mode: outbound.parseMode,
-        disable_notification: silentNotifications,
-        link_preview_options: { is_disabled: true },
-        ...replyParameters,
-      }).catch(async (error) => {
-        recordFallback('chunk_markdownv2_failed', chunkText, outbound.text);
-        if (!fallbackNotified) {
-          logWarning('[Telegram] Failed to send MarkdownV2 chunk; falling back to plain text', error);
-        }
-        await notifyFallback();
-        await ctx
-          .reply(outbound.plainTextFallback, { disable_notification: silentNotifications, ...replyParameters })
-          .catch((error) => {
-            logWarning('[Telegram] Failed to send fallback chunk', error);
-          });
-      });
-      sentChunks.add(chunkText);
-    }
+    await sendRenderedTelegramReply({
+      ctx,
+      text: outputToSend,
+      silentNotifications,
+      replyOptions: replyParameters,
+      logWarning,
+      recordFallback,
+    });
 
     await statusUpdater.cleanup();
     statusUpdater.stopTyping();

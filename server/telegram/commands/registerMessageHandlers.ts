@@ -30,6 +30,8 @@ async function sendToCodex(args: {
       markNoteEnabled: runtime.markStates.get(userId) ?? false,
       silentNotifications: runtime.silentNotifications,
       replyToMessageId,
+      scheduleCompiler: runtime.scheduleCompiler,
+      scheduler: runtime.scheduler,
     },
   );
 }

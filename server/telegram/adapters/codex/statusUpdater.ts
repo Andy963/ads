@@ -12,6 +12,48 @@ export interface TelegramCodexStatusUpdater {
   cleanup: () => Promise<void>;
 }
 
+export function createTelegramTypingOnlyStatusUpdater(params: {
+  ctx: Context;
+  chatId: number;
+  logWarning: (message: string, error?: unknown) => void;
+}): TelegramCodexStatusUpdater {
+  let typingTimer: NodeJS.Timeout | null = null;
+
+  const stopTyping = () => {
+    if (typingTimer) {
+      clearInterval(typingTimer);
+      typingTimer = null;
+    }
+  };
+
+  const startTyping = () => {
+    let typingErrorLogged = false;
+    const sendTyping = async () => {
+      try {
+        await params.ctx.api.sendChatAction(params.chatId, "typing");
+      } catch (error) {
+        if (!typingErrorLogged) {
+          typingErrorLogged = true;
+          params.logWarning("[Telegram] Failed to send typing action; disabling typing indicator", error);
+        }
+        stopTyping();
+      }
+    };
+    void sendTyping();
+    typingTimer = setInterval(sendTyping, 4000);
+  };
+
+  return {
+    startTyping,
+    stopTyping,
+    queueEvent: () => {},
+    finalize: async () => {},
+    cleanup: async () => {
+      stopTyping();
+    },
+  };
+}
+
 interface CommandStatusEntry {
   key: string;
   command: string;

@@ -1,5 +1,7 @@
 import type { Context } from 'grammy';
 import type { Logger } from '../../utils/logger.js';
+import type { ScheduleCompiler } from '../../scheduler/compiler.js';
+import type { SchedulerRuntime } from '../../scheduler/runtime.js';
 import type { TelegramConfig } from '../config.js';
 import type { SessionManager } from '../utils/sessionManager.js';
 import type { DirectoryManager } from '../utils/directoryManager.js';
@@ -13,6 +15,8 @@ export interface TelegramBotRuntime {
   pendingTranscriptions: PendingTranscriptionStore;
   silentNotifications: boolean;
   markStates: Map<number, boolean>;
+  scheduleCompiler?: ScheduleCompiler;
+  scheduler?: SchedulerRuntime;
 }
 
 export async function requireUserId(
