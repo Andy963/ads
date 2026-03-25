@@ -58,11 +58,35 @@ describe("server config resolvers", () => {
     assert.strictEqual(config.maxClients, 2);
     assert.strictEqual(config.wsPingIntervalMs, 0);
     assert.strictEqual(config.wsMaxMissedPongs, 3);
+    assert.strictEqual(config.sessionTimeoutMs, 24 * 60 * 60 * 1000);
+    assert.strictEqual(config.sessionCleanupIntervalMs, 5 * 60 * 1000);
     assert.strictEqual(config.plannerCodexModel, "gpt-5.4");
     assert.strictEqual(config.reviewerCodexModel, undefined);
     assert.strictEqual(config.taskQueueEnabled, false);
     assert.strictEqual(config.taskQueueAutoStart, true);
     assert.strictEqual(config.traceWsDuplication, true);
+  });
+
+  it("supports env overrides for web session idle reclaim config", () => {
+    const configHours = resolveWebConfig({
+      env: {
+        ADS_WEB_SESSION_TIMEOUT_HOURS: "12",
+        ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES: "1",
+      },
+    });
+    assert.strictEqual(configHours.sessionTimeoutMs, 12 * 60 * 60 * 1000);
+    assert.strictEqual(configHours.sessionCleanupIntervalMs, 1 * 60 * 1000);
+
+    const configMs = resolveWebConfig({
+      env: {
+        ADS_WEB_SESSION_TIMEOUT_HOURS: "12",
+        ADS_WEB_SESSION_TIMEOUT_MS: "60000",
+        ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES: "1",
+        ADS_WEB_SESSION_CLEANUP_INTERVAL_MS: "12345",
+      },
+    });
+    assert.strictEqual(configMs.sessionTimeoutMs, 60000);
+    assert.strictEqual(configMs.sessionCleanupIntervalMs, 12345);
   });
 
   it("applies agent defaults when flags are missing or invalid", () => {

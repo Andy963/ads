@@ -262,23 +262,31 @@ export async function startWebServer(): Promise<void> {
   const allowedOrigins = parseAllowedOrigins(webConfig.allowedOriginsRaw);
   const sessionTtlSeconds = resolveSessionTtlSeconds();
   const sessionPepper = resolveSessionPepper();
+  const webSessionTimeoutMs = webConfig.sessionTimeoutMs;
+  const webSessionCleanupIntervalMs = webConfig.sessionCleanupIntervalMs;
   const workspaceLocks = new WorkspaceLockPool();
   const plannerWorkspaceLocks = new WorkspaceLockPool();
   const reviewerWorkspaceLocks = new WorkspaceLockPool();
   const getWorkspaceLock = (workspaceRootForLock: string) => workspaceLocks.get(workspaceRootForLock);
   const getPlannerWorkspaceLock = (workspaceRootForLock: string) => plannerWorkspaceLocks.get(workspaceRootForLock);
   const getReviewerWorkspaceLock = (workspaceRootForLock: string) => reviewerWorkspaceLocks.get(workspaceRootForLock);
-  const sessionManager = new SessionManager(0, 0, "danger-full-access", undefined, webWorkerThreadStorage);
+  const sessionManager = new SessionManager(
+    webSessionTimeoutMs,
+    webSessionCleanupIntervalMs,
+    "danger-full-access",
+    undefined,
+    webWorkerThreadStorage,
+  );
   const plannerSessionManager = new SessionManager(
-    0,
-    0,
+    webSessionTimeoutMs,
+    webSessionCleanupIntervalMs,
     "read-only",
     webConfig.plannerCodexModel,
     webPlannerThreadStorage,
   );
   const reviewerSessionManager = new SessionManager(
-    0,
-    0,
+    webSessionTimeoutMs,
+    webSessionCleanupIntervalMs,
     "read-only",
     webConfig.reviewerCodexModel,
     webReviewerThreadStorage,

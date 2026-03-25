@@ -19,6 +19,8 @@ export interface WebConfig {
   maxClients: number;
   wsPingIntervalMs: number;
   wsMaxMissedPongs: number;
+  sessionTimeoutMs: number;
+  sessionCleanupIntervalMs: number;
   allowedOriginsRaw?: string;
   plannerCodexModel?: string;
   reviewerCodexModel?: string;
@@ -77,6 +79,8 @@ const webConfigSchema = z.object({
   maxClients: z.number().int().min(1),
   wsPingIntervalMs: z.number().min(0),
   wsMaxMissedPongs: z.number().int().min(0),
+  sessionTimeoutMs: z.number().int().min(0),
+  sessionCleanupIntervalMs: z.number().int().min(0),
   allowedOriginsRaw: z.string().optional(),
   plannerCodexModel: z.string().optional(),
   reviewerCodexModel: z.string().optional(),
@@ -231,6 +235,27 @@ function normalizeWebInteger(raw: string | undefined, defaultValue: number, mini
   return Math.max(minimum, Math.floor(parsed));
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+
+function resolveWebSessionTimeoutMs(env: EnvSource): number {
+  const rawMs = normalizeOptionalString(env.ADS_WEB_SESSION_TIMEOUT_MS);
+  if (rawMs !== undefined) {
+    return normalizeWebInteger(rawMs, 24 * HOUR_MS, 0);
+  }
+  const hours = normalizeWebInteger(env.ADS_WEB_SESSION_TIMEOUT_HOURS, 24, 0);
+  return hours * HOUR_MS;
+}
+
+function resolveWebSessionCleanupIntervalMs(env: EnvSource): number {
+  const rawMs = normalizeOptionalString(env.ADS_WEB_SESSION_CLEANUP_INTERVAL_MS);
+  if (rawMs !== undefined) {
+    return normalizeWebInteger(rawMs, 5 * MINUTE_MS, 0);
+  }
+  const minutes = normalizeWebInteger(env.ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES, 5, 0);
+  return minutes * MINUTE_MS;
+}
+
 export function resolveSharedConfig(options: SharedConfigOptions = {}): SharedConfig {
   const env = getEnv(options);
   return sharedConfigSchema.parse({
@@ -250,6 +275,8 @@ export function resolveWebConfig(options: DomainConfigOptions = {}): WebConfig {
     maxClients: normalizeWebInteger(env.ADS_WEB_MAX_CLIENTS, 32, 1),
     wsPingIntervalMs: normalizeWebNumber(env.ADS_WEB_WS_PING_INTERVAL_MS, 15_000, 0),
     wsMaxMissedPongs: normalizeWebInteger(env.ADS_WEB_WS_MAX_MISSED_PONGS, 3, 0),
+    sessionTimeoutMs: resolveWebSessionTimeoutMs(env),
+    sessionCleanupIntervalMs: resolveWebSessionCleanupIntervalMs(env),
     allowedOriginsRaw: env.ADS_WEB_ALLOWED_ORIGINS,
     plannerCodexModel: normalizeOptionalString(env.ADS_PLANNER_CODEX_MODEL),
     reviewerCodexModel: normalizeOptionalString(env.ADS_REVIEWER_CODEX_MODEL),

@@ -177,6 +177,7 @@ Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK
 
 - 构建后启动：`npm run web`（等价于 `node dist/server/cli.js web`）
 - 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ALLOWED_DIRS` 控制（Web/Telegram 共用）。
+- Web 会话空闲回收默认 24 小时：可用 `ADS_WEB_SESSION_TIMEOUT_HOURS`（或 `ADS_WEB_SESSION_TIMEOUT_MS`）覆盖；清理轮询间隔可用 `ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES`（或 `ADS_WEB_SESSION_CLEANUP_INTERVAL_MS`）覆盖。Task Queue 默认继承 Web 配置，亦可用 `ADS_TASK_QUEUE_SESSION_TIMEOUT_HOURS` / `ADS_TASK_QUEUE_SESSION_CLEANUP_INTERVAL_MINUTES` 单独覆盖。
 - 浏览器访问对应地址即可与 Telegram 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
 - （可选）任务完成 Telegram 通知：复用 `TELEGRAM_BOT_TOKEN`，并使用 `TELEGRAM_ALLOWED_USER_ID` 作为通知 `chat_id`（单用户约束；`TELEGRAM_ALLOWED_USERS` 为 legacy alias）；可用 `ADS_TELEGRAM_NOTIFY_TIMEZONE` 设置通知时间戳时区（默认 `Asia/Shanghai`）。
 - 聊天日志支持本地缓存（按 token 隔离，约 100 条/200KB，TTL 1 天），顶部“清空历史”按钮可同时清理日志与缓存；会话标签支持重命名并按 token 记住工作目录，重连/切换时自动恢复；流式回复的“正在输入”占位符按会话隔离。

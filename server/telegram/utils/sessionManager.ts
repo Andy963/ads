@@ -297,12 +297,14 @@ export class SessionManager {
   }
 
   ensureLogger(userId: number): ConversationLogger | undefined {
-    if (!isConversationLoggingEnabled()) {
+    const record = this.sessions.get(userId);
+    if (!record) {
       return undefined;
     }
 
-    const record = this.sessions.get(userId);
-    if (!record) {
+    record.lastActivity = Date.now();
+
+    if (!isConversationLoggingEnabled()) {
       return undefined;
     }
 

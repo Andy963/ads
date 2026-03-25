@@ -79,6 +79,60 @@ function parseWebReviewVerdict(rawResponse: string): { ok: true; verdict: WebRev
   }
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+
+function normalizeNonNegativeInteger(raw: string | undefined, defaultValue: number): number {
+  const parsed = Number(raw ?? defaultValue);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return defaultValue;
+  }
+  return Math.floor(parsed);
+}
+
+function resolveSessionTimeoutMsFromEnv(args: {
+  timeoutMs?: string;
+  timeoutHours?: string;
+  defaultHours: number;
+}): number {
+  const timeoutMs = String(args.timeoutMs ?? "").trim();
+  if (timeoutMs) {
+    return normalizeNonNegativeInteger(timeoutMs, args.defaultHours * HOUR_MS);
+  }
+  const hours = normalizeNonNegativeInteger(args.timeoutHours, args.defaultHours);
+  return hours * HOUR_MS;
+}
+
+function resolveCleanupIntervalMsFromEnv(args: {
+  intervalMs?: string;
+  intervalMinutes?: string;
+  defaultMinutes: number;
+}): number {
+  const intervalMs = String(args.intervalMs ?? "").trim();
+  if (intervalMs) {
+    return normalizeNonNegativeInteger(intervalMs, args.defaultMinutes * MINUTE_MS);
+  }
+  const minutes = normalizeNonNegativeInteger(args.intervalMinutes, args.defaultMinutes);
+  return minutes * MINUTE_MS;
+}
+
+function resolveTaskQueueSessionTimeoutMs(): number {
+  return resolveSessionTimeoutMsFromEnv({
+    timeoutMs: process.env.ADS_TASK_QUEUE_SESSION_TIMEOUT_MS ?? process.env.ADS_WEB_SESSION_TIMEOUT_MS,
+    timeoutHours: process.env.ADS_TASK_QUEUE_SESSION_TIMEOUT_HOURS ?? process.env.ADS_WEB_SESSION_TIMEOUT_HOURS,
+    defaultHours: 24,
+  });
+}
+
+function resolveTaskQueueSessionCleanupIntervalMs(): number {
+  return resolveCleanupIntervalMsFromEnv({
+    intervalMs: process.env.ADS_TASK_QUEUE_SESSION_CLEANUP_INTERVAL_MS ?? process.env.ADS_WEB_SESSION_CLEANUP_INTERVAL_MS,
+    intervalMinutes:
+      process.env.ADS_TASK_QUEUE_SESSION_CLEANUP_INTERVAL_MINUTES ?? process.env.ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES,
+    defaultMinutes: 5,
+  });
+}
+
 function recordTaskWorkspacePatchArtifact(ctx: TaskQueueContext, taskId: string, now = Date.now()): void {
   const id = String(taskId ?? "").trim();
   if (!id) return;
@@ -251,9 +305,11 @@ export function createTaskQueueManager(deps: {
       namespace: `task-queue:${sessionId}`,
       storagePath: path.join(deps.adsStateDir, `task-queue-threads-${sessionId}.json`),
     });
+    const taskQueueSessionTimeoutMs = resolveTaskQueueSessionTimeoutMs();
+    const taskQueueSessionCleanupIntervalMs = resolveTaskQueueSessionCleanupIntervalMs();
     const taskQueueSessionManager = new SessionManager(
-      0,
-      0,
+      taskQueueSessionTimeoutMs,
+      taskQueueSessionCleanupIntervalMs,
       "danger-full-access",
       taskQueueModelOverride,
       taskQueueThreadStorage,
