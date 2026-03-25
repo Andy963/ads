@@ -1,0 +1,3 @@
+## 2024-05-20 - [Graph Adjacency List Secondary Indexes]
+**Learning:** Graph ancestry traversals (such as those using recursive CTEs) perform exceptionally poorly (O(N) per hop instead of O(log N)) if explicit secondary database indexes on adjacency list foreign keys (`source` and `target` in an `edges` table) are missing, resulting in full sequential table scans for every parent lookup.
+**Action:** Always ensure that adjacency list tables used for graph connections have explicit indexes on both their source and target reference columns, especially when used in CTEs or loop-based query traversals.
