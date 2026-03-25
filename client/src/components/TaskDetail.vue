@@ -2,11 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { TaskDetail } from "../api/types";
 import MarkdownContent from "./MarkdownContent.vue";
+import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
 import AttachmentThumb from "./AttachmentThumb.vue";
 import TaskDetailHeader from "./TaskDetailHeader.vue";
 import { autosizeTextarea } from "../lib/textarea_autosize";
 import { isPatchMessageMarkdown } from "../lib/patch_message";
 import { copyTextToClipboard } from "../lib/clipboard";
+import type { MarkdownFilePreviewLink } from "../lib/markdown";
 
 type ChatMessage = {
   id: string;
@@ -17,7 +19,7 @@ type ChatMessage = {
   streaming?: boolean;
 };
 
-const props = defineProps<{ task: TaskDetail | null; messages: ChatMessage[]; apiToken?: string }>();
+const props = defineProps<{ task: TaskDetail | null; messages: ChatMessage[]; apiToken?: string; workspaceRoot?: string | null }>();
 const emit = defineEmits<{
   (e: "cancel", id: string): void;
   (e: "retry", id: string): void;
@@ -34,6 +36,7 @@ const inputEl = ref<HTMLTextAreaElement | null>(null);
 
 const copiedMessageId = ref<string | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 
 const isRunning = computed(() => {
   const t = props.task;
@@ -153,6 +156,15 @@ function onInputKeydown(ev: KeyboardEvent): void {
   send();
 }
 
+function openFilePreview(payload: MarkdownFilePreviewLink): void {
+  if (!String(props.workspaceRoot ?? "").trim()) return;
+  filePreviewTarget.value = payload;
+}
+
+function closeFilePreview(): void {
+  filePreviewTarget.value = null;
+}
+
 onBeforeUnmount(() => {
   // noop; keep hook for symmetry (some browsers keep composition state)
   clearCopiedToast();
@@ -196,7 +208,13 @@ onBeforeUnmount(() => {
       <div v-for="m in messages" :key="m.id" class="msg" :data-role="m.role" :data-kind="m.kind">
         <div class="bubble" :class="{ hasActions: shouldShowMsgActions(m) }">
           <pre v-if="m.kind === 'command'" class="mono">{{ m.content }}</pre>
-          <MarkdownContent v-else :content="m.content" :tone="m.role === 'user' ? 'inverted' : 'default'" />
+          <MarkdownContent
+            v-else
+            :content="m.content"
+            :tone="m.role === 'user' ? 'inverted' : 'default'"
+            :enable-file-preview="Boolean(workspaceRoot)"
+            @open-file-preview="openFilePreview"
+          />
           <div v-if="shouldShowMsgActions(m)" class="msgActions">
             <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="onCopyMessage(m)">
               <svg v-if="copiedMessageId === m.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -245,6 +263,7 @@ onBeforeUnmount(() => {
       />
       <button class="send" :disabled="!input.trim()" type="button" aria-label="发送指令" @click="send">发送</button>
     </div>
+    <ChatFilePreviewModal :workspace-root="workspaceRoot" :target="filePreviewTarget" @close="closeFilePreview" />
   </div>
 </template>
 

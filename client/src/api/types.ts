@@ -96,6 +96,17 @@ export interface ModelConfig {
   configJson?: Record<string, unknown> | null;
 }
 
+export type FilePreviewResponse = {
+  path: string;
+  content: string;
+  totalLines: number;
+  startLine: number;
+  endLine: number;
+  truncated: boolean;
+  language: string | null;
+  line: number | null;
+};
+
 export interface TaskQueueStatus {
   enabled: boolean;
   running: boolean;

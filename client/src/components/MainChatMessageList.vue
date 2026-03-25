@@ -2,7 +2,9 @@
 import { computed, ref, watch } from "vue";
 
 import MarkdownContent from "./MarkdownContent.vue";
+import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
 import type { ChatMessage, RenderMessage } from "./mainChat/types";
+import type { MarkdownFilePreviewLink } from "../lib/markdown";
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
 
@@ -16,6 +18,7 @@ const props = defineProps<{
   liveStepOutlineItems: string[];
   liveStepOutlineHiddenCount: number;
   liveStepCollapsedTrivialOutline: boolean;
+  workspaceRoot?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -25,6 +28,7 @@ const emit = defineEmits<{
 
 const openCommandTrees = ref<Set<string>>(new Set());
 const expandedPatchIds = ref<Set<string>>(new Set());
+const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 
 function isLiveStepRenderMessage(m: RenderMessage): boolean {
   return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
@@ -199,6 +203,15 @@ function shouldShowMsgActions(m: RenderMessage): boolean {
 function shouldUseCompactBubble(m: RenderMessage): boolean {
   return !shouldShowMsgActions(m);
 }
+
+function openFilePreview(payload: MarkdownFilePreviewLink): void {
+  if (!String(props.workspaceRoot ?? "").trim()) return;
+  filePreviewTarget.value = payload;
+}
+
+function closeFilePreview(): void {
+  filePreviewTarget.value = null;
+}
 </script>
 
 <template>
@@ -293,7 +306,7 @@ function shouldUseCompactBubble(m: RenderMessage): boolean {
             :data-trivial-outline="String(liveStepCollapsedTrivialOutline)"
             :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded && liveStepCanToggleExpanded }"
           >
-            <MarkdownContent :content="m.content" />
+            <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
             <div v-if="!liveStepExpanded && liveStepOutlineItems.length > 0" class="liveStepOutline" aria-hidden="true">
               <div v-for="(title, idx) in liveStepOutlineItems" :key="idx" class="liveStepOutlineItem" :title="title">
                 <span class="liveStepOutlineBullet" aria-hidden="true">•</span>
@@ -308,7 +321,7 @@ function shouldUseCompactBubble(m: RenderMessage): boolean {
             </button>
           </div>
         </div>
-        <MarkdownContent v-else :content="m.content" />
+        <MarkdownContent v-else :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
         <div v-if="shouldShowMsgActions(m)" class="msgActions">
           <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="emit('copyMessage', m)">
             <svg
@@ -345,6 +358,7 @@ function shouldUseCompactBubble(m: RenderMessage): boolean {
         </div>
       </div>
     </div>
+    <ChatFilePreviewModal :workspace-root="workspaceRoot" :target="filePreviewTarget" @close="closeFilePreview" />
   </div>
 </template>
 

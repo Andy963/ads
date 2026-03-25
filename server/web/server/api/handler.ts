@@ -19,6 +19,7 @@ import { handleTaskBundleDraftRoutes } from "./routes/taskBundleDrafts.js";
 import { handlePreferenceRoutes } from "./routes/preferences.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
 import { handleReviewQueueRoutes } from "./routes/reviewQueue.js";
+import { handleFileRoutes } from "./routes/files.js";
 
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
@@ -87,6 +88,7 @@ export function createApiRequestHandler(deps: {
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handlePreferenceRoutes(routeCtx, { workspaceRoot: deps.workspaceRoot })) return true;
+    if (await handleFileRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
     if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;
     if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
     if (await handleModelRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;

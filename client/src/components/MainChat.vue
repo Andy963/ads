@@ -30,6 +30,7 @@ const props = defineProps<{
     startedAt: number;
   }>;
   apiToken?: string;
+  workspaceRoot?: string | null;
   headerAction?: { title: string; ariaLabel?: string; testId?: string };
   headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
   threadWarning?: string | null;
@@ -355,6 +356,7 @@ onBeforeUnmount(() => {
         :live-step-outline-items="liveStepOutlineItems"
         :live-step-outline-hidden-count="liveStepOutlineHiddenCount"
         :live-step-collapsed-trivial-outline="liveStepCollapsedTrivialOutline"
+        :workspace-root="workspaceRoot"
         @copy-message="onCopyMessage($event)"
         @toggle-live-step-expanded="toggleLiveStepExpanded"
       />

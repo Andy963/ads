@@ -11,6 +11,11 @@ import rust from "highlight.js/lib/languages/rust";
 import typescript from "highlight.js/lib/languages/typescript";
 import yaml from "highlight.js/lib/languages/yaml";
 
+export type MarkdownFilePreviewLink = {
+  path: string;
+  line: number | null;
+};
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -117,6 +122,44 @@ function isSafeUrl(url: string): boolean {
   );
 }
 
+function parseFilePreviewFragment(fragment: string): number | null {
+  const trimmed = String(fragment ?? "").trim();
+  const match = /^L(\d+)$/i.exec(trimmed);
+  if (!match) return null;
+  const parsed = Number.parseInt(match[1] ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : null;
+}
+
+function decodeUriPart(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+export function parseMarkdownFilePreviewHref(href: string): MarkdownFilePreviewLink | null {
+  const raw = String(href ?? "").trim();
+  if (!raw) return null;
+  if (/^(?:https?:|mailto:|javascript:|data:)/i.test(raw)) return null;
+  if (raw.startsWith("#")) return null;
+
+  const hashIndex = raw.indexOf("#");
+  const rawPath = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
+  const rawFragment = hashIndex >= 0 ? raw.slice(hashIndex + 1) : "";
+  const pathPart = decodeUriPart(rawPath).trim();
+  const line = parseFilePreviewFragment(rawFragment);
+  if (!pathPart || pathPart.endsWith("/")) return null;
+  if (pathPart.startsWith("/api/")) return null;
+
+  const normalized = pathPart.replace(/\\/g, "/");
+  const basename = normalized.split("/").filter(Boolean).pop() ?? normalized;
+  const looksFileLike = basename.includes(".") || line !== null || normalized.includes("/");
+  if (!looksFileLike) return null;
+
+  return { path: pathPart, line };
+}
+
 function normalizeLang(lang: string): string {
   const normalized = lang.trim().toLowerCase();
   if (!normalized) return "";
@@ -162,6 +205,24 @@ const md = new MarkdownIt({
 });
 
 md.validateLink = (url) => isSafeUrl(url);
+
+const defaultLinkOpenRenderer =
+  md.renderer.rules.link_open ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  const href = String(token.attrGet("href") ?? "");
+  const preview = parseMarkdownFilePreviewHref(href);
+  if (preview) {
+    token.attrSet("data-md-link-kind", "file-preview");
+    token.attrSet("data-md-file-path", preview.path);
+    if (preview.line != null) {
+      token.attrSet("data-md-file-line", String(preview.line));
+    }
+  }
+  return defaultLinkOpenRenderer(tokens, idx, options, env, self);
+};
 
 type MarkdownOutlineToken = {
   type: string;

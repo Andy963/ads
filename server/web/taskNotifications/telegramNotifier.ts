@@ -38,6 +38,8 @@ type StructuredSchedulerResult = {
   } | null;
 };
 
+const JSON_CODE_FENCE_REGEX = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+
 function resolveTelegramNotifyTimeZoneFromEnv(): string {
   const raw = String(process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE ?? "").trim();
   if (!raw) return DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE;
@@ -172,10 +174,33 @@ function loadPersistedTaskResult(workspaceRoot: string, taskId: string): string 
   }
 }
 
+function parseSchedulerResultJson<T>(result: string | null): T | null {
+  const raw = String(result ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const direct = safeParseJson<T>(raw);
+  if (direct) {
+    return direct;
+  }
+
+  const matches = Array.from(raw.matchAll(JSON_CODE_FENCE_REGEX));
+  if (matches.length !== 1) {
+    return null;
+  }
+
+  const fenced = String(matches[0]?.[1] ?? "").trim();
+  if (!fenced) {
+    return null;
+  }
+  return safeParseJson<T>(fenced);
+}
+
 function interpretStructuredSchedulerTelegramResult(
   result: string | null,
 ): { kind: "direct"; text: string } | { kind: "skip" } | null {
-  const parsed = safeParseJson<StructuredSchedulerResult>(result);
+  const parsed = parseSchedulerResultJson<StructuredSchedulerResult>(result);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return null;
   }

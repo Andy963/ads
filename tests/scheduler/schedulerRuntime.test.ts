@@ -240,6 +240,66 @@ describe("scheduler/runtime-liteque", () => {
     assert.equal(payload.text, "起来活动一下");
   });
 
+  it("extracts scheduler telegram text from fenced json results instead of sending terminal summaries", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "bot-token";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "111";
+
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Send water reminder to TG",
+        spec: buildScheduleSpec({
+          delivery: { channels: ["telegram"], telegram: { chatId: "222" } },
+        }),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    const fetchCalls: Array<{ url: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      fetchCalls.push({
+        url: String(input),
+        body: typeof init?.body === "string" ? init.body : "",
+      });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      tickMs: 60_000,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => ({
+        resultSummary: ["提醒如下：", "```json", '{"status":"ok","summary":"sent","outputs":{"telegram":{"text":"该喝水了"}}}', "```"].join(
+          "\n",
+        ),
+      }),
+    });
+    runtime.registerWorkspace(tmpDir);
+
+    try {
+      runtime.start();
+      await runtime.tickWorkspace(tmpDir);
+      await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+      await waitFor(() => fetchCalls.length === 1);
+    } finally {
+      runtime.stop();
+      globalThis.fetch = originalFetch;
+    }
+
+    assert.equal(fetchCalls.length, 1);
+    const payload = JSON.parse(fetchCalls[0]!.body) as { chat_id: string; text: string };
+    assert.equal(payload.chat_id, "222");
+    assert.equal(payload.text, "该喝水了");
+  });
+
   it("marks scheduler runs with empty telegram outputs as handled without sending terminal summaries", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "bot-token";
     process.env.TELEGRAM_ALLOWED_USER_ID = "111";

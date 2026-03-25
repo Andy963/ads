@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount } from "vue";
-import { renderMarkdownToHtml } from "../lib/markdown";
+import { renderMarkdownToHtml, type MarkdownFilePreviewLink } from "../lib/markdown";
 import { copyTextToClipboard } from "../lib/clipboard";
 
 const props = defineProps<{
   content: string;
   tone?: "default" | "inverted";
+  enableFilePreview?: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: "openFilePreview", payload: MarkdownFilePreviewLink): void;
 }>();
 
 let lastCodeCopyButton: HTMLButtonElement | null = null;
@@ -31,22 +36,34 @@ async function onClick(ev: MouseEvent): Promise<void> {
   if (!target) return;
 
   const btn = target.closest("button.md-codecopy") as HTMLButtonElement | null;
-  if (!btn) return;
+  if (btn) {
+    const wrapper = btn.closest(".md-codeblock");
+    const codeEl = wrapper?.querySelector("pre code") as HTMLElement | null;
+    const codeText = codeEl?.textContent ?? "";
+    if (!codeText.trim()) return;
 
-  const wrapper = btn.closest(".md-codeblock");
-  const codeEl = wrapper?.querySelector("pre code") as HTMLElement | null;
-  const codeText = codeEl?.textContent ?? "";
-  if (!codeText.trim()) return;
+    const ok = await copyTextToClipboard(codeText);
+    if (!ok) return;
 
-  const ok = await copyTextToClipboard(codeText);
-  if (!ok) return;
-
-  resetCodeCopyToast();
-  btn.setAttribute("data-state", "copied");
-  lastCodeCopyButton = btn;
-  lastCodeCopyTimer = setTimeout(() => {
     resetCodeCopyToast();
-  }, 1400);
+    btn.setAttribute("data-state", "copied");
+    lastCodeCopyButton = btn;
+    lastCodeCopyTimer = setTimeout(() => {
+      resetCodeCopyToast();
+    }, 1400);
+    return;
+  }
+
+  if (!props.enableFilePreview) return;
+  const anchor = target.closest("a[data-md-link-kind='file-preview']") as HTMLAnchorElement | null;
+  if (!anchor) return;
+
+  const rawPath = String(anchor.getAttribute("data-md-file-path") ?? "").trim();
+  if (!rawPath) return;
+  const rawLine = String(anchor.getAttribute("data-md-file-line") ?? "").trim();
+  const line = /^\d+$/.test(rawLine) ? Number.parseInt(rawLine, 10) : null;
+  ev.preventDefault();
+  emit("openFilePreview", { path: rawPath, line: Number.isFinite(line ?? NaN) ? line : null });
 }
 
 const html = computed(() => renderMarkdownToHtml(props.content));

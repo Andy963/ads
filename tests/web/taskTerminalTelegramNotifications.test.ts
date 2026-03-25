@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { TaskStore } from "../../server/tasks/store.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
@@ -25,10 +27,12 @@ describe("web/taskNotifications telegram", () => {
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     delete process.env.TELEGRAM_ALLOWED_USER_ID;
     delete process.env.TELEGRAM_ALLOWED_USERS;
+    resetDatabaseForTests();
     resetStateDatabaseForTests();
   });
 
   afterEach(() => {
+    resetDatabaseForTests();
     resetStateDatabaseForTests();
     process.env = { ...originalEnv };
     try {
@@ -210,6 +214,61 @@ describe("web/taskNotifications telegram", () => {
     const outcome = await attemptSendTaskTerminalTelegramNotification({ logger, taskId: "t5", sender });
     assert.equal(outcome, "sent");
     assert.equal(calls, 1);
+  });
+
+  it("extracts direct scheduler telegram text from fenced json results", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.TELEGRAM_ALLOWED_USER_ID = "123";
+
+    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "ws-fenced-json-"));
+    const result = ["这里是结果：", "```json", '{"status":"ok","summary":"sent","outputs":{"telegram":{"text":"喝水"}}}', "```"].join("\n");
+    const taskStore = new TaskStore({ workspacePath: workspaceRoot });
+    taskStore.createTask(
+      {
+        id: "t5c",
+        title: "Task 5c",
+        prompt: "Return reminder JSON.",
+        model: "auto",
+        inheritContext: false,
+        createdBy: "scheduler",
+      },
+      1_000,
+      { status: "completed" },
+    );
+    taskStore.updateTask("t5c", { result, completedAt: 2_000 }, 2_000);
+
+    const db = getStateDatabase();
+    upsertTaskNotificationBinding({
+      db,
+      authUserId: "u1",
+      workspaceRoot,
+      taskId: "t5c",
+      taskTitle: "Task 5c",
+      telegramChatId: "456",
+      now: 1_000,
+    });
+    recordTaskTerminalStatus({
+      db,
+      workspaceRoot,
+      taskId: "t5c",
+      taskTitle: "Task 5c",
+      status: "completed",
+      startedAt: 1_000,
+      completedAt: 2_000,
+      telegramChatId: "456",
+      now: 2_000,
+    });
+
+    const calls: Array<{ text: string; chatId: string }> = [];
+    const sender = async (args: { botToken: string; chatId: string; text: string }) => {
+      calls.push({ text: args.text, chatId: args.chatId });
+      return { ok: true as const };
+    };
+
+    const logger = { info() {}, warn() {}, debug() {}, error() {} } as any;
+    const outcome = await attemptSendTaskTerminalTelegramNotification({ logger, taskId: "t5c", sender });
+    assert.equal(outcome, "sent");
+    assert.deepEqual(calls, [{ chatId: "456", text: "喝水" }]);
   });
 
   it("prefers task-bound telegram chat id over env default", async () => {

@@ -481,6 +481,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
           :agent-delegations="plannerAgentDelegations"
           :thread-warning="plannerThreadWarning"
+          :workspace-root="resolveActiveWorkspaceRoot()"
           :header-action="{ title: '清空上下文', ariaLabel: '清空 Planner 上下文', testId: 'planner-chat-clear-context' }"
           :header-resume-action="{
             title: '恢复上下文',
@@ -518,6 +519,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
           :thread-warning="workerThreadWarning"
+          :workspace-root="resolveActiveWorkspaceRoot()"
           :header-action="{ title: '新会话', ariaLabel: '新会话', testId: 'worker-chat-new-session' }"
           :header-resume-action="{
             title: '恢复上下文',
@@ -595,6 +597,7 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
           :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
           :agent-delegations="agentDelegations"
           :thread-warning="workerThreadWarning"
+          :workspace-root="resolveActiveWorkspaceRoot()"
           @send="sendMainPrompt"
           @switchAgent="switchMainAgent"
           @setModel="setMainModelId"
