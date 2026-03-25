@@ -121,12 +121,22 @@ export function createHttpServer(options: {
       return true;
     }
 
-    const raw = (url.split("?")[0] ?? "/").trim();
+    let decodedUrl = url;
+    try {
+      decodedUrl = decodeURIComponent(url);
+    } catch {
+      // Ignore malformed URIs, continue with raw url
+    }
+
+    const raw = (decodedUrl.split("?")[0] ?? "/").trim();
     const rel = raw.startsWith("/") ? raw : `/${raw}`;
     const normalized = path.posix.normalize(rel);
     const safeRel = normalized.startsWith("/") ? normalized : `/${normalized}`;
     const resolved = path.resolve(distClientDir, "." + safeRel);
-    if (!resolved.startsWith(distClientDir)) {
+
+    // Ensure exact directory match or match with trailing path separator to avoid partial directory traversal
+    const distClientDirWithSep = distClientDir.endsWith(path.sep) ? distClientDir : distClientDir + path.sep;
+    if (!(resolved === distClientDir || resolved.startsWith(distClientDirWithSep))) {
       setSecurityHeaders(res);
       res.writeHead(403).end("Forbidden");
       return true;
