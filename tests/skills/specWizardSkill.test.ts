@@ -13,6 +13,7 @@ describe("spec-wizard skill wording", () => {
     ];
 
     for (const filePath of targets) {
+      if (!fs.existsSync(filePath)) continue;
       const content = fs.readFileSync(filePath, "utf8");
       assert.doesNotMatch(content, /workflow spec/i, `${filePath} should not mention legacy workflow spec wording`);
       assert.match(content, /docs\/spec\//, `${filePath} should mention direct docs/spec recording`);

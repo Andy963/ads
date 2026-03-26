@@ -121,7 +121,15 @@ export function createHttpServer(options: {
       return true;
     }
 
-    const raw = (url.split("?")[0] ?? "/").trim();
+    let raw = (url.split("?")[0] ?? "/").trim();
+    try {
+      raw = decodeURIComponent(raw);
+    } catch {
+      setSecurityHeaders(res);
+      res.writeHead(400).end("Bad Request");
+      return true;
+    }
+
     const rel = raw.startsWith("/") ? raw : `/${raw}`;
     const normalized = path.posix.normalize(rel);
     const safeRel = normalized.startsWith("/") ? normalized : `/${normalized}`;
