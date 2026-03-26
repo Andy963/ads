@@ -423,6 +423,7 @@ function toggleExpanded(): void {
           :disabled="Boolean(busy)"
           data-testid="task-bundle-drafts-refresh"
           title="刷新"
+          aria-label="刷新"
           @click="emit('refresh')"
         >
           <Refresh />
@@ -452,6 +453,7 @@ function toggleExpanded(): void {
               class="draftRowDelete"
               :disabled="Boolean(busy)"
               title="删除"
+              aria-label="删除"
               data-testid="task-bundle-draft-delete"
               @click.stop="emit('delete', draft.id)"
             >
