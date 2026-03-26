@@ -142,4 +142,34 @@ describe("utils/activityTracker", () => {
     assert.match(tree, /^Explored\n/);
     assert.match(tree, /Execute npm test/);
   });
+
+  it("bounds raw entries and seen state while keeping the recent window", () => {
+    const tracker = new ActivityTracker();
+
+    for (let i = 0; i < 1300; i += 1) {
+      tracker.ingestThreadEvent({
+        type: "item.started",
+        item: {
+          id: `cmd-${i}`,
+          type: "command_execution",
+          command: `echo item-${i}`,
+          aggregated_output: "",
+          status: "in_progress",
+        },
+      } as ThreadEvent);
+    }
+
+    const internal = tracker as unknown as {
+      entries: Array<{ summary: string }>;
+      seen: Set<string>;
+    };
+    assert.equal(internal.entries.length, 200);
+    assert.equal(internal.seen.size, 1000);
+
+    const compacted = tracker.compact({ maxItems: 5, dedupe: "none" });
+    assert.deepEqual(
+      compacted.map((entry) => entry.summary),
+      ["echo item-1100", "echo item-1101", "echo item-1102", "echo item-1103", "echo item-1104"],
+    );
+  });
 });

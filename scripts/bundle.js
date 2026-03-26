@@ -17,7 +17,7 @@ await esbuild.build({
   format: "esm",
   outfile: path.join(DIST, "server", "cli.bundle.js"),
   external: ["better-sqlite3"],
-  sourcemap: true,
+  sourcemap: false,
   banner: {
     js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
   },
@@ -31,7 +31,7 @@ function removeOldFiles(dir) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       fs.rmSync(fullPath, { recursive: true, force: true });
-    } else if (entry.name !== "cli.bundle.js" && entry.name !== "cli.bundle.js.map") {
+    } else if (entry.name !== "cli.bundle.js") {
       fs.unlinkSync(fullPath);
     }
   }
@@ -43,12 +43,6 @@ fs.renameSync(
   path.join(serverDir, "cli.bundle.js"),
   path.join(serverDir, "cli.js"),
 );
-if (fs.existsSync(path.join(serverDir, "cli.bundle.js.map"))) {
-  fs.renameSync(
-    path.join(serverDir, "cli.bundle.js.map"),
-    path.join(serverDir, "cli.js.map"),
-  );
-}
 console.log("[bundle] Server bundled into dist/server/cli.js");
 
 // 3. Copy better-sqlite3 native module (with its dependencies)

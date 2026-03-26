@@ -237,13 +237,15 @@ function normalizeWebInteger(raw: string | undefined, defaultValue: number, mini
 
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
+const DEFAULT_WEB_SESSION_TIMEOUT_HOURS = 24;
+const DEFAULT_TELEGRAM_SESSION_TIMEOUT_HOURS = 24;
 
 function resolveWebSessionTimeoutMs(env: EnvSource): number {
   const rawMs = normalizeOptionalString(env.ADS_WEB_SESSION_TIMEOUT_MS);
   if (rawMs !== undefined) {
-    return normalizeWebInteger(rawMs, 24 * HOUR_MS, 0);
+    return normalizeWebInteger(rawMs, DEFAULT_WEB_SESSION_TIMEOUT_HOURS * HOUR_MS, 0);
   }
-  const hours = normalizeWebInteger(env.ADS_WEB_SESSION_TIMEOUT_HOURS, 24, 0);
+  const hours = normalizeWebInteger(env.ADS_WEB_SESSION_TIMEOUT_HOURS, DEFAULT_WEB_SESSION_TIMEOUT_HOURS, 0);
   return hours * HOUR_MS;
 }
 
@@ -314,7 +316,7 @@ export function resolveTelegramConfig(options: TelegramConfigOptions = {}): Reso
     maxRequestsPerMinute: parsePositiveNumberWithDefault(env.TELEGRAM_MAX_RPM, 10, "TELEGRAM_MAX_RPM"),
     sessionTimeoutMs: parseNonNegativeNumberWithDefault(
       env.TELEGRAM_SESSION_TIMEOUT,
-      0,
+      DEFAULT_TELEGRAM_SESSION_TIMEOUT_HOURS * HOUR_MS,
       "TELEGRAM_SESSION_TIMEOUT",
     ),
     streamUpdateIntervalMs: parsePositiveNumberWithDefault(

@@ -117,7 +117,6 @@ watch(highlightedLine, () => {
     <div ref="rootEl" class="filePreview">
       <div class="filePreviewHeader" data-drag-handle>
         <div class="filePreviewMeta">
-          <div class="filePreviewTitle">文件预览</div>
           <div class="filePreviewPath" :title="preview?.path || target.path">{{ preview?.path || target.path }}</div>
           <div v-if="preview" class="filePreviewStats">
             共 {{ preview.totalLines }} 行
@@ -183,24 +182,18 @@ watch(highlightedLine, () => {
   min-width: 0;
 }
 
-.filePreviewTitle {
-  font-size: 16px;
-  font-weight: 900;
-  color: #0f172a;
-}
-
 .filePreviewPath {
-  margin-top: 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
-  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--github-text);
   word-break: break-all;
 }
 
 .filePreviewStats {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 12px;
-  color: #64748b;
+  color: var(--github-muted);
 }
 
 .filePreviewClose {
@@ -242,10 +235,10 @@ watch(highlightedLine, () => {
 }
 
 .filePreviewCode {
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid var(--github-border);
   border-radius: 12px;
   overflow: auto;
-  background: #0f172a;
+  background: var(--github-code-bg);
   max-height: min(58vh, 620px);
 }
 
@@ -260,7 +253,7 @@ watch(highlightedLine, () => {
 }
 
 .filePreviewLine--highlight {
-  background: rgba(245, 158, 11, 0.18);
+  background: rgba(251, 191, 36, 0.18);
 }
 
 .filePreviewLineNo {
@@ -268,7 +261,7 @@ watch(highlightedLine, () => {
   left: 0;
   font-family: var(--font-mono);
   font-size: 12px;
-  color: rgba(148, 163, 184, 0.95);
+  color: var(--github-muted);
   background: inherit;
   padding: 4px 0;
   user-select: none;
@@ -278,7 +271,7 @@ watch(highlightedLine, () => {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
-  color: rgba(226, 232, 240, 0.96);
+  color: var(--github-text);
   white-space: pre-wrap;
   word-break: break-word;
   padding: 4px 0;

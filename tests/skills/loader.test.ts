@@ -4,7 +4,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { discoverSkills, loadSkillBody, renderCompactSkills, type SkillMetadata } from "../../server/skills/loader.js";
+import {
+  discoverSkills,
+  getSkillFileCacheSizeForTests,
+  loadSkillBody,
+  renderCompactSkills,
+  resetSkillFileCacheForTests,
+  type SkillMetadata,
+} from "../../server/skills/loader.js";
 
 let workspaceRoot: string;
 let adsStateDir: string;
@@ -34,10 +41,12 @@ describe("skills/loader", () => {
     adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-state-"));
     process.env.ADS_STATE_DIR = adsStateDir;
     delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
+    resetSkillFileCacheForTests();
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
+    resetSkillFileCacheForTests();
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
     fs.rmSync(adsStateDir, { recursive: true, force: true });
   });
@@ -217,6 +226,29 @@ describe("skills/loader", () => {
   it("loadSkillBody returns null for unknown skill", () => {
     const body = loadSkillBody("nonexistent", workspaceRoot, NO_BUILTINS);
     assert.equal(body, null);
+  });
+
+  it("removes stale cache entries after a discovered skill file is deleted", () => {
+    createSkill(adsStateDir, "ephemeral-skill", [
+      "---",
+      "name: ephemeral-skill",
+      "description: Temporary skill",
+      "---",
+      "Body",
+    ].join("\n"));
+
+    const firstSkills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    assert.ok(firstSkills.some((skill) => skill.name === "ephemeral-skill"));
+    assert.equal(loadSkillBody("ephemeral-skill", workspaceRoot, NO_BUILTINS) != null, true);
+    const cacheSizeBeforeDelete = getSkillFileCacheSizeForTests();
+    assert.ok(cacheSizeBeforeDelete >= 1);
+
+    fs.rmSync(path.join(adsStateDir, ".agent", "skills", "ephemeral-skill"), { recursive: true, force: true });
+
+    const secondSkills = discoverSkills(workspaceRoot, NO_BUILTINS);
+    assert.equal(secondSkills.some((skill) => skill.name === "ephemeral-skill"), false);
+    assert.equal(loadSkillBody("ephemeral-skill", workspaceRoot, NO_BUILTINS), null);
+    assert.equal(getSkillFileCacheSizeForTests(), cacheSizeBeforeDelete - 1);
   });
 
   it("renderCompactSkills formats skills as XML", () => {

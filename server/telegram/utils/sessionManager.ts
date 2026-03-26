@@ -12,6 +12,7 @@ import { ConversationLogger } from '../../utils/conversationLogger.js';
 import { ThreadStorage } from './threadStorage.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { detectWorkspaceFrom } from '../../workspace/detector.js';
+import type { AgentIdentifier } from '../../agents/types.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -33,6 +34,62 @@ interface SessionRecord {
   lastActivity: number;
   cwd: string;
   logger?: ConversationLogger;
+}
+
+export type SessionDisposeReason = "idle_timeout" | "drop";
+
+export interface SessionDisposeInfo {
+  userId: number;
+  reason: SessionDisposeReason;
+  cwd?: string;
+  clearSavedThread: boolean;
+}
+
+export interface SessionManagerOptions {
+  agentAllowlist?: AgentIdentifier[];
+  createSession?: (args: {
+    userId: number;
+    cwd: string;
+    resumeThread: boolean;
+    resumeThreadId?: string;
+    userModel?: string;
+    workspaceRoot: string;
+    sandboxMode: SandboxMode;
+    codexEnv?: NodeJS.ProcessEnv;
+  }) => HybridOrchestrator;
+  onDispose?: (info: SessionDisposeInfo) => void;
+}
+
+export type SessionAgentSurface =
+  | "telegram"
+  | "web-worker"
+  | "web-planner"
+  | "web-reviewer"
+  | "task-queue"
+  | "scheduler-runtime"
+  | "scheduler-compiler";
+
+const INTERACTIVE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude", "gemini"];
+const CODEX_ONLY_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex"];
+
+export function resolveSessionAgentAllowlist(
+  surface: SessionAgentSurface,
+  env: NodeJS.ProcessEnv = process.env,
+): AgentIdentifier[] {
+  const preferred =
+    surface === "telegram" || surface === "web-worker" || surface === "web-planner"
+      ? INTERACTIVE_AGENT_ALLOWLIST
+      : CODEX_ONLY_AGENT_ALLOWLIST;
+
+  return preferred.filter((agentId) => {
+    if (agentId === "claude") {
+      return env.ADS_CLAUDE_ENABLED !== "0";
+    }
+    if (agentId === "gemini") {
+      return env.ADS_GEMINI_ENABLED !== "0";
+    }
+    return true;
+  });
 }
 
 export interface SessionWrapper {
@@ -80,6 +137,7 @@ export class SessionManager {
     defaultModel?: string,
     threadStorage?: ThreadStorage,
     codexEnv?: NodeJS.ProcessEnv,
+    private readonly options: SessionManagerOptions = {},
   ) {
     this.sandboxMode = sandboxMode;
     this.defaultModel = defaultModel;
@@ -100,6 +158,7 @@ export class SessionManager {
       if (cwd && cwd !== existing.cwd) {
         existing.cwd = cwd;
         existing.session.setWorkingDirectory(cwd);
+        this.syncStoredCwd(userId, cwd);
         existing.logger?.close();
         existing.logger = undefined;
       }
@@ -144,42 +203,16 @@ export class SessionManager {
       `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''}${resumeThreadId ? ` resume=${resumeThreadId}` : ' (fresh)'} at cwd: ${effectiveCwd}`,
     );
 
-    const adapter = new CodexCliAdapter({
-      sandboxMode: this.sandboxMode,
-      model: userModel,
-      workingDirectory: effectiveCwd,
+    const session = this.options.createSession?.({
+      userId,
+      cwd: effectiveCwd,
+      resumeThread: Boolean(resumeThread),
       resumeThreadId,
-      env: this.codexEnv,
-    });
-
-    const adapters: AgentAdapter[] = [adapter];
-
-    if (process.env.ADS_CLAUDE_ENABLED !== "0") {
-      adapters.push(new ClaudeCliAdapter({
-        sandboxMode: this.sandboxMode,
-        workingDirectory: effectiveCwd,
-      }));
-    }
-
-    if (process.env.ADS_GEMINI_ENABLED !== "0") {
-      adapters.push(new GeminiCliAdapter({
-        sandboxMode: this.sandboxMode,
-        workingDirectory: effectiveCwd,
-      }));
-    }
-
-    const systemPromptManager = new SystemPromptManager({
+      userModel,
       workspaceRoot,
-      reinjection: resolveReinjectionConfig(),
-    });
-
-    const session = new HybridOrchestrator({
-      adapters,
-      defaultAgentId: "codex",
-      initialWorkingDirectory: effectiveCwd,
-      initialModel: userModel,
-      systemPromptManager,
-    });
+      sandboxMode: this.sandboxMode,
+      codexEnv: this.codexEnv,
+    }) ?? this.createSession({ effectiveCwd, resumeThreadId, userModel, workspaceRoot });
 
     this.sessions.set(userId, {
       session,
@@ -200,6 +233,14 @@ export class SessionManager {
 
   clearHistoryInjection(userId: number): void {
     this.pendingHistoryInjections.delete(userId);
+  }
+
+  getConfiguredAgentIds(): AgentIdentifier[] {
+    const configured = this.options.agentAllowlist;
+    if (configured && configured.length > 0) {
+      return [...configured];
+    }
+    return ["codex"];
   }
 
   getActiveAgentLabel(userId: number): string {
@@ -390,20 +431,7 @@ export class SessionManager {
   }
 
   dropSession(userId: number, options?: { clearSavedThread?: boolean }): void {
-    const record = this.sessions.get(userId);
-    if (options?.clearSavedThread) {
-      this.threadStorage?.removeThread(userId);
-    }
-    if (!record) {
-      return;
-    }
-    try {
-      record.session.reset();
-    } catch {
-      // ignore
-    }
-    record.logger?.close();
-    this.sessions.delete(userId);
+    this.disposeSession(userId, "drop", options);
   }
 
   getUserCwd(userId: number): string | undefined {
@@ -422,6 +450,7 @@ export class SessionManager {
 
     record.cwd = cwd;
     record.session.setWorkingDirectory(cwd);
+    this.syncStoredCwd(userId, cwd);
     record.logger?.close();
     record.logger = undefined;
   }
@@ -472,9 +501,7 @@ export class SessionManager {
     }
 
     for (const userId of expiredUsers) {
-      const record = this.sessions.get(userId);
-      record?.logger?.close();
-      this.sessions.delete(userId);
+      this.disposeSession(userId, "idle_timeout");
       this.logger.debug('Cleaned up idle session');
     }
   }
@@ -487,5 +514,111 @@ export class SessionManager {
       record.logger?.close();
     }
     this.sessions.clear();
+  }
+
+  private createSession(args: {
+    effectiveCwd: string;
+    resumeThreadId?: string;
+    userModel?: string;
+    workspaceRoot: string;
+  }): HybridOrchestrator {
+    const adapters = this.createAdapters(args);
+
+    const systemPromptManager = new SystemPromptManager({
+      workspaceRoot: args.workspaceRoot,
+      reinjection: resolveReinjectionConfig(),
+    });
+
+    return new HybridOrchestrator({
+      adapters,
+      defaultAgentId: "codex",
+      initialWorkingDirectory: args.effectiveCwd,
+      initialModel: args.userModel,
+      systemPromptManager,
+    });
+  }
+
+  private createAdapters(args: {
+    effectiveCwd: string;
+    resumeThreadId?: string;
+    userModel?: string;
+  }): AgentAdapter[] {
+    const allowlist = this.getConfiguredAgentIds();
+    const adapters: AgentAdapter[] = [];
+
+    for (const agentId of allowlist) {
+      if (agentId === "codex") {
+        adapters.push(
+          new CodexCliAdapter({
+            sandboxMode: this.sandboxMode,
+            model: args.userModel,
+            workingDirectory: args.effectiveCwd,
+            resumeThreadId: args.resumeThreadId,
+            env: this.codexEnv,
+          }),
+        );
+        continue;
+      }
+
+      if (agentId === "claude") {
+        adapters.push(
+          new ClaudeCliAdapter({
+            sandboxMode: this.sandboxMode,
+            workingDirectory: args.effectiveCwd,
+          }),
+        );
+        continue;
+      }
+
+      if (agentId === "gemini") {
+        adapters.push(
+          new GeminiCliAdapter({
+            sandboxMode: this.sandboxMode,
+            workingDirectory: args.effectiveCwd,
+          }),
+        );
+      }
+    }
+
+    if (adapters.length === 0) {
+      throw new Error("SessionManager requires at least one enabled agent adapter");
+    }
+
+    return adapters;
+  }
+
+  private syncStoredCwd(userId: number, cwd: string): void {
+    const storage = this.threadStorage;
+    if (!storage) {
+      return;
+    }
+    const record = storage.getRecord(userId);
+    if (!record) {
+      return;
+    }
+    storage.setRecord(userId, { ...record, cwd });
+  }
+
+  private disposeSession(userId: number, reason: SessionDisposeReason, options?: { clearSavedThread?: boolean }): void {
+    const clearSavedThread = Boolean(options?.clearSavedThread);
+    const record = this.sessions.get(userId);
+    if (clearSavedThread) {
+      this.threadStorage?.removeThread(userId);
+    }
+    if (record) {
+      try {
+        record.session.reset();
+      } catch {
+        // ignore
+      }
+      record.logger?.close();
+      this.sessions.delete(userId);
+    }
+    this.options.onDispose?.({
+      userId,
+      reason,
+      cwd: record?.cwd,
+      clearSavedThread,
+    });
   }
 }

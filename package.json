@@ -23,7 +23,7 @@
     "url": "https://github.com/Andy963/ads/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-runtime-assets.js && npm run build:web",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.js && npm run build:web",
     "build:web": "vite build --config client/vite.config.ts",
     "dev:web": "vite --config client/vite.config.ts",
     "test:web": "vitest --config client/vitest.config.ts run",

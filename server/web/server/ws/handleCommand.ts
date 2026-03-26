@@ -5,6 +5,7 @@ import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type {
   WsCommandHandlerDeps,
 } from "./deps.js";
+import { preferInMemoryThreadId } from "./threadIds.js";
 
 export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<{
   handled: boolean;
@@ -49,7 +50,10 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
           error: merged.error,
         };
       }),
-      threadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId) ?? orchestrator.getThreadId(),
+      threadId: preferInMemoryThreadId({
+        inMemoryThreadId: orchestrator.getThreadId(),
+        savedThreadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId),
+      }),
     });
     return { handled: true, orchestrator, currentCwd };
   }

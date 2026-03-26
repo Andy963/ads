@@ -121,7 +121,7 @@ describe("server config resolvers", () => {
     assert.deepStrictEqual(config.allowedUsers, [123456]);
     assert.deepStrictEqual(config.allowedDirs, ["/workspace/root"]);
     assert.strictEqual(config.maxRequestsPerMinute, 10);
-    assert.strictEqual(config.sessionTimeoutMs, 0);
+    assert.strictEqual(config.sessionTimeoutMs, 24 * 60 * 60 * 1000);
     assert.strictEqual(config.streamUpdateIntervalMs, 1500);
     assert.strictEqual(config.sandboxMode, "workspace-write");
     assert.strictEqual(config.proxyUrl, "http://127.0.0.1:7890");

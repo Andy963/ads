@@ -129,6 +129,43 @@ describe("DraggableModal", () => {
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
+  it("does not start dragging from interactive controls inside the drag handle", async () => {
+    ensurePointerCapturePolyfill();
+
+    const wrapper = mount(DraggableModal, {
+      props: { cardVariant: "default" },
+      slots: {
+        default: `
+          <div>
+            <div data-drag-handle>
+              <span>Header</span>
+              <button type="button" data-testid="header-close">Close</button>
+            </div>
+            <div>Body</div>
+          </div>
+        `,
+      },
+    });
+
+    await nextTick();
+
+    const overlay = wrapper.find(".draggableOverlay");
+    const button = wrapper.find("[data-testid='header-close']");
+    const pointerDown = new Event("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperty(pointerDown, "button", { value: 0, configurable: true });
+    Object.defineProperty(pointerDown, "pointerId", { value: 5, configurable: true });
+    Object.defineProperty(pointerDown, "clientX", { value: 100, configurable: true });
+    Object.defineProperty(pointerDown, "clientY", { value: 100, configurable: true });
+
+    button.element.dispatchEvent(pointerDown);
+    dispatchPointerEvent(overlay.element, "pointermove", { pointerId: 5, clientX: 160, clientY: 160 });
+    dispatchPointerEvent(overlay.element, "pointerup", { pointerId: 5, clientX: 160, clientY: 160 });
+    await nextTick();
+
+    expect(pointerDown.defaultPrevented).toBe(false);
+    expect(overlay.classes()).not.toContain("isDragging");
+  });
+
   it("closes when the gesture starts on the overlay itself", async () => {
     const wrapper = mount(DraggableModal, {
       props: { cardVariant: "default" },

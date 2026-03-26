@@ -11,6 +11,7 @@ import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { SessionManager } from "../../server/telegram/utils/sessionManager.js";
+import { DirectoryManager } from "../../server/telegram/utils/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 
@@ -56,6 +57,17 @@ function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean
   });
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 describe("web/server/ws/interrupt", () => {
   let tmpDir: string;
   let workspaceRoot: string;
@@ -63,6 +75,7 @@ describe("web/server/ws/interrupt", () => {
   let port: number;
   let wss: import("ws").WebSocketServer;
   let runAdsCommandLineImpl: (command: string) => Promise<{ ok: boolean; output: string }>;
+  let interruptControllers: Map<string, AbortController>;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -95,7 +108,9 @@ describe("web/server/ws/interrupt", () => {
     const reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
+    const directoryManager = new DirectoryManager([workspaceRoot]);
 
+    interruptControllers = new Map<string, AbortController>();
     wss = attachWebSocketServer({
       server,
       logger: { info: () => {}, warn: () => {}, debug: () => {} },
@@ -116,8 +131,10 @@ describe("web/server/ws/interrupt", () => {
         agentAvailability,
       },
       state: {
+        directoryManager,
         workspaceCache: new Map(),
-        interruptControllers: new Map<string, AbortController>(),
+        sessionCacheRegistry: { registerBinding: () => {}, clearForUser: () => {} },
+        interruptControllers,
         clientMetaByWs,
         clients,
         cwdStore: new Map(),
@@ -282,5 +299,32 @@ describe("web/server/ws/interrupt", () => {
     } catch {
       // ignore
     }
+  });
+
+  it("disconnect aborts in-flight work and clears interruptControllers", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+
+    let runStarted: (() => void) | null = null;
+    const runStartedPromise = new Promise<void>((resolve) => {
+      runStarted = resolve;
+    });
+    const runPromise = new Promise<{ ok: boolean; output: string }>(() => {});
+
+    runAdsCommandLineImpl = async () => {
+      runStarted?.();
+      return await runPromise;
+    };
+
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+    await waitForWsOpen(client);
+
+    client.send(JSON.stringify({ type: "command", payload: "echo hello" }));
+    await runStartedPromise;
+    assert.equal(interruptControllers.size, 1);
+
+    client.terminate();
+
+    await waitForCondition(() => interruptControllers.size === 0);
   });
 });

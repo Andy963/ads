@@ -14,12 +14,10 @@ import { resolveStateDbPath, getStateDatabase } from "../../state/database.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
 import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
-import { SessionManager } from "../../telegram/utils/sessionManager.js";
 import { prepareMigrationMarkerStatements } from "../../state/migrations.js";
 import { CliAgentAvailability } from "../../agents/health/agentAvailability.js";
 import { createTaskQueueManager } from "./taskQueue/manager.js";
 import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
-import { WorkspaceLockPool } from "./workspaceLockPool.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
 import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions.js";
@@ -29,6 +27,15 @@ import { SchedulerRuntime } from "../../scheduler/runtime.js";
 import { resolveSharedConfig, resolveWebConfig } from "../../config.js";
 import { closeSharedDatabases } from "../../utils/shutdown.js";
 import { createWebSocketHub } from "./start/webSocketHub.js";
+import { DirectoryManager } from "../../telegram/utils/directoryManager.js";
+import {
+  createWebLaneResources,
+  WEB_PLANNER_NAMESPACE,
+  WEB_REVIEWER_NAMESPACE,
+  WEB_WORKER_NAMESPACE,
+} from "./start/webLaneResources.js";
+import { preferInMemoryThreadId } from "./ws/threadIds.js";
+import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
 
 const logger = createLogger("WebSocket");
 
@@ -37,10 +44,6 @@ const interruptControllers = new Map<string, AbortController>();
 const adsStateDir = resolveAdsStateDir();
 const stateDbPath = resolveStateDbPath();
 const LEGACY_WEB_NAMESPACE = "web";
-const WEB_WORKER_NAMESPACE = "web-worker";
-const WEB_PLANNER_NAMESPACE = "web-planner";
-const WEB_REVIEWER_NAMESPACE = "web-reviewer";
-
 function migrateLegacyWebLaneNamespaces(): void {
   try {
     // Best-effort: migrate legacy json stores into state.db under the legacy `web` namespace
@@ -151,34 +154,6 @@ function migrateLegacyWebLaneNamespaces(): void {
 
 migrateLegacyWebLaneNamespaces();
 
-const webWorkerThreadStorage = new ThreadStorage({
-  namespace: WEB_WORKER_NAMESPACE,
-});
-const webPlannerThreadStorage = new ThreadStorage({
-  namespace: WEB_PLANNER_NAMESPACE,
-});
-const webReviewerThreadStorage = new ThreadStorage({
-  namespace: WEB_REVIEWER_NAMESPACE,
-});
-
-const workerHistoryStore = new HistoryStore({
-  storagePath: stateDbPath,
-  namespace: WEB_WORKER_NAMESPACE,
-  maxEntriesPerSession: 200,
-  maxTextLength: 4000,
-});
-const plannerHistoryStore = new HistoryStore({
-  storagePath: stateDbPath,
-  namespace: WEB_PLANNER_NAMESPACE,
-  maxEntriesPerSession: 200,
-  maxTextLength: 4000,
-});
-const reviewerHistoryStore = new HistoryStore({
-  storagePath: stateDbPath,
-  namespace: WEB_REVIEWER_NAMESPACE,
-  maxEntriesPerSession: 200,
-  maxTextLength: 4000,
-});
 const cwdStorePath = stateDbPath;
 const cwdStore = loadCwdStore(cwdStorePath);
 
@@ -259,39 +234,58 @@ export async function startWebServer(): Promise<void> {
   });
   const webConfig = resolveWebConfig();
   const allowedDirs = sharedConfig.allowedDirs;
+  const directoryManager = new DirectoryManager(allowedDirs);
   const allowedOrigins = parseAllowedOrigins(webConfig.allowedOriginsRaw);
   const sessionTtlSeconds = resolveSessionTtlSeconds();
   const sessionPepper = resolveSessionPepper();
   const webSessionTimeoutMs = webConfig.sessionTimeoutMs;
   const webSessionCleanupIntervalMs = webConfig.sessionCleanupIntervalMs;
-  const workspaceLocks = new WorkspaceLockPool();
-  const plannerWorkspaceLocks = new WorkspaceLockPool();
-  const reviewerWorkspaceLocks = new WorkspaceLockPool();
-  const getWorkspaceLock = (workspaceRootForLock: string) => workspaceLocks.get(workspaceRootForLock);
-  const getPlannerWorkspaceLock = (workspaceRootForLock: string) => plannerWorkspaceLocks.get(workspaceRootForLock);
-  const getReviewerWorkspaceLock = (workspaceRootForLock: string) => reviewerWorkspaceLocks.get(workspaceRootForLock);
-  const sessionManager = new SessionManager(
-    webSessionTimeoutMs,
-    webSessionCleanupIntervalMs,
-    "danger-full-access",
-    undefined,
-    webWorkerThreadStorage,
-  );
-  const plannerSessionManager = new SessionManager(
-    webSessionTimeoutMs,
-    webSessionCleanupIntervalMs,
-    "read-only",
-    webConfig.plannerCodexModel,
-    webPlannerThreadStorage,
-  );
-  const reviewerSessionManager = new SessionManager(
-    webSessionTimeoutMs,
-    webSessionCleanupIntervalMs,
-    "read-only",
-    webConfig.reviewerCodexModel,
-    webReviewerThreadStorage,
-  );
-  const wsHub = createWebSocketHub({ workerHistoryStore, reviewerHistoryStore });
+  let sessionCacheRegistry: ReturnType<typeof createSessionCacheRegistry> | null = null;
+  const laneResources = createWebLaneResources({
+    stateDbPath,
+    sessionTimeoutMs: webSessionTimeoutMs,
+    sessionCleanupIntervalMs: webSessionCleanupIntervalMs,
+    plannerCodexModel: webConfig.plannerCodexModel,
+    reviewerCodexModel: webConfig.reviewerCodexModel,
+    workerSessionManagerOptions: {
+      onDispose: ({ userId }) => {
+        directoryManager.clearUserCwd(userId);
+        sessionCacheRegistry?.clearForUser(userId);
+      },
+    },
+    plannerSessionManagerOptions: {
+      onDispose: ({ userId }) => {
+        directoryManager.clearUserCwd(userId);
+        sessionCacheRegistry?.clearForUser(userId);
+      },
+    },
+    reviewerSessionManagerOptions: {
+      onDispose: ({ userId }) => {
+        directoryManager.clearUserCwd(userId);
+        sessionCacheRegistry?.clearForUser(userId);
+      },
+    },
+  });
+  const sessionManager = laneResources.worker.sessionManager;
+  const plannerSessionManager = laneResources.planner.sessionManager;
+  const reviewerSessionManager = laneResources.reviewer.sessionManager;
+  sessionCacheRegistry = createSessionCacheRegistry({
+    workspaceCache,
+    cwdStore,
+    cwdStorePath,
+    persistCwdStore,
+    hasActiveSession: (userId) =>
+      sessionManager.hasSession(userId) ||
+      plannerSessionManager.hasSession(userId) ||
+      reviewerSessionManager.hasSession(userId),
+  });
+  const getWorkspaceLock = laneResources.worker.getWorkspaceLock;
+  const getPlannerWorkspaceLock = laneResources.planner.getWorkspaceLock;
+  const getReviewerWorkspaceLock = laneResources.reviewer.getWorkspaceLock;
+  const wsHub = createWebSocketHub({
+    workerHistoryStore: laneResources.worker.historyStore,
+    reviewerHistoryStore: laneResources.reviewer.historyStore,
+  });
 
   const taskQueueManager = createTaskQueueManager({
     workspaceRoot,
@@ -318,6 +312,13 @@ export async function startWebServer(): Promise<void> {
   scheduler.start();
 
   const agentAvailability = new CliAgentAvailability();
+  const webAgentIds = Array.from(
+    new Set([
+      ...sessionManager.getConfiguredAgentIds(),
+      ...plannerSessionManager.getConfiguredAgentIds(),
+      ...reviewerSessionManager.getConfiguredAgentIds(),
+    ]),
+  );
   const broadcastAgentsSnapshot = (): void => {
     for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
       const manager =
@@ -329,25 +330,28 @@ export async function startWebServer(): Promise<void> {
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
       const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
       const activeAgentId = orchestrator.getActiveAgentId();
-      wsHub.safeSendJson(ws, {
-        type: "agents",
-        activeAgentId,
-        agents: orchestrator.listAgents().map((entry) => {
+	      wsHub.safeSendJson(ws, {
+	        type: "agents",
+	        activeAgentId,
+	        agents: orchestrator.listAgents().map((entry) => {
           const merged = agentAvailability.mergeStatus(entry.metadata.id, entry.status);
           return {
             id: entry.metadata.id,
             name: entry.metadata.name,
             ready: merged.ready,
             error: merged.error,
-          };
-        }),
-        threadId: manager.getSavedThreadId(meta.sessionUserId, activeAgentId) ?? orchestrator.getThreadId(),
-      });
-    }
-  };
+	          };
+	        }),
+	        threadId: preferInMemoryThreadId({
+	          inMemoryThreadId: orchestrator.getThreadId(),
+	          savedThreadId: manager.getSavedThreadId(meta.sessionUserId, activeAgentId),
+	        }),
+	      });
+	    }
+	  };
   const startAgentAvailabilityProbe = (): void => {
     void agentAvailability
-      .probeAll()
+      .probeAll(webAgentIds)
       .then(() => broadcastAgentsSnapshot())
       .catch((error) => {
         logger.warn(`[Web] Failed to probe agent availability: ${(error as Error).message}`);
@@ -403,6 +407,8 @@ export async function startWebServer(): Promise<void> {
     },
     state: {
       workspaceCache,
+      sessionCacheRegistry,
+      directoryManager,
       interruptControllers,
       clientMetaByWs: wsHub.clientMetaByWs,
       clients: wsHub.clients,
@@ -419,9 +425,9 @@ export async function startWebServer(): Promise<void> {
       getReviewerWorkspaceLock,
     },
     history: {
-      workerHistoryStore,
-      plannerHistoryStore,
-      reviewerHistoryStore,
+      workerHistoryStore: laneResources.worker.historyStore,
+      plannerHistoryStore: laneResources.planner.historyStore,
+      reviewerHistoryStore: laneResources.reviewer.historyStore,
     },
     tasks: {
       ensureTaskContext: taskQueueManager.ensureTaskContext,

@@ -60,4 +60,8 @@ export class DirectoryManager {
     this.userCwds.set(userId, absolutePath);
     return { success: true };
   }
+
+  clearUserCwd(userId: number): void {
+    this.userCwds.delete(userId);
+  }
 }

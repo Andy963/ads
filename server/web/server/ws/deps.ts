@@ -12,6 +12,7 @@ import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import type { WsMessage } from "./schema.js";
+import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
 
 export type WsLogger = {
   info: (msg: string) => void;
@@ -64,7 +65,9 @@ export type WsAgentDeps = {
 };
 
 export type WsStateDeps = {
+  directoryManager: DirectoryManager;
   workspaceCache: Map<string, string>;
+  sessionCacheRegistry: SessionCacheRegistry;
   interruptControllers: Map<string, AbortController>;
   clientMetaByWs: Map<WebSocket, WsClientMeta>;
   clients: Set<WebSocket>;

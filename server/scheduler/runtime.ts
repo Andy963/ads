@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 
 import DatabaseConstructor, { type Database as SqliteDatabase } from "better-sqlite3";
@@ -8,7 +9,7 @@ import { getDatabaseInfo } from "../storage/database.js";
 import { TaskStore } from "../tasks/store.js";
 import type { Task } from "../tasks/types.js";
 import { OrchestratorTaskExecutor } from "../tasks/executor.js";
-import { SessionManager } from "../telegram/utils/sessionManager.js";
+import { SessionManager, resolveSessionAgentAllowlist } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -96,6 +97,7 @@ type WorkspaceSchedulerState = {
   runner: Runner<SchedulerJobPayload, SchedulerExecutionResult>;
   executor: OrchestratorTaskExecutor;
   runnerPromise: Promise<void> | null;
+  lastTouchedAt: number;
 };
 
 function hashTaskId(taskId: string): number {
@@ -173,6 +175,7 @@ function resolveScheduleTelegramChatId(schedule: StoredSchedule): string | null 
 export class SchedulerRuntime {
   private readonly enabled: boolean;
   private readonly tickMs: number;
+  private readonly idleRecycleMs: number;
   private readonly leaseTtlMs: number;
   private readonly dueLimit: number;
   private readonly reconcileLimit: number;
@@ -192,6 +195,7 @@ export class SchedulerRuntime {
   constructor(options?: {
     enabled?: boolean;
     tickMs?: number;
+    idleRecycleMs?: number;
     leaseTtlMs?: number;
     dueLimit?: number;
     reconcileLimit?: number;
@@ -205,6 +209,9 @@ export class SchedulerRuntime {
   }) {
     this.enabled = options?.enabled ?? parseBooleanFlag(process.env.ADS_SCHEDULER_ENABLED, true);
     this.tickMs = options?.tickMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_TICK_MS, 5000);
+    const idleRecycleRaw = Number.parseInt(String(process.env.ADS_SCHEDULER_IDLE_RECYCLE_MS ?? ""), 10);
+    this.idleRecycleMs =
+      options?.idleRecycleMs ?? (Number.isFinite(idleRecycleRaw) && idleRecycleRaw >= 0 ? idleRecycleRaw : 300_000);
     this.leaseTtlMs = options?.leaseTtlMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_LEASE_TTL_MS, 30_000);
     this.dueLimit = options?.dueLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_DUE_LIMIT, 20);
     this.reconcileLimit = options?.reconcileLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RECONCILE_LIMIT, 200);
@@ -223,9 +230,8 @@ export class SchedulerRuntime {
     const normalized = normalizeWorkspaceRoot(workspaceRoot);
     if (!normalized) return;
     this.workspaces.add(normalized);
-    this.getState(normalized);
     if (this.interval && this.enabled) {
-      this.startWorkspaceRunner(normalized);
+      void this.tickWorkspace(normalized);
     }
   }
 
@@ -235,9 +241,6 @@ export class SchedulerRuntime {
     }
     if (this.interval) {
       return;
-    }
-    for (const root of this.workspaces.values()) {
-      this.startWorkspaceRunner(root);
     }
     this.interval = setInterval(() => void this.tickAll(), this.tickMs);
     this.interval.unref?.();
@@ -249,17 +252,8 @@ export class SchedulerRuntime {
       clearInterval(this.interval);
       this.interval = null;
     }
-    for (const state of this.states.values()) {
-      try {
-        state.runner.stop();
-      } catch {
-        // ignore
-      }
-      try {
-        state.queueRawDb.close();
-      } catch {
-        // ignore
-      }
+    for (const [workspaceRoot, state] of this.states.entries()) {
+      this.disposeState(workspaceRoot, state);
     }
   }
 
@@ -267,6 +261,7 @@ export class SchedulerRuntime {
     const key = normalizeWorkspaceRoot(workspaceRoot);
     const existing = this.states.get(key);
     if (existing) {
+      existing.lastTouchedAt = Date.now();
       return existing;
     }
 
@@ -294,6 +289,10 @@ export class SchedulerRuntime {
         namespace: `scheduler:${buildQueueName(key)}`,
         storagePath: path.join(this.adsStateDir, `scheduler-threads-${buildQueueName(key)}.json`),
       }),
+      undefined,
+      {
+        agentAllowlist: resolveSessionAgentAllowlist("scheduler-runtime"),
+      },
     );
 
     const executor = new OrchestratorTaskExecutor({
@@ -328,9 +327,94 @@ export class SchedulerRuntime {
       runner,
       executor,
       runnerPromise: null,
+      lastTouchedAt: Date.now(),
     };
     this.states.set(key, state);
     return state;
+  }
+
+  private disposeState(workspaceRoot: string, state: WorkspaceSchedulerState): void {
+    try {
+      state.runner.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      state.queueRawDb.close();
+    } catch {
+      // ignore
+    }
+    this.states.delete(workspaceRoot);
+  }
+
+  private hasDueSchedules(workspaceRoot: string, now: number): boolean {
+    return new ScheduleStore({ workspacePath: workspaceRoot }).listDueScheduleIds(now, { limit: 1 }).length > 0;
+  }
+
+  private async hasQueuedJobs(workspaceRoot: string, state?: WorkspaceSchedulerState): Promise<boolean> {
+    if (state) {
+      const stats = await state.queue.stats();
+      return stats.pending + stats.pending_retry + stats.running > 0;
+    }
+
+    const dbPath = resolveLitequeDbPath(workspaceRoot);
+    if (!fs.existsSync(dbPath)) {
+      return false;
+    }
+
+    let db: SqliteDatabase | null = null;
+    try {
+      db = new DatabaseConstructor(dbPath, { readonly: true, fileMustExist: true });
+      const row = db
+        .prepare(
+          `SELECT COUNT(1) AS count
+           FROM tasks
+           WHERE queue = ?
+             AND status IN ('pending', 'pending_retry', 'running')`,
+        )
+        .get(buildQueueName(workspaceRoot)) as { count?: unknown } | undefined;
+      return Number(row?.count ?? 0) > 0;
+    } catch {
+      return false;
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private async workspaceNeedsMaterialization(workspaceRoot: string, now: number): Promise<boolean> {
+    if (this.states.has(workspaceRoot)) {
+      return true;
+    }
+    if (this.hasDueSchedules(workspaceRoot, now)) {
+      return true;
+    }
+    return await this.hasQueuedJobs(workspaceRoot);
+  }
+
+  private async recycleIdleStates(now = Date.now()): Promise<void> {
+    if (this.idleRecycleMs <= 0) {
+      return;
+    }
+
+    for (const [workspaceRoot, state] of this.states.entries()) {
+      if (this.inFlight.has(workspaceRoot)) {
+        continue;
+      }
+      if (state.runnerPromise) {
+        continue;
+      }
+      if (now - state.lastTouchedAt < this.idleRecycleMs) {
+        continue;
+      }
+      if (await this.hasQueuedJobs(workspaceRoot, state)) {
+        continue;
+      }
+      this.disposeState(workspaceRoot, state);
+    }
   }
 
   private async tickAll(): Promise<void> {
@@ -340,14 +424,19 @@ export class SchedulerRuntime {
 
   async tickWorkspace(workspaceRoot: string): Promise<void> {
     const root = normalizeWorkspaceRoot(workspaceRoot);
+    await this.recycleIdleStates(Date.now());
     if (this.inFlight.has(root)) {
       return;
     }
     this.inFlight.add(root);
     try {
+      const now = Date.now();
+      if (!(await this.workspaceNeedsMaterialization(root, now))) {
+        return;
+      }
+
       const state = this.getState(root);
       const store = state.store;
-      const now = Date.now();
 
       store.reconcileRuns({ limit: this.reconcileLimit, nowMs: now });
 
@@ -374,6 +463,12 @@ export class SchedulerRuntime {
             );
           }
         }
+      }
+
+      if (this.enabled && (await this.hasQueuedJobs(root, state))) {
+        this.startWorkspaceRunner(root);
+      } else {
+        await this.recycleIdleStates(Date.now());
       }
     } finally {
       this.inFlight.delete(root);
@@ -470,8 +565,9 @@ export class SchedulerRuntime {
     if (state.runnerPromise) {
       return;
     }
+    state.lastTouchedAt = Date.now();
     state.runnerPromise = state.runner
-      .run()
+      .runUntilEmpty()
       .catch((error) => {
         this.warnScheduler(
           {
@@ -483,6 +579,7 @@ export class SchedulerRuntime {
         );
       })
       .finally(() => {
+        state.lastTouchedAt = Date.now();
         state.runnerPromise = null;
       });
   }

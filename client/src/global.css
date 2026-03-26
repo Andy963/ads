@@ -5,9 +5,9 @@
     "Noto Sans", "Liberation Sans", sans-serif;
   --font-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
-  --app-bg: #f8fafc;
+  --app-bg: #f6f8fa;
   --surface: #ffffff;
-  --surface-2: #f1f5f9;
+  --surface-2: #f6f8fa;
   --border: rgba(15, 23, 42, 0.08);
   --text: #0f172a;
   --muted: #64748b;
@@ -17,6 +17,19 @@
   --accent-2: #1d4ed8;
   --danger: #ef4444;
   --danger-2: #dc2626;
+
+  --github-canvas: #f6f8fa;
+  --github-canvas-subtle: #f6f8fa;
+  --github-surface: #ffffff;
+  --github-border: #d0d7de;
+  --github-border-muted: #d8dee4;
+  --github-text: #24292f;
+  --github-muted: #57606a;
+  --github-accent: #0969da;
+  --github-accent-strong: #0550ae;
+  --github-accent-subtle: rgba(9, 105, 218, 0.08);
+  --github-code-bg: #f6f8fa;
+  --github-code-header: #eef2f6;
 
   --radius-sm: 10px;
   --radius: 12px;
@@ -68,4 +81,3 @@ pre {
     scroll-behavior: auto !important;
   }
 }
-

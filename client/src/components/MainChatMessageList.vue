@@ -384,8 +384,8 @@ function closeFilePreview(): void {
   overflow: hidden;
   border-radius: 12px;
   padding: 8px 14px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: 1px solid var(--github-border);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .execute-block {
@@ -515,7 +515,7 @@ function closeFilePreview(): void {
 .patchCardToggle {
   flex: 0 0 auto;
   border: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.92);
   color: #0f172a;
   border-radius: 999px;
   padding: 4px 10px;
@@ -526,7 +526,7 @@ function closeFilePreview(): void {
 }
 
 .patchCardToggle:hover {
-  background: rgba(255, 255, 255, 0.96);
+  background: #ffffff;
 }
 
 .patchCardBody {
@@ -539,9 +539,9 @@ function closeFilePreview(): void {
   margin: 0;
   padding: 10px 12px;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  background: rgba(15, 23, 42, 0.03);
-  color: #0f172a;
+  border: 1px solid var(--github-border);
+  background: var(--github-code-bg);
+  color: var(--github-text);
   font-size: 12px;
   line-height: 1.45;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -651,8 +651,9 @@ function closeFilePreview(): void {
   max-width: 100%;
   border-radius: 12px;
   padding: 12px 14px 22px 14px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: 1px solid var(--github-border);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 0 rgba(27, 31, 36, 0.04);
   position: relative;
   overflow: hidden;
 }
@@ -704,13 +705,13 @@ function closeFilePreview(): void {
 }
 
 .msg[data-role="user"] .bubble {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: rgba(37, 99, 235, 0.25);
+  background: rgba(221, 244, 255, 0.82);
+  border-color: rgba(9, 105, 218, 0.18);
 }
 
 .msg[data-role="system"] .bubble {
-  background: rgba(15, 23, 42, 0.04);
-  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(246, 248, 250, 0.96);
+  border-color: rgba(208, 215, 222, 0.95);
 }
 
 .msg[data-id="live-step"] .liveStepBody {
@@ -790,7 +791,7 @@ function closeFilePreview(): void {
   right: 0;
   bottom: 0;
   height: 1.6em;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0), var(--surface));
+  background: linear-gradient(to bottom, rgba(246, 248, 250, 0), rgba(255, 255, 255, 0.96));
   pointer-events: none;
 }
 
@@ -801,9 +802,9 @@ function closeFilePreview(): void {
 }
 
 .msg[data-id="live-step"] .liveStepToggleBtn {
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(15, 23, 42, 0.03);
-  color: rgba(15, 23, 42, 0.82);
+  border: 1px solid var(--github-border);
+  background: rgba(246, 248, 250, 0.98);
+  color: var(--github-muted);
   border-radius: 999px;
   padding: 4px 10px;
   font-size: 11px;
@@ -813,13 +814,13 @@ function closeFilePreview(): void {
 }
 
 .msg[data-id="live-step"] .liveStepToggleBtn:hover {
-  background: rgba(15, 23, 42, 0.06);
-  color: rgba(15, 23, 42, 0.92);
+  background: rgba(234, 238, 242, 0.98);
+  color: var(--github-text);
 }
 
 .msg[data-kind="command"] .bubble {
-  background: white;
-  border-color: rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.96);
+  border-color: var(--github-border);
 }
 
 .typing {

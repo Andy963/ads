@@ -6,7 +6,7 @@ import { loadTelegramConfig, validateConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
 import { resolveCodexConfig } from '../codexConfig.js';
-import { SessionManager } from './utils/sessionManager.js';
+import { SessionManager, resolveSessionAgentAllowlist } from './utils/sessionManager.js';
 import { DirectoryManager } from './utils/directoryManager.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
@@ -82,13 +82,21 @@ async function main() {
   logger.info(`[Config] TELEGRAM_SILENT_NOTIFICATIONS env=${process.env.TELEGRAM_SILENT_NOTIFICATIONS}, parsed=${silentNotifications}`);
 
   // 创建管理器
+  const directoryManager = new DirectoryManager(config.allowedDirs);
   const sessionManager = new SessionManager(
     config.sessionTimeoutMs,
     5 * 60 * 1000,
     config.sandboxMode,
-    config.defaultModel
+    config.defaultModel,
+    undefined,
+    undefined,
+    {
+      agentAllowlist: resolveSessionAgentAllowlist("telegram"),
+      onDispose: ({ userId }) => {
+        directoryManager.clearUserCwd(userId);
+      },
+    },
   );
-  const directoryManager = new DirectoryManager(config.allowedDirs);
   const pendingTranscriptions = new PendingTranscriptionStore({ ttlMs: 5 * 60 * 1000 });
   const scheduleCompiler = new AgentScheduleCompiler();
   const scheduler = new SchedulerRuntime();

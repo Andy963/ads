@@ -78,7 +78,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.6;
-  color: var(--text);
+  color: var(--github-text);
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -138,7 +138,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 }
 
 .md :deep(a) {
-  color: var(--accent);
+  color: var(--github-accent);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -153,10 +153,11 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 }
 
 .md :deep(:not(pre) > code) {
-  padding: 1px 6px;
+  padding: 2px 6px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.04);
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(175, 184, 193, 0.2);
+  border: 1px solid rgba(208, 215, 222, 0.8);
+  color: #cf222e;
 }
 
 .md :deep(.md-diffstat) {
@@ -191,10 +192,14 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 .md :deep(.md-codeblock) {
   position: relative;
   margin: 8px 0;
+  border: 1px solid var(--github-border);
+  border-radius: 12px;
+  background: var(--github-code-bg);
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
 .md :deep(details.md-codeblock) {
-  border: none;
   padding: 0;
 }
 
@@ -202,14 +207,15 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   list-style: none;
   cursor: pointer;
   user-select: none;
-  border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(15, 23, 42, 0.03);
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--github-border);
+  background: var(--github-code-header);
   padding: 10px 12px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
-  color: rgba(15, 23, 42, 0.85);
+  color: var(--github-muted);
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -232,7 +238,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(details.md-codeblock > summary .md-collapsible-title) {
   font-weight: 800;
-  color: rgba(15, 23, 42, 0.92);
+  color: var(--github-text);
   flex: 0 0 auto;
 }
 
@@ -267,10 +273,10 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.md-codeblock pre) {
   margin: 0;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(15, 23, 42, 0.03);
+  padding: 14px 16px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
   overflow-x: auto;
   overflow-y: auto;
   max-height: min(40vh, 360px);
@@ -309,15 +315,15 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.md-codecopy) {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 10px;
+  right: 10px;
   width: 28px;
   height: 28px;
   padding: 0;
   border-radius: 8px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: transparent;
-  color: rgba(15, 23, 42, 0.56);
+  border: 1px solid var(--github-border);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--github-muted);
   font-size: 11px;
   cursor: pointer;
   opacity: 0.75;
@@ -333,21 +339,21 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.md-codecopy:hover) {
   opacity: 1;
-  background: transparent;
-  border-color: rgba(15, 23, 42, 0.22);
-  color: rgba(15, 23, 42, 0.78);
+  background: #ffffff;
+  border-color: var(--github-border);
+  color: var(--github-text);
 }
 
 .md :deep(.md-codecopy:active),
 .md :deep(.md-codecopy:focus),
 .md :deep(.md-codecopy:focus-visible) {
-  background: transparent;
-  border-color: rgba(15, 23, 42, 0.28);
-  color: rgba(15, 23, 42, 0.86);
+  background: #ffffff;
+  border-color: rgba(9, 105, 218, 0.35);
+  color: var(--github-text);
 }
 
 .md :deep(.md-codecopy:focus-visible) {
-  outline: 2px solid rgba(124, 58, 237, 0.35);
+  outline: 2px solid rgba(9, 105, 218, 0.28);
   outline-offset: 2px;
 }
 
@@ -389,7 +395,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.hljs) {
   background: transparent;
-  color: #0f172a;
+  color: var(--github-text);
 }
 
 .md.inverted :deep(.hljs) {
@@ -398,19 +404,23 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.hljs-keyword),
 .md :deep(.hljs-selector-tag),
-.md :deep(.hljs-literal) {
-  color: #7c3aed;
+.md :deep(.hljs-literal),
+.md :deep(.hljs-subst) {
+  color: #cf222e;
 }
 
 .md :deep(.hljs-string),
 .md :deep(.hljs-title),
 .md :deep(.hljs-section),
-.md :deep(.hljs-attr) {
-  color: #0f766e;
+.md :deep(.hljs-doctag),
+.md :deep(.hljs-regexp) {
+  color: #0a3069;
 }
 
-.md :deep(.hljs-comment) {
-  color: #94a3b8;
+.md :deep(.hljs-comment),
+.md :deep(.hljs-quote) {
+  color: #6e7781;
+  font-style: italic;
 }
 
 .md.inverted :deep(.hljs-comment) {
@@ -418,19 +428,40 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 }
 
 .md :deep(.hljs-number) {
-  color: #b45309;
+  color: #0550ae;
+}
+
+.md :deep(.hljs-attr),
+.md :deep(.hljs-attribute),
+.md :deep(.hljs-property),
+.md :deep(.hljs-variable),
+.md :deep(.hljs-template-variable),
+.md :deep(.hljs-link),
+.md :deep(.hljs-symbol) {
+  color: #0550ae;
+}
+
+.md :deep(.hljs-built_in),
+.md :deep(.hljs-type),
+.md :deep(.hljs-class .hljs-title),
+.md :deep(.hljs-function .hljs-title),
+.md :deep(.hljs-selector-id),
+.md :deep(.hljs-selector-class) {
+  color: #8250df;
 }
 
 .md :deep(.hljs-addition) {
-  color: #15803d;
+  color: #116329;
+  background: rgba(46, 160, 67, 0.14);
 }
 
 .md :deep(.hljs-deletion) {
-  color: #b91c1c;
+  color: #cf222e;
+  background: rgba(248, 81, 73, 0.14);
 }
 
 .md :deep(.hljs-meta) {
-  color: #334155;
+  color: #953800;
 }
 
 .md.inverted :deep(.hljs-addition) {
@@ -451,6 +482,48 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   height: auto;
   max-height: 20vh;
   object-fit: contain;
+}
+
+.md :deep(blockquote) {
+  margin: 10px 0;
+  padding: 0 0 0 12px;
+  border-left: 4px solid var(--github-border-muted);
+  color: var(--github-muted);
+}
+
+.md :deep(hr) {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--github-border-muted);
+}
+
+.md :deep(table) {
+  width: 100%;
+  margin: 10px 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  display: block;
+  overflow-x: auto;
+}
+
+.md :deep(th),
+.md :deep(td) {
+  padding: 6px 12px;
+  border: 1px solid var(--github-border-muted);
+  text-align: left;
+}
+
+.md :deep(th) {
+  background: var(--github-code-header);
+  font-weight: 700;
+}
+
+.md :deep(tr:nth-child(2n) td) {
+  background: rgba(246, 248, 250, 0.72);
+}
+
+.md :deep(strong) {
+  color: var(--github-text);
 }
 
 @media (max-width: 480px) {

@@ -110,21 +110,33 @@ export function loadCwdStore(filePath: string): Map<string, string> {
 export function persistCwdStore(filePath: string, store: Map<string, string>): void {
   if (isSqliteDbPath(filePath)) {
     const db = getStateDatabase(filePath);
+    const selectKeysStmt: SqliteStatement = db.prepare(`SELECT key FROM kv_state WHERE namespace = 'web_cwd'`);
     const upsertStmt: SqliteStatement = db.prepare(
       `INSERT INTO kv_state (namespace, key, value, updated_at)
        VALUES ('web_cwd', ?, ?, ?)
        ON CONFLICT(namespace, key)
        DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     );
+    const deleteStmt: SqliteStatement = db.prepare(`DELETE FROM kv_state WHERE namespace = 'web_cwd' AND key = ?`);
     try {
       const tx = db.transaction(() => {
+        const nextKeys = new Set<string>();
         for (const [key, cwd] of store.entries()) {
           const normalizedKey = String(key ?? "").trim();
           const normalizedCwd = typeof cwd === "string" ? cwd.trim() : "";
           if (!normalizedKey || !normalizedCwd) {
             continue;
           }
+          nextKeys.add(normalizedKey);
           upsertStmt.run(normalizedKey, normalizedCwd, Date.now());
+        }
+        const existingRows = selectKeysStmt.all() as Array<{ key: string }>;
+        for (const row of existingRows) {
+          const normalizedKey = String(row.key ?? "").trim();
+          if (!normalizedKey || nextKeys.has(normalizedKey)) {
+            continue;
+          }
+          deleteStmt.run(normalizedKey);
         }
       });
       tx();

@@ -52,6 +52,9 @@ export function resolveExploredConfig(): ExploredConfig {
 export type ExploredEntryCallback = (entry: ExploredEntry) => void;
 
 export class ActivityTracker {
+  private static readonly MAX_ENTRIES = 200;
+  private static readonly MAX_SEEN = 1000;
+
   private readonly entries: ExploredEntry[] = [];
   private readonly seen = new Set<string>();
   private readonly onEntryCallback?: ExploredEntryCallback;
@@ -298,10 +301,9 @@ export class ActivityTracker {
 
   private ingestCommandExecution(item: CommandExecutionItem): void {
     const seenKey = `codex:command:${item.id}`;
-    if (this.seen.has(seenKey)) {
+    if (!this.markSeen(seenKey)) {
       return;
     }
-    this.seen.add(seenKey);
 
     const commandLine = normalizeFirstLine(item.command);
     const category = categorizeCommand(commandLine);
@@ -316,10 +318,9 @@ export class ActivityTracker {
 
   private ingestFileChange(item: FileChangeItem): void {
     const seenKey = `codex:file_change:${item.id}`;
-    if (this.seen.has(seenKey)) {
+    if (!this.markSeen(seenKey)) {
       return;
     }
-    this.seen.add(seenKey);
 
     if (Array.isArray(item.changes) && item.changes.length > 0) {
       const summary =
@@ -343,10 +344,9 @@ export class ActivityTracker {
 
   private ingestToolCall(item: ToolCallItem): void {
     const seenKey = `codex:tool:${item.id}`;
-    if (this.seen.has(seenKey)) {
+    if (!this.markSeen(seenKey)) {
       return;
     }
-    this.seen.add(seenKey);
 
     const summary = [item.server, item.tool].filter(Boolean).join(".");
     this.add({
@@ -358,10 +358,9 @@ export class ActivityTracker {
 
   private ingestWebSearch(item: WebSearchItem): void {
     const seenKey = `codex:web_search:${item.id}`;
-    if (this.seen.has(seenKey)) {
+    if (!this.markSeen(seenKey)) {
       return;
     }
-    this.seen.add(seenKey);
 
     this.add({
       category: "WebSearch",
@@ -381,11 +380,29 @@ export class ActivityTracker {
       ts: Date.now(),
     };
     this.entries.push(full);
+    if (this.entries.length > ActivityTracker.MAX_ENTRIES) {
+      this.entries.splice(0, this.entries.length - ActivityTracker.MAX_ENTRIES);
+    }
     try {
       this.onEntryCallback?.(full);
     } catch {
       // ignore callback errors
     }
+  }
+
+  private markSeen(key: string): boolean {
+    if (this.seen.has(key)) {
+      return false;
+    }
+    this.seen.add(key);
+    while (this.seen.size > ActivityTracker.MAX_SEEN) {
+      const oldest = this.seen.values().next().value;
+      if (!oldest) {
+        break;
+      }
+      this.seen.delete(oldest);
+    }
+    return true;
   }
 }
 

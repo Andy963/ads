@@ -15,6 +15,7 @@ import { injectPlannerDraftSkill, parsePlannerDraftSlashCommand } from "../plann
 import type { WsPromptHandlerDeps } from "./deps.js";
 import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
 import { processScheduleOutput } from "../planner/scheduleHandler.js";
+import { preferInMemoryThreadId } from "./threadIds.js";
 import {
   buildHistoryInjectionContext,
   parseModelFromPayload,
@@ -110,10 +111,12 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     });
 
     try {
-      const expectedThreadId = deps.sessions.sessionManager.getSavedThreadId(
-        deps.context.userId,
-        orchestrator.getActiveAgentId(),
-      );
+      const activeAgentId = orchestrator.getActiveAgentId();
+      const savedThreadId = deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId);
+      // Prefer the in-memory thread id as the "expected" value for this request. Using the persisted
+      // value directly can produce false positives if another connection/process updated storage.
+      const expectedThreadId =
+        preferInMemoryThreadId({ inMemoryThreadId: orchestrator.getThreadId(), savedThreadId }) ?? undefined;
 
       const delegationIdsByFingerprint = new Map<string, string[]>();
       const delegationFingerprint = (agentId: string, prompt: string): string =>

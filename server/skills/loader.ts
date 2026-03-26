@@ -86,6 +86,30 @@ function readSkillFileWithCache(skillFile: string, source: SkillMetadata["source
   }
 }
 
+function pruneSkillFileCache(activeRoots: Array<{ dir: string; source: SkillMetadata["source"] }>): void {
+  const normalizedRoots = activeRoots.map(({ dir, source }) => ({
+    dir: path.resolve(dir),
+    source,
+  }));
+
+  for (const cacheKey of skillFileCache.keys()) {
+    const matchedRoot = normalizedRoots.find(({ source }) => cacheKey.startsWith(`${source}:`));
+    if (!matchedRoot) {
+      skillFileCache.delete(cacheKey);
+      continue;
+    }
+
+    const resolvedSkillFile = cacheKey.slice(`${matchedRoot.source}:`.length);
+    const underActiveRoot =
+      resolvedSkillFile === path.join(matchedRoot.dir, SKILL_FILE_NAME) ||
+      resolvedSkillFile.startsWith(`${matchedRoot.dir}${path.sep}`);
+
+    if (!underActiveRoot || !fs.existsSync(resolvedSkillFile)) {
+      skillFileCache.delete(cacheKey);
+    }
+  }
+}
+
 export function discoverSkills(workspacePath: string, builtinRoot?: string): SkillMetadata[] {
   const resolvedBuiltin = builtinRoot ?? BUILTIN_SKILLS_ROOT;
   const adsStateSkillsDir = path.join(resolveAdsStateDir(), WORKSPACE_SKILLS_DIR);
@@ -130,6 +154,8 @@ export function discoverSkills(workspacePath: string, builtinRoot?: string): Ski
     }
   }
 
+  pruneSkillFileCache(roots);
+
   return Array.from(byName.values()).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
 }
 
@@ -141,6 +167,14 @@ export function loadSkillBody(name: string, workspacePath: string, builtinRoot?:
     }
   }
   return null;
+}
+
+export function getSkillFileCacheSizeForTests(): number {
+  return skillFileCache.size;
+}
+
+export function resetSkillFileCacheForTests(): void {
+  skillFileCache.clear();
 }
 
 export function renderCompactSkills(skills: SkillMetadata[]): string {

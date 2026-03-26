@@ -127,6 +127,101 @@ describe("scheduler/runtime-liteque", () => {
     }
   });
 
+  it("registers workspaces lazily and materializes scheduler state on the first due tick", async () => {
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Lazy runtime materialization",
+        spec: buildScheduleSpec(),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    let executions = 0;
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => {
+        executions += 1;
+        return { resultSummary: "lazy-ok" };
+      },
+    });
+    const internal = runtime as unknown as { workspaces: Set<string>; states: Map<string, unknown> };
+
+    runtime.registerWorkspace(tmpDir);
+    assert.deepEqual(Array.from(internal.workspaces), [tmpDir]);
+    assert.equal(internal.states.size, 0);
+
+    await runtime.tickWorkspace(tmpDir);
+    assert.equal(internal.states.size, 1);
+    await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+    runtime.stop();
+
+    assert.equal(executions, 1);
+  });
+
+  it("recycles idle scheduler state and rebuilds it for later due runs without duplicate execution", async () => {
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Idle recycle",
+        spec: buildScheduleSpec(),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+
+    let executions = 0;
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      idleRecycleMs: 5,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => {
+        executions += 1;
+        return { resultSummary: `run-${executions}` };
+      },
+    });
+    const internal = runtime as unknown as {
+      states: Map<string, { lastTouchedAt: number; runnerPromise: Promise<void> | null }>;
+    };
+
+    runtime.registerWorkspace(tmpDir);
+    await runtime.tickWorkspace(tmpDir);
+    await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+    await waitFor(() => internal.states.get(tmpDir)?.runnerPromise == null);
+
+    const firstState = internal.states.get(tmpDir);
+    assert.ok(firstState);
+    firstState!.lastTouchedAt = Date.now() - 50;
+
+    await runtime.tickWorkspace(tmpDir);
+    assert.equal(internal.states.has(tmpDir), false);
+
+    store.updateSchedule(schedule.id, { nextRunAt: Date.now() - 1000 }, Date.now());
+
+    await runtime.tickWorkspace(tmpDir);
+    await waitFor(() => store.listRuns(schedule.id, { limit: 2 }).length === 2);
+    await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+
+    const rebuiltState = internal.states.get(tmpDir);
+    assert.ok(rebuiltState);
+    assert.notEqual(rebuiltState, firstState);
+    assert.equal(executions, 2);
+    assert.deepEqual(
+      store.listRuns(schedule.id, { limit: 10 }).map((run) => run.status),
+      ["completed", "completed"],
+    );
+
+    runtime.stop();
+  });
+
   it("executes due schedules via liteque worker and persists completed run", async () => {
     const store = new ScheduleStore({ workspacePath: tmpDir });
     const now = Date.now();
@@ -630,12 +725,12 @@ describe("scheduler/runtime-liteque", () => {
     await runtime.tickWorkspace(nestedWorkspace);
 
     await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
-    runtime.stop();
 
     assert.equal(executions, 1);
     const internal = runtime as unknown as { workspaces: Set<string>; states: Map<string, unknown> };
     assert.deepEqual(Array.from(internal.workspaces), [tmpDir]);
     assert.deepEqual(Array.from(internal.states.keys()), [tmpDir]);
+    runtime.stop();
   });
 
   it("warns on summary persistence failure without breaking completion flow", async () => {
@@ -663,10 +758,10 @@ describe("scheduler/runtime-liteque", () => {
     runtime.registerWorkspace(tmpDir);
 
     const internal = runtime as unknown as {
+      getState: (workspaceRoot: string) => { taskStore: TaskStore };
       states: Map<string, { taskStore: TaskStore }>;
     };
-    const state = internal.states.get(tmpDir);
-    assert.ok(state);
+    const state = internal.getState(tmpDir);
 
     const originalSaveContext = state.taskStore.saveContext.bind(state.taskStore);
     state.taskStore.saveContext = ((taskId, context, savedAt) => {

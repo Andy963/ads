@@ -4,7 +4,6 @@ import { WebSocketServer } from "ws";
 import type { RawData, WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 
 import { getStateDatabase } from "../../../state/database.js";
@@ -22,6 +21,7 @@ import { handlePromptMessage } from "./handlePrompt.js";
 import { handleCommandMessage } from "./handleCommand.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
+import { preferInMemoryThreadId } from "./threadIds.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
@@ -156,8 +156,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       authUserId,
       sessionUserId: userId,
     });
-    const directoryManager = new DirectoryManager(config.allowedDirs);
-
     ws.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
@@ -166,6 +164,14 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
 
     const cacheKey = `${authUserId}::${sessionId}`;
+    const registerSessionCacheBinding = (): void => {
+      state.sessionCacheRegistry.registerBinding({
+        userId,
+        cacheKey,
+        cwdKeys: [String(userId), String(legacyUserId)],
+      });
+    };
+    registerSessionCacheBinding();
     const cachedWorkspace = state.workspaceCache.get(cacheKey);
     const userCwdKey = String(userId);
     if (!state.cwdStore.has(userCwdKey)) {
@@ -177,7 +183,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     }
     const savedState = sessionManager.getSavedState(userId);
     const storedCwd = state.cwdStore.get(userCwdKey);
-    let currentCwd = directoryManager.getUserCwd(userId);
+    let currentCwd = state.directoryManager.getUserCwd(userId);
     const preferredProjectCwd = (() => {
       try {
         const db = getStateDatabase();
@@ -191,11 +197,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
     const preferredCwd = preferredProjectCwd ?? cachedWorkspace ?? savedState?.cwd ?? storedCwd;
     if (preferredCwd) {
-      const restoreResult = directoryManager.setUserCwd(userId, preferredCwd);
+      const restoreResult = state.directoryManager.setUserCwd(userId, preferredCwd);
       if (!restoreResult.success) {
         logger.warn(`[Web][WorkspaceRestore] failed path=${preferredCwd} reason=${restoreResult.error}`);
       } else {
-        currentCwd = directoryManager.getUserCwd(userId);
+        currentCwd = state.directoryManager.getUserCwd(userId);
         state.cwdStore.set(String(userId), currentCwd);
         state.persistCwdStore(state.cwdStorePath, state.cwdStore);
       }
@@ -246,30 +252,36 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       return true;
     };
 
-    safeJsonSend(ws, {
-      type: "welcome",
-      message: "ADS WebSocket bridge ready.",
-      workspace: getWorkspaceState(currentCwd),
-      sessionId,
-      chatSessionId,
-      inFlight,
-      threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
-      contextMode: pendingInjection ? "history_injection" : contextRestored ? "thread_resumed" : "fresh",
-    });
-    safeJsonSend(ws, {
-      type: "agents",
-      activeAgentId: orchestrator.getActiveAgentId(),
+	    safeJsonSend(ws, {
+	      type: "welcome",
+	      message: "ADS WebSocket bridge ready.",
+	      workspace: getWorkspaceState(currentCwd),
+	      sessionId,
+	      chatSessionId,
+	      inFlight,
+	      threadId: preferInMemoryThreadId({
+	        inMemoryThreadId: orchestrator.getThreadId(),
+	        savedThreadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
+	      }),
+	      contextMode: pendingInjection ? "history_injection" : contextRestored ? "thread_resumed" : "fresh",
+	    });
+	    safeJsonSend(ws, {
+	      type: "agents",
+	      activeAgentId: orchestrator.getActiveAgentId(),
       agents: orchestrator.listAgents().map((entry) => {
         const merged = agents.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
         return {
           id: entry.metadata.id,
           name: entry.metadata.name,
           ready: merged.ready,
-          error: merged.error,
-        };
-      }),
-      threadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()) ?? orchestrator.getThreadId(),
-    });
+	          error: merged.error,
+	        };
+	      }),
+	      threadId: preferInMemoryThreadId({
+	        inMemoryThreadId: orchestrator.getThreadId(),
+	        savedThreadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
+	      }),
+	    });
 
     const cachedHistory = historyStore.get(historyKey);
     if (cachedHistory.length > 0) {
@@ -388,6 +400,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
     const handleOneMessage = async (msg: IncomingWsMessage): Promise<void> => {
       try {
+        registerSessionCacheBinding();
         const parsed = msg.parsed;
         const requestId = msg.requestId;
         const clientMessageId = msg.clientMessageId;
@@ -533,7 +546,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             agentAvailability: agents.agentAvailability,
           },
           state: {
-            directoryManager,
+            directoryManager: state.directoryManager,
             cacheKey,
             workspaceCache: state.workspaceCache,
             cwdStore: state.cwdStore,
@@ -635,6 +648,17 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     ws.on("close", (code, reason) => {
       state.clients.delete(ws);
       const meta = state.clientMetaByWs.get(ws);
+      if (meta?.historyKey) {
+        const controller = state.interruptControllers.get(meta.historyKey);
+        if (controller) {
+          try {
+            controller.abort();
+          } catch {
+            // ignore
+          }
+          state.interruptControllers.delete(meta.historyKey);
+        }
+      }
       state.clientMetaByWs.delete(ws);
       const reasonText = formatCloseReason(reason);
       const suffix = reasonText ? ` reason=${reasonText}` : "";

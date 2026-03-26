@@ -11,6 +11,7 @@ import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { SessionManager } from "../../server/telegram/utils/sessionManager.js";
+import { DirectoryManager } from "../../server/telegram/utils/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 
@@ -50,6 +51,7 @@ describe("web/server/ws/stability", () => {
     const reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
+    const directoryManager = new DirectoryManager([workspaceRoot]);
 
     wss = attachWebSocketServer({
       server,
@@ -71,7 +73,9 @@ describe("web/server/ws/stability", () => {
         agentAvailability,
       },
       state: {
+        directoryManager,
         workspaceCache: new Map(),
+        sessionCacheRegistry: { registerBinding: () => {}, clearForUser: () => {} },
         interruptControllers: new Map<string, AbortController>(),
         clientMetaByWs,
         clients,

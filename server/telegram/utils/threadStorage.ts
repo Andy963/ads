@@ -38,6 +38,19 @@ const logger = createLogger('ThreadStorage');
 
 type SqliteStatement = StatementType<unknown[], unknown>;
 
+type ThreadStorageStatements = {
+  getStmt: SqliteStatement;
+  upsertStmt: SqliteStatement;
+  deleteStmt: SqliteStatement;
+  clearNamespaceStmt: SqliteStatement;
+  getKvStmt: SqliteStatement;
+  setKvStmt: SqliteStatement;
+  getMigrationMarkerStmt: SqliteStatement;
+  setMigrationMarkerStmt: SqliteStatement;
+};
+
+const threadStorageStatementsCache = new WeakMap<DatabaseType, ThreadStorageStatements>();
+
 export class ThreadStorage {
   private readonly namespace: string;
   private readonly legacyStoragePath: string;
@@ -65,39 +78,15 @@ export class ThreadStorage {
     this.legacySaltPath = options.saltPath ?? path.join(adsDir, 'thread-storage-salt');
     this.stateDbPath = options.stateDbPath;
     this.db = getStateDatabase(this.stateDbPath);
-
-    this.getStmt = this.db.prepare(
-      `SELECT thread_id as threadId, cwd, updated_at as updatedAt
-       FROM thread_state
-       WHERE namespace = ? AND user_hash = ?`,
-    );
-    this.upsertStmt = this.db.prepare(
-      `INSERT INTO thread_state (namespace, user_hash, thread_id, cwd, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(namespace, user_hash)
-       DO UPDATE SET thread_id = excluded.thread_id,
-                     cwd = excluded.cwd,
-                     updated_at = excluded.updated_at`,
-    );
-    this.deleteStmt = this.db.prepare(
-      `DELETE FROM thread_state WHERE namespace = ? AND user_hash = ?`,
-    );
-    this.clearNamespaceStmt = this.db.prepare(
-      `DELETE FROM thread_state WHERE namespace = ?`,
-    );
-
-    this.getKvStmt = this.db.prepare(
-      `SELECT value FROM kv_state WHERE namespace = ? AND key = ?`,
-    );
-    this.setKvStmt = this.db.prepare(
-      `INSERT INTO kv_state (namespace, key, value, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(namespace, key)
-       DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    );
-    const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(this.db);
-    this.getMigrationMarkerStmt = getMigrationMarkerStmt;
-    this.setMigrationMarkerStmt = setMigrationMarkerStmt;
+    const statements = getThreadStorageStatements(this.db);
+    this.getStmt = statements.getStmt;
+    this.upsertStmt = statements.upsertStmt;
+    this.deleteStmt = statements.deleteStmt;
+    this.clearNamespaceStmt = statements.clearNamespaceStmt;
+    this.getKvStmt = statements.getKvStmt;
+    this.setKvStmt = statements.setKvStmt;
+    this.getMigrationMarkerStmt = statements.getMigrationMarkerStmt;
+    this.setMigrationMarkerStmt = statements.setMigrationMarkerStmt;
 
     this.salt = this.loadSalt();
     this.migrateLegacyThreads();
@@ -370,4 +359,53 @@ export class ThreadStorage {
       logger.warn(`[ThreadStorage] Failed to clear namespace threads (ns=${this.namespace})`, error);
     }
   }
+}
+
+function getThreadStorageStatements(db: DatabaseType): ThreadStorageStatements {
+  const cached = threadStorageStatementsCache.get(db);
+  if (cached) {
+    return cached;
+  }
+
+  const getStmt = db.prepare(
+    `SELECT thread_id as threadId, cwd, updated_at as updatedAt
+     FROM thread_state
+     WHERE namespace = ? AND user_hash = ?`,
+  );
+  const upsertStmt = db.prepare(
+    `INSERT INTO thread_state (namespace, user_hash, thread_id, cwd, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(namespace, user_hash)
+     DO UPDATE SET thread_id = excluded.thread_id,
+                   cwd = excluded.cwd,
+                   updated_at = excluded.updated_at`,
+  );
+  const deleteStmt = db.prepare(
+    `DELETE FROM thread_state WHERE namespace = ? AND user_hash = ?`,
+  );
+  const clearNamespaceStmt = db.prepare(
+    `DELETE FROM thread_state WHERE namespace = ?`,
+  );
+  const getKvStmt = db.prepare(
+    `SELECT value FROM kv_state WHERE namespace = ? AND key = ?`,
+  );
+  const setKvStmt = db.prepare(
+    `INSERT INTO kv_state (namespace, key, value, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(namespace, key)
+     DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  );
+  const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
+  const statements = {
+    getStmt,
+    upsertStmt,
+    deleteStmt,
+    clearNamespaceStmt,
+    getKvStmt,
+    setKvStmt,
+    getMigrationMarkerStmt,
+    setMigrationMarkerStmt,
+  };
+  threadStorageStatementsCache.set(db, statements);
+  return statements;
 }

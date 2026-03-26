@@ -7,7 +7,13 @@ export interface MigrationMarkerStatements {
   setMigrationMarkerStmt: SqliteStatement;
 }
 
+const migrationMarkerStatementsCache = new WeakMap<DatabaseType, MigrationMarkerStatements>();
+
 export function prepareMigrationMarkerStatements(db: DatabaseType): MigrationMarkerStatements {
+  const cached = migrationMarkerStatementsCache.get(db);
+  if (cached) {
+    return cached;
+  }
   const getMigrationMarkerStmt: SqliteStatement = db.prepare(
     `SELECT value FROM kv_state WHERE namespace = 'migrations' AND key = ?`,
   );
@@ -17,5 +23,7 @@ export function prepareMigrationMarkerStatements(db: DatabaseType): MigrationMar
      ON CONFLICT(namespace, key)
      DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
   );
-  return { getMigrationMarkerStmt, setMigrationMarkerStmt };
+  const statements = { getMigrationMarkerStmt, setMigrationMarkerStmt };
+  migrationMarkerStatementsCache.set(db, statements);
+  return statements;
 }

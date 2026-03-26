@@ -40,6 +40,17 @@ const MIN_VISIBLE_X_PX = 48;
 const MIN_VISIBLE_TOP_PX = 64;
 const MIN_VISIBLE_BOTTOM_PX = 48;
 const CLICK_SUPPRESS_PX = 4;
+const INTERACTIVE_SELECTOR = [
+  "button",
+  "a[href]",
+  "input",
+  "select",
+  "textarea",
+  "summary",
+  "[role='button']",
+  "[role='link']",
+  "[contenteditable='true']",
+].join(", ");
 
 const cardStyle = computed(() => {
   return {
@@ -53,6 +64,7 @@ function isDraggableStart(ev: PointerEvent): boolean {
   if (ev.button !== 0) return false;
   const target = ev.target as Element | null;
   if (!target) return false;
+  if (target.closest(INTERACTIVE_SELECTOR)) return false;
   return Boolean(target.closest(props.handleSelector));
 }
 

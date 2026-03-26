@@ -13,6 +13,18 @@ import { truncateForLog } from "./text.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
 
+type HistoryStoreStatements = {
+  insertStmt: SqliteStatement;
+  selectStmt: SqliteStatement;
+  deleteSessionStmt: SqliteStatement;
+  cutoffStmt: SqliteStatement;
+  deleteOlderStmt: SqliteStatement;
+  getMigrationMarkerStmt: SqliteStatement;
+  setMigrationMarkerStmt: SqliteStatement;
+};
+
+const historyStoreStatementsCache = new WeakMap<DatabaseType, HistoryStoreStatements>();
+
 export interface HistoryEntry {
   role: string;
   text: string;
@@ -198,32 +210,14 @@ export class HistoryStore {
     if (!this.db) {
       return;
     }
-    this.insertStmt = this.db.prepare(
-      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    );
-    this.selectStmt = this.db.prepare(
-      `SELECT role, text, ts, kind
-       FROM history_entries
-       WHERE namespace = ? AND session_id = ?
-       ORDER BY id ASC`,
-    );
-    this.deleteSessionStmt = this.db.prepare(
-      `DELETE FROM history_entries WHERE namespace = ? AND session_id = ?`,
-    );
-    this.cutoffStmt = this.db.prepare(
-      `SELECT id FROM history_entries
-       WHERE namespace = ? AND session_id = ?
-       ORDER BY id DESC
-       LIMIT 1 OFFSET ?`,
-    );
-    this.deleteOlderStmt = this.db.prepare(
-      `DELETE FROM history_entries WHERE namespace = ? AND session_id = ? AND id < ?`,
-    );
-
-    const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(this.db);
-    this.getMigrationMarkerStmt = getMigrationMarkerStmt;
-    this.setMigrationMarkerStmt = setMigrationMarkerStmt;
+    const statements = getHistoryStoreStatements(this.db);
+    this.insertStmt = statements.insertStmt;
+    this.selectStmt = statements.selectStmt;
+    this.deleteSessionStmt = statements.deleteSessionStmt;
+    this.cutoffStmt = statements.cutoffStmt;
+    this.deleteOlderStmt = statements.deleteOlderStmt;
+    this.getMigrationMarkerStmt = statements.getMigrationMarkerStmt;
+    this.setMigrationMarkerStmt = statements.setMigrationMarkerStmt;
   }
 
   private trimSqlite(sessionId: string): void {
@@ -339,4 +333,46 @@ export class HistoryStore {
       logger.warn(`[HistoryStore] Failed to persist ${this.storagePath}`, error);
     }
   }
+}
+
+function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
+  const cached = historyStoreStatementsCache.get(db);
+  if (cached) {
+    return cached;
+  }
+
+  const insertStmt = db.prepare(
+    `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  const selectStmt = db.prepare(
+    `SELECT role, text, ts, kind
+     FROM history_entries
+     WHERE namespace = ? AND session_id = ?
+     ORDER BY id ASC`,
+  );
+  const deleteSessionStmt = db.prepare(
+    `DELETE FROM history_entries WHERE namespace = ? AND session_id = ?`,
+  );
+  const cutoffStmt = db.prepare(
+    `SELECT id FROM history_entries
+     WHERE namespace = ? AND session_id = ?
+     ORDER BY id DESC
+     LIMIT 1 OFFSET ?`,
+  );
+  const deleteOlderStmt = db.prepare(
+    `DELETE FROM history_entries WHERE namespace = ? AND session_id = ? AND id < ?`,
+  );
+  const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
+  const statements = {
+    insertStmt,
+    selectStmt,
+    deleteSessionStmt,
+    cutoffStmt,
+    deleteOlderStmt,
+    getMigrationMarkerStmt,
+    setMigrationMarkerStmt,
+  };
+  historyStoreStatementsCache.set(db, statements);
+  return statements;
 }

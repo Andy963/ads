@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Logger } from "../../../utils/logger.js";
 import { safeParseJson } from "../../../utils/json.js";
 import { ThreadStorage } from "../../../telegram/utils/threadStorage.js";
-import { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import { SessionManager, resolveSessionAgentAllowlist } from "../../../telegram/utils/sessionManager.js";
 import { deriveProjectSessionId } from "../projectSessionId.js";
 
 import { TaskQueue } from "../../../tasks/queue.js";
@@ -313,6 +313,10 @@ export function createTaskQueueManager(deps: {
       "danger-full-access",
       taskQueueModelOverride,
       taskQueueThreadStorage,
+      undefined,
+      {
+        agentAllowlist: resolveSessionAgentAllowlist("task-queue"),
+      },
     );
     const getStatusOrchestrator = () => taskQueueSessionManager.getOrCreate(taskQueueStatusUserId, key, true);
     const getTaskQueueOrchestrator = (task: { id: string }) => {

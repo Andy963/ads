@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { SessionManager } from "../telegram/utils/sessionManager.js";
+import { SessionManager, resolveSessionAgentAllowlist } from "../telegram/utils/sessionManager.js";
 import { parsePositiveIntFlag } from "../utils/flags.js";
 import { resolveTaskNotificationDefaultTelegramChatIdFromEnv } from "../web/taskNotifications/telegramConfig.js";
 
@@ -114,7 +114,9 @@ export class AgentScheduleCompiler implements ScheduleCompiler {
 
     this.timeoutMs = timeoutMs;
     this.maxAttempts = maxAttempts;
-    this.sessionManager = new SessionManager(10 * 60 * 1000, 2 * 60 * 1000, "read-only", model);
+    this.sessionManager = new SessionManager(10 * 60 * 1000, 2 * 60 * 1000, "read-only", model, undefined, undefined, {
+      agentAllowlist: resolveSessionAgentAllowlist("scheduler-compiler"),
+    });
   }
 
   async compile(options: { workspaceRoot: string; instruction: string; signal?: AbortSignal }): Promise<ScheduleSpec> {

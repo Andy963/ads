@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -57,37 +57,27 @@ function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean
   });
 }
 
-describe("web/server/ws/broadcast", () => {
+describe("web/server/ws reconnect cwd restore", () => {
   let tmpDir: string;
   let workspaceRoot: string;
+  let nextWorkspace: string;
   let server: http.Server;
   let port: number;
   let wss: import("ws").WebSocketServer;
-  let runAdsCommandLineImpl: (command: string) => Promise<{ ok: boolean; output: string }>;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-broadcast-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-reconnect-"));
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-workspace-"));
+    nextWorkspace = path.join(workspaceRoot, "nested");
+    fs.mkdirSync(nextWorkspace, { recursive: true });
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     resetStateDatabaseForTests();
 
-    runAdsCommandLineImpl = async () => ({ ok: true, output: "" });
-
     server = http.createServer();
     const clients = new Set<import("ws").WebSocket>();
-    const clientMetaByWs = new Map<
-      import("ws").WebSocket,
-      {
-        historyKey: string;
-        sessionId: string;
-        chatSessionId: string;
-        connectionId: string;
-        authUserId: string;
-        sessionUserId: number;
-        workspaceRoot?: string;
-      }
-    >();
+    const clientMetaByWs = new Map<import("ws").WebSocket, any>();
+    const directoryManager = new DirectoryManager([workspaceRoot]);
     const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
     const plannerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
     const reviewerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
@@ -96,7 +86,6 @@ describe("web/server/ws/broadcast", () => {
     const reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
-    const directoryManager = new DirectoryManager([workspaceRoot]);
 
     wss = attachWebSocketServer({
       server,
@@ -112,7 +101,11 @@ describe("web/server/ws/broadcast", () => {
       auth: {
         allowedOrigins: new Set(),
         isOriginAllowed: () => true,
-        authenticateRequest: () => ({ ok: true, userId: "test" }),
+        authenticateRequest: (req) => {
+          const header = req.headers["x-user-id"];
+          const userId = Array.isArray(header) ? header[0] : header;
+          return { ok: true as const, userId: String(userId ?? "default") };
+        },
       },
       agents: {
         agentAvailability,
@@ -125,7 +118,7 @@ describe("web/server/ws/broadcast", () => {
         clientMetaByWs,
         clients,
         cwdStore: new Map(),
-        cwdStorePath: process.env.ADS_STATE_DB_PATH,
+        cwdStorePath: process.env.ADS_STATE_DB_PATH!,
         persistCwdStore: () => {},
       },
       sessions: {
@@ -142,12 +135,12 @@ describe("web/server/ws/broadcast", () => {
         reviewerHistoryStore,
       },
       tasks: {
-        ensureTaskContext: () => ({} as unknown as any),
+        ensureTaskContext: () => ({} as any),
         promoteQueuedTasksToPending: () => {},
         broadcastToSession: () => {},
       },
       commands: {
-        runAdsCommandLine: async (command) => await runAdsCommandLineImpl(command),
+        runAdsCommandLine: async () => ({ ok: true, output: "" }),
         sanitizeInput: (payload) => String(payload ?? ""),
         syncWorkspaceTemplates: () => {},
       },
@@ -167,6 +160,7 @@ describe("web/server/ws/broadcast", () => {
       }
       throw error;
     }
+
     const addr = server.address();
     assert.ok(addr && typeof addr === "object");
     port = addr.port;
@@ -199,49 +193,37 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
-  it("broadcasts command results to another active connection in the same session", async () => {
+  it("restores cwd for the same identity after reconnect without leaking to another user", async () => {
     const url = `ws://127.0.0.1:${port}`;
-    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+    const protocols = ["ads-v1", "ads-session.shared-session", "ads-chat.main"];
 
-    let resolveRun: ((value: { ok: boolean; output: string }) => void) | null = null;
-    let runStarted: (() => void) | null = null;
-    const runStartedPromise = new Promise<void>((resolve) => {
-      runStarted = resolve;
-    });
-    const runPromise = new Promise<{ ok: boolean; output: string }>((resolve) => {
-      resolveRun = resolve;
-    });
-
-    runAdsCommandLineImpl = async () => {
-      runStarted?.();
-      return await runPromise;
-    };
-
-    const clientA = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const clientA = new WebSocket(url, protocols, { origin: "http://localhost", headers: { "x-user-id": "user-a" } });
+    const firstWelcomePromise = waitForWsMessage(clientA, (msg) => msg.type === "welcome");
     await waitForWsOpen(clientA);
+    await firstWelcomePromise;
 
-    clientA.send(JSON.stringify({ type: "command", payload: "echo hello" }));
-    await runStartedPromise;
+    const cdResultPromise = waitForWsMessage(
+      clientA,
+      (msg) => msg.type === "result" && typeof msg.output === "string" && String(msg.output).includes(nextWorkspace),
+    );
+    clientA.send(JSON.stringify({ type: "command", payload: `/cd ${nextWorkspace}` }));
+    await cdResultPromise;
 
-    const clientB = new WebSocket(url, protocols, { origin: "http://localhost" });
+    clientA.terminate();
+
+    const reconnectA = new WebSocket(url, protocols, { origin: "http://localhost", headers: { "x-user-id": "user-a" } });
+    const reconnectWelcomePromise = waitForWsMessage(reconnectA, (msg) => msg.type === "welcome");
+    await waitForWsOpen(reconnectA);
+    const welcomeA = await reconnectWelcomePromise;
+    assert.equal((welcomeA.workspace as { path?: unknown }).path, nextWorkspace);
+
+    const clientB = new WebSocket(url, protocols, { origin: "http://localhost", headers: { "x-user-id": "user-b" } });
+    const otherWelcomePromise = waitForWsMessage(clientB, (msg) => msg.type === "welcome");
     await waitForWsOpen(clientB);
+    const welcomeB = await otherWelcomePromise;
+    assert.equal((welcomeB.workspace as { path?: unknown }).path, workspaceRoot);
 
-    const resultPromise = waitForWsMessage(clientB, (msg) => msg.type === "result" && msg.output === "done");
-    resolveRun?.({ ok: true, output: "done" });
-
-    const result = await resultPromise;
-    assert.equal(result.type, "result");
-
-    try {
-      clientA.terminate();
-    } catch {
-      // ignore
-    }
-
-    try {
-      clientB.terminate();
-    } catch {
-      // ignore
-    }
+    reconnectA.terminate();
+    clientB.terminate();
   });
 });
