@@ -154,10 +154,10 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(:not(pre) > code) {
   padding: 2px 6px;
-  border-radius: 8px;
+  border-radius: 6px;
   background: rgba(175, 184, 193, 0.2);
-  border: 1px solid rgba(208, 215, 222, 0.8);
-  color: #cf222e;
+  border: 1px solid rgba(208, 215, 222, 0.7);
+  color: #24292f;
 }
 
 .md :deep(.md-diffstat) {

@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 
 import { ApiClient } from "../api/client";
 import type { FilePreviewResponse } from "../api/types";
+import { hljs } from "../lib/markdown";
 import type { MarkdownFilePreviewLink } from "../lib/markdown";
 import DraggableModal from "./DraggableModal.vue";
 
@@ -26,10 +27,22 @@ let loadToken = 0;
 const requestedLine = computed(() => props.target?.line ?? null);
 const previewLines = computed(() => {
   const content = String(preview.value?.content ?? "");
-  if (!content) return [] as Array<{ number: number; text: string }>;
+  if (!content) return [] as Array<{ number: number; text: string; html: string | null }>;
+  const rawLang = preview.value?.language ?? null;
+  const lang = rawLang === "html" || rawLang === "vue" ? "xml" : rawLang;
+  let highlightedLines: string[] | null = null;
+  if (lang && hljs.getLanguage(lang)) {
+    try {
+      const result = hljs.highlight(content, { language: lang });
+      highlightedLines = result.value.split("\n");
+    } catch {
+      // fall back to plain text
+    }
+  }
   return content.split("\n").map((text, idx) => ({
     number: (preview.value?.startLine ?? 1) + idx,
     text,
+    html: highlightedLines?.[idx] ?? null,
   }));
 });
 const highlightedLine = computed(() => {
@@ -118,10 +131,9 @@ watch(highlightedLine, () => {
       <div class="filePreviewHeader" data-drag-handle>
         <div class="filePreviewMeta">
           <div class="filePreviewPath" :title="preview?.path || target.path">{{ preview?.path || target.path }}</div>
-          <div v-if="preview" class="filePreviewStats">
-            共 {{ preview.totalLines }} 行
-            <span v-if="preview.truncated"> · 当前展示 {{ preview.startLine }}-{{ preview.endLine }}</span>
-          </div>
+          <span v-if="preview" class="filePreviewStats">
+            {{ preview.totalLines }} 行<template v-if="preview.truncated"> · {{ preview.startLine }}-{{ preview.endLine }}</template>
+          </span>
         </div>
         <button
           class="filePreviewClose"
@@ -130,7 +142,9 @@ watch(highlightedLine, () => {
           data-testid="chat-file-preview-close"
           @click="emit('close')"
         >
-          关闭
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M1.5 1.5L12.5 12.5M12.5 1.5L1.5 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
         </button>
       </div>
 
@@ -138,11 +152,8 @@ watch(highlightedLine, () => {
         <div v-if="loading" class="filePreviewEmpty">正在加载文件…</div>
         <div v-else-if="error" class="filePreviewError">{{ error }}</div>
         <template v-else-if="preview">
-          <div v-if="preview.truncated" class="filePreviewHint">
-            当前只展示部分内容；如有行号，会尽量包含目标行。
-          </div>
           <div v-if="outOfRangeLine" class="filePreviewHint">
-            目标行 {{ requestedLine }} 超出文件范围。
+            目标行 {{ requestedLine }} 超出文件范围
           </div>
           <div class="filePreviewCode" data-testid="chat-file-preview-code">
             <div
@@ -153,7 +164,8 @@ watch(highlightedLine, () => {
               :data-line="line.number"
             >
               <span class="filePreviewLineNo">{{ line.number }}</span>
-              <code class="filePreviewLineText">{{ line.text || " " }}</code>
+              <code v-if="line.html != null" class="filePreviewLineText" v-html="line.html || '&nbsp;'"></code>
+              <code v-else class="filePreviewLineText">{{ line.text || " " }}</code>
             </div>
           </div>
         </template>
@@ -166,20 +178,29 @@ watch(highlightedLine, () => {
 .filePreview {
   display: flex;
   flex-direction: column;
-  min-height: min(72vh, 720px);
+  height: 88vh;
+  max-height: 88vh;
+  overflow: hidden;
 }
 
 .filePreviewHeader {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--github-border);
+  background: var(--github-code-bg);
+  border-radius: 20px 20px 0 0;
 }
 
 .filePreviewMeta {
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: 1;
+  overflow: hidden;
 }
 
 .filePreviewPath {
@@ -187,93 +208,168 @@ watch(highlightedLine, () => {
   font-size: 13px;
   font-weight: 600;
   color: var(--github-text);
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .filePreviewStats {
-  margin-top: 4px;
+  flex-shrink: 0;
   font-size: 12px;
   color: var(--github-muted);
+  white-space: nowrap;
 }
 
 .filePreviewClose {
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: white;
-  color: #334155;
-  border-radius: 10px;
-  padding: 8px 12px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--github-muted);
+  border-radius: 6px;
   cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.filePreviewClose:hover {
+  color: var(--github-text);
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .filePreviewBody {
   flex: 1;
   min-height: 0;
-  padding-top: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .filePreviewEmpty,
 .filePreviewError {
-  border-radius: 12px;
-  padding: 14px;
+  padding: 14px 18px;
   font-size: 13px;
 }
 
 .filePreviewEmpty {
-  background: rgba(248, 250, 252, 0.9);
-  color: #64748b;
+  color: var(--github-muted);
 }
 
 .filePreviewError {
-  background: rgba(254, 226, 226, 0.7);
+  background: rgba(254, 226, 226, 0.5);
   color: #b91c1c;
 }
 
 .filePreviewHint {
-  margin-bottom: 10px;
+  padding: 8px 18px 0;
   font-size: 12px;
   color: #92400e;
 }
 
 .filePreviewCode {
-  border: 1px solid var(--github-border);
-  border-radius: 12px;
   overflow: auto;
   background: var(--github-code-bg);
-  max-height: min(58vh, 620px);
+  flex: 1;
+  min-height: 0;
 }
 
 .filePreviewLine {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 12px;
-  padding: 0 14px;
-  min-height: 24px;
-  align-items: center;
+  display: flex;
+  padding: 0 16px;
+  min-height: 22px;
+  line-height: 22px;
   background: transparent;
 }
 
 .filePreviewLine--highlight {
-  background: rgba(251, 191, 36, 0.18);
+  background: rgba(251, 191, 36, 0.15);
 }
 
 .filePreviewLineNo {
   position: sticky;
   left: 0;
+  flex-shrink: 0;
+  width: 48px;
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--github-muted);
+  color: rgba(27, 31, 36, 0.3);
   background: inherit;
-  padding: 4px 0;
+  text-align: right;
+  padding-right: 16px;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .filePreviewLineText {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 22px;
   color: var(--github-text);
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 4px 0;
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* highlight.js token colors – GitHub light theme */
+.filePreviewLineText :deep(.hljs-keyword),
+.filePreviewLineText :deep(.hljs-selector-tag),
+.filePreviewLineText :deep(.hljs-literal),
+.filePreviewLineText :deep(.hljs-subst) {
+  color: #cf222e;
+}
+
+.filePreviewLineText :deep(.hljs-string),
+.filePreviewLineText :deep(.hljs-title),
+.filePreviewLineText :deep(.hljs-section),
+.filePreviewLineText :deep(.hljs-doctag),
+.filePreviewLineText :deep(.hljs-regexp) {
+  color: #0a3069;
+}
+
+.filePreviewLineText :deep(.hljs-comment),
+.filePreviewLineText :deep(.hljs-quote) {
+  color: #6e7781;
+  font-style: italic;
+}
+
+.filePreviewLineText :deep(.hljs-number) {
+  color: #0550ae;
+}
+
+.filePreviewLineText :deep(.hljs-attr),
+.filePreviewLineText :deep(.hljs-attribute),
+.filePreviewLineText :deep(.hljs-property),
+.filePreviewLineText :deep(.hljs-variable),
+.filePreviewLineText :deep(.hljs-template-variable),
+.filePreviewLineText :deep(.hljs-link),
+.filePreviewLineText :deep(.hljs-symbol) {
+  color: #0550ae;
+}
+
+.filePreviewLineText :deep(.hljs-built_in),
+.filePreviewLineText :deep(.hljs-type),
+.filePreviewLineText :deep(.hljs-class .hljs-title),
+.filePreviewLineText :deep(.hljs-function .hljs-title),
+.filePreviewLineText :deep(.hljs-selector-id),
+.filePreviewLineText :deep(.hljs-selector-class) {
+  color: #8250df;
+}
+
+.filePreviewLineText :deep(.hljs-addition) {
+  color: #116329;
+  background: rgba(46, 160, 67, 0.14);
+}
+
+.filePreviewLineText :deep(.hljs-deletion) {
+  color: #cf222e;
+  background: rgba(248, 81, 73, 0.14);
+}
+
+.filePreviewLineText :deep(.hljs-meta) {
+  color: #953800;
 }
 </style>

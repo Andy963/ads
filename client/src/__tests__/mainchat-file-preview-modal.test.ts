@@ -1,9 +1,8 @@
-import { readFileSync } from "node:fs";
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChatMessageList from "../components/MainChatMessageList.vue";
+import { readSfc } from "./readSfc";
 
 describe("MainChat file preview modal", () => {
   const originalFetch = globalThis.fetch;
@@ -69,7 +68,7 @@ describe("MainChat file preview modal", () => {
 
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="chat-file-preview-modal"]').exists()).toBe(true);
-      expect(wrapper.text()).toContain("共 120 行");
+      expect(wrapper.text()).toContain("120 行");
     });
     expect(wrapper.text()).not.toContain("文件预览");
     expect(wrapper.find('[data-line="46"]').classes()).toContain("filePreviewLine--highlight");
@@ -133,12 +132,11 @@ describe("MainChat file preview modal", () => {
     wrapper.unmount();
   });
 
-  it("keeps the preview modal on the shared light code surface", () => {
-    const source = readFileSync(new URL("../components/ChatFilePreviewModal.vue", import.meta.url), "utf8");
+  it("keeps the preview modal on the shared light code surface", async () => {
+    const source = await readSfc("../components/ChatFilePreviewModal.vue", import.meta.url);
 
     expect(source).not.toContain('<div class="filePreviewTitle">文件预览</div>');
     expect(source).toContain("background: var(--github-code-bg);");
-    expect(source).toContain("border: 1px solid var(--github-border);");
     expect(source).toContain("color: var(--github-text);");
   });
 });
