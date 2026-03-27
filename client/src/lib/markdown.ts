@@ -19,6 +19,19 @@ export type MarkdownFilePreviewLink = {
   line: number | null;
 };
 
+function applyFilePreviewAttrs(
+  target: {
+    attrSet: (name: string, value: string) => void;
+  },
+  preview: MarkdownFilePreviewLink,
+): void {
+  target.attrSet("data-md-link-kind", "file-preview");
+  target.attrSet("data-md-file-path", preview.path);
+  if (preview.line != null) {
+    target.attrSet("data-md-file-line", String(preview.line));
+  }
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -141,6 +154,28 @@ function decodeUriPart(text: string): string {
   }
 }
 
+const FILE_EXTENSIONS = new Set([
+  "ts", "tsx", "js", "jsx", "mjs", "cjs",
+  "py", "rs", "go", "java", "c", "cpp", "h", "hpp", "cs",
+  "rb", "php", "swift", "kt", "scala", "lua", "zig",
+  "json", "yaml", "yml", "toml", "ini", "cfg", "env",
+  "md", "mdx", "txt", "rst", "adoc",
+  "html", "htm", "css", "scss", "less", "sass",
+  "vue", "svelte", "astro",
+  "xml", "svg", "sql", "graphql", "gql", "proto",
+  "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+  "dockerfile", "makefile",
+  "lock", "log", "csv", "tsv",
+  "conf", "config", "rc",
+]);
+
+function hasFileExtension(basename: string): boolean {
+  const dotIndex = basename.lastIndexOf(".");
+  if (dotIndex <= 0 || dotIndex === basename.length - 1) return false;
+  const ext = basename.slice(dotIndex + 1).toLowerCase();
+  return FILE_EXTENSIONS.has(ext);
+}
+
 export function parseMarkdownFilePreviewHref(href: string): MarkdownFilePreviewLink | null {
   const raw = String(href ?? "").trim();
   if (!raw) return null;
@@ -155,10 +190,16 @@ export function parseMarkdownFilePreviewHref(href: string): MarkdownFilePreviewL
   if (!pathPart || pathPart.endsWith("/")) return null;
   if (pathPart.startsWith("/api/")) return null;
 
+  // Reject things that look like code: function calls, operators, etc.
+  if (/[(){}[\];,=!<>|&~^?@$]/.test(pathPart)) return null;
+
   const normalized = pathPart.replace(/\\/g, "/");
   const basename = normalized.split("/").filter(Boolean).pop() ?? normalized;
-  const looksFileLike = basename.includes(".") || line !== null || normalized.includes("/");
-  if (!looksFileLike) return null;
+
+  // Must have a recognized file extension, or have a line anchor with a path separator
+  const hasExt = hasFileExtension(basename);
+  const hasPath = normalized.includes("/");
+  if (!hasExt && !(line !== null && hasPath)) return null;
 
   return { path: pathPart, line };
 }
@@ -212,6 +253,7 @@ const md = new MarkdownIt({
   },
 });
 
+md.linkify.set({ fuzzyLink: false });
 md.validateLink = (url) => isSafeUrl(url);
 
 const defaultLinkOpenRenderer =
@@ -223,13 +265,27 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   const href = String(token.attrGet("href") ?? "");
   const preview = parseMarkdownFilePreviewHref(href);
   if (preview) {
-    token.attrSet("data-md-link-kind", "file-preview");
-    token.attrSet("data-md-file-path", preview.path);
-    if (preview.line != null) {
-      token.attrSet("data-md-file-line", String(preview.line));
-    }
+    applyFilePreviewAttrs(token, preview);
   }
   return defaultLinkOpenRenderer(tokens, idx, options, env, self);
+};
+
+const defaultCodeInlineRenderer =
+  md.renderer.rules.code_inline ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+
+md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  const content = String(token.content ?? "");
+  const preview = parseMarkdownFilePreviewHref(content);
+  if (!preview || !content.includes("/")) {
+    return defaultCodeInlineRenderer(tokens, idx, options, env, self);
+  }
+
+  const rawHref = escapeAttr(content);
+  const escapedContent = escapeHtml(content);
+  const lineAttr = preview.line != null ? ` data-md-file-line="${escapeAttr(String(preview.line))}"` : "";
+  return `<a href="${rawHref}" data-md-link-kind="file-preview" data-md-file-path="${escapeAttr(preview.path)}"${lineAttr}><code>${escapedContent}</code></a>`;
 };
 
 type MarkdownOutlineToken = {

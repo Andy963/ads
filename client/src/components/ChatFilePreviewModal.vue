@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 
 import { ApiClient } from "../api/client";
 import type { FilePreviewResponse } from "../api/types";
-import { hljs } from "../lib/markdown";
+import { hljs, renderMarkdownToHtml } from "../lib/markdown";
 import type { MarkdownFilePreviewLink } from "../lib/markdown";
 import DraggableModal from "./DraggableModal.vue";
 
@@ -23,6 +23,12 @@ const error = ref<string | null>(null);
 const preview = ref<FilePreviewResponse | null>(null);
 
 let loadToken = 0;
+
+const isMarkdown = computed(() => preview.value?.language === "markdown");
+const renderedMarkdown = computed(() => {
+  if (!isMarkdown.value) return "";
+  return renderMarkdownToHtml(String(preview.value?.content ?? ""));
+});
 
 const requestedLine = computed(() => props.target?.line ?? null);
 const previewLines = computed(() => {
@@ -126,7 +132,7 @@ watch(highlightedLine, () => {
 </script>
 
 <template>
-  <DraggableModal v-if="target" card-variant="large" data-testid="chat-file-preview-modal" @close="emit('close')">
+  <DraggableModal v-if="target" card-variant="large" :resizable="true" data-testid="chat-file-preview-modal" @close="emit('close')">
     <div ref="rootEl" class="filePreview">
       <div class="filePreviewHeader" data-drag-handle>
         <div class="filePreviewMeta">
@@ -155,7 +161,8 @@ watch(highlightedLine, () => {
           <div v-if="outOfRangeLine" class="filePreviewHint">
             目标行 {{ requestedLine }} 超出文件范围
           </div>
-          <div class="filePreviewCode" data-testid="chat-file-preview-code">
+          <div v-if="isMarkdown" class="filePreviewMarkdown md" data-testid="chat-file-preview-code" v-html="renderedMarkdown"></div>
+          <div v-else class="filePreviewCode" data-testid="chat-file-preview-code">
             <div
               v-for="line in previewLines"
               :key="line.number"
@@ -178,8 +185,7 @@ watch(highlightedLine, () => {
 .filePreview {
   display: flex;
   flex-direction: column;
-  height: 88vh;
-  max-height: 88vh;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -267,6 +273,17 @@ watch(highlightedLine, () => {
   padding: 8px 18px 0;
   font-size: 12px;
   color: #92400e;
+}
+
+.filePreviewMarkdown {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 24px;
+  background: #fff;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--github-text);
 }
 
 .filePreviewCode {

@@ -76,6 +76,63 @@ describe("MainChat file preview modal", () => {
     wrapper.unmount();
   });
 
+  it("opens a file preview modal from an inline-code file reference", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          path: "/tmp/ws/app/memory/chunker.py",
+          content: "line 45\nline 46\nline 47",
+          totalLines: 120,
+          startLine: 45,
+          endLine: 47,
+          truncated: true,
+          language: "python",
+          line: 46,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          {
+            id: "m1",
+            role: "assistant",
+            kind: "text",
+            content: "`/tmp/ws/app/memory/chunker.py#L46`",
+          },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+        workspaceRoot: "/tmp/ws",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find("a").trigger("click");
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const fetchUrl = String((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] ?? "");
+    expect(fetchUrl).toContain("/api/files/content?");
+    expect(fetchUrl).toContain("workspace=%2Ftmp%2Fws");
+    expect(fetchUrl).toContain("path=%2Ftmp%2Fws%2Fapp%2Fmemory%2Fchunker.py");
+    expect(fetchUrl).toContain("line=46");
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="chat-file-preview-modal"]').exists()).toBe(true);
+      expect(wrapper.find('[data-line="46"]').classes()).toContain("filePreviewLine--highlight");
+    });
+
+    wrapper.unmount();
+  });
+
   it("closes the file preview modal when the header close button is clicked", async () => {
     globalThis.fetch = vi.fn(async () => {
       return new Response(

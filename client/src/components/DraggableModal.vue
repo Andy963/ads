@@ -7,10 +7,12 @@ const props = withDefaults(
   defineProps<{
     cardVariant?: CardVariant;
     handleSelector?: string;
+    resizable?: boolean;
   }>(),
   {
     cardVariant: "default",
     handleSelector: "[data-drag-handle]",
+    resizable: false,
   },
 );
 
@@ -22,12 +24,23 @@ const cardEl = ref<HTMLElement | null>(null);
 const offsetX = ref(0);
 const offsetY = ref(0);
 const dragging = ref(false);
+const resizing = ref(false);
+const resizeW = ref(0);
+const resizeH = ref(0);
 
 let startClientX = 0;
 let startClientY = 0;
 let startOffsetX = 0;
 let startOffsetY = 0;
 let activePointerId: number | null = null;
+let resizePointerId: number | null = null;
+let resizeStartX = 0;
+let resizeStartY = 0;
+let resizeStartW = 0;
+let resizeStartH = 0;
+
+const MIN_RESIZE_W = 360;
+const MIN_RESIZE_H = 240;
 let minOffsetX = -Infinity;
 let maxOffsetX = Infinity;
 let minOffsetY = -Infinity;
@@ -53,11 +66,19 @@ const INTERACTIVE_SELECTOR = [
 ].join(", ");
 
 const cardStyle = computed(() => {
-  return {
+  const base: Record<string, string> = {
     left: "50%",
     top: "50%",
     transform: `translate(-50%, -50%) translate3d(${offsetX.value}px, ${offsetY.value}px, 0)`,
-  } as const;
+  };
+  if (props.resizable && resizeW.value > 0) {
+    base.width = `${resizeW.value}px`;
+  }
+  if (props.resizable && resizeH.value > 0) {
+    base.height = `${resizeH.value}px`;
+    base.maxHeight = `${resizeH.value}px`;
+  }
+  return base;
 });
 
 function isDraggableStart(ev: PointerEvent): boolean {
@@ -158,6 +179,41 @@ function stopDragging(ev: PointerEvent): void {
   }
 }
 
+function onResizePointerDown(ev: PointerEvent): void {
+  if (ev.button !== 0 || !props.resizable) return;
+  const card = cardEl.value;
+  if (!card) return;
+
+  ev.preventDefault();
+  ev.stopPropagation();
+  resizing.value = true;
+  resizePointerId = ev.pointerId;
+  resizeStartX = ev.clientX;
+  resizeStartY = ev.clientY;
+  const rect = card.getBoundingClientRect();
+  resizeStartW = rect.width;
+  resizeStartH = rect.height;
+  (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+}
+
+function onResizePointerMove(ev: PointerEvent): void {
+  if (!resizing.value || resizePointerId !== ev.pointerId) return;
+  ev.preventDefault();
+  const dx = ev.clientX - resizeStartX;
+  const dy = ev.clientY - resizeStartY;
+  resizeW.value = Math.max(MIN_RESIZE_W, resizeStartW + dx);
+  resizeH.value = Math.max(MIN_RESIZE_H, resizeStartH + dy);
+}
+
+function onResizePointerUp(ev: PointerEvent): void {
+  if (!resizing.value || resizePointerId !== ev.pointerId) return;
+  try {
+    (ev.currentTarget as HTMLElement)?.releasePointerCapture?.(ev.pointerId);
+  } catch { /* ignore */ }
+  resizing.value = false;
+  resizePointerId = null;
+}
+
 function onWindowResize(): void {
   updateBounds();
 }
@@ -190,7 +246,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="draggableOverlay"
-    :class="{ isDragging: dragging }"
+    :class="{ isDragging: dragging, isResizing: resizing }"
     role="dialog"
     aria-modal="true"
     @click.self="onOverlayClick"
@@ -199,8 +255,16 @@ onBeforeUnmount(() => {
     @pointerup="stopDragging"
     @pointercancel="stopDragging"
   >
-    <div ref="cardEl" class="draggableCard" :class="{ wide: cardVariant === 'wide', large: cardVariant === 'large' }" :style="cardStyle">
+    <div ref="cardEl" class="draggableCard" :class="{ wide: cardVariant === 'wide', large: cardVariant === 'large', resizableCard: resizable }" :style="cardStyle">
       <slot />
+      <div
+        v-if="resizable"
+        class="resizeHandle"
+        @pointerdown="onResizePointerDown"
+        @pointermove="onResizePointerMove"
+        @pointerup="onResizePointerUp"
+        @pointercancel="onResizePointerUp"
+      ></div>
     </div>
   </div>
 </template>
@@ -216,7 +280,8 @@ onBeforeUnmount(() => {
   z-index: 9999;
 }
 
-.draggableOverlay.isDragging {
+.draggableOverlay.isDragging,
+.draggableOverlay.isResizing {
   user-select: none;
 }
 
@@ -252,6 +317,10 @@ onBeforeUnmount(() => {
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
 }
 
+.draggableCard.large.resizableCard {
+  height: 88vh;
+}
+
 :deep([data-drag-handle]) {
   cursor: grab;
   user-select: none;
@@ -260,5 +329,31 @@ onBeforeUnmount(() => {
 
 .isDragging :deep([data-drag-handle]) {
   cursor: grabbing;
+}
+
+.resizeHandle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  z-index: 1;
+}
+
+.resizeHandle::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(148, 163, 184, 0.5);
+  border-bottom: 2px solid rgba(148, 163, 184, 0.5);
+  border-radius: 0 0 2px 0;
+}
+
+.resizeHandle:hover::after {
+  border-color: rgba(100, 116, 139, 0.7);
 }
 </style>
