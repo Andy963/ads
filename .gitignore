@@ -57,3 +57,5 @@ AGENTS.md
 .idea/
 *.swp
 ads.db
+ads.db-shm
+ads.db-wal
