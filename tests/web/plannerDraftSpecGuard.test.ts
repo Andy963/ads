@@ -103,6 +103,7 @@ function createPlannerPromptDeps(args: {
   payload: unknown;
   requestId: string;
   workspaceRoot: string;
+  chatSessionId?: string;
   chatMessages: unknown[];
   clientMessages: unknown[];
   historyStore: MemoryHistoryStore;
@@ -136,7 +137,7 @@ function createPlannerPromptDeps(args: {
     context: {
       authUserId: "test-user",
       sessionId: "s",
-      chatSessionId: "planner" as const,
+      chatSessionId: (args.chatSessionId ?? "planner") as const,
       userId: 1,
       historyKey: "h",
       currentCwd: args.workspaceRoot,
@@ -252,6 +253,57 @@ describe("web/ws/planner-draft-spec-guard", () => {
     assert.ok(drafts[0]!.bundle);
     assert.match(String(drafts[0]!.bundle?.specRef ?? ""), /^docs\/spec\//);
     assert.equal(drafts[0]!.requestId, "req:req-1");
+    assert.ok(Array.isArray(clientMessages));
+  });
+
+  it("persists ads-tasks drafts from the worker lane", async () => {
+    const specRef = ensureSpecFiles(workspaceRoot, "worker-draft");
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+    const orchestrator = new FakeOrchestrator(
+      [
+        "Here is your worker draft.",
+        "```ads-tasks",
+        JSON.stringify({
+          version: 1,
+          specRef,
+          tasks: [{ title: "Worker Task", prompt: "Do it from worker" }],
+        }),
+        "```",
+      ].join("\n"),
+    );
+
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "create a draft task from worker",
+        requestId: "req-worker-draft-1",
+        workspaceRoot,
+        chatSessionId: "main",
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
+
+    assert.equal(orchestrator.invokeCount, 1);
+
+    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+    assert.ok(result);
+    const output = String((result as { output?: unknown }).output ?? "");
+    assert.match(output, /任务草稿已写入/);
+    assert.doesNotMatch(output, /```ads-tasks/);
+
+    const drafts = listTaskBundleDrafts({
+      authUserId: "test-user",
+      workspaceRoot,
+      limit: 10,
+    });
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]!.requestId, "req:req-worker-draft-1");
+    assert.equal(drafts[0]!.bundle?.tasks[0]?.title, "Worker Task");
+    assert.equal(drafts[0]!.bundle?.specRef, specRef);
     assert.ok(Array.isArray(clientMessages));
   });
 

@@ -72,8 +72,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     }
 
     let inputToSend: Input = promptInput.input;
-    const isPlannerDraftCommand =
-      deps.context.chatSessionId === "planner" && Boolean(parsePlannerDraftSlashCommand(inputToSend));
+    const isPlannerSession = deps.context.chatSessionId === "planner";
+    const isWorkerSession = deps.context.chatSessionId === "main" || deps.context.chatSessionId === "worker";
+    const shouldHandleTaskBundleDrafts = isPlannerSession || isWorkerSession;
+    const isPlannerDraftCommand = isPlannerSession && Boolean(parsePlannerDraftSlashCommand(inputToSend));
     if (isPlannerDraftCommand) {
       inputToSend = injectPlannerDraftSkill(inputToSend);
     }
@@ -235,7 +237,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       let threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
 
-      if (deps.context.chatSessionId === "planner") {
+      if (shouldHandleTaskBundleDrafts) {
         const plannerHandled = await handlePlannerPromptOutput({
           outputToSend,
           finalOutput,
@@ -259,6 +261,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           broadcastToSession: deps.tasks.broadcastToSession,
           scheduleCompiler: deps.scheduler.scheduleCompiler,
           scheduler: deps.scheduler.scheduler,
+          scheduleSource: deps.context.chatSessionId || "worker",
           draftCommand: isPlannerDraftCommand,
         });
         outputForChat = plannerHandled.outputForChat;

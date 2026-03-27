@@ -29,7 +29,7 @@ import { detectBundleRisk } from "./riskDetector.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { startQueueInAllMode } from "../../taskQueue/control.js";
 import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
-import { processPlannerScheduleOutput } from "./scheduleHandler.js";
+import { processScheduleOutput } from "./scheduleHandler.js";
 import { truncateForLog } from "../../utils.js";
 
 const PLANNER_DRAFT_RECOVERY_MAX_ATTEMPTS = 1;
@@ -81,6 +81,7 @@ type PlannerPromptHandlerArgs = {
   broadcastToSession?: (sessionId: string, payload: unknown) => void;
   scheduleCompiler?: ScheduleCompiler;
   scheduler?: SchedulerRuntime;
+  scheduleSource?: string;
   draftCommand: boolean;
 };
 
@@ -496,13 +497,14 @@ export async function handlePlannerPromptOutput(args: PlannerPromptHandlerArgs):
     threadReset = Boolean(args.expectedThreadId) && Boolean(threadId) && args.expectedThreadId !== threadId;
   }
 
-  outputForChat = await processPlannerScheduleOutput({
+  outputForChat = await processScheduleOutput({
     outputForChat,
-    isPlannerDraftCommand: args.draftCommand,
+    isDraftCommand: args.draftCommand,
     workspaceRoot: workspaceRootForDraft,
     scheduleCompiler: args.scheduleCompiler,
     scheduler: args.scheduler,
     logger: args.logger,
+    source: args.scheduleSource ?? "planner",
   });
 
   return { outputForChat, threadId, threadReset };
