@@ -121,12 +121,27 @@ export function createHttpServer(options: {
       return true;
     }
 
-    const raw = (url.split("?")[0] ?? "/").trim();
+    let raw = (url.split("?")[0] ?? "/").trim();
+    try {
+      raw = decodeURIComponent(raw);
+    } catch (e) {
+      if (e instanceof URIError) {
+        setSecurityHeaders(res);
+        res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Bad Request");
+        return true;
+      }
+      throw e;
+    }
+
     const rel = raw.startsWith("/") ? raw : `/${raw}`;
     const normalized = path.posix.normalize(rel);
     const safeRel = normalized.startsWith("/") ? normalized : `/${normalized}`;
     const resolved = path.resolve(distClientDir, "." + safeRel);
-    if (!resolved.startsWith(distClientDir)) {
+
+    // Prevent partial directory matching (e.g. distClient matching distClient-secrets)
+    const distClientDirWithSep = distClientDir.endsWith(path.sep) ? distClientDir : distClientDir + path.sep;
+    if (!resolved.startsWith(distClientDirWithSep) && resolved !== distClientDir) {
       setSecurityHeaders(res);
       res.writeHead(403).end("Forbidden");
       return true;
