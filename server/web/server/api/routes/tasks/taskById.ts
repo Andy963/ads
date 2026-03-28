@@ -27,6 +27,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     const attachments = buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore });
     sendJson(res, 200, {
       ...task,
+      latestRun: taskCtx.taskStore.getLatestTaskRun(task.id),
       attachments,
       messages: taskCtx.taskStore.getMessages(taskId),
     });
@@ -113,6 +114,12 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         priority: z.number().finite().optional(),
         maxRetries: z.number().int().min(0).optional(),
         reviewRequired: z.boolean().optional(),
+        execution: z
+          .object({
+            isolation: z.enum(["default", "required"]).optional(),
+          })
+          .passthrough()
+          .optional(),
         bootstrap: bootstrapSchema,
       })
       .passthrough();
@@ -123,7 +130,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     }
     const parsed = updateResult.data;
     const keys = Object.keys(parsed).filter((k) =>
-      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "reviewRequired", "bootstrap"].includes(k),
+      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "reviewRequired", "execution", "bootstrap"].includes(k),
     );
     if (keys.length === 0) {
       sendJson(res, 400, { error: "No updates provided" });
@@ -148,6 +155,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     if (parsed.priority !== undefined) updates.priority = parsed.priority;
     if (parsed.maxRetries !== undefined) updates.maxRetries = parsed.maxRetries;
     if (parsed.reviewRequired !== undefined) updates.reviewRequired = parsed.reviewRequired;
+    if (parsed.execution?.isolation !== undefined) updates.executionIsolation = parsed.execution.isolation;
     if (parsed.bootstrap !== undefined) {
       const base = (() => {
         const raw = existing.modelParams;
@@ -169,7 +177,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       taskCtx.taskQueue.notifyNewTask();
     }
     deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: updated, ts: Date.now() });
-    sendJson(res, 200, { success: true, task: updated });
+    sendJson(res, 200, { success: true, task: { ...updated, latestRun: taskCtx.taskStore.getLatestTaskRun(updated.id) } });
     return true;
   }
 

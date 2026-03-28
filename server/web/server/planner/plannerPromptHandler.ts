@@ -309,6 +309,7 @@ function createPlannerDraftPassProcessor(args: {
             await taskCtx.getLock().runExclusive(async () => {
               ({ createdTaskIds, taskTitles } = materializeTaskBundleTasks({
                 draftId: draft.id,
+                bundleDefaults: normalized,
                 tasks: normalized.tasks,
                 now,
                 taskStore: taskCtx.taskStore,

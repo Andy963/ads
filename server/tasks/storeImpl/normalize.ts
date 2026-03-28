@@ -1,4 +1,13 @@
-import type { ConversationStatus, TaskReviewStatus, TaskRole, TaskStatus } from "../types.js";
+import type {
+  ConversationStatus,
+  TaskExecutionIsolation,
+  TaskReviewStatus,
+  TaskRole,
+  TaskRunApplyStatus,
+  TaskRunCaptureStatus,
+  TaskRunStatus,
+  TaskStatus,
+} from "../types.js";
 
 import { safeParseJsonFromUnknown } from "../../utils/json.js";
 
@@ -47,6 +56,57 @@ export function normalizeTaskReviewStatus(value: unknown): TaskReviewStatus {
       return raw;
     default:
       return "none";
+  }
+}
+
+export function normalizeTaskExecutionIsolation(value: unknown): TaskExecutionIsolation {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (raw) {
+    case "required":
+      return "required";
+    default:
+      return "default";
+  }
+}
+
+export function normalizeTaskRunStatus(value: unknown): TaskRunStatus {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (raw) {
+    case "preparing":
+    case "running":
+    case "completed":
+    case "failed":
+    case "cancelled":
+      return raw;
+    default:
+      return "preparing";
+  }
+}
+
+export function normalizeTaskCaptureStatus(value: unknown): TaskRunCaptureStatus {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (raw) {
+    case "pending":
+    case "ok":
+    case "failed":
+    case "skipped":
+      return raw;
+    default:
+      return "pending";
+  }
+}
+
+export function normalizeTaskApplyStatus(value: unknown): TaskRunApplyStatus {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (raw) {
+    case "pending":
+    case "applied":
+    case "blocked":
+    case "failed":
+    case "skipped":
+      return raw;
+    default:
+      return "pending";
   }
 }
 

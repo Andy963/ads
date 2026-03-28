@@ -452,6 +452,88 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 16,
+    description: "Task execution isolation - add task execution isolation, task runs, and snapshot run linkage",
+    up: (db) => {
+      const taskNames = getTableColumnNames(db, "tasks");
+      if (!taskNames.has("execution_isolation")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN execution_isolation TEXT NOT NULL DEFAULT 'default'`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET execution_isolation = COALESCE(NULLIF(TRIM(execution_isolation), ''), 'default')
+        WHERE execution_isolation IS NULL OR TRIM(COALESCE(execution_isolation, '')) = ''
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_execution_isolation
+          ON tasks(execution_isolation, status, created_at DESC, id DESC)
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_runs (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          execution_isolation TEXT NOT NULL DEFAULT 'default',
+          workspace_root TEXT NOT NULL,
+          worktree_dir TEXT,
+          branch_name TEXT,
+          base_head TEXT,
+          end_head TEXT,
+          status TEXT NOT NULL,
+          capture_status TEXT NOT NULL DEFAULT 'pending',
+          apply_status TEXT NOT NULL DEFAULT 'pending',
+          error TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_runs_task_id_created_at
+          ON task_runs(task_id, created_at DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_task_runs_status_created_at
+          ON task_runs(status, created_at DESC, id DESC);
+      `);
+
+      const reviewSnapshotNames = getTableColumnNames(db, "review_snapshots");
+      if (!reviewSnapshotNames.has("task_run_id")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN task_run_id TEXT`);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_review_snapshots_task_run_id
+          ON review_snapshots(task_run_id, created_at DESC, id DESC)
+      `);
+    },
+  },
+  {
+    version: 17,
+    description: "Backfill review snapshot task_run_id for upgraded isolation reviews",
+    up: (db) => {
+      db.exec(`
+        UPDATE review_snapshots
+        SET task_run_id = (
+          SELECT r.id
+          FROM task_runs r
+          WHERE r.task_id = review_snapshots.task_id
+            AND r.created_at <= review_snapshots.created_at
+          ORDER BY r.created_at DESC, r.id DESC
+          LIMIT 1
+        )
+        WHERE TRIM(COALESCE(task_run_id, '')) = ''
+          AND EXISTS (
+            SELECT 1
+            FROM task_runs r
+            WHERE r.task_id = review_snapshots.task_id
+              AND r.created_at <= review_snapshots.created_at
+          )
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

@@ -105,6 +105,9 @@ describe("web/api/tasks/:id/rerun", () => {
         getTask(id: string) {
           return id === source.id ? source : null;
         },
+        getLatestTaskRun() {
+          return null;
+        },
         createTask(input: Record<string, unknown>) {
           createInput = input;
           return {
@@ -123,6 +126,11 @@ describe("web/api/tasks/:id/rerun", () => {
             createdAt: Date.now(),
             parentTaskId: String(input.parentTaskId ?? ""),
           } satisfies Task;
+        },
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
         },
       },
     };
@@ -190,6 +198,9 @@ describe("web/api/tasks/:id/rerun", () => {
         getTask(id: string) {
           return id === source.id ? source : null;
         },
+        getLatestTaskRun() {
+          return null;
+        },
         createTask(input: Record<string, unknown>) {
           createInput = input;
           return {
@@ -208,6 +219,11 @@ describe("web/api/tasks/:id/rerun", () => {
             createdAt: Date.now(),
             parentTaskId: String(input.parentTaskId ?? ""),
           } satisfies Task;
+        },
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
         },
       },
     };
@@ -281,6 +297,9 @@ describe("web/api/tasks/:id/rerun", () => {
         getTask(id: string) {
           return id === source.id ? source : null;
         },
+        getLatestTaskRun() {
+          return null;
+        },
         createTask(input: Record<string, unknown>) {
           return {
             id: String(input.id),
@@ -300,6 +319,11 @@ describe("web/api/tasks/:id/rerun", () => {
           } satisfies Task;
         },
         getContext() {
+          return [];
+        },
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
           return [];
         },
       },

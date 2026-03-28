@@ -25,6 +25,13 @@ type ExplicitReviewArtifactReference = {
   responseText: string;
 };
 
+const executionSchema = z
+  .object({
+    isolation: z.enum(["default", "required"]).optional(),
+  })
+  .passthrough()
+  .optional();
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -44,6 +51,17 @@ function broadcastTaskUpdated(
   now: number,
 ): void {
   deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: now });
+}
+
+function enrichTask(taskCtx: TaskRouteTaskContext, task: ReturnType<QueueTaskStore["getTask"]>, url: URL, deps: ApiSharedDeps) {
+  if (!task) {
+    return null;
+  }
+  return {
+    ...task,
+    latestRun: taskCtx.taskStore.getLatestTaskRun(task.id),
+    attachments: buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore }),
+  };
 }
 
 function upsertTaskNotificationBindingSafe(args: {
@@ -162,10 +180,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return raw === "1" || raw === "true" || raw === "yes";
     })();
     const tasks = taskCtx.taskStore.listTasks({ status, limit }).filter((t) => includeArchived || t.archivedAt == null);
-    const enriched = tasks.map((task) => ({
-      ...task,
-      attachments: buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore }),
-    }));
+    const enriched = tasks.map((task) => enrichTask(taskCtx, task, url, deps)).filter(Boolean);
     sendJson(res, 200, enriched);
 
     // Schedule maintenance asynchronously; never block the response path.
@@ -205,6 +220,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         reviewRequired: z.boolean().optional(),
         reviewArtifactId: z.string().min(1).optional(),
         reviewSnapshotId: z.string().min(1).optional(),
+        execution: executionSchema,
         attachments: z.array(z.string().min(1)).optional(),
         bootstrap: bootstrapSchema,
       })
@@ -243,6 +259,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           modelParams,
           priority: parsed.priority,
           maxRetries: parsed.maxRetries,
+          executionIsolation: parsed.execution?.isolation,
           reviewRequired: parsed.reviewRequired,
           createdBy: "web",
         },
@@ -266,10 +283,9 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       return true;
     }
 
-    const attachments = buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore });
-
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: task.id });
-    broadcastTaskUpdated(deps, taskCtx, { ...task, attachments }, now);
+    const responseTask = enrichTask(taskCtx, task, url, deps);
+    broadcastTaskUpdated(deps, taskCtx, responseTask, now);
 
     upsertTaskNotificationBindingSafe({
       deps,
@@ -280,7 +296,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       now,
     });
 
-    sendJson(res, 201, { ...task, attachments });
+    sendJson(res, 201, responseTask);
 
     maybePromoteQueuedTasks({ deps, taskCtx, taskId: task.id, reason: "create" });
     return true;
@@ -323,6 +339,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         reviewRequired: z.boolean().optional(),
         reviewArtifactId: z.string().min(1).optional(),
         reviewSnapshotId: z.string().min(1).optional(),
+        execution: executionSchema,
         bootstrap: bootstrapSchema,
       })
       .passthrough();
@@ -341,6 +358,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const priority = parsed.priority ?? source.priority;
     const inheritContext = parsed.inheritContext ?? source.inheritContext;
     const maxRetries = parsed.maxRetries ?? source.maxRetries;
+    const executionIsolation = parsed.execution?.isolation ?? source.executionIsolation ?? "default";
     const reviewRequired = parsed.reviewRequired ?? source.reviewRequired;
     const reviewArtifactRef = resolveExplicitReviewArtifactReference({
       taskCtx,
@@ -383,6 +401,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
           inheritContext,
           parentTaskId: source.id,
           maxRetries,
+          executionIsolation,
           reviewRequired,
           createdBy: "web",
         },
@@ -424,7 +443,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
     recordTaskQueueMetric(taskCtx.metrics, "TASK_ADDED", { ts: now, taskId: created.id, reason: `rerun_from:${source.id}` });
 
-    broadcastTaskUpdated(deps, taskCtx, created, now);
+    const responseTask = enrichTask(taskCtx, created, url, deps);
+    broadcastTaskUpdated(deps, taskCtx, responseTask, now);
 
     upsertTaskNotificationBindingSafe({
       deps,
@@ -435,7 +455,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       now,
     });
 
-    sendJson(res, 201, { success: true, sourceTaskId: source.id, task: created });
+    sendJson(res, 201, { success: true, sourceTaskId: source.id, task: responseTask });
 
     maybePromoteQueuedTasks({ deps, taskCtx, taskId: created.id, reason: "rerun" });
     return true;

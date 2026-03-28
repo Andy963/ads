@@ -152,4 +152,59 @@ describe("planner/taskBundleApprover", () => {
 
     assert.equal(deleteCalls, 0);
   });
+
+  it("resolves execution isolation from bundle defaults and task overrides", () => {
+    const seenInputs: Array<Record<string, unknown>> = [];
+
+    materializeTaskBundleTasks({
+      draftId: "draft-iso",
+      bundleDefaults: {
+        defaults: {
+          execution: { isolation: "required" },
+        },
+      },
+      tasks: [
+        { prompt: "default required task" },
+        { prompt: "explicit default task", execution: { isolation: "default" } },
+      ],
+      now: 123,
+      taskStore: {
+        createTask(input, now, options) {
+          seenInputs.push({ ...input, status: options.status, createdAt: now });
+          return {
+            id: input.id ?? "task-1",
+            title: input.title ?? "",
+            prompt: input.prompt,
+            model: input.model ?? "auto",
+            status: options.status,
+            priority: input.priority ?? 0,
+            queueOrder: 0,
+            inheritContext: input.inheritContext ?? true,
+            retryCount: 0,
+            maxRetries: input.maxRetries ?? 0,
+            executionIsolation: input.executionIsolation ?? "default",
+            reviewRequired: true,
+            reviewStatus: "pending",
+            createdAt: now,
+          };
+        },
+        getTask() {
+          return null;
+        },
+        deleteTask() {},
+      },
+      attachmentStore: {
+        assignAttachmentsToTask() {},
+        listAttachmentsForTask() {
+          return [];
+        },
+      },
+      metrics: createMetrics(),
+      metricReason: "planner_draft",
+    });
+
+    assert.equal(seenInputs.length, 2);
+    assert.equal(seenInputs[0]?.executionIsolation, "required");
+    assert.equal(seenInputs[1]?.executionIsolation, "default");
+  });
 });

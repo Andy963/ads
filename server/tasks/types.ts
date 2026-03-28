@@ -11,6 +11,10 @@ export type TaskStatus =
 export type TaskRole = "system" | "user" | "assistant" | "tool";
 
 export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected" | "failed";
+export type TaskExecutionIsolation = "default" | "required";
+export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
+export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
+export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | "skipped";
 
 export interface TaskContext {
   id?: number;
@@ -65,6 +69,7 @@ export interface Task {
   error?: string | null;
   retryCount: number;
   maxRetries: number;
+  executionIsolation?: TaskExecutionIsolation;
   reviewRequired: boolean;
   reviewStatus: TaskReviewStatus;
   reviewSnapshotId?: string | null;
@@ -75,6 +80,7 @@ export interface Task {
   completedAt?: number | null;
   archivedAt?: number | null;
   createdBy?: string | null;
+  latestRun?: TaskRun | null;
 }
 
 export interface CreateTaskInput {
@@ -89,8 +95,42 @@ export interface CreateTaskInput {
   parentTaskId?: string | null;
   threadId?: string | null;
   maxRetries?: number;
+  executionIsolation?: TaskExecutionIsolation;
   reviewRequired?: boolean;
   createdBy?: string | null;
+}
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  executionIsolation: TaskExecutionIsolation;
+  workspaceRoot: string;
+  worktreeDir: string | null;
+  branchName: string | null;
+  baseHead: string | null;
+  endHead: string | null;
+  status: TaskRunStatus;
+  captureStatus: TaskRunCaptureStatus;
+  applyStatus: TaskRunApplyStatus;
+  error: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
+}
+
+export interface CreateTaskRunInput {
+  id?: string;
+  taskId: string;
+  executionIsolation: TaskExecutionIsolation;
+  workspaceRoot: string;
+  worktreeDir?: string | null;
+  branchName?: string | null;
+  baseHead?: string | null;
+  endHead?: string | null;
+  status?: TaskRunStatus;
+  captureStatus?: TaskRunCaptureStatus;
+  applyStatus?: TaskRunApplyStatus;
+  error?: string | null;
 }
 
 export interface TaskFilter {

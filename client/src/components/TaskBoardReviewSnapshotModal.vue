@@ -41,6 +41,11 @@ const emit = defineEmits<{
       <div class="snapshotMeta">
         <div v-if="props.taskId"><span class="metaKey">任务</span> <span class="detailMono">{{ props.taskId }}</span></div>
         <div v-if="props.snapshotId"><span class="metaKey">快照</span> <span class="detailMono">{{ props.snapshotId }}</span></div>
+        <div v-if="props.snapshot?.taskRunId"><span class="metaKey">Run</span> <span class="detailMono">{{ props.snapshot.taskRunId }}</span></div>
+        <div v-if="props.snapshot"><span class="metaKey">隔离执行</span> <span>{{ props.snapshot.executionIsolation }}</span></div>
+        <div v-if="props.snapshot?.applyStatus"><span class="metaKey">Apply</span> <span>{{ props.snapshot.applyStatus }}</span></div>
+        <div v-if="props.snapshot?.captureStatus"><span class="metaKey">Capture</span> <span>{{ props.snapshot.captureStatus }}</span></div>
+        <div v-if="props.snapshot?.worktreeDir"><span class="metaKey">Worktree</span> <span class="detailMono">{{ props.snapshot.worktreeDir }}</span></div>
       </div>
 
       <div v-if="props.error" class="snapshotError">{{ props.error }}</div>

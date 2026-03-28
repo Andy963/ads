@@ -45,6 +45,12 @@ export type TaskStoreStatements = {
   getConversationMessagesLimitedStmt: SqliteStatement;
 
   selectMostRecentThreadIdStmt: SqliteStatement;
+
+  insertTaskRunStmt: SqliteStatement;
+  getTaskRunStmt: SqliteStatement;
+  getLatestTaskRunStmt: SqliteStatement;
+  listTaskRunsStmt: SqliteStatement;
+  updateTaskRunStmt: SqliteStatement;
 };
 
 export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatements {
@@ -68,6 +74,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         error,
         retry_count,
         max_retries,
+        execution_isolation,
         review_required,
         review_status,
         review_snapshot_id,
@@ -78,7 +85,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         completed_at,
         archived_at,
         created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
 
     getTaskStmt: db.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`),
@@ -136,6 +143,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         error = ?,
         retry_count = ?,
         max_retries = ?,
+        execution_isolation = ?,
         review_required = ?,
         review_status = ?,
         review_snapshot_id = ?,
@@ -297,5 +305,59 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
        ORDER BY COALESCE(completed_at, 0) DESC, created_at DESC
        LIMIT 1`,
     ),
+
+    insertTaskRunStmt: db.prepare(`
+      INSERT INTO task_runs (
+        id,
+        task_id,
+        execution_isolation,
+        workspace_root,
+        worktree_dir,
+        branch_name,
+        base_head,
+        end_head,
+        status,
+        capture_status,
+        apply_status,
+        error,
+        created_at,
+        started_at,
+        completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+
+    getTaskRunStmt: db.prepare(`SELECT * FROM task_runs WHERE id = ? LIMIT 1`),
+
+    getLatestTaskRunStmt: db.prepare(
+      `SELECT * FROM task_runs
+       WHERE task_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    ),
+
+    listTaskRunsStmt: db.prepare(
+      `SELECT * FROM task_runs
+       WHERE task_id = ?
+       ORDER BY created_at DESC, id DESC`,
+    ),
+
+    updateTaskRunStmt: db.prepare(`
+      UPDATE task_runs
+      SET
+        execution_isolation = ?,
+        workspace_root = ?,
+        worktree_dir = ?,
+        branch_name = ?,
+        base_head = ?,
+        end_head = ?,
+        status = ?,
+        capture_status = ?,
+        apply_status = ?,
+        error = ?,
+        created_at = ?,
+        started_at = ?,
+        completed_at = ?
+      WHERE id = ?
+    `),
   };
 }

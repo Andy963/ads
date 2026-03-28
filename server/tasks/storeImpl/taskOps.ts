@@ -3,10 +3,19 @@ import crypto from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import type { TaskStoreStatements } from "../storeStatements.js";
-import type { CreateTaskInput, Task, TaskFilter, TaskStatus } from "../types.js";
+import type { CreateTaskInput, CreateTaskRunInput, Task, TaskExecutionIsolation, TaskFilter, TaskRun, TaskStatus } from "../types.js";
 
-import { toTask } from "./mappers.js";
-import { normalizeNullableString, normalizeTaskModel, normalizeTaskReviewStatus, normalizeTaskStatus } from "./normalize.js";
+import { toTask, toTaskRun } from "./mappers.js";
+import {
+  normalizeNullableString,
+  normalizeTaskApplyStatus,
+  normalizeTaskCaptureStatus,
+  normalizeTaskExecutionIsolation,
+  normalizeTaskModel,
+  normalizeTaskReviewStatus,
+  normalizeTaskRunStatus,
+  normalizeTaskStatus,
+} from "./normalize.js";
 
 export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStoreStatements }) {
   const { db, stmts } = deps;
@@ -48,6 +57,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
   const normalizeTaskWritableFields = (task: Task, existing?: Task): void => {
     task.status = normalizeTaskStatus(task.status);
     task.inheritContext = Boolean(task.inheritContext);
+    task.executionIsolation = normalizeTaskExecutionIsolation(task.executionIsolation);
     task.reviewRequired = Boolean(task.reviewRequired);
     task.reviewStatus = normalizeTaskReviewStatus(task.reviewStatus);
     normalizeTaskIdentityFields(task);
@@ -139,6 +149,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
           ? now
           : null;
     const reviewRequired = Boolean(input.reviewRequired);
+    const executionIsolation = normalizeTaskExecutionIsolation(input.executionIsolation);
 
     const task: Task = {
       id,
@@ -159,6 +170,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       error: null,
       retryCount: 0,
       maxRetries: typeof input.maxRetries === "number" ? Math.max(0, Math.floor(input.maxRetries)) : 3,
+      executionIsolation,
       reviewRequired,
       reviewStatus: "none",
       reviewSnapshotId: null,
@@ -191,6 +203,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.error ?? null,
       task.retryCount,
       task.maxRetries,
+      task.executionIsolation,
       task.reviewRequired ? 1 : 0,
       task.reviewStatus,
       task.reviewSnapshotId ?? null,
@@ -273,6 +286,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.error ?? null,
       merged.retryCount,
       merged.maxRetries,
+      merged.executionIsolation,
       merged.reviewRequired ? 1 : 0,
       merged.reviewStatus,
       merged.reviewSnapshotId ?? null,
@@ -494,6 +508,135 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     return updated;
   };
 
+  const getTaskRun = (id: string): TaskRun | null => {
+    const normalized = String(id ?? "").trim();
+    if (!normalized) {
+      return null;
+    }
+    const row = stmts.getTaskRunStmt.get(normalized) as Record<string, unknown> | undefined;
+    return row ? toTaskRun(row) : null;
+  };
+
+  const getLatestTaskRun = (taskId: string): TaskRun | null => {
+    const normalized = String(taskId ?? "").trim();
+    if (!normalized) {
+      return null;
+    }
+    const row = stmts.getLatestTaskRunStmt.get(normalized) as Record<string, unknown> | undefined;
+    return row ? toTaskRun(row) : null;
+  };
+
+  const listTaskRuns = (taskId: string): TaskRun[] => {
+    const normalized = String(taskId ?? "").trim();
+    if (!normalized) {
+      return [];
+    }
+    const rows = stmts.listTaskRunsStmt.all(normalized) as Record<string, unknown>[];
+    return rows.map((row) => toTaskRun(row));
+  };
+
+  const createTaskRun = (input: CreateTaskRunInput, now = Date.now()): TaskRun => {
+    const id = String(input.id ?? crypto.randomUUID()).trim();
+    const taskId = String(input.taskId ?? "").trim();
+    const workspaceRoot = String(input.workspaceRoot ?? "").trim();
+    if (!taskId) {
+      throw new Error("taskId is required");
+    }
+    if (!workspaceRoot) {
+      throw new Error("workspaceRoot is required");
+    }
+    const run: TaskRun = {
+      id,
+      taskId,
+      executionIsolation: normalizeTaskExecutionIsolation(input.executionIsolation),
+      workspaceRoot,
+      worktreeDir: normalizeNullableString(input.worktreeDir),
+      branchName: normalizeNullableString(input.branchName),
+      baseHead: normalizeNullableString(input.baseHead),
+      endHead: normalizeNullableString(input.endHead),
+      status: normalizeTaskRunStatus(input.status ?? "preparing"),
+      captureStatus: normalizeTaskCaptureStatus(input.captureStatus ?? "pending"),
+      applyStatus: normalizeTaskApplyStatus(input.applyStatus ?? "pending"),
+      error: normalizeNullableString(input.error),
+      createdAt: now,
+      startedAt: null,
+      completedAt: null,
+    };
+    stmts.insertTaskRunStmt.run(
+      run.id,
+      run.taskId,
+      run.executionIsolation,
+      run.workspaceRoot,
+      run.worktreeDir,
+      run.branchName,
+      run.baseHead,
+      run.endHead,
+      run.status,
+      run.captureStatus,
+      run.applyStatus,
+      run.error,
+      run.createdAt,
+      run.startedAt,
+      run.completedAt,
+    );
+    return run;
+  };
+
+  const updateTaskRun = (id: string, updates: Partial<Omit<TaskRun, "id" | "taskId">>, now = Date.now()): TaskRun => {
+    const existing = getTaskRun(id);
+    if (!existing) {
+      throw new Error(`Task run not found: ${id}`);
+    }
+    const merged: TaskRun = {
+      ...existing,
+      ...updates,
+      id: existing.id,
+      taskId: existing.taskId,
+      executionIsolation: normalizeTaskExecutionIsolation(
+        (updates.executionIsolation ?? existing.executionIsolation) as TaskExecutionIsolation,
+      ),
+      workspaceRoot: String(updates.workspaceRoot ?? existing.workspaceRoot).trim(),
+      worktreeDir: updates.worktreeDir === undefined ? existing.worktreeDir : normalizeNullableString(updates.worktreeDir),
+      branchName: updates.branchName === undefined ? existing.branchName : normalizeNullableString(updates.branchName),
+      baseHead: updates.baseHead === undefined ? existing.baseHead : normalizeNullableString(updates.baseHead),
+      endHead: updates.endHead === undefined ? existing.endHead : normalizeNullableString(updates.endHead),
+      status: normalizeTaskRunStatus(updates.status ?? existing.status),
+      captureStatus: normalizeTaskCaptureStatus(updates.captureStatus ?? existing.captureStatus),
+      applyStatus: normalizeTaskApplyStatus(updates.applyStatus ?? existing.applyStatus),
+      error: updates.error === undefined ? existing.error : normalizeNullableString(updates.error),
+      createdAt: existing.createdAt,
+      startedAt: updates.startedAt === undefined ? existing.startedAt : normalizeNullableFiniteNumber(updates.startedAt),
+      completedAt:
+        updates.completedAt === undefined ? existing.completedAt : normalizeNullableFiniteNumber(updates.completedAt),
+    };
+    if (!merged.workspaceRoot) {
+      throw new Error("workspaceRoot is required");
+    }
+    if (merged.status === "running" && merged.startedAt == null) {
+      merged.startedAt = now;
+    }
+    if (["completed", "failed", "cancelled"].includes(merged.status) && merged.completedAt == null) {
+      merged.completedAt = now;
+    }
+    stmts.updateTaskRunStmt.run(
+      merged.executionIsolation,
+      merged.workspaceRoot,
+      merged.worktreeDir,
+      merged.branchName,
+      merged.baseHead,
+      merged.endHead,
+      merged.status,
+      merged.captureStatus,
+      merged.applyStatus,
+      merged.error,
+      merged.createdAt,
+      merged.startedAt,
+      merged.completedAt,
+      merged.id,
+    );
+    return merged;
+  };
+
   return {
     createTask,
     getActiveTaskId,
@@ -507,5 +650,10 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     claimNextPendingTask,
     movePendingTask,
     reorderPendingTasks,
+    createTaskRun,
+    getTaskRun,
+    getLatestTaskRun,
+    listTaskRuns,
+    updateTaskRun,
   };
 }

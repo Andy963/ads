@@ -298,6 +298,7 @@ export class SchedulerRuntime {
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: (task) => sessionManager.getOrCreate(hashTaskId(task.id), key, true),
       store: taskStore,
+      workspaceRoot: key,
       autoModelOverride: schedulerModelOverride,
     });
 

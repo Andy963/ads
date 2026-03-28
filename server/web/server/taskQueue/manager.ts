@@ -10,6 +10,7 @@ import { TaskQueue } from "../../../tasks/queue.js";
 import { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
 import { OrchestratorTaskExecutor } from "../../../tasks/executor.js";
 import { ReviewStore, toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
+import { applyTaskRunChanges } from "../../../tasks/applyBack.js";
 import { AttachmentStore } from "../../../attachments/store.js";
 import { TaskRunController } from "../../taskRunController.js";
 import { pauseQueueInManualMode, startQueueInAllMode } from "../../taskQueue/control.js";
@@ -162,6 +163,15 @@ function resolveReviewSnapshotWorktreeDir(
   task: { id: string; modelParams?: unknown },
 ): { ok: true; worktreeDir: string } | { ok: false; reason: "worktree_unresolved" } {
   try {
+    const latestRun = ctx.taskStore.getLatestTaskRun(task.id);
+    const worktreeDir = String(latestRun?.worktreeDir ?? "").trim();
+    if (worktreeDir) {
+      return { ok: true, worktreeDir };
+    }
+  } catch {
+    // ignore
+  }
+  try {
     const contexts = ctx.taskStore.getContext(task.id);
     for (let i = contexts.length - 1; i >= 0; i--) {
       const entry = contexts[i];
@@ -210,11 +220,22 @@ function recordTaskWorkspacePatchArtifact(ctx: TaskQueueContext, taskId: string,
 
   let patch: WorkspacePatchPayload | null = null;
   let reason = "";
+  const latestRun = (() => {
+    try {
+      return ctx.taskStore.getLatestTaskRun(id);
+    } catch {
+      return null;
+    }
+  })();
+  const patchRoot =
+    latestRun?.executionIsolation === "required" && latestRun.worktreeDir ? latestRun.worktreeDir : ctx.workspaceRoot;
+  const patchBaseRef =
+    latestRun?.executionIsolation === "required" && latestRun.worktreeDir ? (latestRun.baseHead ?? undefined) : undefined;
   if (paths.length === 0) {
     reason = "no_changed_paths_recorded";
   } else {
     try {
-      patch = buildWorkspacePatch(ctx.workspaceRoot, paths);
+      patch = buildWorkspacePatch(patchRoot, paths, patchBaseRef ? { baseRef: patchBaseRef } : undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reason = `patch_error:${message}`;
@@ -377,6 +398,7 @@ export function createTaskQueueManager(deps: {
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: getTaskQueueOrchestrator,
       store: taskStore,
+      workspaceRoot: key,
       autoModelOverride: taskQueueModelOverride,
       getLock,
     });
@@ -403,6 +425,107 @@ export function createTaskQueueManager(deps: {
     let reviewLoopRunning = false;
 
     const reviewerEnabled = Boolean(deps.reviewSessionManager);
+
+    const resolveCurrentTaskReviewRunId = (taskId: string, snapshotId: string): string | null => {
+      try {
+        const latestTask = ctx.taskStore.getTask(taskId);
+        if (!latestTask) {
+          return null;
+        }
+        if (String(latestTask.reviewSnapshotId ?? "").trim() !== String(snapshotId ?? "").trim()) {
+          return null;
+        }
+        return ctx.taskStore.getLatestTaskRun(taskId)?.id ?? null;
+      } catch {
+        return null;
+      }
+    };
+
+    const failReviewPipeline = (args: {
+      taskId: string;
+      taskRunId?: string | null;
+      queueItemId?: string | null;
+      errorMessage: string;
+      now?: number;
+      captureStatus?: "pending" | "ok" | "failed" | "skipped" | null;
+      applyStatus?: "pending" | "applied" | "blocked" | "failed" | "skipped" | null;
+    }): void => {
+      const ts = typeof args.now === "number" && Number.isFinite(args.now) ? args.now : Date.now();
+      const errorMessage = String(args.errorMessage ?? "").trim() || "review_failed";
+      const queueItemId = String(args.queueItemId ?? "").trim();
+      if (queueItemId) {
+        try {
+          ctx.reviewStore.completeItem(queueItemId, { status: "failed", error: errorMessage }, ts);
+        } catch {
+          // ignore
+        }
+      }
+
+      const taskRunId = String(args.taskRunId ?? "").trim();
+      if (taskRunId) {
+        try {
+          const boundRun = ctx.taskStore.getTaskRun(taskRunId);
+          if (boundRun) {
+            const nextCaptureStatus =
+              args.captureStatus === undefined
+                ? undefined
+                : args.captureStatus ?? (boundRun.captureStatus === "pending" ? "failed" : boundRun.captureStatus);
+            const nextApplyStatus =
+              args.applyStatus === undefined
+                ? (boundRun.applyStatus === "pending" ? "failed" : boundRun.applyStatus)
+                : args.applyStatus ?? (boundRun.applyStatus === "pending" ? "failed" : boundRun.applyStatus);
+            ctx.taskStore.updateTaskRun(
+              boundRun.id,
+              {
+                ...(nextCaptureStatus ? { captureStatus: nextCaptureStatus } : {}),
+                ...(nextApplyStatus ? { applyStatus: nextApplyStatus } : {}),
+                status: "failed",
+                error: errorMessage,
+              },
+              ts,
+            );
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        const latestTask = ctx.taskStore.getTask(args.taskId);
+        if (latestTask && latestTask.reviewStatus !== "passed") {
+          const existingConclusion = String(latestTask.reviewConclusion ?? "").trim();
+          const reviewedAt =
+            typeof latestTask.reviewedAt === "number" && Number.isFinite(latestTask.reviewedAt) && latestTask.reviewedAt > 0
+              ? latestTask.reviewedAt
+              : ts;
+          const failedTask = ctx.taskStore.updateTask(
+            latestTask.id,
+            {
+              reviewStatus: "failed",
+              reviewConclusion: existingConclusion || errorMessage,
+              reviewedAt,
+              status: "failed",
+              error: errorMessage,
+            },
+            ts,
+          );
+          deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failedTask, ts });
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    const resolveReviewerWorkingDirectory = (snapshot: ReturnType<ReviewStore["getSnapshot"]>): string | null => {
+      if (!snapshot) {
+        return null;
+      }
+      const worktreeDir = String(snapshot.worktreeDir ?? "").trim();
+      if (snapshot.executionIsolation === "required") {
+        return worktreeDir || null;
+      }
+      return worktreeDir || ctx.workspaceRoot;
+    };
 
     const buildReviewerPrompt = (task: { id: string; title: string; prompt: string }, snapshot: { patch: WorkspacePatchPayload | null; changedFiles: string[] }): string => {
       const changedFiles = Array.isArray(snapshot.changedFiles) ? snapshot.changedFiles : [];
@@ -484,22 +607,13 @@ export function createTaskQueueManager(deps: {
 
           const snapshot = ctx.reviewStore.getSnapshot(item.snapshotId);
           if (!snapshot) {
-            ctx.reviewStore.completeItem(item.id, { status: "failed", error: "snapshot_not_found" }, now);
-            try {
-              const latest = ctx.taskStore.getTask(task.id);
-              if (latest && latest.reviewStatus !== "passed") {
-                const existingConclusion = String(latest.reviewConclusion ?? "").trim();
-                const reviewConclusion = existingConclusion || "snapshot_not_found";
-                const reviewedAt =
-                  typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0
-                    ? latest.reviewedAt
-                    : now;
-                const failed = ctx.taskStore.updateTask(task.id, { reviewStatus: "failed", reviewConclusion, reviewedAt }, now);
-                deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failed, ts: now });
-              }
-            } catch {
-              // ignore
-            }
+            failReviewPipeline({
+              taskId: task.id,
+              taskRunId: resolveCurrentTaskReviewRunId(task.id, item.snapshotId),
+              queueItemId: item.id,
+              errorMessage: "snapshot_not_found",
+              now,
+            });
             continue;
           }
 
@@ -507,7 +621,22 @@ export function createTaskQueueManager(deps: {
             { id: runningTask.id, title: runningTask.title, prompt: runningTask.prompt },
             { patch: snapshot.patch, changedFiles: snapshot.changedFiles },
           );
-          const reviewerCwd = String(snapshot.worktreeDir ?? "").trim() || ctx.workspaceRoot;
+          const reviewerCwd = resolveReviewerWorkingDirectory(snapshot);
+          if (!reviewerCwd) {
+            const errorMessage = "review_snapshot_worktree_missing";
+            failReviewPipeline({
+              taskId: task.id,
+              taskRunId: snapshot.taskRunId,
+              queueItemId: item.id,
+              errorMessage,
+              now,
+            });
+            deps.broadcastToReviewerSession?.(sessionId, {
+              type: "error",
+              message: `[Review failed] taskId=${task.id} snapshotId=${item.snapshotId} err=${errorMessage}`,
+            });
+            continue;
+          }
 
           let responseText = "";
           try {
@@ -530,21 +659,14 @@ export function createTaskQueueManager(deps: {
                 : String((result as { response?: unknown } | null)?.response ?? "");
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            ctx.reviewStore.completeItem(item.id, { status: "failed", error: message }, Date.now());
-            try {
-              const latest = ctx.taskStore.getTask(task.id);
-              const ts = Date.now();
-              if (latest && latest.reviewStatus !== "passed") {
-                const existingConclusion = String(latest.reviewConclusion ?? "").trim();
-                const reviewConclusion = existingConclusion || message;
-                const reviewedAt =
-                  typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0 ? latest.reviewedAt : ts;
-                const failed = ctx.taskStore.updateTask(task.id, { reviewStatus: "failed", reviewConclusion, reviewedAt }, ts);
-                deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failed, ts });
-              }
-            } catch {
-              // ignore
-            }
+            const ts = Date.now();
+            failReviewPipeline({
+              taskId: task.id,
+              taskRunId: snapshot.taskRunId,
+              queueItemId: item.id,
+              errorMessage: message,
+              now: ts,
+            });
             deps.broadcastToReviewerSession?.(sessionId, {
               type: "error",
               message: `[Review failed] taskId=${task.id} snapshotId=${item.snapshotId} err=${message}`,
@@ -561,21 +683,14 @@ export function createTaskQueueManager(deps: {
           const parsed = parseWebReviewVerdict(responseText);
           if (!parsed.ok) {
             const errorMessage = `invalid_review_verdict_json:${parsed.error}`;
-            ctx.reviewStore.completeItem(item.id, { status: "failed", error: errorMessage }, Date.now());
-            try {
-              const latest = ctx.taskStore.getTask(task.id);
-              const ts = Date.now();
-              if (latest && latest.reviewStatus !== "passed") {
-                const existingConclusion = String(latest.reviewConclusion ?? "").trim();
-                const reviewConclusion = existingConclusion || errorMessage;
-                const reviewedAt =
-                  typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0 ? latest.reviewedAt : ts;
-                const failed = ctx.taskStore.updateTask(task.id, { reviewStatus: "failed", reviewConclusion, reviewedAt }, ts);
-                deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failed, ts });
-              }
-            } catch {
-              // ignore
-            }
+            const ts = Date.now();
+            failReviewPipeline({
+              taskId: task.id,
+              taskRunId: snapshot.taskRunId,
+              queueItemId: item.id,
+              errorMessage,
+              now: ts,
+            });
             deps.broadcastToReviewerSession?.(sessionId, {
               type: "error",
               message: `[Review failed] taskId=${task.id} snapshotId=${item.snapshotId} err=${errorMessage}`,
@@ -604,6 +719,65 @@ export function createTaskQueueManager(deps: {
 
           ctx.reviewStore.completeItem(item.id, { status: verdictStatus, conclusion }, Date.now());
 
+          const latestRun = (() => {
+            try {
+              return snapshot.taskRunId ? ctx.taskStore.getTaskRun(snapshot.taskRunId) : null;
+            } catch {
+              return null;
+            }
+          })();
+          let applyConclusionSuffix = "";
+          if (verdictStatus === "passed" && latestRun?.executionIsolation === "required" && latestRun.worktreeDir && latestRun.baseHead) {
+            const worktreeDir = latestRun.worktreeDir;
+            const baseHead = latestRun.baseHead;
+            const applyResult = await ctx.getLock().runExclusive(async () => {
+              const result = await applyTaskRunChanges({
+                workspaceRoot: latestRun.workspaceRoot,
+                worktreeDir,
+                baseHead,
+              });
+              try {
+                ctx.taskStore.updateTaskRun(
+                  latestRun.id,
+                  {
+                    applyStatus:
+                      result.status === "applied"
+                        ? "applied"
+                        : result.status === "skipped"
+                          ? "skipped"
+                          : result.status,
+                    status:
+                      result.status === "blocked" || result.status === "failed" ? "failed" : latestRun.status,
+                    error:
+                      result.status === "blocked" || result.status === "failed"
+                        ? (result.message ?? "apply-back failed")
+                        : null,
+                  },
+                  Date.now(),
+                );
+              } catch {
+                // ignore
+              }
+              return result;
+            });
+            if (applyResult.status === "blocked" || applyResult.status === "failed") {
+              applyConclusionSuffix = `\n\n[apply-back ${applyResult.status}] ${applyResult.message ?? "unknown error"}`;
+            }
+          } else if (verdictStatus !== "passed" && latestRun?.executionIsolation === "required" && latestRun.applyStatus === "pending") {
+            try {
+              ctx.taskStore.updateTaskRun(
+                latestRun.id,
+                {
+                  applyStatus: "skipped",
+                  error: null,
+                },
+                Date.now(),
+              );
+            } catch {
+              // ignore
+            }
+          }
+
           let updatedTask = runningTask;
           try {
             const ts = Date.now();
@@ -617,11 +791,24 @@ export function createTaskQueueManager(deps: {
                 typeof latest.reviewedAt === "number" && Number.isFinite(latest.reviewedAt) && latest.reviewedAt > 0
                   ? latest.reviewedAt
                   : ts;
-              updatedTask = ctx.taskStore.updateTask(runningTask.id, { reviewConclusion, reviewedAt }, ts);
+              updatedTask = ctx.taskStore.updateTask(
+                runningTask.id,
+                {
+                  reviewConclusion: `${reviewConclusion}${applyConclusionSuffix}`,
+                  reviewedAt,
+                  ...(applyConclusionSuffix ? { status: "failed", error: applyConclusionSuffix.trim() } : {}),
+                },
+                ts,
+              );
             } else {
               updatedTask = ctx.taskStore.updateTask(
                 runningTask.id,
-                { reviewStatus: verdictStatus, reviewConclusion: conclusion, reviewedAt: ts },
+                {
+                  reviewStatus: verdictStatus,
+                  reviewConclusion: `${conclusion}${applyConclusionSuffix}`,
+                  reviewedAt: ts,
+                  ...(applyConclusionSuffix ? { status: "failed", error: applyConclusionSuffix.trim() } : {}),
+                },
                 ts,
               );
             }
@@ -658,7 +845,18 @@ export function createTaskQueueManager(deps: {
       if (existingSnapshotId) {
         const open = ctx.reviewStore.getOpenQueueItemBySnapshotId(existingSnapshotId);
         if (!open) {
-          ctx.reviewStore.enqueueReview({ taskId: task.id, snapshotId: existingSnapshotId }, now);
+          try {
+            ctx.reviewStore.enqueueReview({ taskId: task.id, snapshotId: existingSnapshotId }, now);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            failReviewPipeline({
+              taskId: task.id,
+              taskRunId: resolveCurrentTaskReviewRunId(task.id, existingSnapshotId),
+              errorMessage: `review_queue_enqueue_failed:${message}`,
+              now,
+            });
+            return;
+          }
         }
         void runReviewLoop();
         return;
@@ -666,6 +864,13 @@ export function createTaskQueueManager(deps: {
 
       let patchArtifact: TaskWorkspacePatchArtifact | null = null;
       let changedFiles: string[] = [];
+      const snapshotTaskRunId = (() => {
+        try {
+          return ctx.taskStore.getLatestTaskRun(task.id)?.id ?? null;
+        } catch {
+          return null;
+        }
+      })();
       try {
         const contexts = ctx.taskStore.getContext(taskId);
         const latestPatch = [...contexts].reverse().find((c) => c.contextType === "artifact:workspace_patch") ?? null;
@@ -680,39 +885,87 @@ export function createTaskQueueManager(deps: {
         changedFiles = [];
       }
 
-      const reviewWorktree = resolveReviewSnapshotWorktreeDir(ctx, task);
-      if (!reviewWorktree.ok) {
-        deps.logger.warn(
-          `[Web][ReviewQueue] skip auto-review snapshot taskId=${task.id} reason=${reviewWorktree.reason} workspaceRoot=${ctx.workspaceRoot}`,
-        );
-        const failedTask = ctx.taskStore.updateTask(
-          task.id,
-          { reviewStatus: "failed", reviewConclusion: reviewWorktree.reason, reviewedAt: now },
+      if (!patchArtifact?.patch) {
+        failReviewPipeline({
+          taskId: task.id,
+          taskRunId: snapshotTaskRunId,
+          errorMessage: "review_snapshot_patch_missing",
           now,
-        );
-        deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failedTask, ts: now });
+          captureStatus: "failed",
+          applyStatus: "failed",
+        });
         return;
       }
 
-      const snapshot = ctx.reviewStore.createSnapshot(
-        {
+      const reviewWorktree = resolveReviewSnapshotWorktreeDir(ctx, task);
+      if (!reviewWorktree.ok) {
+        failReviewPipeline({
           taskId: task.id,
-          specRef: null,
-          worktreeDir: reviewWorktree.worktreeDir,
-          patch: patchArtifact?.patch ?? null,
-          changedFiles: patchArtifact?.paths?.length ? patchArtifact.paths : changedFiles,
-          lintSummary: "",
-          testSummary: "",
-        },
-        now,
-      );
+          taskRunId: snapshotTaskRunId,
+          errorMessage: reviewWorktree.reason,
+          now,
+          captureStatus: "failed",
+          applyStatus: "failed",
+        });
+        return;
+      }
+
+      let snapshot: ReturnType<ReviewStore["createSnapshot"]>;
+      try {
+        snapshot = ctx.reviewStore.createSnapshot(
+          {
+            taskId: task.id,
+            taskRunId: snapshotTaskRunId,
+            specRef: null,
+            worktreeDir: reviewWorktree.worktreeDir,
+            patch: patchArtifact?.patch ?? null,
+            changedFiles: patchArtifact?.paths?.length ? patchArtifact.paths : changedFiles,
+            lintSummary: "",
+            testSummary: "",
+          },
+          now,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failReviewPipeline({
+          taskId: task.id,
+          taskRunId: snapshotTaskRunId,
+          errorMessage: `review_snapshot_create_failed:${message}`,
+          now,
+          captureStatus: "failed",
+          applyStatus: "failed",
+        });
+        return;
+      }
+
+      try {
+        if (snapshotTaskRunId) {
+          const boundRun = ctx.taskStore.getTaskRun(snapshotTaskRunId);
+          if (boundRun) {
+            ctx.taskStore.updateTaskRun(boundRun.id, { captureStatus: "ok" }, now);
+          }
+        }
+      } catch {
+        // ignore
+      }
 
       const pendingTask = ctx.taskStore.updateTask(task.id, { reviewStatus: "pending", reviewSnapshotId: snapshot.id }, now);
       deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: pendingTask, ts: now });
 
       const open = ctx.reviewStore.getOpenQueueItemBySnapshotId(snapshot.id);
       if (!open) {
-        ctx.reviewStore.enqueueReview({ taskId: task.id, snapshotId: snapshot.id }, now);
+        try {
+          ctx.reviewStore.enqueueReview({ taskId: task.id, snapshotId: snapshot.id }, now);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failReviewPipeline({
+            taskId: task.id,
+            taskRunId: snapshot.taskRunId,
+            errorMessage: `review_queue_enqueue_failed:${message}`,
+            now,
+          });
+          return;
+        }
       }
 
       void runReviewLoop();
@@ -770,8 +1023,15 @@ export function createTaskQueueManager(deps: {
       if (task.reviewRequired) {
         try {
           ensureReviewEnqueued(task.id);
-        } catch {
-          // ignore
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failReviewPipeline({
+            taskId: task.id,
+            taskRunId: ctx.taskStore.getLatestTaskRun(task.id)?.id ?? null,
+            errorMessage: `review_enqueue_failed:${message}`,
+            now: Date.now(),
+            captureStatus: "failed",
+          });
         }
       }
       try {

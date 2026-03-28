@@ -49,6 +49,7 @@ describe("tasks/executor lock", () => {
 
     const orchestrator = {
       setModel() {},
+      setWorkingDirectory() {},
       onEvent() {
         return () => {};
       },
@@ -62,6 +63,7 @@ describe("tasks/executor lock", () => {
     const executor = new OrchestratorTaskExecutor({
       getOrchestrator: () => orchestrator as any,
       store,
+      workspaceRoot: tmpDir,
       autoModelOverride: "mock",
       lock,
     });

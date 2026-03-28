@@ -77,6 +77,9 @@ describe("web/api/tasks/:id", () => {
         getTask(id: string) {
           return id === task.id ? task : null;
         },
+        getLatestTaskRun() {
+          return null;
+        },
         getMessages() {
           return [];
         },
@@ -121,4 +124,3 @@ describe("web/api/tasks/:id", () => {
     assert.ok(!("plan" in payload), "plan should not be present");
   });
 });
-

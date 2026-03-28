@@ -6,7 +6,7 @@ import path from "node:path";
 import { createAbortError } from "../utils/abort.js";
 import { getExecAllowlistFromEnv, runCommand } from "../utils/commandRunner.js";
 import { AsyncLock } from "../utils/asyncLock.js";
-import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { resolveAdsStateDir, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import type { BootstrapProjectRef } from "./types.js";
 import { normalizeBootstrapProjectRef } from "./projectId.js";
 
@@ -19,6 +19,15 @@ export type BootstrapWorktree = {
   artifactsDir: string;
   branchName: string;
   source: { kind: BootstrapProjectRef["kind"]; value: string; identity: string };
+};
+
+export type TaskExecutionWorktree = {
+  runId: string;
+  workspaceRoot: string;
+  repoDir: string;
+  worktreeDir: string;
+  branchName: string;
+  baseHead: string;
 };
 
 function sanitizeSegment(value: string, maxLen = 48): string {
@@ -55,6 +64,24 @@ async function runGit(
     throw new Error(stderr);
   }
   return { stdout: res.stdout, stderr: res.stderr };
+}
+
+async function resolveGitTopLevel(cwd: string, signal?: AbortSignal): Promise<string> {
+  const out = await runGit(cwd, ["rev-parse", "--show-toplevel"], { signal });
+  const topLevel = String(out.stdout ?? "").trim();
+  if (!topLevel) {
+    throw new Error("git top-level not found");
+  }
+  return topLevel;
+}
+
+export async function readGitHead(cwd: string, signal?: AbortSignal): Promise<string> {
+  const out = await runGit(cwd, ["rev-parse", "--verify", "HEAD"], { signal });
+  const head = String(out.stdout ?? "").trim();
+  if (!head) {
+    throw new Error("git HEAD not found");
+  }
+  return head;
 }
 
 function ensureDir(dirPath: string): void {
@@ -244,6 +271,23 @@ class BootstrapProjectLockPool {
 
 const BOOTSTRAP_PROJECT_LOCK_POOL = new BootstrapProjectLockPool();
 
+class TaskExecutionWorktreeLockPool {
+  private readonly locks = new Map<string, AsyncLock>();
+
+  get(repoDir: string): AsyncLock {
+    const key = String(repoDir ?? "").trim() || "default";
+    const existing = this.locks.get(key);
+    if (existing) {
+      return existing;
+    }
+    const lock = new AsyncLock();
+    this.locks.set(key, lock);
+    return lock;
+  }
+}
+
+const TASK_EXECUTION_WORKTREE_LOCK_POOL = new TaskExecutionWorktreeLockPool();
+
 async function ensureRepoReady(options: {
   source: { kind: BootstrapProjectRef["kind"]; value: string };
   repoDir: string;
@@ -285,6 +329,56 @@ async function ensureRepoReady(options: {
   } catch {
     // Best-effort: repos without remotes should still be usable for worktree creation.
   }
+}
+
+export async function prepareTaskExecutionWorktree(options: {
+  workspaceRoot: string;
+  runId: string;
+  branchPrefix?: string;
+  signal?: AbortSignal;
+}): Promise<TaskExecutionWorktree> {
+  const workspaceRoot = path.resolve(String(options.workspaceRoot ?? "").trim());
+  if (!workspaceRoot) {
+    throw new Error("workspaceRoot is required");
+  }
+  const runId = String(options.runId ?? "").trim();
+  if (!runId) {
+    throw new Error("runId is required");
+  }
+
+  const repoDir = await resolveGitTopLevel(workspaceRoot, options.signal);
+  const baseHead = await readGitHead(repoDir, options.signal);
+
+  const worktreesRoot = resolveWorkspaceStatePath(repoDir, "task-worktrees");
+  ensureDir(worktreesRoot);
+  const worktreeDir = path.join(worktreesRoot, runId);
+  const branchPrefix = sanitizeSegment(options.branchPrefix || "task-run", 32);
+  const branchName = `${branchPrefix}/${sanitizeSegment(runId, 48)}`;
+
+  const repoLock = TASK_EXECUTION_WORKTREE_LOCK_POOL.get(repoDir);
+  await repoLock.runExclusive(async () => {
+    try {
+      await runGit(repoDir, ["worktree", "prune"], { signal: options.signal });
+    } catch {
+      // ignore
+    }
+    await runGit(repoDir, ["worktree", "add", "-b", branchName, worktreeDir, baseHead], { signal: options.signal });
+    try {
+      await runGit(worktreeDir, ["config", "user.name", "ads-task"], { signal: options.signal });
+      await runGit(worktreeDir, ["config", "user.email", "ads-task@local"], { signal: options.signal });
+    } catch {
+      // ignore
+    }
+  });
+
+  return {
+    runId,
+    workspaceRoot: repoDir,
+    repoDir,
+    worktreeDir,
+    branchName,
+    baseHead,
+  };
 }
 
 export async function prepareBootstrapWorktree(options: {

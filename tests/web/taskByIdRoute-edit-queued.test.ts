@@ -83,6 +83,9 @@ describe("web/api/tasks/:id PATCH", () => {
         getTask(id: string) {
           return id === task.id ? task : null;
         },
+        getLatestTaskRun() {
+          return null;
+        },
         updateTask(id: string, updates: Record<string, unknown>) {
           assert.equal(id, task.id);
           task = { ...task, ...(updates as Partial<Task>) };
@@ -151,6 +154,9 @@ describe("web/api/tasks/:id PATCH", () => {
       taskStore: {
         getTask(id: string) {
           return id === task.id ? task : null;
+        },
+        getLatestTaskRun() {
+          return null;
         },
         updateTask(id: string, updates: Record<string, unknown>) {
           assert.equal(id, task.id);
@@ -222,6 +228,9 @@ describe("web/api/tasks/:id PATCH", () => {
         getTask(id: string) {
           return id === task.id ? task : null;
         },
+        getLatestTaskRun() {
+          return null;
+        },
         updateTask(id: string, updates: Record<string, unknown>) {
           assert.equal(id, task.id);
           task = { ...task, ...(updates as Partial<Task>) };
@@ -292,6 +301,9 @@ describe("web/api/tasks/:id PATCH", () => {
       taskStore: {
         getTask(id: string) {
           return id === task.id ? task : null;
+        },
+        getLatestTaskRun() {
+          return null;
         },
         updateTask(id: string, updates: Record<string, unknown>) {
           assert.equal(id, task.id);

@@ -4,6 +4,7 @@ import { getDatabase } from "../storage/database.js";
 import { type TaskStoreStatements, prepareTaskStoreStatements } from "./storeStatements.js";
 import type {
   CreateTaskInput,
+  CreateTaskRunInput,
   Conversation,
   ConversationMessage,
   ModelConfig,
@@ -11,6 +12,7 @@ import type {
   TaskContext,
   TaskFilter,
   TaskMessage,
+  TaskRun,
   TaskStatus,
 } from "./types.js";
 
@@ -74,6 +76,26 @@ export class TaskStore {
 
   updateTask(id: string, updates: Partial<Omit<Task, "id">>, now = Date.now()): Task {
     return this.taskOps.updateTask(id, updates, now);
+  }
+
+  createTaskRun(input: CreateTaskRunInput, now = Date.now()): TaskRun {
+    return this.taskOps.createTaskRun(input, now);
+  }
+
+  getTaskRun(id: string): TaskRun | null {
+    return this.taskOps.getTaskRun(id);
+  }
+
+  getLatestTaskRun(taskId: string): TaskRun | null {
+    return this.taskOps.getLatestTaskRun(taskId);
+  }
+
+  listTaskRuns(taskId: string): TaskRun[] {
+    return this.taskOps.listTaskRuns(taskId);
+  }
+
+  updateTaskRun(id: string, updates: Partial<Omit<TaskRun, "id" | "taskId">>, now = Date.now()): TaskRun {
+    return this.taskOps.updateTaskRun(id, updates, now);
   }
 
   markPromptInjected(taskId: string, now = Date.now()): boolean {

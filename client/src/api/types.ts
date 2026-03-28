@@ -9,6 +9,28 @@ export type TaskStatus =
   | "cancelled";
 
 export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected" | "failed";
+export type TaskExecutionIsolation = "default" | "required";
+export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
+export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
+export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | "skipped";
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  executionIsolation?: TaskExecutionIsolation;
+  workspaceRoot: string;
+  worktreeDir: string | null;
+  branchName: string | null;
+  baseHead: string | null;
+  endHead: string | null;
+  status: TaskRunStatus;
+  captureStatus: TaskRunCaptureStatus;
+  applyStatus: TaskRunApplyStatus;
+  error: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
+}
 
 export interface Task {
   id: string;
@@ -29,6 +51,7 @@ export interface Task {
   error?: string | null;
   retryCount: number;
   maxRetries: number;
+  executionIsolation: TaskExecutionIsolation;
   reviewRequired: boolean;
   reviewStatus: TaskReviewStatus;
   reviewSnapshotId?: string | null;
@@ -40,6 +63,7 @@ export interface Task {
   archivedAt?: number | null;
   createdBy?: string | null;
   attachments?: Attachment[];
+  latestRun?: TaskRun | null;
 }
 
 export interface TaskMessage {
@@ -85,6 +109,9 @@ export interface CreateTaskInput {
   reviewRequired?: boolean;
   reviewArtifactId?: string;
   reviewSnapshotId?: string;
+  execution?: {
+    isolation?: TaskExecutionIsolation;
+  };
   attachments?: string[];
   bootstrap?: BootstrapConfig;
 }
@@ -167,6 +194,14 @@ export type ReviewSnapshotPatch = {
 export type ReviewSnapshot = {
   id: string;
   taskId: string;
+  taskRunId: string | null;
+  executionIsolation: TaskExecutionIsolation;
+  worktreeDir: string | null;
+  branchName: string | null;
+  baseHead: string | null;
+  endHead: string | null;
+  applyStatus: TaskRunApplyStatus | null;
+  captureStatus: TaskRunCaptureStatus | null;
   specRef: string | null;
   worktreeDir: string;
   patch: ReviewSnapshotPatch | null;
@@ -212,6 +247,9 @@ export type TaskBundleTask = {
   inheritContext?: boolean;
   maxRetries?: number;
   attachments?: string[];
+  execution?: {
+    isolation?: TaskExecutionIsolation;
+  };
 };
 
 export type TaskBundle = {
@@ -221,6 +259,11 @@ export type TaskBundle = {
   autoApprove?: boolean;
   specRef?: string;
   insertPosition?: "front" | "back";
+  defaults?: {
+    execution?: {
+      isolation?: TaskExecutionIsolation;
+    };
+  };
   tasks: TaskBundleTask[];
 };
 

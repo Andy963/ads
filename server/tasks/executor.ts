@@ -3,12 +3,15 @@ import type { HybridOrchestrator } from "../agents/orchestrator.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { AsyncLock } from "../utils/asyncLock.js";
 
+import { isAbortError } from "../utils/abort.js";
+import { prepareTaskExecutionWorktree, readGitHead } from "../bootstrap/worktree.js";
 import type { BootstrapProjectRef } from "../bootstrap/types.js";
 import { safeParseJson } from "../utils/json.js";
 import { mergeStreamingText } from "../utils/streamingText.js";
 
 import type { TaskStore } from "./store.js";
 import type { Task, TaskContext } from "./types.js";
+import { applyTaskRunChanges, collectWorktreeChangedPaths } from "./applyBack.js";
 import { selectAgentForTask } from "./agentSelection.js";
 
 export interface TaskExecutorHooks {
@@ -170,6 +173,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
   private readonly getOrchestrator: (task: Task) => HybridOrchestrator;
   private readonly getAgentEnv?: (task: Task, agentId: AgentIdentifier) => Record<string, string> | undefined;
   private readonly store: TaskStore;
+  private readonly workspaceRoot: string;
   private readonly autoModelOverride?: string;
   private readonly lock?: AsyncLock;
   private readonly getLock?: () => AsyncLock;
@@ -178,6 +182,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     getOrchestrator: (task: Task) => HybridOrchestrator;
     getAgentEnv?: (task: Task, agentId: AgentIdentifier) => Record<string, string> | undefined;
     store: TaskStore;
+    workspaceRoot: string;
     autoModelOverride?: string;
     lock?: AsyncLock;
     getLock?: () => AsyncLock;
@@ -185,6 +190,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     this.getOrchestrator = options.getOrchestrator;
     this.getAgentEnv = options.getAgentEnv;
     this.store = options.store;
+    this.workspaceRoot = options.workspaceRoot;
     this.autoModelOverride = String(options.autoModelOverride ?? "").trim() || undefined;
     this.lock = options.lock;
     this.getLock = options.getLock;
@@ -286,15 +292,90 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks },
   ): Promise<{ resultSummary?: string }> {
     const run = async (): Promise<{ resultSummary?: string }> => {
+      const executionIsolation = task.executionIsolation ?? "default";
       const bootstrapConfig = extractBootstrapConfig(task);
       if (bootstrapConfig) {
         return this.executeBootstrap(task, bootstrapConfig, options);
       }
 
+      const startedAt = Date.now();
+      const initialRun = this.store.createTaskRun(
+        {
+          taskId: task.id,
+          executionIsolation,
+          workspaceRoot: this.workspaceRoot,
+          status: "preparing",
+          captureStatus: task.reviewRequired && executionIsolation === "required" ? "pending" : "skipped",
+          applyStatus: executionIsolation === "required" ? "pending" : "skipped",
+        },
+        startedAt,
+      );
+      let taskRun = initialRun;
+      let executionCwd = this.workspaceRoot;
+
       const orchestrator = this.getOrchestrator(task);
       const { modelOverride, modelForSelection, modelForStorage } = this.resolveModelOverride(task);
       const agentId = selectAgentForTask({ agentId: task.agentId, modelToUse: modelForSelection });
       orchestrator.setModel(modelOverride);
+
+      if (executionIsolation === "required") {
+        try {
+          const worktree = await prepareTaskExecutionWorktree({
+            workspaceRoot: this.workspaceRoot,
+            runId: taskRun.id,
+            branchPrefix: "task-run",
+            signal: options?.signal,
+          });
+          executionCwd = worktree.worktreeDir;
+          taskRun = this.store.updateTaskRun(
+            taskRun.id,
+            {
+              workspaceRoot: worktree.workspaceRoot,
+              worktreeDir: worktree.worktreeDir,
+              branchName: worktree.branchName,
+              baseHead: worktree.baseHead,
+              status: "running",
+              startedAt,
+            },
+            startedAt,
+          );
+        } catch (error) {
+          const terminalStatus = isAbortError(error) ? "cancelled" : "failed";
+          const message = isAbortError(error) ? "cancelled" : (error instanceof Error ? error.message : String(error));
+          try {
+            const captureStatus =
+              taskRun.captureStatus === "pending" ? (terminalStatus === "cancelled" ? "skipped" : "failed") : taskRun.captureStatus;
+            const applyStatus =
+              taskRun.applyStatus === "pending" ? (terminalStatus === "cancelled" ? "skipped" : "failed") : taskRun.applyStatus;
+            taskRun = this.store.updateTaskRun(
+              taskRun.id,
+              {
+                status: terminalStatus,
+                captureStatus,
+                applyStatus,
+                error: message,
+              },
+              Date.now(),
+            );
+          } catch {
+            // ignore
+          }
+          throw error;
+        }
+      } else {
+        taskRun = this.store.updateTaskRun(
+          taskRun.id,
+          {
+            status: "running",
+            startedAt,
+            applyStatus: "skipped",
+            captureStatus: task.reviewRequired ? "pending" : "skipped",
+          },
+          startedAt,
+        );
+      }
+
+      orchestrator.setWorkingDirectory(executionCwd);
 
       const conversationId = String(task.threadId ?? "").trim() || `conv-${task.id}`;
       this.store.upsertConversation({ id: conversationId, taskId: task.id, title: task.title, lastModel: modelForStorage }, Date.now());
@@ -469,9 +550,87 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           createdAt: Date.now(),
         });
         options?.hooks?.onMessage?.({ role: "assistant", content: lastOutput, modelUsed: modelForStorage });
+
+        const endHead = taskRun.worktreeDir ? await readGitHead(taskRun.worktreeDir, options?.signal) : taskRun.endHead;
+        if (executionIsolation === "required" && taskRun.worktreeDir && taskRun.baseHead && !task.reviewRequired) {
+          const applyResult = await applyTaskRunChanges({
+            workspaceRoot: taskRun.workspaceRoot,
+            worktreeDir: taskRun.worktreeDir,
+            baseHead: taskRun.baseHead,
+            signal: options?.signal,
+          });
+          if (applyResult.status === "blocked" || applyResult.status === "failed") {
+            this.store.updateTaskRun(
+              taskRun.id,
+              {
+                endHead,
+                status: "failed",
+                applyStatus: applyResult.status,
+                captureStatus: "skipped",
+                error: applyResult.message ?? "apply-back failed",
+              },
+              Date.now(),
+            );
+            throw new Error(applyResult.message ?? "apply-back failed");
+          }
+          taskRun = this.store.updateTaskRun(
+            taskRun.id,
+            {
+              endHead,
+              status: "completed",
+              applyStatus: applyResult.status === "applied" ? "applied" : "skipped",
+              captureStatus: "skipped",
+              error: null,
+            },
+            Date.now(),
+          );
+        } else {
+          taskRun = this.store.updateTaskRun(
+            taskRun.id,
+            {
+              endHead,
+              status: "completed",
+              captureStatus: executionIsolation === "required" && task.reviewRequired ? "pending" : "skipped",
+              applyStatus: executionIsolation === "required" ? "pending" : "skipped",
+              error: null,
+            },
+            Date.now(),
+          );
+        }
+      } catch (error) {
+        const terminalStatus = isAbortError(error) ? "cancelled" : "failed";
+        const message = isAbortError(error) ? "cancelled" : (error instanceof Error ? error.message : String(error));
+        try {
+          const endHead = taskRun.worktreeDir ? await readGitHead(taskRun.worktreeDir, options?.signal).catch(() => taskRun.endHead) : taskRun.endHead;
+          const captureStatus =
+            taskRun.captureStatus === "pending" ? (terminalStatus === "cancelled" ? "skipped" : "failed") : taskRun.captureStatus;
+          const applyStatus =
+            taskRun.applyStatus === "pending" ? (terminalStatus === "cancelled" ? "skipped" : "failed") : taskRun.applyStatus;
+          taskRun = this.store.updateTaskRun(
+            taskRun.id,
+            {
+              endHead,
+              status: terminalStatus,
+              captureStatus,
+              applyStatus,
+              error: message,
+            },
+            Date.now(),
+          );
+        } catch {
+          // ignore
+        }
+        throw error;
       } finally {
         try {
-          const payload = { paths: Array.from(changedPaths.values()) };
+          const isolatedPaths =
+            taskRun.worktreeDir && executionIsolation === "required"
+              ? await collectWorktreeChangedPaths(taskRun.worktreeDir, {
+                  baseRef: taskRun.baseHead ?? undefined,
+                  signal: options?.signal,
+                }).catch(() => [])
+              : [];
+          const payload = { paths: isolatedPaths.length > 0 ? isolatedPaths : Array.from(changedPaths.values()) };
           this.store.saveContext(task.id, { contextType: "artifact:changed_paths", content: JSON.stringify(payload) }, Date.now());
         } catch {
           // ignore

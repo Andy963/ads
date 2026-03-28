@@ -194,4 +194,51 @@ describe("storage/database", () => {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }
   });
+
+  it("should backfill review snapshot task_run_id when upgrading from schema version 14", () => {
+    const db = getDatabase();
+    const createdAt = Date.now();
+    db.prepare(
+      `INSERT INTO tasks (id, title, prompt, model, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("task-1", "Task", "Prompt", "auto", "completed", createdAt);
+    db.prepare(
+      `INSERT INTO task_runs (
+         id, task_id, execution_isolation, workspace_root, worktree_dir,
+         branch_name, base_head, end_head, status, capture_status, apply_status, error,
+         created_at, started_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "run-1",
+      "task-1",
+      "required",
+      "/tmp/workspace",
+      "/tmp/worktree",
+      "task-run-1",
+      "base-head",
+      "end-head",
+      "completed",
+      "ok",
+      "pending",
+      null,
+      createdAt,
+      createdAt,
+      createdAt,
+    );
+    db.prepare(
+      `INSERT INTO review_snapshots (
+         id, task_id, task_run_id, spec_ref, patch_json, changed_files_json,
+         lint_summary, test_summary, created_at
+       ) VALUES (?, ?, NULL, NULL, NULL, ?, '', '', ?)`,
+    ).run("snapshot-1", "task-1", JSON.stringify(["note.txt"]), createdAt + 1);
+    db.prepare("UPDATE schema_version SET version = 14 WHERE id = 1").run();
+
+    resetDatabaseForTests();
+
+    const migrated = getDatabase();
+    const row = migrated
+      .prepare("SELECT task_run_id FROM review_snapshots WHERE id = ?")
+      .get("snapshot-1") as { task_run_id: string | null };
+    assert.strictEqual(row.task_run_id, "run-1");
+  });
 });

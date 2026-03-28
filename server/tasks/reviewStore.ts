@@ -5,12 +5,24 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { getDatabase } from "../storage/database.js";
 import { parseOptionalSqliteInt } from "../utils/sqlite.js";
 import type { WorkspacePatchPayload } from "../web/gitPatch.js";
+import type {
+  TaskExecutionIsolation,
+  TaskRunApplyStatus,
+  TaskRunCaptureStatus,
+} from "./types.js";
 
 export type ReviewSnapshot = {
   id: string;
   taskId: string;
+  taskRunId: string | null;
+  executionIsolation: TaskExecutionIsolation;
+  worktreeDir: string | null;
+  branchName: string | null;
+  baseHead: string | null;
+  endHead: string | null;
+  applyStatus: TaskRunApplyStatus | null;
+  captureStatus: TaskRunCaptureStatus | null;
   specRef: string | null;
-  worktreeDir: string;
   patch: WorkspacePatchPayload | null;
   changedFiles: string[];
   lintSummary: string;
@@ -75,6 +87,37 @@ function parseReviewQueueItemStatus(value: unknown): ReviewQueueItemStatus {
   }
 }
 
+function normalizeTaskExecutionIsolation(value: unknown): TaskExecutionIsolation {
+  return String(value ?? "").trim().toLowerCase() === "required" ? "required" : "default";
+}
+
+function normalizeTaskRunApplyStatus(value: unknown): TaskRunApplyStatus | null {
+  const raw = String(value ?? "").trim().toLowerCase();
+  switch (raw) {
+    case "pending":
+    case "applied":
+    case "blocked":
+    case "failed":
+    case "skipped":
+      return raw;
+    default:
+      return null;
+  }
+}
+
+function normalizeTaskRunCaptureStatus(value: unknown): TaskRunCaptureStatus | null {
+  const raw = String(value ?? "").trim().toLowerCase();
+  switch (raw) {
+    case "pending":
+    case "ok":
+    case "failed":
+    case "skipped":
+      return raw;
+    default:
+      return null;
+  }
+}
+
 function parseSnapshotRow(row: Record<string, unknown>): ReviewSnapshot {
   const id = String(row.id ?? "").trim();
   const taskId = String(row.task_id ?? "").trim();
@@ -82,6 +125,7 @@ function parseSnapshotRow(row: Record<string, unknown>): ReviewSnapshot {
     throw new Error("Invalid review snapshot row");
   }
   const specRef = row.spec_ref == null ? null : String(row.spec_ref ?? "").trim() || null;
+  const taskRunId = row.task_run_id == null ? null : String(row.task_run_id ?? "").trim() || null;
   const patchRaw = row.patch_json == null ? "" : String(row.patch_json ?? "").trim();
   const patch = (() => {
     if (!patchRaw) return null;
@@ -105,8 +149,15 @@ function parseSnapshotRow(row: Record<string, unknown>): ReviewSnapshot {
   return {
     id,
     taskId,
+    taskRunId,
+    executionIsolation: normalizeTaskExecutionIsolation(row.execution_isolation),
+    worktreeDir: row.worktree_dir == null ? null : String(row.worktree_dir ?? "").trim() || null,
+    branchName: row.branch_name == null ? null : String(row.branch_name ?? "").trim() || null,
+    baseHead: row.base_head == null ? null : String(row.base_head ?? "").trim() || null,
+    endHead: row.end_head == null ? null : String(row.end_head ?? "").trim() || null,
+    applyStatus: normalizeTaskRunApplyStatus(row.apply_status),
+    captureStatus: normalizeTaskRunCaptureStatus(row.capture_status),
     specRef,
-    worktreeDir: String(row.worktree_dir ?? "").trim(),
     patch,
     changedFiles,
     lintSummary: String(row.lint_summary ?? ""),
@@ -197,6 +248,7 @@ export class ReviewStore {
   createSnapshot(
     input: {
       taskId: string;
+      taskRunId?: string | null;
       specRef: string | null;
       worktreeDir?: string | null;
       patch: WorkspacePatchPayload | null;
@@ -213,6 +265,7 @@ export class ReviewStore {
     const id = crypto.randomUUID();
     const specRef = input.specRef == null ? null : String(input.specRef ?? "").trim() || null;
     const worktreeDir = String(input.worktreeDir ?? "").trim();
+    const taskRunId = input.taskRunId == null ? null : String(input.taskRunId ?? "").trim() || null;
     const patchJson = input.patch ? JSON.stringify(input.patch) : null;
     const changedFilesJson = JSON.stringify((input.changedFiles ?? []).map((p) => String(p ?? "").trim()).filter(Boolean));
     const lintSummary = String(input.lintSummary ?? "");
@@ -221,14 +274,14 @@ export class ReviewStore {
     this.db
       .prepare(
         `INSERT INTO review_snapshots (
-          id, task_id, spec_ref,
+          id, task_id, task_run_id, spec_ref,
           worktree_dir,
           patch_json, changed_files_json,
           lint_summary, test_summary,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, taskId, specRef, worktreeDir, patchJson, changedFilesJson, lintSummary, testSummary, now);
+      .run(id, taskId, taskRunId, specRef, worktreeDir, patchJson, changedFilesJson, lintSummary, testSummary, now);
 
     const snapshot = this.getSnapshot(id);
     if (!snapshot) {
@@ -240,7 +293,23 @@ export class ReviewStore {
   getSnapshot(id: string): ReviewSnapshot | null {
     const snapshotId = String(id ?? "").trim();
     if (!snapshotId) return null;
-    const row = this.db.prepare(`SELECT * FROM review_snapshots WHERE id = ? LIMIT 1`).get(snapshotId) as
+    const row = this.db
+      .prepare(
+        `SELECT
+           s.*,
+           r.execution_isolation,
+           COALESCE(NULLIF(TRIM(r.worktree_dir), ''), NULLIF(TRIM(s.worktree_dir), '')) AS worktree_dir,
+           r.branch_name,
+           r.base_head,
+           r.end_head,
+           r.apply_status,
+           r.capture_status
+         FROM review_snapshots s
+         LEFT JOIN task_runs r ON r.id = s.task_run_id
+         WHERE s.id = ?
+         LIMIT 1`,
+      )
+      .get(snapshotId) as
       | Record<string, unknown>
       | undefined;
     return row ? parseSnapshotRow(row) : null;

@@ -17,6 +17,7 @@ export type WorkspacePatchPayload = {
 export type BuildWorkspacePatchOptions = {
   maxFiles: number;
   maxBytes: number;
+  baseRef: string;
 };
 
 function clampInt(value: number, min: number, max: number): number {
@@ -195,6 +196,7 @@ export function buildWorkspacePatch(
     8 * 1024,
     2 * 1024 * 1024,
   );
+  const baseRef = String(opts?.baseRef ?? "").trim();
 
   if (!isGitWorkTree(workspaceRoot)) {
     return null;
@@ -216,7 +218,12 @@ export function buildWorkspacePatch(
 
   const headOk = hasHeadCommit(normalizedRoot);
   if (tracked.length > 0) {
-    if (headOk) {
+    if (baseRef) {
+      const diffOut = runGit(normalizedRoot, ["diff", "--patch", "--no-color", baseRef, "--", ...tracked]);
+      if (diffOut.stdout.trim()) diffParts.push(diffOut.stdout.trimEnd());
+      const statOut = runGit(normalizedRoot, ["diff", "--numstat", baseRef, "--", ...tracked]);
+      numstat = mergeNumstat(numstat, parseNumstat(statOut.stdout));
+    } else if (headOk) {
       const diffOut = runGit(normalizedRoot, ["diff", "--patch", "--no-color", "HEAD", "--", ...tracked]);
       if (diffOut.stdout.trim()) diffParts.push(diffOut.stdout.trimEnd());
       const statOut = runGit(normalizedRoot, ["diff", "--numstat", "HEAD", "--", ...tracked]);

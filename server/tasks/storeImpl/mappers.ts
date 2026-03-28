@@ -1,10 +1,14 @@
-import type { Conversation, ConversationMessage, ModelConfig, Task, TaskMessage } from "../types.js";
+import type { Conversation, ConversationMessage, ModelConfig, Task, TaskMessage, TaskRun } from "../types.js";
 import {
   normalizeConversationStatus,
   normalizeNullableString,
   normalizeRole,
+  normalizeTaskApplyStatus,
+  normalizeTaskCaptureStatus,
+  normalizeTaskExecutionIsolation,
   normalizeTaskModel,
   normalizeTaskReviewStatus,
+  normalizeTaskRunStatus,
   normalizeTaskStatus,
   parseJson,
 } from "./normalize.js";
@@ -41,6 +45,7 @@ export function toTask(row: Record<string, unknown>): Task {
     error: row.error == null ? null : String(row.error),
     retryCount: toNumber(row.retry_count),
     maxRetries: toNumber(row.max_retries, 3),
+    executionIsolation: normalizeTaskExecutionIsolation(row.execution_isolation),
     reviewRequired: Boolean(row.review_required),
     reviewStatus: normalizeTaskReviewStatus(row.review_status),
     reviewSnapshotId: normalizeNullableString(row.review_snapshot_id),
@@ -51,6 +56,27 @@ export function toTask(row: Record<string, unknown>): Task {
     completedAt: toNullableNumber(row.completed_at),
     archivedAt: toNullableNumber(row.archived_at),
     createdBy: normalizeNullableString(row.created_by),
+    latestRun: null,
+  };
+}
+
+export function toTaskRun(row: Record<string, unknown>): TaskRun {
+  return {
+    id: String(row.id ?? ""),
+    taskId: String(row.task_id ?? ""),
+    executionIsolation: normalizeTaskExecutionIsolation(row.execution_isolation),
+    workspaceRoot: String(row.workspace_root ?? ""),
+    worktreeDir: normalizeNullableString(row.worktree_dir),
+    branchName: normalizeNullableString(row.branch_name),
+    baseHead: normalizeNullableString(row.base_head),
+    endHead: normalizeNullableString(row.end_head),
+    status: normalizeTaskRunStatus(row.status),
+    captureStatus: normalizeTaskCaptureStatus(row.capture_status),
+    applyStatus: normalizeTaskApplyStatus(row.apply_status),
+    error: normalizeNullableString(row.error),
+    createdAt: toNumber(row.created_at),
+    startedAt: toNullableNumber(row.started_at),
+    completedAt: toNullableNumber(row.completed_at),
   };
 }
 

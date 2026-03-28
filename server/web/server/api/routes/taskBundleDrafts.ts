@@ -520,6 +520,7 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
     try {
       const { createdTaskIds } = materializeTaskBundleTasks({
         draftId,
+        bundleDefaults: bundle,
         tasks: bundle.tasks,
         now,
         taskStore: taskCtx.taskStore,
