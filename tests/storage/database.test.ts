@@ -241,4 +241,43 @@ describe("storage/database", () => {
       .get("snapshot-1") as { task_run_id: string | null };
     assert.strictEqual(row.task_run_id, "run-1");
   });
+
+  it("should repair legacy schema-v17 task_runs columns when upgrading to schema version 18", () => {
+    const db = getDatabase();
+    db.exec(`
+      DROP TABLE IF EXISTS task_runs;
+      CREATE TABLE task_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        worktree_dir TEXT,
+        branch_name TEXT,
+        base_head TEXT,
+        start_head TEXT,
+        end_head TEXT,
+        status TEXT NOT NULL,
+        capture_status TEXT NOT NULL DEFAULT 'pending',
+        capture_error TEXT,
+        apply_status TEXT NOT NULL DEFAULT 'pending',
+        apply_error TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        completed_at INTEGER,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      )
+    `);
+    db.prepare("UPDATE schema_version SET version = 17 WHERE id = 1").run();
+
+    resetDatabaseForTests();
+
+    const migrated = getDatabase();
+    const taskRunCols = (
+      migrated.prepare("PRAGMA table_info(task_runs)").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    assert.ok(taskRunCols.includes("execution_isolation"));
+    assert.ok(taskRunCols.includes("error"));
+
+    const version = migrated.prepare("SELECT version FROM schema_version WHERE id = 1").get() as { version: number };
+    assert.strictEqual(version.version, 18);
+  });
 });

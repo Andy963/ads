@@ -534,6 +534,96 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 18,
+    description: "Repair legacy schema-v17 isolation columns for task runs and review snapshots",
+    up: (db) => {
+      const taskNames = getTableColumnNames(db, "tasks");
+      if (!taskNames.has("execution_isolation")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN execution_isolation TEXT NOT NULL DEFAULT 'default'`);
+      }
+      db.exec(`
+        UPDATE tasks
+        SET execution_isolation = COALESCE(NULLIF(TRIM(execution_isolation), ''), 'default')
+        WHERE execution_isolation IS NULL OR TRIM(COALESCE(execution_isolation, '')) = ''
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_runs (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          execution_isolation TEXT NOT NULL DEFAULT 'default',
+          workspace_root TEXT NOT NULL,
+          worktree_dir TEXT,
+          branch_name TEXT,
+          base_head TEXT,
+          end_head TEXT,
+          status TEXT NOT NULL,
+          capture_status TEXT NOT NULL DEFAULT 'pending',
+          apply_status TEXT NOT NULL DEFAULT 'pending',
+          error TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )
+      `);
+
+      const taskRunNames = getTableColumnNames(db, "task_runs");
+      if (!taskRunNames.has("execution_isolation")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN execution_isolation TEXT NOT NULL DEFAULT 'default'`);
+      }
+      if (!taskRunNames.has("error")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN error TEXT`);
+      }
+
+      db.exec(`
+        UPDATE task_runs
+        SET execution_isolation = COALESCE(NULLIF(TRIM(execution_isolation), ''), 'default')
+        WHERE execution_isolation IS NULL OR TRIM(COALESCE(execution_isolation, '')) = ''
+      `);
+
+      if (taskRunNames.has("apply_error") || taskRunNames.has("capture_error")) {
+        const applyError = taskRunNames.has("apply_error") ? "apply_error" : "NULL";
+        const captureError = taskRunNames.has("capture_error") ? "capture_error" : "NULL";
+        db.exec(`
+          UPDATE task_runs
+          SET error = COALESCE(error, ${applyError}, ${captureError})
+          WHERE TRIM(COALESCE(error, '')) = ''
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_execution_isolation
+          ON tasks(execution_isolation, status, created_at DESC, id DESC)
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_task_runs_task_id_created_at
+          ON task_runs(task_id, created_at DESC, id DESC)
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_task_runs_status_created_at
+          ON task_runs(status, created_at DESC, id DESC)
+      `);
+
+      const reviewSnapshotNames = getTableColumnNames(db, "review_snapshots");
+      if (!reviewSnapshotNames.has("task_run_id")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN task_run_id TEXT`);
+      }
+      if (!reviewSnapshotNames.has("worktree_dir")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN worktree_dir TEXT NOT NULL DEFAULT ''`);
+      }
+      db.exec(`
+        UPDATE review_snapshots
+        SET worktree_dir = COALESCE(worktree_dir, '')
+        WHERE worktree_dir IS NULL
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_review_snapshots_task_run_id
+          ON review_snapshots(task_run_id, created_at DESC, id DESC)
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,
