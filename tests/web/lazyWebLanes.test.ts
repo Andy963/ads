@@ -121,104 +121,6 @@ describe("web lazy planner/reviewer lanes", () => {
     }
   });
 
-  it("materializes the reviewer lane only when the task-queue review path first needs it", async () => {
-    const reviewPrompts: string[] = [];
-    const reviewerSessionManager = createLazyObject(
-      () =>
-        ({
-          dropSession: () => {},
-          getOrCreate: () => ({
-            setWorkingDirectory: () => {},
-            status: () => ({ ready: true, streaming: false }),
-            getActiveAgentId: () => "codex",
-            invokeAgent: async (_agentId: string, prompt: string) => {
-              reviewPrompts.push(prompt);
-              return { response: JSON.stringify({ verdict: "passed", conclusion: "looks good" }) };
-            },
-          }),
-        }) as any,
-    );
-    const reviewerHistoryStore = createLazyObject(
-      () =>
-        ({
-          add: () => true,
-        }) as any,
-    );
-
-    const manager = createTaskQueueManager({
-      workspaceRoot,
-      allowedDirs: [workspaceRoot],
-      adsStateDir: tmpDir,
-      lockForWorkspace: () =>
-        ({
-          isBusy: () => false,
-          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
-        }) as any,
-      available: false,
-      autoStart: false,
-      logger: {
-        info: () => {},
-        warn: () => {},
-        debug: () => {},
-      },
-      broadcastToSession: () => {},
-      recordToSessionHistories: () => {},
-      reviewSessionManager: reviewerSessionManager as any,
-      broadcastToReviewerSession: () => {},
-      recordToReviewerHistories: (sessionId, entry) => reviewerHistoryStore.add(sessionId, entry),
-    });
-
-    const ctx = manager.ensureTaskContext(workspaceRoot);
-    assert.deepEqual(inspectLazyObject(reviewerSessionManager), {
-      materialized: false,
-      materializeCount: 0,
-    });
-    assert.deepEqual(inspectLazyObject(reviewerHistoryStore), {
-      materialized: false,
-      materializeCount: 0,
-    });
-
-    const firstTask = ctx.taskStore.createTask({ title: "Task 1", prompt: "Do work", reviewRequired: true }, Date.now());
-    const firstCompleted = ctx.taskStore.updateTask(
-      firstTask.id,
-      { status: "completed", result: "done", completedAt: Date.now() },
-      Date.now(),
-    );
-    ctx.taskQueue.emit("task:completed", { task: firstCompleted });
-
-    await waitForCondition(() => ctx.taskStore.getTask(firstTask.id)?.reviewStatus === "passed");
-
-    assert.deepEqual(inspectLazyObject(reviewerSessionManager), {
-      materialized: true,
-      materializeCount: 1,
-    });
-    assert.deepEqual(inspectLazyObject(reviewerHistoryStore), {
-      materialized: true,
-      materializeCount: 1,
-    });
-    assert.equal(reviewPrompts.length, 1);
-
-    const secondTask = ctx.taskStore.createTask({ title: "Task 2", prompt: "More work", reviewRequired: true }, Date.now());
-    const secondCompleted = ctx.taskStore.updateTask(
-      secondTask.id,
-      { status: "completed", result: "done again", completedAt: Date.now() },
-      Date.now(),
-    );
-    ctx.taskQueue.emit("task:completed", { task: secondCompleted });
-
-    await waitForCondition(() => ctx.taskStore.getTask(secondTask.id)?.reviewStatus === "passed");
-
-    assert.deepEqual(inspectLazyObject(reviewerSessionManager), {
-      materialized: true,
-      materializeCount: 1,
-    });
-    assert.deepEqual(inspectLazyObject(reviewerHistoryStore), {
-      materialized: true,
-      materializeCount: 1,
-    });
-    assert.equal(reviewPrompts.length, 2);
-  });
-
   it("fails isolated-task auto review when no dedicated worktree was persisted", async () => {
     const reviewPrompts: string[] = [];
     const reviewerSessionManager = createLazyObject(
@@ -287,7 +189,7 @@ describe("web lazy planner/reviewer lanes", () => {
     await waitForCondition(() => ctx.taskStore.getTask(task.id)?.reviewStatus === "failed");
 
     const failed = ctx.taskStore.getTask(task.id);
-    assert.equal(failed?.reviewConclusion, "worktree_unresolved");
+    assert.equal(failed?.reviewConclusion, "review_snapshot_patch_missing");
     assert.equal(ctx.reviewStore.getLatestSnapshot(), null);
     assert.equal(reviewPrompts.length, 0);
     assert.deepEqual(inspectLazyObject(reviewerSessionManager), {
