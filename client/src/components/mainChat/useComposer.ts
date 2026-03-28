@@ -1,4 +1,4 @@
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import type { IncomingImage } from "./types";
 import { autosizeTextarea } from "../../lib/textarea_autosize";
@@ -75,13 +75,20 @@ async function readImagesFromNavigatorClipboard(maxBytes: number): Promise<Incom
 }
 
 export function useMainChatComposer(params: {
+  getDraft: () => string;
+  onDraftChange: (draft: string) => void;
   pendingImages: ReadonlyArray<IncomingImage>;
   isBusy: () => boolean;
   getApiToken: () => string;
   onSend: (content: string) => void;
   onAddImages: (images: IncomingImage[]) => void;
 }) {
-  const input = ref("");
+  const input = computed({
+    get: () => String(params.getDraft() ?? ""),
+    set: (value: string) => {
+      params.onDraftChange(String(value ?? ""));
+    },
+  });
   const inputEl = ref<HTMLTextAreaElement | null>(null);
 
   const resizeComposer = (): void => {

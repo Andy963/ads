@@ -53,9 +53,9 @@ describe("MainChat header UI", () => {
     wrapper.unmount();
   });
 
-  it("only shows the green top border while the chat is active", () => {
+  it("only toggles the active chat class without restoring the legacy transparent top border", () => {
     const css = readUtf8("../components/MainChat.css");
-    expect(css).toMatch(/\.detail\s*\{[\s\S]*?border-top:\s*2px\s+solid\s+transparent\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.detail\s*\{[\s\S]*?border-top:\s*none\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.detail--active\s*\{[\s\S]*?border-top-color:\s*#22c55e\s*;[\s\S]*?\}/);
 
     const baseProps = {
@@ -203,6 +203,26 @@ describe("MainChat header UI", () => {
     expect(headerWarning.text()).toContain(warning);
     expect(wrapper.findComponent({ name: "MainChatHeader" }).text()).toContain(warning);
     expect(wrapper.find(".threadWarningBanner").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("shows only the lane title without repeating a project prefix in the chat header", () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        title: "Planner",
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: true } },
+    });
+
+    const title = wrapper.find(".paneTitle");
+    expect(title.exists()).toBe(true);
+    expect(title.text()).toBe("Planner");
+    expect(wrapper.text()).not.toContain("Project:");
     wrapper.unmount();
   });
 });

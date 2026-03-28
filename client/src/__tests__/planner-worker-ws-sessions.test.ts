@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { shallowMount } from "@vue/test-utils";
+import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import { createAppController } from "../app/controller";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
 let getImpl: GetImpl | null = null;
 const wsConnections: Array<{ sessionId: string; chatSessionId: string }> = [];
+const wsByChatSessionId = new Map<string, any>();
 
 vi.mock("../api/client", () => {
   class ApiClient {
@@ -41,12 +43,15 @@ vi.mock("../api/ws", () => {
     onError?: () => void;
     onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
+    send = vi.fn();
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
+      const chatSessionId = String(options.chatSessionId ?? "main");
       wsConnections.push({
         sessionId: String(options.sessionId ?? ""),
-        chatSessionId: String(options.chatSessionId ?? "main"),
+        chatSessionId,
       });
+      wsByChatSessionId.set(chatSessionId, this);
     }
 
     connect(): void {
@@ -78,10 +83,33 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
   await wrapper.vm.$nextTick();
 }
 
-describe("Planner/Worker websocket sessions", () => {
+async function mountController() {
+  let controller: ReturnType<typeof createAppController> | null = null;
+  const Harness = defineComponent({
+    setup() {
+      controller = createAppController();
+      return {};
+    },
+    template: "<div />",
+  });
+
+  const wrapper = mount(Harness);
+  await settleUi(wrapper as any);
+  if (!controller) {
+    throw new Error("controller not created");
+  }
+  controller.loggedIn.value = true;
+  controller.currentUser.value = { id: "u-1", username: "admin" } as any;
+  await controller.bootstrap();
+  await settleUi(wrapper as any);
+  return { wrapper, controller };
+}
+
+describe("Lane websocket sessions", () => {
   beforeEach(() => {
     localStorage.clear();
     wsConnections.length = 0;
+    wsByChatSessionId.clear();
 
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
@@ -99,10 +127,8 @@ describe("Planner/Worker websocket sessions", () => {
     localStorage.clear();
   });
 
-  it("opens a worker chat session and a planner chat session for the default project", async () => {
-    const { default: App } = await import("../App.vue");
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper as any);
+  it("opens worker, planner, and reviewer chat sessions for the default project", async () => {
+    const { wrapper } = await mountController();
 
     const chats = wsConnections
       .filter((c) => c.sessionId === "default")
@@ -111,6 +137,81 @@ describe("Planner/Worker websocket sessions", () => {
 
     expect(chats).toContain("main");
     expect(chats).toContain("planner");
+    expect(chats).toContain("reviewer");
+    wrapper.unmount();
+  });
+
+  it("keeps reconnect, history restore, and thread restore lane-specific", async () => {
+    const { wrapper, controller } = await mountController();
+
+    const workerRt = controller.getRuntime("default");
+    const plannerRt = controller.getPlannerRuntime("default");
+    const reviewerRt = controller.getReviewerRuntime("default");
+    const workerWs = wsByChatSessionId.get("main");
+    const plannerWs = wsByChatSessionId.get("planner");
+    const reviewerWs = wsByChatSessionId.get("reviewer");
+
+    expect(workerWs).toBeTruthy();
+    expect(plannerWs).toBeTruthy();
+    expect(reviewerWs).toBeTruthy();
+
+    workerRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
+    plannerRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "planner history" }];
+    reviewerRt.messages.value = [{ id: "r-1", role: "assistant", kind: "text", content: "reviewer history" }];
+    workerRt.busy.value = false;
+    plannerRt.busy.value = true;
+    reviewerRt.busy.value = false;
+    await settleUi(wrapper as any);
+
+    plannerWs.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper as any);
+
+    expect(plannerRt.connected.value).toBe(false);
+    expect(workerRt.connected.value).toBe(true);
+    expect(reviewerRt.connected.value).toBe(true);
+    expect(plannerRt.busy.value).toBe(true);
+    expect(workerRt.busy.value).toBe(false);
+    expect(reviewerRt.busy.value).toBe(false);
+
+    plannerWs.onOpen?.();
+    await settleUi(wrapper as any);
+    plannerWs.onMessage?.({ type: "welcome", inFlight: false });
+    await settleUi(wrapper as any);
+
+    expect(plannerRt.connected.value).toBe(true);
+
+    plannerRt.messages.value = [];
+    plannerWs.onMessage?.({
+      type: "history",
+      items: [{ role: "ai", text: "planner restored only", kind: "text", ts: Date.now() }],
+    });
+    await settleUi(wrapper as any);
+
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toContain("planner restored only");
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
+
+    await controller.resumePlannerThread();
+    expect(plannerWs.send).toHaveBeenCalledWith("task_resume");
+    expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
+    expect(reviewerWs.send).not.toHaveBeenCalledWith("task_resume");
+    expect(plannerRt.messages.value).toEqual([]);
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
+
+    await controller.resumeTaskThread();
+    expect(workerWs.send).toHaveBeenCalledWith("task_resume");
+    expect(workerRt.messages.value).toEqual([]);
+    expect(plannerRt.messages.value).toEqual([]);
+    expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
+
+    reviewerWs.onMessage?.({ type: "thread_reset" });
+    await settleUi(wrapper as any);
+
+    expect(reviewerRt.messages.value.map((entry: any) => entry.content).join("\n")).not.toContain("reviewer history");
+    expect(workerRt.messages.value).toEqual([]);
+    expect(plannerRt.messages.value).toEqual([]);
+    wrapper.unmount();
   });
 });
 

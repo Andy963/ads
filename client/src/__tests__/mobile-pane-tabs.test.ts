@@ -9,14 +9,29 @@ describe("mobile pane tabs", () => {
     expect(ctx.mobilePane.value).toBe("tasks");
   });
 
-  it("renders the mobile tab order as projects then chat", async () => {
+  it("renders Planner, Worker, and Reviewer in one shared lane tab shell", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
-    // Ensure the first mobile tab is "项目" and the second is "对话".
-    expect(sfc).toMatch(/<div v-if="isMobile" class="paneTabs"[\s\S]*?>[\s\S]*?>\s*项目\s*<\/button>[\s\S]*?>\s*对话\s*<\/button>/);
+    expect(sfc).toContain('const chatLanes: Array<{ id: ChatLane; label: string }> = [');
+    expect(sfc).toContain('{ id: "planner", label: "Planner" }');
+    expect(sfc).toContain('{ id: "worker", label: "Worker" }');
+    expect(sfc).toContain('{ id: "reviewer", label: "Reviewer" }');
+    expect(sfc).toMatch(/<div class="laneTabs"[^>]*role="tablist"[^>]*>/);
   });
 
-  it("does not show the active project label on mobile", async () => {
+  it("shows only the active lane panel and binds panel visibility to the shared active tab state", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
+    expect(sfc).toMatch(/v-show="activeChatLane === 'planner'"/);
+    expect(sfc).toMatch(/v-show="activeChatLane === 'worker'"/);
+    expect(sfc).toMatch(/v-show="activeChatLane === 'reviewer'"/);
+    expect(sfc).toMatch(/:class="\{ active: activeChatLane === lane.id \}"/);
+    expect(sfc).toMatch(/:aria-selected="activeChatLane === lane.id"/);
+  });
+
+  it("removes the legacy worker drawer path and repeated project label from the central chat shell", async () => {
+    const sfc = await readSfc("../App.vue", import.meta.url);
+    expect(sfc).not.toContain("topbarWorker");
+    expect(sfc).not.toContain("workerDrawerOverlay");
+    expect(sfc).not.toContain("workerDrawer");
     expect(sfc).not.toContain('class="activeProjectDisplay"');
   });
 });

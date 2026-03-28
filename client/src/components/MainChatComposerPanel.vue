@@ -23,6 +23,7 @@ type PendingImagePreview = {
 };
 
 const props = defineProps<{
+  draft?: string;
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
   connected: boolean;
@@ -37,6 +38,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  (e: "update:draft", value: string): void;
   (e: "send", content: string): void;
   (e: "interrupt"): void;
   (e: "addImages", images: IncomingImage[]): void;
@@ -309,6 +311,8 @@ const {
   triggerFileInput,
   onFileInputChange,
 } = useMainChatComposer({
+  getDraft: () => String(props.draft ?? ""),
+  onDraftChange: (draft) => emit("update:draft", draft),
   pendingImages: props.pendingImages,
   isBusy: () => props.busy,
   getApiToken: () => String(props.apiToken ?? ""),

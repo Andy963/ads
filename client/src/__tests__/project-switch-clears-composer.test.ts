@@ -77,7 +77,16 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
   await wrapper.vm.$nextTick();
 }
 
-describe("Project switch clears chat composer draft", () => {
+function getLaneTextarea(wrapper: any, lane: "planner" | "worker"): any {
+  return wrapper.get(`[data-testid="lane-panel-${lane}"] textarea.composer-input`);
+}
+
+async function switchLane(wrapper: any, lane: "planner" | "worker" | "reviewer"): Promise<void> {
+  await wrapper.get(`[data-testid="lane-tab-${lane}"]`).trigger("click");
+  await settleUi(wrapper);
+}
+
+describe("Project and lane composer draft isolation", () => {
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem(
@@ -105,17 +114,32 @@ describe("Project switch clears chat composer draft", () => {
     vi.clearAllMocks();
   });
 
-  it("does not leak unsubmitted draft across projects", async () => {
+  it("preserves lane-local drafts across tab switches without leaking across projects", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {
       global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false } },
     });
     await settleUi(wrapper);
 
-    const textareaA = wrapper.find("textarea.composer-input");
-    expect(textareaA.exists()).toBe(true);
-    await textareaA.setValue("draft text");
-    expect((textareaA.element as HTMLTextAreaElement).value).toBe("draft text");
+    const workerTextareaA = getLaneTextarea(wrapper, "worker");
+    expect(workerTextareaA.exists()).toBe(true);
+    await workerTextareaA.setValue("worker draft text");
+    expect((workerTextareaA.element as HTMLTextAreaElement).value).toBe("worker draft text");
+
+    await switchLane(wrapper, "planner");
+    const plannerTextareaA = getLaneTextarea(wrapper, "planner");
+    await plannerTextareaA.setValue("planner draft line 1\nplanner draft line 2");
+    expect((plannerTextareaA.element as HTMLTextAreaElement).value).toBe("planner draft line 1\nplanner draft line 2");
+
+    await switchLane(wrapper, "worker");
+    expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("worker draft text");
+
+    await switchLane(wrapper, "planner");
+    expect((getLaneTextarea(wrapper, "planner").element as HTMLTextAreaElement).value).toBe(
+      "planner draft line 1\nplanner draft line 2",
+    );
+
+    await switchLane(wrapper, "worker");
 
     const projectRows = wrapper.findAll("button.projectRow");
     expect(projectRows.length).toBeGreaterThanOrEqual(2);
@@ -126,9 +150,24 @@ describe("Project switch clears chat composer draft", () => {
 
     expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
 
-    const textareaB = wrapper.find("textarea.composer-input");
-    expect(textareaB.exists()).toBe(true);
-    expect((textareaB.element as HTMLTextAreaElement).value).toBe("");
+    const workerTextareaB = getLaneTextarea(wrapper, "worker");
+    expect(workerTextareaB.exists()).toBe(true);
+    expect((workerTextareaB.element as HTMLTextAreaElement).value).toBe("");
+
+    await switchLane(wrapper, "planner");
+    expect((getLaneTextarea(wrapper, "planner").element as HTMLTextAreaElement).value).toBe("");
+
+    const rowA = projectRows.find((row) => row.text().includes("A")) ?? null;
+    expect(rowA).toBeTruthy();
+    await rowA!.trigger("click");
+    await settleUi(wrapper);
+
+    await switchLane(wrapper, "worker");
+    expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("worker draft text");
+    await switchLane(wrapper, "planner");
+    expect((getLaneTextarea(wrapper, "planner").element as HTMLTextAreaElement).value).toBe(
+      "planner draft line 1\nplanner draft line 2",
+    );
 
     wrapper.unmount();
   });
