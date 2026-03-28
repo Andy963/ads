@@ -1,0 +1,4 @@
+## 2024-03-28 - URL Encoded Path Traversal Bypass
+**Vulnerability:** The HTTP server implementation matched normalized directory paths without first decoding URL-encoded characters (like `%2e%2e` for `..`) and used a vulnerable partial string match (`startsWith`) to verify directory bounds.
+**Learning:** Node.js HTTP req.url contains raw, encoded strings. Standard path resolution (`path.resolve`) preserves URL-encoded segments like `%2e%2e` as literal directory names, but clients passing these through to `fs.statSync` or serving logic can exploit implicit decoding or OS-level file access. Additionally, `startsWith('/app/dist')` is vulnerable to matching siblings like `/app/dist_secrets`.
+**Prevention:** Always `decodeURIComponent` requested URLs in a `try/catch` block before normalizing. When validating directory scope using string matching, append the OS-specific path separator (`path.sep`) or check for an exact directory match.
