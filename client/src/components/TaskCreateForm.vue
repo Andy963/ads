@@ -367,7 +367,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
               <button class="retryBtn" type="button" @click="retryUpload(a.localId)">重试</button>
             </div>
 
-            <button class="removeBtn" type="button" title="移除" @click="removeAttachment(a.localId)">×</button>
+            <button class="removeBtn" type="button" title="移除" aria-label="移除附件" @click="removeAttachment(a.localId)">×</button>
           </div>
         </div>
       </div>
