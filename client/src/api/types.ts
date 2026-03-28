@@ -83,6 +83,8 @@ export interface CreateTaskInput {
   priority?: number;
   maxRetries?: number;
   reviewRequired?: boolean;
+  reviewArtifactId?: string;
+  reviewSnapshotId?: string;
   attachments?: string[];
   bootstrap?: BootstrapConfig;
 }
@@ -166,11 +168,38 @@ export type ReviewSnapshot = {
   id: string;
   taskId: string;
   specRef: string | null;
+  worktreeDir: string;
   patch: ReviewSnapshotPatch | null;
   changedFiles: string[];
   lintSummary: string;
   testSummary: string;
   createdAt: number;
+};
+
+export type ReviewArtifactSummary = {
+  id: string;
+  taskId: string;
+  snapshotId: string;
+  queueItemId: string | null;
+  scope: "queue" | "reviewer";
+  summaryText: string;
+  verdict: "passed" | "rejected" | "analysis";
+  priorArtifactId: string | null;
+  createdAt: number;
+};
+
+export type ReviewArtifact = ReviewArtifactSummary & {
+  historyKey?: string | null;
+  promptText?: string;
+  responseText?: string;
+};
+
+export type ReviewArtifactResponse = {
+  artifact: ReviewArtifactSummary | null;
+};
+
+export type ReviewArtifactListResponse = {
+  items: ReviewArtifactSummary[];
 };
 
 export type TaskBundleTask = {

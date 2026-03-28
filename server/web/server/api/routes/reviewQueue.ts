@@ -1,7 +1,7 @@
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { sendJson } from "../../http.js";
 import { resolveTaskContextOrSendBadRequest } from "./tasks/shared.js";
-import type { ReviewQueueItemStatus } from "../../../../tasks/reviewStore.js";
+import { toReviewArtifactSummary, type ReviewQueueItemStatus } from "../../../../tasks/reviewStore.js";
 
 function parseReviewQueueStatus(value: string | null): ReviewQueueItemStatus | undefined {
   const raw = String(value ?? "").trim().toLowerCase();
@@ -54,6 +54,42 @@ export async function handleReviewQueueRoutes(ctx: ApiRouteContext, deps: ApiSha
       return true;
     }
     sendJson(res, 200, snapshot);
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/review-artifacts/latest") {
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
+    const latest = taskCtx.reviewStore.getLatestArtifact();
+    sendJson(res, 200, { artifact: latest ? toReviewArtifactSummary(latest) : null });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/review-artifacts") {
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
+    const taskId = String(url.searchParams.get("taskId") ?? "").trim();
+    const snapshotId = String(url.searchParams.get("snapshotId") ?? "").trim();
+    const limitRaw = url.searchParams.get("limit")?.trim();
+    const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
+    const items = taskCtx.reviewStore
+      .listArtifacts({ taskId: taskId || undefined, snapshotId: snapshotId || undefined, limit })
+      .map((artifact) => toReviewArtifactSummary(artifact));
+    sendJson(res, 200, { items });
+    return true;
+  }
+
+  const artifactMatch = /^\/api\/review-artifacts\/([^/]+)$/.exec(pathname);
+  if (artifactMatch && req.method === "GET") {
+    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
+    if (!taskCtx) return true;
+    const artifactId = artifactMatch[1] ?? "";
+    const artifact = taskCtx.reviewStore.getArtifact(artifactId);
+    if (!artifact) {
+      sendJson(res, 404, { error: "Not Found" });
+      return true;
+    }
+    sendJson(res, 200, artifact);
     return true;
   }
 

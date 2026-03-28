@@ -15,6 +15,15 @@ import { handleTaskByIdRoute } from "./tasks/taskById.js";
 import { buildTaskAttachments, parseTaskStatus, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./tasks/shared.js";
 
 type TaskRouteTaskContext = ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+type ExplicitReviewArtifactReference = {
+  reviewArtifactId: string;
+  snapshotId: string;
+  taskId: string;
+  verdict: string;
+  scope: string;
+  summaryText: string;
+  responseText: string;
+};
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -82,6 +91,63 @@ function maybePromoteQueuedTasks(args: {
   }
 }
 
+function resolveExplicitReviewArtifactReference(args: {
+  taskCtx: TaskRouteTaskContext;
+  reviewArtifactId?: string | null;
+  reviewSnapshotId?: string | null;
+}): { ok: true; reference: ExplicitReviewArtifactReference | null } | { ok: false; error: string } {
+  const reviewArtifactId = String(args.reviewArtifactId ?? "").trim();
+  const reviewSnapshotId = String(args.reviewSnapshotId ?? "").trim();
+  if (!reviewArtifactId && !reviewSnapshotId) {
+    return { ok: true, reference: null };
+  }
+  if (!reviewArtifactId) {
+    return { ok: false, error: "reviewArtifactId is required when reviewSnapshotId is provided" };
+  }
+  const artifact = args.taskCtx.reviewStore.getArtifact(reviewArtifactId);
+  if (!artifact) {
+    return { ok: false, error: `Unknown review artifact: ${reviewArtifactId}` };
+  }
+  if (reviewSnapshotId && artifact.snapshotId !== reviewSnapshotId) {
+    return {
+      ok: false,
+      error: `Review artifact ${reviewArtifactId} is linked to snapshot ${artifact.snapshotId}, not ${reviewSnapshotId}`,
+    };
+  }
+  return {
+    ok: true,
+    reference: {
+      reviewArtifactId: artifact.id,
+      snapshotId: artifact.snapshotId,
+      taskId: artifact.taskId,
+      verdict: artifact.verdict,
+      scope: artifact.scope,
+      summaryText: artifact.summaryText,
+      responseText: artifact.responseText,
+    },
+  };
+}
+
+function persistExplicitReviewArtifactReference(
+  taskCtx: TaskRouteTaskContext,
+  taskId: string,
+  reference: ExplicitReviewArtifactReference | null,
+  now: number,
+): void {
+  if (!reference) {
+    return;
+  }
+  taskCtx.taskStore.saveContext(
+    taskId,
+    {
+      contextType: "artifact:review_artifact_reference",
+      content: JSON.stringify(reference),
+      createdAt: now,
+    },
+    now,
+  );
+}
+
 export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url, auth } = ctx;
 
@@ -137,6 +203,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         priority: z.number().optional(),
         maxRetries: z.number().optional(),
         reviewRequired: z.boolean().optional(),
+        reviewArtifactId: z.string().min(1).optional(),
+        reviewSnapshotId: z.string().min(1).optional(),
         attachments: z.array(z.string().min(1)).optional(),
         bootstrap: bootstrapSchema,
       })
@@ -150,6 +218,15 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const now = Date.now();
     const attachmentIds = (parsed.attachments ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
     const taskId = crypto.randomUUID();
+    const reviewArtifactRef = resolveExplicitReviewArtifactReference({
+      taskCtx,
+      reviewArtifactId: parsed.reviewArtifactId,
+      reviewSnapshotId: parsed.reviewSnapshotId,
+    });
+    if (!reviewArtifactRef.ok) {
+      sendJson(res, 400, { error: reviewArtifactRef.error });
+      return true;
+    }
 
     const modelParams: Record<string, unknown> | null =
       parsed.bootstrap?.enabled ? { bootstrap: parsed.bootstrap } : null;
@@ -176,6 +253,7 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       if (attachmentIds.length > 0) {
         taskCtx.attachmentStore.assignAttachmentsToTask(task.id, attachmentIds);
       }
+      persistExplicitReviewArtifactReference(taskCtx, task.id, reviewArtifactRef.reference, now);
     } catch (error) {
       try {
         taskCtx.taskStore.deleteTask(taskId);
@@ -243,6 +321,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         inheritContext: z.boolean().optional(),
         maxRetries: z.number().int().min(0).optional(),
         reviewRequired: z.boolean().optional(),
+        reviewArtifactId: z.string().min(1).optional(),
+        reviewSnapshotId: z.string().min(1).optional(),
         bootstrap: bootstrapSchema,
       })
       .passthrough();
@@ -262,6 +342,15 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
     const inheritContext = parsed.inheritContext ?? source.inheritContext;
     const maxRetries = parsed.maxRetries ?? source.maxRetries;
     const reviewRequired = parsed.reviewRequired ?? source.reviewRequired;
+    const reviewArtifactRef = resolveExplicitReviewArtifactReference({
+      taskCtx,
+      reviewArtifactId: parsed.reviewArtifactId,
+      reviewSnapshotId: parsed.reviewSnapshotId,
+    });
+    if (!reviewArtifactRef.ok) {
+      sendJson(res, 400, { error: reviewArtifactRef.error });
+      return true;
+    }
     const modelParams = (() => {
       const base = (() => {
         const raw = source.modelParams;
@@ -301,6 +390,19 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
         { status: "queued" },
       );
     } catch (error) {
+      const message = getErrorMessage(error);
+      sendJson(res, 400, { error: message });
+      return true;
+    }
+
+    try {
+      persistExplicitReviewArtifactReference(taskCtx, created.id, reviewArtifactRef.reference, now);
+    } catch (error) {
+      try {
+        taskCtx.taskStore.deleteTask(created.id);
+      } catch {
+        // ignore
+      }
       const message = getErrorMessage(error);
       sendJson(res, 400, { error: message });
       return true;

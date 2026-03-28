@@ -32,6 +32,17 @@ function truncate(text: string, limit = 4000): string {
 type WorkspacePatchFileStat = { path: string; added: number | null; removed: number | null };
 type WorkspacePatchPayload = { files: WorkspacePatchFileStat[]; diff: string; truncated: boolean };
 type TaskWorkspacePatchArtifact = { paths: string[]; patch: WorkspacePatchPayload | null; reason?: string; createdAt: number };
+type TaskWorktreeReferenceContext = { worktreeDir: string; source?: string; createdAt: number };
+type ReviewArtifactReferenceContext = {
+  reviewArtifactId?: string;
+  snapshotId?: string;
+  taskId?: string;
+  verdict?: string | null;
+  scope?: string | null;
+  summaryText?: string;
+  responseText?: string;
+  createdAt?: number;
+};
 
 function getLatestContextOfType(contexts: TaskContext[], contextType: string): TaskContext | null {
   const type = String(contextType ?? "").trim();
@@ -68,6 +79,67 @@ function formatWorkspacePatchArtifactForPrompt(context: TaskContext | null): str
   lines.push(patch.diff.trimEnd());
   lines.push("```");
   return lines.join("\n");
+}
+
+function formatReviewArtifactReferenceForPrompt(context: TaskContext | null): string {
+  if (!context) return "";
+  const parsed = safeParseJson<ReviewArtifactReferenceContext>(context.content);
+  if (!parsed) return "";
+  const reviewArtifactId = String(parsed.reviewArtifactId ?? "").trim();
+  const snapshotId = String(parsed.snapshotId ?? "").trim();
+  const taskId = String(parsed.taskId ?? "").trim();
+  if (!reviewArtifactId || !snapshotId) return "";
+
+  const lines: string[] = [];
+  lines.push("Explicit reviewer guidance artifact:");
+  lines.push(`- reviewArtifactId: ${reviewArtifactId}`);
+  lines.push(`- snapshotId: ${snapshotId}`);
+  if (taskId) {
+    lines.push(`- sourceTaskId: ${taskId}`);
+  }
+  const verdict = String(parsed.verdict ?? "").trim();
+  if (verdict) {
+    lines.push(`- verdict: ${verdict}`);
+  }
+  const scope = String(parsed.scope ?? "").trim();
+  if (scope) {
+    lines.push(`- scope: ${scope}`);
+  }
+  const summaryText = String(parsed.summaryText ?? "").trim();
+  if (summaryText) {
+    lines.push("- summary:");
+    lines.push(summaryText);
+  }
+  const responseText = String(parsed.responseText ?? "").trim();
+  if (responseText) {
+    lines.push("");
+    lines.push("Reviewer response:");
+    lines.push(responseText);
+  }
+  return lines.join("\n");
+}
+
+export function persistTaskWorktreeReference(
+  store: Pick<TaskStore, "saveContext">,
+  taskId: string,
+  input: { worktreeDir?: string | null; source?: string | null },
+  now = Date.now(),
+): void {
+  const id = String(taskId ?? "").trim();
+  const worktreeDir = String(input.worktreeDir ?? "").trim();
+  if (!id || !worktreeDir) {
+    return;
+  }
+  const payload: TaskWorktreeReferenceContext = {
+    worktreeDir,
+    source: String(input.source ?? "").trim() || undefined,
+    createdAt: now,
+  };
+  store.saveContext(
+    id,
+    { contextType: "artifact:worktree_reference", content: JSON.stringify(payload), createdAt: now },
+    now,
+  );
 }
 
 type BootstrapModelParams = {
@@ -168,6 +240,13 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         agentRunner,
         signal: options?.signal,
         hooks: {
+          onStarted: (ctx) => {
+            try {
+              persistTaskWorktreeReference(this.store, task.id, { worktreeDir: ctx.worktreeDir, source: "bootstrap" });
+            } catch {
+              // ignore
+            }
+          },
           onIteration(progress) {
             const line = `bootstrap iter=${progress.iteration} ok=${progress.ok} lint=${progress.lint.ok ? "ok" : "fail"} test=${progress.test.ok ? "ok" : "fail"} strategy=${progress.strategy}`;
             options?.hooks?.onMessage?.({ role: "assistant", content: line, modelUsed: modelForStorage });
@@ -232,6 +311,9 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       const latestPatchContext =
         getLatestContextOfType(contexts, "artifact:previous_workspace_patch") ?? getLatestContextOfType(contexts, "artifact:workspace_patch");
       const patchHint = formatWorkspacePatchArtifactForPrompt(latestPatchContext);
+      const reviewArtifactHint = formatReviewArtifactReferenceForPrompt(
+        getLatestContextOfType(contexts, "artifact:review_artifact_reference"),
+      );
 
       try {
         const history = this.store
@@ -274,6 +356,8 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         const prompt = [
           "你正在执行一个任务队列中的任务。请完成任务并输出结果。",
           "",
+          reviewArtifactHint ? reviewArtifactHint : "",
+          reviewArtifactHint ? "" : "",
           patchHint ? patchHint : "",
           patchHint ? "" : "",
           historySnippet ? "（上下文）\n" + historySnippet : "",

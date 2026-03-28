@@ -329,14 +329,12 @@
 }
 .layout {
   --sidebar-width: clamp(280px, 24vw, 360px);
-  --planner-width: clamp(420px, 36vw, 560px);
-  --worker-width: clamp(380px, 32vw, 540px);
   flex: 1;
   display: grid;
-  grid-template-columns: var(--sidebar-width) var(--planner-width) var(--worker-width);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   gap: 12px;
   padding: 12px 12px 8px 12px;
-  max-width: 1600px;
+  max-width: 1480px;
   width: 100%;
   margin: 0 auto;
   min-height: 0;
@@ -589,114 +587,146 @@
   flex-direction: column;
 }
 
-.plannerPane,
-.workerPane {
+.chatShell,
+.lanePanels,
+.lanePanel {
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
-.topbarWorker {
-  flex-shrink: 0;
-  height: 30px;
-  border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(15, 23, 42, 0.04);
-  color: #334155;
-  font-size: 12px;
-  font-weight: 800;
-  padding: 0 10px;
-  cursor: pointer;
-  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
-}
-.topbarWorker:hover {
-  background: rgba(37, 99, 235, 0.06);
-  border-color: rgba(37, 99, 235, 0.18);
-  color: #1d4ed8;
-}
-.topbarWorker:focus-visible {
-  outline: none;
-  border-color: rgba(37, 99, 235, 0.65);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+.chatShell {
+  gap: 0;
 }
 
-.workerDrawerOverlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.55);
-  backdrop-filter: blur(10px);
-  display: flex;
-  justify-content: flex-end;
-  z-index: 9998;
-}
-.workerDrawer {
-  width: min(92vw, 520px);
-  height: calc(var(--ads-visual-viewport-height, 100dvh) - 24px);
-  margin: 12px;
-  background: var(--app-bg);
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.workerDrawerHeader {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(248, 250, 252, 0.95);
-}
-.workerDrawerTitle {
-  font-size: 12px;
-  font-weight: 900;
-  color: #0f172a;
-}
-.workerDrawerActions {
+.laneTabs {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 6px 10px;
+  border-radius: 16px 16px 0 0;
+  border: 1px solid rgba(208, 215, 222, 0.85);
+  border-bottom: none;
+  background: rgba(248, 250, 252, 0.95);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
-.workerDrawerIconBtn {
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
+
+.laneTabSpacer {
+  flex: 1 1 auto;
+}
+
+.laneTabWarning {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #c2410c;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.laneTabIconBtn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
   border: none;
   display: grid;
   place-items: center;
   cursor: pointer;
   background: transparent;
-  color: var(--muted);
+  color: #64748b;
   box-shadow: none;
   transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
-.workerDrawerIconBtn:hover:not(:disabled) {
-  color: var(--text);
-  background: rgba(15, 23, 42, 0.04);
+
+.laneTabIconBtn:hover:not(:disabled) {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.06);
 }
-.workerDrawerIconBtn:disabled {
+
+.laneTabIconBtn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
-.workerDrawerClose {
+
+.laneTab {
   border: none;
   background: transparent;
-  color: #2563eb;
-  font-size: 12px;
+  color: #64748b;
+  font-size: 13px;
   font-weight: 800;
+  padding: 8px 14px;
+  border-radius: 12px;
   cursor: pointer;
-  padding: 6px 8px;
-  border-radius: 10px;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
-.workerDrawerClose:hover {
-  background: rgba(37, 99, 235, 0.06);
+
+.laneTab:hover {
+  color: #0f172a;
 }
+
+.laneTab.active {
+  background: white;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.laneTab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.lanePanels {
+  flex: 1 1 auto;
+}
+
+.reviewerBindingBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(208, 215, 222, 0.85);
+  border-bottom: none;
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.reviewerBindingMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: #334155;
+}
+
+.reviewerBindingLabel {
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.reviewerBindingValue,
+.reviewerBindingText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reviewerBindingValue {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.reviewerBindingActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .link {
   background: transparent;
   border: none;
@@ -781,14 +811,32 @@
     padding-right: 12px;
   }
   .left,
-  .plannerPane,
-  .workerPane {
+  .chatShell {
     display: none;
   }
   .layout[data-pane="tasks"] .left {
     display: flex;
   }
-  .layout[data-pane="chat"] .plannerPane {
+  .layout[data-pane="chat"] .chatShell {
     display: flex;
+  }
+  .laneTabs {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .reviewerBindingBar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .reviewerBindingActions {
+    margin-left: 0;
+    justify-content: stretch;
+  }
+  .reviewerBindingActions .inlineAction {
+    flex: 1 1 0;
+  }
+  .laneTab {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }

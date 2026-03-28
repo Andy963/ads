@@ -13,6 +13,7 @@ export interface IncomingImage {
 export interface PromptPayload {
   text?: string;
   images?: IncomingImage[];
+  snapshotId?: string;
 }
 
 export interface WorkspaceState {

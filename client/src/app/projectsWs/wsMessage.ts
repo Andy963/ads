@@ -1,6 +1,6 @@
 import type { ChatActions } from "../chat";
 import type { ChatItem, ChatPatch, ChatPatchFile, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
-import type { TaskBundleDraft } from "../../api/types";
+import type { ReviewArtifactSummary, TaskBundleDraft } from "../../api/types";
 
 import { deriveProjectNameFromPath } from "./projectName";
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
@@ -373,6 +373,52 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (next !== existing) {
           rt.taskBundleDrafts.value = next;
         }
+      }
+      return;
+    }
+
+    if (type === "reviewer_artifact") {
+      const artifact = msg.artifact;
+      const boundSnapshotId = String(rt.boundReviewSnapshotId.value ?? "").trim();
+      if (!boundSnapshotId) {
+        return;
+      }
+      const artifactSnapshotId =
+        artifact && typeof artifact === "object" ? String((artifact as Record<string, unknown>).snapshotId ?? "").trim() : "";
+      if (boundSnapshotId && artifactSnapshotId && artifactSnapshotId !== boundSnapshotId) {
+        return;
+      }
+      rt.latestReviewArtifact.value =
+        artifact && typeof artifact === "object"
+          ? ({
+              id: String((artifact as Record<string, unknown>).id ?? "").trim(),
+              taskId: String((artifact as Record<string, unknown>).taskId ?? "").trim(),
+              snapshotId: String((artifact as Record<string, unknown>).snapshotId ?? "").trim(),
+              queueItemId:
+                (artifact as Record<string, unknown>).queueItemId == null
+                  ? null
+                  : String((artifact as Record<string, unknown>).queueItemId ?? "").trim() || null,
+              scope: String((artifact as Record<string, unknown>).scope ?? "").trim() === "queue" ? "queue" : "reviewer",
+              summaryText: String((artifact as Record<string, unknown>).summaryText ?? ""),
+              verdict: (() => {
+                const verdict = String((artifact as Record<string, unknown>).verdict ?? "").trim().toLowerCase();
+                return verdict === "passed" || verdict === "rejected" ? verdict : "analysis";
+              })(),
+              priorArtifactId:
+                (artifact as Record<string, unknown>).priorArtifactId == null
+                  ? null
+                  : String((artifact as Record<string, unknown>).priorArtifactId ?? "").trim() || null,
+              createdAt: Number((artifact as Record<string, unknown>).createdAt ?? 0) || 0,
+            } satisfies ReviewArtifactSummary)
+          : null;
+      return;
+    }
+
+    if (type === "reviewer_snapshot_binding") {
+      const snapshotId = String(msg.snapshotId ?? "").trim();
+      rt.boundReviewSnapshotId.value = snapshotId || null;
+      if (!snapshotId) {
+        rt.latestReviewArtifact.value = null;
       }
       return;
     }

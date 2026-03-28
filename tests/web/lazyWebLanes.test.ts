@@ -218,4 +218,85 @@ describe("web lazy planner/reviewer lanes", () => {
     });
     assert.equal(reviewPrompts.length, 2);
   });
+
+  it("fails isolated-task auto review when no dedicated worktree was persisted", async () => {
+    const reviewPrompts: string[] = [];
+    const reviewerSessionManager = createLazyObject(
+      () =>
+        ({
+          dropSession: () => {},
+          getOrCreate: () => ({
+            setWorkingDirectory: () => {},
+            status: () => ({ ready: true, streaming: false }),
+            getActiveAgentId: () => "codex",
+            invokeAgent: async (_agentId: string, prompt: string) => {
+              reviewPrompts.push(prompt);
+              return { response: JSON.stringify({ verdict: "passed", conclusion: "looks good" }) };
+            },
+          }),
+        }) as any,
+    );
+    const reviewerHistoryStore = createLazyObject(
+      () =>
+        ({
+          add: () => true,
+        }) as any,
+    );
+
+    const manager = createTaskQueueManager({
+      workspaceRoot,
+      allowedDirs: [workspaceRoot],
+      adsStateDir: tmpDir,
+      lockForWorkspace: () =>
+        ({
+          isBusy: () => false,
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      available: false,
+      autoStart: false,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        debug: () => {},
+      },
+      broadcastToSession: () => {},
+      recordToSessionHistories: () => {},
+      reviewSessionManager: reviewerSessionManager as any,
+      broadcastToReviewerSession: () => {},
+      recordToReviewerHistories: (sessionId, entry) => reviewerHistoryStore.add(sessionId, entry),
+    });
+
+    const ctx = manager.ensureTaskContext(workspaceRoot);
+    const task = ctx.taskStore.createTask(
+      {
+        title: "Bootstrap task",
+        prompt: "Prepare isolated repo",
+        reviewRequired: true,
+        modelParams: {
+          bootstrap: {
+            enabled: true,
+            projectRef: "/tmp/example-repo",
+          },
+        },
+      },
+      Date.now(),
+    );
+    const completed = ctx.taskStore.updateTask(task.id, { status: "completed", result: "done", completedAt: Date.now() }, Date.now());
+    ctx.taskQueue.emit("task:completed", { task: completed });
+
+    await waitForCondition(() => ctx.taskStore.getTask(task.id)?.reviewStatus === "failed");
+
+    const failed = ctx.taskStore.getTask(task.id);
+    assert.equal(failed?.reviewConclusion, "worktree_unresolved");
+    assert.equal(ctx.reviewStore.getLatestSnapshot(), null);
+    assert.equal(reviewPrompts.length, 0);
+    assert.deepEqual(inspectLazyObject(reviewerSessionManager), {
+      materialized: false,
+      materializeCount: 0,
+    });
+    assert.deepEqual(inspectLazyObject(reviewerHistoryStore), {
+      materialized: false,
+      materializeCount: 0,
+    });
+  });
 });

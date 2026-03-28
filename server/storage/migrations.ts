@@ -371,6 +371,7 @@ export const migrations: Migration[] = [
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
           spec_ref TEXT,
+          worktree_dir TEXT NOT NULL DEFAULT '',
           patch_json TEXT,
           changed_files_json TEXT NOT NULL,
           lint_summary TEXT NOT NULL DEFAULT '',
@@ -402,6 +403,52 @@ export const migrations: Migration[] = [
           ON review_queue_items(task_id, created_at DESC, id DESC);
         CREATE INDEX IF NOT EXISTS idx_review_queue_snapshot_id
           ON review_queue_items(snapshot_id);
+      `);
+    },
+  },
+  {
+    version: 14,
+    description: "Review artifacts - durable reviewer artifacts with snapshot linkage",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS review_artifacts (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          snapshot_id TEXT NOT NULL,
+          queue_item_id TEXT,
+          scope TEXT NOT NULL,
+          history_key TEXT,
+          prompt_text TEXT NOT NULL DEFAULT '',
+          response_text TEXT NOT NULL DEFAULT '',
+          summary_text TEXT NOT NULL DEFAULT '',
+          verdict TEXT NOT NULL DEFAULT 'analysis',
+          prior_artifact_id TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(snapshot_id) REFERENCES review_snapshots(id) ON DELETE CASCADE,
+          FOREIGN KEY(queue_item_id) REFERENCES review_queue_items(id) ON DELETE SET NULL,
+          FOREIGN KEY(prior_artifact_id) REFERENCES review_artifacts(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_artifacts_snapshot_created_at
+          ON review_artifacts(snapshot_id, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_review_artifacts_task_created_at
+          ON review_artifacts(task_id, created_at DESC, id DESC);
+      `);
+    },
+  },
+  {
+    version: 15,
+    description: "Review snapshots - persist bound worktree directory",
+    up: (db) => {
+      const reviewSnapshotNames = getTableColumnNames(db, "review_snapshots");
+      if (!reviewSnapshotNames.has("worktree_dir")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN worktree_dir TEXT NOT NULL DEFAULT ''`);
+      }
+      db.exec(`
+        UPDATE review_snapshots
+        SET worktree_dir = COALESCE(worktree_dir, '')
+        WHERE worktree_dir IS NULL
       `);
     },
   },

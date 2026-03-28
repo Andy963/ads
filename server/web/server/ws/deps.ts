@@ -195,6 +195,7 @@ export type WsPromptHandlerDeps = {
   history: WsHistoryRuntimeDeps;
   tasks: WsTaskRuntimeDeps;
   scheduler: WsSchedulerDeps;
+  reviewerSnapshotBindings?: Map<string, string>;
 };
 
 export type WsCommandHandlerDeps = {

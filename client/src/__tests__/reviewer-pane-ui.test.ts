@@ -1,0 +1,238 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { shallowMount } from "@vue/test-utils";
+import { defineComponent } from "vue";
+
+import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+
+type GetImpl = (url: string) => Promise<unknown>;
+
+let getImpl: GetImpl | null = null;
+let lastReviewerWs: {
+  onOpen?: () => void;
+  onClose?: (ev: { code: number; reason?: string }) => void;
+  onError?: () => void;
+  onTaskEvent?: (payload: unknown) => void;
+  onMessage?: (msg: unknown) => void;
+  sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
+} | null = null;
+let lastReviewerPromptPayload: unknown = null;
+
+vi.mock("../api/client", () => {
+  class ApiClient {
+    constructor(_: { baseUrl: string }) {}
+
+    async get<T>(url: string): Promise<T> {
+      if (!getImpl) throw new Error("getImpl not set");
+      return (await getImpl(url)) as T;
+    }
+
+    async post<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async patch<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async delete<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+  }
+
+  return { ApiClient };
+});
+
+vi.mock("../api/ws", () => {
+  class AdsWebSocket {
+    onOpen?: () => void;
+    onClose?: (ev: { code: number; reason?: string }) => void;
+    onError?: () => void;
+    onTaskEvent?: (payload: unknown) => void;
+    onMessage?: (msg: unknown) => void;
+    send = vi.fn();
+
+    constructor(options: { sessionId: string; chatSessionId?: string }) {
+      const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
+      if (chatSessionId === "reviewer") {
+        lastReviewerWs = this as unknown as typeof lastReviewerWs;
+      }
+    }
+
+    connect(): void {}
+    close(): void {}
+    sendPrompt(payload: unknown): void {
+      lastReviewerPromptPayload = payload;
+    }
+    interrupt(): void {}
+    clearHistory(): void {}
+  }
+
+  return { AdsWebSocket };
+});
+
+vi.mock("../components/LoginGate.vue", () => {
+  return {
+    default: defineComponent({
+      name: "LoginGate",
+      emits: ["logged-in"],
+      mounted() {
+        this.$emit("logged-in", { id: "u-1", username: "admin" });
+      },
+      template: "<div />",
+    }),
+  };
+});
+
+async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
+  await wrapper.vm.$nextTick();
+  await Promise.resolve();
+  await wrapper.vm.$nextTick();
+}
+
+describe("Reviewer pane UI", () => {
+  beforeEach(() => {
+    lastReviewerWs = null;
+    lastReviewerPromptPayload = null;
+    localStorage.clear();
+    getImpl = async (url: string) => {
+      if (url === "/api/models") {
+        return [
+          { id: "gpt-4.1", displayName: "GPT-4.1", provider: "openai", isEnabled: true, isDefault: true },
+        ] satisfies ModelConfig[];
+      }
+      if (url.includes("/api/task-queue/status")) {
+        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
+      }
+      if (url.startsWith("/api/review-artifacts")) {
+        return {
+          items: [
+            {
+              id: "artifact-123",
+              taskId: "task-7",
+              snapshotId: "snapshot-9",
+              queueItemId: null,
+              scope: "reviewer",
+              summaryText: "Guard the null case before calling into the worker flow.",
+              verdict: "analysis",
+              priorArtifactId: null,
+              createdAt: Date.now(),
+            },
+          ],
+        };
+      }
+      if (url.startsWith("/api/tasks"))
+        return [
+          {
+            id: "task-7",
+            title: "Task 7",
+            prompt: "Do work",
+            model: "auto",
+            status: "completed",
+            priority: 0,
+            queueOrder: 0,
+            inheritContext: false,
+            agentId: null,
+            retryCount: 0,
+            maxRetries: 3,
+            reviewRequired: true,
+            reviewStatus: "pending",
+            reviewSnapshotId: "snapshot-9",
+            createdAt: Date.now(),
+          },
+        ] satisfies Task[];
+      if (url.startsWith("/api/paths/validate")) return { ok: false };
+      return {};
+    };
+  });
+
+  afterEach(() => {
+    getImpl = null;
+    lastReviewerWs = null;
+    lastReviewerPromptPayload = null;
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("renders an interactive reviewer composer and surfaces the latest review artifact", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false, MarkdownContent: true, DraggableModal: true } },
+    });
+    await settleUi(wrapper);
+
+    expect(lastReviewerWs).toBeTruthy();
+    lastReviewerWs!.onOpen?.();
+    lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer" });
+    await settleUi(wrapper);
+
+    await wrapper.get('[data-testid="lane-tab-reviewer"]').trigger("click");
+    await settleUi(wrapper);
+
+    await wrapper.get('[data-testid="reviewer-bind-selected-snapshot"]').trigger("click");
+    await settleUi(wrapper);
+
+    const textarea = wrapper.get('[data-testid="lane-panel-reviewer"] textarea.composer-input');
+    await textarea.setValue("Please review the latest snapshot");
+    expect((textarea.element as HTMLTextAreaElement).value).toBe("Please review the latest snapshot");
+
+    (wrapper.vm as any).sendReviewerPrompt("Please review the latest snapshot");
+    await settleUi(wrapper);
+    expect(lastReviewerPromptPayload).toMatchObject({
+      text: "Please review the latest snapshot",
+      model: "gpt-4.1",
+      snapshotId: "snapshot-9",
+    });
+
+    lastReviewerWs!.onMessage?.({
+      type: "reviewer_artifact",
+      artifact: {
+        id: "artifact-123",
+        taskId: "task-7",
+        snapshotId: "snapshot-9",
+        queueItemId: null,
+        scope: "reviewer",
+        summaryText: "Guard the null case before calling into the worker flow.",
+        verdict: "analysis",
+        priorArtifactId: null,
+        createdAt: Date.now(),
+      },
+    });
+    await settleUi(wrapper);
+
+    const banner = wrapper.get('[data-testid="review-artifact-banner"]');
+    expect(banner.text()).toContain("artifact-123");
+    expect(banner.text()).toContain("snapshot-9");
+    expect(banner.text()).toContain("Guard the null case before calling into the worker flow.");
+
+    wrapper.unmount();
+  });
+
+  it("keeps the current snapshot binding when starting a new reviewer session", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false, MarkdownContent: true, DraggableModal: true } },
+    });
+    await settleUi(wrapper);
+
+    lastReviewerWs!.onOpen?.();
+    lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer" });
+    await settleUi(wrapper);
+
+    await wrapper.get('[data-testid="lane-tab-reviewer"]').trigger("click");
+    await settleUi(wrapper);
+    await wrapper.get('[data-testid="reviewer-bind-selected-snapshot"]').trigger("click");
+    await settleUi(wrapper);
+
+    await wrapper.get('[data-testid="lane-new-session"]').trigger("click");
+    await settleUi(wrapper);
+
+    (wrapper.vm as any).sendReviewerPrompt("Review again");
+    await settleUi(wrapper);
+    expect(lastReviewerPromptPayload).toMatchObject({
+      text: "Review again",
+      snapshotId: "snapshot-9",
+    });
+
+    wrapper.unmount();
+  });
+});

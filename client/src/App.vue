@@ -10,8 +10,8 @@ import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 
 import { createAppController } from "./app/controller";
-import type { TaskBundle, TaskBundleDraftSpecFileKey, TaskBundleDraftSpecFileUpdate } from "./api/types";
-import { ChatDotRound, CirclePlus, Refresh } from "@element-plus/icons-vue";
+import type { ReviewArtifactListResponse, TaskBundle, TaskBundleDraftSpecFileKey, TaskBundleDraftSpecFileUpdate } from "./api/types";
+import { CirclePlus, Refresh, ChatDotRound } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -57,6 +57,8 @@ const {
   resumePlannerThread,
   clearActiveChat,
   clearPlannerChat,
+  clearReviewerChat,
+  startNewReviewerSession,
   startNewChatSession,
   messages,
   activeRuntime,
@@ -75,20 +77,27 @@ const {
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
+  sendReviewerPrompt,
   setMainModelId,
   setPlannerModelId,
+  setReviewerModelId,
   setMainModelReasoningEffort,
   setPlannerModelReasoningEffort,
+  setReviewerModelReasoningEffort,
   switchMainAgent,
   switchPlannerAgent,
+  switchReviewerAgent,
   interruptActive,
   interruptPlanner,
   addPendingImages,
   clearPendingImages,
   addPlannerPendingImages,
   clearPlannerPendingImages,
+  addReviewerPendingImages,
+  clearReviewerPendingImages,
   removeQueuedPrompt,
   removePlannerQueuedPrompt,
+  removeReviewerQueuedPrompt,
   apiNotice,
   taskCreateDialogOpen,
   closeTaskCreateDialog,
@@ -125,7 +134,14 @@ const draggingProjectId = ref<string | null>(null);
 const dropTargetProjectId = ref<string | null>(null);
 const dropTargetPosition = ref<"before" | "after">("before");
 
-const workerDrawerOpen = ref(false);
+type ChatLane = "planner" | "worker" | "reviewer";
+
+const activeChatLane = ref<ChatLane>("worker");
+const chatLanes: Array<{ id: ChatLane; label: string }> = [
+  { id: "planner", label: "Planner" },
+  { id: "worker", label: "Worker" },
+  { id: "reviewer", label: "Reviewer" },
+];
 
 const plannerMessages = computed(() => activePlannerRuntime.value.messages.value);
 const plannerQueuedPrompts = computed(() =>
@@ -138,11 +154,24 @@ const plannerAgentDelegations = computed(() => activePlannerRuntime.value.delega
 const plannerDrafts = computed(() => activePlannerRuntime.value.taskBundleDrafts.value);
 const plannerDraftsBusy = computed(() => activePlannerRuntime.value.taskBundleDraftsBusy.value);
 const plannerDraftsError = computed(() => activePlannerRuntime.value.taskBundleDraftsError.value);
+const plannerComposerDraft = computed({
+  get: () => activePlannerRuntime.value.composerDraft.value,
+  set: (value: string) => {
+    activePlannerRuntime.value.composerDraft.value = value;
+  },
+});
 const workerAgents = computed(() => activeRuntime.value.availableAgents.value);
 const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.value);
+const workerComposerDraft = computed({
+  get: () => activeRuntime.value.composerDraft.value,
+  set: (value: string) => {
+    activeRuntime.value.composerDraft.value = value;
+  },
+});
 const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
 const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
 const plannerThreadWarning = computed(() => activePlannerRuntime.value.threadWarning.value);
+const plannerChatKey = computed(() => `${activeProjectId.value}:planner`);
 const workerThreadWarning = computed(() => activeRuntime.value.threadWarning.value);
 const workerChatKey = computed(() => `${activeProjectId.value}:${activeProject.value?.chatSessionId ?? "main"}`);
 const workerQueuedPrompts = computed(() =>
@@ -154,8 +183,105 @@ const resumeThreadBlocked = computed(() =>
 
 const reviewerMessages = computed(() => activeReviewerRuntime.value.messages.value);
 const reviewerConnected = computed(() => activeReviewerRuntime.value.connected.value);
+const reviewerQueuedPrompts = computed(() =>
+  activeReviewerRuntime.value.queuedPrompts.value.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length })),
+);
+const reviewerPendingImages = computed(() => activeReviewerRuntime.value.pendingImages.value);
 const reviewerBusy = computed(() => activeReviewerRuntime.value.busy.value);
+const reviewerThreadWarning = computed(() => activeReviewerRuntime.value.threadWarning.value);
+const reviewerAgents = computed(() => activeReviewerRuntime.value.availableAgents.value);
+const reviewerActiveAgentId = computed(() => activeReviewerRuntime.value.activeAgentId.value);
+const reviewerAgentDelegations = computed(() => activeReviewerRuntime.value.delegationsInFlight.value);
+const reviewerLatestArtifact = computed(() => activeReviewerRuntime.value.latestReviewArtifact.value);
+const reviewerBoundSnapshotId = computed(() => activeReviewerRuntime.value.boundReviewSnapshotId.value);
+const reviewerChatKey = computed(() => `${activeProjectId.value}:reviewer`);
+const selectedTask = computed(() => {
+  const id = String(selectedId.value ?? "").trim();
+  if (!id) return null;
+  return tasks.value.find((task) => task.id === id) ?? null;
+});
+const selectedTaskReviewSnapshotId = computed(() => {
+  const snapshotId = String(selectedTask.value?.reviewSnapshotId ?? "").trim();
+  return snapshotId || null;
+});
+const selectedTaskReviewLabel = computed(() => {
+  const task = selectedTask.value;
+  if (!task) return "No task selected";
+  return `${task.title || task.id} (${task.id.slice(0, 8)})`;
+});
 
+const activeLaneBusy = computed(() => {
+  if (activeChatLane.value === "planner") return plannerBusy.value;
+  if (activeChatLane.value === "reviewer") return reviewerBusy.value;
+  return agentBusy.value;
+});
+
+const activeLaneThreadWarning = computed(() => {
+  if (activeChatLane.value === "planner") return plannerThreadWarning.value;
+  if (activeChatLane.value === "worker") return workerThreadWarning.value;
+  return reviewerThreadWarning.value;
+});
+
+const activeLaneHasResume = computed(() => activeChatLane.value !== "reviewer");
+
+function handleLaneNewSession() {
+  if (activeChatLane.value === "planner") clearPlannerChat();
+  else if (activeChatLane.value === "worker") startNewChatSession();
+  else startNewReviewerSession();
+}
+
+function handleLaneResumeThread() {
+  if (activeChatLane.value === "planner") resumePlannerThread();
+  else if (activeChatLane.value === "worker") resumeTaskThread();
+}
+
+function withWorkspaceQuery(apiPath: string): string {
+  const root = String(resolveActiveWorkspaceRoot() ?? "").trim();
+  if (!root) return apiPath;
+  const joiner = apiPath.includes("?") ? "&" : "?";
+  return `${apiPath}${joiner}workspace=${encodeURIComponent(root)}`;
+}
+
+async function hydrateReviewerArtifact(snapshotId: string): Promise<void> {
+  const sid = String(snapshotId ?? "").trim();
+  if (!sid) {
+    activeReviewerRuntime.value.latestReviewArtifact.value = null;
+    return;
+  }
+  try {
+    const result = await api.get<ReviewArtifactListResponse>(
+      withWorkspaceQuery(`/api/review-artifacts?snapshotId=${encodeURIComponent(sid)}&limit=1`),
+    );
+    activeReviewerRuntime.value.latestReviewArtifact.value = Array.isArray(result.items) ? result.items[0] ?? null : null;
+  } catch {
+    activeReviewerRuntime.value.latestReviewArtifact.value = null;
+  }
+}
+
+async function bindReviewerToSelectedSnapshot(): Promise<void> {
+  const snapshotId = String(selectedTaskReviewSnapshotId.value ?? "").trim();
+  if (!snapshotId) {
+    return;
+  }
+  const rt = activeReviewerRuntime.value;
+  const previous = String(rt.boundReviewSnapshotId.value ?? "").trim();
+  if (previous && previous !== snapshotId) {
+    clearReviewerChat();
+  }
+  rt.boundReviewSnapshotId.value = snapshotId;
+  await hydrateReviewerArtifact(snapshotId);
+}
+
+function clearReviewerSnapshotBinding(): void {
+  clearReviewerChat();
+}
+
+const reviewerComposerDraft = computed({
+  get: () => activeReviewerRuntime.value.composerDraft.value,
+  set: (value: string) => {
+    activeReviewerRuntime.value.composerDraft.value = value;
+  },
+});
 function refreshPlannerDrafts(): void {
   void loadTaskBundleDrafts(activeProjectId.value);
 }
@@ -346,9 +472,6 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
         </div>
       </div>
       <div class="right">
-        <button v-if="isMobile" type="button" class="topbarWorker" title="Worker" @click="workerDrawerOpen = true">
-          Worker
-        </button>
         <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
       </div>
     </header>
@@ -464,152 +587,192 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
         </div>
       </aside>
 
-      <section class="plannerPane">
-        <MainChatView
-          :key="activeProjectId"
-          class="chatHost chatHost--planner"
-          title="Planner"
-          :messages="plannerMessages"
-          :queued-prompts="plannerQueuedPrompts"
-          :pending-images="plannerPendingImages"
-          :connected="plannerConnected"
-          :busy="plannerBusy"
-          :agents="plannerAgents"
-          :active-agent-id="plannerActiveAgentId"
-          :models="models"
-          :model-id="activePlannerRuntime.modelId.value"
-          :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
-          :agent-delegations="plannerAgentDelegations"
-          :thread-warning="plannerThreadWarning"
-          :workspace-root="resolveActiveWorkspaceRoot()"
-          :header-action="{ title: '清空上下文', ariaLabel: '清空 Planner 上下文', testId: 'planner-chat-clear-context' }"
-          :header-resume-action="{
-            title: '恢复上下文',
-            ariaLabel: '恢复 Planner 上下文',
-            testId: 'planner-chat-resume-thread',
-            disabled: resumeThreadBlocked,
-          }"
-          @send="sendPlannerPrompt"
-          @switchAgent="switchPlannerAgent"
-          @setModel="setPlannerModelId"
-          @setReasoningEffort="setPlannerModelReasoningEffort"
-          @newSession="clearPlannerChat"
-          @resumeThread="resumePlannerThread"
-          @interrupt="interruptPlanner"
-          @addImages="addPlannerPendingImages"
-          @clearImages="clearPlannerPendingImages"
-          @removeQueued="removePlannerQueuedPrompt"
-        />
-      </section>
+      <section class="chatShell">
+        <div class="laneTabs" role="tablist" aria-label="切换对话 lane">
+          <button
+            v-for="lane in chatLanes"
+            :id="`lane-tab-${lane.id}`"
+            :key="lane.id"
+            type="button"
+            class="laneTab"
+            :class="{ active: activeChatLane === lane.id }"
+            role="tab"
+            :aria-selected="activeChatLane === lane.id"
+            :aria-controls="`lane-panel-${lane.id}`"
+            :data-testid="`lane-tab-${lane.id}`"
+            @click="activeChatLane = lane.id"
+          >
+            {{ lane.label }}
+          </button>
+          <span v-if="activeLaneThreadWarning" class="laneTabWarning" data-testid="lane-thread-warning">
+            {{ activeLaneThreadWarning }}
+          </span>
+          <span class="laneTabSpacer" />
+          <button
+            v-if="activeLaneHasResume"
+            class="laneTabIconBtn"
+            type="button"
+            title="恢复上下文"
+            :disabled="activeLaneBusy || resumeThreadBlocked"
+            data-testid="lane-resume-thread"
+            @click.stop="handleLaneResumeThread"
+          >
+            <el-icon :size="16" aria-hidden="true"><Refresh /></el-icon>
+          </button>
+          <button
+            class="laneTabIconBtn"
+            type="button"
+            title="新会话"
+            :disabled="activeLaneBusy"
+            data-testid="lane-new-session"
+            @click.stop="handleLaneNewSession"
+          >
+            <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
+          </button>
+        </div>
 
-      <section v-if="!isMobile" class="workerPane">
-        <MainChatView
-          :key="workerChatKey"
-          class="chatHost"
-          title="Worker"
-          :messages="messages"
-          :queued-prompts="workerQueuedPrompts"
-          :pending-images="pendingImages"
-          :connected="connected"
-          :busy="agentBusy"
-          :agents="workerAgents"
-          :active-agent-id="workerActiveAgentId"
-          :models="models"
-          :model-id="activeRuntime.modelId.value"
-          :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
-          :agent-delegations="agentDelegations"
-          :thread-warning="workerThreadWarning"
-          :workspace-root="resolveActiveWorkspaceRoot()"
-          :header-action="{ title: '新会话', ariaLabel: '新会话', testId: 'worker-chat-new-session' }"
-          :header-resume-action="{
-            title: '恢复上下文',
-            ariaLabel: '恢复 Worker 上下文',
-            testId: 'worker-chat-resume-thread',
-            disabled: resumeThreadBlocked,
-          }"
-          @send="sendMainPrompt"
-          @switchAgent="switchMainAgent"
-          @setModel="setMainModelId"
-          @setReasoningEffort="setMainModelReasoningEffort"
-          @newSession="startNewChatSession"
-          @resumeThread="resumeTaskThread"
-          @interrupt="interruptActive"
-          @clear="clearActiveChat"
-          @addImages="addPendingImages"
-          @clearImages="clearPendingImages"
-          @removeQueued="removeQueuedPrompt"
-        />
+        <div class="lanePanels">
+          <section
+            :id="'lane-panel-planner'"
+            v-show="activeChatLane === 'planner'"
+            class="lanePanel"
+            role="tabpanel"
+            aria-labelledby="lane-tab-planner"
+            data-testid="lane-panel-planner"
+          >
+            <MainChatView
+              :key="plannerChatKey"
+              class="chatHost chatHost--planner"
+              :messages="plannerMessages"
+              :draft="plannerComposerDraft"
+              :queued-prompts="plannerQueuedPrompts"
+              :pending-images="plannerPendingImages"
+              :connected="plannerConnected"
+              :busy="plannerBusy"
+              :agents="plannerAgents"
+              :active-agent-id="plannerActiveAgentId"
+              :models="models"
+              :model-id="activePlannerRuntime.modelId.value"
+              :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
+              :agent-delegations="plannerAgentDelegations"
+              :workspace-root="resolveActiveWorkspaceRoot()"
+              @send="sendPlannerPrompt"
+              @update:draft="plannerComposerDraft = $event"
+              @switchAgent="switchPlannerAgent"
+              @setModel="setPlannerModelId"
+              @setReasoningEffort="setPlannerModelReasoningEffort"
+              @interrupt="interruptPlanner"
+              @addImages="addPlannerPendingImages"
+              @clearImages="clearPlannerPendingImages"
+              @removeQueued="removePlannerQueuedPrompt"
+            />
+          </section>
+
+          <section
+            :id="'lane-panel-worker'"
+            v-show="activeChatLane === 'worker'"
+            class="lanePanel"
+            role="tabpanel"
+            aria-labelledby="lane-tab-worker"
+            data-testid="lane-panel-worker"
+          >
+            <MainChatView
+              :key="workerChatKey"
+              class="chatHost"
+              :messages="messages"
+              :draft="workerComposerDraft"
+              :queued-prompts="workerQueuedPrompts"
+              :pending-images="pendingImages"
+              :connected="connected"
+              :busy="agentBusy"
+              :agents="workerAgents"
+              :active-agent-id="workerActiveAgentId"
+              :models="models"
+              :model-id="activeRuntime.modelId.value"
+              :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
+              :agent-delegations="agentDelegations"
+              :workspace-root="resolveActiveWorkspaceRoot()"
+              @send="sendMainPrompt"
+              @update:draft="workerComposerDraft = $event"
+              @switchAgent="switchMainAgent"
+              @setModel="setMainModelId"
+              @setReasoningEffort="setMainModelReasoningEffort"
+              @interrupt="interruptActive"
+              @clear="clearActiveChat"
+              @addImages="addPendingImages"
+              @clearImages="clearPendingImages"
+              @removeQueued="removeQueuedPrompt"
+            />
+          </section>
+
+          <section
+            :id="'lane-panel-reviewer'"
+            v-show="activeChatLane === 'reviewer'"
+            class="lanePanel"
+            role="tabpanel"
+            aria-labelledby="lane-tab-reviewer"
+            data-testid="lane-panel-reviewer"
+          >
+            <div class="reviewerBindingBar" data-testid="reviewer-binding-bar">
+              <div class="reviewerBindingMeta">
+                <span class="reviewerBindingLabel">Bound snapshot</span>
+                <code class="reviewerBindingValue">{{ reviewerBoundSnapshotId || "unbound" }}</code>
+              </div>
+              <div class="reviewerBindingMeta">
+                <span class="reviewerBindingLabel">Selected task</span>
+                <span class="reviewerBindingText">{{ selectedTaskReviewLabel }}</span>
+              </div>
+              <div class="reviewerBindingActions">
+                <button
+                  class="inlineAction"
+                  type="button"
+                  :disabled="!selectedTaskReviewSnapshotId"
+                  data-testid="reviewer-bind-selected-snapshot"
+                  @click="bindReviewerToSelectedSnapshot"
+                >
+                  Use selected snapshot
+                </button>
+                <button
+                  class="inlineAction"
+                  type="button"
+                  :disabled="!reviewerBoundSnapshotId"
+                  data-testid="reviewer-clear-snapshot-binding"
+                  @click="clearReviewerSnapshotBinding"
+                >
+                  Clear binding
+                </button>
+              </div>
+            </div>
+            <MainChatView
+              :key="reviewerChatKey"
+              class="chatHost"
+              :messages="reviewerMessages"
+              :draft="reviewerComposerDraft"
+              :queued-prompts="reviewerQueuedPrompts"
+              :pending-images="reviewerPendingImages"
+              :connected="reviewerConnected"
+              :busy="reviewerBusy"
+              :agents="reviewerAgents"
+              :active-agent-id="reviewerActiveAgentId"
+              :models="models"
+              :model-id="activeReviewerRuntime.modelId.value"
+              :model-reasoning-effort="activeReviewerRuntime.modelReasoningEffort.value"
+              :agent-delegations="reviewerAgentDelegations"
+              :review-artifact="reviewerLatestArtifact"
+              :workspace-root="resolveActiveWorkspaceRoot()"
+              @send="sendReviewerPrompt"
+              @update:draft="reviewerComposerDraft = $event"
+              @switchAgent="switchReviewerAgent"
+              @setModel="setReviewerModelId"
+              @setReasoningEffort="setReviewerModelReasoningEffort"
+              @addImages="addReviewerPendingImages"
+              @clearImages="clearReviewerPendingImages"
+              @removeQueued="removeReviewerQueuedPrompt"
+            />
+          </section>
+        </div>
       </section>
     </main>
-
-    <div
-      v-if="isMobile && workerDrawerOpen"
-      class="workerDrawerOverlay"
-      role="dialog"
-      aria-modal="true"
-      @click.self="workerDrawerOpen = false"
-    >
-      <div class="workerDrawer">
-        <div class="workerDrawerHeader">
-          <div class="workerDrawerTitle">Worker</div>
-          <div class="workerDrawerActions">
-            <button
-              class="workerDrawerIconBtn"
-              type="button"
-              title="恢复上下文"
-              aria-label="恢复上下文"
-              :disabled="agentBusy || resumeThreadBlocked"
-              data-testid="worker-chat-resume-thread"
-              @click.stop="resumeTaskThread()"
-            >
-              <el-icon :size="16" aria-hidden="true">
-                <Refresh />
-              </el-icon>
-            </button>
-            <button
-              class="workerDrawerIconBtn"
-              type="button"
-              title="新会话"
-              aria-label="新会话"
-              :disabled="agentBusy"
-              data-testid="worker-chat-new-session"
-              @click.stop="startNewChatSession"
-            >
-              <el-icon :size="16" aria-hidden="true">
-                <ChatDotRound />
-              </el-icon>
-            </button>
-            <button type="button" class="workerDrawerClose" @click="workerDrawerOpen = false">Close</button>
-          </div>
-        </div>
-        <MainChatView
-          :key="workerChatKey"
-          class="chatHost"
-          :messages="messages"
-          :queued-prompts="workerQueuedPrompts"
-          :pending-images="pendingImages"
-          :connected="connected"
-          :busy="agentBusy"
-          :agents="workerAgents"
-          :active-agent-id="workerActiveAgentId"
-          :models="models"
-          :model-id="activeRuntime.modelId.value"
-          :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
-          :agent-delegations="agentDelegations"
-          :thread-warning="workerThreadWarning"
-          :workspace-root="resolveActiveWorkspaceRoot()"
-          @send="sendMainPrompt"
-          @switchAgent="switchMainAgent"
-          @setModel="setMainModelId"
-          @setReasoningEffort="setMainModelReasoningEffort"
-          @interrupt="interruptActive"
-          @clear="clearActiveChat"
-          @addImages="addPendingImages"
-          @clearImages="clearPendingImages"
-          @removeQueued="removeQueuedPrompt"
-        />
-      </div>
-    </div>
 
     <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
       <span class="noticeToastText">{{ apiNotice }}</span>
@@ -660,7 +823,14 @@ async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<vo
             >
               {{ projectDialogPathMessage }}
             </div>
-            <button class="inlineAction" type="button" :disabled="!workspacePath" @click="useCurrentWorkspacePath">使用当前目录</button>
+            <button
+              class="inlineAction"
+              type="button"
+              :disabled="!workspacePath"
+              @click="useCurrentWorkspacePath"
+            >
+              使用当前目录
+            </button>
           </div>
 
           <label class="modalLabel" for="project-name">项目名称（可选）</label>

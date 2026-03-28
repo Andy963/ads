@@ -10,6 +10,7 @@ export type ReviewSnapshot = {
   id: string;
   taskId: string;
   specRef: string | null;
+  worktreeDir: string;
   patch: WorkspacePatchPayload | null;
   changedFiles: string[];
   lintSummary: string;
@@ -18,6 +19,8 @@ export type ReviewSnapshot = {
 };
 
 export type ReviewQueueItemStatus = "pending" | "running" | "passed" | "rejected" | "failed";
+export type ReviewArtifactScope = "queue" | "reviewer";
+export type ReviewArtifactVerdict = "passed" | "rejected" | "analysis";
 
 export type ReviewQueueItem = {
   id: string;
@@ -29,6 +32,33 @@ export type ReviewQueueItem = {
   createdAt: number;
   startedAt: number | null;
   completedAt: number | null;
+};
+
+export type ReviewArtifact = {
+  id: string;
+  taskId: string;
+  snapshotId: string;
+  queueItemId: string | null;
+  scope: ReviewArtifactScope;
+  historyKey: string | null;
+  promptText: string;
+  responseText: string;
+  summaryText: string;
+  verdict: ReviewArtifactVerdict;
+  priorArtifactId: string | null;
+  createdAt: number;
+};
+
+export type ReviewArtifactSummary = {
+  id: string;
+  taskId: string;
+  snapshotId: string;
+  queueItemId: string | null;
+  scope: ReviewArtifactScope;
+  summaryText: string;
+  verdict: ReviewArtifactVerdict;
+  priorArtifactId: string | null;
+  createdAt: number;
 };
 
 function parseReviewQueueItemStatus(value: unknown): ReviewQueueItemStatus {
@@ -76,12 +106,28 @@ function parseSnapshotRow(row: Record<string, unknown>): ReviewSnapshot {
     id,
     taskId,
     specRef,
+    worktreeDir: String(row.worktree_dir ?? "").trim(),
     patch,
     changedFiles,
     lintSummary: String(row.lint_summary ?? ""),
     testSummary: String(row.test_summary ?? ""),
     createdAt: parseOptionalSqliteInt(row.created_at) ?? 0,
   };
+}
+
+function parseReviewArtifactScope(value: unknown): ReviewArtifactScope {
+  return String(value ?? "").trim().toLowerCase() === "queue" ? "queue" : "reviewer";
+}
+
+function parseReviewArtifactVerdict(value: unknown): ReviewArtifactVerdict {
+  const raw = String(value ?? "").trim().toLowerCase();
+  switch (raw) {
+    case "passed":
+    case "rejected":
+      return raw;
+    default:
+      return "analysis";
+  }
 }
 
 function parseQueueRow(row: Record<string, unknown>): ReviewQueueItem {
@@ -104,6 +150,43 @@ function parseQueueRow(row: Record<string, unknown>): ReviewQueueItem {
   };
 }
 
+function parseArtifactRow(row: Record<string, unknown>): ReviewArtifact {
+  const id = String(row.id ?? "").trim();
+  const taskId = String(row.task_id ?? "").trim();
+  const snapshotId = String(row.snapshot_id ?? "").trim();
+  if (!id || !taskId || !snapshotId) {
+    throw new Error("Invalid review artifact row");
+  }
+  return {
+    id,
+    taskId,
+    snapshotId,
+    queueItemId: row.queue_item_id == null ? null : String(row.queue_item_id ?? "").trim() || null,
+    scope: parseReviewArtifactScope(row.scope),
+    historyKey: row.history_key == null ? null : String(row.history_key ?? "").trim() || null,
+    promptText: String(row.prompt_text ?? ""),
+    responseText: String(row.response_text ?? ""),
+    summaryText: String(row.summary_text ?? ""),
+    verdict: parseReviewArtifactVerdict(row.verdict),
+    priorArtifactId: row.prior_artifact_id == null ? null : String(row.prior_artifact_id ?? "").trim() || null,
+    createdAt: parseOptionalSqliteInt(row.created_at) ?? 0,
+  };
+}
+
+export function toReviewArtifactSummary(artifact: ReviewArtifact): ReviewArtifactSummary {
+  return {
+    id: artifact.id,
+    taskId: artifact.taskId,
+    snapshotId: artifact.snapshotId,
+    queueItemId: artifact.queueItemId,
+    scope: artifact.scope,
+    summaryText: artifact.summaryText,
+    verdict: artifact.verdict,
+    priorArtifactId: artifact.priorArtifactId,
+    createdAt: artifact.createdAt,
+  };
+}
+
 export class ReviewStore {
   private readonly db: DatabaseType;
 
@@ -115,6 +198,7 @@ export class ReviewStore {
     input: {
       taskId: string;
       specRef: string | null;
+      worktreeDir?: string | null;
       patch: WorkspacePatchPayload | null;
       changedFiles: string[];
       lintSummary?: string;
@@ -128,6 +212,7 @@ export class ReviewStore {
     }
     const id = crypto.randomUUID();
     const specRef = input.specRef == null ? null : String(input.specRef ?? "").trim() || null;
+    const worktreeDir = String(input.worktreeDir ?? "").trim();
     const patchJson = input.patch ? JSON.stringify(input.patch) : null;
     const changedFilesJson = JSON.stringify((input.changedFiles ?? []).map((p) => String(p ?? "").trim()).filter(Boolean));
     const lintSummary = String(input.lintSummary ?? "");
@@ -137,12 +222,13 @@ export class ReviewStore {
       .prepare(
         `INSERT INTO review_snapshots (
           id, task_id, spec_ref,
+          worktree_dir,
           patch_json, changed_files_json,
           lint_summary, test_summary,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, taskId, specRef, patchJson, changedFilesJson, lintSummary, testSummary, now);
+      .run(id, taskId, specRef, worktreeDir, patchJson, changedFilesJson, lintSummary, testSummary, now);
 
     const snapshot = this.getSnapshot(id);
     if (!snapshot) {
@@ -157,6 +243,17 @@ export class ReviewStore {
     const row = this.db.prepare(`SELECT * FROM review_snapshots WHERE id = ? LIMIT 1`).get(snapshotId) as
       | Record<string, unknown>
       | undefined;
+    return row ? parseSnapshotRow(row) : null;
+  }
+
+  getLatestSnapshot(): ReviewSnapshot | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM review_snapshots
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get() as Record<string, unknown> | undefined;
     return row ? parseSnapshotRow(row) : null;
   }
 
@@ -284,5 +381,130 @@ export class ReviewStore {
       throw new Error("Failed to read back updated review queue item");
     }
     return updated;
+  }
+
+  createArtifact(
+    input: {
+      taskId: string;
+      snapshotId: string;
+      queueItemId?: string | null;
+      scope: ReviewArtifactScope;
+      historyKey?: string | null;
+      promptText?: string;
+      responseText: string;
+      summaryText: string;
+      verdict?: ReviewArtifactVerdict;
+      priorArtifactId?: string | null;
+    },
+    now = Date.now(),
+  ): ReviewArtifact {
+    const taskId = String(input.taskId ?? "").trim();
+    const snapshotId = String(input.snapshotId ?? "").trim();
+    const scope = parseReviewArtifactScope(input.scope);
+    if (!taskId || !snapshotId) {
+      throw new Error("taskId and snapshotId are required");
+    }
+    const id = crypto.randomUUID();
+    const queueItemId = input.queueItemId == null ? null : String(input.queueItemId ?? "").trim() || null;
+    const historyKey = input.historyKey == null ? null : String(input.historyKey ?? "").trim() || null;
+    const promptText = String(input.promptText ?? "");
+    const responseText = String(input.responseText ?? "");
+    const summaryText = String(input.summaryText ?? "");
+    const verdict = parseReviewArtifactVerdict(input.verdict);
+    const priorArtifactId = input.priorArtifactId == null ? null : String(input.priorArtifactId ?? "").trim() || null;
+
+    this.db
+      .prepare(
+        `INSERT INTO review_artifacts (
+          id, task_id, snapshot_id, queue_item_id,
+          scope, history_key,
+          prompt_text, response_text, summary_text,
+          verdict, prior_artifact_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, taskId, snapshotId, queueItemId, scope, historyKey, promptText, responseText, summaryText, verdict, priorArtifactId, now);
+
+    const artifact = this.getArtifact(id);
+    if (!artifact) {
+      throw new Error("Failed to read back created review artifact");
+    }
+    return artifact;
+  }
+
+  getArtifact(id: string): ReviewArtifact | null {
+    const artifactId = String(id ?? "").trim();
+    if (!artifactId) return null;
+    const row = this.db.prepare(`SELECT * FROM review_artifacts WHERE id = ? LIMIT 1`).get(artifactId) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? parseArtifactRow(row) : null;
+  }
+
+  listArtifacts(options?: { snapshotId?: string; taskId?: string; limit?: number }): ReviewArtifact[] {
+    const limit =
+      typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit > 0 ? Math.floor(options.limit) : 100;
+    const snapshotId = String(options?.snapshotId ?? "").trim();
+    const taskId = String(options?.taskId ?? "").trim();
+    const rows = (
+      snapshotId
+        ? this.db
+            .prepare(
+              `SELECT * FROM review_artifacts
+               WHERE snapshot_id = ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?`,
+            )
+            .all(snapshotId, limit)
+        : taskId
+          ? this.db
+              .prepare(
+                `SELECT * FROM review_artifacts
+                 WHERE task_id = ?
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?`,
+              )
+              .all(taskId, limit)
+          : this.db
+              .prepare(
+                `SELECT * FROM review_artifacts
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?`,
+              )
+              .all(limit)
+    ) as Record<string, unknown>[];
+    return rows.map((row) => parseArtifactRow(row));
+  }
+
+  getLatestArtifact(options?: { snapshotId?: string; taskId?: string }): ReviewArtifact | null {
+    const snapshotId = String(options?.snapshotId ?? "").trim();
+    const taskId = String(options?.taskId ?? "").trim();
+    const row = (
+      snapshotId
+        ? this.db
+            .prepare(
+              `SELECT * FROM review_artifacts
+               WHERE snapshot_id = ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1`,
+            )
+            .get(snapshotId)
+        : taskId
+          ? this.db
+              .prepare(
+                `SELECT * FROM review_artifacts
+                 WHERE task_id = ?
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1`,
+              )
+              .get(taskId)
+          : this.db
+              .prepare(
+                `SELECT * FROM review_artifacts
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1`,
+              )
+              .get()
+    ) as Record<string, unknown> | undefined;
+    return row ? parseArtifactRow(row) : null;
   }
 }

@@ -22,6 +22,7 @@ import { handleCommandMessage } from "./handleCommand.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
+import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
@@ -29,6 +30,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
   const { auth, agents, commands, config, history, logger, scheduler, sessions, state, tasks } = deps;
   const wss = new WebSocketServer({ server: deps.server });
   const safeJsonSend = createSafeJsonSend(logger);
+  const reviewerSnapshotBindings = new Map<string, string>();
 
   const normalizeWorkspaceRootForMeta = (cwd: string): string => {
     return resolveWorkspaceRootFromDirectory(cwd);
@@ -312,6 +314,22 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       safeJsonSend(ws, { type: "history", items: filteredHistory });
     }
 
+    if (isReviewerChat) {
+      const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim();
+      if (boundSnapshotId) {
+        safeJsonSend(ws, { type: "reviewer_snapshot_binding", snapshotId: boundSnapshotId });
+        try {
+          const taskCtx = tasks.ensureTaskContext(normalizeWorkspaceRootForMeta(currentCwd));
+          const latestArtifact = taskCtx.reviewStore.getLatestArtifact({ snapshotId: boundSnapshotId });
+          if (latestArtifact) {
+            safeJsonSend(ws, { type: "reviewer_artifact", artifact: toReviewArtifactSummary(latestArtifact) });
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
     let messageChain = Promise.resolve();
     let lastReceivedAt = 0;
     type IncomingWsMessage = {
@@ -425,6 +443,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         if (parsed.type === "clear_history") {
           historyStore.clear(historyKey);
           sessionManager.reset(userId);
+          if (isReviewerChat) {
+            reviewerSnapshotBindings.delete(historyKey);
+          }
           safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
           return;
         }
@@ -509,6 +530,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             broadcastToSession: tasks.broadcastToSession,
           },
           scheduler,
+          reviewerSnapshotBindings,
         });
         if (promptResult.handled) {
           orchestrator = promptResult.orchestrator;

@@ -9,7 +9,7 @@ import { deriveProjectSessionId } from "../projectSessionId.js";
 import { TaskQueue } from "../../../tasks/queue.js";
 import { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
 import { OrchestratorTaskExecutor } from "../../../tasks/executor.js";
-import { ReviewStore } from "../../../tasks/reviewStore.js";
+import { ReviewStore, toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 import { AttachmentStore } from "../../../attachments/store.js";
 import { TaskRunController } from "../../taskRunController.js";
 import { pauseQueueInManualMode, startQueueInAllMode } from "../../taskQueue/control.js";
@@ -59,6 +59,8 @@ export type TaskQueueContext = {
 
 type ChangedPathsContext = { paths?: unknown };
 type TaskWorkspacePatchArtifact = { paths: string[]; patch: WorkspacePatchPayload | null; reason?: string; createdAt: number };
+type TaskWorktreeReferenceContext = { worktreeDir?: string | null };
+type TaskLikeWithModelParams = { modelParams?: unknown };
 
 const WebReviewVerdictSchema = z.object({
   verdict: z.enum(["passed", "rejected"]),
@@ -131,6 +133,54 @@ function resolveTaskQueueSessionCleanupIntervalMs(): number {
       process.env.ADS_TASK_QUEUE_SESSION_CLEANUP_INTERVAL_MINUTES ?? process.env.ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES,
     defaultMinutes: 5,
   });
+}
+
+function summarizeReviewArtifactText(text: string): string {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) {
+    return "No reviewer summary provided.";
+  }
+  const firstParagraph = normalized.split(/\n\s*\n/)[0]?.trim() ?? normalized;
+  const summary = firstParagraph || normalized;
+  return summary.length <= 400 ? summary : `${summary.slice(0, 399)}…`;
+}
+
+function taskRequiresDedicatedReviewWorktree(task: TaskLikeWithModelParams | null | undefined): boolean {
+  const modelParams = task?.modelParams;
+  if (!modelParams || typeof modelParams !== "object" || Array.isArray(modelParams)) {
+    return false;
+  }
+  const bootstrap = (modelParams as Record<string, unknown>).bootstrap;
+  if (!bootstrap || typeof bootstrap !== "object" || Array.isArray(bootstrap)) {
+    return false;
+  }
+  return (bootstrap as Record<string, unknown>).enabled === true;
+}
+
+function resolveReviewSnapshotWorktreeDir(
+  ctx: TaskQueueContext,
+  task: { id: string; modelParams?: unknown },
+): { ok: true; worktreeDir: string } | { ok: false; reason: "worktree_unresolved" } {
+  try {
+    const contexts = ctx.taskStore.getContext(task.id);
+    for (let i = contexts.length - 1; i >= 0; i--) {
+      const entry = contexts[i];
+      if (!entry || entry.contextType !== "artifact:worktree_reference") {
+        continue;
+      }
+      const parsed = safeParseJson<TaskWorktreeReferenceContext>(entry.content);
+      const worktreeDir = String(parsed?.worktreeDir ?? "").trim();
+      if (worktreeDir) {
+        return { ok: true, worktreeDir };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  if (taskRequiresDedicatedReviewWorktree(task)) {
+    return { ok: false, reason: "worktree_unresolved" };
+  }
+  return { ok: true, worktreeDir: ctx.workspaceRoot };
 }
 
 function recordTaskWorkspacePatchArtifact(ctx: TaskQueueContext, taskId: string, now = Date.now()): void {
@@ -457,6 +507,7 @@ export function createTaskQueueManager(deps: {
             { id: runningTask.id, title: runningTask.title, prompt: runningTask.prompt },
             { patch: snapshot.patch, changedFiles: snapshot.changedFiles },
           );
+          const reviewerCwd = String(snapshot.worktreeDir ?? "").trim() || ctx.workspaceRoot;
 
           let responseText = "";
           try {
@@ -465,8 +516,8 @@ export function createTaskQueueManager(deps: {
             // ignore
           }
           try {
-            const orchestrator = reviewerSessionManager.getOrCreate(reviewUserId, ctx.workspaceRoot, false);
-            orchestrator.setWorkingDirectory(ctx.workspaceRoot);
+            const orchestrator = reviewerSessionManager.getOrCreate(reviewUserId, reviewerCwd, false);
+            orchestrator.setWorkingDirectory(reviewerCwd);
             const status = orchestrator.status();
             if (!status.ready) {
               throw new Error(status.error ?? "reviewer agent not ready");
@@ -535,6 +586,21 @@ export function createTaskQueueManager(deps: {
           const verdict = parsed.verdict;
           const verdictStatus = verdict.verdict;
           const conclusion = verdict.conclusion.trim();
+          const previousArtifact = ctx.reviewStore.getLatestArtifact({ snapshotId: item.snapshotId });
+          const artifact = ctx.reviewStore.createArtifact(
+            {
+              taskId: runningTask.id,
+              snapshotId: item.snapshotId,
+              queueItemId: item.id,
+              scope: "queue",
+              promptText: prompt,
+              responseText,
+              summaryText: summarizeReviewArtifactText(conclusion || responseText),
+              verdict: verdictStatus,
+              priorArtifactId: previousArtifact?.id ?? null,
+            },
+            Date.now(),
+          );
 
           ctx.reviewStore.completeItem(item.id, { status: verdictStatus, conclusion }, Date.now());
 
@@ -565,8 +631,10 @@ export function createTaskQueueManager(deps: {
 
           deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: updatedTask, ts: Date.now() });
 
-          const reviewSummary = `[Review ${verdictStatus.toUpperCase()}] taskId=${updatedTask.id} snapshotId=${item.snapshotId}\n\n${conclusion}`;
+          const reviewSummary =
+            `[Review ${verdictStatus.toUpperCase()}] taskId=${updatedTask.id} snapshotId=${item.snapshotId} reviewArtifactId=${artifact.id}\n\n${conclusion}`;
           deps.broadcastToReviewerSession?.(sessionId, { type: "result", ok: true, output: reviewSummary, kind: "review" });
+          deps.broadcastToReviewerSession?.(sessionId, { type: "reviewer_artifact", artifact: toReviewArtifactSummary(artifact) });
           deps.recordToReviewerHistories?.(sessionId, { role: "ai", text: reviewSummary, ts: Date.now(), kind: "review" });
         }
       } finally {
@@ -612,10 +680,25 @@ export function createTaskQueueManager(deps: {
         changedFiles = [];
       }
 
+      const reviewWorktree = resolveReviewSnapshotWorktreeDir(ctx, task);
+      if (!reviewWorktree.ok) {
+        deps.logger.warn(
+          `[Web][ReviewQueue] skip auto-review snapshot taskId=${task.id} reason=${reviewWorktree.reason} workspaceRoot=${ctx.workspaceRoot}`,
+        );
+        const failedTask = ctx.taskStore.updateTask(
+          task.id,
+          { reviewStatus: "failed", reviewConclusion: reviewWorktree.reason, reviewedAt: now },
+          now,
+        );
+        deps.broadcastToSession(sessionId, { type: "task:event", event: "task:updated", data: failedTask, ts: now });
+        return;
+      }
+
       const snapshot = ctx.reviewStore.createSnapshot(
         {
           taskId: task.id,
           specRef: null,
+          worktreeDir: reviewWorktree.worktreeDir,
           patch: patchArtifact?.patch ?? null,
           changedFiles: patchArtifact?.paths?.length ? patchArtifact.paths : changedFiles,
           lintSummary: "",

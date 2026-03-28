@@ -7,7 +7,7 @@ import path from "node:path";
 import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { TaskStore } from "../../server/tasks/store.js";
 import type { Task } from "../../server/tasks/types.js";
-import { OrchestratorTaskExecutor } from "../../server/tasks/executor.js";
+import { OrchestratorTaskExecutor, persistTaskWorktreeReference } from "../../server/tasks/executor.js";
 
 describe("tasks/executor artifacts", () => {
   let tmpDir: string;
@@ -85,5 +85,67 @@ describe("tasks/executor artifacts", () => {
     assert.equal(changed.length, 1);
     const payload = JSON.parse(changed[0]!.content) as { paths?: string[] };
     assert.deepEqual(payload.paths, ["src/a.ts"]);
+  });
+
+  it("injects explicit reviewer artifact references only when present", async () => {
+    const store = new TaskStore();
+    const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
+    store.saveContext(
+      task.id,
+      {
+        contextType: "artifact:review_artifact_reference",
+        content: JSON.stringify({
+          reviewArtifactId: "artifact-1",
+          snapshotId: "snapshot-1",
+          taskId: "source-task",
+          verdict: "analysis",
+          scope: "reviewer",
+          summaryText: "Use a guard clause.",
+          responseText: "Use a guard clause before the expensive branch.",
+        }),
+      },
+      Date.now(),
+    );
+
+    const prompts: string[] = [];
+    const orchestrator = {
+      setModel() {},
+      onEvent() {
+        return () => undefined;
+      },
+      async invokeAgent(_: string, input: string) {
+        prompts.push(String(input));
+        return { response: "ok" };
+      },
+    };
+
+    const executor = new OrchestratorTaskExecutor({
+      getOrchestrator: () => orchestrator as any,
+      store,
+      autoModelOverride: "mock",
+    });
+
+    await executor.execute(task, {});
+
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0] ?? "", /reviewArtifactId: artifact-1/);
+    assert.match(prompts[0] ?? "", /snapshotId: snapshot-1/);
+    assert.match(prompts[0] ?? "", /Use a guard clause before the expensive branch\./);
+  });
+
+  it("persists explicit worktree references for reviewer snapshot binding", () => {
+    const store = new TaskStore();
+    const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
+
+    persistTaskWorktreeReference(store, task.id, { worktreeDir: "/tmp/bootstrap-worktree", source: "bootstrap" }, 123);
+
+    const contexts = store.getContext(task.id);
+    const worktreeRef = contexts.find((context) => context.contextType === "artifact:worktree_reference");
+    assert.ok(worktreeRef);
+    assert.deepEqual(JSON.parse(worktreeRef!.content), {
+      worktreeDir: "/tmp/bootstrap-worktree",
+      source: "bootstrap",
+      createdAt: 123,
+    });
   });
 });

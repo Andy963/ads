@@ -449,6 +449,15 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     enqueuePrompt(text, images, planner);
   };
 
+  const sendReviewerPrompt = (content: string): void => {
+    apiError.value = null;
+    const text = String(content ?? "");
+    const reviewer = activeReviewerRuntime.value;
+    const images = reviewer.pendingImages.value.slice();
+    reviewer.pendingImages.value = [];
+    enqueuePrompt(text, images, reviewer);
+  };
+
   const persistReasoningEffort = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
     if (!sessionId) return;
@@ -501,6 +510,20 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     persistModelId(rt);
   };
 
+  const setReviewerModelReasoningEffort = (effort: string): void => {
+    apiError.value = null;
+    const rt = activeReviewerRuntime.value;
+    rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
+    persistReasoningEffort(rt);
+  };
+
+  const setReviewerModelId = (modelId: string): void => {
+    apiError.value = null;
+    const rt = activeReviewerRuntime.value;
+    rt.modelId.value = normalizeModelId(modelId);
+    persistModelId(rt);
+  };
+
   const switchMainAgent = (agentId: string): void => {
     apiError.value = null;
     const next = String(agentId ?? "").trim();
@@ -517,6 +540,14 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     rt.ws?.send?.("set_agent", { agentId: next });
   };
 
+  const switchReviewerAgent = (agentId: string): void => {
+    apiError.value = null;
+    const next = String(agentId ?? "").trim();
+    if (!next) return;
+    const rt = activeReviewerRuntime.value;
+    rt.ws?.send?.("set_agent", { agentId: next });
+  };
+
   const interruptActive = (): void => {
     activeRuntime.value.ws?.interrupt();
   };
@@ -527,6 +558,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const clearActiveChat = (): void => {
     const rt = activeRuntime.value;
+    rt.composerDraft.value = "";
     threadReset(rt, {
       notice: "",
       warning: null,
@@ -539,6 +571,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const clearPlannerChat = (): void => {
     const rt = activePlannerRuntime.value;
+    rt.composerDraft.value = "";
     rt.queuedPrompts.value = [];
     threadReset(rt, {
       notice: "",
@@ -547,6 +580,36 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       clearBackendHistory: true,
       resetThreadId: true,
       source: "user_clear_planner_context",
+    });
+  };
+
+  const clearReviewerChat = (): void => {
+    const rt = activeReviewerRuntime.value;
+    rt.composerDraft.value = "";
+    rt.queuedPrompts.value = [];
+    rt.boundReviewSnapshotId.value = null;
+    rt.latestReviewArtifact.value = null;
+    threadReset(rt, {
+      notice: "",
+      warning: null,
+      keepLatestTurn: false,
+      clearBackendHistory: true,
+      resetThreadId: true,
+      source: "user_clear_reviewer_context",
+    });
+  };
+
+  const startNewReviewerSession = (): void => {
+    const rt = activeReviewerRuntime.value;
+    rt.composerDraft.value = "";
+    rt.queuedPrompts.value = [];
+    threadReset(rt, {
+      notice: "",
+      warning: null,
+      keepLatestTurn: false,
+      clearBackendHistory: true,
+      resetThreadId: true,
+      source: "user_new_reviewer_session",
     });
   };
 
@@ -620,8 +683,21 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     activePlannerRuntime.value.pendingImages.value = [];
   };
 
+  const addReviewerPendingImages = (imgs: IncomingImage[]): void => {
+    const rt = activeReviewerRuntime.value;
+    rt.pendingImages.value = [...rt.pendingImages.value, ...(Array.isArray(imgs) ? imgs : [])];
+  };
+
+  const clearReviewerPendingImages = (): void => {
+    activeReviewerRuntime.value.pendingImages.value = [];
+  };
+
   const removePlannerQueuedPrompt = (id: string): void => {
     removeQueuedPrompt(id, activePlannerRuntime.value);
+  };
+
+  const removeReviewerQueuedPrompt = (id: string): void => {
+    removeQueuedPrompt(id, activeReviewerRuntime.value);
   };
 
   const openTaskCreateDialog = (): void => {
@@ -664,26 +740,35 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     confirmDeleteTask,
     sendMainPrompt,
     sendPlannerPrompt,
+    sendReviewerPrompt,
     markTaskReviewDone,
     switchMainAgent,
     switchPlannerAgent,
+    switchReviewerAgent,
     interruptActive,
     interruptPlanner,
     clearActiveChat,
     clearPlannerChat,
+    clearReviewerChat,
+    startNewReviewerSession,
     resumeTaskThread,
     resumePlannerThread,
     addPendingImages,
     clearPendingImages,
     addPlannerPendingImages,
     clearPlannerPendingImages,
+    addReviewerPendingImages,
+    clearReviewerPendingImages,
     openTaskCreateDialog,
     closeTaskCreateDialog,
     select,
     removePlannerQueuedPrompt,
+    removeReviewerQueuedPrompt,
     setMainModelReasoningEffort,
     setPlannerModelReasoningEffort,
+    setReviewerModelReasoningEffort,
     setMainModelId,
     setPlannerModelId,
+    setReviewerModelId,
   };
 }

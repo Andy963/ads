@@ -1,4 +1,4 @@
-import type { TaskBundleDraft, TaskEventPayload } from "./types";
+import type { ReviewArtifactSummary, TaskBundleDraft, TaskEventPayload } from "./types";
 
 type WsCommandPayload = {
   id?: string;
@@ -55,6 +55,8 @@ type WsMessage =
     }
   | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number }
   | { type: "task_bundle_draft"; action?: "upsert" | "delete"; draft?: TaskBundleDraft | null }
+  | { type: "reviewer_artifact"; artifact?: ReviewArtifactSummary | null }
+  | { type: "reviewer_snapshot_binding"; snapshotId?: string | null; taskId?: string | null }
   | { type: string; [k: string]: unknown };
 
 export class AdsWebSocket {
