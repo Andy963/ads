@@ -201,5 +201,77 @@ describe("web/api stage guards", () => {
     assert.equal(res.statusCode, 409);
     assert.deepEqual(parseJson(res.body), { error: "Task not cancellable in status: pending" });
   });
+
+  it("resume action promotes queued tasks before resuming the queue", async () => {
+    let promoteCalls = 0;
+    let resumeCalls = 0;
+    let setModeAllCalls = 0;
+    let maybePauseCalls = 0;
+
+    const req = createReq("PATCH", { action: "resume" });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/t-1?workspace=/tmp/ws");
+
+    const taskCtx = {
+      sessionId: "s-1",
+      queueRunning: false,
+      runController: {
+        setModeAll() {
+          setModeAllCalls += 1;
+        },
+        setModeManual() {},
+        maybePauseAfterDrain() {
+          maybePauseCalls += 1;
+          return false;
+        },
+      },
+      taskQueue: {
+        pause() {},
+        resume() {
+          resumeCalls += 1;
+        },
+        cancel() {},
+      },
+      taskStore: {
+        getTask() {
+          return { id: "t-1", status: "queued" } as Task;
+        },
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as any,
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as any;
+      },
+      promoteQueuedTasksToPending() {
+        promoteCalls += 1;
+      },
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const ctx: ApiRouteContext = {
+      req: req as any,
+      res: res as any,
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    const handled = await handleTaskByIdRoute(ctx, deps);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(parseJson(res.body), { success: true });
+    assert.equal(setModeAllCalls, 1);
+    assert.equal(resumeCalls, 1);
+    assert.equal(promoteCalls, 1);
+    assert.equal(maybePauseCalls, 1);
+  });
 });
 

@@ -69,6 +69,8 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         pauseQueueInManualMode(taskCtx, "api");
       } else if (parsed.action === "resume") {
         startQueueInAllMode(taskCtx);
+        deps.promoteQueuedTasksToPending(taskCtx);
+        taskCtx.runController.maybePauseAfterDrain(taskCtx);
       } else if (parsed.action === "cancel") {
         const existing = taskCtx.taskStore.getTask(taskId);
         if (!existing) {
