@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { parseAllowedOrigins, isOriginAllowed } from "../auth/origin.js";
 import { createHttpServer } from "./httpServer.js";
+import { listenServer } from "./listenServer.js";
 import { createApiRequestHandler } from "./api/handler.js";
 import { authenticateRequest as authenticateWebRequest } from "./auth.js";
 import { attachWebSocketServer } from "./ws/server.js";
@@ -451,11 +452,9 @@ export async function startWebServer(): Promise<void> {
     logger.warn(`[Web] Failed to sync templates: ${(error as Error).message}`);
   }
   await ensureWebPidFile();
-
-  server.listen(webConfig.port, webConfig.host, () => {
-    logger.info(`WebSocket server listening on ws://${webConfig.host}:${webConfig.port}`);
-    logger.info(`Workspace: ${workspaceRoot}`);
-  });
+  await listenServer(server, webConfig.port, webConfig.host);
+  logger.info(`WebSocket server listening on ws://${webConfig.host}:${webConfig.port}`);
+  logger.info(`Workspace: ${workspaceRoot}`);
 
   startAgentAvailabilityProbe();
 }
