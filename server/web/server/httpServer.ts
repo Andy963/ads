@@ -121,7 +121,17 @@ export function createHttpServer(options: {
       return true;
     }
 
-    const raw = (url.split("?")[0] ?? "/").trim();
+    let raw = (url.split("?")[0] ?? "/").trim();
+    try {
+      // Security: Decode URL components to prevent path traversal bypasses
+      // e.g. /%2e%2e/ translates to /../ and would bypass startswith verification if not decoded
+      raw = decodeURIComponent(raw);
+    } catch {
+      setSecurityHeaders(res);
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Bad Request");
+      return true;
+    }
     const rel = raw.startsWith("/") ? raw : `/${raw}`;
     const normalized = path.posix.normalize(rel);
     const safeRel = normalized.startsWith("/") ? normalized : `/${normalized}`;
