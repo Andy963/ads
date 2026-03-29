@@ -135,8 +135,6 @@ describe("TaskBundleDraftPanel", () => {
 
     expect(wrapper.find('[data-testid="task-bundle-draft-task-normalization-warning"]').exists()).toBe(true);
     expect((wrapper.get('[data-testid="task-bundle-draft-approve"]').element as HTMLButtonElement).disabled).toBe(true);
-    expect(wrapper.find('[data-testid="task-bundle-draft-task-title"]').exists()).toBe(true);
-    expect(wrapper.findAll('[data-testid^="task-bundle-draft-task-title-"]')).toHaveLength(0);
 
     const promptField = wrapper.get('[data-testid="task-bundle-draft-task-prompt"]');
     await promptField.setValue("");

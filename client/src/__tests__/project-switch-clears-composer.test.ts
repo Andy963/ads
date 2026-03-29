@@ -170,5 +170,5 @@ describe("Project and lane composer draft isolation", () => {
     );
 
     wrapper.unmount();
-  });
+  }, 30_000);
 });

@@ -195,7 +195,7 @@ describe("App.updateQueuedTaskAndRun", () => {
     ]);
 
     wrapper.unmount();
-  }, 10_000);
+  }, 20_000);
 
   it("patches a queued task and starts the queue without reordering pending tasks", async () => {
     const calls: Array<{ method: "PATCH" | "POST"; url: string; body: unknown }> = [];

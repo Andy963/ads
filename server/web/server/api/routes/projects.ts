@@ -119,8 +119,9 @@ export async function handleProjectRoutes(
     const deleted = deleteWebProject(db, auth.userId, projectId);
     const currentActive = getActiveWebProjectId(db, auth.userId);
     let nextActive = currentActive;
-    if (currentActive === projectId) {
-      nextActive = "default";
+    if (deleted && currentActive === projectId) {
+      const remainingProjects = listWebProjects(db, auth.userId);
+      nextActive = remainingProjects[0]?.id ?? "default";
       setActiveWebProjectId(db, auth.userId, nextActive);
     }
     sendJson(res, 200, { success: deleted, activeProjectId: nextActive });

@@ -7,7 +7,7 @@ import path from "node:path";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
-import { listWebProjects, upsertWebProject } from "../../server/web/projects/store.js";
+import { listWebProjects, setActiveWebProjectId, upsertWebProject } from "../../server/web/projects/store.js";
 import { handleProjectRoutes } from "../../server/web/server/api/routes/projects.js";
 
 type FakeReq = {
@@ -237,6 +237,44 @@ describe("web/projects ordering", () => {
     const listed = listWebProjects(db, "u");
     assert.equal(listed[0]?.name, "Renamed Demo");
     assert.equal(listed[0]?.chatSessionId, "review-session");
+  });
+
+  it("DELETE /api/projects/:id switches active project to the next real project before default", async () => {
+    const db = getStateDatabase();
+    ensureWebAuthTables(db);
+    ensureWebProjectTables(db);
+
+    db.prepare(
+      `INSERT INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run("u", "u", "x", 1, 1);
+
+    upsertWebProject(db, { userId: "u", projectId: "p1", workspaceRoot: "/a", name: "A" }, 10);
+    upsertWebProject(db, { userId: "u", projectId: "p2", workspaceRoot: "/b", name: "B" }, 20);
+    upsertWebProject(db, { userId: "u", projectId: "p3", workspaceRoot: "/c", name: "C" }, 30);
+    setActiveWebProjectId(db, "u", "p2", 40);
+
+    const req = createReq("DELETE");
+    const res = createRes();
+    const handled = await handleProjectRoutes(
+      {
+        req: req as any,
+        res: res as any,
+        url: new URL("http://localhost/api/projects/p2"),
+        pathname: "/api/projects/p2",
+        auth: { userId: "u", username: "u" },
+      } as any,
+      { allowedDirs: [] },
+    );
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(parseJson(res.body), { success: true, activeProjectId: "p1" });
+
+    const payload = listWebProjects(db, "u");
+    assert.deepEqual(
+      payload.map((project) => project.id),
+      ["p1", "p3"],
+    );
   });
 
   it("PATCH /api/projects/:id rejects blank-only fields after trim", async () => {
