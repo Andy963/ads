@@ -177,7 +177,8 @@ function summarizeSed(commandLine: string): string | null {
   if (tokens[0] !== "sed") {
     return null;
   }
-  const file = [...tokens].reverse().find((token) => token && !token.startsWith("-"));
+  // ⚡ Bolt: Use findLast to avoid O(N) array allocation and reverse mutation
+  const file = tokens.findLast((token) => token && !token.startsWith("-"));
   if (!file || file === "sed") {
     return null;
   }
