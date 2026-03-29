@@ -296,7 +296,7 @@ describe("App.updateQueuedTaskAndRun", () => {
     wrapper.unmount();
   }, 10_000);
 
-  it("reruns a completed task and starts the task queue", async () => {
+  it("reruns a completed task via single-task run", async () => {
     const calls: Array<{ method: "PATCH" | "POST"; url: string; body: unknown }> = [];
 
     const completed = makeTask({ id: "t-1", status: "completed" });
@@ -322,8 +322,9 @@ describe("App.updateQueuedTaskAndRun", () => {
         expect(body).toEqual({ title: "Updated", prompt: "Updated prompt" });
         return { success: true, task: { ...rerun, title: "Updated", prompt: "Updated prompt" } };
       }
-      if (url.includes("/api/task-queue/run")) {
-        return { enabled: true, running: true, ready: true, streaming: false } satisfies TaskQueueStatus;
+      if (url.includes("/api/tasks/t-2/run")) {
+        expect(body).toEqual({});
+        return { success: true, taskId: "t-2", mode: "single", state: "scheduled" };
       }
       throw new Error(`unexpected url: ${url}`);
     };
@@ -341,7 +342,7 @@ describe("App.updateQueuedTaskAndRun", () => {
 
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       expect.stringContaining("POST /api/tasks/t-1/rerun"),
-      expect.stringContaining("POST /api/task-queue/run"),
+      expect.stringContaining("POST /api/tasks/t-2/run"),
     ]);
 
     wrapper.unmount();

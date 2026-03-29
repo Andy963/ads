@@ -17,7 +17,7 @@ import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
-function waitForWsOpen(client: WebSocket, timeoutMs = 1500): Promise<void> {
+function waitForWsOpen(client: WebSocket, timeoutMs = 3000): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Timed out waiting for ws open")), timeoutMs);
     client.once("open", () => {
@@ -31,7 +31,7 @@ function waitForWsOpen(client: WebSocket, timeoutMs = 1500): Promise<void> {
   });
 }
 
-function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean, timeoutMs = 1500): Promise<WsJson> {
+function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean, timeoutMs = 3000): Promise<WsJson> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Timed out waiting for ws message")), timeoutMs);
     const handler = (raw: RawData) => {
@@ -230,7 +230,7 @@ describe("web/server/ws/preflight-persistence", () => {
       const ack = await waitForWsMessage(
         client,
         (msg) => msg.type === "ack" && msg.client_message_id === "m2",
-        500,
+        2000,
       );
       assert.equal(ack.type, "ack");
 

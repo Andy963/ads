@@ -226,10 +226,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
         if (res?.task) {
           upsertTask(res.task);
           selectedId.value = res.task.id;
+          await runSingleTask(res.task.id);
         } else {
           await loadTasks();
         }
-        await runTaskQueue();
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         apiError.value = msg;

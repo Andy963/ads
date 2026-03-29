@@ -40,6 +40,19 @@ type StructuredSchedulerResult = {
 
 const JSON_CODE_FENCE_REGEX = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
 
+function shouldDisableTelegramNotificationsInTests(): boolean {
+  if (String(process.env.ADS_ENABLE_TELEGRAM_NOTIFICATIONS_IN_TESTS ?? "").trim() === "1") {
+    return false;
+  }
+  if (String(process.env.VITEST ?? "").trim()) {
+    return true;
+  }
+  if (process.argv.includes("--test")) {
+    return true;
+  }
+  return String(process.env.npm_lifecycle_event ?? "").trim() === "test:web";
+}
+
 function resolveTelegramNotifyTimeZoneFromEnv(): string {
   const raw = String(process.env.ADS_TELEGRAM_NOTIFY_TIMEZONE ?? "").trim();
   if (!raw) return DEFAULT_TELEGRAM_NOTIFY_TIME_ZONE;
@@ -279,6 +292,9 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
   if (!taskId) {
     return "skipped";
   }
+  if (shouldDisableTelegramNotificationsInTests()) {
+    return "skipped";
+  }
 
   const botToken = resolveTaskNotificationTelegramBotTokenFromEnv();
   if (!botToken) {
@@ -358,6 +374,7 @@ export function notifyTaskTerminalViaTelegram(args: {
 }): void {
   const taskId = String(args.task.id ?? "").trim();
   if (!taskId) return;
+  if (shouldDisableTelegramNotificationsInTests()) return;
 
   const resultText = String(args.task.result ?? "").trim();
   if (resultText) {
@@ -410,6 +427,9 @@ export function startTaskTerminalTelegramRetryLoop(args: {
   let inProgress = false;
   const tick = async () => {
     if (inProgress) return;
+    if (shouldDisableTelegramNotificationsInTests()) {
+      return;
+    }
     if (!resolveTaskNotificationTelegramBotTokenFromEnv()) {
       return;
     }
