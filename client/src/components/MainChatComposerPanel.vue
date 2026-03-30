@@ -334,7 +334,7 @@ const {
           {{ q.text || `[图片 x${q.imagesCount}]` }}
           <span v-if="q.text && q.imagesCount" class="queue-sub"> · 图片 x{{ q.imagesCount }}</span>
         </div>
-        <button class="queue-del" type="button" title="移除" @click="emit('removeQueued', q.id)">
+        <button class="queue-del" type="button" title="移除" aria-label="移除" @click="emit('removeQueued', q.id)">
           <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path
               fill-rule="evenodd"
@@ -361,7 +361,7 @@ const {
           <span v-else class="attachmentsThumbFallback">图片</span>
         </button>
       </div>
-      <button class="attachmentsClear" type="button" title="清空图片" @click="emit('clearImages')">
+      <button class="attachmentsClear" type="button" title="清空图片" aria-label="清空图片" @click="emit('clearImages')">
         <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <path
             fill-rule="evenodd"
@@ -385,7 +385,7 @@ const {
       />
       <div class="inputToolbar">
         <div class="inputToolbarLeft">
-          <button class="attachIcon" type="button" title="添加图片附件" @click="triggerFileInput">
+          <button class="attachIcon" type="button" title="添加图片附件" aria-label="添加图片附件" @click="triggerFileInput">
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path
                 fill-rule="evenodd"
@@ -454,6 +454,7 @@ const {
             :disabled="canInterrupt || transcribing"
             type="button"
             :title="recording ? '停止录音' : '语音输入（追加到输入框）'"
+            :aria-label="recording ? '停止录音' : '语音输入（追加到输入框）'"
             @click="toggleRecording"
           >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -463,7 +464,7 @@ const {
               />
             </svg>
           </button>
-          <button v-if="canInterrupt" class="stopIcon" type="button" title="中断" @click="emit('interrupt')">
+          <button v-if="canInterrupt" class="stopIcon" type="button" title="中断" aria-label="中断" @click="emit('interrupt')">
             <span class="interruptSpinner" aria-hidden="true" />
           </button>
           <button
@@ -472,6 +473,7 @@ const {
             :disabled="(!input.trim() && pendingImages.length === 0) || recording || transcribing"
             type="button"
             title="发送"
+            aria-label="发送"
             @click="send"
           >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
