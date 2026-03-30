@@ -1,6 +1,7 @@
 import type { ChatActions } from "../chat";
 import type { ChatItem, ChatPatch, ChatPatchFile, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
 import type { ReviewArtifactSummary, TaskBundleDraft } from "../../api/types";
+import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 
 import { deriveProjectNameFromPath } from "./projectName";
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
@@ -124,47 +125,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     turnPatchFilesByPath.clear();
     turnPatchDiffByPath.clear();
     turnPatchOrder.length = 0;
-  };
-
-  const isDevNullPath = (raw: string): boolean => {
-    const p = String(raw ?? "").trim();
-    return p === "dev/null" || p === "/dev/null";
-  };
-
-  const splitUnifiedDiffByPath = (raw: string): Map<string, string> => {
-    const diff = String(raw ?? "").trimEnd();
-    const out = new Map<string, string>();
-    if (!diff.trim()) return out;
-
-    const lines = diff.split("\n");
-    let currentPath: string | null = null;
-    let currentStart = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? "";
-      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-      if (!match) continue;
-
-      if (currentPath) {
-        const section = lines.slice(currentStart, i).join("\n").trimEnd();
-        if (section.trim()) out.set(currentPath, section);
-      }
-
-      const aPath = String(match[1] ?? "").trim();
-      const bPath = String(match[2] ?? "").trim();
-      const picked = bPath && !isDevNullPath(bPath) ? bPath : aPath;
-      currentPath = picked || null;
-      currentStart = i;
-    }
-
-    if (currentPath) {
-      const section = lines.slice(currentStart).join("\n").trimEnd();
-      if (section.trim()) out.set(currentPath, section);
-    }
-
-    if (out.size > 0) return out;
-    out.set("__all__", diff);
-    return out;
   };
 
   const buildTurnPatchFiles = (): ChatPatchFile[] =>

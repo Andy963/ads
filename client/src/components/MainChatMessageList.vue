@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
 import type { ChatMessage, RenderMessage } from "./mainChat/types";
+import { PATCH_DIFF_FALLBACK_KEY, splitUnifiedDiffByPath } from "../lib/patchDiff";
 import type { MarkdownFilePreviewLink } from "../lib/markdown";
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
@@ -27,8 +28,16 @@ const emit = defineEmits<{
 }>();
 
 const openCommandTrees = ref<Set<string>>(new Set());
-const expandedPatchIds = ref<Set<string>>(new Set());
+const expandedPatchKeys = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
+
+type PatchRenderRow = {
+  key: string;
+  path: string;
+  added: number | null;
+  removed: number | null;
+  diff: string;
+};
 
 function isLiveStepRenderMessage(m: RenderMessage): boolean {
   return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
@@ -55,20 +64,14 @@ function formatPatchStatHtml(added: number | null | undefined, removed: number |
   );
 }
 
-function patchHeaderTitle(m: RenderMessage): string {
-  const files = Array.isArray(m.patch?.files) ? m.patch?.files : [];
-  const first = files[0];
-  if (!first?.path) return "补丁";
-  return first.path;
+function patchRowTitle(row: PatchRenderRow): string {
+  const title = String(row.path ?? "").trim();
+  return title || "补丁";
 }
 
-function patchHeaderMeta(m: RenderMessage): string {
-  const files = Array.isArray(m.patch?.files) ? m.patch?.files : [];
-  const first = files[0];
-  const hiddenCount = Math.max(0, files.length - 1);
+function patchRowMeta(row: PatchRenderRow): string {
   const parts: string[] = [];
-  if (first) parts.push(formatPatchStatHtml(first.added, first.removed));
-  if (hiddenCount > 0) parts.push(`<span class="patchCardMetaExtra">${escapeHtml(`另 ${hiddenCount} 个文件`)}</span>`);
+  parts.push(formatPatchStatHtml(row.added, row.removed));
   return parts.join(" ");
 }
 
@@ -103,28 +106,97 @@ function renderPatchDiffHtml(raw: unknown): string {
     .join("\n");
 }
 
-function isPatchExpanded(id: string): boolean {
-  return expandedPatchIds.value.has(id);
+function patchExpandKey(messageId: string, rowKey: string): string {
+  return `${messageId}::${rowKey}`;
 }
 
-function togglePatchExpanded(id: string): void {
-  const next = new Set(expandedPatchIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  expandedPatchIds.value = next;
+function buildPatchRows(m: RenderMessage): PatchRenderRow[] {
+  const files = Array.isArray(m.patch?.files) ? m.patch.files : [];
+  const diff = String(m.patch?.diff ?? m.content ?? "").trimEnd();
+  const diffByPath = splitUnifiedDiffByPath(diff);
+  const fallbackDiff = diffByPath.get(PATCH_DIFF_FALLBACK_KEY) ?? "";
+  const rows: PatchRenderRow[] = [];
+  const seen = new Set<string>();
+  let fallbackUsed = false;
+
+  for (const file of files) {
+    const filePath = String(file?.path ?? "").trim();
+    if (!filePath) continue;
+    const rowDiff = diffByPath.get(filePath) ?? (!fallbackUsed && files.length === 1 ? fallbackDiff : "");
+    if (rowDiff === fallbackDiff && rowDiff) fallbackUsed = true;
+    rows.push({
+      key: filePath,
+      path: filePath,
+      added: file?.added ?? null,
+      removed: file?.removed ?? null,
+      diff: rowDiff,
+    });
+    seen.add(filePath);
+  }
+
+  for (const [path, section] of diffByPath.entries()) {
+    if (path === PATCH_DIFF_FALLBACK_KEY || seen.has(path) || !section.trim()) continue;
+    rows.push({
+      key: path,
+      path,
+      added: null,
+      removed: null,
+      diff: section,
+    });
+    seen.add(path);
+  }
+
+  if (!rows.length && fallbackDiff) {
+    rows.push({
+      key: PATCH_DIFF_FALLBACK_KEY,
+      path: "补丁",
+      added: null,
+      removed: null,
+      diff: fallbackDiff,
+    });
+    fallbackUsed = true;
+  }
+
+  if (!fallbackUsed && fallbackDiff) {
+    rows.push({
+      key: `${PATCH_DIFF_FALLBACK_KEY}:extra`,
+      path: "补丁",
+      added: null,
+      removed: null,
+      diff: fallbackDiff,
+    });
+  }
+
+  return rows;
+}
+
+function isPatchExpanded(messageId: string, rowKey: string): boolean {
+  return expandedPatchKeys.value.has(patchExpandKey(messageId, rowKey));
+}
+
+function togglePatchExpanded(messageId: string, rowKey: string): void {
+  const key = patchExpandKey(messageId, rowKey);
+  const next = new Set(expandedPatchKeys.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expandedPatchKeys.value = next;
 }
 
 watch(
   () =>
     props.messages
       .filter((m) => m.kind === "patch")
-      .map((m) => String(m.id ?? "").trim())
+      .flatMap((m) =>
+        buildPatchRows(m as RenderMessage)
+          .map((row) => patchExpandKey(String(m.id ?? "").trim(), row.key))
+          .filter(Boolean),
+      )
       .filter(Boolean),
-  (ids) => {
-    const visibleIds = new Set(ids);
-    const next = new Set([...expandedPatchIds.value].filter((id) => visibleIds.has(id)));
-    if (next.size !== expandedPatchIds.value.size) {
-      expandedPatchIds.value = next;
+  (keys) => {
+    const visibleKeys = new Set(keys);
+    const next = new Set([...expandedPatchKeys.value].filter((key) => visibleKeys.has(key)));
+    if (next.size !== expandedPatchKeys.value.size) {
+      expandedPatchKeys.value = next;
     }
   },
   { immediate: true },
@@ -266,25 +338,28 @@ function closeFilePreview(): void {
         <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
       </div>
       <div v-else-if="m.kind === 'patch'" :class="['bubble', 'bubble--compact', 'patchCard']">
-        <div class="patchCardHeader">
-          <div class="patchCardSummary">
-            <div class="patchCardTitle" :title="patchHeaderTitle(m)">{{ patchHeaderTitle(m) }}</div>
-            <div v-if="patchHeaderMeta(m)" class="patchCardMeta" v-html="patchHeaderMeta(m)"></div>
+        <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
+          <div class="patchCardHeader">
+            <div class="patchCardSummary">
+              <div class="patchCardTitle" :title="patchRowTitle(row)">{{ patchRowTitle(row) }}</div>
+              <div v-if="patchRowMeta(row)" class="patchCardMeta" v-html="patchRowMeta(row)"></div>
+            </div>
+            <button
+              v-if="row.diff"
+              class="patchCardToggle"
+              type="button"
+              :aria-expanded="isPatchExpanded(m.id, row.key)"
+              :data-testid="`patch-toggle-${m.id}-${rowIdx}`"
+              @click.stop="togglePatchExpanded(m.id, row.key)"
+            >
+              {{ isPatchExpanded(m.id, row.key) ? "收起" : "展开" }}
+            </button>
           </div>
-          <button
-            class="patchCardToggle"
-            type="button"
-            :aria-expanded="isPatchExpanded(m.id)"
-            :data-testid="`patch-toggle-${m.id}`"
-            @click.stop="togglePatchExpanded(m.id)"
-          >
-            {{ isPatchExpanded(m.id) ? "收起" : "展开" }}
-          </button>
+          <div v-if="row.diff && isPatchExpanded(m.id, row.key)" class="patchCardBody">
+            <pre class="patchCardDiff" v-html="renderPatchDiffHtml(row.diff)"></pre>
+          </div>
         </div>
-        <div v-if="isPatchExpanded(m.id)" class="patchCardBody">
-          <pre class="patchCardDiff" v-html="renderPatchDiffHtml(m.patch?.diff || m.content)"></pre>
-          <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
-        </div>
+        <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
       </div>
       <div
         v-else
@@ -457,6 +532,17 @@ function closeFilePreview(): void {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.patchCardRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.patchCardRow + .patchCardRow {
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
 }
 
 .patchCardHeader {

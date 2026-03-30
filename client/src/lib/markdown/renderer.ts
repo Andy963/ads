@@ -54,6 +54,16 @@ export const md = new MarkdownIt({
 md.linkify.set({ fuzzyLink: false });
 md.validateLink = (url) => isSafeUrl(url);
 
+// Disable underscore-based emphasis so paths like __tests__ are not treated as bold.
+const emphRule = md.inline.ruler.__rules__.find((r: { name: string }) => r.name === "emphasis");
+if (emphRule) {
+  const origEmph = emphRule.fn;
+  emphRule.fn = function (state: { src: string; pos: number }, silent: boolean) {
+    if (state.src.charCodeAt(state.pos) === 0x5f) return false;
+    return origEmph.call(this, state, silent);
+  };
+}
+
 const defaultLinkOpenRenderer =
   md.renderer.rules.link_open ??
   ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
