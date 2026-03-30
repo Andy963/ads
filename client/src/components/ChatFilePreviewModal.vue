@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import { ApiClient } from "../api/client";
 import type { FilePreviewResponse } from "../api/types";
-import { hljs, renderMarkdownToHtml } from "../lib/markdown";
+import { copyTextToClipboard } from "../lib/clipboard";
+import { buildFilePreviewLines } from "../lib/filePreview";
 import type { MarkdownFilePreviewLink } from "../lib/markdown";
 import DraggableModal from "./DraggableModal.vue";
+import MarkdownContent from "./MarkdownContent.vue";
 
 const props = defineProps<{
   workspaceRoot?: string | null;
@@ -21,35 +23,20 @@ const rootEl = ref<HTMLElement | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const preview = ref<FilePreviewResponse | null>(null);
+const activeTarget = ref<MarkdownFilePreviewLink | null>(props.target);
+const copyState = ref<"idle" | "copied">("idle");
+let copyToastTimer: ReturnType<typeof setTimeout> | null = null;
 
 let loadToken = 0;
 
 const isMarkdown = computed(() => preview.value?.language === "markdown");
-const renderedMarkdown = computed(() => {
-  if (!isMarkdown.value) return "";
-  return renderMarkdownToHtml(String(preview.value?.content ?? ""));
-});
-
-const requestedLine = computed(() => props.target?.line ?? null);
+const requestedLine = computed(() => activeTarget.value?.line ?? null);
 const previewLines = computed(() => {
-  const content = String(preview.value?.content ?? "");
-  if (!content) return [] as Array<{ number: number; text: string; html: string | null }>;
-  const rawLang = preview.value?.language ?? null;
-  const lang = rawLang === "html" || rawLang === "vue" ? "xml" : rawLang;
-  let highlightedLines: string[] | null = null;
-  if (lang && hljs.getLanguage(lang)) {
-    try {
-      const result = hljs.highlight(content, { language: lang });
-      highlightedLines = result.value.split("\n");
-    } catch {
-      // fall back to plain text
-    }
-  }
-  return content.split("\n").map((text, idx) => ({
-    number: (preview.value?.startLine ?? 1) + idx,
-    text,
-    html: highlightedLines?.[idx] ?? null,
-  }));
+  return buildFilePreviewLines({
+    content: preview.value?.content ?? "",
+    startLine: preview.value?.startLine ?? 1,
+    language: preview.value?.language,
+  });
 });
 const highlightedLine = computed(() => {
   const line = requestedLine.value;
@@ -73,6 +60,18 @@ function normalizeErrorMessage(error: unknown): string {
   }
 }
 
+function resetCopyToast(): void {
+  if (copyToastTimer) {
+    clearTimeout(copyToastTimer);
+    copyToastTimer = null;
+  }
+  copyState.value = "idle";
+}
+
+onBeforeUnmount(() => {
+  resetCopyToast();
+});
+
 async function scrollToHighlightedLine(): Promise<void> {
   const line = highlightedLine.value;
   if (!line) return;
@@ -82,7 +81,7 @@ async function scrollToHighlightedLine(): Promise<void> {
 }
 
 async function loadPreview(): Promise<void> {
-  const target = props.target;
+  const target = activeTarget.value;
   const workspaceRoot = String(props.workspaceRoot ?? "").trim();
   if (!target || !workspaceRoot) {
     preview.value = null;
@@ -119,8 +118,17 @@ async function loadPreview(): Promise<void> {
 }
 
 watch(
-  () => [props.target?.path ?? "", props.target?.line ?? null, props.workspaceRoot ?? ""],
+  () => [props.target?.path ?? "", props.target?.line ?? null],
   () => {
+    activeTarget.value = props.target;
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [activeTarget.value?.path ?? "", activeTarget.value?.line ?? null, props.workspaceRoot ?? ""],
+  () => {
+    resetCopyToast();
     void loadPreview();
   },
   { immediate: true },
@@ -129,6 +137,22 @@ watch(
 watch(highlightedLine, () => {
   void scrollToHighlightedLine();
 });
+
+async function onCopyPreview(): Promise<void> {
+  const content = String(preview.value?.content ?? "");
+  if (!content) return;
+  const ok = await copyTextToClipboard(content);
+  if (!ok) return;
+  resetCopyToast();
+  copyState.value = "copied";
+  copyToastTimer = setTimeout(() => {
+    resetCopyToast();
+  }, 1400);
+}
+
+function openNestedPreview(target: MarkdownFilePreviewLink): void {
+  activeTarget.value = target;
+}
 </script>
 
 <template>
@@ -136,22 +160,43 @@ watch(highlightedLine, () => {
     <div ref="rootEl" class="filePreview">
       <div class="filePreviewHeader" data-drag-handle>
         <div class="filePreviewMeta">
-          <div class="filePreviewPath" :title="preview?.path || target.path">{{ preview?.path || target.path }}</div>
+          <div class="filePreviewPath" :title="preview?.path || activeTarget?.path || target.path">
+            {{ preview?.path || activeTarget?.path || target.path }}
+          </div>
           <span v-if="preview" class="filePreviewStats">
             {{ preview.totalLines }} 行<template v-if="preview.truncated"> · {{ preview.startLine }}-{{ preview.endLine }}</template>
           </span>
         </div>
-        <button
-          class="filePreviewClose"
-          type="button"
-          aria-label="关闭文件预览"
-          data-testid="chat-file-preview-close"
-          @click="emit('close')"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M1.5 1.5L12.5 12.5M12.5 1.5L1.5 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-          </svg>
-        </button>
+        <div class="filePreviewActions">
+          <button
+            class="filePreviewCopy"
+            type="button"
+            :data-state="copyState"
+            aria-label="复制当前预览内容"
+            data-testid="chat-file-preview-copy"
+            :disabled="!preview?.content"
+            @click="onCopyPreview"
+          >
+            <svg class="filePreviewIcon filePreviewIcon--copy" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+            <svg class="filePreviewIcon filePreviewIcon--check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+          </button>
+          <button
+            class="filePreviewClose"
+            type="button"
+            aria-label="关闭文件预览"
+            data-testid="chat-file-preview-close"
+            @click="emit('close')"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M1.5 1.5L12.5 12.5M12.5 1.5L1.5 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div class="filePreviewBody">
@@ -161,7 +206,13 @@ watch(highlightedLine, () => {
           <div v-if="outOfRangeLine" class="filePreviewHint">
             目标行 {{ requestedLine }} 超出文件范围
           </div>
-          <div v-if="isMarkdown" class="filePreviewMarkdown md" data-testid="chat-file-preview-code" v-html="renderedMarkdown"></div>
+          <div v-if="isMarkdown" class="filePreviewMarkdown" data-testid="chat-file-preview-code">
+            <MarkdownContent
+              :content="String(preview.content ?? '')"
+              :enable-file-preview="Boolean(workspaceRoot)"
+              @open-file-preview="openNestedPreview"
+            />
+          </div>
           <div v-else class="filePreviewCode" data-testid="chat-file-preview-code">
             <div
               v-for="line in previewLines"
@@ -227,23 +278,55 @@ watch(highlightedLine, () => {
   white-space: nowrap;
 }
 
+.filePreviewActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.filePreviewCopy,
 .filePreviewClose {
   flex-shrink: 0;
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
-  border: none;
-  background: transparent;
+  border: 1px solid var(--github-border);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--github-muted);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: color 120ms ease, background 120ms ease;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease;
 }
 
+.filePreviewCopy:disabled,
+.filePreviewClose:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.filePreviewCopy:hover,
 .filePreviewClose:hover {
   color: var(--github-text);
-  background: rgba(0, 0, 0, 0.06);
+  background: #ffffff;
+  border-color: var(--github-border);
+}
+
+.filePreviewIcon--check {
+  display: none;
+}
+
+.filePreviewCopy[data-state="copied"] .filePreviewIcon--copy {
+  display: none;
+}
+
+.filePreviewCopy[data-state="copied"] .filePreviewIcon--check {
+  display: block;
 }
 
 .filePreviewBody {
@@ -281,9 +364,6 @@ watch(highlightedLine, () => {
   min-height: 0;
   padding: 18px 24px;
   background: #fff;
-  font-size: 14px;
-  line-height: 1.7;
-  color: var(--github-text);
 }
 
 .filePreviewCode {

@@ -1,4 +1,4 @@
-export { hljs } from "./markdown/highlight";
+export { hljs, normalizeLang } from "./markdown/highlight";
 export {
   parseMarkdownFilePreviewHref,
   type MarkdownFilePreviewLink,
