@@ -2,7 +2,7 @@ import type http from "node:http";
 
 export function isStateChangingMethod(method: string | undefined): boolean {
   const normalized = String(method ?? "").toUpperCase();
-  return normalized === "POST" || normalized === "PATCH" || normalized === "DELETE";
+  return normalized === "POST" || normalized === "PUT" || normalized === "PATCH" || normalized === "DELETE";
 }
 
 export function resolveClientIp(req: http.IncomingMessage): string | null {
