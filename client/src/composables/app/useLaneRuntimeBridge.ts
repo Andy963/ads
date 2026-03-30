@@ -57,7 +57,7 @@ export function useLaneRuntimeBridge(params: {
   resumePlannerThread: () => void;
   resumeTaskThread: () => void;
 }) {
-  const activeChatLane = ref<ChatLane>("worker");
+  const activeChatLane = ref<ChatLane>("planner");
   const plannerRuntime = computed(() => asPlannerRuntimeShape(params.activePlannerRuntime.value));
   const workerRuntime = computed(() => asRuntimeShape(params.activeRuntime.value));
   const reviewerRuntime = computed(() => asRuntimeShape(params.activeReviewerRuntime.value));
