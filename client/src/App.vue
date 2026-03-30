@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
@@ -10,7 +10,10 @@ import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 
 import { createAppController } from "./app/controller";
-import type { ReviewArtifactListResponse, TaskBundle, TaskBundleDraftSpecFileKey, TaskBundleDraftSpecFileUpdate } from "./api/types";
+import type { TaskBundle, TaskBundleDraftSpecFileKey, TaskBundleDraftSpecFileUpdate } from "./api/types";
+import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
+import { useProjectSidebar } from "./composables/app/useProjectSidebar";
+import { useReviewerBinding } from "./composables/app/useReviewerBinding";
 import { CirclePlus, Refresh, ChatDotRound } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
@@ -130,157 +133,107 @@ const {
   deleteConfirmButtonEl,
 } = createAppController();
 
-const draggingProjectId = ref<string | null>(null);
-const dropTargetProjectId = ref<string | null>(null);
-const dropTargetPosition = ref<"before" | "after">("before");
-
-type ChatLane = "planner" | "worker" | "reviewer";
-
-const activeChatLane = ref<ChatLane>("worker");
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "planner", label: "Planner" },
   { id: "worker", label: "Worker" },
   { id: "reviewer", label: "Reviewer" },
 ];
 
-const plannerMessages = computed(() => activePlannerRuntime.value.messages.value);
-const plannerQueuedPrompts = computed(() =>
-  activePlannerRuntime.value.queuedPrompts.value.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length })),
-);
-const plannerPendingImages = computed(() => activePlannerRuntime.value.pendingImages.value);
-const plannerConnected = computed(() => activePlannerRuntime.value.connected.value);
-const plannerBusy = computed(() => activePlannerRuntime.value.busy.value);
-const plannerAgentDelegations = computed(() => activePlannerRuntime.value.delegationsInFlight.value);
-const plannerDrafts = computed(() => activePlannerRuntime.value.taskBundleDrafts.value);
-const plannerDraftsBusy = computed(() => activePlannerRuntime.value.taskBundleDraftsBusy.value);
-const plannerDraftsError = computed(() => activePlannerRuntime.value.taskBundleDraftsError.value);
-const plannerComposerDraft = computed({
-  get: () => activePlannerRuntime.value.composerDraft.value,
-  set: (value: string) => {
-    activePlannerRuntime.value.composerDraft.value = value;
-  },
-});
-const workerAgents = computed(() => activeRuntime.value.availableAgents.value);
-const workerActiveAgentId = computed(() => activeRuntime.value.activeAgentId.value);
-const workerComposerDraft = computed({
-  get: () => activeRuntime.value.composerDraft.value,
-  set: (value: string) => {
-    activeRuntime.value.composerDraft.value = value;
-  },
-});
-const plannerAgents = computed(() => activePlannerRuntime.value.availableAgents.value);
-const plannerActiveAgentId = computed(() => activePlannerRuntime.value.activeAgentId.value);
-const plannerThreadWarning = computed(() => activePlannerRuntime.value.threadWarning.value);
-const plannerChatKey = computed(() => `${activeProjectId.value}:planner`);
-const workerThreadWarning = computed(() => activeRuntime.value.threadWarning.value);
-const workerChatKey = computed(() => `${activeProjectId.value}:${activeProject.value?.chatSessionId ?? "main"}`);
-const workerQueuedPrompts = computed(() =>
-  queuedPrompts.value.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length })),
-);
-const resumeThreadBlocked = computed(() =>
-  Boolean(queueStatus.value?.running) || tasks.value.some((t) => t.status === "planning" || t.status === "running"),
-);
-
-const reviewerMessages = computed(() => activeReviewerRuntime.value.messages.value);
-const reviewerConnected = computed(() => activeReviewerRuntime.value.connected.value);
-const reviewerQueuedPrompts = computed(() =>
-  activeReviewerRuntime.value.queuedPrompts.value.map((q) => ({ id: q.id, text: q.text, imagesCount: q.images.length })),
-);
-const reviewerPendingImages = computed(() => activeReviewerRuntime.value.pendingImages.value);
-const reviewerBusy = computed(() => activeReviewerRuntime.value.busy.value);
-const reviewerThreadWarning = computed(() => activeReviewerRuntime.value.threadWarning.value);
-const reviewerAgents = computed(() => activeReviewerRuntime.value.availableAgents.value);
-const reviewerActiveAgentId = computed(() => activeReviewerRuntime.value.activeAgentId.value);
-const reviewerAgentDelegations = computed(() => activeReviewerRuntime.value.delegationsInFlight.value);
-const reviewerLatestArtifact = computed(() => activeReviewerRuntime.value.latestReviewArtifact.value);
-const reviewerBoundSnapshotId = computed(() => activeReviewerRuntime.value.boundReviewSnapshotId.value);
-const reviewerChatKey = computed(() => `${activeProjectId.value}:reviewer`);
-const selectedTask = computed(() => {
-  const id = String(selectedId.value ?? "").trim();
-  if (!id) return null;
-  return tasks.value.find((task) => task.id === id) ?? null;
-});
-const selectedTaskReviewSnapshotId = computed(() => {
-  const snapshotId = String(selectedTask.value?.reviewSnapshotId ?? "").trim();
-  return snapshotId || null;
-});
-const selectedTaskReviewLabel = computed(() => {
-  const task = selectedTask.value;
-  if (!task) return "No task selected";
-  return `${task.title || task.id} (${task.id.slice(0, 8)})`;
+const {
+  activeChatLane,
+  plannerMessages,
+  plannerQueuedPrompts,
+  plannerPendingImages,
+  plannerConnected,
+  plannerBusy,
+  plannerAgentDelegations,
+  plannerDrafts,
+  plannerDraftsBusy,
+  plannerDraftsError,
+  plannerComposerDraft,
+  plannerAgents,
+  plannerActiveAgentId,
+  plannerThreadWarning,
+  plannerChatKey,
+  workerAgents,
+  workerActiveAgentId,
+  workerComposerDraft,
+  workerThreadWarning,
+  workerChatKey,
+  workerQueuedPrompts,
+  resumeThreadBlocked,
+  reviewerMessages,
+  reviewerConnected,
+  reviewerQueuedPrompts,
+  reviewerPendingImages,
+  reviewerBusy,
+  reviewerThreadWarning,
+  reviewerAgents,
+  reviewerActiveAgentId,
+  reviewerAgentDelegations,
+  reviewerComposerDraft,
+  reviewerChatKey,
+  activeLaneBusy,
+  activeLaneThreadWarning,
+  activeLaneHasResume,
+  handleLaneNewSession,
+  handleLaneResumeThread,
+} = useLaneRuntimeBridge({
+  activeProjectId,
+  activeProject,
+  activeRuntime,
+  activePlannerRuntime,
+  activeReviewerRuntime,
+  queueStatus,
+  tasks,
+  queuedPrompts,
+  pendingImages,
+  agentBusy,
+  clearPlannerChat,
+  startNewChatSession,
+  startNewReviewerSession,
+  resumePlannerThread,
+  resumeTaskThread,
 });
 
-const activeLaneBusy = computed(() => {
-  if (activeChatLane.value === "planner") return plannerBusy.value;
-  if (activeChatLane.value === "reviewer") return reviewerBusy.value;
-  return agentBusy.value;
+const {
+  reviewerLatestArtifact,
+  reviewerBoundSnapshotId,
+  selectedTaskReviewSnapshotId,
+  selectedTaskReviewLabel,
+  bindReviewerToSelectedSnapshot,
+  clearReviewerSnapshotBinding,
+} = useReviewerBinding({
+  tasks,
+  selectedId,
+  activeReviewerRuntime,
+  api: computed(() => api),
+  resolveActiveWorkspaceRoot,
+  clearReviewerChat,
 });
 
-const activeLaneThreadWarning = computed(() => {
-  if (activeChatLane.value === "planner") return plannerThreadWarning.value;
-  if (activeChatLane.value === "worker") return workerThreadWarning.value;
-  return reviewerThreadWarning.value;
-});
-
-const activeLaneHasResume = computed(() => activeChatLane.value !== "reviewer");
-
-function handleLaneNewSession() {
-  if (activeChatLane.value === "planner") clearPlannerChat();
-  else if (activeChatLane.value === "worker") startNewChatSession();
-  else startNewReviewerSession();
-}
-
-function handleLaneResumeThread() {
-  if (activeChatLane.value === "planner") resumePlannerThread();
-  else if (activeChatLane.value === "worker") resumeTaskThread();
-}
-
-function withWorkspaceQuery(apiPath: string): string {
-  const root = String(resolveActiveWorkspaceRoot() ?? "").trim();
-  if (!root) return apiPath;
-  const joiner = apiPath.includes("?") ? "&" : "?";
-  return `${apiPath}${joiner}workspace=${encodeURIComponent(root)}`;
-}
-
-async function hydrateReviewerArtifact(snapshotId: string): Promise<void> {
-  const sid = String(snapshotId ?? "").trim();
-  if (!sid) {
-    activeReviewerRuntime.value.latestReviewArtifact.value = null;
-    return;
-  }
-  try {
-    const result = await api.get<ReviewArtifactListResponse>(
-      withWorkspaceQuery(`/api/review-artifacts?snapshotId=${encodeURIComponent(sid)}&limit=1`),
-    );
-    activeReviewerRuntime.value.latestReviewArtifact.value = Array.isArray(result.items) ? result.items[0] ?? null : null;
-  } catch {
-    activeReviewerRuntime.value.latestReviewArtifact.value = null;
-  }
-}
-
-async function bindReviewerToSelectedSnapshot(): Promise<void> {
-  const snapshotId = String(selectedTaskReviewSnapshotId.value ?? "").trim();
-  if (!snapshotId) {
-    return;
-  }
-  const rt = activeReviewerRuntime.value;
-  const previous = String(rt.boundReviewSnapshotId.value ?? "").trim();
-  if (previous && previous !== snapshotId) {
-    clearReviewerChat();
-  }
-  rt.boundReviewSnapshotId.value = snapshotId;
-  await hydrateReviewerArtifact(snapshotId);
-}
-
-function clearReviewerSnapshotBinding(): void {
-  clearReviewerChat();
-}
-
-const reviewerComposerDraft = computed({
-  get: () => activeReviewerRuntime.value.composerDraft.value,
-  set: (value: string) => {
-    activeReviewerRuntime.value.composerDraft.value = value;
-  },
+const {
+  draggingProjectId,
+  dropTargetProjectId,
+  dropTargetPosition,
+  projectRemoveConfirmOpen,
+  pendingRemoveProject,
+  onProjectRowClick,
+  canRemoveProject,
+  requestRemoveProject,
+  cancelRemoveProject,
+  confirmRemoveProject,
+  onProjectDragStart,
+  onProjectDragEnd,
+  onProjectDragOver,
+  onProjectDrop,
+} = useProjectSidebar({
+  projects,
+  getRuntime,
+  runtimeProjectInProgress,
+  requestProjectSwitch,
+  reorderProjects,
+  removeProject,
 });
 function refreshPlannerDrafts(): void {
   void loadTaskBundleDrafts(activeProjectId.value);
@@ -310,134 +263,8 @@ async function onSaveDraftSpecFile(payload: { id: string; file: TaskBundleDraftS
   return await saveTaskBundleDraftSpecFile(payload.id, payload.file, payload.update, activeProjectId.value);
 }
 
-const projectRemoveConfirmOpen = ref(false);
-const pendingRemoveProjectId = ref<string | null>(null);
-const pendingRemoveProject = computed(() => {
-  const pid = String(pendingRemoveProjectId.value ?? "").trim();
-  if (!pid) return null;
-  return projects.value.find((p) => p.id === pid) ?? null;
-});
-
-let suppressProjectRowClick = false;
-
 function openTaskCreateDialogHandler(): void {
   openTaskCreateDialog();
-}
-
-function canDragProject(id: string): boolean {
-  const pid = String(id ?? "").trim();
-  return pid !== "default";
-}
-
-function scheduleSuppressProjectRowClick(): void {
-  suppressProjectRowClick = true;
-  setTimeout(() => {
-    suppressProjectRowClick = false;
-  }, 0);
-}
-
-function onProjectRowClick(projectId: string): void {
-  if (suppressProjectRowClick) return;
-  requestProjectSwitch(projectId);
-}
-
-function canRemoveProject(id: string): boolean {
-  const pid = String(id ?? "").trim();
-  if (!pid) return false;
-  if (pid === "default") return false;
-  return !runtimeProjectInProgress(getRuntime(pid));
-}
-
-function requestRemoveProject(id: string): void {
-  const pid = String(id ?? "").trim();
-  if (!canRemoveProject(pid)) return;
-  pendingRemoveProjectId.value = pid;
-  projectRemoveConfirmOpen.value = true;
-}
-
-function cancelRemoveProject(): void {
-  projectRemoveConfirmOpen.value = false;
-  pendingRemoveProjectId.value = null;
-}
-
-async function confirmRemoveProject(): Promise<void> {
-  const pid = String(pendingRemoveProjectId.value ?? "").trim();
-  projectRemoveConfirmOpen.value = false;
-  pendingRemoveProjectId.value = null;
-  if (!pid) return;
-  await removeProject(pid);
-}
-
-function onProjectDragStart(ev: DragEvent, projectId: string): void {
-  const id = String(projectId ?? "").trim();
-  if (!canDragProject(id)) return;
-
-  draggingProjectId.value = id;
-  dropTargetProjectId.value = null;
-  dropTargetPosition.value = "before";
-  try {
-    ev.dataTransfer?.setData("text/plain", id);
-    if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
-  } catch {
-    // ignore
-  }
-}
-
-function onProjectDragEnd(): void {
-  draggingProjectId.value = null;
-  dropTargetProjectId.value = null;
-  dropTargetPosition.value = "before";
-}
-
-function onProjectDragOver(ev: DragEvent, targetProjectId: string): void {
-  const dragging = draggingProjectId.value;
-  const targetId = String(targetProjectId ?? "").trim();
-  if (!dragging) return;
-  if (!canDragProject(targetId)) return;
-  if (dragging === targetId) return;
-
-  ev.preventDefault();
-  try {
-    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-  } catch {
-    // ignore
-  }
-
-  dropTargetProjectId.value = targetId;
-  const el = ev.currentTarget as HTMLElement | null;
-  if (!el) {
-    dropTargetPosition.value = "before";
-    return;
-  }
-  const rect = el.getBoundingClientRect();
-  const midpoint = rect.top + rect.height / 2;
-  dropTargetPosition.value = ev.clientY > midpoint ? "after" : "before";
-}
-
-async function onProjectDrop(ev: DragEvent, targetProjectId: string): Promise<void> {
-  const dragging = draggingProjectId.value;
-  const targetId = String(targetProjectId ?? "").trim();
-  const position = dropTargetPosition.value;
-  if (dragging) scheduleSuppressProjectRowClick();
-  onProjectDragEnd();
-
-  if (!dragging) return;
-  if (!targetId) return;
-  if (!canDragProject(targetId)) return;
-  if (dragging === targetId) return;
-
-  ev.preventDefault();
-
-  const ids = projects.value.filter((p) => p.id !== "default").map((p) => p.id);
-  const fromIdx = ids.indexOf(dragging);
-  const toIdx = ids.indexOf(targetId);
-  if (fromIdx < 0 || toIdx < 0) return;
-
-  ids.splice(fromIdx, 1);
-  const adjustedTo = fromIdx < toIdx ? toIdx - 1 : toIdx;
-  const insertAt = position === "after" ? adjustedTo + 1 : adjustedTo;
-  ids.splice(Math.max(0, Math.min(ids.length, insertAt)), 0, dragging);
-  await reorderProjects(ids);
 }
 </script>
 

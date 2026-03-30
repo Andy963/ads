@@ -108,6 +108,50 @@ describe("tasks/executor artifacts", () => {
     assert.deepEqual(payload.paths, ["src/a.ts"]);
   });
 
+  it("preserves the full stored workspace patch when re-prompting", async () => {
+    const store = new TaskStore();
+    const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
+    const tailMarker = "TAIL_MARKER_SHOULD_SURVIVE";
+    const longDiff = `diff --git a/src/a.ts b/src/a.ts\n${"+x".repeat(2500)}\n${tailMarker}\n`;
+    store.saveContext(
+      task.id,
+      {
+        contextType: "artifact:previous_workspace_patch",
+        content: JSON.stringify({
+          paths: ["src/a.ts"],
+          patch: { files: [{ path: "src/a.ts", added: 2501, removed: 0 }], diff: longDiff, truncated: false },
+          createdAt: Date.now(),
+        }),
+      },
+      Date.now(),
+    );
+
+    const prompts: string[] = [];
+    const orchestrator = {
+      setModel() {},
+      setWorkingDirectory() {},
+      onEvent() {
+        return () => undefined;
+      },
+      async invokeAgent(_: string, input: string) {
+        prompts.push(String(input));
+        return { response: "ok" };
+      },
+    };
+
+    const executor = new OrchestratorTaskExecutor({
+      getOrchestrator: () => orchestrator as any,
+      store,
+      workspaceRoot: tmpDir,
+      autoModelOverride: "mock",
+    });
+
+    await executor.execute(task, {});
+
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0] ?? "", new RegExp(tailMarker));
+  });
+
   it("injects explicit reviewer artifact references only when present", async () => {
     const store = new TaskStore();
     const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
