@@ -288,4 +288,4 @@ function toggleExpanded(): void {
   />
 </template>
 
-<style src="./TaskBundleDraftPanel.css" scoped></style>
+<style src="./TaskBundleDraftPanel.css"></style>
