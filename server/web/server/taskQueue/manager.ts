@@ -873,9 +873,9 @@ export function createTaskQueueManager(deps: {
       })();
       try {
         const contexts = ctx.taskStore.getContext(taskId);
-        const latestPatch = [...contexts].reverse().find((c) => c.contextType === "artifact:workspace_patch") ?? null;
+        const latestPatch = contexts.findLast((c) => c.contextType === "artifact:workspace_patch") ?? null;
         patchArtifact = latestPatch ? safeParseJson<TaskWorkspacePatchArtifact>(latestPatch.content) : null;
-        const latestChanged = [...contexts].reverse().find((c) => c.contextType === "artifact:changed_paths") ?? null;
+        const latestChanged = contexts.findLast((c) => c.contextType === "artifact:changed_paths") ?? null;
         const changedParsed = latestChanged ? safeParseJson<ChangedPathsContext>(latestChanged.content) : null;
         changedFiles = Array.isArray(changedParsed?.paths)
           ? (changedParsed?.paths as unknown[]).map((p) => String(p ?? "").trim()).filter(Boolean)
