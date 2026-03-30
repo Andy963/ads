@@ -177,7 +177,7 @@ function summarizeSed(commandLine: string): string | null {
   if (tokens[0] !== "sed") {
     return null;
   }
-  const file = [...tokens].reverse().find((token) => token && !token.startsWith("-"));
+  const file = tokens.findLast((token) => token && !token.startsWith("-"));
   if (!file || file === "sed") {
     return null;
   }
