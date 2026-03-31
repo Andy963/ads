@@ -429,7 +429,8 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
 
     try {
       const contexts = taskCtx.taskStore.getContext(source.id);
-      const latestPatch = [...contexts].reverse().find((c) => c.contextType === "artifact:workspace_patch") ?? null;
+      // ⚡ Bolt: Use findLast instead of [...array].reverse().find() to avoid O(N) memory allocation
+      const latestPatch = contexts.findLast((c) => c.contextType === "artifact:workspace_patch") ?? null;
       if (latestPatch) {
         taskCtx.taskStore.saveContext(
           created.id,
