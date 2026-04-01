@@ -10,8 +10,7 @@ import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
-
-import { deriveLegacyWebUserId, deriveWebUserId, getWorkspaceState } from "../../utils.js";
+import { getWorkspaceState } from "../../utils.js";
 import { wsMessageSchema } from "./schema.js";
 import type { AttachWebSocketServerDeps } from "./deps.js";
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
@@ -23,6 +22,7 @@ import { buildPromptHistoryText } from "./promptHistory.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
+import { buildWsConnectionIdentity } from "./connectionIdentity.js";
 import { resolveWsLaneResources } from "./laneResources.js";
 import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
@@ -133,21 +133,21 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       aliveWs.missedPongs = 0;
     });
 
-    const authUserId = String(authResult.userId ?? "").trim();
-    const chatKey = `${sessionId}:${chatSessionId}`;
-    const legacyUserId = deriveLegacyWebUserId(authUserId, chatKey);
-    const userId = deriveWebUserId(authUserId, chatKey);
-    sessionManager.maybeMigrateThreadState(legacyUserId, userId);
-    const historyKey = `${authUserId}::${sessionId}::${chatSessionId}`;
-    const connectionId = crypto.randomBytes(3).toString("hex");
-    state.clientMetaByWs.set(ws, {
+    const {
+      authUserId,
+      legacyUserId,
+      userId,
       historyKey,
+      connectionId,
+      cacheKey,
+      clientMeta,
+    } = buildWsConnectionIdentity({
+      authUserId: authResult.userId,
       sessionId,
       chatSessionId,
-      connectionId,
-      authUserId,
-      sessionUserId: userId,
     });
+    sessionManager.maybeMigrateThreadState(legacyUserId, userId);
+    state.clientMetaByWs.set(ws, clientMeta);
     ws.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
@@ -155,7 +155,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       );
     });
 
-    const cacheKey = `${authUserId}::${sessionId}`;
     const registerSessionCacheBinding = (): void => {
       state.sessionCacheRegistry.registerBinding({
         userId,
