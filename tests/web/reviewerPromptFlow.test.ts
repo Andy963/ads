@@ -79,6 +79,7 @@ function createDeps(args: {
   reviewStore: ReviewStore;
   reviewerSnapshotBindings: Map<string, string>;
   payload: unknown;
+  sessionManagerOverrides?: Record<string, unknown>;
 }) {
   const chatMessages: unknown[] = [];
   const clientMessages: unknown[] = [];
@@ -120,6 +121,7 @@ function createDeps(args: {
       },
       sessions: {
         sessionManager: {
+          hasSession: () => true,
           getOrCreate: () => args.orchestrator as any,
           getSavedThreadId: () => undefined,
           getUserModel: () => "test-model",
@@ -130,6 +132,7 @@ function createDeps(args: {
           setUserModel: () => {},
           setUserModelReasoningEffort: () => {},
           saveThreadId: () => {},
+          ...(args.sessionManagerOverrides ?? {}),
         } as any,
         orchestrator: args.orchestrator as any,
         getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
@@ -260,6 +263,48 @@ describe("web reviewer prompt flow", () => {
       ["user", "ai", "user", "ai", "user", "ai"],
     );
     assert.match(history[3]?.text ?? "", /Reviewer stays read-only/);
+  });
+
+  it("resumes reviewer continuity when a recreated session receives an explicit snapshot-bound prompt", async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ title: "Task 1", prompt: "Do work", model: "auto" });
+    const reviewStore = new ReviewStore();
+    const snapshot = reviewStore.createSnapshot({
+      taskId: task.id,
+      specRef: null,
+      worktreeDir: workspaceRoot,
+      patch: { files: [{ path: "src/a.ts", added: 1, removed: 0 }], diff: "diff --git a/src/a.ts b/src/a.ts\n+ok\n", truncated: false },
+      changedFiles: ["src/a.ts"],
+      lintSummary: "",
+      testSummary: "",
+    });
+    const historyStore = new MemoryHistoryStore();
+    const reviewerSnapshotBindings = new Map<string, string>();
+    const orchestrator = new FakeReviewerOrchestrator(["Resumed analytical review."]);
+    const getOrCreateCalls: Array<{ userId: number; cwd?: string; resumeThread?: boolean }> = [];
+
+    const prompt = createDeps({
+      orchestrator,
+      historyStore,
+      reviewStore,
+      reviewerSnapshotBindings,
+      payload: { text: "Resume reviewer context for this snapshot", snapshotId: snapshot.id },
+      sessionManagerOverrides: {
+        hasSession: () => false,
+        getOrCreate: (userId: number, cwd?: string, resumeThread?: boolean) => {
+          getOrCreateCalls.push({ userId, cwd, resumeThread });
+          return orchestrator as any;
+        },
+      },
+    });
+    await handlePromptMessage(prompt.deps);
+
+    const result = prompt.chatMessages.find((message) => (message as { type?: unknown }).type === "result") as
+      | { output?: unknown }
+      | undefined;
+    assert.equal(String(result?.output ?? ""), "Resumed analytical review.");
+    assert.deepEqual(getOrCreateCalls, [{ userId: 1, cwd: workspaceRoot, resumeThread: true }]);
+    assert.equal(reviewerSnapshotBindings.get("hist-1"), snapshot.id);
   });
 
   it("rejects reviewer prompts without an explicit or previously bound snapshot", async () => {

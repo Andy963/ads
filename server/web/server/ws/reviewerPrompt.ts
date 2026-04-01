@@ -13,7 +13,7 @@ import {
   finishReviewerPromptEarly,
   handleReviewerOrchestratorUnavailable,
 } from "./reviewerPromptLifecycle.js";
-import { parseReviewerSnapshotId } from "./reviewerSnapshotContext.js";
+import { parseReviewerSnapshotId, shouldResumeReviewerThread } from "./reviewerSnapshotContext.js";
 import { applySessionOverrides } from "./sessionOverrides.js";
 
 export { extractInputText } from "./reviewerGuards.js";
@@ -104,7 +104,15 @@ export async function handleReviewerPromptMessage(args: {
   }
 
   const reviewerCwd = String(snapshot.worktreeDir ?? "").trim() || turnCwd;
-  const orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, reviewerCwd);
+  const orchestrator = deps.sessions.sessionManager.getOrCreate(
+    deps.context.userId,
+    reviewerCwd,
+    shouldResumeReviewerThread({
+      requestedSnapshotId,
+      boundSnapshotId,
+      hasSession: deps.sessions.sessionManager.hasSession(deps.context.userId),
+    }),
+  );
   const status = orchestrator.status();
   if (!status.ready) {
     handleReviewerOrchestratorUnavailable({

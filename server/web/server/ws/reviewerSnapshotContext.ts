@@ -16,6 +16,21 @@ export function parseReviewerSnapshotId(payload: unknown): string | null {
   return snapshotId || null;
 }
 
+export function hasReviewerSnapshotContext(args: {
+  requestedSnapshotId?: string | null;
+  boundSnapshotId?: string | null;
+}): boolean {
+  return Boolean(String(args.requestedSnapshotId ?? "").trim() || String(args.boundSnapshotId ?? "").trim());
+}
+
+export function shouldResumeReviewerThread(args: {
+  requestedSnapshotId?: string | null;
+  boundSnapshotId?: string | null;
+  hasSession: boolean;
+}): boolean {
+  return !args.hasSession && hasReviewerSnapshotContext(args);
+}
+
 export function summarizeReviewerArtifactText(text: string): string {
   const normalized = String(text ?? "").trim();
   if (!normalized) {

@@ -95,4 +95,29 @@ describe("web/ws/bootstrapState", () => {
       threadId: "thread-live",
     });
   });
+
+  it("can suppress saved thread fallback when reviewer continuity is not safely bound", () => {
+    const state = buildWsBootstrapState({
+      sessionManager: {
+        getSavedThreadId: () => "thread-saved",
+        getContextRestoreMode: () => "fresh",
+        getEffectiveState: () => ({
+          model: "gpt-4o",
+          modelReasoningEffort: "high",
+          activeAgentId: "codex",
+        }),
+      } as any,
+      orchestrator: {
+        getActiveAgentId: () => "codex",
+        getThreadId: () => null,
+        listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+      } as any,
+      userId: 7,
+      agentAvailability: { mergeStatus: (_agentId: string, status: { ready: boolean; streaming: boolean }) => status } as any,
+      allowSavedThreadFallback: false,
+    });
+
+    assert.equal(state.threadId, null);
+    assert.equal(state.contextMode, "fresh");
+  });
 });

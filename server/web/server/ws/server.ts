@@ -20,6 +20,7 @@ import { buildWsConnectionIdentity } from "./connectionIdentity.js";
 import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnection } from "./connectionRuntime.js";
 import { resolveWsLaneResources } from "./laneResources.js";
 import { preflightPersistAndAck } from "./preflight.js";
+import { shouldResumeReviewerThread } from "./reviewerSnapshotContext.js";
 import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
@@ -192,7 +193,13 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       // ignore
     }
 
-    const resumeThread = !isReviewerChat && !sessionManager.hasSession(userId);
+    const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
+    const resumeThread = isReviewerChat
+      ? shouldResumeReviewerThread({
+          boundSnapshotId,
+          hasSession: sessionManager.hasSession(userId),
+        })
+      : !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
     const contextMode = sessionManager.getContextRestoreMode(userId);
 
@@ -215,7 +222,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         historyKey: targetHistoryKey,
       });
 
-    const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
     sendInitialBootstrapMessages({
       ws,
       safeJsonSend,

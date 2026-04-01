@@ -19,13 +19,16 @@ export function buildWsBootstrapState(args: {
   orchestrator: Orchestrator;
   userId: number;
   agentAvailability: AgentAvailability;
+  allowSavedThreadFallback?: boolean;
 }): WsBootstrapState {
   const { sessionManager, orchestrator, userId, agentAvailability } = args;
   const activeAgentId = orchestrator.getActiveAgentId();
+  const savedThreadId =
+    args.allowSavedThreadFallback === false ? undefined : sessionManager.getSavedThreadId(userId, activeAgentId);
   return {
     threadId: preferInMemoryThreadId({
       inMemoryThreadId: orchestrator.getThreadId(),
-      savedThreadId: sessionManager.getSavedThreadId(userId, activeAgentId),
+      savedThreadId,
     }),
     contextMode: sessionManager.getContextRestoreMode(userId),
     effectiveState: sessionManager.getEffectiveState(userId),
