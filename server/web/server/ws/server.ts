@@ -9,12 +9,10 @@ import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
 import { getWorkspaceState } from "../../utils.js";
 import type { AttachWebSocketServerDeps } from "./deps.js";
-import { ensureWsSessionLogger, handleWsControlMessage } from "./messageControl.js";
+import { dispatchWsMessage, type IncomingWsMessage } from "./messageDispatch.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
-import { handlePromptMessage } from "./handlePrompt.js";
-import { handleCommandMessage } from "./handleCommand.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { buildHistoryBootstrapPayload, buildReviewerBootstrapPayloads } from "./bootstrapReplay.js";
@@ -270,159 +268,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
     let messageChain = Promise.resolve();
     let lastReceivedAt = 0;
-    type IncomingWsMessage = {
-      parsed: import("./schema.js").WsMessage;
-      requestId: string;
-      clientMessageId: string | null;
-      receivedAt: number;
-    };
-
-    const handleOneMessage = async (msg: IncomingWsMessage): Promise<void> => {
-      try {
-        registerSessionCacheBinding();
-        const parsed = msg.parsed;
-        const requestId = msg.requestId;
-        const clientMessageId = msg.clientMessageId;
-
-        const sessionLogger = ensureWsSessionLogger({
-          sessionManager,
-          userId,
-          warn: logger.warn,
-        });
-
-        const control = await handleWsControlMessage({
-          parsed,
-          isReviewerChat,
-          userId,
-          historyKey,
-          currentCwd,
-          sessionManager,
-          orchestrator,
-          getWorkspaceLock,
-          historyStore,
-          reviewerSnapshotBindings,
-          ensureTaskContext: tasks.ensureTaskContext,
-          sendJson: (payload) => safeJsonSend(ws, payload),
-          logger,
-        });
-        if (control.handled) {
-          orchestrator = control.orchestrator;
-          return;
-        }
-
-        const promptResult = await handlePromptMessage({
-          request: {
-            parsed,
-            requestId,
-            clientMessageId,
-            receivedAt: msg.receivedAt,
-          },
-          transport: {
-            ws,
-            safeJsonSend,
-            broadcastJson,
-            sendWorkspaceState,
-          },
-          observability: {
-            logger,
-            sessionLogger,
-            traceWsDuplication: config.traceWsDuplication,
-          },
-          context: {
-            authUserId,
-            sessionId,
-            chatSessionId,
-            userId,
-            historyKey,
-            currentCwd,
-          },
-          sessions: {
-            sessionManager,
-            orchestrator,
-            getWorkspaceLock,
-            interruptControllers: state.interruptControllers,
-          },
-          history: {
-            historyStore,
-          },
-          tasks: {
-            ensureTaskContext: tasks.ensureTaskContext,
-            promoteQueuedTasksToPending: tasks.promoteQueuedTasksToPending,
-            broadcastToSession: tasks.broadcastToSession,
-          },
-          scheduler,
-          reviewerSnapshotBindings,
-        });
-        if (promptResult.handled) {
-          orchestrator = promptResult.orchestrator;
-          return;
-        }
-
-        const commandResult = await handleCommandMessage({
-          request: {
-            parsed,
-            clientMessageId,
-          },
-          transport: {
-            ws,
-            safeJsonSend,
-            broadcastJson,
-            sendWorkspaceState,
-          },
-          observability: {
-            logger,
-            sessionLogger,
-            traceWsDuplication: config.traceWsDuplication,
-          },
-          context: {
-            sessionId,
-            userId,
-            historyKey,
-            currentCwd,
-          },
-          agents: {
-            agentAvailability: agents.agentAvailability,
-          },
-          state: {
-            directoryManager: state.directoryManager,
-            cacheKey,
-            workspaceCache: state.workspaceCache,
-            cwdStore: state.cwdStore,
-            cwdStorePath: state.cwdStorePath,
-            persistCwdStore: state.persistCwdStore,
-          },
-          sessions: {
-            sessionManager,
-            orchestrator,
-            getWorkspaceLock,
-            interruptControllers: state.interruptControllers,
-          },
-          history: {
-            historyStore,
-          },
-          commands,
-        });
-        if (commandResult.handled) {
-          orchestrator = commandResult.orchestrator;
-          currentCwd = commandResult.currentCwd;
-          try {
-            const meta = state.clientMetaByWs.get(ws);
-            if (meta) {
-              meta.workspaceRoot = normalizeWorkspaceRootForMeta(currentCwd);
-            }
-          } catch {
-            // ignore
-          }
-          return;
-        }
-
-        safeJsonSend(ws, { type: "error", message: "Unsupported message type" });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn(`[WebSocket] Message handler error: ${message}`);
-        safeJsonSend(ws, { type: "error", message: "Internal server error" });
-      }
-    };
 
     ws.on("message", (data: RawData) => {
       const envelope = parseIncomingWsEnvelope({ data, lastReceivedAt });
@@ -472,10 +317,60 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
 
       const msg: IncomingWsMessage = { parsed, requestId, clientMessageId, receivedAt };
-      messageChain = messageChain.then(() => handleOneMessage(msg)).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn(`[WebSocket] Message chain error: ${message}`);
-        safeJsonSend(ws, { type: "error", message: "Internal server error" });
+      messageChain = messageChain.then(async () => {
+        const result = await dispatchWsMessage({
+          msg,
+          ws,
+          authUserId,
+          sessionId,
+          chatSessionId,
+          userId,
+          historyKey,
+          currentCwd,
+          cacheKey,
+          isReviewerChat,
+          sessionManager,
+          orchestrator,
+          getWorkspaceLock,
+          interruptControllers: state.interruptControllers,
+          historyStore,
+          tasks: {
+            ensureTaskContext: tasks.ensureTaskContext,
+            promoteQueuedTasksToPending: tasks.promoteQueuedTasksToPending,
+            broadcastToSession: tasks.broadcastToSession,
+          },
+          scheduler,
+          commands,
+          agents: {
+            agentAvailability: agents.agentAvailability,
+          },
+          state: {
+            directoryManager: state.directoryManager,
+            workspaceCache: state.workspaceCache,
+            cwdStore: state.cwdStore,
+            cwdStorePath: state.cwdStorePath,
+            persistCwdStore: state.persistCwdStore,
+          },
+          reviewerSnapshotBindings,
+          registerSessionCacheBinding,
+          broadcastJson,
+          safeJsonSend,
+          sendWorkspaceState,
+          traceWsDuplication: config.traceWsDuplication,
+          logger,
+          updateWorkspaceRootMeta: (cwd) => {
+            try {
+              const meta = state.clientMetaByWs.get(ws);
+              if (meta) {
+                meta.workspaceRoot = normalizeWorkspaceRootForMeta(cwd);
+              }
+            } catch {
+              // ignore
+            }
+          },
+        });
+        orchestrator = result.orchestrator;
+        currentCwd = result.currentCwd;
       });
     });
 
