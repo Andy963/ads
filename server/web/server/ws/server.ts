@@ -21,7 +21,7 @@ import { handlePromptMessage } from "./handlePrompt.js";
 import { handleCommandMessage } from "./handleCommand.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
-import { preferInMemoryThreadId } from "./threadIds.js";
+import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
@@ -253,40 +253,29 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       return true;
     };
 
-    const effectiveState = sessionManager.getEffectiveState(userId);
-    safeJsonSend(ws, {
-      type: "welcome",
-      message: "ADS WebSocket bridge ready.",
-      workspace: getWorkspaceState(currentCwd),
-      sessionId,
-      chatSessionId,
-	      inFlight,
-      threadId: preferInMemoryThreadId({
-        inMemoryThreadId: orchestrator.getThreadId(),
-        savedThreadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
-      }),
-      effectiveModel: effectiveState.model,
-      effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
-      activeAgentId: effectiveState.activeAgentId,
-      contextMode,
+    const bootstrapState = buildWsBootstrapState({
+      sessionManager,
+      orchestrator,
+      userId,
+      agentAvailability: agents.agentAvailability,
     });
-	    safeJsonSend(ws, {
-	      type: "agents",
-	      activeAgentId: orchestrator.getActiveAgentId(),
-      agents: orchestrator.listAgents().map((entry) => {
-        const merged = agents.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
-        return {
-          id: entry.metadata.id,
-          name: entry.metadata.name,
-          ready: merged.ready,
-	          error: merged.error,
-	        };
-	      }),
-	      threadId: preferInMemoryThreadId({
-	        inMemoryThreadId: orchestrator.getThreadId(),
-	        savedThreadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
-	      }),
-	    });
+    safeJsonSend(
+      ws,
+      buildWelcomePayload({
+        sessionId,
+        chatSessionId,
+        workspace: getWorkspaceState(currentCwd),
+        inFlight,
+        state: bootstrapState,
+      }),
+    );
+    safeJsonSend(
+      ws,
+      buildAgentsPayload({
+        activeAgentId: orchestrator.getActiveAgentId(),
+        state: bootstrapState,
+      }),
+    );
 
     const cachedHistory = historyStore.get(historyKey);
     if (cachedHistory.length > 0) {
