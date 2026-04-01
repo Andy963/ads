@@ -3,6 +3,7 @@ export const CODEX_THREAD_RESET_HINT =
 
 export type CodexErrorCode =
   | "thread_corrupted"
+  | "model_mismatch"
   | "session_in_use"
   | "rate_limit"
   | "token_limit"
@@ -29,6 +30,13 @@ const ERROR_PATTERNS: Array<{
   retryable: boolean;
   needsReset: boolean;
 }> = [
+  {
+    pattern: /cannot resume thread with a different model|different model/i,
+    code: "model_mismatch",
+    userHint: "模型已变更，旧线程不能继续复用。请重试；系统应为这次模型切换创建新线程",
+    retryable: false,
+    needsReset: false,
+  },
   {
     pattern: /session id .*already in use|already in use.*session id/i,
     code: "session_in_use",

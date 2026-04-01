@@ -254,19 +254,23 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       return true;
     };
 
-	    safeJsonSend(ws, {
-	      type: "welcome",
-	      message: "ADS WebSocket bridge ready.",
-	      workspace: getWorkspaceState(currentCwd),
-	      sessionId,
-	      chatSessionId,
+    const effectiveState = sessionManager.getEffectiveState(userId);
+    safeJsonSend(ws, {
+      type: "welcome",
+      message: "ADS WebSocket bridge ready.",
+      workspace: getWorkspaceState(currentCwd),
+      sessionId,
+      chatSessionId,
 	      inFlight,
-	      threadId: preferInMemoryThreadId({
-	        inMemoryThreadId: orchestrator.getThreadId(),
-	        savedThreadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
-	      }),
-	      contextMode: pendingInjection ? "history_injection" : contextRestored ? "thread_resumed" : "fresh",
-	    });
+      threadId: preferInMemoryThreadId({
+        inMemoryThreadId: orchestrator.getThreadId(),
+        savedThreadId: sessionManager.getSavedThreadId(userId, orchestrator.getActiveAgentId()),
+      }),
+      effectiveModel: effectiveState.model,
+      effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
+      activeAgentId: effectiveState.activeAgentId,
+      contextMode: pendingInjection ? "history_injection" : contextRestored ? "thread_resumed" : "fresh",
+    });
 	    safeJsonSend(ws, {
 	      type: "agents",
 	      activeAgentId: orchestrator.getActiveAgentId(),

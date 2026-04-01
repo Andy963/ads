@@ -150,8 +150,13 @@ function createPlannerPromptDeps(args: {
       sessionManager: {
         getOrCreate: () => args.orchestrator as any,
         getSavedThreadId: () => undefined,
+        getUserModel: () => "test-model",
+        getUserModelReasoningEffort: () => "high",
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
         needsHistoryInjection: () => false,
         clearHistoryInjection: () => {},
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => {},
         saveThreadId: () => {},
       } as any,
       orchestrator: args.orchestrator as any,

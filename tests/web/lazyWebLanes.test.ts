@@ -92,7 +92,7 @@ describe("web lazy planner/reviewer lanes", () => {
       await firstLock.runExclusive(() => "ok");
 
       assert.deepEqual(lanes.planner.inspectMaterialization(), {
-        threadStorage: { materialized: false, materializeCount: 0 },
+        threadStorage: { materialized: true, materializeCount: 1 },
         historyStore: { materialized: true, materializeCount: 1 },
         sessionManager: { materialized: true, materializeCount: 1 },
         workspaceLockPool: { materialized: true, materializeCount: 1 },
@@ -109,7 +109,7 @@ describe("web lazy planner/reviewer lanes", () => {
       const secondLock = lanes.planner.getWorkspaceLock(workspaceRoot);
       assert.equal(secondLock, firstLock);
       assert.deepEqual(lanes.planner.inspectMaterialization(), {
-        threadStorage: { materialized: false, materializeCount: 0 },
+        threadStorage: { materialized: true, materializeCount: 1 },
         historyStore: { materialized: true, materializeCount: 1 },
         sessionManager: { materialized: true, materializeCount: 1 },
         workspaceLockPool: { materialized: true, materializeCount: 1 },

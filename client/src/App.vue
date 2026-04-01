@@ -266,6 +266,11 @@ async function onSaveDraftSpecFile(payload: { id: string; file: TaskBundleDraftS
 function openTaskCreateDialogHandler(): void {
   openTaskCreateDialog();
 }
+
+const runningTaskCount = computed(() =>
+  tasks.value.filter((t) => t.status === "running" || t.status === "planning").length,
+);
+
 </script>
 
 <template>
@@ -519,6 +524,7 @@ function openTaskCreateDialogHandler(): void {
               :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
               :agent-delegations="agentDelegations"
               :workspace-root="resolveActiveWorkspaceRoot()"
+              :running-task-count="runningTaskCount"
               @send="sendMainPrompt"
               @update:draft="workerComposerDraft = $event"
               @switchAgent="switchMainAgent"

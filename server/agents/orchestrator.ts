@@ -518,6 +518,10 @@ export class HybridOrchestrator {
     this.broadcastModel(model);
   }
 
+  getModel(): string | undefined {
+    return this.model;
+  }
+
   private broadcastModel(model?: string): void {
     for (const { adapter } of this.adapters.values()) {
       adapter.setModel?.(model);
@@ -530,6 +534,10 @@ export class HybridOrchestrator {
     for (const { adapter } of this.adapters.values()) {
       adapter.setModelReasoningEffort?.(normalized);
     }
+  }
+
+  getModelReasoningEffort(): string | undefined {
+    return this.modelReasoningEffort;
   }
 
   getThreadId(): string | null {
@@ -548,4 +556,3 @@ export class HybridOrchestrator {
     return adapter.classifyInput(input);
   }
 }
-

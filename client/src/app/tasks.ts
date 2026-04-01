@@ -36,6 +36,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const {
     api,
     activeProjectId,
+    activeProject,
     normalizeProjectId,
     getRuntime,
     getPlannerRuntime,
@@ -62,6 +63,14 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const { setNotice, clearNotice } = createNoticeActions({ activeProjectId, normalizeProjectId, getRuntime });
 
+  const resolveStorageSessionId = (rt: ProjectRuntime): string => {
+    const projectSessionId = String(rt.projectSessionId ?? "").trim();
+    if (projectSessionId) {
+      return projectSessionId;
+    }
+    return String(activeProject.value?.sessionId ?? "").trim();
+  };
+
   const formatTaskNoticeLabel = (taskId: string, projectId: string): string => {
     const pid = normalizeProjectId(projectId);
     const rt = getRuntime(pid);
@@ -84,7 +93,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const defaultModelId = enabledModels[0]!.id;
 
     const ensureRuntimeModelId = (rt: ProjectRuntime): void => {
-      const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
+      const sessionId = resolveStorageSessionId(rt);
+      if (!sessionId) return;
       const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
       let stored: string | null = null;
       try {
@@ -95,12 +105,12 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
       const storedModelId = stored === null ? null : normalizeModelId(stored);
       let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
-      if (candidate === "auto" || !enabledIds.has(candidate)) {
+      if (candidate !== "auto" && !enabledIds.has(candidate)) {
         candidate = defaultModelId;
       }
 
       rt.modelId.value = candidate;
-      if (storedModelId !== candidate) {
+      if (candidate !== "auto" && storedModelId !== candidate) {
         try {
           localStorage.setItem(key, candidate);
         } catch {
@@ -459,7 +469,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   };
 
   const persistReasoningEffort = (rt: ProjectRuntime): void => {
-    const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
+    const sessionId = resolveStorageSessionId(rt);
     if (!sessionId) return;
     const key = buildReasoningEffortStorageKey(sessionId, rt.chatSessionId);
     const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
@@ -471,7 +481,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   };
 
   const persistModelId = (rt: ProjectRuntime): void => {
-    const sessionId = String(rt.projectSessionId ?? "").trim() || normalizeProjectId(activeProjectId.value);
+    const sessionId = resolveStorageSessionId(rt);
     if (!sessionId) return;
     const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
     const modelId = normalizeModelId(rt.modelId.value);

@@ -35,6 +35,7 @@ const props = defineProps<{
   modelReasoningEffort?: string;
   agentDelegations?: AgentDelegation[];
   apiToken?: string;
+  runningTaskCount?: number;
 }>();
 
 const emit = defineEmits<{
@@ -464,7 +465,10 @@ const {
             </svg>
           </button>
           <button v-if="canInterrupt" class="stopIcon" type="button" title="中断" @click="emit('interrupt')">
-            <span class="interruptSpinner" aria-hidden="true" />
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <rect x="4" y="4" width="12" height="12" rx="2" />
+            </svg>
+            <span v-if="runningTaskCount > 0" class="runningBadge">{{ runningTaskCount }}</span>
           </button>
           <button
             v-else
@@ -954,6 +958,7 @@ const {
 }
 
 .stopIcon {
+  position: relative;
   width: 28px;
   height: 28px;
   border-radius: 8px;
@@ -965,13 +970,20 @@ const {
   cursor: pointer;
 }
 
-.interruptSpinner {
-  width: 14px;
+.runningBadge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
   height: 14px;
-  border-radius: 999px;
-  border: 2px solid rgba(220, 38, 38, 0.25);
-  border-top-color: currentColor;
-  animation: voiceSpin 0.75s linear infinite;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
 }
 
 .stopIcon:hover {

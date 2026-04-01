@@ -372,14 +372,12 @@ export class CodexCliAdapter implements AgentAdapter {
         throw error instanceof Error ? error : createAbortError();
       }
       const message = error instanceof Error ? error.message : String(error);
-      if (!isResumeModelMismatchError(message)) {
-        throw error;
+      if (isResumeModelMismatchError(message)) {
+        logger.info(
+          `Resume failed due to model mismatch (thread=${this.threadId ?? "null"}); explicit thread rotation is required.`,
+        );
       }
-
-      const previousThreadId = this.threadId;
-      logger.info(`Resume failed due to model mismatch (thread=${previousThreadId ?? "null"}), retrying fresh.`);
-      this.threadId = null;
-      return await runAttempt(false);
+      throw error;
     }
   }
 

@@ -101,13 +101,21 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       return;
     }
     orchestrator.setWorkingDirectory(turnCwd);
+    let rotationNotice: string | undefined;
     const modelOverride = parseModelFromPayload(deps.request.parsed.payload);
-    if (modelOverride.present) {
-      orchestrator.setModel(modelOverride.model);
+    if (modelOverride.present && modelOverride.model) {
+      const previousModel = deps.sessions.sessionManager.getUserModel(deps.context.userId);
+      if (previousModel !== modelOverride.model) {
+        deps.sessions.sessionManager.setUserModel(deps.context.userId, modelOverride.model);
+        rotationNotice =
+          previousModel && previousModel.trim()
+            ? `模型已从 ${previousModel} 切换到 ${modelOverride.model}，已启动新会话线程。`
+            : `模型已切换到 ${modelOverride.model}，已启动新会话线程。`;
+      }
     }
     const reasoningEffort = parseModelReasoningEffortFromPayload(deps.request.parsed.payload);
     if (reasoningEffort.present) {
-      orchestrator.setModelReasoningEffort(reasoningEffort.effort);
+      deps.sessions.sessionManager.setUserModelReasoningEffort(deps.context.userId, reasoningEffort.effort);
     }
     const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
       orchestrator,
@@ -286,16 +294,27 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         });
       }
 
-      sendToChat({ type: "result", ok: true, output: outputForChat, threadId, expectedThreadId, threadReset });
+      if (threadId) {
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
+      }
+      const effectiveState = deps.sessions.sessionManager.getEffectiveState(deps.context.userId);
+      sendToChat({
+        type: "result",
+        ok: true,
+        output: outputForChat,
+        threadId,
+        expectedThreadId,
+        threadReset,
+        effectiveModel: effectiveState.model,
+        effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
+        activeAgentId: effectiveState.activeAgentId,
+        notice: rotationNotice,
+      });
       if (deps.observability.sessionLogger) {
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
       deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
-
-      if (threadId) {
-        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
-      }
       deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
     } catch (error) {
       const aborted = controller.signal.aborted;

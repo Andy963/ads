@@ -212,13 +212,21 @@ export async function handleReviewerPromptMessage(args: {
     sendToClient({ type: "reviewer_snapshot_binding", snapshotId: requestedSnapshotId, taskId: snapshot.taskId });
   }
 
+  let rotationNotice: string | undefined;
   const modelOverride = parseModelFromPayload(deps.request.parsed.payload);
-  if (modelOverride.present) {
-    orchestrator.setModel(modelOverride.model);
+  if (modelOverride.present && modelOverride.model) {
+    const previousModel = deps.sessions.sessionManager.getUserModel(deps.context.userId);
+    if (previousModel !== modelOverride.model) {
+      deps.sessions.sessionManager.setUserModel(deps.context.userId, modelOverride.model);
+      rotationNotice =
+        previousModel && previousModel.trim()
+          ? `模型已从 ${previousModel} 切换到 ${modelOverride.model}，已启动新会话线程。`
+          : `模型已切换到 ${modelOverride.model}，已启动新会话线程。`;
+    }
   }
   const reasoningEffort = parseModelReasoningEffortFromPayload(deps.request.parsed.payload);
   if (reasoningEffort.present) {
-    orchestrator.setModelReasoningEffort(reasoningEffort.effort);
+    deps.sessions.sessionManager.setUserModelReasoningEffort(deps.context.userId, reasoningEffort.effort);
   }
 
   if (isReviewerWriteLikeRequest(inputToSend)) {
@@ -285,16 +293,26 @@ export async function handleReviewerPromptMessage(args: {
       Date.now(),
     );
 
-    sendToChat({ type: "result", ok: true, output, threadId });
+    if (threadId) {
+      deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
+    }
+    const effectiveState = deps.sessions.sessionManager.getEffectiveState(deps.context.userId);
+    sendToChat({
+      type: "result",
+      ok: true,
+      output,
+      threadId,
+      effectiveModel: effectiveState.model,
+      effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
+      activeAgentId: effectiveState.activeAgentId,
+      notice: rotationNotice,
+    });
     sendToChat({ type: "reviewer_artifact", artifact: toReviewArtifactSummary(artifact) });
     if (deps.observability.sessionLogger) {
       deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
       deps.observability.sessionLogger.logOutput(output);
     }
     deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: output, ts: Date.now() });
-    if (threadId) {
-      deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
-    }
     deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
   } catch (error) {
     if (controller.signal.aborted) {

@@ -197,13 +197,21 @@ describe("Model selector persistence", () => {
     wrapper.unmount();
   });
 
-  it("defaults to the first model and persists it when there is no stored selection", async () => {
+  it("uses backend effective model and persists it when there is no stored selection", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {
       global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
     });
     await settleUi(wrapper);
     await ensureWsConnected(wrapper);
+    lastWorkerWs!.onMessage?.({
+      type: "welcome",
+      threadId: null,
+      chatSessionId: "main",
+      effectiveModel: "gpt-4.1",
+      effectiveModelReasoningEffort: "high",
+    });
+    await settleUi(wrapper);
 
     wrapper.vm.sendMainPrompt?.("hello");
     await settleUi(wrapper);

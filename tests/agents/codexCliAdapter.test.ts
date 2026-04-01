@@ -95,7 +95,7 @@ describe("CodexCliAdapter", () => {
     assert.equal(result.response, "OK");
   });
 
-  it("retries fresh when resume fails due to model mismatch", async () => {
+  it("does not silently retry fresh when resume fails due to model mismatch", async () => {
     const expectedModel = "codex-default";
     const binary = await createExecutableScript([
       "#!/usr/bin/env bash",
@@ -119,20 +119,10 @@ describe("CodexCliAdapter", () => {
       '  if [[ "${args[$i]}" == "t-old" ]]; then has_thread=1; fi',
       "done",
       "cat >/dev/null || true",
-      'if [[ "$count" -eq 1 ]]; then',
-      '  if [[ "$has_resume" -ne 1 ]]; then echo \'{"type":"turn.failed","error":{"message":"expected resume"}}\'; exit 0; fi',
-      `  if [[ "$model_value" != "${expectedModel}" ]]; then echo '{"type":"turn.failed","error":{"message":"expected model"}}'; exit 0; fi`,
-      '  if [[ "$has_thread" -ne 1 ]]; then echo \'{"type":"turn.failed","error":{"message":"expected thread id"}}\'; exit 0; fi',
-      '  echo \'{"type":"turn.failed","error":{"message":"Cannot resume thread with a different model"}}\'',
-      "  exit 0",
-      "fi",
-      'if [[ "$has_resume" -ne 0 ]]; then echo \'{"type":"turn.failed","error":{"message":"unexpected resume"}}\'; exit 0; fi',
+      'if [[ "$has_resume" -ne 1 ]]; then echo \'{"type":"turn.failed","error":{"message":"expected resume"}}\'; exit 0; fi',
       `if [[ "$model_value" != "${expectedModel}" ]]; then echo '{"type":"turn.failed","error":{"message":"expected model"}}'; exit 0; fi`,
-      'if [[ "$has_thread" -ne 0 ]]; then echo \'{"type":"turn.failed","error":{"message":"unexpected thread id"}}\'; exit 0; fi',
-      'echo \'{"type":"thread.started","thread_id":"t-new"}\'',
-      'echo \'{"type":"turn.started"}\'',
-      'echo \'{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}\'',
-      'echo \'{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}\'',
+      'if [[ "$has_thread" -ne 1 ]]; then echo \'{"type":"turn.failed","error":{"message":"expected thread id"}}\'; exit 0; fi',
+      'echo \'{"type":"turn.failed","error":{"message":"Cannot resume thread with a different model"}}\'',
       "exit 0",
       "",
     ].join("\n"));
@@ -143,13 +133,14 @@ describe("CodexCliAdapter", () => {
       resumeThreadId: "t-old",
       model: expectedModel,
     });
-    const result = await adapter.send("hi");
-    assert.equal(result.response, "OK");
-    assert.equal(adapter.getThreadId(), "t-new");
+    await assert.rejects(async () => {
+      await adapter.send("hi");
+    }, /different model/i);
+    assert.equal(adapter.getThreadId(), "t-old");
 
     const countFile = path.join(path.dirname(binary), "count.txt");
     const countRaw = await fs.readFile(countFile, "utf-8");
-    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 1);
   });
 
   it("keeps real assistant output when compaction heads-up arrives later", async () => {

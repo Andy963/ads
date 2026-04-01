@@ -31,6 +31,7 @@ const props = defineProps<{
     startedAt: number;
   }>;
   apiToken?: string;
+  runningTaskCount?: number;
   workspaceRoot?: string | null;
   reviewArtifact?: ReviewArtifactSummary | null;
   headerAction?: { title: string; ariaLabel?: string; testId?: string };
@@ -409,6 +410,7 @@ onBeforeUnmount(() => {
       :model-reasoning-effort="modelReasoningEffort"
       :agent-delegations="agentDelegations"
       :api-token="apiToken"
+      :running-task-count="runningTaskCount"
       @update:draft="emit('update:draft', $event)"
       @send="emit('send', $event)"
       @interrupt="emit('interrupt')"

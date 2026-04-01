@@ -427,14 +427,6 @@
   color: var(--danger);
 }
 
-.iconBtn.danger .interruptSpinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  border: 2px solid rgba(220, 38, 38, 0.25);
-  border-top-color: currentColor;
-  animation: spin 0.75s linear infinite;
-}
 
 .iconBtn.danger:hover:not(:disabled) {
   color: var(--danger-2);

@@ -32,6 +32,9 @@ interface ThreadState {
   cwd?: string;
   agentThreads?: Record<string, string>;
   updatedAt?: number;
+  model?: string;
+  modelReasoningEffort?: string;
+  activeAgentId?: string;
 }
 
 const logger = createLogger('ThreadStorage');
@@ -195,7 +198,20 @@ export class ThreadStorage {
     }
   }
 
-  private parseThreadIdValue(raw: string): { codex?: string; agentThreads: Record<string, string> } {
+  private normalizeAgentThreads(value: unknown): Record<string, string> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    const agentThreads: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (typeof entry === "string" && entry.trim()) {
+        agentThreads[key] = entry.trim();
+      }
+    }
+    return agentThreads;
+  }
+
+  private parseThreadStateValue(raw: string): Omit<ThreadState, "cwd" | "updatedAt"> {
     const trimmed = raw.trim();
     if (!trimmed) {
       return { agentThreads: {} };
@@ -204,22 +220,50 @@ export class ThreadStorage {
       try {
         const parsed = JSON.parse(trimmed) as Record<string, unknown>;
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const hasStructuredState =
+            Object.prototype.hasOwnProperty.call(parsed, "agentThreads") ||
+            Object.prototype.hasOwnProperty.call(parsed, "threadId") ||
+            Object.prototype.hasOwnProperty.call(parsed, "model") ||
+            Object.prototype.hasOwnProperty.call(parsed, "modelReasoningEffort") ||
+            Object.prototype.hasOwnProperty.call(parsed, "activeAgentId") ||
+            Object.prototype.hasOwnProperty.call(parsed, "version");
+          if (hasStructuredState) {
+            const agentThreads = this.normalizeAgentThreads(parsed.agentThreads);
+            const threadId =
+              typeof parsed.threadId === "string" && parsed.threadId.trim()
+                ? parsed.threadId.trim()
+                : agentThreads.codex;
+            if (threadId) {
+              agentThreads.codex = threadId;
+            }
+            const model = typeof parsed.model === "string" && parsed.model.trim() ? parsed.model.trim() : undefined;
+            const modelReasoningEffort =
+              typeof parsed.modelReasoningEffort === "string" && parsed.modelReasoningEffort.trim()
+                ? parsed.modelReasoningEffort.trim()
+                : undefined;
+            const activeAgentId =
+              typeof parsed.activeAgentId === "string" && parsed.activeAgentId.trim()
+                ? parsed.activeAgentId.trim()
+                : undefined;
+            return { threadId, agentThreads, model, modelReasoningEffort, activeAgentId };
+          }
+
           const agentThreads: Record<string, string> = {};
           for (const [key, value] of Object.entries(parsed)) {
             if (typeof value === "string" && value.trim()) {
               agentThreads[key] = value.trim();
             }
           }
-          return { codex: agentThreads.codex, agentThreads };
+          return { threadId: agentThreads.codex, agentThreads };
         }
       } catch {
         // fall back to legacy string format
       }
     }
-    return { codex: trimmed, agentThreads: { codex: trimmed } };
+    return { threadId: trimmed, agentThreads: { codex: trimmed } };
   }
 
-  private serializeThreadIdValue(state: ThreadState): string | null {
+  private serializeThreadStateValue(state: ThreadState): string | null {
     const agentThreads: Record<string, string> = { ...(state.agentThreads ?? {}) };
     if (state.threadId) {
       agentThreads.codex = String(state.threadId).trim();
@@ -232,13 +276,31 @@ export class ThreadStorage {
       }
     }
     const keys = Object.keys(agentThreads);
-    if (keys.length === 0) {
+    const model = typeof state.model === "string" && state.model.trim() ? state.model.trim() : undefined;
+    const modelReasoningEffort =
+      typeof state.modelReasoningEffort === "string" && state.modelReasoningEffort.trim()
+        ? state.modelReasoningEffort.trim()
+        : undefined;
+    const activeAgentId =
+      typeof state.activeAgentId === "string" && state.activeAgentId.trim() ? state.activeAgentId.trim() : undefined;
+    const hasMetadata = Boolean(model || modelReasoningEffort || activeAgentId);
+    if (keys.length === 0 && !hasMetadata) {
       return null;
     }
-    if (keys.length === 1 && keys[0] === "codex") {
+    if (!hasMetadata && keys.length === 1 && keys[0] === "codex") {
       return agentThreads.codex ?? null;
     }
-    return JSON.stringify(agentThreads);
+    if (!hasMetadata) {
+      return JSON.stringify(agentThreads);
+    }
+    return JSON.stringify({
+      version: 2,
+      threadId: agentThreads.codex ?? undefined,
+      agentThreads,
+      model,
+      modelReasoningEffort,
+      activeAgentId,
+    });
   }
 
   getThreadId(userId: number, agentId = "codex"): string | undefined {
@@ -261,7 +323,14 @@ export class ThreadStorage {
     }
     agentThreads[agentId] = cleaned;
     const codexId = agentThreads.codex ?? (agentId === "codex" ? cleaned : existing?.threadId);
-    this.setRecord(userId, { threadId: codexId, cwd: existing?.cwd, agentThreads });
+    this.setRecord(userId, {
+      threadId: codexId,
+      cwd: existing?.cwd,
+      agentThreads,
+      model: existing?.model,
+      modelReasoningEffort: existing?.modelReasoningEffort,
+      activeAgentId: existing?.activeAgentId,
+    });
   }
 
   getRecord(userId: number): ThreadState | undefined {
@@ -273,12 +342,12 @@ export class ThreadStorage {
       if (!row || !row.threadId) {
         return undefined;
       }
-      const parsed = this.parseThreadIdValue(row.threadId);
+      const parsed = this.parseThreadStateValue(row.threadId);
       const cwd = row.cwd && typeof row.cwd === 'string' ? row.cwd : undefined;
       const updatedAt = typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) && row.updatedAt > 0
         ? row.updatedAt
         : undefined;
-      return { threadId: parsed.codex, cwd, agentThreads: parsed.agentThreads, updatedAt };
+      return { ...parsed, cwd, updatedAt };
     } catch (error) {
       logger.warn(`[ThreadStorage] Failed to read thread record (ns=${this.namespace})`, error);
       return undefined;
@@ -287,15 +356,15 @@ export class ThreadStorage {
 
   setRecord(userId: number, state: ThreadState): void {
     const userHash = this.hashUserId(userId);
-    const threadId = this.serializeThreadIdValue(state);
-    if (!threadId) {
+    const serializedState = this.serializeThreadStateValue(state);
+    if (!serializedState) {
       return;
     }
     const cwd = typeof state.cwd === 'string' && state.cwd.trim() ? state.cwd.trim() : null;
     try {
-      this.upsertStmt.run(this.namespace, userHash, threadId, cwd, Date.now());
+      this.upsertStmt.run(this.namespace, userHash, serializedState, cwd, Date.now());
       logger.debug(
-        `Saved state (ns=${this.namespace} thread=${threadId}${cwd ? `, cwd=${cwd}` : ''})`,
+        `Saved state (ns=${this.namespace} thread=${serializedState}${cwd ? `, cwd=${cwd}` : ''})`,
       );
     } catch (error) {
       logger.warn(`[ThreadStorage] Failed to persist thread record (ns=${this.namespace})`, error);

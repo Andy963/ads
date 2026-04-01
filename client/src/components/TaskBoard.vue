@@ -310,7 +310,9 @@ function toggleQueue(): void {
                   </button>
                   <button v-if="isActionAllowed(t, 'cancel') && (t.status === 'running' || t.status === 'planning')"
                     class="iconBtn danger" type="button" title="终止任务" @click.stop="emit('cancel', t.id)">
-                    <span class="interruptSpinner" aria-hidden="true" />
+                    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <rect x="4" y="4" width="12" height="12" rx="2" />
+                    </svg>
                   </button>
                   <button v-if="isActionAllowed(t, 'retry') && t.status === 'failed'" class="iconBtn" type="button"
                     title="重试" @click.stop="emit('retry', t.id)">

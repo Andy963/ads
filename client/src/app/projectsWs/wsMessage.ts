@@ -1,6 +1,12 @@
 import type { ChatActions } from "../chat";
 import type { ChatItem, ChatPatch, ChatPatchFile, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
 import type { ReviewArtifactSummary, TaskBundleDraft } from "../../api/types";
+import {
+  buildModelIdStorageKey,
+  buildReasoningEffortStorageKey,
+  normalizeModelId,
+  normalizeReasoningEffort,
+} from "../../lib/chatPreferences";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 
 import { deriveProjectNameFromPath } from "./projectName";
@@ -212,6 +218,54 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     updateProject(current.id, buildWorkspaceProjectUpdates(current, nextPath, wsState));
   };
 
+  const persistEffectivePreferences = (): void => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    if (!sessionId) return;
+    try {
+      localStorage.setItem(buildModelIdStorageKey(sessionId, chatSessionId), normalizeModelId(rt.modelId.value));
+      localStorage.setItem(
+        buildReasoningEffortStorageKey(sessionId, chatSessionId),
+        normalizeReasoningEffort(rt.modelReasoningEffort.value),
+      );
+    } catch {
+      // ignore
+    }
+  };
+
+  const applyEffectiveState = (payload: Record<string, unknown>): void => {
+    const effectiveModel = String(payload.effectiveModel ?? "").trim();
+    if (effectiveModel) {
+      rt.modelId.value = normalizeModelId(effectiveModel);
+    }
+    const effectiveReasoningEffort = String(payload.effectiveModelReasoningEffort ?? "").trim();
+    if (effectiveReasoningEffort) {
+      rt.modelReasoningEffort.value = normalizeReasoningEffort(effectiveReasoningEffort);
+    }
+    const activeAgentId = String(payload.activeAgentId ?? "").trim();
+    if (activeAgentId) {
+      rt.activeAgentId.value = activeAgentId;
+    }
+    const notice = String(payload.notice ?? "").trim();
+    if (notice) {
+      rt.apiNotice.value = notice;
+      if (rt.noticeTimer !== null) {
+        try {
+          clearTimeout(rt.noticeTimer);
+        } catch {
+          // ignore
+        }
+      }
+      rt.noticeTimer = window.setTimeout(() => {
+        rt.noticeTimer = null;
+        rt.apiNotice.value = null;
+      }, 3000);
+    }
+    if (effectiveModel || effectiveReasoningEffort) {
+      persistEffectivePreferences();
+    }
+  };
+
   return (msg: unknown): void => {
     if (!isRecord(msg)) return;
     const typeValue = msg.type;
@@ -408,6 +462,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (serverChatSessionId) {
         rt.chatSessionId = serverChatSessionId;
       }
+      applyEffectiveState(msg as Record<string, unknown>);
       const handshakeReset = Boolean(msg.reset);
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       if (handshakeReset) {
@@ -635,6 +690,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           source: "result_thread_reset",
         });
       }
+      applyEffectiveState(msg as Record<string, unknown>);
       if (rt.pendingCdRequestedPath && msg.ok === false) {
         if (output.includes("/cd") || output.includes("目录")) {
           rt.pendingCdRequestedPath = null;
