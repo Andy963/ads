@@ -1,9 +1,5 @@
 import type { Input } from "../../../agents/protocol/types.js";
 
-import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../../codex/errors.js";
-import { stripLeadingTranslation } from "../../../utils/assistantText.js";
-import { processAdrBlocks } from "../../../utils/adrRecording.js";
-import { processSpecBlocks } from "../../../utils/specRecording.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { truncateForLog } from "../../utils.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
@@ -23,6 +19,9 @@ import {
 import { applySessionOverrides } from "./sessionOverrides.js";
 import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
 import { handleReviewerPromptMessage } from "./reviewerPrompt.js";
+import { createDelegationTracker } from "./delegationTracker.js";
+import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
+import { handlePromptError } from "./promptErrorHandling.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -123,28 +122,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const expectedThreadId =
         preferInMemoryThreadId({ inMemoryThreadId: orchestrator.getThreadId(), savedThreadId }) ?? undefined;
 
-      const delegationIdsByFingerprint = new Map<string, string[]>();
-      const delegationFingerprint = (agentId: string, prompt: string): string =>
-        `${String(agentId ?? "").trim().toLowerCase()}:${truncateForLog(prompt, 200)}`;
-      const nextDelegationId = (): string => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const stashDelegationId = (agentId: string, prompt: string): string => {
-        const fp = delegationFingerprint(agentId, prompt);
-        const next = delegationIdsByFingerprint.get(fp) ?? [];
-        const id = nextDelegationId();
-        delegationIdsByFingerprint.set(fp, [...next, id]);
-        return id;
-      };
-      const popDelegationId = (agentId: string, prompt: string): string => {
-        const fp = delegationFingerprint(agentId, prompt);
-        const existing = delegationIdsByFingerprint.get(fp) ?? [];
-        if (existing.length === 0) {
-          return nextDelegationId();
-        }
-        const [head, ...tail] = existing;
-        if (tail.length > 0) delegationIdsByFingerprint.set(fp, tail);
-        else delegationIdsByFingerprint.delete(fp);
-        return head!;
-      };
+      const delegationTracker = createDelegationTracker();
 
       let effectiveInput: Input = inputToSend;
       if (deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId)) {
@@ -172,7 +150,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
             deps.observability.logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
             // The LiveActivity UI is intentionally short-lived (TTL). Emit a structured message so
             // the frontend can keep a persistent "agents in progress" indicator while delegations run.
-            const delegationId = stashDelegationId(agentId, prompt);
+            const delegationId = delegationTracker.stash(agentId, prompt);
             sendToChat({
               type: "agent",
               event: "delegation:start",
@@ -193,7 +171,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
             deps.observability.logger.info(
               `[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`,
             );
-            const delegationId = popDelegationId(summary.agentId, summary.prompt);
+            const delegationId = delegationTracker.pop(summary.agentId, summary.prompt);
             sendToChat({
               type: "agent",
               event: "delegation:result",
@@ -216,26 +194,11 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         historySessionId: deps.context.historyKey,
       });
 
-      const rawResponse = typeof result.response === "string" ? result.response : String(result.response ?? "");
-      const finalOutput = stripLeadingTranslation(rawResponse);
       const workspaceRootForAdr = detectWorkspaceFrom(turnCwd);
-      let outputToSend = finalOutput;
-      let createdSpecRefs: string[] = [];
-      try {
-        const adrProcessed = processAdrBlocks(outputToSend, workspaceRootForAdr);
-        outputToSend = adrProcessed.finalText || outputToSend;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        outputToSend = `${outputToSend}\n\n---\nADR warning: failed to record ADR (${message})`;
-      }
-      try {
-        const specProcessed = await processSpecBlocks(outputToSend, workspaceRootForAdr);
-        outputToSend = specProcessed.finalText || outputToSend;
-        createdSpecRefs = specProcessed.results.map((r) => r.specRef);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        outputToSend = `${outputToSend}\n\n---\nSpec warning: failed to record spec (${message})`;
-      }
+      const { finalOutput, outputToSend, createdSpecRefs } = await processPromptOutputBlocks({
+        rawResponse: result.response,
+        workspaceRoot: workspaceRootForAdr,
+      });
       let threadId = orchestrator.getThreadId();
       let threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
@@ -305,40 +268,15 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
       deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
     } catch (error) {
-      const aborted = controller.signal.aborted;
-      if (aborted) {
-        sendToChat({ type: "error", message: "已中断，输出可能不完整" });
-      } else {
-        const errorInfo: CodexErrorInfo =
-          error instanceof CodexClassifiedError
-            ? error.info
-            : classifyError(error);
-
-        const logMessage = `[${errorInfo.code}] ${errorInfo.message}`;
-        const stack = error instanceof Error ? error.stack : undefined;
-        deps.observability.sessionLogger?.logError(stack ? `${logMessage}\n${stack}` : logMessage);
-        deps.observability.logger.warn(
-          `[Prompt Error] code=${errorInfo.code} retryable=${errorInfo.retryable} needsReset=${errorInfo.needsReset} message=${errorInfo.message}`,
-        );
-
-        deps.history.historyStore.add(deps.context.historyKey, {
-          role: "status",
-          text: `[${errorInfo.code}] ${errorInfo.userHint}`,
-          ts: Date.now(),
-          kind: "error",
-        });
-
-        sendToChat({
-          type: "error",
-          message: errorInfo.userHint,
-          errorInfo: {
-            code: errorInfo.code,
-            retryable: errorInfo.retryable,
-            needsReset: errorInfo.needsReset,
-            originalError: errorInfo.originalError,
-          },
-        });
-      }
+      handlePromptError({
+        error,
+        aborted: controller.signal.aborted,
+        sessionLogger: deps.observability.sessionLogger,
+        logger: deps.observability.logger,
+        historyStore: deps.history.historyStore,
+        historyKey: deps.context.historyKey,
+        sendToChat,
+      });
     } finally {
       unsubscribe();
       deps.sessions.interruptControllers.delete(deps.context.historyKey);
