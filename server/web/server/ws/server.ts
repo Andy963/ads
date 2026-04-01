@@ -4,7 +4,6 @@ import { WebSocketServer } from "ws";
 import type { RawData, WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 
 import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
@@ -18,12 +17,13 @@ import { createSafeJsonSend, formatCloseReason, summarizeWsPayloadForLog } from 
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import { handlePromptMessage } from "./handlePrompt.js";
 import { handleCommandMessage } from "./handleCommand.js";
-import { buildPromptHistoryText } from "./promptHistory.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
+import { buildHistoryBootstrapPayload, buildReviewerBootstrapPayloads } from "./bootstrapReplay.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
 import { buildWsConnectionIdentity } from "./connectionIdentity.js";
 import { resolveWsLaneResources } from "./laneResources.js";
+import { preflightPersistAndAck } from "./preflight.js";
 import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
@@ -251,49 +251,30 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }),
     );
 
-    const cachedHistory = historyStore.get(historyKey);
-    if (cachedHistory.length > 0) {
-      const sanitizedHistory = cachedHistory.map((entry) => {
-        if (entry.role !== "ai") {
-          return entry;
-        }
-        const cleanedText = stripLeadingTranslation(entry.text);
-        if (cleanedText === entry.text) {
-          return entry;
-        }
-        return { ...entry, text: cleanedText };
-      });
-      const cdPattern = /^\/cd\b/i;
-      const isCdCommand = (entry: { role: string; text: string }) =>
-        entry.role === "user" && cdPattern.test(String(entry.text ?? "").trim());
-      let lastCdIndex = -1;
-      for (let i = sanitizedHistory.length - 1; i >= 0; i--) {
-        if (isCdCommand(sanitizedHistory[i])) {
-          lastCdIndex = i;
-          break;
-        }
-      }
-      const filteredHistory =
-        lastCdIndex >= 0
-          ? sanitizedHistory.filter((entry, idx) => !isCdCommand(entry) || idx === lastCdIndex)
-          : sanitizedHistory;
-      safeJsonSend(ws, { type: "history", items: filteredHistory });
+    const historyPayload = buildHistoryBootstrapPayload(historyStore.get(historyKey));
+    if (historyPayload) {
+      safeJsonSend(ws, historyPayload);
     }
 
-    if (isReviewerChat) {
-      const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim();
-      if (boundSnapshotId) {
-        safeJsonSend(ws, { type: "reviewer_snapshot_binding", snapshotId: boundSnapshotId });
+    const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
+    const reviewerBootstrapPayloads = buildReviewerBootstrapPayloads({
+      isReviewerChat,
+      boundSnapshotId,
+      latestArtifact: (() => {
+        if (!isReviewerChat || !boundSnapshotId) {
+          return null;
+        }
         try {
           const taskCtx = tasks.ensureTaskContext(normalizeWorkspaceRootForMeta(currentCwd));
           const latestArtifact = taskCtx.reviewStore.getLatestArtifact({ snapshotId: boundSnapshotId });
-          if (latestArtifact) {
-            safeJsonSend(ws, { type: "reviewer_artifact", artifact: toReviewArtifactSummary(latestArtifact) });
-          }
+          return latestArtifact ? toReviewArtifactSummary(latestArtifact) : null;
         } catch {
-          // ignore
+          return null;
         }
-      }
+      })(),
+    });
+    for (const payload of reviewerBootstrapPayloads) {
+      safeJsonSend(ws, payload);
     }
 
     let messageChain = Promise.resolve();
@@ -303,83 +284,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       requestId: string;
       clientMessageId: string | null;
       receivedAt: number;
-    };
-
-    const shouldPersistCommandMessage = (payload: unknown): { ok: boolean; command: string; shouldPersist: boolean } => {
-      const commandRaw = commands.sanitizeInput(payload);
-      if (!commandRaw) {
-        return { ok: false, command: "", shouldPersist: false };
-      }
-      const command = commandRaw.trim();
-      if (!command) {
-        return { ok: false, command: "", shouldPersist: false };
-      }
-      const isSilent =
-        payload !== null &&
-        typeof payload === "object" &&
-        !Array.isArray(payload) &&
-        (payload as Record<string, unknown>).silent === true;
-      const isCd = /^\/cd\b/i.test(command);
-      return { ok: true, command, shouldPersist: !isSilent && !isCd };
-    };
-
-    const preflightPersistAndAck = (args: {
-      parsed: import("./schema.js").WsMessage;
-      requestId: string;
-      clientMessageId: string | null;
-      receivedAt: number;
-    }): { enqueue: boolean } => {
-      if (!args.clientMessageId) {
-        return { enqueue: true };
-      }
-      const entryKind = `client_message_id:${args.clientMessageId}`;
-      if (args.parsed.type === "prompt") {
-        const textResult = buildPromptHistoryText(args.parsed.payload, commands.sanitizeInput);
-        if (!textResult.ok) {
-          return { enqueue: true };
-        }
-        const inserted = historyStore.add(historyKey, {
-          role: "user",
-          text: textResult.text,
-          ts: args.receivedAt,
-          kind: entryKind,
-        });
-        safeJsonSend(ws, { type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
-        if (!inserted) {
-          if (config.traceWsDuplication) {
-            logger.warn(
-              `[WebSocket][Dedupe] req=${args.requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${args.clientMessageId}`,
-            );
-          }
-          return { enqueue: false };
-        }
-        return { enqueue: true };
-      }
-
-      if (args.parsed.type === "command") {
-        const cmd = shouldPersistCommandMessage(args.parsed.payload);
-        if (!cmd.ok || !cmd.shouldPersist) {
-          return { enqueue: true };
-        }
-        const inserted = historyStore.add(historyKey, {
-          role: "user",
-          text: cmd.command,
-          ts: args.receivedAt,
-          kind: entryKind,
-        });
-        safeJsonSend(ws, { type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
-        if (!inserted) {
-          if (config.traceWsDuplication) {
-            logger.warn(
-              `[WebSocket][Dedupe] req=${args.requestId} session=${sessionId} user=${userId} history=${historyKey} client_message_id=${args.clientMessageId}`,
-            );
-          }
-          return { enqueue: false };
-        }
-        return { enqueue: true };
-      }
-
-      return { enqueue: true };
     };
 
     const handleOneMessage = async (msg: IncomingWsMessage): Promise<void> => {
@@ -620,7 +524,20 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         );
       }
 
-      const preflight = preflightPersistAndAck({ parsed, requestId, clientMessageId, receivedAt });
+      const preflight = preflightPersistAndAck({
+        parsed,
+        requestId,
+        clientMessageId,
+        receivedAt,
+        historyStore,
+        historyKey,
+        sanitizeInput: commands.sanitizeInput,
+        sendJson: (payload) => safeJsonSend(ws, payload),
+        traceWsDuplication: config.traceWsDuplication,
+        warn: logger.warn,
+        sessionId,
+        userId,
+      });
       if (!preflight.enqueue) {
         return;
       }
