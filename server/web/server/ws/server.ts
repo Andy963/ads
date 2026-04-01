@@ -3,18 +3,16 @@ import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { RawData, WebSocket } from "ws";
 
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-
 import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
 import { getWorkspaceState } from "../../utils.js";
 import type { AttachWebSocketServerDeps } from "./deps.js";
+import { ensureWsSessionLogger, handleWsControlMessage } from "./messageControl.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
-import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import { handlePromptMessage } from "./handlePrompt.js";
 import { handleCommandMessage } from "./handleCommand.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
@@ -286,69 +284,29 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         const requestId = msg.requestId;
         const clientMessageId = msg.clientMessageId;
 
-        let sessionLogger: NonNullable<ReturnType<SessionManager["ensureLogger"]>> | null = null;
-        try {
-          sessionLogger = sessionManager.ensureLogger(userId) ?? null;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          logger.warn(`[WebSocket] Failed to initialize session logger: ${message}`);
-          sessionLogger = null;
-        }
+        const sessionLogger = ensureWsSessionLogger({
+          sessionManager,
+          userId,
+          warn: logger.warn,
+        });
 
-        if (parsed.type === "interrupt") {
-          const found = abortInFlightForHistoryKey(historyKey);
-          if (!found) {
-            safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
-          }
-          return;
-        }
-
-        if (parsed.type === "clear_history") {
-          historyStore.clear(historyKey);
-          sessionManager.reset(userId);
-          if (isReviewerChat) {
-            reviewerSnapshotBindings.delete(historyKey);
-          }
-          safeJsonSend(ws, { type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
-          return;
-        }
-
-        if (parsed.type === "task_resume") {
-          if (isReviewerChat) {
-            safeJsonSend(ws, { type: "error", message: "Reviewer lane does not support resuming threads." });
-            return;
-          }
-          const resume = await handleTaskResumeMessage({
-            request: {
-              parsed,
-            },
-            transport: {
-              ws,
-              safeJsonSend,
-            },
-            observability: {
-              logger,
-            },
-            context: {
-              userId,
-              historyKey,
-              currentCwd,
-            },
-            sessions: {
-              sessionManager,
-              orchestrator,
-              getWorkspaceLock,
-            },
-            history: {
-              historyStore,
-            },
-            tasks: {
-              ensureTaskContext: tasks.ensureTaskContext,
-            },
-          });
-          if (resume.orchestrator) {
-            orchestrator = resume.orchestrator;
-          }
+        const control = await handleWsControlMessage({
+          parsed,
+          isReviewerChat,
+          userId,
+          historyKey,
+          currentCwd,
+          sessionManager,
+          orchestrator,
+          getWorkspaceLock,
+          historyStore,
+          reviewerSnapshotBindings,
+          ensureTaskContext: tasks.ensureTaskContext,
+          sendJson: (payload) => safeJsonSend(ws, payload),
+          logger,
+        });
+        if (control.handled) {
+          orchestrator = control.orchestrator;
           return;
         }
 
@@ -397,11 +355,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         });
         if (promptResult.handled) {
           orchestrator = promptResult.orchestrator;
-          return;
-        }
-
-        if (isReviewerChat && (parsed.type === "command" || parsed.type === "set_agent")) {
-          safeJsonSend(ws, { type: "error", message: "Reviewer lane is read-only and does not accept commands." });
           return;
         }
 
