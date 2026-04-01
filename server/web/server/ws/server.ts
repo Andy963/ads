@@ -224,11 +224,10 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
     const resumeThread = !isReviewerChat && !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
-    const contextRestored = resumeThread && !sessionManager.needsHistoryInjection(userId);
-    const pendingInjection = sessionManager.needsHistoryInjection(userId);
+    const contextMode = sessionManager.getContextRestoreMode(userId);
 
     logger.info(
-      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size}${pendingInjection ? " (pending history injection)" : ""}${contextRestored ? " (thread resumed)" : ""}`,
+      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,
     );
     const inFlight = state.interruptControllers.has(historyKey);
 
@@ -269,7 +268,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       effectiveModel: effectiveState.model,
       effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
       activeAgentId: effectiveState.activeAgentId,
-      contextMode: pendingInjection ? "history_injection" : contextRestored ? "thread_resumed" : "fresh",
+      contextMode,
     });
 	    safeJsonSend(ws, {
 	      type: "agents",

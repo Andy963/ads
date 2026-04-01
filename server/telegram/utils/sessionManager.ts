@@ -13,6 +13,7 @@ import {
   buildPreservedResetState,
   buildSyncedSessionState,
   clearSavedResumeThreadId,
+  type ContextRestoreMode,
   getSavedResumeThreadId,
   getSavedSessionState,
   resolveResumeState,
@@ -140,6 +141,7 @@ export class SessionManager {
   private readonly logger = createLogger("SessionManager");
   private readonly resumeTtlMs = resolveResumeTtlMs();
   private readonly pendingHistoryInjections = new Set<number>();
+  private readonly contextRestoreModes = new Map<number, ContextRestoreMode>();
 
   constructor(
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000,
@@ -173,6 +175,9 @@ export class SessionManager {
         existing.logger?.close();
         existing.logger = undefined;
       }
+      if (!this.contextRestoreModes.has(userId)) {
+        this.contextRestoreModes.set(userId, this.pendingHistoryInjections.has(userId) ? "history_injection" : "fresh");
+      }
       return existing.session;
     }
 
@@ -194,6 +199,7 @@ export class SessionManager {
     if (resumeState.shouldInjectHistory) {
       this.pendingHistoryInjections.add(userId);
     }
+    this.contextRestoreModes.set(userId, resumeState.restoreMode);
 
     this.logger.info(
       `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''}${resumeState.resumeThreadId ? ` resume=${resumeState.resumeThreadId}` : ' (fresh)'} at cwd: ${effectiveCwd}`,
@@ -240,6 +246,16 @@ export class SessionManager {
 
   clearHistoryInjection(userId: number): void {
     this.pendingHistoryInjections.delete(userId);
+    if (this.contextRestoreModes.get(userId) === "history_injection") {
+      this.contextRestoreModes.set(userId, "fresh");
+    }
+  }
+
+  getContextRestoreMode(userId: number): ContextRestoreMode {
+    if (this.pendingHistoryInjections.has(userId)) {
+      return "history_injection";
+    }
+    return this.contextRestoreModes.get(userId) ?? "fresh";
   }
 
   getConfiguredAgentIds(): AgentIdentifier[] {
@@ -301,6 +317,10 @@ export class SessionManager {
     }
     if (this.pendingHistoryInjections.has(fromUserId)) {
       this.pendingHistoryInjections.add(toUserId);
+    }
+    const restoreMode = this.contextRestoreModes.get(fromUserId);
+    if (restoreMode && !this.contextRestoreModes.has(toUserId)) {
+      this.contextRestoreModes.set(toUserId, restoreMode);
     }
 
     return true;
@@ -365,6 +385,7 @@ export class SessionManager {
       record.session.setModel(normalized || undefined);
       record.lastActivity = Date.now();
     }
+    this.contextRestoreModes.set(userId, "fresh");
     this.syncStoredState(userId, { clearThreads: previousModel !== (normalized || undefined) });
     this.logger.info(`Switched to model: ${normalized || "(default)"}`);
   }
@@ -467,6 +488,8 @@ export class SessionManager {
     } else {
       this.logger.debug('Reset requested without active session');
     }
+    this.pendingHistoryInjections.delete(userId);
+    this.contextRestoreModes.set(userId, "fresh");
   }
 
   dropSession(userId: number, options?: { clearSavedThread?: boolean }): void {
@@ -489,6 +512,7 @@ export class SessionManager {
 
     record.cwd = cwd;
     record.session.setWorkingDirectory(cwd);
+    this.contextRestoreModes.set(userId, "fresh");
     this.syncStoredState(userId, { cwd, clearThreads: true });
     record.logger?.close();
     record.logger = undefined;
@@ -553,6 +577,8 @@ export class SessionManager {
       record.logger?.close();
     }
     this.sessions.clear();
+    this.pendingHistoryInjections.clear();
+    this.contextRestoreModes.clear();
   }
 
   private createSession(args: {
@@ -679,6 +705,8 @@ export class SessionManager {
       record.logger?.close();
       this.sessions.delete(userId);
     }
+    this.pendingHistoryInjections.delete(userId);
+    this.contextRestoreModes.delete(userId);
     this.options.onDispose?.({
       userId,
       reason,

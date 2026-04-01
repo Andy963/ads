@@ -8,10 +8,9 @@ import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 import type { WsPromptHandlerDeps } from "./deps.js";
 import {
   buildHistoryInjectionContext,
-  parseModelFromPayload,
-  parseModelReasoningEffortFromPayload,
   prependContextToInput,
 } from "./promptModelConfig.js";
+import { applySessionOverrides } from "./sessionOverrides.js";
 
 export function extractInputText(input: Input): string {
   if (typeof input === "string") {
@@ -212,22 +211,11 @@ export async function handleReviewerPromptMessage(args: {
     sendToClient({ type: "reviewer_snapshot_binding", snapshotId: requestedSnapshotId, taskId: snapshot.taskId });
   }
 
-  let rotationNotice: string | undefined;
-  const modelOverride = parseModelFromPayload(deps.request.parsed.payload);
-  if (modelOverride.present && modelOverride.model) {
-    const previousModel = deps.sessions.sessionManager.getUserModel(deps.context.userId);
-    if (previousModel !== modelOverride.model) {
-      deps.sessions.sessionManager.setUserModel(deps.context.userId, modelOverride.model);
-      rotationNotice =
-        previousModel && previousModel.trim()
-          ? `模型已从 ${previousModel} 切换到 ${modelOverride.model}，已启动新会话线程。`
-          : `模型已切换到 ${modelOverride.model}，已启动新会话线程。`;
-    }
-  }
-  const reasoningEffort = parseModelReasoningEffortFromPayload(deps.request.parsed.payload);
-  if (reasoningEffort.present) {
-    deps.sessions.sessionManager.setUserModelReasoningEffort(deps.context.userId, reasoningEffort.effort);
-  }
+  const { notice: rotationNotice } = applySessionOverrides({
+    sessionManager: deps.sessions.sessionManager,
+    userId: deps.context.userId,
+    payload: deps.request.parsed.payload,
+  });
 
   if (isReviewerWriteLikeRequest(inputToSend)) {
     const output =

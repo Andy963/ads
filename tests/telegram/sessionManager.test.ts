@@ -133,6 +133,7 @@ describe("SessionManager", () => {
 
     assert.equal(session1, session2);
     assert.equal(manager.getUserCwd(123456), "/tmp/a");
+    assert.equal(manager.getContextRestoreMode(123456), "fresh");
   });
 
   it("evicts idle sessions, resets heavy state, and recreates them on demand", async () => {
@@ -224,6 +225,27 @@ describe("SessionManager", () => {
     assert.equal(session.getModelReasoningEffort(), "xhigh");
     assert.equal(session.getActiveAgentId(), "claude");
     assert.equal(session.getThreadId(), "claude-thread");
+    assert.equal(manager.getContextRestoreMode(42), "thread_resumed");
+  });
+
+  it("keeps fresh restore mode when no saved thread exists even if resume was requested", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    const session = manager.getOrCreate(77, "/tmp/project", true) as unknown as FakeSession;
+    assert.equal(session.getThreadId(), null);
+    assert.equal(manager.getContextRestoreMode(77), "fresh");
   });
 
   it("falls back to history injection when a saved thread is stale", () => {
@@ -258,6 +280,7 @@ describe("SessionManager", () => {
       const session = manager.getOrCreate(42, "/tmp/project", true) as unknown as FakeSession;
       assert.equal(session.getThreadId(), null);
       assert.equal(manager.needsHistoryInjection(42), true);
+      assert.equal(manager.getContextRestoreMode(42), "history_injection");
       assert.equal(storage.getRecord(42)?.agentThreads?.resume, "codex-thread");
     } finally {
       if (previousTtl === undefined) {

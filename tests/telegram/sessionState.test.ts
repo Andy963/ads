@@ -11,6 +11,7 @@ import {
   buildSyncedSessionState,
   clearSavedResumeThreadId,
   getSavedResumeThreadId,
+  resolveResumeState,
 } from "../../server/telegram/utils/sessionState.js";
 
 describe("telegram/sessionState helpers", () => {
@@ -105,5 +106,40 @@ describe("telegram/sessionState helpers", () => {
       threadId: undefined,
       agentThreads: { resume: "thread-live" },
     });
+  });
+
+  it("classifies restore mode as fresh when resume was requested without a saved thread", () => {
+    const resume = resolveResumeState({
+      userId: 10,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      resumeTtlMs: 60_000,
+    });
+
+    assert.equal(resume.restoreMode, "fresh");
+    assert.equal(resume.resumeThreadId, undefined);
+    assert.equal(resume.shouldInjectHistory, false);
+  });
+
+  it("classifies restore mode as thread_resumed when a saved thread is still fresh", () => {
+    storage.setRecord(11, {
+      threadId: "thread-11",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "thread-11" },
+      activeAgentId: "codex",
+    });
+
+    const resume = resolveResumeState({
+      userId: 11,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      resumeTtlMs: 60_000,
+    });
+
+    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.resumeThreadId, "thread-11");
+    assert.equal(resume.shouldInjectHistory, false);
   });
 });

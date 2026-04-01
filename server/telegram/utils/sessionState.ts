@@ -12,11 +12,14 @@ export type SavedSessionState = {
   activeAgentId?: AgentIdentifier;
 };
 
+export type ContextRestoreMode = "fresh" | "thread_resumed" | "history_injection";
+
 export type ResumeState = {
   resumeThreadId?: string;
   resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
   activeAgentId?: AgentIdentifier;
   shouldInjectHistory: boolean;
+  restoreMode: ContextRestoreMode;
 };
 
 export type ActiveSessionState = {
@@ -63,7 +66,7 @@ export function resolveResumeState(args: {
   resumeTtlMs: number;
 }): ResumeState {
   if (!args.resumeThread) {
-    return { shouldInjectHistory: false };
+    return { shouldInjectHistory: false, restoreMode: "fresh" };
   }
 
   const record = args.storage?.getRecord(args.userId);
@@ -93,6 +96,7 @@ export function resolveResumeState(args: {
       return {
         activeAgentId: savedActiveAgentId,
         shouldInjectHistory: true,
+        restoreMode: "history_injection",
       };
     }
     return {
@@ -100,6 +104,7 @@ export function resolveResumeState(args: {
       resumeThreadIds,
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: false,
+      restoreMode: "thread_resumed",
     };
   }
 
@@ -108,6 +113,7 @@ export function resolveResumeState(args: {
     return {
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: true,
+      restoreMode: "history_injection",
     };
   }
 
@@ -117,6 +123,7 @@ export function resolveResumeState(args: {
       resumeThreadIds,
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: false,
+      restoreMode: "thread_resumed",
     };
   }
 
@@ -124,6 +131,7 @@ export function resolveResumeState(args: {
     resumeThreadIds,
     activeAgentId: savedActiveAgentId,
     shouldInjectHistory: false,
+    restoreMode: "fresh",
   };
 }
 
