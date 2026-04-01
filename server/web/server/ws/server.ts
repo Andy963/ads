@@ -22,6 +22,7 @@ import { handleCommandMessage } from "./handleCommand.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
+import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
 import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
@@ -174,18 +175,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       });
     };
     registerSessionCacheBinding();
-    const cachedWorkspace = state.workspaceCache.get(cacheKey);
-    const userCwdKey = String(userId);
-    if (!state.cwdStore.has(userCwdKey)) {
-      const legacyCwd = state.cwdStore.get(String(legacyUserId));
-      if (legacyCwd && legacyCwd.trim()) {
-        state.cwdStore.set(userCwdKey, legacyCwd);
-        state.persistCwdStore(state.cwdStorePath, state.cwdStore);
-      }
-    }
-    const savedState = sessionManager.getSavedState(userId);
-    const storedCwd = state.cwdStore.get(userCwdKey);
-    let currentCwd = state.directoryManager.getUserCwd(userId);
     const preferredProjectCwd = (() => {
       try {
         const db = getStateDatabase();
@@ -196,22 +185,19 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         return null;
       }
     })();
-
-    const preferredCwd = preferredProjectCwd ?? cachedWorkspace ?? savedState?.cwd ?? storedCwd;
-    if (preferredCwd) {
-      const restoreResult = state.directoryManager.setUserCwd(userId, preferredCwd);
-      if (!restoreResult.success) {
-        logger.warn(`[Web][WorkspaceRestore] failed path=${preferredCwd} reason=${restoreResult.error}`);
-      } else {
-        currentCwd = state.directoryManager.getUserCwd(userId);
-        state.cwdStore.set(String(userId), currentCwd);
-        state.persistCwdStore(state.cwdStorePath, state.cwdStore);
-      }
-    }
-    state.workspaceCache.set(cacheKey, currentCwd);
-    sessionManager.setUserCwd(userId, currentCwd);
-    state.cwdStore.set(String(userId), currentCwd);
-    state.persistCwdStore(state.cwdStorePath, state.cwdStore);
+    let currentCwd = restoreConnectionWorkspace({
+      userId,
+      legacyUserId,
+      cacheKey,
+      preferredProjectCwd,
+      directoryManager: state.directoryManager,
+      sessionManager,
+      workspaceCache: state.workspaceCache,
+      cwdStore: state.cwdStore,
+      cwdStorePath: state.cwdStorePath,
+      persistCwdStore: state.persistCwdStore,
+      warn: logger.warn,
+    });
 
     try {
       const meta = state.clientMetaByWs.get(ws);
