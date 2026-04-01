@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 
-import { parseTaskResumeRequest, selectTaskResumeThread } from "../../server/web/server/ws/taskResume.js";
+import {
+  isPermanentTaskResumeFailure,
+  parseTaskResumeRequest,
+  selectTaskResumeThread,
+} from "../../server/web/server/ws/taskResume.js";
 
 describe("web/ws/taskResume", () => {
   it("defaults to auto mode when payload missing", () => {
@@ -49,7 +53,7 @@ describe("web/ws/taskResume", () => {
       savedThreadId: undefined,
       savedResumeThreadId: "saved-resume",
     });
-    assert.deepStrictEqual(selection, { threadId: "", source: "none" });
+    assert.deepStrictEqual(selection, { threadId: "saved-resume", source: "saved" });
   });
 
   it("saved mode prefers saved-resume when present", () => {
@@ -80,5 +84,12 @@ describe("web/ws/taskResume", () => {
       savedResumeThreadId: "saved-resume",
     });
     assert.deepStrictEqual(selection, { threadId: "explicit", source: "explicit" });
+  });
+
+  it("only treats clearly missing or invalid resume threads as permanent failures", () => {
+    assert.equal(isPermanentTaskResumeFailure("thread not found"), true);
+    assert.equal(isPermanentTaskResumeFailure("invalid thread id"), true);
+    assert.equal(isPermanentTaskResumeFailure("codex exited with code 1"), false);
+    assert.equal(isPermanentTaskResumeFailure("temporary upstream timeout"), false);
   });
 });

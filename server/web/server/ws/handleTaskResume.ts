@@ -7,7 +7,11 @@ import type {
 import { loadTaskResumeConversationContext } from "./taskResumeConversation.js";
 import { assertCodexThreadResumable } from "./taskResumeCodex.js";
 import { sendTaskResumeHistorySnapshot } from "./taskResumeHistory.js";
-import { parseTaskResumeRequest, selectTaskResumeThread } from "./taskResume.js";
+import {
+  isPermanentTaskResumeFailure,
+  parseTaskResumeRequest,
+  selectTaskResumeThread,
+} from "./taskResume.js";
 
 export async function handleTaskResumeMessage(
   deps: WsTaskResumeHandlerDeps,
@@ -44,6 +48,7 @@ export async function handleTaskResumeMessage(
       savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
     });
     const threadIdToResume = selection.threadId;
+    let clearSavedResumeThreadAfterFallback = false;
 
     if (threadIdToResume) {
       try {
@@ -87,6 +92,9 @@ export async function handleTaskResumeMessage(
         deps.observability.logger.warn(
           `[Web][task_resume] resumeThread failed thread=${threadIdToResume} err=${truncateForLog(message)}`,
         );
+        if (selection.source === "saved" && isPermanentTaskResumeFailure(message)) {
+          clearSavedResumeThreadAfterFallback = true;
+        }
       }
     }
 
@@ -105,7 +113,10 @@ export async function handleTaskResumeMessage(
       ts: Date.now(),
     });
 
-    deps.sessions.sessionManager.dropSession(deps.context.userId, { clearSavedThread: true });
+    if (clearSavedResumeThreadAfterFallback) {
+      deps.sessions.sessionManager.clearSavedResumeThreadId(deps.context.userId);
+    }
+    deps.sessions.sessionManager.dropSession(deps.context.userId);
     orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, false);
     orchestrator.setWorkingDirectory(deps.context.currentCwd);
 

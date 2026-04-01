@@ -10,6 +10,16 @@ export type TaskResumeSelection = {
   source: "none" | "explicit" | "current" | "saved";
 };
 
+const PERMANENT_TASK_RESUME_FAILURE_PATTERNS = [
+  /\bnot\s+found\b/i,
+  /\bno\s+such\b/i,
+  /\bdoes\s+not\s+exist\b/i,
+  /\bunknown\b/i,
+  /\binvalid\b/i,
+  /\bmalformed\b/i,
+  /\bmissing\b/i,
+];
+
 function normalizeMode(value: unknown): TaskResumeMode {
   if (typeof value !== "string") {
     return "auto";
@@ -95,5 +105,16 @@ export function selectTaskResumeThread(args: {
   if (savedThreadId) {
     return { threadId: savedThreadId, source: "current" };
   }
+  if (savedResumeThreadId) {
+    return { threadId: savedResumeThreadId, source: "saved" };
+  }
   return { threadId: "", source: "none" };
+}
+
+export function isPermanentTaskResumeFailure(message: unknown): boolean {
+  const normalized = String(message ?? "").trim();
+  if (!normalized) {
+    return false;
+  }
+  return PERMANENT_TASK_RESUME_FAILURE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
