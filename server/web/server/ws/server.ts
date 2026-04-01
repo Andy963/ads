@@ -23,6 +23,7 @@ import { buildPromptHistoryText } from "./promptHistory.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
+import { resolveWsLaneResources } from "./laneResources.js";
 import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
@@ -113,23 +114,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
     const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: config.workspaceRoot });
     const chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
-    const isPlannerChat = chatSessionId === "planner";
-    const isReviewerChat = chatSessionId === "reviewer";
-    const sessionManager = isPlannerChat
-      ? sessions.plannerSessionManager
-      : isReviewerChat
-        ? sessions.reviewerSessionManager
-        : sessions.workerSessionManager;
-    const historyStore = isPlannerChat
-      ? history.plannerHistoryStore
-      : isReviewerChat
-        ? history.reviewerHistoryStore
-        : history.workerHistoryStore;
-    const getWorkspaceLock = isPlannerChat
-      ? sessions.getPlannerWorkspaceLock
-      : isReviewerChat
-        ? sessions.getReviewerWorkspaceLock
-        : sessions.getWorkspaceLock;
+    const { isReviewerChat, sessionManager, historyStore, getWorkspaceLock } = resolveWsLaneResources({
+      chatSessionId,
+      sessions,
+      history,
+    });
 
     if (Number.isFinite(config.maxClients) && config.maxClients > 0 && state.clients.size >= config.maxClients) {
       ws.close(4409, `max clients reached (${config.maxClients})`);
