@@ -13,7 +13,7 @@ import { getWorkspaceState } from "../../utils.js";
 import type { AttachWebSocketServerDeps } from "./deps.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
-import { createSafeJsonSend, formatCloseReason, summarizeWsPayloadForLog } from "./utils.js";
+import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import { handlePromptMessage } from "./handlePrompt.js";
 import { handleCommandMessage } from "./handleCommand.js";
@@ -22,6 +22,7 @@ import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "
 import { buildHistoryBootstrapPayload, buildReviewerBootstrapPayloads } from "./bootstrapReplay.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
 import { buildWsConnectionIdentity } from "./connectionIdentity.js";
+import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnection } from "./connectionRuntime.js";
 import { resolveWsLaneResources } from "./laneResources.js";
 import { preflightPersistAndAck } from "./preflight.js";
 import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
@@ -205,27 +206,19 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     );
     const inFlight = state.interruptControllers.has(historyKey);
 
-    const broadcastJson = (payload: unknown): void => {
-      for (const [candidate, meta] of state.clientMetaByWs.entries()) {
-        if (meta.historyKey !== historyKey) {
-          continue;
-        }
-        safeJsonSend(candidate, payload);
-      }
-    };
+    const broadcastJson = (payload: unknown): void =>
+      broadcastJsonToHistoryKey({
+        clientMetaByWs: state.clientMetaByWs,
+        historyKey,
+        payload,
+        sendJson: safeJsonSend,
+      });
 
-    const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean => {
-      const controller = state.interruptControllers.get(targetHistoryKey);
-      if (!controller) {
-        return false;
-      }
-      try {
-        controller.abort();
-      } catch {
-        // ignore
-      }
-      return true;
-    };
+    const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean =>
+      abortInFlightHistory({
+        interruptControllers: state.interruptControllers,
+        historyKey: targetHistoryKey,
+      });
 
     const bootstrapState = buildWsBootstrapState({
       sessionManager,
@@ -534,25 +527,17 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
 
     ws.on("close", (code, reason) => {
-      state.clients.delete(ws);
-      const meta = state.clientMetaByWs.get(ws);
-      if (meta?.historyKey) {
-        const controller = state.interruptControllers.get(meta.historyKey);
-        if (controller) {
-          try {
-            controller.abort();
-          } catch {
-            // ignore
-          }
-          state.interruptControllers.delete(meta.historyKey);
-        }
-      }
-      state.clientMetaByWs.delete(ws);
-      const reasonText = formatCloseReason(reason);
-      const suffix = reasonText ? ` reason=${reasonText}` : "";
-      logger.info(
-        `client disconnected conn=${meta?.connectionId ?? "unknown"} session=${sessionId} user=${userId} history=${meta?.historyKey ?? ""} code=${code}${suffix}`,
-      );
+      cleanupClosedConnection({
+        ws,
+        code,
+        reason,
+        sessionId,
+        userId,
+        clients: state.clients,
+        clientMetaByWs: state.clientMetaByWs,
+        interruptControllers: state.interruptControllers,
+        logger,
+      });
     });
   });
 
