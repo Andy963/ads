@@ -14,8 +14,7 @@ import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageInta
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
-import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
-import { buildHistoryBootstrapPayload, buildReviewerBootstrapPayloads } from "./bootstrapReplay.js";
+import { sendInitialBootstrapMessages } from "./bootstrapDelivery.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
 import { buildWsConnectionIdentity } from "./connectionIdentity.js";
 import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnection } from "./connectionRuntime.js";
@@ -216,37 +215,20 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         historyKey: targetHistoryKey,
       });
 
-    const bootstrapState = buildWsBootstrapState({
+    const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
+    sendInitialBootstrapMessages({
+      ws,
+      safeJsonSend,
       sessionManager,
       orchestrator,
       userId,
       agentAvailability: agents.agentAvailability,
-    });
-    safeJsonSend(
-      ws,
-      buildWelcomePayload({
-        sessionId,
-        chatSessionId,
-        workspace: getWorkspaceState(currentCwd),
-        inFlight,
-        state: bootstrapState,
-      }),
-    );
-    safeJsonSend(
-      ws,
-      buildAgentsPayload({
-        activeAgentId: orchestrator.getActiveAgentId(),
-        state: bootstrapState,
-      }),
-    );
-
-    const historyPayload = buildHistoryBootstrapPayload(historyStore.get(historyKey));
-    if (historyPayload) {
-      safeJsonSend(ws, historyPayload);
-    }
-
-    const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
-    const reviewerBootstrapPayloads = buildReviewerBootstrapPayloads({
+      sessionId,
+      chatSessionId,
+      workspace: getWorkspaceState(currentCwd),
+      inFlight,
+      historyStore,
+      historyKey,
       isReviewerChat,
       boundSnapshotId,
       latestArtifact: (() => {
@@ -262,9 +244,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         }
       })(),
     });
-    for (const payload of reviewerBootstrapPayloads) {
-      safeJsonSend(ws, payload);
-    }
 
     let messageChain = Promise.resolve();
     let lastReceivedAt = 0;
