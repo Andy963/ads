@@ -14,6 +14,33 @@ function sleep(ms: number): void {
   Atomics.wait(SLEEP, 0, 0, ms);
 }
 
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code !== "ESRCH";
+  }
+}
+
+function clearStaleLock(): boolean {
+  try {
+    const raw = fs.readFileSync(LOCK_FILE, "utf8").trim();
+    const pid = Number.parseInt(raw, 10);
+    if (isPidAlive(pid)) {
+      return false;
+    }
+    fs.unlinkSync(LOCK_FILE);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function acquireLock(timeoutMs = 30_000): () => void {
   const startedAt = Date.now();
   while (true) {
@@ -30,6 +57,9 @@ function acquireLock(timeoutMs = 30_000): () => void {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") {
         throw error;
+      }
+      if (clearStaleLock()) {
+        continue;
       }
       if (Date.now() - startedAt > timeoutMs) {
         throw new Error(`Timed out acquiring ADS_STATE_DIR lock: ${LOCK_FILE}`);

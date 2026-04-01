@@ -1,22 +1,35 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { SessionManager } from "../../server/telegram/utils/sessionManager.js";
+import { getStateDatabase } from "../../server/state/database.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { ThreadStorage } from "../../server/telegram/utils/threadStorage.js";
 
 type FakeSession = {
   readonly id: number;
   resetCalls: number;
   workingDirectory?: string;
+  threadId: string | null;
+  model?: string;
+  modelReasoningEffort?: string;
+  activeAgentId: string;
   send: () => Promise<{ response: string }>;
   onEvent: () => () => void;
   getThreadId: () => string | null;
+  getModel: () => string | undefined;
+  getModelReasoningEffort: () => string | undefined;
   reset: () => void;
-  setModel: () => void;
+  setModel: (model?: string) => void;
+  setModelReasoningEffort: (effort?: string) => void;
   setWorkingDirectory: (workingDirectory?: string) => void;
   status: () => { ready: boolean; streaming: boolean };
   getActiveAgentId: () => string;
   listAgents: () => Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean } }>;
-  switchAgent: () => void;
+  switchAgent: (agentId: string) => void;
 };
 
 function createFakeSessionFactory() {
@@ -25,25 +38,57 @@ function createFakeSessionFactory() {
 
   return {
     created,
-    factory: ({ cwd }: { cwd: string }) => {
+    factory: ({
+      cwd,
+      resumeThreadId,
+      resumeThreadIds,
+      userModel,
+      userModelReasoningEffort,
+      activeAgentId,
+    }: {
+      cwd: string;
+      resumeThreadId?: string;
+      resumeThreadIds?: Record<string, string>;
+      userModel?: string;
+      userModelReasoningEffort?: string;
+      activeAgentId?: string;
+    }) => {
+      const initialAgentId = activeAgentId ?? "codex";
       const session: FakeSession = {
         id: nextId++,
         resetCalls: 0,
         workingDirectory: cwd,
+        threadId: resumeThreadIds?.[initialAgentId] ?? resumeThreadId ?? null,
+        model: userModel,
+        modelReasoningEffort: userModelReasoningEffort,
+        activeAgentId: initialAgentId,
         send: async () => ({ response: "ok" }),
         onEvent: () => () => {},
-        getThreadId: () => null,
+        getThreadId: () => session.threadId,
+        getModel: () => session.model,
+        getModelReasoningEffort: () => session.modelReasoningEffort,
         reset: () => {
           session.resetCalls += 1;
+          session.threadId = null;
         },
-        setModel: () => {},
+        setModel: (model) => {
+          session.model = model;
+          session.threadId = null;
+        },
+        setModelReasoningEffort: (effort) => {
+          session.modelReasoningEffort = effort;
+        },
         setWorkingDirectory: (workingDirectory) => {
           session.workingDirectory = workingDirectory;
+          session.threadId = null;
         },
         status: () => ({ ready: true, streaming: true }),
-        getActiveAgentId: () => "codex",
+        getActiveAgentId: () => session.activeAgentId,
         listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
-        switchAgent: () => {},
+        switchAgent: (agentId) => {
+          session.activeAgentId = agentId;
+          session.threadId = resumeThreadIds?.[agentId] ?? null;
+        },
       };
       created.push(session);
       return session as unknown as ReturnType<SessionManager["getOrCreate"]>;
@@ -64,9 +109,15 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 500): Prom
 
 describe("SessionManager", () => {
   let manager: SessionManager;
+  let tmpDir: string | null = null;
 
   afterEach(() => {
     manager?.destroy();
+    resetStateDatabaseForTests();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = null;
+    }
   });
 
   beforeEach(() => {
@@ -143,5 +194,109 @@ describe("SessionManager", () => {
 
     manager.setUserCwd(123456, "/home/other");
     assert.equal(manager.getUserCwd(123456), "/home/other");
+  });
+
+  it("restores saved model, reasoning effort, active agent, and agent thread", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(42, {
+      threadId: "codex-thread",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "codex-thread", claude: "claude-thread" },
+      model: "claude-sonnet",
+      modelReasoningEffort: "xhigh",
+      activeAgentId: "claude",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    const session = manager.getOrCreate(42, "/tmp/project", true) as unknown as FakeSession;
+    assert.equal(session.getModel(), "claude-sonnet");
+    assert.equal(session.getModelReasoningEffort(), "xhigh");
+    assert.equal(session.getActiveAgentId(), "claude");
+    assert.equal(session.getThreadId(), "claude-thread");
+  });
+
+  it("falls back to history injection when a saved thread is stale", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const stateDbPath = path.join(tmpDir, "state.db");
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath,
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(42, {
+      threadId: "codex-thread",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "codex-thread" },
+      activeAgentId: "codex",
+    });
+    getStateDatabase(stateDbPath)
+      .prepare("UPDATE thread_state SET updated_at = ? WHERE namespace = ?")
+      .run(Date.now() - 10_000, "test");
+
+    const previousTtl = process.env.ADS_THREAD_RESUME_TTL_MS;
+    process.env.ADS_THREAD_RESUME_TTL_MS = "1";
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    try {
+      const session = manager.getOrCreate(42, "/tmp/project", true) as unknown as FakeSession;
+      assert.equal(session.getThreadId(), null);
+      assert.equal(manager.needsHistoryInjection(42), true);
+      assert.equal(storage.getRecord(42)?.agentThreads?.resume, "codex-thread");
+    } finally {
+      if (previousTtl === undefined) {
+        delete process.env.ADS_THREAD_RESUME_TTL_MS;
+      } else {
+        process.env.ADS_THREAD_RESUME_TTL_MS = previousTtl;
+      }
+    }
+  });
+
+  it("clears saved thread bindings but preserves authoritative model metadata on model switch", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(7, {
+      threadId: "thread-1",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "thread-1" },
+      model: "gpt-4.1",
+      activeAgentId: "codex",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    manager.getOrCreate(7, "/tmp/project", true);
+    manager.setUserModel(7, "gpt-4o");
+
+    const record = storage.getRecord(7);
+    assert.equal(record?.model, "gpt-4o");
+    assert.equal(record?.threadId, undefined);
+    assert.deepEqual(record?.agentThreads, {});
+    assert.equal(record?.activeAgentId, "codex");
   });
 });

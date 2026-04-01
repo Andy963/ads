@@ -319,7 +319,7 @@ export class ReviewStore {
     const row = this.db
       .prepare(
         `SELECT * FROM review_snapshots
-         ORDER BY created_at DESC, id DESC
+         ORDER BY created_at DESC, rowid DESC
          LIMIT 1`,
       )
       .get() as Record<string, unknown> | undefined;
@@ -336,14 +336,14 @@ export class ReviewStore {
             .prepare(
               `SELECT * FROM review_queue_items
                WHERE status = ?
-               ORDER BY created_at ASC, id ASC
+               ORDER BY created_at ASC, rowid ASC
                LIMIT ?`,
             )
             .all(status, limit)
         : this.db
             .prepare(
               `SELECT * FROM review_queue_items
-               ORDER BY created_at DESC, id DESC
+               ORDER BY created_at DESC, rowid DESC
                LIMIT ?`,
             )
             .all(limit)
@@ -391,7 +391,7 @@ export class ReviewStore {
         `SELECT * FROM review_queue_items
          WHERE snapshot_id = ?
            AND status IN ('pending', 'running')
-         ORDER BY created_at DESC, id DESC
+         ORDER BY created_at DESC, rowid DESC
          LIMIT 1`,
       )
       .get(id) as Record<string, unknown> | undefined;
@@ -404,7 +404,7 @@ export class ReviewStore {
         .prepare(
           `SELECT * FROM review_queue_items
            WHERE status = 'pending'
-           ORDER BY created_at ASC, id ASC
+           ORDER BY created_at ASC, rowid ASC
            LIMIT 1`,
         )
         .get() as Record<string, unknown> | undefined;
@@ -520,7 +520,7 @@ export class ReviewStore {
             .prepare(
               `SELECT * FROM review_artifacts
                WHERE snapshot_id = ?
-               ORDER BY created_at DESC, id DESC
+               ORDER BY created_at DESC, rowid DESC
                LIMIT ?`,
             )
             .all(snapshotId, limit)
@@ -529,14 +529,14 @@ export class ReviewStore {
               .prepare(
                 `SELECT * FROM review_artifacts
                  WHERE task_id = ?
-                 ORDER BY created_at DESC, id DESC
+                 ORDER BY created_at DESC, rowid DESC
                  LIMIT ?`,
               )
               .all(taskId, limit)
           : this.db
               .prepare(
                 `SELECT * FROM review_artifacts
-                 ORDER BY created_at DESC, id DESC
+                 ORDER BY created_at DESC, rowid DESC
                  LIMIT ?`,
               )
               .all(limit)
@@ -553,7 +553,7 @@ export class ReviewStore {
             .prepare(
               `SELECT * FROM review_artifacts
                WHERE snapshot_id = ?
-               ORDER BY created_at DESC, id DESC
+               ORDER BY created_at DESC, rowid DESC
                LIMIT 1`,
             )
             .get(snapshotId)
@@ -562,14 +562,14 @@ export class ReviewStore {
               .prepare(
                 `SELECT * FROM review_artifacts
                  WHERE task_id = ?
-                 ORDER BY created_at DESC, id DESC
+                 ORDER BY created_at DESC, rowid DESC
                  LIMIT 1`,
               )
               .get(taskId)
           : this.db
               .prepare(
                 `SELECT * FROM review_artifacts
-                 ORDER BY created_at DESC, id DESC
+                 ORDER BY created_at DESC, rowid DESC
                  LIMIT 1`,
               )
               .get()

@@ -5,14 +5,21 @@ import type { Input } from '../../agents/protocol/types.js';
 import { CodexCliAdapter } from '../../agents/adapters/codexCliAdapter.js';
 import { ClaudeCliAdapter } from '../../agents/adapters/claudeCliAdapter.js';
 import { GeminiCliAdapter } from '../../agents/adapters/geminiCliAdapter.js';
-import type { AgentAdapter } from '../../agents/types.js';
+import type { AgentAdapter, AgentIdentifier, AgentRunResult, AgentSendOptions } from '../../agents/types.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
-import type { AgentRunResult, AgentSendOptions } from '../../agents/types.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
 import { ThreadStorage } from './threadStorage.js';
+import {
+  buildPreservedResetState,
+  buildSyncedSessionState,
+  clearSavedResumeThreadId,
+  getSavedResumeThreadId,
+  getSavedSessionState,
+  resolveResumeState,
+  type SavedSessionState,
+} from './sessionState.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { detectWorkspaceFrom } from '../../workspace/detector.js';
-import type { AgentIdentifier } from '../../agents/types.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -52,7 +59,10 @@ export interface SessionManagerOptions {
     cwd: string;
     resumeThread: boolean;
     resumeThreadId?: string;
+    resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
     userModel?: string;
+    userModelReasoningEffort?: string;
+    activeAgentId?: AgentIdentifier;
     workspaceRoot: string;
     sandboxMode: SandboxMode;
     codexEnv?: NodeJS.ProcessEnv;
@@ -124,6 +134,7 @@ export class SessionManager {
   private sandboxMode: SandboxMode;
   private defaultModel?: string;
   private userModels = new Map<number, string>();
+  private userReasoningEfforts = new Map<number, string>();
   private threadStorage?: ThreadStorage;
   private codexEnv?: NodeJS.ProcessEnv;
   private readonly logger = createLogger("SessionManager");
@@ -158,61 +169,57 @@ export class SessionManager {
       if (cwd && cwd !== existing.cwd) {
         existing.cwd = cwd;
         existing.session.setWorkingDirectory(cwd);
-        this.syncStoredCwd(userId, cwd);
+        this.syncStoredState(userId, { cwd, clearThreads: true });
         existing.logger?.close();
         existing.logger = undefined;
       }
       return existing.session;
     }
 
-    const userModel = this.userModels.get(userId) || this.defaultModel;
-    const savedState = resumeThread ? this.getSavedState(userId) : undefined;
+    const savedState = this.getSavedState(userId);
+    const userModel = this.userModels.get(userId) || savedState?.model || this.defaultModel;
+    const userModelReasoningEffort = this.userReasoningEfforts.get(userId) || savedState?.modelReasoningEffort;
     const effectiveCwd = cwd || savedState?.cwd || process.cwd();
     const workspaceRoot = detectWorkspaceFrom(effectiveCwd);
 
-    let resumeThreadId: string | undefined;
-    if (resumeThread) {
-      const record = this.threadStorage?.getRecord(userId);
-      const candidateThreadId = record?.agentThreads?.codex ?? record?.threadId;
-      const updatedAt = record?.updatedAt;
-
-      if (candidateThreadId && updatedAt && this.resumeTtlMs > 0) {
-        const age = Date.now() - updatedAt;
-        if (age > this.resumeTtlMs) {
-          this.logger.info(
-            `Thread too stale for auto-resume (age=${Math.round(age / 60_000)}min ttl=${Math.round(this.resumeTtlMs / 60_000)}min), will inject history instead`,
-          );
-          this.threadStorage?.setRecord(userId, {
-            threadId: undefined,
-            cwd: record?.cwd,
-            agentThreads: { resume: candidateThreadId },
-          });
-          this.pendingHistoryInjections.add(userId);
-        } else {
-          resumeThreadId = candidateThreadId;
-        }
-      } else if (candidateThreadId && !updatedAt) {
-        this.logger.info("Thread has no updatedAt, treating as stale — will inject history instead");
-        this.pendingHistoryInjections.add(userId);
-      } else if (candidateThreadId) {
-        resumeThreadId = candidateThreadId;
-      }
+    let activeAgentId: AgentIdentifier | undefined = savedState?.activeAgentId;
+    const resumeState = resolveResumeState({
+      userId,
+      resumeThread,
+      storage: this.threadStorage,
+      logger: this.logger,
+      resumeTtlMs: this.resumeTtlMs,
+    });
+    activeAgentId = resumeState.activeAgentId ?? activeAgentId;
+    if (resumeState.shouldInjectHistory) {
+      this.pendingHistoryInjections.add(userId);
     }
 
     this.logger.info(
-      `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''}${resumeThreadId ? ` resume=${resumeThreadId}` : ' (fresh)'} at cwd: ${effectiveCwd}`,
+      `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''}${resumeState.resumeThreadId ? ` resume=${resumeState.resumeThreadId}` : ' (fresh)'} at cwd: ${effectiveCwd}`,
     );
 
     const session = this.options.createSession?.({
       userId,
       cwd: effectiveCwd,
       resumeThread: Boolean(resumeThread),
-      resumeThreadId,
+      resumeThreadId: resumeState.resumeThreadId,
+      resumeThreadIds: resumeState.resumeThreadIds,
       userModel,
+      userModelReasoningEffort,
+      activeAgentId,
       workspaceRoot,
       sandboxMode: this.sandboxMode,
       codexEnv: this.codexEnv,
-    }) ?? this.createSession({ effectiveCwd, resumeThreadId, userModel, workspaceRoot });
+    }) ?? this.createSession({
+      effectiveCwd,
+      resumeThreadId: resumeState.resumeThreadId,
+      resumeThreadIds: resumeState.resumeThreadIds,
+      userModel,
+      userModelReasoningEffort,
+      activeAgentId,
+      workspaceRoot,
+    });
 
     this.sessions.set(userId, {
       session,
@@ -259,28 +266,15 @@ export class SessionManager {
       return;
     }
     storage.setThreadId(userId, threadId, agentId ?? "codex");
-
-    const cwd = this.getUserCwd(userId);
-    if (!cwd) {
-      return;
-    }
-    const record = storage.getRecord(userId);
-    if (!record) {
-      return;
-    }
-    storage.setRecord(userId, { ...record, cwd });
+    this.syncStoredState(userId);
   }
 
   getSavedThreadId(userId: number, agentId?: string): string | undefined {
     return this.threadStorage?.getThreadId(userId, agentId ?? "codex");
   }
 
-  getSavedState(userId: number): { threadId?: string; cwd?: string } | undefined {
-    const record = this.threadStorage?.getRecord(userId);
-    if (!record) {
-      return undefined;
-    }
-    return { threadId: record.threadId, cwd: record.cwd };
+  getSavedState(userId: number): SavedSessionState | undefined {
+    return getSavedSessionState(this.threadStorage, userId);
   }
 
   maybeMigrateThreadState(fromUserId: number, toUserId: number): boolean {
@@ -301,6 +295,10 @@ export class SessionManager {
     if (model && !this.userModels.has(toUserId)) {
       this.userModels.set(toUserId, model);
     }
+    const reasoningEffort = this.userReasoningEfforts.get(fromUserId);
+    if (reasoningEffort && !this.userReasoningEfforts.has(toUserId)) {
+      this.userReasoningEfforts.set(toUserId, reasoningEffort);
+    }
     if (this.pendingHistoryInjections.has(fromUserId)) {
       this.pendingHistoryInjections.add(toUserId);
     }
@@ -309,32 +307,11 @@ export class SessionManager {
   }
 
   getSavedResumeThreadId(userId: number): string | undefined {
-    const record = this.threadStorage?.getRecord(userId);
-    const raw = record?.agentThreads?.resume;
-    const trimmed = typeof raw === "string" ? raw.trim() : "";
-    return trimmed || undefined;
+    return getSavedResumeThreadId(this.threadStorage, userId);
   }
 
   clearSavedResumeThreadId(userId: number): void {
-    const storage = this.threadStorage;
-    if (!storage) {
-      return;
-    }
-    const record = storage.getRecord(userId);
-    if (!record?.agentThreads?.resume) {
-      return;
-    }
-    const agentThreads = { ...(record.agentThreads ?? {}) };
-    delete agentThreads.resume;
-    const normalized = Object.fromEntries(
-      Object.entries(agentThreads).filter(([, value]) => typeof value === "string" && value.trim()),
-    ) as Record<string, string>;
-
-    if (!record.threadId && Object.keys(normalized).length === 0) {
-      storage.removeThread(userId);
-      return;
-    }
-    storage.setRecord(userId, { threadId: record.threadId, cwd: record.cwd, agentThreads: normalized });
+    clearSavedResumeThreadId(this.threadStorage, userId);
   }
 
   ensureLogger(userId: number): ConversationLogger | undefined {
@@ -367,6 +344,7 @@ export class SessionManager {
     try {
       record.session.switchAgent(agentId);
       record.lastActivity = Date.now();
+      this.syncStoredState(userId);
       return { success: true, message: `✅ 已切换到代理: ${agentId}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -374,18 +352,76 @@ export class SessionManager {
     }
   }
 
-  setUserModel(userId: number, model: string): void {
-    this.userModels.set(userId, model);
+  setUserModel(userId: number, model?: string): void {
+    const normalized = String(model ?? "").trim();
+    if (normalized) {
+      this.userModels.set(userId, normalized);
+    } else {
+      this.userModels.delete(userId);
+    }
     const record = this.sessions.get(userId);
+    const previousModel = record?.session.getModel?.() ?? this.getSavedState(userId)?.model ?? this.defaultModel;
     if (record) {
-      record.session.setModel(model);
+      record.session.setModel(normalized || undefined);
       record.lastActivity = Date.now();
     }
-    this.logger.info(`Switched to model: ${model}`);
+    this.syncStoredState(userId, { clearThreads: previousModel !== (normalized || undefined) });
+    this.logger.info(`Switched to model: ${normalized || "(default)"}`);
   }
 
   getUserModel(userId: number): string {
-    return this.userModels.get(userId) || this.defaultModel || 'default';
+    const sessionModel = this.sessions.get(userId)?.session.getModel?.();
+    return (
+      sessionModel ||
+      this.userModels.get(userId) ||
+      this.getSavedState(userId)?.model ||
+      this.defaultModel ||
+      'default'
+    );
+  }
+
+  setUserModelReasoningEffort(userId: number, effort?: string): void {
+    const normalized = String(effort ?? "").trim();
+    if (normalized) {
+      this.userReasoningEfforts.set(userId, normalized);
+    } else {
+      this.userReasoningEfforts.delete(userId);
+    }
+    const record = this.sessions.get(userId);
+    if (record) {
+      record.session.setModelReasoningEffort(normalized || undefined);
+      record.lastActivity = Date.now();
+    }
+    this.syncStoredState(userId);
+  }
+
+  getUserModelReasoningEffort(userId: number): string | undefined {
+    return (
+      this.sessions.get(userId)?.session.getModelReasoningEffort?.() ||
+      this.userReasoningEfforts.get(userId) ||
+      this.getSavedState(userId)?.modelReasoningEffort
+    );
+  }
+
+  getEffectiveState(userId: number): {
+    model?: string;
+    modelReasoningEffort?: string;
+    activeAgentId: AgentIdentifier;
+  } {
+    const record = this.sessions.get(userId);
+    const saved = this.getSavedState(userId);
+    const activeAgentId =
+      (record?.session.getActiveAgentId?.() as AgentIdentifier | undefined) ||
+      saved?.activeAgentId ||
+      "codex";
+    return {
+      model: record?.session.getModel?.() || this.userModels.get(userId) || saved?.model || this.defaultModel,
+      modelReasoningEffort:
+        record?.session.getModelReasoningEffort?.() ||
+        this.userReasoningEfforts.get(userId) ||
+        saved?.modelReasoningEffort,
+      activeAgentId,
+    };
   }
 
   getDefaultModel(): string {
@@ -406,12 +442,15 @@ export class SessionManager {
     const preserve = Boolean(options?.preserveThreadForResume);
     if (storage) {
       if (preserve) {
-        const threadIdFromSession = record?.session.getThreadId() ?? null;
-        const threadIdFromStorage = this.getSavedThreadId(userId);
-        const threadId = threadIdFromSession ?? threadIdFromStorage ?? null;
-        const cwd = record?.cwd ?? storage.getRecord(userId)?.cwd;
-        if (threadId) {
-          storage.setRecord(userId, { threadId: undefined, cwd, agentThreads: { resume: threadId } });
+        const savedState = storage.getRecord(userId);
+        const nextState = buildPreservedResetState({
+          currentThreadId: record?.session.getThreadId() ?? null,
+          savedThreadId: this.getSavedThreadId(userId),
+          savedState,
+          cwd: record?.cwd ?? savedState?.cwd,
+        });
+        if (nextState) {
+          storage.setRecord(userId, nextState);
         } else {
           storage.removeThread(userId);
         }
@@ -450,7 +489,7 @@ export class SessionManager {
 
     record.cwd = cwd;
     record.session.setWorkingDirectory(cwd);
-    this.syncStoredCwd(userId, cwd);
+    this.syncStoredState(userId, { cwd, clearThreads: true });
     record.logger?.close();
     record.logger = undefined;
   }
@@ -519,7 +558,10 @@ export class SessionManager {
   private createSession(args: {
     effectiveCwd: string;
     resumeThreadId?: string;
+    resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
     userModel?: string;
+    userModelReasoningEffort?: string;
+    activeAgentId?: AgentIdentifier;
     workspaceRoot: string;
   }): HybridOrchestrator {
     const adapters = this.createAdapters(args);
@@ -529,18 +571,23 @@ export class SessionManager {
       reinjection: resolveReinjectionConfig(),
     });
 
-    return new HybridOrchestrator({
+    const orchestrator = new HybridOrchestrator({
       adapters,
-      defaultAgentId: "codex",
+      defaultAgentId: args.activeAgentId ?? "codex",
       initialWorkingDirectory: args.effectiveCwd,
       initialModel: args.userModel,
       systemPromptManager,
     });
+    if (args.userModelReasoningEffort) {
+      orchestrator.setModelReasoningEffort(args.userModelReasoningEffort);
+    }
+    return orchestrator;
   }
 
   private createAdapters(args: {
     effectiveCwd: string;
     resumeThreadId?: string;
+    resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
     userModel?: string;
   }): AgentAdapter[] {
     const allowlist = this.getConfiguredAgentIds();
@@ -553,7 +600,7 @@ export class SessionManager {
             sandboxMode: this.sandboxMode,
             model: args.userModel,
             workingDirectory: args.effectiveCwd,
-            resumeThreadId: args.resumeThreadId,
+            resumeThreadId: args.resumeThreadIds?.codex ?? args.resumeThreadId,
             env: this.codexEnv,
           }),
         );
@@ -565,6 +612,7 @@ export class SessionManager {
           new ClaudeCliAdapter({
             sandboxMode: this.sandboxMode,
             workingDirectory: args.effectiveCwd,
+            sessionId: args.resumeThreadIds?.claude,
           }),
         );
         continue;
@@ -575,6 +623,7 @@ export class SessionManager {
           new GeminiCliAdapter({
             sandboxMode: this.sandboxMode,
             workingDirectory: args.effectiveCwd,
+            sessionId: args.resumeThreadIds?.gemini,
           }),
         );
       }
@@ -587,16 +636,32 @@ export class SessionManager {
     return adapters;
   }
 
-  private syncStoredCwd(userId: number, cwd: string): void {
+  private syncStoredState(userId: number, options?: { cwd?: string; clearThreads?: boolean }): void {
     const storage = this.threadStorage;
     if (!storage) {
       return;
     }
-    const record = storage.getRecord(userId);
-    if (!record) {
-      return;
-    }
-    storage.setRecord(userId, { ...record, cwd });
+    const sessionRecord = this.sessions.get(userId);
+    const session = sessionRecord?.session;
+    storage.setRecord(
+      userId,
+      buildSyncedSessionState({
+        storedState: getSavedSessionState(storage, userId),
+        sessionState: sessionRecord
+          ? {
+              cwd: sessionRecord.cwd,
+              model: session?.getModel?.(),
+              modelReasoningEffort: session?.getModelReasoningEffort?.(),
+              activeAgentId: session?.getActiveAgentId?.() as AgentIdentifier | undefined,
+            }
+          : undefined,
+        userModel: this.userModels.get(userId),
+        userModelReasoningEffort: this.userReasoningEfforts.get(userId),
+        defaultModel: this.defaultModel,
+        cwd: options?.cwd,
+        clearThreads: options?.clearThreads,
+      }),
+    );
   }
 
   private disposeSession(userId: number, reason: SessionDisposeReason, options?: { clearSavedThread?: boolean }): void {
