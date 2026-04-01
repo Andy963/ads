@@ -19,6 +19,7 @@ import {
   resolveResumeState,
   type SavedSessionState,
 } from './sessionState.js';
+import { SessionRuntimeRegistry } from './sessionRuntimeRegistry.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { detectWorkspaceFrom } from '../../workspace/detector.js';
 
@@ -35,13 +36,6 @@ function isConversationLoggingEnabled(): boolean {
     return false;
   }
   return false;
-}
-
-interface SessionRecord {
-  session: HybridOrchestrator;
-  lastActivity: number;
-  cwd: string;
-  logger?: ConversationLogger;
 }
 
 export type SessionDisposeReason = "idle_timeout" | "drop";
@@ -130,7 +124,7 @@ function resolveResumeTtlMs(): number {
 }
 
 export class SessionManager {
-  private sessions = new Map<number, SessionRecord>();
+  private readonly runtime = new SessionRuntimeRegistry<HybridOrchestrator, ConversationLogger>();
   private cleanupInterval?: NodeJS.Timeout;
   private sandboxMode: SandboxMode;
   private defaultModel?: string;
@@ -140,8 +134,6 @@ export class SessionManager {
   private codexEnv?: NodeJS.ProcessEnv;
   private readonly logger = createLogger("SessionManager");
   private readonly resumeTtlMs = resolveResumeTtlMs();
-  private readonly pendingHistoryInjections = new Set<number>();
-  private readonly contextRestoreModes = new Map<number, ContextRestoreMode>();
 
   constructor(
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000,
@@ -164,20 +156,13 @@ export class SessionManager {
   }
 
   getOrCreate(userId: number, cwd?: string, resumeThread?: boolean): HybridOrchestrator {
-    const existing = this.sessions.get(userId);
+    const existing = this.runtime.touch(userId);
     
     if (existing) {
-      existing.lastActivity = Date.now();
-      if (cwd && cwd !== existing.cwd) {
-        existing.cwd = cwd;
-        existing.session.setWorkingDirectory(cwd);
+      if (cwd && this.runtime.updateWorkingDirectory(userId, cwd)) {
         this.syncStoredState(userId, { cwd, clearThreads: true });
-        existing.logger?.close();
-        existing.logger = undefined;
       }
-      if (!this.contextRestoreModes.has(userId)) {
-        this.contextRestoreModes.set(userId, this.pendingHistoryInjections.has(userId) ? "history_injection" : "fresh");
-      }
+      this.runtime.ensureContextRestoreMode(userId);
       return existing.session;
     }
 
@@ -197,9 +182,9 @@ export class SessionManager {
     });
     activeAgentId = resumeState.activeAgentId ?? activeAgentId;
     if (resumeState.shouldInjectHistory) {
-      this.pendingHistoryInjections.add(userId);
+      this.runtime.markHistoryInjection(userId);
     }
-    this.contextRestoreModes.set(userId, resumeState.restoreMode);
+    this.runtime.setContextRestoreMode(userId, resumeState.restoreMode);
 
     this.logger.info(
       `Creating new session with sandbox mode: ${this.sandboxMode}${userModel ? `, model: ${userModel}` : ''}${resumeState.resumeThreadId ? ` resume=${resumeState.resumeThreadId}` : ' (fresh)'} at cwd: ${effectiveCwd}`,
@@ -227,35 +212,25 @@ export class SessionManager {
       workspaceRoot,
     });
 
-    this.sessions.set(userId, {
-      session,
-      lastActivity: Date.now(),
-      cwd: effectiveCwd,
-    });
+    this.runtime.trackSession(userId, session, effectiveCwd);
 
     return session;
   }
 
   hasSession(userId: number): boolean {
-    return this.sessions.has(userId);
+    return this.runtime.hasSession(userId);
   }
 
   needsHistoryInjection(userId: number): boolean {
-    return this.pendingHistoryInjections.has(userId);
+    return this.runtime.needsHistoryInjection(userId);
   }
 
   clearHistoryInjection(userId: number): void {
-    this.pendingHistoryInjections.delete(userId);
-    if (this.contextRestoreModes.get(userId) === "history_injection") {
-      this.contextRestoreModes.set(userId, "fresh");
-    }
+    this.runtime.clearHistoryInjection(userId);
   }
 
   getContextRestoreMode(userId: number): ContextRestoreMode {
-    if (this.pendingHistoryInjections.has(userId)) {
-      return "history_injection";
-    }
-    return this.contextRestoreModes.get(userId) ?? "fresh";
+    return this.runtime.getContextRestoreMode(userId);
   }
 
   getConfiguredAgentIds(): AgentIdentifier[] {
@@ -267,7 +242,7 @@ export class SessionManager {
   }
 
   getActiveAgentLabel(userId: number): string {
-    const session = this.sessions.get(userId)?.session;
+    const session = this.runtime.getSession(userId);
     if (!session) {
       return "Codex";
     }
@@ -315,13 +290,7 @@ export class SessionManager {
     if (reasoningEffort && !this.userReasoningEfforts.has(toUserId)) {
       this.userReasoningEfforts.set(toUserId, reasoningEffort);
     }
-    if (this.pendingHistoryInjections.has(fromUserId)) {
-      this.pendingHistoryInjections.add(toUserId);
-    }
-    const restoreMode = this.contextRestoreModes.get(fromUserId);
-    if (restoreMode && !this.contextRestoreModes.has(toUserId)) {
-      this.contextRestoreModes.set(toUserId, restoreMode);
-    }
+    this.runtime.migrateContinuityState(fromUserId, toUserId);
 
     return true;
   }
@@ -335,29 +304,15 @@ export class SessionManager {
   }
 
   ensureLogger(userId: number): ConversationLogger | undefined {
-    const record = this.sessions.get(userId);
-    if (!record) {
-      return undefined;
-    }
-
-    record.lastActivity = Date.now();
-
-    if (!isConversationLoggingEnabled()) {
-      return undefined;
-    }
-
-    if (record.logger && !record.logger.isClosed) {
-      record.logger.attachThreadId(record.session.getThreadId());
-      return record.logger;
-    }
-
-    const threadId = record.session.getThreadId() ?? undefined;
-    record.logger = new ConversationLogger(record.cwd, userId, threadId);
-    return record.logger;
+    return this.runtime.ensureLogger(
+      userId,
+      isConversationLoggingEnabled(),
+      (cwd, targetUserId, threadId) => new ConversationLogger(cwd, targetUserId, threadId),
+    );
   }
 
   switchAgent(userId: number, agentId: string): { success: boolean; message: string } {
-    const record = this.sessions.get(userId);
+    const record = this.runtime.getRecord(userId);
     if (!record) {
       return { success: false, message: "❌ 没有找到活跃会话" };
     }
@@ -379,19 +334,19 @@ export class SessionManager {
     } else {
       this.userModels.delete(userId);
     }
-    const record = this.sessions.get(userId);
+    const record = this.runtime.getRecord(userId);
     const previousModel = record?.session.getModel?.() ?? this.getSavedState(userId)?.model ?? this.defaultModel;
     if (record) {
       record.session.setModel(normalized || undefined);
       record.lastActivity = Date.now();
     }
-    this.contextRestoreModes.set(userId, "fresh");
+    this.runtime.setContextRestoreMode(userId, "fresh");
     this.syncStoredState(userId, { clearThreads: previousModel !== (normalized || undefined) });
     this.logger.info(`Switched to model: ${normalized || "(default)"}`);
   }
 
   getUserModel(userId: number): string {
-    const sessionModel = this.sessions.get(userId)?.session.getModel?.();
+    const sessionModel = this.runtime.getSession(userId)?.getModel?.();
     return (
       sessionModel ||
       this.userModels.get(userId) ||
@@ -408,7 +363,7 @@ export class SessionManager {
     } else {
       this.userReasoningEfforts.delete(userId);
     }
-    const record = this.sessions.get(userId);
+    const record = this.runtime.getRecord(userId);
     if (record) {
       record.session.setModelReasoningEffort(normalized || undefined);
       record.lastActivity = Date.now();
@@ -418,7 +373,7 @@ export class SessionManager {
 
   getUserModelReasoningEffort(userId: number): string | undefined {
     return (
-      this.sessions.get(userId)?.session.getModelReasoningEffort?.() ||
+      this.runtime.getSession(userId)?.getModelReasoningEffort?.() ||
       this.userReasoningEfforts.get(userId) ||
       this.getSavedState(userId)?.modelReasoningEffort
     );
@@ -429,7 +384,7 @@ export class SessionManager {
     modelReasoningEffort?: string;
     activeAgentId: AgentIdentifier;
   } {
-    const record = this.sessions.get(userId);
+    const record = this.runtime.getRecord(userId);
     const saved = this.getSavedState(userId);
     const activeAgentId =
       (record?.session.getActiveAgentId?.() as AgentIdentifier | undefined) ||
@@ -458,7 +413,7 @@ export class SessionManager {
   }
 
   reset(userId: number, options?: { preserveThreadForResume?: boolean }): void {
-    const record = this.sessions.get(userId);
+    const record = this.runtime.getRecord(userId);
     const storage = this.threadStorage;
     const preserve = Boolean(options?.preserveThreadForResume);
     if (storage) {
@@ -482,14 +437,13 @@ export class SessionManager {
     if (record) {
       record.session.reset();
       record.lastActivity = Date.now();
-      record.logger?.close();
-      record.logger = undefined;
+      this.runtime.closeLogger(userId);
       this.logger.info('Session reset');
     } else {
       this.logger.debug('Reset requested without active session');
     }
-    this.pendingHistoryInjections.delete(userId);
-    this.contextRestoreModes.set(userId, "fresh");
+    this.runtime.clearHistoryInjection(userId);
+    this.runtime.setContextRestoreMode(userId, "fresh");
   }
 
   dropSession(userId: number, options?: { clearSavedThread?: boolean }): void {
@@ -497,11 +451,11 @@ export class SessionManager {
   }
 
   getUserCwd(userId: number): string | undefined {
-    return this.sessions.get(userId)?.cwd;
+    return this.runtime.getUserCwd(userId);
   }
 
   setUserCwd(userId: number, cwd: string): void {
-    const record = this.sessions.get(userId);
+    const record = this.runtime.getRecord(userId);
     if (!record) {
       return;
     }
@@ -510,12 +464,9 @@ export class SessionManager {
       return;
     }
 
-    record.cwd = cwd;
-    record.session.setWorkingDirectory(cwd);
-    this.contextRestoreModes.set(userId, "fresh");
+    this.runtime.updateWorkingDirectory(userId, cwd);
+    this.runtime.setContextRestoreMode(userId, "fresh");
     this.syncStoredState(userId, { cwd, clearThreads: true });
-    record.logger?.close();
-    record.logger = undefined;
   }
 
   getStats(): { total: number; active: number; idle: number; sandboxMode: SandboxMode; defaultModel: string } {
@@ -525,15 +476,15 @@ export class SessionManager {
 
     if (this.sessionTimeoutMs <= 0) {
       return {
-        total: this.sessions.size,
-        active: this.sessions.size,
+        total: this.runtime.size,
+        active: this.runtime.size,
         idle: 0,
         sandboxMode: this.sandboxMode,
         defaultModel: this.defaultModel || 'default',
       };
     }
 
-    for (const record of this.sessions.values()) {
+    for (const record of this.runtime.records()) {
       if (now - record.lastActivity < this.sessionTimeoutMs) {
         active++;
       } else {
@@ -542,7 +493,7 @@ export class SessionManager {
     }
 
     return {
-      total: this.sessions.size,
+      total: this.runtime.size,
       active,
       idle,
       sandboxMode: this.sandboxMode,
@@ -554,16 +505,7 @@ export class SessionManager {
     if (this.sessionTimeoutMs <= 0) {
       return;
     }
-    const now = Date.now();
-    const expiredUsers: number[] = [];
-
-    for (const [userId, record] of this.sessions.entries()) {
-      if (now - record.lastActivity > this.sessionTimeoutMs) {
-        expiredUsers.push(userId);
-      }
-    }
-
-    for (const userId of expiredUsers) {
+    for (const userId of this.runtime.getExpiredUserIds(this.sessionTimeoutMs)) {
       this.disposeSession(userId, "idle_timeout");
       this.logger.debug('Cleaned up idle session');
     }
@@ -573,12 +515,7 @@ export class SessionManager {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
     }
-    for (const record of this.sessions.values()) {
-      record.logger?.close();
-    }
-    this.sessions.clear();
-    this.pendingHistoryInjections.clear();
-    this.contextRestoreModes.clear();
+    this.runtime.destroy();
   }
 
   private createSession(args: {
@@ -667,7 +604,7 @@ export class SessionManager {
     if (!storage) {
       return;
     }
-    const sessionRecord = this.sessions.get(userId);
+    const sessionRecord = this.runtime.getRecord(userId);
     const session = sessionRecord?.session;
     storage.setRecord(
       userId,
@@ -692,21 +629,10 @@ export class SessionManager {
 
   private disposeSession(userId: number, reason: SessionDisposeReason, options?: { clearSavedThread?: boolean }): void {
     const clearSavedThread = Boolean(options?.clearSavedThread);
-    const record = this.sessions.get(userId);
     if (clearSavedThread) {
       this.threadStorage?.removeThread(userId);
     }
-    if (record) {
-      try {
-        record.session.reset();
-      } catch {
-        // ignore
-      }
-      record.logger?.close();
-      this.sessions.delete(userId);
-    }
-    this.pendingHistoryInjections.delete(userId);
-    this.contextRestoreModes.delete(userId);
+    const record = this.runtime.releaseSession(userId);
     this.options.onDispose?.({
       userId,
       reason,
