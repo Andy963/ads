@@ -10,8 +10,8 @@ import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
 import { getWorkspaceState } from "../../utils.js";
-import { wsMessageSchema } from "./schema.js";
 import type { AttachWebSocketServerDeps } from "./deps.js";
+import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
 import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, formatCloseReason, summarizeWsPayloadForLog } from "./utils.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
@@ -479,43 +479,26 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     };
 
     ws.on("message", (data: RawData) => {
-      const now = Date.now();
-      const receivedAt = now > lastReceivedAt ? now : lastReceivedAt + 1;
-      lastReceivedAt = receivedAt;
-
-      let parsed: import("./schema.js").WsMessage;
-      try {
-        const raw = JSON.parse(String(data)) as unknown;
-        const result = wsMessageSchema.safeParse(raw);
-        if (!result.success) {
-          safeJsonSend(ws, { type: "error", message: "Invalid message payload" });
-          return;
-        }
-        parsed = result.data;
-      } catch {
-        safeJsonSend(ws, { type: "error", message: "Invalid JSON message" });
+      const envelope = parseIncomingWsEnvelope({ data, lastReceivedAt });
+      lastReceivedAt = envelope.nextReceivedAt;
+      if (!envelope.ok) {
+        safeJsonSend(ws, { type: "error", message: envelope.errorMessage });
         return;
       }
 
-      if (parsed.type === "ping") {
-        safeJsonSend(ws, { type: "pong", ts: receivedAt });
-        return;
-      }
-      if (parsed.type === "pong") {
-        return;
-      }
-
-      if (parsed.type === "interrupt") {
-        const found = abortInFlightForHistoryKey(historyKey);
-        if (!found) {
-          safeJsonSend(ws, { type: "error", message: "当前没有正在执行的任务" });
-        }
+      const { parsed, receivedAt, clientMessageId } = envelope;
+      if (
+        handleImmediateWsMessage({
+          parsed,
+          receivedAt,
+          abortInFlight: () => abortInFlightForHistoryKey(historyKey),
+          sendJson: (payload) => safeJsonSend(ws, payload),
+        })
+      ) {
         return;
       }
 
       const requestId = crypto.randomBytes(4).toString("hex");
-      const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
-      const clientMessageId = clientMessageIdRaw || null;
       if (config.traceWsDuplication) {
         const meta = state.clientMetaByWs.get(ws);
         const payloadPreview = summarizeWsPayloadForLog(parsed.payload);
