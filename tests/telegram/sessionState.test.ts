@@ -40,6 +40,7 @@ describe("telegram/sessionState helpers", () => {
       agentThreads: { resume: "resume-thread", codex: "current-thread" },
       model: "gpt-4.1",
       activeAgentId: "codex",
+      reviewerSnapshotId: "snapshot-1",
     });
 
     assert.equal(getSavedResumeThreadId(storage, 1), "resume-thread");
@@ -47,6 +48,7 @@ describe("telegram/sessionState helpers", () => {
     clearSavedResumeThreadId(storage, 1);
     assert.equal(getSavedResumeThreadId(storage, 1), undefined);
     assert.deepEqual(storage.getRecord(1)?.agentThreads, { codex: "current-thread" });
+    assert.equal(storage.getRecord(1)?.reviewerSnapshotId, "snapshot-1");
   });
 
   it("removes metadata-less records when clearing the last saved resume thread", () => {
@@ -69,6 +71,7 @@ describe("telegram/sessionState helpers", () => {
         model: "gpt-4.1",
         modelReasoningEffort: "medium",
         activeAgentId: "codex",
+        reviewerSnapshotId: "snapshot-1",
       },
       sessionState: {
         cwd: "/tmp/project-next",
@@ -86,6 +89,7 @@ describe("telegram/sessionState helpers", () => {
       model: "gpt-4o",
       modelReasoningEffort: "high",
       activeAgentId: "claude",
+      reviewerSnapshotId: "snapshot-1",
     });
   });
 

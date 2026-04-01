@@ -129,6 +129,7 @@ export async function handleReviewerPromptMessage(args: {
   orchestrator.setWorkingDirectory(reviewerCwd);
   if (requestedSnapshotId && !boundSnapshotId) {
     deps.reviewerSnapshotBindings?.set(deps.context.historyKey, requestedSnapshotId);
+    deps.sessions.sessionManager.saveReviewerSnapshotBinding(deps.context.userId, requestedSnapshotId);
     sendToClient({ type: "reviewer_snapshot_binding", snapshotId: requestedSnapshotId, taskId: snapshot.taskId });
   }
 

@@ -193,7 +193,31 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       // ignore
     }
 
-    const boundSnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
+    const boundSnapshotId = (() => {
+      if (!isReviewerChat) {
+        return null;
+      }
+      const inMemorySnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
+      const persistedSnapshotId = String(sessionManager.getSavedReviewerSnapshotId(userId) ?? "").trim() || null;
+      const candidateSnapshotId = inMemorySnapshotId || persistedSnapshotId;
+      if (!candidateSnapshotId) {
+        return null;
+      }
+      try {
+        const taskCtx = tasks.ensureTaskContext(normalizeWorkspaceRootForMeta(currentCwd));
+        if (!taskCtx.reviewStore.getSnapshot(candidateSnapshotId)) {
+          reviewerSnapshotBindings.delete(historyKey);
+          sessionManager.clearSavedReviewerSnapshotBinding(userId);
+          return null;
+        }
+      } catch {
+        reviewerSnapshotBindings.delete(historyKey);
+        sessionManager.clearSavedReviewerSnapshotBinding(userId);
+        return null;
+      }
+      reviewerSnapshotBindings.set(historyKey, candidateSnapshotId);
+      return candidateSnapshotId;
+    })();
     const resumeThread = isReviewerChat
       ? shouldResumeReviewerThread({
           boundSnapshotId,

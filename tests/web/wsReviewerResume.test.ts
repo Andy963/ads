@@ -322,6 +322,7 @@ describe("web/server/ws reviewer resume", () => {
       chatSessionId: "reviewer",
     }).userId;
     assert.equal(threadStorage.getRecord(userId)?.agentThreads?.codex, "reviewer-thread");
+    assert.equal(threadStorage.getRecord(userId)?.reviewerSnapshotId, snapshotId);
     assert.deepEqual(
       reviewerCreateCalls.map((call) => ({ cwd: call.cwd, resumeThread: call.resumeThread, resumeThreadId: call.resumeThreadId })),
       [{ cwd: workspaceRoot, resumeThread: false, resumeThreadId: undefined }],
@@ -352,5 +353,201 @@ describe("web/server/ws reviewer resume", () => {
     );
 
     reconnectClient.terminate();
+  });
+
+  it("restores reviewer continuity after the server-side snapshot binding state is recreated", async (t) => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.review-session", "ads-chat.reviewer"];
+
+    const firstClient = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const bindingPromise = waitForWsMessage(
+      firstClient,
+      (msg) => msg.type === "reviewer_snapshot_binding" && msg.snapshotId === snapshotId,
+    );
+    const resultPromise = waitForWsMessage(
+      firstClient,
+      (msg) => msg.type === "result" && typeof msg.output === "string" && String(msg.output).includes("Review response"),
+    );
+    await waitForWsOpen(firstClient);
+    firstClient.send(JSON.stringify({ type: "prompt", payload: { text: "Please review", snapshotId } }));
+    await bindingPromise;
+    await resultPromise;
+
+    const userId = buildWsConnectionIdentity({
+      authUserId: "review-user",
+      sessionId: "review-session",
+      chatSessionId: "reviewer",
+    }).userId;
+    assert.equal(threadStorage.getRecord(userId)?.threadId, "reviewer-thread");
+    assert.equal(threadStorage.getRecord(userId)?.reviewerSnapshotId, snapshotId);
+
+    firstClient.terminate();
+    reviewerSessionManager.dropSession(userId);
+
+    const recreatedThreadStorage = new ThreadStorage({
+      namespace: "test-reviewer-resume",
+      stateDbPath: process.env.ADS_STATE_DB_PATH,
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    const recreatedReviewerCreateCalls: Array<{ cwd: string; resumeThread: boolean; resumeThreadId?: string }> = [];
+    const recreatedReviewerSessionManager = new SessionManager(
+      0,
+      0,
+      "read-only",
+      "test-model",
+      recreatedThreadStorage,
+      undefined,
+      {
+        createSession: ((args: {
+          cwd: string;
+          resumeThread: boolean;
+          resumeThreadId?: string;
+        }) => {
+          recreatedReviewerCreateCalls.push({
+            cwd: args.cwd,
+            resumeThread: args.resumeThread,
+            resumeThreadId: args.resumeThreadId,
+          });
+          return new FakeReviewerSession(args.resumeThreadId ?? null) as any;
+        }) as never,
+      },
+    );
+    const recreatedWorkerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
+    const recreatedPlannerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
+    const recreatedServer = http.createServer();
+    const recreatedClients = new Set<import("ws").WebSocket>();
+    const recreatedClientMetaByWs = new Map<import("ws").WebSocket, any>();
+    const recreatedDirectoryManager = new DirectoryManager([workspaceRoot]);
+    const recreatedWorkerHistoryStore = new HistoryStore({
+      storagePath: process.env.ADS_STATE_DB_PATH,
+      namespace: "test-worker",
+    });
+    const recreatedPlannerHistoryStore = new HistoryStore({
+      storagePath: process.env.ADS_STATE_DB_PATH,
+      namespace: "test-planner",
+    });
+    const recreatedReviewerHistoryStore = new HistoryStore({
+      storagePath: process.env.ADS_STATE_DB_PATH,
+      namespace: "test-reviewer",
+    });
+    const recreatedLock = new AsyncLock();
+    const recreatedReviewStore = new ReviewStore();
+    const recreatedWss = attachWebSocketServer({
+      server: recreatedServer,
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      config: {
+        workspaceRoot,
+        allowedDirs: [workspaceRoot],
+        maxClients: 10,
+        pingIntervalMs: 0,
+        maxMissedPongs: 0,
+        traceWsDuplication: false,
+      },
+      auth: {
+        allowedOrigins: new Set(),
+        isOriginAllowed: () => true,
+        authenticateRequest: () => ({ ok: true as const, userId: "review-user" }),
+      },
+      agents: {
+        agentAvailability: new NoopAgentAvailability(),
+      },
+      state: {
+        directoryManager: recreatedDirectoryManager,
+        workspaceCache: new Map(),
+        sessionCacheRegistry: { registerBinding: () => {}, clearForUser: () => {} },
+        interruptControllers: new Map<string, AbortController>(),
+        clientMetaByWs: recreatedClientMetaByWs,
+        clients: recreatedClients,
+        cwdStore: new Map(),
+        cwdStorePath: process.env.ADS_STATE_DB_PATH!,
+        persistCwdStore: () => {},
+      },
+      sessions: {
+        workerSessionManager: recreatedWorkerSessionManager,
+        plannerSessionManager: recreatedPlannerSessionManager,
+        reviewerSessionManager: recreatedReviewerSessionManager,
+        getWorkspaceLock: () => recreatedLock,
+        getPlannerWorkspaceLock: () => recreatedLock,
+        getReviewerWorkspaceLock: () => recreatedLock,
+      },
+      history: {
+        workerHistoryStore: recreatedWorkerHistoryStore,
+        plannerHistoryStore: recreatedPlannerHistoryStore,
+        reviewerHistoryStore: recreatedReviewerHistoryStore,
+      },
+      tasks: {
+        ensureTaskContext: () => ({ reviewStore: recreatedReviewStore }) as any,
+        promoteQueuedTasksToPending: () => {},
+        broadcastToSession: () => {},
+      },
+      commands: {
+        runAdsCommandLine: async () => ({ ok: true, output: "" }),
+        sanitizeInput: (payload) => String(payload ?? ""),
+        syncWorkspaceTemplates: () => {},
+      },
+      scheduler: {},
+    });
+
+    let recreatedClient: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        recreatedServer.listen(0, "127.0.0.1", () => resolve());
+        recreatedServer.once("error", reject);
+      });
+    } catch (error) {
+      try {
+        recreatedWss.close();
+      } catch {
+        // ignore
+      }
+      recreatedReviewerSessionManager.destroy();
+      recreatedWorkerSessionManager.destroy();
+      recreatedPlannerSessionManager.destroy();
+      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (code === "EPERM" || code === "EACCES") {
+        t.skip(`listen not permitted (${code})`);
+        return;
+      }
+      throw error;
+    }
+
+    try {
+      const addr = recreatedServer.address();
+      assert.ok(addr && typeof addr === "object");
+      recreatedClient = new WebSocket(`ws://127.0.0.1:${addr.port}`, protocols, { origin: "http://localhost" });
+      const welcomePromise = waitForWsMessage(recreatedClient, (msg) => msg.type === "welcome");
+      const replayedBindingPromise = waitForWsMessage(
+        recreatedClient,
+        (msg) => msg.type === "reviewer_snapshot_binding" && msg.snapshotId === snapshotId,
+      );
+      await waitForWsOpen(recreatedClient);
+      const welcome = await welcomePromise;
+      assert.equal(welcome.threadId, "reviewer-thread");
+      assert.equal(welcome.contextMode, "thread_resumed");
+
+      const replayedBinding = await replayedBindingPromise;
+      assert.equal(replayedBinding.snapshotId, snapshotId);
+      assert.deepEqual(recreatedReviewerCreateCalls, [
+        { cwd: workspaceRoot, resumeThread: true, resumeThreadId: "reviewer-thread" },
+      ]);
+    } finally {
+      recreatedClient?.terminate();
+      try {
+        recreatedWss.close();
+      } catch {
+        // ignore
+      }
+      await new Promise<void>((resolve) => {
+        try {
+          recreatedServer.close(() => resolve());
+        } catch {
+          resolve();
+        }
+      });
+      recreatedReviewerSessionManager.destroy();
+      recreatedWorkerSessionManager.destroy();
+      recreatedPlannerSessionManager.destroy();
+    }
   });
 });
