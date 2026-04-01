@@ -267,6 +267,7 @@ export function createChatActions(ctx: AppContext) {
   ): void => {
     rt.threadWarning.value = params.warning ?? null;
     rt.ignoreNextHistory = true;
+    rt.resumeReplacePending = false;
     resetConversation(rt, params.notice, params.keepLatestTurn ?? false);
     if (params.resetThreadId) {
       rt.activeThreadId.value = null;
@@ -281,9 +282,24 @@ export function createChatActions(ctx: AppContext) {
   const clearConversationForResume = (rt: ProjectRuntime): void => {
     rt.threadWarning.value = null;
     rt.ignoreNextHistory = false;
+    rt.resumeReplacePending = true;
+    finalizeCommandBlock(rt);
+  };
+
+  const applyResumeHistory = (serverHistory: ChatItem[], rt: ProjectRuntime): void => {
+    if (!rt.resumeReplacePending) {
+      applyMergedHistory(serverHistory, rt);
+      return;
+    }
+    rt.resumeReplacePending = false;
     resetConversation(rt, "", false);
     rt.activeThreadId.value = null;
     finalizeCommandBlock(rt);
+    applyMergedHistory(serverHistory, rt);
+  };
+
+  const cancelPendingResume = (rt: ProjectRuntime): void => {
+    rt.resumeReplacePending = false;
   };
 
   const applyStreamingDisconnectCleanup = (rt: ProjectRuntime): void => {
@@ -569,6 +585,8 @@ export function createChatActions(ctx: AppContext) {
     resetConversation,
     threadReset,
     clearConversationForResume,
+    applyResumeHistory,
+    cancelPendingResume,
     applyStreamingDisconnectCleanup,
     applyMergedHistory,
     dropEmptyAssistantPlaceholder,

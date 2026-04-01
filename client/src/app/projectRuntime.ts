@@ -44,6 +44,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     boundReviewSnapshotId: ref<string | null>(null),
     delegationsInFlight: ref([]),
     ignoreNextHistory: false,
+    resumeReplacePending: false,
     ws: null,
     reconnectTimer: null,
     reconnectAttempts: 0,

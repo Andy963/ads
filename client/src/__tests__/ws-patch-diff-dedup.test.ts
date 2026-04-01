@@ -22,6 +22,7 @@ function createRuntime(): any {
     liveActivity: {},
     activeThreadId: { value: null } satisfies Ref<string | null>,
     workspacePath: { value: "" } satisfies Ref<string>,
+    resumeReplacePending: false,
   };
 }
 
@@ -95,7 +96,8 @@ function createHandler(rt: any) {
     randomId,
 
     updateProject: vi.fn(),
-    applyMergedHistory: vi.fn(),
+    applyResumeHistory: vi.fn(),
+    cancelPendingResume: vi.fn(),
     clearPendingPrompt: vi.fn(),
     clearStepLive: vi.fn(),
     commandKeyForWsEvent,

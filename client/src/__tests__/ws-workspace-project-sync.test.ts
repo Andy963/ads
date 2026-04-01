@@ -29,6 +29,7 @@ function createRuntime(): any {
     threadWarning: { value: null } satisfies Ref<string | null>,
     chatSessionId: "main",
     ignoreNextHistory: false,
+    resumeReplacePending: false,
   };
 }
 
@@ -47,7 +48,8 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     randomId,
 
     updateProject: args.updateProject,
-    applyMergedHistory: vi.fn(),
+    applyResumeHistory: vi.fn(),
+    cancelPendingResume: vi.fn(),
     clearPendingPrompt: vi.fn(),
     clearStepLive: vi.fn(),
     commandKeyForWsEvent: () => null,

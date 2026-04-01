@@ -123,6 +123,7 @@ export type ProjectRuntime = {
   boundReviewSnapshotId: Ref<string | null>;
   delegationsInFlight: Ref<AgentDelegationInFlight[]>;
   ignoreNextHistory: boolean;
+  resumeReplacePending: boolean;
   ws: unknown;
   reconnectTimer: number | null;
   reconnectAttempts: number;

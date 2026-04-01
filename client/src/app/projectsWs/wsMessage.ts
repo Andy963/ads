@@ -24,7 +24,8 @@ export type WsMessageHandlerArgs = {
 
   updateProject: (id: string, updates: Partial<ProjectTab>) => void;
 
-  applyMergedHistory: ChatActions["applyMergedHistory"];
+  applyResumeHistory: ChatActions["applyResumeHistory"];
+  cancelPendingResume: ChatActions["cancelPendingResume"];
   clearPendingPrompt: ChatActions["clearPendingPrompt"];
   clearStepLive: ChatActions["clearStepLive"];
   commandKeyForWsEvent: ChatActions["commandKeyForWsEvent"];
@@ -51,7 +52,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     wsInstance,
     randomId,
     updateProject,
-    applyMergedHistory,
+    applyResumeHistory,
+    cancelPendingResume,
     clearPendingPrompt,
     clearStepLive,
     commandKeyForWsEvent,
@@ -536,8 +538,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "history") {
-      if ((rt.busy.value || rt.queuedPrompts.value.length > 0) && rt.messages.value.length > 0) return;
-      if (rt.ignoreNextHistory) {
+      const resumeReplacePending = rt.resumeReplacePending;
+      if (!resumeReplacePending && (rt.busy.value || rt.queuedPrompts.value.length > 0) && rt.messages.value.length > 0) return;
+      if (!resumeReplacePending && rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
         return;
       }
@@ -562,7 +565,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed, ts: ts ?? undefined });
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }
-      applyMergedHistory(next, rt);
+      applyResumeHistory(next, rt);
       return;
     }
 
@@ -655,6 +658,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "result") {
+      cancelPendingResume(rt);
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
@@ -704,6 +708,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "error") {
+      cancelPendingResume(rt);
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;

@@ -141,7 +141,7 @@ describe("Lane websocket sessions", () => {
     wrapper.unmount();
   });
 
-  it("keeps reconnect, history restore, and thread restore lane-specific", async () => {
+  it("keeps reconnect and only swaps lane history after resume snapshots arrive", async () => {
     const { wrapper, controller } = await mountController();
 
     const workerRt = controller.getRuntime("default");
@@ -195,22 +195,72 @@ describe("Lane websocket sessions", () => {
     expect(plannerWs.send).toHaveBeenCalledWith("task_resume");
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
     expect(reviewerWs.send).not.toHaveBeenCalledWith("task_resume");
-    expect(plannerRt.messages.value).toEqual([]);
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner restored only"]);
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
     expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
 
+    plannerWs.onMessage?.({
+      type: "history",
+      items: [{ role: "ai", text: "planner resumed only", kind: "text", ts: Date.now() }],
+    });
+    await settleUi(wrapper as any);
+
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
+
     await controller.resumeTaskThread();
     expect(workerWs.send).toHaveBeenCalledWith("task_resume");
-    expect(workerRt.messages.value).toEqual([]);
-    expect(plannerRt.messages.value).toEqual([]);
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
     expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
+
+    workerWs.onMessage?.({
+      type: "history",
+      items: [{ role: "ai", text: "worker resumed only", kind: "text", ts: Date.now() }],
+    });
+    await settleUi(wrapper as any);
+
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker resumed only"]);
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
 
     reviewerWs.onMessage?.({ type: "thread_reset" });
     await settleUi(wrapper as any);
 
     expect(reviewerRt.messages.value.map((entry: any) => entry.content).join("\n")).not.toContain("reviewer history");
-    expect(workerRt.messages.value).toEqual([]);
-    expect(plannerRt.messages.value).toEqual([]);
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker resumed only"]);
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
+    wrapper.unmount();
+  });
+
+  it("keeps existing chat visible when worker or planner resume fails", async () => {
+    const { wrapper, controller } = await mountController();
+
+    const workerRt = controller.getRuntime("default");
+    const plannerRt = controller.getPlannerRuntime("default");
+    const workerWs = wsByChatSessionId.get("main");
+    const plannerWs = wsByChatSessionId.get("planner");
+
+    expect(workerWs).toBeTruthy();
+    expect(plannerWs).toBeTruthy();
+
+    workerRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
+    plannerRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "planner history" }];
+    await settleUi(wrapper as any);
+
+    await controller.resumeTaskThread();
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+
+    workerWs.onMessage?.({ type: "error", message: "worker resume failed" });
+    await settleUi(wrapper as any);
+
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history", "worker resume failed"]);
+
+    await controller.resumePlannerThread();
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history"]);
+
+    plannerWs.onMessage?.({ type: "error", message: "planner resume failed" });
+    await settleUi(wrapper as any);
+
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history", "planner resume failed"]);
     wrapper.unmount();
   });
 });
