@@ -171,4 +171,38 @@ describe("Project and lane composer draft isolation", () => {
 
     wrapper.unmount();
   }, 30_000);
+
+  it("returns to the worker lane on project switches so preserved worker context stays visible", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false } },
+    });
+    await settleUi(wrapper);
+
+    await getLaneTextarea(wrapper, "worker").setValue("worker context A");
+    await switchLane(wrapper, "planner");
+    await getLaneTextarea(wrapper, "planner").setValue("planner draft A");
+    expect((wrapper.vm as any).activeChatLane).toBe("planner");
+
+    const projectRows = wrapper.findAll("button.projectRow");
+    const rowB = projectRows.find((row) => row.text().includes("B")) ?? null;
+    expect(rowB).toBeTruthy();
+    await rowB!.trigger("click");
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
+    expect((wrapper.vm as any).activeChatLane).toBe("worker");
+    expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("");
+
+    const rowA = wrapper.findAll("button.projectRow").find((row) => row.text().includes("A")) ?? null;
+    expect(rowA).toBeTruthy();
+    await rowA!.trigger("click");
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).activeProjectId).toBe("sess-a");
+    expect((wrapper.vm as any).activeChatLane).toBe("worker");
+    expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("worker context A");
+
+    wrapper.unmount();
+  }, 30_000);
 });
