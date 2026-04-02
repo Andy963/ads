@@ -56,6 +56,17 @@ describe("web/ws/taskResume", () => {
     assert.deepStrictEqual(selection, { threadId: "saved-resume", source: "saved" });
   });
 
+  it("skips automatic thread selection when the active agent cannot true-resume threads", () => {
+    const selection = selectTaskResumeThread({
+      request: { mode: "auto" },
+      currentThreadId: "current",
+      savedThreadId: "saved",
+      savedResumeThreadId: "saved-resume",
+      canResumeThread: false,
+    });
+    assert.deepStrictEqual(selection, { threadId: "", source: "none" });
+  });
+
   it("saved mode prefers saved-resume when present", () => {
     const selection = selectTaskResumeThread({
       request: { mode: "saved" },

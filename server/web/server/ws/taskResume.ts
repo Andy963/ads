@@ -65,6 +65,7 @@ export function selectTaskResumeThread(args: {
   currentThreadId: string | null;
   savedThreadId?: string;
   savedResumeThreadId?: string;
+  canResumeThread?: boolean;
 }): TaskResumeSelection {
   const explicitThreadId = String(args.request.threadId ?? "").trim();
   if (explicitThreadId) {
@@ -76,6 +77,10 @@ export function selectTaskResumeThread(args: {
   const savedResumeThreadId = String(args.savedResumeThreadId ?? "").trim();
 
   const mode = args.request.mode ?? "auto";
+  if (args.canResumeThread === false) {
+    return { threadId: "", source: "none" };
+  }
+
   if (mode === "saved") {
     if (savedResumeThreadId) {
       return { threadId: savedResumeThreadId, source: "saved" };

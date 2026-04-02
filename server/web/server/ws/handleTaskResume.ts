@@ -46,6 +46,7 @@ export async function handleTaskResumeMessage(
       currentThreadId: orchestrator.getThreadId(),
       savedThreadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId),
       savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
+      canResumeThread: activeAgentId === "codex",
     });
     const threadIdToResume = selection.threadId;
     let clearSavedResumeThreadAfterFallback = false;
