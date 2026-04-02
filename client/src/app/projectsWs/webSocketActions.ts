@@ -353,7 +353,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.reconnectAttempts = 0;
       clearReconnectTimer(rt);
       restorePendingPrompt(rt);
-      void flushQueuedPrompts(rt);
       if (shouldSyncTasks && rt.needsTaskResync) {
         rt.needsTaskResync = false;
         void deps.syncProjectState?.(pid).catch(() => {

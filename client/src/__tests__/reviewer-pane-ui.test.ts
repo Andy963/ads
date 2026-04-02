@@ -99,6 +99,7 @@ describe("Reviewer pane UI", () => {
     lastReviewerPromptPayload = null;
     lastReviewerClearHistoryPayload = null;
     localStorage.clear();
+    sessionStorage.clear();
     getImpl = async (url: string) => {
       if (url === "/api/models") {
         return [
@@ -157,6 +158,7 @@ describe("Reviewer pane UI", () => {
     lastReviewerClearHistoryPayload = null;
     vi.clearAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
   });
 
   it("renders an interactive reviewer composer and surfaces the latest review artifact", async () => {

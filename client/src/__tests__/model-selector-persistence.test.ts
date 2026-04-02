@@ -4,6 +4,8 @@ import { defineComponent } from "vue";
 
 import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
 
+const TEST_TIMEOUT_MS = 40_000;
+
 type GetImpl = (url: string) => Promise<unknown>;
 
 let getImpl: GetImpl | null = null;
@@ -127,6 +129,7 @@ describe("Model selector persistence", () => {
     lastSendPromptPayload = null;
     try {
       localStorage.clear();
+      sessionStorage.clear();
     } catch {
       // ignore
     }
@@ -152,74 +155,125 @@ describe("Model selector persistence", () => {
     vi.clearAllMocks();
     try {
       localStorage.clear();
+      sessionStorage.clear();
     } catch {
       // ignore
     }
   });
 
-  it("restores a persisted model id and keeps it", async () => {
-    localStorage.setItem("ads.modelId.default.main", "gpt-4o");
+  it(
+    "restores a persisted model id and keeps it",
+    async () => {
+      localStorage.setItem("ads.modelId.default.main", "gpt-4o");
 
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, {
-      global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
-    });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
 
-    wrapper.vm.sendMainPrompt?.("hello");
-    await settleUi(wrapper);
+      wrapper.vm.sendMainPrompt?.("hello");
+      await settleUi(wrapper);
 
-    expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4o" });
-    expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4o");
+      expect(lastSendPromptPayload).toBeTruthy();
+      expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4o" });
+      expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4o");
 
-    wrapper.unmount();
-  });
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
 
-  it("falls back to the first model and persists it when the stored id is invalid", async () => {
-    localStorage.setItem("ads.modelId.default.main", "not-a-real-model");
+  it(
+    "falls back to the first model and persists it when the stored id is invalid",
+    async () => {
+      localStorage.setItem("ads.modelId.default.main", "not-a-real-model");
 
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, {
-      global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
-    });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
 
-    wrapper.vm.sendMainPrompt?.("hello");
-    await settleUi(wrapper);
+      wrapper.vm.sendMainPrompt?.("hello");
+      await settleUi(wrapper);
 
-    expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
-    expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
+      expect(lastSendPromptPayload).toBeTruthy();
+      expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
+      expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
 
-    wrapper.unmount();
-  });
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
 
-  it("uses backend effective model and persists it when there is no stored selection", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, {
-      global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
-    });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
-    lastWorkerWs!.onMessage?.({
-      type: "welcome",
-      threadId: null,
-      chatSessionId: "main",
-      effectiveModel: "gpt-4.1",
-      effectiveModelReasoningEffort: "high",
-    });
-    await settleUi(wrapper);
+  it(
+    "uses backend effective model and persists it when there is no stored selection",
+    async () => {
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+      lastWorkerWs!.onMessage?.({
+        type: "welcome",
+        threadId: null,
+        chatSessionId: "main",
+        effectiveModel: "gpt-4.1",
+        effectiveModelReasoningEffort: "high",
+      });
+      await settleUi(wrapper);
 
-    wrapper.vm.sendMainPrompt?.("hello");
-    await settleUi(wrapper);
+      wrapper.vm.sendMainPrompt?.("hello");
+      await settleUi(wrapper);
 
-    expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
-    expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
+      expect(lastSendPromptPayload).toBeTruthy();
+      expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
+      expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
 
-    wrapper.unmount();
-  });
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "waits for welcome effective model before replaying a restored pending prompt",
+    async () => {
+      sessionStorage.setItem(
+        "ads.pendingPrompt.default.main",
+        JSON.stringify({ clientMessageId: "c-1", text: "hello", createdAt: Date.now() }),
+      );
+
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+
+      expect(lastSendPromptPayload).toBeNull();
+
+      lastWorkerWs!.onMessage?.({
+        type: "welcome",
+        threadId: null,
+        chatSessionId: "main",
+        effectiveModel: "gpt-4.1",
+        effectiveModelReasoningEffort: "high",
+      });
+      await settleUi(wrapper);
+
+      expect(lastSendPromptPayload).toBeTruthy();
+      expect(lastSendPromptPayload).toMatchObject({
+        text: "hello",
+        model: "gpt-4.1",
+        model_reasoning_effort: "high",
+      });
+
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
 });

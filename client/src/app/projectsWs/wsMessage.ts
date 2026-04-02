@@ -544,7 +544,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       syncProjectFromWorkspaceState(current, nextPath, wsState);
 
-      if (typeof inFlight === "boolean" && !inFlight) {
+      if ((typeof inFlight === "boolean" && !inFlight) || (typeof inFlight !== "boolean" && !rt.turnInFlight)) {
         void flushQueuedPrompts(rt);
       }
       return;
