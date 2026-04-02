@@ -62,7 +62,7 @@ export function useLaneRuntimeBridge(params: {
     () => params.activeProjectId.value,
     (nextProjectId, prevProjectId) => {
       if (!prevProjectId || nextProjectId === prevProjectId) return;
-      if (activeChatLane.value === "planner") {
+      if (activeChatLane.value === "planner" || activeChatLane.value === "reviewer") {
         activeChatLane.value = "worker";
       }
     },
