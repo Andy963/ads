@@ -4,7 +4,10 @@ import { truncateForLog } from "../../utils.js";
 import type {
   WsTaskResumeHandlerDeps,
 } from "./deps.js";
-import { loadTaskResumeConversationContext } from "./taskResumeConversation.js";
+import {
+  buildHistoryStoreResumeTranscript,
+  loadTaskResumeConversationContext,
+} from "./taskResumeConversation.js";
 import { assertCodexThreadResumable } from "./taskResumeCodex.js";
 import { sendTaskResumeHistorySnapshot } from "./taskResumeHistory.js";
 import {
@@ -99,18 +102,35 @@ export async function handleTaskResumeMessage(
       }
     }
 
-    const resumeContext = loadTaskResumeConversationContext(taskCtx.taskStore);
+    const laneHistoryTranscript = buildHistoryStoreResumeTranscript(
+      deps.history.historyStore.get(deps.context.historyKey),
+    );
+    const resumeContext = laneHistoryTranscript
+      ? {
+          transcript: laneHistoryTranscript,
+          statusText: "已从当前对话恢复上下文",
+        }
+      : (() => {
+          const taskResumeContext = loadTaskResumeConversationContext(taskCtx.taskStore);
+          if (!taskResumeContext) {
+            return null;
+          }
+          return {
+            transcript: taskResumeContext.transcript,
+            statusText: `已从最近任务恢复上下文：${String(taskResumeContext.task.title ?? taskResumeContext.task.id ?? "").trim()}`,
+          };
+        })();
 
     if (!resumeContext) {
       deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: "未找到可用于恢复的任务历史" });
       return;
     }
-    const { task: mostRecentTask, transcript } = resumeContext;
+    const { transcript, statusText } = resumeContext;
 
     deps.history.historyStore.clear(deps.context.historyKey);
     deps.history.historyStore.add(deps.context.historyKey, {
       role: "status",
-      text: `已从最近任务恢复上下文：${String(mostRecentTask.title ?? mostRecentTask.id ?? "").trim()}`,
+      text: statusText,
       ts: Date.now(),
     });
 
@@ -128,7 +148,7 @@ export async function handleTaskResumeMessage(
     }
     try {
       const prompt = [
-        "你正在帮助我恢复对话上下文。以下是最近一次任务执行的对话片段（仅用于恢复上下文，不要逐条复述）：",
+        "你正在帮助我恢复对话上下文。以下是最近保留的对话片段（仅用于恢复上下文，不要逐条复述）：",
         transcript,
         "",
         "请回复：OK",

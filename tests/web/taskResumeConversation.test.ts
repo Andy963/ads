@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildHistoryStoreResumeTranscript,
   buildTaskResumeTranscript,
   loadTaskResumeConversationContext,
   selectMostRecentTaskResumeCandidate,
@@ -71,6 +72,16 @@ describe("web/ws/taskResumeConversation", () => {
     ]);
 
     assert.equal(transcript, "User: hello\nAssistant: hi");
+  });
+
+  it("builds transcript from lane history user and ai entries only", () => {
+    const transcript = buildHistoryStoreResumeTranscript([
+      { role: "status", text: "ignored", ts: 1 },
+      { role: "user", text: "current question", ts: 2 },
+      { role: "ai", text: "current answer", ts: 3 },
+    ]);
+
+    assert.equal(transcript, "User: current question\nAssistant: current answer");
   });
 
   it("loads the latest resumable task conversation and truncates long transcripts from the front", () => {

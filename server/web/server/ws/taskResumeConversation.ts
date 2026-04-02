@@ -1,5 +1,6 @@
 import type { TaskStore } from "../../../tasks/store.js";
 import type { ConversationMessage, Task, TaskStatus } from "../../../tasks/types.js";
+import type { HistoryEntry } from "../../../utils/historyStore.js";
 
 const TASK_RESUME_STATUSES: TaskStatus[] = ["completed", "failed", "cancelled"];
 const TASK_RESUME_CONVERSATION_LIMIT = 24;
@@ -8,6 +9,11 @@ const TASK_RESUME_TRANSCRIPT_MAX_CHARS = 10_000;
 export type TaskResumeConversationContext = {
   task: Task;
   transcript: string;
+};
+
+type TaskResumeTranscriptLine = {
+  speaker: "User" | "Assistant";
+  text: string;
 };
 
 function getTaskActivityTs(task: Task): number {
@@ -26,15 +32,43 @@ export function buildTaskResumeTranscript(
   messages: readonly ConversationMessage[],
   maxChars = TASK_RESUME_TRANSCRIPT_MAX_CHARS,
 ): string {
-  const rawTranscript = messages
-    .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${String(message.content ?? "").trim()}`)
-    .filter(Boolean)
-    .join("\n");
+  const rawTranscript = buildResumeTranscriptLines(
+    messages
+      .filter((message) => message.role === "user" || message.role === "assistant")
+      .map((message) => ({
+        speaker: message.role === "user" ? "User" : "Assistant",
+        text: String(message.content ?? "").trim(),
+      })),
+  );
 
   return rawTranscript.length <= maxChars
     ? rawTranscript
     : rawTranscript.slice(rawTranscript.length - maxChars);
+}
+
+export function buildHistoryStoreResumeTranscript(
+  entries: readonly HistoryEntry[],
+  maxChars = TASK_RESUME_TRANSCRIPT_MAX_CHARS,
+): string {
+  const rawTranscript = buildResumeTranscriptLines(
+    entries
+      .filter((entry) => entry.role === "user" || entry.role === "ai")
+      .map((entry) => ({
+        speaker: entry.role === "user" ? "User" : "Assistant",
+        text: String(entry.text ?? "").trim(),
+      })),
+  );
+
+  return rawTranscript.length <= maxChars
+    ? rawTranscript
+    : rawTranscript.slice(rawTranscript.length - maxChars);
+}
+
+function buildResumeTranscriptLines(lines: readonly TaskResumeTranscriptLine[]): string {
+  return lines
+    .filter((line) => Boolean(line.text))
+    .map((line) => `${line.speaker}: ${line.text}`)
+    .join("\n");
 }
 
 export function loadTaskResumeConversationContext(
