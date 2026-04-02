@@ -24,12 +24,14 @@ export function sendInitialBootstrapMessages(args: {
   boundSnapshotId: string | null;
   latestArtifact?: Record<string, unknown> | null;
 }): void {
+  const allowReviewerContinuityBootstrap =
+    !args.isReviewerChat || hasReviewerSnapshotContext({ boundSnapshotId: args.boundSnapshotId });
   const bootstrapState = buildWsBootstrapState({
     sessionManager: args.sessionManager,
     orchestrator: args.orchestrator,
     userId: args.userId,
     agentAvailability: args.agentAvailability,
-    allowSavedThreadFallback: !args.isReviewerChat || hasReviewerSnapshotContext({ boundSnapshotId: args.boundSnapshotId }),
+    allowSavedThreadFallback: allowReviewerContinuityBootstrap,
   });
 
   args.safeJsonSend(
@@ -51,7 +53,7 @@ export function sendInitialBootstrapMessages(args: {
   );
 
   const historyPayload = buildHistoryBootstrapPayload(args.historyStore.get(args.historyKey));
-  if (historyPayload) {
+  if (historyPayload && allowReviewerContinuityBootstrap) {
     args.safeJsonSend(args.ws, historyPayload);
   }
 

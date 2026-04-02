@@ -298,19 +298,21 @@ export class SessionManager {
       return;
     }
     const record = storage.getRecord(userId);
-    if (!record?.reviewerSnapshotId) {
+    if (!record) {
       return;
     }
-    const agentThreads = { ...(record.agentThreads ?? {}) };
-    const hasAgentThreads = Object.keys(agentThreads).length > 0;
-    if (!record.threadId && !hasAgentThreads && !record.model && !record.modelReasoningEffort && !record.activeAgentId) {
+    const hasSavedThreads = Boolean(record.threadId) || Object.keys(record.agentThreads ?? {}).length > 0;
+    if (!record.reviewerSnapshotId && !hasSavedThreads) {
+      return;
+    }
+    if (!record.model && !record.modelReasoningEffort && !record.activeAgentId) {
       storage.removeThread(userId);
       return;
     }
     storage.setRecord(userId, {
-      threadId: record.threadId,
+      threadId: undefined,
       cwd: record.cwd,
-      agentThreads,
+      agentThreads: {},
       model: record.model,
       modelReasoningEffort: record.modelReasoningEffort,
       activeAgentId: record.activeAgentId,

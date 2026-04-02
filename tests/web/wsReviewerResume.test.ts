@@ -124,6 +124,7 @@ describe("web/server/ws reviewer resume", () => {
   let wss: import("ws").WebSocketServer;
   let reviewerSessionManager: SessionManager;
   let threadStorage: ThreadStorage;
+  let reviewerHistoryStore: HistoryStore;
   let reviewerCreateCalls: Array<{ cwd: string; resumeThread: boolean; resumeThreadId?: string }>;
   let reviewerSessions: FakeReviewerSession[];
   let snapshotId: string;
@@ -186,7 +187,7 @@ describe("web/server/ws reviewer resume", () => {
     const plannerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
     const workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     const plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
-    const reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
+    reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
 
@@ -618,5 +619,55 @@ describe("web/server/ws reviewer resume", () => {
     );
 
     reconnectClient.terminate();
+  });
+
+  it("clears stale reviewer continuity and skips history replay when the saved snapshot binding is invalid", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.review-session", "ads-chat.reviewer"];
+    const identity = buildWsConnectionIdentity({
+      authUserId: "review-user",
+      sessionId: "review-session",
+      chatSessionId: "reviewer",
+    });
+    const userId = identity.userId;
+
+    threadStorage.setRecord(userId, {
+      threadId: "stale-reviewer-thread",
+      cwd: workspaceRoot,
+      agentThreads: { codex: "stale-reviewer-thread" },
+      reviewerSnapshotId: "missing-snapshot",
+    });
+    reviewerHistoryStore.add(identity.historyKey, {
+      role: "user",
+      text: "stale reviewer history",
+      ts: Date.now(),
+    });
+
+    const received: WsJson[] = [];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+    client.on("message", (raw: RawData) => {
+      try {
+        received.push(JSON.parse(raw.toString("utf8")) as WsJson);
+      } catch {
+        // ignore malformed payloads
+      }
+    });
+
+    const welcomePromise = waitForWsMessage(client, (msg) => msg.type === "welcome");
+    await waitForWsOpen(client);
+    const welcome = await welcomePromise;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(welcome.threadId, null);
+    assert.equal(welcome.contextMode, "fresh");
+    assert.equal(received.some((msg) => msg.type === "history"), false);
+    assert.equal(received.some((msg) => msg.type === "reviewer_snapshot_binding"), false);
+    assert.equal(threadStorage.getRecord(userId), undefined);
+    assert.deepEqual(
+      reviewerCreateCalls.map((call) => ({ cwd: call.cwd, resumeThread: call.resumeThread, resumeThreadId: call.resumeThreadId })),
+      [{ cwd: workspaceRoot, resumeThread: false, resumeThreadId: undefined }],
+    );
+
+    client.terminate();
   });
 });
