@@ -44,7 +44,12 @@ export function cleanupClosedConnection(args: {
 }): void {
   args.clients.delete(args.ws);
   const meta = args.clientMetaByWs.get(args.ws);
-  if (meta?.historyKey) {
+  const hasSiblingForHistory =
+    typeof meta?.historyKey === "string" &&
+    Array.from(args.clientMetaByWs.entries()).some(
+      ([candidate, candidateMeta]) => candidate !== args.ws && candidateMeta?.historyKey === meta.historyKey,
+    );
+  if (meta?.historyKey && !hasSiblingForHistory) {
     invalidateWsPromptRun({
       historyKey: meta.historyKey,
       interruptControllers: args.interruptControllers,

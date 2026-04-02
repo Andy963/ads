@@ -327,4 +327,110 @@ describe("web/server/ws/interrupt", () => {
 
     await waitForCondition(() => interruptControllers.size === 0);
   });
+
+  it("keeps in-flight work running when a sibling connection disconnects", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+
+    let resolveRun: ((value: { ok: boolean; output: string }) => void) | null = null;
+    let runStarted: (() => void) | null = null;
+    const runStartedPromise = new Promise<void>((resolve) => {
+      runStarted = resolve;
+    });
+    const runPromise = new Promise<{ ok: boolean; output: string }>((resolve) => {
+      resolveRun = resolve;
+    });
+
+    runAdsCommandLineImpl = async () => {
+      runStarted?.();
+      return await runPromise;
+    };
+
+    const clientA = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const clientB = new WebSocket(url, protocols, { origin: "http://localhost" });
+    await waitForWsOpen(clientA);
+    await waitForWsOpen(clientB);
+
+    const resultPromise = waitForWsMessage(
+      clientA,
+      (msg) => msg.type === "result" && msg.ok === true && msg.output === "done",
+      1500,
+    );
+    clientA.send(JSON.stringify({ type: "command", payload: "echo hello" }));
+    await runStartedPromise;
+    assert.equal(interruptControllers.size, 1);
+
+    const closePromise = new Promise<void>((resolve) => {
+      clientB.once("close", () => resolve());
+    });
+    clientB.terminate();
+    await closePromise;
+
+    assert.equal(interruptControllers.size, 1);
+    resolveRun?.({ ok: true, output: "done" });
+
+    const result = await resultPromise;
+    assert.equal(result.output, "done");
+    assert.equal(interruptControllers.size, 0);
+
+    try {
+      clientA.terminate();
+    } catch {
+      // ignore
+    }
+  });
+
+  it("allows the remaining connection to interrupt after the original requester disconnects", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+
+    let resolveRun: ((value: { ok: boolean; output: string }) => void) | null = null;
+    let runStarted: (() => void) | null = null;
+    const runStartedPromise = new Promise<void>((resolve) => {
+      runStarted = resolve;
+    });
+    const runPromise = new Promise<{ ok: boolean; output: string }>((resolve) => {
+      resolveRun = resolve;
+    });
+
+    runAdsCommandLineImpl = async () => {
+      runStarted?.();
+      return await runPromise;
+    };
+
+    const clientA = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const clientB = new WebSocket(url, protocols, { origin: "http://localhost" });
+    await waitForWsOpen(clientA);
+    await waitForWsOpen(clientB);
+
+    clientA.send(JSON.stringify({ type: "command", payload: "echo hello" }));
+    await runStartedPromise;
+    assert.equal(interruptControllers.size, 1);
+
+    const requesterClosed = new Promise<void>((resolve) => {
+      clientA.once("close", () => resolve());
+    });
+    clientA.terminate();
+    await requesterClosed;
+
+    assert.equal(interruptControllers.size, 1);
+
+    const interruptedPromise = waitForWsMessage(
+      clientB,
+      (msg) => msg.type === "error" && msg.message === "已中断，输出可能不完整",
+      1500,
+    );
+    clientB.send(JSON.stringify({ type: "interrupt" }));
+    const interrupted = await interruptedPromise;
+    assert.equal(interrupted.message, "已中断，输出可能不完整");
+    assert.equal(interruptControllers.size, 0);
+
+    resolveRun?.({ ok: true, output: "late output" });
+
+    try {
+      clientB.terminate();
+    } catch {
+      // ignore
+    }
+  });
 });

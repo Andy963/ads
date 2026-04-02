@@ -86,4 +86,56 @@ describe("web/ws/connectionRuntime", () => {
     assert.equal(promptRunEpochs.get("h1"), 2);
     assert.match(logs[0]!, /client disconnected conn=c1 session=session-1 user=7 history=h1 code=1000 reason=bye/);
   });
+
+  it("keeps in-flight work when another socket for the same history key remains connected", () => {
+    const wsA = {} as any;
+    const wsB = {} as any;
+    let aborted = 0;
+    const controller = new AbortController();
+    const promptRunEpochs = new Map<string, number>([["h1", 1]]);
+    controller.abort = () => {
+      aborted += 1;
+    };
+    const clients = new Set([wsA, wsB]);
+    const clientMetaByWs = new Map([
+      [
+        wsA,
+        {
+          historyKey: "h1",
+          connectionId: "c1",
+        } as any,
+      ],
+      [
+        wsB,
+        {
+          historyKey: "h1",
+          connectionId: "c2",
+        } as any,
+      ],
+    ]);
+    const interruptControllers = new Map([["h1", controller]]);
+
+    cleanupClosedConnection({
+      ws: wsA,
+      code: 1000,
+      reason: Buffer.alloc(0),
+      sessionId: "session-1",
+      userId: 7,
+      clients,
+      clientMetaByWs,
+      interruptControllers,
+      promptRunEpochs,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        debug: () => {},
+      },
+    });
+
+    assert.equal(aborted, 0);
+    assert.equal(clients.has(wsA), false);
+    assert.equal(clientMetaByWs.has(wsA), false);
+    assert.equal(interruptControllers.get("h1"), controller);
+    assert.equal(promptRunEpochs.get("h1"), 1);
+  });
 });
