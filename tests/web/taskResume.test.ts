@@ -77,6 +77,18 @@ describe("web/ws/taskResume", () => {
     assert.deepStrictEqual(selection, { threadId: "saved-resume", source: "saved" });
   });
 
+  it("saved mode skips saved-resume when it belongs to a different cwd context", () => {
+    const selection = selectTaskResumeThread({
+      request: { mode: "saved" },
+      currentThreadId: "current",
+      savedThreadId: "saved",
+      savedResumeThreadId: "saved-resume",
+      savedResumeCwd: "/tmp/project-a",
+      currentCwd: "/tmp/project-b",
+    });
+    assert.deepStrictEqual(selection, { threadId: "current", source: "current" });
+  });
+
   it("current mode prefers current/saved over saved-resume", () => {
     const selection = selectTaskResumeThread({
       request: { mode: "current" },

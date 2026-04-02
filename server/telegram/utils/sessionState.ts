@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type { Logger } from "../../utils/logger.js";
 import type { AgentIdentifier } from "../../agents/types.js";
+import { detectWorkspaceFrom } from "../../workspace/detector.js";
 
 import type { ThreadStorage } from "./threadStorage.js";
 
@@ -62,6 +63,42 @@ export function getSavedSessionState(storage: ThreadStorage | undefined, userId:
   };
 }
 
+function normalizeCwd(value: string | undefined): string | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+  return path.resolve(value);
+}
+
+function isNestedCwd(parentCwd: string, childCwd: string): boolean {
+  const relative = path.relative(parentCwd, childCwd);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+export function areSessionCwdsCompatible(savedCwd?: string, currentCwd?: string): boolean {
+  const normalizedSavedCwd = normalizeCwd(savedCwd);
+  const normalizedCurrentCwd = normalizeCwd(currentCwd);
+  if (!normalizedSavedCwd || !normalizedCurrentCwd) {
+    return true;
+  }
+  if (normalizedSavedCwd === normalizedCurrentCwd) {
+    return true;
+  }
+  if (
+    isNestedCwd(normalizedSavedCwd, normalizedCurrentCwd) ||
+    isNestedCwd(normalizedCurrentCwd, normalizedSavedCwd)
+  ) {
+    return true;
+  }
+
+  const savedWorkspaceRoot = detectWorkspaceFrom(normalizedSavedCwd);
+  const currentWorkspaceRoot = detectWorkspaceFrom(normalizedCurrentCwd);
+  return (
+    savedWorkspaceRoot === currentWorkspaceRoot &&
+    (normalizedSavedCwd === savedWorkspaceRoot || normalizedCurrentCwd === currentWorkspaceRoot)
+  );
+}
+
 export function resolveResumeState(args: {
   userId: number;
   resumeThread: boolean | undefined;
@@ -86,11 +123,10 @@ export function resolveResumeState(args: {
     record?.threadId;
   const resumeThreadIds = filterAgentThreads(record?.agentThreads);
   const updatedAt = record?.updatedAt;
-  const savedCwd = typeof record?.cwd === "string" && record.cwd.trim() ? path.resolve(record.cwd) : undefined;
-  const currentCwd =
-    typeof args.currentCwd === "string" && args.currentCwd.trim() ? path.resolve(args.currentCwd) : undefined;
+  const savedCwd = normalizeCwd(record?.cwd);
+  const currentCwd = normalizeCwd(args.currentCwd);
 
-  if (candidateThreadId && savedCwd && currentCwd && savedCwd !== currentCwd) {
+  if (candidateThreadId && savedCwd && currentCwd && !areSessionCwdsCompatible(savedCwd, currentCwd)) {
     args.logger.info(
       `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
     );

@@ -147,6 +147,28 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, false);
   });
 
+  it("keeps auto-resume when reconnect normalizes to a compatible project cwd", () => {
+    storage.setRecord(13, {
+      threadId: "thread-13",
+      cwd: "/tmp/project/src",
+      agentThreads: { codex: "thread-13" },
+      activeAgentId: "codex",
+    });
+
+    const resume = resolveResumeState({
+      userId: 13,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      resumeTtlMs: 60_000,
+      currentCwd: "/tmp/project",
+    });
+
+    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.resumeThreadId, "thread-13");
+    assert.equal(resume.shouldInjectHistory, false);
+  });
+
   it("skips auto-resume when the current cwd no longer matches the saved cwd", () => {
     storage.setRecord(12, {
       threadId: "thread-12",

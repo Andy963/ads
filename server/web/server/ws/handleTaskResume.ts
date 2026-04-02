@@ -94,12 +94,15 @@ export async function handleTaskResumeMessage(
     );
 
     const activeAgentId = orchestrator.getActiveAgentId();
+    const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
     const selection = selectTaskResumeThread({
       request,
       currentThreadId: orchestrator.getThreadId(),
       savedThreadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId),
       savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
+      savedResumeCwd: savedState?.cwd,
+      currentCwd: deps.context.currentCwd,
       canResumeThread: activeAgentId === "codex",
     });
     const threadIdToResume = selection.threadId;

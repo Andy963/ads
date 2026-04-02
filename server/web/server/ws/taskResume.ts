@@ -1,3 +1,5 @@
+import { areSessionCwdsCompatible } from "../../../telegram/utils/sessionState.js";
+
 export type TaskResumeMode = "auto" | "current" | "saved";
 
 export type TaskResumeRequest = {
@@ -65,6 +67,8 @@ export function selectTaskResumeThread(args: {
   currentThreadId: string | null;
   savedThreadId?: string;
   savedResumeThreadId?: string;
+  savedResumeCwd?: string;
+  currentCwd?: string;
   canResumeThread?: boolean;
 }): TaskResumeSelection {
   const explicitThreadId = String(args.request.threadId ?? "").trim();
@@ -75,6 +79,8 @@ export function selectTaskResumeThread(args: {
   const currentThreadId = String(args.currentThreadId ?? "").trim();
   const savedThreadId = String(args.savedThreadId ?? "").trim();
   const savedResumeThreadId = String(args.savedResumeThreadId ?? "").trim();
+  const validatedSavedResumeThreadId =
+    savedResumeThreadId && areSessionCwdsCompatible(args.savedResumeCwd, args.currentCwd) ? savedResumeThreadId : "";
 
   const mode = args.request.mode ?? "auto";
   if (args.canResumeThread === false) {
@@ -82,8 +88,8 @@ export function selectTaskResumeThread(args: {
   }
 
   if (mode === "saved") {
-    if (savedResumeThreadId) {
-      return { threadId: savedResumeThreadId, source: "saved" };
+    if (validatedSavedResumeThreadId) {
+      return { threadId: validatedSavedResumeThreadId, source: "saved" };
     }
     if (currentThreadId) {
       return { threadId: currentThreadId, source: "current" };
@@ -110,8 +116,8 @@ export function selectTaskResumeThread(args: {
   if (savedThreadId) {
     return { threadId: savedThreadId, source: "current" };
   }
-  if (savedResumeThreadId) {
-    return { threadId: savedResumeThreadId, source: "saved" };
+  if (validatedSavedResumeThreadId) {
+    return { threadId: validatedSavedResumeThreadId, source: "saved" };
   }
   return { threadId: "", source: "none" };
 }
