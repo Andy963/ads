@@ -20,17 +20,22 @@ const emit = defineEmits<{
 
 const api = new ApiClient({ baseUrl: "" });
 const rootEl = ref<HTMLElement | null>(null);
+const contentEl = ref<HTMLElement | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const preview = ref<FilePreviewResponse | null>(null);
 const activeTarget = ref<MarkdownFilePreviewLink | null>(props.target);
+const pageStartLine = ref<number | null>(null);
 const copyState = ref<"idle" | "copied">("idle");
 let copyToastTimer: ReturnType<typeof setTimeout> | null = null;
 
 let loadToken = 0;
+const PREVIEW_PAGE_SIZE = 400;
 
 const isMarkdown = computed(() => preview.value?.language === "markdown");
 const requestedLine = computed(() => activeTarget.value?.line ?? null);
+const canLoadPrevious = computed(() => Boolean(preview.value && preview.value.startLine > 1));
+const canLoadNext = computed(() => Boolean(preview.value && preview.value.endLine < preview.value.totalLines));
 const previewLines = computed(() => {
   return buildFilePreviewLines({
     content: preview.value?.content ?? "",
@@ -74,8 +79,11 @@ onBeforeUnmount(() => {
 
 async function scrollToHighlightedLine(): Promise<void> {
   const line = highlightedLine.value;
-  if (!line) return;
   await nextTick();
+  if (!line) {
+    contentEl.value?.scrollTo?.({ top: 0 });
+    return;
+  }
   const el = rootEl.value?.querySelector<HTMLElement>(`[data-line="${line}"]`);
   el?.scrollIntoView?.({ block: "center" });
 }
@@ -101,6 +109,9 @@ async function loadPreview(): Promise<void> {
   if (target.line != null) {
     qp.set("line", String(target.line));
   }
+  if (pageStartLine.value != null) {
+    qp.set("startLine", String(pageStartLine.value));
+  }
 
   try {
     const result = await api.get<FilePreviewResponse>(`/api/files/content?${qp.toString()}`);
@@ -121,12 +132,13 @@ watch(
   () => [props.target?.path ?? "", props.target?.line ?? null],
   () => {
     activeTarget.value = props.target;
+    pageStartLine.value = null;
   },
   { immediate: true },
 );
 
 watch(
-  () => [activeTarget.value?.path ?? "", activeTarget.value?.line ?? null, props.workspaceRoot ?? ""],
+  () => [activeTarget.value?.path ?? "", activeTarget.value?.line ?? null, props.workspaceRoot ?? "", pageStartLine.value],
   () => {
     resetCopyToast();
     void loadPreview();
@@ -152,6 +164,17 @@ async function onCopyPreview(): Promise<void> {
 
 function openNestedPreview(target: MarkdownFilePreviewLink): void {
   activeTarget.value = target;
+  pageStartLine.value = null;
+}
+
+function loadPreviousPage(): void {
+  if (!preview.value || !canLoadPrevious.value) return;
+  pageStartLine.value = Math.max(1, preview.value.startLine - PREVIEW_PAGE_SIZE);
+}
+
+function loadNextPage(): void {
+  if (!preview.value || !canLoadNext.value) return;
+  pageStartLine.value = preview.value.endLine + 1;
 }
 </script>
 
@@ -168,6 +191,26 @@ function openNestedPreview(target: MarkdownFilePreviewLink): void {
           </span>
         </div>
         <div class="filePreviewActions">
+          <div v-if="preview?.truncated" class="filePreviewPager">
+            <button
+              class="filePreviewPagerButton"
+              type="button"
+              data-testid="chat-file-preview-prev"
+              :disabled="loading || !canLoadPrevious"
+              @click="loadPreviousPage"
+            >
+              上一页
+            </button>
+            <button
+              class="filePreviewPagerButton"
+              type="button"
+              data-testid="chat-file-preview-next"
+              :disabled="loading || !canLoadNext"
+              @click="loadNextPage"
+            >
+              下一页
+            </button>
+          </div>
           <button
             class="filePreviewCopy"
             type="button"
@@ -206,14 +249,14 @@ function openNestedPreview(target: MarkdownFilePreviewLink): void {
           <div v-if="outOfRangeLine" class="filePreviewHint">
             目标行 {{ requestedLine }} 超出文件范围
           </div>
-          <div v-if="isMarkdown" class="filePreviewMarkdown" data-testid="chat-file-preview-code">
+          <div v-if="isMarkdown" ref="contentEl" class="filePreviewMarkdown" data-testid="chat-file-preview-code">
             <MarkdownContent
               :content="String(preview.content ?? '')"
               :enable-file-preview="Boolean(workspaceRoot)"
               @open-file-preview="openNestedPreview"
             />
           </div>
-          <div v-else class="filePreviewCode" data-testid="chat-file-preview-code">
+          <div v-else ref="contentEl" class="filePreviewCode" data-testid="chat-file-preview-code">
             <div
               v-for="line in previewLines"
               :key="line.number"
@@ -285,6 +328,13 @@ function openNestedPreview(target: MarkdownFilePreviewLink): void {
   flex-shrink: 0;
 }
 
+.filePreviewPager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filePreviewPagerButton,
 .filePreviewCopy,
 .filePreviewClose {
   flex-shrink: 0;
@@ -304,12 +354,22 @@ function openNestedPreview(target: MarkdownFilePreviewLink): void {
     opacity 120ms ease;
 }
 
+.filePreviewPagerButton {
+  display: inline-flex;
+  width: auto;
+  min-width: 56px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.filePreviewPagerButton:disabled,
 .filePreviewCopy:disabled,
 .filePreviewClose:disabled {
   opacity: 0.45;
   cursor: default;
 }
 
+.filePreviewPagerButton:hover,
 .filePreviewCopy:hover,
 .filePreviewClose:hover {
   color: var(--github-text);

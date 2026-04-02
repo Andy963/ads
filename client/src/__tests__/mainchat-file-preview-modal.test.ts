@@ -138,6 +138,113 @@ describe("MainChat file preview modal", () => {
     wrapper.unmount();
   });
 
+  it("loads adjacent preview windows from the modal pager", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            path: "/tmp/ws/app/memory/chunker.py",
+            content: Array.from({ length: 400 }, (_, idx) => `line ${idx + 250}`).join("\n"),
+            totalLines: 900,
+            startLine: 250,
+            endLine: 649,
+            truncated: true,
+            language: "python",
+            line: 450,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            path: "/tmp/ws/app/memory/chunker.py",
+            content: Array.from({ length: 251 }, (_, idx) => `line ${idx + 650}`).join("\n"),
+            totalLines: 900,
+            startLine: 650,
+            endLine: 900,
+            truncated: true,
+            language: "python",
+            line: 450,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            path: "/tmp/ws/app/memory/chunker.py",
+            content: Array.from({ length: 400 }, (_, idx) => `line ${idx + 250}`).join("\n"),
+            totalLines: 900,
+            startLine: 250,
+            endLine: 649,
+            truncated: true,
+            language: "python",
+            line: 450,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ) as typeof fetch;
+
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          {
+            id: "m1",
+            role: "assistant",
+            kind: "text",
+            content: '[chunker](/tmp/ws/app/memory/chunker.py#L450)',
+          },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+        workspaceRoot: "/tmp/ws",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find("a").trigger("click");
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="chat-file-preview-modal"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="chat-file-preview-next"]').exists()).toBe(true);
+      expect(wrapper.find('[data-line="450"]').classes()).toContain("filePreviewLine--highlight");
+    });
+
+    await wrapper.find('[data-testid="chat-file-preview-next"]').trigger("click");
+
+    await vi.waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      expect(wrapper.text()).toContain("650-900");
+      expect(wrapper.find('[data-line="450"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="chat-file-preview-prev"]').attributes("disabled")).toBeUndefined();
+      expect(wrapper.find('[data-testid="chat-file-preview-next"]').attributes("disabled")).toBeDefined();
+    });
+
+    const nextFetchUrl = String((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[1]?.[0] ?? "");
+    expect(nextFetchUrl).toContain("line=450");
+    expect(nextFetchUrl).toContain("startLine=650");
+
+    await wrapper.find('[data-testid="chat-file-preview-prev"]').trigger("click");
+
+    await vi.waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+      expect(wrapper.find('[data-line="450"]').classes()).toContain("filePreviewLine--highlight");
+    });
+
+    const prevFetchUrl = String((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[2]?.[0] ?? "");
+    expect(prevFetchUrl).toContain("startLine=250");
+
+    wrapper.unmount();
+  });
+
   it("closes the file preview modal when the header close button is clicked", async () => {
     globalThis.fetch = vi.fn(async () => {
       return new Response(

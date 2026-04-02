@@ -95,7 +95,12 @@ function parseRequestedLine(raw: string | null): number | null {
   return parsed;
 }
 
-function buildPreviewPayload(filePath: string, text: string, requestedLine: number | null): FilePreviewResponse {
+function buildPreviewPayload(
+  filePath: string,
+  text: string,
+  requestedLine: number | null,
+  requestedStartLine: number | null,
+): FilePreviewResponse {
   const lines = splitPreviewLines(text);
   const totalLines = lines.length;
 
@@ -116,9 +121,11 @@ function buildPreviewPayload(filePath: string, text: string, requestedLine: numb
   let endLine = totalLines;
 
   if (totalLines > MAX_PREVIEW_LINES) {
-    if (requestedLine && requestedLine <= totalLines) {
-      const earliestStart = 1;
-      const latestStart = Math.max(1, totalLines - MAX_PREVIEW_LINES + 1);
+    const earliestStart = 1;
+    const latestStart = Math.max(1, totalLines - MAX_PREVIEW_LINES + 1);
+    if (requestedStartLine && requestedStartLine <= totalLines) {
+      startLine = Math.min(latestStart, Math.max(earliestStart, requestedStartLine));
+    } else if (requestedLine && requestedLine <= totalLines) {
       startLine = Math.min(
         latestStart,
         Math.max(earliestStart, requestedLine - PREVIEW_WINDOW_RADIUS),
@@ -160,6 +167,7 @@ export async function handleFileRoutes(
 
   const requestedPath = url.searchParams.get("path") ?? "";
   const requestedLine = parseRequestedLine(url.searchParams.get("line"));
+  const requestedStartLine = parseRequestedLine(url.searchParams.get("startLine"));
   const validated = validateWorkspaceFilePath({
     candidatePath: requestedPath,
     workspaceRoot: taskCtx.workspaceRoot,
@@ -190,7 +198,7 @@ export async function handleFileRoutes(
   }
 
   const text = raw.toString("utf8");
-  const payload = buildPreviewPayload(validated.resolvedPath, text, requestedLine);
+  const payload = buildPreviewPayload(validated.resolvedPath, text, requestedLine, requestedStartLine);
   sendJson(res, 200, payload);
   return true;
 }

@@ -98,6 +98,41 @@ describe("web/api/files", () => {
     assert.match(body.content, /line 450/);
   });
 
+  it("returns a requested preview window and clamps it to the file bounds", async () => {
+    const filePath = path.join(tmpDir, "src", "demo.py");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const lines = Array.from({ length: 900 }, (_, idx) => `line ${idx + 1}`);
+    fs.writeFileSync(filePath, lines.join("\n"), "utf8");
+
+    const req = createReq("GET");
+    const res = createRes();
+    const url = new URL(
+      `http://localhost/api/files/content?workspace=${encodeURIComponent(tmpDir)}&path=${encodeURIComponent(filePath)}&line=450&startLine=850`,
+    );
+
+    const handled = await handleFileRoutes(
+      { req: req as any, res: res as any, url, pathname: "/api/files/content", auth: {} as any } as any,
+      { resolveTaskContext: () => ({ workspaceRoot: tmpDir }) as any },
+    );
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    const body = parseJson<{
+      startLine: number;
+      endLine: number;
+      line: number | null;
+      content: string;
+      truncated: boolean;
+    }>(res.body);
+    assert.equal(body.startLine, 501);
+    assert.equal(body.endLine, 900);
+    assert.equal(body.line, 450);
+    assert.equal(body.truncated, true);
+    assert.doesNotMatch(body.content, /line 450/);
+    assert.match(body.content, /^line 501/);
+    assert.match(body.content, /line 900$/);
+  });
+
   it("rejects paths outside the current workspace", async () => {
     const outsideFile = path.join(os.tmpdir(), `ads-outside-${Date.now()}.txt`);
     fs.writeFileSync(outsideFile, "secret", "utf8");
