@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type { Logger } from "../../utils/logger.js";
 import type { AgentIdentifier } from "../../agents/types.js";
 
@@ -66,6 +68,7 @@ export function resolveResumeState(args: {
   storage?: ThreadStorage;
   logger: Pick<Logger, "info">;
   resumeTtlMs: number;
+  currentCwd?: string;
 }): ResumeState {
   if (!args.resumeThread) {
     return { shouldInjectHistory: false, restoreMode: "fresh" };
@@ -82,6 +85,20 @@ export function resolveResumeState(args: {
     record?.threadId;
   const resumeThreadIds = filterAgentThreads(record?.agentThreads);
   const updatedAt = record?.updatedAt;
+  const savedCwd = typeof record?.cwd === "string" && record.cwd.trim() ? path.resolve(record.cwd) : undefined;
+  const currentCwd =
+    typeof args.currentCwd === "string" && args.currentCwd.trim() ? path.resolve(args.currentCwd) : undefined;
+
+  if (candidateThreadId && savedCwd && currentCwd && savedCwd !== currentCwd) {
+    args.logger.info(
+      `Skipping auto-resume because saved cwd no longer matches current cwd (saved=${savedCwd} current=${currentCwd})`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: false,
+      restoreMode: "fresh",
+    };
+  }
 
   if (candidateThreadId && updatedAt && args.resumeTtlMs > 0) {
     const age = Date.now() - updatedAt;

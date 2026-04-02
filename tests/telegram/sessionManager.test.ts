@@ -248,6 +248,33 @@ describe("SessionManager", () => {
     assert.equal(manager.getContextRestoreMode(77), "fresh");
   });
 
+  it("skips automatic resume when the requested cwd diverges from the saved cwd", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(78, {
+      threadId: "thread-78",
+      cwd: "/tmp/project-a",
+      agentThreads: { codex: "thread-78" },
+      activeAgentId: "codex",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    const session = manager.getOrCreate(78, "/tmp/project-b", true) as unknown as FakeSession;
+    assert.equal(session.getThreadId(), null);
+    assert.equal(session.workingDirectory, "/tmp/project-b");
+    assert.equal(manager.getContextRestoreMode(78), "fresh");
+  });
+
   it("falls back to history injection when a saved thread is stale", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
     const stateDbPath = path.join(tmpDir, "state.db");
@@ -321,5 +348,36 @@ describe("SessionManager", () => {
     assert.equal(record?.threadId, undefined);
     assert.deepEqual(record?.agentThreads, {});
     assert.equal(record?.activeAgentId, "codex");
+  });
+
+  it("preserves explicit resume after rebinding the saved thread to the current cwd", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(79, {
+      threadId: "stale-thread",
+      cwd: "/tmp/project-a",
+      agentThreads: { codex: "stale-thread" },
+      activeAgentId: "codex",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    manager.getOrCreate(79, "/tmp/project-b", false);
+    manager.saveThreadId(79, "manual-thread", "codex");
+    manager.dropSession(79);
+
+    const resumed = manager.getOrCreate(79, "/tmp/project-b", true) as unknown as FakeSession;
+    assert.equal(storage.getRecord(79)?.cwd, "/tmp/project-b");
+    assert.equal(resumed.getThreadId(), "manual-thread");
+    assert.equal(manager.getContextRestoreMode(79), "thread_resumed");
   });
 });

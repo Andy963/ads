@@ -146,4 +146,27 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.resumeThreadId, "thread-11");
     assert.equal(resume.shouldInjectHistory, false);
   });
+
+  it("skips auto-resume when the current cwd no longer matches the saved cwd", () => {
+    storage.setRecord(12, {
+      threadId: "thread-12",
+      cwd: "/tmp/project-a",
+      agentThreads: { codex: "thread-12", claude: "claude-thread-12" },
+      activeAgentId: "codex",
+    });
+
+    const resume = resolveResumeState({
+      userId: 12,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      resumeTtlMs: 60_000,
+      currentCwd: "/tmp/project-b",
+    });
+
+    assert.equal(resume.restoreMode, "fresh");
+    assert.equal(resume.resumeThreadId, undefined);
+    assert.equal(resume.resumeThreadIds, undefined);
+    assert.equal(resume.shouldInjectHistory, false);
+  });
 });

@@ -179,6 +179,7 @@ export class SessionManager {
       storage: this.threadStorage,
       logger: this.logger,
       resumeTtlMs: this.resumeTtlMs,
+      currentCwd: effectiveCwd,
     });
     activeAgentId = resumeState.activeAgentId ?? activeAgentId;
     if (resumeState.shouldInjectHistory) {
