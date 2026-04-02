@@ -461,12 +461,19 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
       const serverThreadId = String(msg.threadId ?? "").trim();
       const serverChatSessionId = String(msg.chatSessionId ?? "").trim();
+      const effectiveChatSessionId = serverChatSessionId || rt.chatSessionId;
       if (serverChatSessionId) {
         rt.chatSessionId = serverChatSessionId;
       }
+      if (effectiveChatSessionId === "reviewer") {
+        rt.boundReviewSnapshotId.value = null;
+        rt.latestReviewArtifact.value = null;
+      }
       applyEffectiveState(msg as Record<string, unknown>);
       const handshakeReset = Boolean(msg.reset);
+      const contextMode = String(msg.contextMode ?? "").trim();
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
+      const hasStaleLocalContinuity = Boolean(prevThreadId) || rt.messages.value.length > 0;
       if (handshakeReset) {
         resetTurnPatchSummary();
         threadReset(rt, {
@@ -477,12 +484,22 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           resetThreadId: true,
           source: "welcome_reset",
         });
+      } else if (!serverThreadId && contextMode === "fresh" && hasStaleLocalContinuity) {
+        resetTurnPatchSummary();
+        threadReset(rt, {
+          notice: "Fresh backend context detected. Stale local chat history was cleared to avoid misleading continuity.",
+          warning: null,
+          keepLatestTurn: false,
+          clearBackendHistory: false,
+          resetThreadId: true,
+          source: "welcome_fresh_context",
+        });
       } else if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
         rt.threadWarning.value =
           `Backend thread changed without an explicit reset marker (prev=${prevThreadId}, now=${serverThreadId}). ` +
           "UI was preserved, but model context may not match chat history.";
       }
-      if (serverThreadId) rt.activeThreadId.value = serverThreadId;
+      rt.activeThreadId.value = serverThreadId || null;
 
       const current = projects.value.find((p) => p.id === pid) ?? null;
       if (current) {

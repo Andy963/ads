@@ -235,4 +235,45 @@ describe("Reviewer pane UI", () => {
 
     wrapper.unmount();
   });
+
+  it("clears stale reviewer binding and artifact when bootstrap arrives without a binding", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false, MarkdownContent: true, DraggableModal: true } },
+    });
+    await settleUi(wrapper);
+
+    lastReviewerWs!.onOpen?.();
+    lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer" });
+    await settleUi(wrapper);
+
+    lastReviewerWs!.onMessage?.({ type: "reviewer_snapshot_binding", snapshotId: "snapshot-9" });
+    lastReviewerWs!.onMessage?.({
+      type: "reviewer_artifact",
+      artifact: {
+        id: "artifact-123",
+        taskId: "task-7",
+        snapshotId: "snapshot-9",
+        queueItemId: null,
+        scope: "reviewer",
+        summaryText: "Guard the null case before calling into the worker flow.",
+        verdict: "analysis",
+        priorArtifactId: null,
+        createdAt: Date.now(),
+      },
+    });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).reviewerBoundSnapshotId).toBe("snapshot-9");
+    expect((wrapper.vm as any).reviewerLatestArtifact?.id).toBe("artifact-123");
+
+    lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer", threadId: null, contextMode: "fresh" });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).reviewerBoundSnapshotId).toBeNull();
+    expect((wrapper.vm as any).reviewerLatestArtifact).toBeNull();
+    expect(wrapper.find('[data-testid="review-artifact-banner"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
 });

@@ -172,6 +172,33 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("clears stale local chat continuity when welcome reports a fresh context with no thread", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    const activeProjectId = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const rt = (wrapper.vm as any).getRuntime?.(activeProjectId);
+    expect(rt).toBeTruthy();
+
+    rt.messages.value = [
+      { id: "u1", role: "user", kind: "text", content: "Old question" },
+      { id: "a1", role: "assistant", kind: "text", content: "Old answer" },
+    ];
+    rt.activeThreadId.value = "thread-stale";
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false, threadId: null, contextMode: "fresh" });
+    await settleUi(wrapper);
+
+    expect(rt.activeThreadId.value).toBeNull();
+    const contents = rt.messages.value.map((m: any) => String(m.content ?? ""));
+    expect(contents.join("\n")).not.toContain("Old question");
+    expect(contents.join("\n")).not.toContain("Old answer");
+    wrapper.unmount();
+  });
+
   it("clears messages and records a thread_reset reason when receiving thread_reset", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const App = (await import("../App.vue")).default;
