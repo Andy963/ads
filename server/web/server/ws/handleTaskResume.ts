@@ -1,5 +1,6 @@
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
 import type {
   WsTaskResumeHandlerDeps,
@@ -15,6 +16,53 @@ import {
   parseTaskResumeRequest,
   selectTaskResumeThread,
 } from "./taskResume.js";
+
+function cloneHistoryEntries(entries: readonly HistoryEntry[]): HistoryEntry[] {
+  return entries.map((entry) => ({ ...entry }));
+}
+
+function replaceHistoryEntries(args: {
+  historyStore: Pick<WsTaskResumeHandlerDeps["history"]["historyStore"], "clear" | "add">;
+  historyKey: string;
+  entries: readonly HistoryEntry[];
+}): void {
+  args.historyStore.clear(args.historyKey);
+  for (const entry of args.entries) {
+    args.historyStore.add(args.historyKey, entry);
+  }
+}
+
+function commitTaskResumeHistory(args: {
+  historyStore: Pick<WsTaskResumeHandlerDeps["history"]["historyStore"], "clear" | "add">;
+  historyKey: string;
+  previousEntries: readonly HistoryEntry[];
+  statusText: string;
+}): void {
+  const originalEntries = cloneHistoryEntries(args.previousEntries);
+  const resumedEntries = [
+    ...cloneHistoryEntries(args.previousEntries),
+    {
+      role: "status",
+      text: args.statusText,
+      ts: Date.now(),
+    },
+  ];
+
+  try {
+    replaceHistoryEntries({
+      historyStore: args.historyStore,
+      historyKey: args.historyKey,
+      entries: resumedEntries,
+    });
+  } catch (error) {
+    replaceHistoryEntries({
+      historyStore: args.historyStore,
+      historyKey: args.historyKey,
+      entries: originalEntries,
+    });
+    throw error;
+  }
+}
 
 export async function handleTaskResumeMessage(
   deps: WsTaskResumeHandlerDeps,
@@ -41,6 +89,9 @@ export async function handleTaskResumeMessage(
         historyKey: deps.context.historyKey,
         send: (payload) => deps.transport.safeJsonSend(deps.transport.ws, payload),
       });
+    const originalHistoryEntries = cloneHistoryEntries(
+      deps.history.historyStore.get(deps.context.historyKey),
+    );
 
     const activeAgentId = orchestrator.getActiveAgentId();
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
@@ -67,13 +118,6 @@ export async function handleTaskResumeMessage(
           env: deps.sessions.sessionManager.getCodexEnv(),
         });
 
-        deps.history.historyStore.clear(deps.context.historyKey);
-        deps.history.historyStore.add(deps.context.historyKey, {
-          role: "status",
-          text: "已通过 thread ID 恢复上下文",
-          ts: Date.now(),
-        });
-
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadIdToResume, activeAgentId);
         if (selection.source === "saved") {
           deps.sessions.sessionManager.clearSavedResumeThreadId(deps.context.userId);
@@ -89,6 +133,12 @@ export async function handleTaskResumeMessage(
           return;
         }
 
+        commitTaskResumeHistory({
+          historyStore: deps.history.historyStore,
+          historyKey: deps.context.historyKey,
+          previousEntries: originalHistoryEntries,
+          statusText: "已通过 thread ID 恢复上下文",
+        });
         sendHistorySnapshot();
         return;
       } catch (error) {
@@ -102,9 +152,7 @@ export async function handleTaskResumeMessage(
       }
     }
 
-    const laneHistoryTranscript = buildHistoryStoreResumeTranscript(
-      deps.history.historyStore.get(deps.context.historyKey),
-    );
+    const laneHistoryTranscript = buildHistoryStoreResumeTranscript(originalHistoryEntries);
     const resumeContext = laneHistoryTranscript
       ? {
           transcript: laneHistoryTranscript,
@@ -126,13 +174,6 @@ export async function handleTaskResumeMessage(
       return;
     }
     const { transcript, statusText } = resumeContext;
-
-    deps.history.historyStore.clear(deps.context.historyKey);
-    deps.history.historyStore.add(deps.context.historyKey, {
-      role: "status",
-      text: statusText,
-      ts: Date.now(),
-    });
 
     if (clearSavedResumeThreadAfterFallback) {
       deps.sessions.sessionManager.clearSavedResumeThreadId(deps.context.userId);
@@ -166,6 +207,12 @@ export async function handleTaskResumeMessage(
       return;
     }
 
+    commitTaskResumeHistory({
+      historyStore: deps.history.historyStore,
+      historyKey: deps.context.historyKey,
+      previousEntries: originalHistoryEntries,
+      statusText,
+    });
     sendHistorySnapshot();
   });
 

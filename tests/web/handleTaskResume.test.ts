@@ -152,12 +152,125 @@ describe("web/ws/handleTaskResume", () => {
       type: "history",
       items: [
         {
+          role: "user",
+          text: "current question",
+          ts: 1,
+        },
+        {
+          role: "ai",
+          text: "current answer",
+          ts: 2,
+        },
+        {
+          role: "status",
+          text: "ignored status",
+          ts: 3,
+        },
+        {
           role: "status",
           text: "已从当前对话恢复上下文",
-          ts: historyEntries[0]?.ts,
+          ts: historyEntries.at(-1)?.ts,
         },
       ],
     });
+  });
+
+  it("keeps prior lane history when transcript restore fails", async () => {
+    const sent: unknown[] = [];
+    const historyEntries = [
+      { role: "user", text: "current question", ts: 1 },
+      { role: "ai", text: "current answer", ts: 2 },
+      { role: "status", text: "existing status", ts: 3 },
+    ];
+    const originalHistoryEntries = historyEntries.map((entry) => ({ ...entry }));
+    const saveThreadCalls: Array<{ userId: number; threadId: string; agentId?: string }> = [];
+
+    const initialOrchestrator = {
+      getActiveAgentId: () => "claude",
+      getThreadId: () => "claude-current-thread",
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true }),
+    };
+
+    const fallbackOrchestrator = {
+      getActiveAgentId: () => "claude",
+      getThreadId: () => "new-claude-session",
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true }),
+      send: async () => {
+        throw new Error("restore exploded");
+      },
+    };
+
+    const result = await handleTaskResumeMessage({
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: { mode: "auto" },
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+      },
+      observability: {
+        logger: {
+          info: () => {},
+          debug: () => {},
+          warn: () => {},
+        },
+      },
+      context: {
+        userId: 10,
+        historyKey: "history-failed-restore",
+        currentCwd: "/mnt/d/code/ADS/ads",
+      },
+      sessions: {
+        sessionManager: {
+          getSavedThreadId: () => "claude-saved-thread",
+          getSavedResumeThreadId: () => "saved-resume-thread",
+          getSandboxMode: () => "workspace-write",
+          getCodexEnv: () => undefined,
+          clearSavedResumeThreadId: () => {},
+          dropSession: () => {},
+          getOrCreate: () => fallbackOrchestrator as any,
+          saveThreadId: (userId: number, threadId: string, agentId?: string) => {
+            saveThreadCalls.push({ userId, threadId, agentId });
+          },
+        } as any,
+        orchestrator: initialOrchestrator as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          clear: () => {
+            historyEntries.length = 0;
+          },
+          add: (_key: string, entry: { role: string; text: string; ts: number }) => {
+            historyEntries.push(entry);
+          },
+          get: () => historyEntries,
+        } as any,
+      },
+      tasks: {
+        ensureTaskContext: () => ({
+          queueRunning: false,
+          taskStore: {
+            getActiveTaskId: () => null,
+            listTasks: () => [],
+            getConversationMessages: () => [],
+          },
+        }) as any,
+      },
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(result.orchestrator, fallbackOrchestrator);
+    assert.deepEqual(saveThreadCalls, []);
+    assert.deepEqual(historyEntries, originalHistoryEntries);
+    assert.deepEqual(sent, [{ type: "error", message: "恢复失败: restore exploded" }]);
   });
 
   it("preserves saved resume continuity when probe fails and falls back to transcript restore", async () => {
