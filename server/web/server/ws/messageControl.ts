@@ -2,6 +2,7 @@ import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { WsLogger, WsPromptSessionLogger, WsTaskResumeHandlerDeps } from "./deps.js";
+import { invalidateWsPromptRun } from "./promptLifecycle.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import type { WsMessage } from "./schema.js";
@@ -72,6 +73,8 @@ export async function handleWsControlMessage(args: {
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   getWorkspaceLock: WsTaskResumeHandlerDeps["sessions"]["getWorkspaceLock"];
   historyStore: WsTaskResumeHandlerDeps["history"]["historyStore"];
+  interruptControllers?: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
   reviewerSnapshotBindings: Map<string, string>;
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
@@ -81,6 +84,13 @@ export async function handleWsControlMessage(args: {
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }> {
   if (args.parsed.type === "clear_history") {
+    if (args.interruptControllers) {
+      invalidateWsPromptRun({
+        historyKey: args.historyKey,
+        interruptControllers: args.interruptControllers,
+        promptRunEpochs: args.promptRunEpochs,
+      });
+    }
     const preservedSnapshotId = resolveReviewerSnapshotBindingToPreserve({
       parsed: args.parsed,
       isReviewerChat: args.isReviewerChat,

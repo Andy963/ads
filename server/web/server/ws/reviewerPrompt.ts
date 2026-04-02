@@ -13,6 +13,7 @@ import {
   finishReviewerPromptEarly,
   handleReviewerOrchestratorUnavailable,
 } from "./reviewerPromptLifecycle.js";
+import { isWsPromptAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 import { parseReviewerSnapshotId, shouldResumeReviewerThread } from "./reviewerSnapshotContext.js";
 import { applySessionOverrides } from "./sessionOverrides.js";
 
@@ -24,6 +25,10 @@ export async function handleReviewerPromptMessage(args: {
   turnCwd: string;
   inputToSend: Input;
   controller: AbortController;
+  promptRun: {
+    ensureActive: () => void;
+    cleanup: () => void;
+  };
   sendToClient: (payload: unknown) => void;
   sendToChat: (payload: unknown) => void;
   cleanupAfter: () => void;
@@ -31,7 +36,7 @@ export async function handleReviewerPromptMessage(args: {
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }> {
-  const { deps, workspaceRoot, turnCwd, inputToSend, controller, sendToClient, sendToChat, cleanupAfter } = args;
+  const { deps, workspaceRoot, turnCwd, inputToSend, controller, promptRun, sendToClient, sendToChat, cleanupAfter } = args;
   if (deps.context.chatSessionId !== "reviewer") {
     return { handled: false, orchestrator: deps.sessions.orchestrator };
   }
@@ -156,6 +161,7 @@ export async function handleReviewerPromptMessage(args: {
     return { handled: true, orchestrator };
   }
 
+  let collaborativeTurnPromise: Promise<Awaited<ReturnType<typeof runCollaborativeTurn>>> | undefined;
   try {
     const shouldInjectHistory = deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId);
     const { effectiveInput, injectedHistoryCount } = buildReviewerPromptInput({
@@ -178,16 +184,22 @@ export async function handleReviewerPromptMessage(args: {
       deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
     }
 
-    const result = await runCollaborativeTurn(orchestrator, effectiveInput, {
+    collaborativeTurnPromise = runCollaborativeTurn(orchestrator, effectiveInput, {
       streaming: true,
       signal: controller.signal,
       cwd: reviewerCwd,
       historyNamespace: "web",
       historySessionId: deps.context.historyKey,
     });
+    const result = await raceWsPromptAbort({
+      controller,
+      runPromise: collaborativeTurnPromise,
+    });
+    promptRun.ensureActive();
     const rawResponse = typeof result.response === "string" ? result.response : String(result.response ?? "");
     const output = stripLeadingTranslation(rawResponse);
     const threadId = orchestrator.getThreadId();
+    promptRun.ensureActive();
 
     const artifact = createReviewerArtifact({
       reviewStore,
@@ -197,6 +209,7 @@ export async function handleReviewerPromptMessage(args: {
       output,
     });
 
+    promptRun.ensureActive();
     if (threadId) {
       deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
     }
@@ -215,9 +228,18 @@ export async function handleReviewerPromptMessage(args: {
       workspaceRoot: turnCwd,
     });
   } catch (error) {
+    if (isWsPromptAbort(error)) {
+      const activePromise = typeof collaborativeTurnPromise !== "undefined" ? collaborativeTurnPromise : undefined;
+      if (activePromise) {
+        void activePromise.catch((innerError) => {
+          const detail = innerError instanceof Error ? innerError.message : String(innerError);
+          deps.observability.logger.debug(`[Web] reviewer prompt settled after abort: ${detail}`);
+        });
+      }
+    }
     handlePromptError({
       error,
-      aborted: controller.signal.aborted,
+      aborted: controller.signal.aborted || isWsPromptAbort(error),
       sessionLogger: deps.observability.sessionLogger,
       logger: deps.observability.logger,
       historyStore: deps.history.historyStore,
@@ -226,7 +248,7 @@ export async function handleReviewerPromptMessage(args: {
       logPrefix: "Reviewer Prompt Error",
     });
   } finally {
-    deps.sessions.interruptControllers.delete(deps.context.historyKey);
+    promptRun.cleanup();
     cleanupAfter();
   }
 

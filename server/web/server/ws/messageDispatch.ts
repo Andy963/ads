@@ -39,6 +39,7 @@ export async function dispatchWsMessage(args: {
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   getWorkspaceLock: WsSessionRuntimeDeps["getWorkspaceLock"];
   interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
   historyStore: WsHistoryRuntimeDeps["historyStore"];
   tasks: WsTaskRuntimeDeps;
   scheduler: WsSchedulerDeps;
@@ -82,6 +83,8 @@ export async function dispatchWsMessage(args: {
       orchestrator,
       getWorkspaceLock: args.getWorkspaceLock,
       historyStore: args.historyStore,
+      interruptControllers: args.interruptControllers,
+      promptRunEpochs: args.promptRunEpochs,
       reviewerSnapshotBindings: args.reviewerSnapshotBindings,
       ensureTaskContext: args.tasks.ensureTaskContext as WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"],
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
@@ -122,6 +125,7 @@ export async function dispatchWsMessage(args: {
         orchestrator,
         getWorkspaceLock: args.getWorkspaceLock,
         interruptControllers: args.interruptControllers,
+        promptRunEpochs: args.promptRunEpochs,
       },
       history: {
         historyStore: args.historyStore,
@@ -170,6 +174,7 @@ export async function dispatchWsMessage(args: {
         orchestrator,
         getWorkspaceLock: args.getWorkspaceLock,
         interruptControllers: args.interruptControllers,
+        promptRunEpochs: args.promptRunEpochs,
       },
       history: {
         historyStore: args.historyStore,

@@ -243,6 +243,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean =>
       abortInFlightHistory({
         interruptControllers: state.interruptControllers,
+        promptRunEpochs: state.promptRunEpochs,
         historyKey: targetHistoryKey,
       });
 
@@ -342,6 +343,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
           orchestrator,
           getWorkspaceLock,
           interruptControllers: state.interruptControllers,
+          promptRunEpochs: state.promptRunEpochs,
           historyStore,
           tasks: {
             ensureTaskContext: tasks.ensureTaskContext,
@@ -393,6 +395,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         clients: state.clients,
         clientMetaByWs: state.clientMetaByWs,
         interruptControllers: state.interruptControllers,
+        promptRunEpochs: state.promptRunEpochs,
         logger,
       });
     });

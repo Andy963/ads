@@ -22,6 +22,7 @@ import { handleReviewerPromptMessage } from "./reviewerPrompt.js";
 import { createDelegationTracker } from "./delegationTracker.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
+import { beginWsPromptRun, isWsPromptAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -73,14 +74,19 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const cleanupAfter = cleanupAttachments;
     const turnCwd = deps.context.currentCwd;
 
-    const controller = new AbortController();
-    deps.sessions.interruptControllers.set(deps.context.historyKey, controller);
+    const promptRun = beginWsPromptRun({
+      historyKey: deps.context.historyKey,
+      interruptControllers: deps.sessions.interruptControllers,
+      promptRunEpochs: deps.sessions.promptRunEpochs,
+    });
+    const controller = promptRun.controller;
     const reviewerResult = await handleReviewerPromptMessage({
       deps,
       workspaceRoot,
       turnCwd,
       inputToSend,
       controller,
+      promptRun,
       sendToClient,
       sendToChat,
       cleanupAfter,
@@ -94,7 +100,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     if (!status.ready) {
       deps.observability.sessionLogger?.logError(status.error ?? "代理未启用");
       sendToClient({ type: "error", message: status.error ?? "代理未启用，请配置凭证" });
-      deps.sessions.interruptControllers.delete(deps.context.historyKey);
+      promptRun.cleanup();
       cleanupAfter();
       return;
     }
@@ -113,6 +119,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
     });
+    let collaborativeTurnPromise: Promise<Awaited<ReturnType<typeof runCollaborativeTurn>>> | undefined;
 
     try {
       const activeAgentId = orchestrator.getActiveAgentId();
@@ -139,7 +146,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
 
-      const result = await runCollaborativeTurn(orchestrator, effectiveInput, {
+      collaborativeTurnPromise = runCollaborativeTurn(orchestrator, effectiveInput, {
         streaming: true,
         signal: controller.signal,
         onExploredEntry: handleExploredEntry,
@@ -193,12 +200,18 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         historyNamespace: "web",
         historySessionId: deps.context.historyKey,
       });
+      const result = await raceWsPromptAbort({
+        controller,
+        runPromise: collaborativeTurnPromise,
+      });
+      promptRun.ensureActive();
 
       const workspaceRootForAdr = detectWorkspaceFrom(turnCwd);
       const { finalOutput, outputToSend, createdSpecRefs } = await processPromptOutputBlocks({
         rawResponse: result.response,
         workspaceRoot: workspaceRootForAdr,
       });
+      promptRun.ensureActive();
       let threadId = orchestrator.getThreadId();
       let threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
@@ -230,6 +243,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           scheduleSource: deps.context.chatSessionId || "worker",
           draftCommand: isPlannerDraftCommand,
         });
+        promptRun.ensureActive();
         outputForChat = plannerHandled.outputForChat;
         threadId = plannerHandled.threadId;
         threadReset = plannerHandled.threadReset;
@@ -243,8 +257,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           logger: deps.observability.logger,
           source: deps.context.chatSessionId || "worker",
         });
+        promptRun.ensureActive();
       }
 
+      promptRun.ensureActive();
       if (threadId) {
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
       }
@@ -268,9 +284,18 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
       deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
     } catch (error) {
+      if (isWsPromptAbort(error)) {
+        const activePromise = typeof collaborativeTurnPromise !== "undefined" ? collaborativeTurnPromise : undefined;
+        if (activePromise) {
+          void activePromise.catch((innerError) => {
+            const detail = innerError instanceof Error ? innerError.message : String(innerError);
+            deps.observability.logger.debug(`[Web] prompt settled after abort: ${detail}`);
+          });
+        }
+      }
       handlePromptError({
         error,
-        aborted: controller.signal.aborted,
+        aborted: controller.signal.aborted || isWsPromptAbort(error),
         sessionLogger: deps.observability.sessionLogger,
         logger: deps.observability.logger,
         historyStore: deps.history.historyStore,
@@ -279,7 +304,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       });
     } finally {
       unsubscribe();
-      deps.sessions.interruptControllers.delete(deps.context.historyKey);
+      promptRun.cleanup();
       cleanupAfter();
     }
   });

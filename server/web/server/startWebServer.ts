@@ -42,6 +42,7 @@ const logger = createLogger("WebSocket");
 
 const workspaceCache = new Map<string, string>();
 const interruptControllers = new Map<string, AbortController>();
+const promptRunEpochs = new Map<string, number>();
 const adsStateDir = resolveAdsStateDir();
 const stateDbPath = resolveStateDbPath();
 const LEGACY_WEB_NAMESPACE = "web";
@@ -411,6 +412,7 @@ export async function startWebServer(): Promise<void> {
       sessionCacheRegistry,
       directoryManager,
       interruptControllers,
+      promptRunEpochs,
       clientMetaByWs: wsHub.clientMetaByWs,
       clients: wsHub.clients,
       cwdStore,

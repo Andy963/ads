@@ -8,6 +8,7 @@ import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { ReviewStore } from "../../server/tasks/reviewStore.js";
 import { TaskStore } from "../../server/tasks/store.js";
 import { handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
+import { handleWsControlMessage } from "../../server/web/server/ws/messageControl.js";
 
 type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
 
@@ -22,6 +23,10 @@ class MemoryHistoryStore {
     const next = [...this.get(sessionId), entry];
     this.store.set(sessionId, next);
     return true;
+  }
+
+  clear(sessionId: string): void {
+    this.store.delete(sessionId);
   }
 }
 
@@ -66,10 +71,70 @@ class FakeReviewerOrchestrator {
     return "reviewer-thread";
   }
 
-  async invokeAgent(agentId: string, _input: unknown): Promise<{ response: string; usage: null; agentId: string }> {
+  async invokeAgent(_agentId: string, _input: unknown): Promise<{ response: string; usage: null; agentId: string }> {
     this.invokeCount += 1;
     const response = this.responses.shift() ?? "default analysis";
-    return { response, usage: null, agentId };
+    return { response, usage: null, agentId: "codex" };
+  }
+}
+
+class SlowReviewerOrchestrator {
+  workingDirectory = "";
+  private resolveInvoke: ((value: { response: string; usage: null; agentId: string }) => void) | null = null;
+  private readonly startedPromise: Promise<void>;
+  private startedResolve: (() => void) | null = null;
+
+  constructor(private readonly threadId: string) {
+    this.startedPromise = new Promise<void>((resolve) => {
+      this.startedResolve = resolve;
+    });
+  }
+
+  status(): { ready: boolean; streaming: boolean } {
+    return { ready: true, streaming: true };
+  }
+
+  setWorkingDirectory(cwd: string): void {
+    this.workingDirectory = cwd;
+  }
+
+  setModel(): void {}
+
+  setModelReasoningEffort(): void {}
+
+  getActiveAgentId(): string {
+    return "codex";
+  }
+
+  listAgents(): Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean } }> {
+    return [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }];
+  }
+
+  hasAgent(agentId: string): boolean {
+    return agentId === "codex";
+  }
+
+  onEvent(): () => void {
+    return () => undefined;
+  }
+
+  getThreadId(): string {
+    return this.threadId;
+  }
+
+  async invokeAgent(_agentId: string, _input: unknown): Promise<{ response: string; usage: null; agentId: string }> {
+    this.startedResolve?.();
+    return await new Promise<{ response: string; usage: null; agentId: string }>((resolve) => {
+      this.resolveInvoke = resolve;
+    });
+  }
+
+  waitForStart(): Promise<void> {
+    return this.startedPromise;
+  }
+
+  resolveLate(response: string): void {
+    this.resolveInvoke?.({ response, usage: null, agentId: "codex" });
   }
 }
 
@@ -125,6 +190,7 @@ function createDeps(args: {
           getOrCreate: () => args.orchestrator as any,
           getSavedThreadId: () => undefined,
           getSavedReviewerSnapshotId: () => undefined,
+          reset: () => {},
           getUserModel: () => "test-model",
           getUserModelReasoningEffort: () => "high",
           getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
@@ -151,6 +217,10 @@ function createDeps(args: {
       reviewerSnapshotBindings: args.reviewerSnapshotBindings,
     } as any,
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("web reviewer prompt flow", () => {
@@ -332,5 +402,93 @@ describe("web reviewer prompt flow", () => {
       | undefined;
     assert.match(String(firstResult?.output ?? ""), /needs an explicit snapshotId/);
     assert.equal(orchestrator.invokeCount, 0);
+  });
+
+  it("clear_history makes late reviewer completion unable to write back artifacts, history, or thread state", async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ title: "Task 1", prompt: "Do work", model: "auto" });
+    const reviewStore = new ReviewStore();
+    const snapshot = reviewStore.createSnapshot({
+      taskId: task.id,
+      specRef: null,
+      worktreeDir: workspaceRoot,
+      patch: { files: [{ path: "src/a.ts", added: 1, removed: 0 }], diff: "diff --git a/src/a.ts b/src/a.ts\n+ok\n", truncated: false },
+      changedFiles: ["src/a.ts"],
+      lintSummary: "",
+      testSummary: "",
+    });
+    const historyStore = new MemoryHistoryStore();
+    const reviewerSnapshotBindings = new Map<string, string>();
+    const orchestrator = new SlowReviewerOrchestrator("reviewer-late-thread");
+    const saveThreadIdCalls: Array<{ userId: number; threadId: string; agentId: string }> = [];
+    const clearResults: unknown[] = [];
+
+    const prompt = createDeps({
+      orchestrator: orchestrator as unknown as FakeReviewerOrchestrator,
+      historyStore,
+      reviewStore,
+      reviewerSnapshotBindings,
+      payload: { text: "Please review this snapshot", snapshotId: snapshot.id },
+      sessionManagerOverrides: {
+        saveThreadId: (userId: number, threadId: string, agentId: string) =>
+          saveThreadIdCalls.push({ userId, threadId, agentId }),
+      },
+    });
+    prompt.deps.sessions.promptRunEpochs = new Map<string, number>();
+
+    const pending = handlePromptMessage(prompt.deps);
+    await orchestrator.waitForStart();
+
+    await handleWsControlMessage({
+      parsed: { type: "clear_history" },
+      isReviewerChat: true,
+      userId: 1,
+      historyKey: "hist-1",
+      currentCwd: workspaceRoot,
+      sessionManager: prompt.deps.sessions.sessionManager,
+      orchestrator: prompt.deps.sessions.orchestrator,
+      getWorkspaceLock: prompt.deps.sessions.getWorkspaceLock,
+      historyStore: prompt.deps.history.historyStore,
+      interruptControllers: prompt.deps.sessions.interruptControllers,
+      promptRunEpochs: prompt.deps.sessions.promptRunEpochs,
+      reviewerSnapshotBindings,
+      ensureTaskContext: prompt.deps.tasks.ensureTaskContext,
+      sendJson: (payload) => clearResults.push(payload),
+      logger: { warn: () => {} },
+    });
+
+    const settled = await Promise.race([
+      pending.then(() => "done"),
+      delay(200).then(() => "timeout"),
+    ]);
+    assert.equal(settled, "done");
+
+    orchestrator.resolveLate("Late reviewer output");
+    await delay(0);
+
+    assert.ok(prompt.chatMessages.some((message) => (message as { message?: unknown }).message === "已中断，输出可能不完整"));
+    assert.equal(
+      prompt.chatMessages.some(
+        (message) =>
+          (message as { type?: unknown; output?: unknown }).type === "result" &&
+          (message as { output?: unknown }).output === "Late reviewer output",
+      ),
+      false,
+    );
+    assert.equal(
+      prompt.chatMessages.some((message) => (message as { type?: unknown }).type === "reviewer_artifact"),
+      false,
+    );
+    assert.equal(reviewStore.listArtifacts({ snapshotId: snapshot.id, limit: 10 }).length, 0);
+    assert.deepEqual(saveThreadIdCalls, []);
+    assert.deepEqual(historyStore.get("hist-1"), []);
+    assert.deepEqual(clearResults, [
+      {
+        type: "result",
+        ok: true,
+        output: "已清空历史缓存并重置会话",
+        kind: "clear_history",
+      },
+    ]);
   });
 });

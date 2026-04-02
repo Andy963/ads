@@ -69,6 +69,7 @@ export type WsStateDeps = {
   workspaceCache: Map<string, string>;
   sessionCacheRegistry: SessionCacheRegistry;
   interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
   clientMetaByWs: Map<WebSocket, WsClientMeta>;
   clients: Set<WebSocket>;
   cwdStore: Map<string, string>;
@@ -156,6 +157,7 @@ export type WsSessionRuntimeDeps = {
   orchestrator: WsOrchestrator;
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
 };
 
 export type WsHistoryRuntimeDeps = {

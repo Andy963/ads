@@ -26,6 +26,12 @@ describe("web/ws/messageControl", () => {
     const cleared: string[] = [];
     const reset: number[] = [];
     const bindings = new Map([["history-1", "snap-1"]]);
+    let aborted = 0;
+    const controller = new AbortController();
+    controller.abort = () => {
+      aborted += 1;
+    };
+    const promptRunEpochs = new Map<string, number>([["history-1", 1]]);
 
     const clearedHistory = await handleWsControlMessage({
       parsed: { type: "clear_history" },
@@ -41,6 +47,8 @@ describe("web/ws/messageControl", () => {
       historyStore: {
         clear: (key: string) => cleared.push(key),
       },
+      interruptControllers: new Map([["history-1", controller]]),
+      promptRunEpochs,
       reviewerSnapshotBindings: bindings,
       ensureTaskContext: (() => ({})) as any,
       sendJson: (payload) => sent.push(payload),
@@ -48,9 +56,11 @@ describe("web/ws/messageControl", () => {
     });
 
     assert.equal(clearedHistory.handled, true);
+    assert.equal(aborted, 1);
     assert.equal(bindings.has("history-1"), false);
     assert.deepEqual(cleared, ["history-1"]);
     assert.deepEqual(reset, [7]);
+    assert.equal(promptRunEpochs.get("history-1"), 2);
     assert.deepEqual(sent[0], {
       type: "result",
       ok: true,

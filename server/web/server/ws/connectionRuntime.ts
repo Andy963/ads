@@ -1,6 +1,7 @@
 import type { WebSocket } from "ws";
 
 import type { WsClientMeta, WsLogger } from "./deps.js";
+import { invalidateWsPromptRun } from "./promptLifecycle.js";
 import { formatCloseReason } from "./utils.js";
 
 export function broadcastJsonToHistoryKey(args: {
@@ -19,18 +20,14 @@ export function broadcastJsonToHistoryKey(args: {
 
 export function abortInFlightHistory(args: {
   interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
   historyKey: string;
 }): boolean {
-  const controller = args.interruptControllers.get(args.historyKey);
-  if (!controller) {
-    return false;
-  }
-  try {
-    controller.abort();
-  } catch {
-    // ignore
-  }
-  return true;
+  return invalidateWsPromptRun({
+    historyKey: args.historyKey,
+    interruptControllers: args.interruptControllers,
+    promptRunEpochs: args.promptRunEpochs,
+  });
 }
 
 export function cleanupClosedConnection(args: {
@@ -42,20 +39,17 @@ export function cleanupClosedConnection(args: {
   clients: Set<WebSocket>;
   clientMetaByWs: Map<WebSocket, WsClientMeta>;
   interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
   logger: WsLogger;
 }): void {
   args.clients.delete(args.ws);
   const meta = args.clientMetaByWs.get(args.ws);
   if (meta?.historyKey) {
-    const controller = args.interruptControllers.get(meta.historyKey);
-    if (controller) {
-      try {
-        controller.abort();
-      } catch {
-        // ignore
-      }
-      args.interruptControllers.delete(meta.historyKey);
-    }
+    invalidateWsPromptRun({
+      historyKey: meta.historyKey,
+      interruptControllers: args.interruptControllers,
+      promptRunEpochs: args.promptRunEpochs,
+    });
   }
   args.clientMetaByWs.delete(args.ws);
   const reasonText = formatCloseReason(args.reason);

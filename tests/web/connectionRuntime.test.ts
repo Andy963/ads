@@ -25,23 +25,27 @@ describe("web/ws/connectionRuntime", () => {
   it("aborts in-flight work when present", () => {
     let aborted = 0;
     const controller = new AbortController();
+    const promptRunEpochs = new Map<string, number>([["h1", 1]]);
     controller.abort = () => {
       aborted += 1;
     };
     assert.equal(
       abortInFlightHistory({
         interruptControllers: new Map([["h1", controller]]),
+        promptRunEpochs,
         historyKey: "h1",
       }),
       true,
     );
     assert.equal(aborted, 1);
+    assert.equal(promptRunEpochs.get("h1"), 2);
   });
 
   it("cleans up closed sockets, aborts pending work, and logs disconnect details", () => {
     const ws = {} as any;
     let aborted = 0;
     const controller = new AbortController();
+    const promptRunEpochs = new Map<string, number>([["h1", 1]]);
     controller.abort = () => {
       aborted += 1;
     };
@@ -67,6 +71,7 @@ describe("web/ws/connectionRuntime", () => {
       clients,
       clientMetaByWs,
       interruptControllers,
+      promptRunEpochs,
       logger: {
         info: (message) => logs.push(message),
         warn: () => {},
@@ -78,6 +83,7 @@ describe("web/ws/connectionRuntime", () => {
     assert.equal(clients.has(ws), false);
     assert.equal(clientMetaByWs.has(ws), false);
     assert.equal(interruptControllers.has("h1"), false);
+    assert.equal(promptRunEpochs.get("h1"), 2);
     assert.match(logs[0]!, /client disconnected conn=c1 session=session-1 user=7 history=h1 code=1000 reason=bye/);
   });
 });
