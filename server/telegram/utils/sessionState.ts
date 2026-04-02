@@ -71,6 +71,7 @@ export function resolveResumeState(args: {
   currentCwd?: string;
 }): ResumeState {
   if (!args.resumeThread) {
+    args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=resume_not_requested`);
     return { shouldInjectHistory: false, restoreMode: "fresh" };
   }
 
@@ -91,7 +92,7 @@ export function resolveResumeState(args: {
 
   if (candidateThreadId && savedCwd && currentCwd && savedCwd !== currentCwd) {
     args.logger.info(
-      `Skipping auto-resume because saved cwd no longer matches current cwd (saved=${savedCwd} current=${currentCwd})`,
+      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
     );
     return {
       activeAgentId: savedActiveAgentId,
@@ -104,7 +105,7 @@ export function resolveResumeState(args: {
     const age = Date.now() - updatedAt;
     if (age > args.resumeTtlMs) {
       args.logger.info(
-        `Thread too stale for auto-resume (age=${Math.round(age / 60_000)}min ttl=${Math.round(args.resumeTtlMs / 60_000)}min), will inject history instead`,
+        `[Continuity] user=${args.userId} restore=history_injection reason=stale_thread agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId} ageMin=${Math.round(age / 60_000)} ttlMin=${Math.round(args.resumeTtlMs / 60_000)}`,
       );
       args.storage?.setRecord(args.userId, {
         ...record,
@@ -118,6 +119,9 @@ export function resolveResumeState(args: {
         restoreMode: "history_injection",
       };
     }
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+    );
     return {
       resumeThreadId: candidateThreadId,
       resumeThreadIds,
@@ -128,7 +132,9 @@ export function resolveResumeState(args: {
   }
 
   if (candidateThreadId && !updatedAt) {
-    args.logger.info("Thread has no updatedAt, treating as stale — will inject history instead");
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=history_injection reason=missing_updated_at agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+    );
     return {
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: true,
@@ -137,6 +143,9 @@ export function resolveResumeState(args: {
   }
 
   if (candidateThreadId) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+    );
     return {
       resumeThreadId: candidateThreadId,
       resumeThreadIds,
@@ -146,6 +155,7 @@ export function resolveResumeState(args: {
     };
   }
 
+  args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=no_saved_thread`);
   return {
     resumeThreadIds,
     activeAgentId: savedActiveAgentId,

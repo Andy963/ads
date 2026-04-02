@@ -78,7 +78,7 @@ export async function handleWsControlMessage(args: {
   reviewerSnapshotBindings: Map<string, string>;
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
-  logger: Pick<WsLogger, "warn">;
+  logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
@@ -101,6 +101,10 @@ export async function handleWsControlMessage(args: {
       reviewerSnapshotBindings: args.reviewerSnapshotBindings,
       ensureTaskContext: args.ensureTaskContext,
     });
+    const requestedSnapshotId = parsePreservedReviewerSnapshotId(args.parsed.payload);
+    args.logger.info(
+      `[Web][continuity] reset source=clear_history user=${args.userId} history=${args.historyKey} reviewer=${args.isReviewerChat} preserveRequested=${requestedSnapshotId ?? "none"} preserveApplied=${preservedSnapshotId ?? "none"}`,
+    );
     args.historyStore.clear(args.historyKey);
     args.sessionManager.reset(args.userId);
     if (args.isReviewerChat) {
@@ -129,7 +133,7 @@ export async function handleWsControlMessage(args: {
       observability: {
         logger: {
           warn: args.logger.warn,
-          info: () => {},
+          info: args.logger.info,
           debug: () => {},
         },
       },

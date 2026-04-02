@@ -7,7 +7,7 @@ import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
-import { getWorkspaceState } from "../../utils.js";
+import { getWorkspaceState, truncateForLog } from "../../utils.js";
 import type { AttachWebSocketServerDeps } from "./deps.js";
 import { dispatchWsMessage, type IncomingWsMessage } from "./messageDispatch.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
@@ -200,22 +200,33 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       const inMemorySnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
       const persistedSnapshotId = String(sessionManager.getSavedReviewerSnapshotId(userId) ?? "").trim() || null;
       const candidateSnapshotId = inMemorySnapshotId || persistedSnapshotId;
+      const candidateSource = inMemorySnapshotId ? "memory" : persistedSnapshotId ? "storage" : "none";
       if (!candidateSnapshotId) {
         return null;
       }
       try {
         const taskCtx = tasks.ensureTaskContext(normalizeWorkspaceRootForMeta(currentCwd));
         if (!taskCtx.reviewStore.getSnapshot(candidateSnapshotId)) {
+          logger.info(
+            `[Web][continuity] reviewer snapshot binding cleared user=${userId} history=${historyKey} snapshot=${candidateSnapshotId} source=${candidateSource} reason=snapshot_missing`,
+          );
           reviewerSnapshotBindings.delete(historyKey);
           sessionManager.clearSavedReviewerSnapshotBinding(userId);
           return null;
         }
-      } catch {
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          `[Web][continuity] reviewer snapshot binding cleared user=${userId} history=${historyKey} snapshot=${candidateSnapshotId} source=${candidateSource} reason=lookup_failed err=${truncateForLog(message)}`,
+        );
         reviewerSnapshotBindings.delete(historyKey);
         sessionManager.clearSavedReviewerSnapshotBinding(userId);
         return null;
       }
       reviewerSnapshotBindings.set(historyKey, candidateSnapshotId);
+      logger.info(
+        `[Web][continuity] reviewer snapshot binding restored user=${userId} history=${historyKey} snapshot=${candidateSnapshotId} source=${candidateSource}`,
+      );
       return candidateSnapshotId;
     })();
     const resumeThread = isReviewerChat
@@ -228,7 +239,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     const contextMode = sessionManager.getContextRestoreMode(userId);
 
     logger.info(
-      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,
+      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size} restore=${contextMode}${boundSnapshotId ? ` reviewerSnapshot=${truncateForLog(boundSnapshotId, 48)}` : ""}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,
     );
     const inFlight = state.interruptControllers.has(historyKey);
 

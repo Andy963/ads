@@ -104,6 +104,9 @@ export async function handleTaskResumeMessage(
     });
     const threadIdToResume = selection.threadId;
     let clearSavedResumeThreadAfterFallback = false;
+    deps.observability.logger.info(
+      `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} agent=${activeAgentId} selectedThread=${threadIdToResume ?? "none"} selectionSource=${selection.source ?? "none"}`,
+    );
 
     if (threadIdToResume) {
       try {
@@ -139,6 +142,9 @@ export async function handleTaskResumeMessage(
           previousEntries: originalHistoryEntries,
           statusText: "已通过 thread ID 恢复上下文",
         });
+        deps.observability.logger.info(
+          `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=thread_resumed source=${selection.source ?? "unknown"} thread=${threadIdToResume}`,
+        );
         sendHistorySnapshot();
         return;
       } catch (error) {
@@ -148,6 +154,9 @@ export async function handleTaskResumeMessage(
         );
         if (selection.source === "saved" && isPermanentTaskResumeFailure(message)) {
           clearSavedResumeThreadAfterFallback = true;
+          deps.observability.logger.info(
+            `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} clearingSavedResumeThread=true thread=${threadIdToResume} reason=permanent_resume_failure`,
+          );
         }
       }
     }
@@ -170,10 +179,14 @@ export async function handleTaskResumeMessage(
         })();
 
     if (!resumeContext) {
+      deps.observability.logger.warn(
+        `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=unavailable reason=no_resume_context`,
+      );
       deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: "未找到可用于恢复的任务历史" });
       return;
     }
     const { transcript, statusText } = resumeContext;
+    const transcriptSource = laneHistoryTranscript ? "lane_history" : "recent_task";
 
     if (clearSavedResumeThreadAfterFallback) {
       deps.sessions.sessionManager.clearSavedResumeThreadId(deps.context.userId);
@@ -201,8 +214,14 @@ export async function handleTaskResumeMessage(
       if (threadId) {
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
       }
+      deps.observability.logger.info(
+        `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} savedThread=${threadId ?? "none"}`,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      deps.observability.logger.warn(
+        `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} failed err=${truncateForLog(message)}`,
+      );
       deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: `恢复失败: ${message}` });
       return;
     }

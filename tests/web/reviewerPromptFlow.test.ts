@@ -454,7 +454,7 @@ describe("web reviewer prompt flow", () => {
       reviewerSnapshotBindings,
       ensureTaskContext: prompt.deps.tasks.ensureTaskContext,
       sendJson: (payload) => clearResults.push(payload),
-      logger: { warn: () => {} },
+      logger: { info: () => {}, warn: () => {} },
     });
 
     const settled = await Promise.race([

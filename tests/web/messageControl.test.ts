@@ -52,7 +52,7 @@ describe("web/ws/messageControl", () => {
       reviewerSnapshotBindings: bindings,
       ensureTaskContext: (() => ({})) as any,
       sendJson: (payload) => sent.push(payload),
-      logger: { warn: () => {} },
+      logger: { info: () => {}, warn: () => {} },
     });
 
     assert.equal(clearedHistory.handled, true);
@@ -81,7 +81,7 @@ describe("web/ws/messageControl", () => {
       reviewerSnapshotBindings: new Map(),
       ensureTaskContext: (() => ({})) as any,
       sendJson: (payload) => sent.push(payload),
-      logger: { warn: () => {} },
+      logger: { info: () => {}, warn: () => {} },
     });
 
     assert.equal(reviewerGuard.handled, true);
@@ -119,7 +119,7 @@ describe("web/ws/messageControl", () => {
         },
       })) as any,
       sendJson: (payload) => sent.push(payload),
-      logger: { warn: () => {} },
+      logger: { info: () => {}, warn: () => {} },
     });
 
     assert.equal(bindings.get("history-1"), "snap-1");
@@ -157,7 +157,7 @@ describe("web/ws/messageControl", () => {
         },
       })) as any,
       sendJson: () => {},
-      logger: { warn: () => {} },
+      logger: { info: () => {}, warn: () => {} },
     });
 
     assert.equal(bindings.has("history-1"), false);
