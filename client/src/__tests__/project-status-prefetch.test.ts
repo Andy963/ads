@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { shallowMount } from "@vue/test-utils";
+import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import { createAppController } from "../app/controller";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -58,19 +59,6 @@ vi.mock("../api/ws", () => {
   return { AdsWebSocket };
 });
 
-vi.mock("../components/LoginGate.vue", () => {
-  return {
-    default: defineComponent({
-      name: "LoginGate",
-      emits: ["logged-in"],
-      mounted() {
-        this.$emit("logged-in", { id: "u-1", username: "admin" });
-      },
-      template: "<div />",
-    }),
-  };
-});
-
 function makeTask(overrides: Partial<Task>): Task {
   const now = Date.now();
   return {
@@ -100,6 +88,51 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
   await wrapper.vm.$nextTick();
   await Promise.resolve();
   await wrapper.vm.$nextTick();
+}
+
+async function mountProjectStatusHarness() {
+  let controller: ReturnType<typeof createAppController> | null = null;
+  const Harness = defineComponent({
+    name: "ProjectStatusHarness",
+    setup() {
+      controller = createAppController();
+      return {
+        projects: controller.projects,
+        getRuntime: controller.getRuntime,
+        runtimeProjectInProgress: controller.runtimeProjectInProgress,
+      };
+    },
+    template: `
+      <div>
+        <div v-for="project in projects" :key="project.id" class="projectRow">
+          <span class="projectName">{{ project.name }}</span>
+          <span
+            class="projectStatus"
+            :class="{ spinning: runtimeProjectInProgress(getRuntime(project.id)) }"
+          />
+        </div>
+      </div>
+    `,
+  });
+
+  const wrapper = mount(Harness);
+  await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
+  if (!controller) {
+    throw new Error("controller not created");
+  }
+
+  controller.loggedIn.value = true;
+  controller.currentUser.value = { id: "u-1", username: "admin" } as any;
+  await controller.loadProjectsFromServer();
+  await controller.bootstrap();
+  await vi.waitFor(() => {
+    expect(controller!.projects.value.length).toBeGreaterThanOrEqual(3);
+    expect(controller!.getRuntime("sess-a").tasks.value.length).toBeGreaterThan(0);
+    expect(controller!.getRuntime("sess-b").tasks.value.length).toBeGreaterThan(0);
+  });
+  await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
+
+  return { wrapper, controller };
 }
 
 describe("project status spinner prefetch", () => {
@@ -179,16 +212,7 @@ describe("project status spinner prefetch", () => {
   });
 
   it("shows spinners for projects that have running tasks after a page reload", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    for (let i = 0; i < 40; i += 1) {
-      await settleUi(wrapper);
-      const rows = wrapper.findAll(".projectRow");
-      if (rows.length < 2) continue;
-      const vm = wrapper.vm as any;
-      const bTasks = vm.getRuntime("sess-b").tasks.value;
-      if (Array.isArray(bTasks) && bTasks.length > 0) break;
-    }
+    const { wrapper } = await mountProjectStatusHarness();
 
     const rows = wrapper.findAll(".projectRow");
     expect(rows.length).toBeGreaterThanOrEqual(2);
