@@ -14,8 +14,10 @@ let lastReviewerWs: {
   onTaskEvent?: (payload: unknown) => void;
   onMessage?: (msg: unknown) => void;
   sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
+  clearHistory?: (payload?: unknown) => void;
 } | null = null;
 let lastReviewerPromptPayload: unknown = null;
+let lastReviewerClearHistoryPayload: unknown = null;
 
 vi.mock("../api/client", () => {
   class ApiClient {
@@ -64,7 +66,9 @@ vi.mock("../api/ws", () => {
       lastReviewerPromptPayload = payload;
     }
     interrupt(): void {}
-    clearHistory(): void {}
+    clearHistory(payload?: unknown): void {
+      lastReviewerClearHistoryPayload = payload;
+    }
   }
 
   return { AdsWebSocket };
@@ -93,6 +97,7 @@ describe("Reviewer pane UI", () => {
   beforeEach(() => {
     lastReviewerWs = null;
     lastReviewerPromptPayload = null;
+    lastReviewerClearHistoryPayload = null;
     localStorage.clear();
     getImpl = async (url: string) => {
       if (url === "/api/models") {
@@ -149,6 +154,7 @@ describe("Reviewer pane UI", () => {
     getImpl = null;
     lastReviewerWs = null;
     lastReviewerPromptPayload = null;
+    lastReviewerClearHistoryPayload = null;
     vi.clearAllMocks();
     localStorage.clear();
   });
@@ -225,6 +231,7 @@ describe("Reviewer pane UI", () => {
 
     await wrapper.get('[data-testid="lane-new-session"]').trigger("click");
     await settleUi(wrapper);
+    expect(lastReviewerClearHistoryPayload).toEqual({ preserveReviewerSnapshotId: "snapshot-9" });
 
     (wrapper.vm as any).sendReviewerPrompt("Review again");
     await settleUi(wrapper);

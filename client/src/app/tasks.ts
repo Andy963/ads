@@ -613,11 +613,13 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const rt = activeReviewerRuntime.value;
     rt.composerDraft.value = "";
     rt.queuedPrompts.value = [];
+    const boundSnapshotId = String(rt.boundReviewSnapshotId.value ?? "").trim();
     threadReset(rt, {
       notice: "",
       warning: null,
       keepLatestTurn: false,
       clearBackendHistory: true,
+      clearHistoryPayload: boundSnapshotId ? { preserveReviewerSnapshotId: boundSnapshotId } : undefined,
       resetThreadId: true,
       source: "user_new_reviewer_session",
     });

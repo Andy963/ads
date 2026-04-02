@@ -80,4 +80,77 @@ describe("web/ws/messageControl", () => {
       message: "Reviewer lane is read-only and does not accept commands.",
     });
   });
+
+  it("preserves the existing reviewer snapshot binding only when clear_history explicitly requests the same snapshot", async () => {
+    const sent: unknown[] = [];
+    const bindings = new Map([["history-1", "snap-1"]]);
+    const preserved: Array<{ userId: number; snapshotId: string }> = [];
+    const clearedSaved: number[] = [];
+
+    await handleWsControlMessage({
+      parsed: { type: "clear_history", payload: { preserveReviewerSnapshotId: "snap-1" } },
+      isReviewerChat: true,
+      userId: 7,
+      historyKey: "history-1",
+      currentCwd: "/tmp/project",
+      sessionManager: {
+        reset: () => {},
+        getSavedReviewerSnapshotId: () => undefined,
+        clearSavedReviewerSnapshotBinding: (userId: number) => clearedSaved.push(userId),
+        saveReviewerSnapshotBinding: (userId: number, snapshotId: string) => preserved.push({ userId, snapshotId }),
+      } as any,
+      orchestrator: { id: "orch" } as any,
+      getWorkspaceLock: (() => null) as any,
+      historyStore: { clear: () => {} } as any,
+      reviewerSnapshotBindings: bindings,
+      ensureTaskContext: ((workspaceRoot: string) => ({
+        reviewStore: {
+          getSnapshot: (snapshotId: string) => (workspaceRoot === "/tmp/project" && snapshotId === "snap-1" ? { id: snapshotId } : null),
+        },
+      })) as any,
+      sendJson: (payload) => sent.push(payload),
+      logger: { warn: () => {} },
+    });
+
+    assert.equal(bindings.get("history-1"), "snap-1");
+    assert.deepEqual(clearedSaved, [7]);
+    assert.deepEqual(preserved, [{ userId: 7, snapshotId: "snap-1" }]);
+    assert.deepEqual(sent[0], {
+      type: "result",
+      ok: true,
+      output: "已清空历史缓存并重置会话",
+      kind: "clear_history",
+    });
+
+    bindings.set("history-1", "snap-1");
+    preserved.length = 0;
+
+    await handleWsControlMessage({
+      parsed: { type: "clear_history", payload: { preserveReviewerSnapshotId: "snap-2" } },
+      isReviewerChat: true,
+      userId: 7,
+      historyKey: "history-1",
+      currentCwd: "/tmp/project",
+      sessionManager: {
+        reset: () => {},
+        getSavedReviewerSnapshotId: () => undefined,
+        clearSavedReviewerSnapshotBinding: () => {},
+        saveReviewerSnapshotBinding: (userId: number, snapshotId: string) => preserved.push({ userId, snapshotId }),
+      } as any,
+      orchestrator: { id: "orch" } as any,
+      getWorkspaceLock: (() => null) as any,
+      historyStore: { clear: () => {} } as any,
+      reviewerSnapshotBindings: bindings,
+      ensureTaskContext: ((workspaceRoot: string) => ({
+        reviewStore: {
+          getSnapshot: (snapshotId: string) => (workspaceRoot === "/tmp/project" && snapshotId === "snap-2" ? { id: snapshotId } : null),
+        },
+      })) as any,
+      sendJson: () => {},
+      logger: { warn: () => {} },
+    });
+
+    assert.equal(bindings.has("history-1"), false);
+    assert.deepEqual(preserved, []);
+  });
 });

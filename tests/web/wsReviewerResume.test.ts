@@ -550,4 +550,73 @@ describe("web/server/ws reviewer resume", () => {
       recreatedPlannerSessionManager.destroy();
     }
   });
+
+  it("keeps the reviewer snapshot binding across clear_history and reconnect before the next prompt", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.review-session", "ads-chat.reviewer"];
+
+    const firstClient = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const firstWelcomePromise = waitForWsMessage(firstClient, (msg) => msg.type === "welcome");
+    await waitForWsOpen(firstClient);
+    await firstWelcomePromise;
+
+    const bindingPromise = waitForWsMessage(
+      firstClient,
+      (msg) => msg.type === "reviewer_snapshot_binding" && msg.snapshotId === snapshotId,
+    );
+    const firstResultPromise = waitForWsMessage(
+      firstClient,
+      (msg) => msg.type === "result" && typeof msg.output === "string" && String(msg.output).includes("Review response"),
+    );
+    firstClient.send(JSON.stringify({ type: "prompt", payload: { text: "Please review", snapshotId } }));
+    await bindingPromise;
+    await firstResultPromise;
+
+    const clearHistoryPromise = waitForWsMessage(
+      firstClient,
+      (msg) => msg.type === "result" && msg.kind === "clear_history" && msg.ok === true,
+    );
+    firstClient.send(JSON.stringify({ type: "clear_history", payload: { preserveReviewerSnapshotId: snapshotId } }));
+    await clearHistoryPromise;
+
+    const userId = buildWsConnectionIdentity({
+      authUserId: "review-user",
+      sessionId: "review-session",
+      chatSessionId: "reviewer",
+    }).userId;
+    assert.equal(threadStorage.getRecord(userId)?.reviewerSnapshotId, snapshotId);
+    assert.equal(threadStorage.getRecord(userId)?.threadId, undefined);
+
+    firstClient.terminate();
+    reviewerSessionManager.dropSession(userId);
+
+    const reconnectClient = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const reconnectWelcomePromise = waitForWsMessage(reconnectClient, (msg) => msg.type === "welcome");
+    const replayedBindingPromise = waitForWsMessage(
+      reconnectClient,
+      (msg) => msg.type === "reviewer_snapshot_binding" && msg.snapshotId === snapshotId,
+    );
+    await waitForWsOpen(reconnectClient);
+    const reconnectWelcome = await reconnectWelcomePromise;
+    assert.equal(reconnectWelcome.threadId, null);
+    assert.equal(reconnectWelcome.contextMode, "fresh");
+    await replayedBindingPromise;
+
+    const resumedResultPromise = waitForWsMessage(
+      reconnectClient,
+      (msg) => msg.type === "result" && typeof msg.output === "string" && String(msg.output).includes("Review response"),
+    );
+    reconnectClient.send(JSON.stringify({ type: "prompt", payload: { text: "Continue reviewing" } }));
+    const resumedResult = await resumedResultPromise;
+    assert.match(String(resumedResult.output ?? ""), /Review response/);
+    assert.deepEqual(
+      reviewerCreateCalls.map((call) => ({ cwd: call.cwd, resumeThread: call.resumeThread, resumeThreadId: call.resumeThreadId })),
+      [
+        { cwd: workspaceRoot, resumeThread: false, resumeThreadId: undefined },
+        { cwd: workspaceRoot, resumeThread: true, resumeThreadId: undefined },
+      ],
+    );
+
+    reconnectClient.terminate();
+  });
 });

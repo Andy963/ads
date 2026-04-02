@@ -261,6 +261,7 @@ export function createChatActions(ctx: AppContext) {
       warning?: string | null;
       keepLatestTurn?: boolean;
       clearBackendHistory?: boolean;
+      clearHistoryPayload?: unknown;
       resetThreadId?: boolean;
       source?: string;
     },
@@ -274,7 +275,7 @@ export function createChatActions(ctx: AppContext) {
     }
     if (params.clearBackendHistory) {
       rt.suppressNextClearHistoryResult = true;
-      rt.ws?.clearHistory();
+      rt.ws?.clearHistory(params.clearHistoryPayload);
     }
     recordChatClear("thread_reset", params.source ?? "unknown");
   };

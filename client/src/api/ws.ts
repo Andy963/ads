@@ -98,8 +98,8 @@ export class AdsWebSocket {
     this.send("interrupt");
   }
 
-  clearHistory(): void {
-    this.send("clear_history");
+  clearHistory(payload?: unknown): void {
+    this.send("clear_history", payload);
   }
 
   connect(): void {

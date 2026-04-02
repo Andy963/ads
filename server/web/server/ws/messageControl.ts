@@ -2,8 +2,51 @@ import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { WsLogger, WsPromptSessionLogger, WsTaskResumeHandlerDeps } from "./deps.js";
+import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import type { WsMessage } from "./schema.js";
+
+function parsePreservedReviewerSnapshotId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  const raw = record.preserveReviewerSnapshotId;
+  const snapshotId = typeof raw === "string" ? raw.trim() : "";
+  return snapshotId || null;
+}
+
+function resolveReviewerSnapshotBindingToPreserve(args: {
+  parsed: WsMessage;
+  isReviewerChat: boolean;
+  userId: number;
+  historyKey: string;
+  currentCwd: string;
+  sessionManager: SessionManager;
+  reviewerSnapshotBindings: Map<string, string>;
+  ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
+}): string | null {
+  if (!args.isReviewerChat) {
+    return null;
+  }
+  const requestedSnapshotId = parsePreservedReviewerSnapshotId(args.parsed.payload);
+  if (!requestedSnapshotId) {
+    return null;
+  }
+  const currentBinding =
+    String(args.reviewerSnapshotBindings.get(args.historyKey) ?? "").trim() ||
+    String((args.sessionManager as SessionManager).getSavedReviewerSnapshotId?.(args.userId) ?? "").trim();
+  if (!currentBinding || currentBinding !== requestedSnapshotId) {
+    return null;
+  }
+  try {
+    const workspaceRoot = resolveWorkspaceRootFromDirectory(args.currentCwd);
+    const taskCtx = args.ensureTaskContext(workspaceRoot);
+    return taskCtx.reviewStore.getSnapshot(requestedSnapshotId) ? requestedSnapshotId : null;
+  } catch {
+    return null;
+  }
+}
 
 export function ensureWsSessionLogger(args: {
   sessionManager: SessionManager;
@@ -38,10 +81,25 @@ export async function handleWsControlMessage(args: {
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }> {
   if (args.parsed.type === "clear_history") {
+    const preservedSnapshotId = resolveReviewerSnapshotBindingToPreserve({
+      parsed: args.parsed,
+      isReviewerChat: args.isReviewerChat,
+      userId: args.userId,
+      historyKey: args.historyKey,
+      currentCwd: args.currentCwd,
+      sessionManager: args.sessionManager,
+      reviewerSnapshotBindings: args.reviewerSnapshotBindings,
+      ensureTaskContext: args.ensureTaskContext,
+    });
     args.historyStore.clear(args.historyKey);
     args.sessionManager.reset(args.userId);
     if (args.isReviewerChat) {
       args.reviewerSnapshotBindings.delete(args.historyKey);
+      args.sessionManager.clearSavedReviewerSnapshotBinding?.(args.userId);
+      if (preservedSnapshotId) {
+        args.reviewerSnapshotBindings.set(args.historyKey, preservedSnapshotId);
+        args.sessionManager.saveReviewerSnapshotBinding(args.userId, preservedSnapshotId);
+      }
     }
     args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
     return { handled: true, orchestrator: args.orchestrator };
