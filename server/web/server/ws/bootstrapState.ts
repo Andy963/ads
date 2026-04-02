@@ -23,14 +23,17 @@ export function buildWsBootstrapState(args: {
 }): WsBootstrapState {
   const { sessionManager, orchestrator, userId, agentAvailability } = args;
   const activeAgentId = orchestrator.getActiveAgentId();
+  const contextMode = sessionManager.getContextRestoreMode(userId);
   const savedThreadId =
-    args.allowSavedThreadFallback === false ? undefined : sessionManager.getSavedThreadId(userId, activeAgentId);
+    args.allowSavedThreadFallback === false || contextMode !== "thread_resumed"
+      ? undefined
+      : sessionManager.getSavedThreadId(userId, activeAgentId);
   return {
     threadId: preferInMemoryThreadId({
       inMemoryThreadId: orchestrator.getThreadId(),
       savedThreadId,
     }),
-    contextMode: sessionManager.getContextRestoreMode(userId),
+    contextMode,
     effectiveState: sessionManager.getEffectiveState(userId),
     agents: orchestrator.listAgents().map((entry) => {
       const merged = agentAvailability.mergeStatus(entry.metadata.id, entry.status);

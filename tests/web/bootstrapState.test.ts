@@ -96,11 +96,39 @@ describe("web/ws/bootstrapState", () => {
     });
   });
 
+  it("only falls back to saved thread ids for resumed sessions", () => {
+    const makeState = (contextMode: "fresh" | "history_injection" | "thread_resumed") =>
+      buildWsBootstrapState({
+        sessionManager: {
+          getSavedThreadId: () => "thread-saved",
+          getContextRestoreMode: () => contextMode,
+          getEffectiveState: () => ({
+            model: "gpt-4o",
+            modelReasoningEffort: "high",
+            activeAgentId: "codex",
+          }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => null,
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: {
+          mergeStatus: (_agentId: string, status: { ready: boolean; streaming: boolean }) => status,
+        } as any,
+      });
+
+    assert.equal(makeState("fresh").threadId, null);
+    assert.equal(makeState("history_injection").threadId, null);
+    assert.equal(makeState("thread_resumed").threadId, "thread-saved");
+  });
+
   it("can suppress saved thread fallback when reviewer continuity is not safely bound", () => {
     const state = buildWsBootstrapState({
       sessionManager: {
         getSavedThreadId: () => "thread-saved",
-        getContextRestoreMode: () => "fresh",
+        getContextRestoreMode: () => "thread_resumed",
         getEffectiveState: () => ({
           model: "gpt-4o",
           modelReasoningEffort: "high",
@@ -118,6 +146,6 @@ describe("web/ws/bootstrapState", () => {
     });
 
     assert.equal(state.threadId, null);
-    assert.equal(state.contextMode, "fresh");
+    assert.equal(state.contextMode, "thread_resumed");
   });
 });
