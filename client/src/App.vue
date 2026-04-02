@@ -271,6 +271,29 @@ const runningTaskCount = computed(() =>
   tasks.value.filter((t) => t.status === "running" || t.status === "planning").length,
 );
 
+const disconnectedStatusMessage = "连接已断开，正在重连…";
+
+const workerConnectionStatus = computed(() => {
+  const error = String(wsError.value ?? "").trim();
+  if (error) return { kind: "error" as const, message: error };
+  if (!connected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  return null;
+});
+
+const plannerConnectionStatus = computed(() => {
+  const error = String(activePlannerRuntime.value.wsError.value ?? "").trim();
+  if (error) return { kind: "error" as const, message: error };
+  if (!plannerConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  return null;
+});
+
+const reviewerConnectionStatus = computed(() => {
+  const error = String(activeReviewerRuntime.value.wsError.value ?? "").trim();
+  if (error) return { kind: "error" as const, message: error };
+  if (!reviewerConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  return null;
+});
+
 </script>
 
 <template>
@@ -488,6 +511,8 @@ const runningTaskCount = computed(() =>
               :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
               :agent-delegations="plannerAgentDelegations"
               :workspace-root="resolveActiveWorkspaceRoot()"
+              :connection-status-kind="plannerConnectionStatus?.kind ?? null"
+              :connection-status-message="plannerConnectionStatus?.message ?? null"
               @send="sendPlannerPrompt"
               @update:draft="plannerComposerDraft = $event"
               @switchAgent="switchPlannerAgent"
@@ -525,6 +550,8 @@ const runningTaskCount = computed(() =>
               :agent-delegations="agentDelegations"
               :workspace-root="resolveActiveWorkspaceRoot()"
               :running-task-count="runningTaskCount"
+              :connection-status-kind="workerConnectionStatus?.kind ?? null"
+              :connection-status-message="workerConnectionStatus?.message ?? null"
               @send="sendMainPrompt"
               @update:draft="workerComposerDraft = $event"
               @switchAgent="switchMainAgent"
@@ -593,6 +620,8 @@ const runningTaskCount = computed(() =>
               :agent-delegations="reviewerAgentDelegations"
               :review-artifact="reviewerLatestArtifact"
               :workspace-root="resolveActiveWorkspaceRoot()"
+              :connection-status-kind="reviewerConnectionStatus?.kind ?? null"
+              :connection-status-message="reviewerConnectionStatus?.message ?? null"
               @send="sendReviewerPrompt"
               @update:draft="reviewerComposerDraft = $event"
               @switchAgent="switchReviewerAgent"

@@ -36,6 +36,8 @@ const props = defineProps<{
   agentDelegations?: AgentDelegation[];
   apiToken?: string;
   runningTaskCount?: number;
+  connectionStatusKind?: "disconnected" | "error" | null;
+  connectionStatusMessage?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -252,6 +254,10 @@ const agentDelegationLabel = computed(() => {
   return `Delegating to: ${shown}${suffix}`;
 });
 
+const normalizedConnectionStatusKind = computed(() =>
+  props.connectionStatusKind === "error" ? "error" : "disconnected",
+);
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -327,6 +333,18 @@ const {
     <div v-if="agentDelegationLabel" class="delegationBar" aria-label="Agent delegation status">
       <span class="delegationSpinner" aria-hidden="true" />
       <span class="delegationText">{{ agentDelegationLabel }}</span>
+    </div>
+
+    <div
+      v-if="connectionStatusMessage"
+      class="laneStatusBar"
+      :class="`laneStatusBar--${normalizedConnectionStatusKind}`"
+      role="status"
+      aria-live="polite"
+      data-testid="lane-connection-status"
+    >
+      <span class="laneStatusDot" aria-hidden="true" />
+      <span class="laneStatusText">{{ connectionStatusMessage }}</span>
     </div>
 
     <div v-if="queuedPrompts.length" class="queue" aria-label="排队消息">
@@ -556,6 +574,40 @@ const {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.laneStatusBar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.laneStatusBar--error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.laneStatusDot {
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.laneStatusText {
+  min-width: 0;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .queue {

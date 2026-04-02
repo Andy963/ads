@@ -243,7 +243,7 @@ describe("Reviewer pane UI", () => {
     wrapper.unmount();
   });
 
-  it("clears stale reviewer binding and artifact when bootstrap arrives without a binding", async () => {
+  it("clears stale reviewer transcript when bootstrap explicitly withholds reviewer continuity", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {
       global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false, MarkdownContent: true, DraggableModal: true } },
@@ -254,32 +254,64 @@ describe("Reviewer pane UI", () => {
     lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer" });
     await settleUi(wrapper);
 
-    lastReviewerWs!.onMessage?.({ type: "reviewer_snapshot_binding", snapshotId: "snapshot-9" });
-    lastReviewerWs!.onMessage?.({
-      type: "reviewer_artifact",
-      artifact: {
-        id: "artifact-123",
-        taskId: "task-7",
-        snapshotId: "snapshot-9",
-        queueItemId: null,
-        scope: "reviewer",
-        summaryText: "Guard the null case before calling into the worker flow.",
-        verdict: "analysis",
-        priorArtifactId: null,
-        createdAt: Date.now(),
-      },
-    });
+    const reviewerRt = (wrapper.vm as any).activeReviewerRuntime;
+    expect(reviewerRt?.messages?.value).toBeTruthy();
+    reviewerRt.messages.value = [
+      { id: "u-1", role: "user", kind: "text", content: "Please review snapshot-9" },
+      { id: "a-1", role: "assistant", kind: "text", content: "Previous reviewer transcript" },
+    ];
+    reviewerRt.activeThreadId.value = "reviewer-thread-old";
+    reviewerRt.boundReviewSnapshotId.value = "snapshot-9";
+    reviewerRt.latestReviewArtifact.value = {
+      id: "artifact-123",
+      taskId: "task-7",
+      snapshotId: "snapshot-9",
+      queueItemId: null,
+      scope: "reviewer",
+      summaryText: "Guard the null case before calling into the worker flow.",
+      verdict: "analysis",
+      priorArtifactId: null,
+      createdAt: Date.now(),
+    };
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).reviewerBoundSnapshotId).toBe("snapshot-9");
     expect((wrapper.vm as any).reviewerLatestArtifact?.id).toBe("artifact-123");
 
-    lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer", threadId: null, contextMode: "fresh" });
+    lastReviewerWs!.onMessage?.({ type: "reviewer_snapshot_binding", snapshotId: null });
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).reviewerBoundSnapshotId).toBeNull();
     expect((wrapper.vm as any).reviewerLatestArtifact).toBeNull();
+    expect(reviewerRt.activeThreadId.value).toBeNull();
+    const contents = reviewerRt.messages.value.map((m: any) => String(m.content ?? ""));
+    expect(contents.join("\n")).not.toContain("Please review snapshot-9");
+    expect(contents.join("\n")).not.toContain("Previous reviewer transcript");
+    expect(contents.join("\n")).toContain("Reviewer continuity was unavailable from the backend.");
     expect(wrapper.find('[data-testid="review-artifact-banner"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("shows a lane-local reviewer connection indicator after websocket errors", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false, MarkdownContent: true, DraggableModal: true } },
+    });
+    await settleUi(wrapper);
+
+    lastReviewerWs!.onOpen?.();
+    lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer" });
+    await settleUi(wrapper);
+
+    await wrapper.get('[data-testid="lane-tab-reviewer"]').trigger("click");
+    await settleUi(wrapper);
+
+    lastReviewerWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    const status = wrapper.get('[data-testid="lane-panel-reviewer"] [data-testid="lane-connection-status"]');
+    expect(status.text()).toContain("WebSocket closed (1006)");
 
     wrapper.unmount();
   });

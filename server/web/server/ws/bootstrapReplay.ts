@@ -37,13 +37,13 @@ export function buildReviewerBootstrapPayloads(args: {
   boundSnapshotId: string | null;
   latestArtifact?: Record<string, unknown> | null;
 }): Array<Record<string, unknown>> {
-  if (!args.isReviewerChat || !args.boundSnapshotId) {
+  if (!args.isReviewerChat) {
     return [];
   }
   const payloads: Array<Record<string, unknown>> = [
-    { type: "reviewer_snapshot_binding", snapshotId: args.boundSnapshotId },
+    { type: "reviewer_snapshot_binding", snapshotId: args.boundSnapshotId ?? null },
   ];
-  if (args.latestArtifact) {
+  if (args.boundSnapshotId && args.latestArtifact) {
     payloads.push({ type: "reviewer_artifact", artifact: args.latestArtifact });
   }
   return payloads;

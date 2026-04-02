@@ -22,7 +22,7 @@ describe("web/ws/bootstrapReplay", () => {
     });
   });
 
-  it("builds reviewer bootstrap payloads only for reviewer lanes with a bound snapshot", () => {
+  it("builds reviewer bootstrap payloads for reviewer lanes and explicitly clears missing bindings", () => {
     assert.deepEqual(
       buildReviewerBootstrapPayloads({
         isReviewerChat: true,
@@ -33,6 +33,15 @@ describe("web/ws/bootstrapReplay", () => {
         { type: "reviewer_snapshot_binding", snapshotId: "snap-1" },
         { type: "reviewer_artifact", artifact: { id: "art-1", snapshotId: "snap-1" } },
       ],
+    );
+
+    assert.deepEqual(
+      buildReviewerBootstrapPayloads({
+        isReviewerChat: true,
+        boundSnapshotId: null,
+        latestArtifact: { id: "art-stale", snapshotId: "snap-stale" } as any,
+      }),
+      [{ type: "reviewer_snapshot_binding", snapshotId: null }],
     );
 
     assert.deepEqual(

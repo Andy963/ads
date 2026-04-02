@@ -268,6 +268,32 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  const clearStaleReviewerContinuity = (): void => {
+    const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    if (effectiveChatSessionId !== "reviewer") {
+      return;
+    }
+    const hasStaleLocalContinuity =
+      Boolean(String(rt.activeThreadId.value ?? "").trim()) ||
+      Boolean(String(rt.boundReviewSnapshotId.value ?? "").trim()) ||
+      Boolean(rt.latestReviewArtifact.value) ||
+      rt.messages.value.length > 0;
+    rt.boundReviewSnapshotId.value = null;
+    rt.latestReviewArtifact.value = null;
+    if (!hasStaleLocalContinuity) {
+      return;
+    }
+    resetTurnPatchSummary();
+    threadReset(rt, {
+      notice: "Reviewer continuity was unavailable from the backend. Stale local reviewer history was cleared to avoid mismatched context.",
+      warning: null,
+      keepLatestTurn: false,
+      clearBackendHistory: false,
+      resetThreadId: true,
+      source: "reviewer_bootstrap_missing",
+    });
+  };
+
   return (msg: unknown): void => {
     if (!isRecord(msg)) return;
     const typeValue = msg.type;
@@ -432,10 +458,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "reviewer_snapshot_binding") {
       const snapshotId = String(msg.snapshotId ?? "").trim();
-      rt.boundReviewSnapshotId.value = snapshotId || null;
       if (!snapshotId) {
-        rt.latestReviewArtifact.value = null;
+        clearStaleReviewerContinuity();
+        return;
       }
+      rt.boundReviewSnapshotId.value = snapshotId;
       return;
     }
 
