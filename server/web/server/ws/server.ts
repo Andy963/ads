@@ -259,9 +259,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         if (meta.authUserId !== authUserId || meta.sessionId !== sessionId) {
           continue;
         }
-        if (meta.chatSessionId !== chatSessionId) {
-          continue;
-        }
         safeJsonSend(candidate, payload);
       }
     };

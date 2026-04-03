@@ -245,30 +245,44 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
-  it("broadcasts clear_history resets only to sibling connections in the same chat lane", async () => {
+  it("broadcasts clear_history resets to sibling connections across chat lanes in the same session", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
     const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
+    const reviewerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.reviewer"];
 
     const mainClientA = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
     const mainClientB = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
     const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
+    const reviewerClient = new WebSocket(url, reviewerProtocols, { origin: "http://localhost" });
     await waitForWsOpen(mainClientA);
     await waitForWsOpen(mainClientB);
     await waitForWsOpen(plannerClient);
+    await waitForWsOpen(reviewerClient);
 
-    const plannerMessages: WsJson[] = [];
-    const plannerHandler = (raw: RawData) => {
+    const siblingMessages: WsJson[] = [];
+    const siblingHandler = (raw: RawData) => {
       try {
-        plannerMessages.push(JSON.parse(raw.toString("utf8")) as WsJson);
+        siblingMessages.push(JSON.parse(raw.toString("utf8")) as WsJson);
       } catch {
         // ignore
       }
     };
-    plannerClient.on("message", plannerHandler);
+    plannerClient.on("message", siblingHandler);
+    reviewerClient.on("message", siblingHandler);
 
     const resetPromise = waitForWsMessage(
       mainClientB,
+      (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
+      1500,
+    );
+    const plannerResetPromise = waitForWsMessage(
+      plannerClient,
+      (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
+      1500,
+    );
+    const reviewerResetPromise = waitForWsMessage(
+      reviewerClient,
       (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
       1500,
     );
@@ -281,17 +295,22 @@ describe("web/server/ws/broadcast", () => {
     mainClientA.send(JSON.stringify({ type: "clear_history" }));
 
     const reset = await resetPromise;
+    const plannerReset = await plannerResetPromise;
+    const reviewerReset = await reviewerResetPromise;
     const result = await resultPromise;
     assert.equal(reset.type, "session_reset");
+    assert.equal(plannerReset.type, "session_reset");
+    assert.equal(reviewerReset.type, "session_reset");
     assert.equal(result.type, "result");
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(
-      plannerMessages.some((msg) => msg.type === "session_reset"),
-      false,
+      siblingMessages.filter((msg) => msg.type === "session_reset").length,
+      2,
     );
 
-    plannerClient.off("message", plannerHandler);
+    plannerClient.off("message", siblingHandler);
+    reviewerClient.off("message", siblingHandler);
     try {
       mainClientA.terminate();
     } catch {
@@ -304,6 +323,11 @@ describe("web/server/ws/broadcast", () => {
     }
     try {
       plannerClient.terminate();
+    } catch {
+      // ignore
+    }
+    try {
+      reviewerClient.terminate();
     } catch {
       // ignore
     }

@@ -619,11 +619,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "session_reset") {
-      const sourceChatSessionId = String(msg.sourceChatSessionId ?? "").trim();
-      const currentChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
-      if (sourceChatSessionId && sourceChatSessionId !== currentChatSessionId) {
-        return;
-      }
       handleSharedSessionReset();
       return;
     }

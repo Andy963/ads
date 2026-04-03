@@ -274,10 +274,13 @@ describe("ws workspace project sync", () => {
     );
   });
 
-  it("ignores reset events from a different chat lane", () => {
+  it("clears stale local continuity when a sibling chat lane resets the shared session", () => {
     const rt = createRuntime();
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
     rt.activeThreadId.value = "thread-keep";
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.queuedPrompts.value = ["queued"];
     const { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock } = createHandler({
       projects: [],
       pid: "default",
@@ -287,15 +290,24 @@ describe("ws workspace project sync", () => {
 
     handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" });
 
-    expect(threadReset).not.toHaveBeenCalled();
-    expect(clearPendingPrompt).not.toHaveBeenCalled();
-    expect(clearStepLive).not.toHaveBeenCalled();
-    expect(finalizeCommandBlock).not.toHaveBeenCalled();
-    expect(rt.messages.value.map((entry: any) => entry.content)).toEqual(["keep me"]);
-    expect(rt.activeThreadId.value).toBe("thread-keep");
+    expect(clearPendingPrompt).toHaveBeenCalledWith(rt);
+    expect(clearStepLive).toHaveBeenCalledWith(rt);
+    expect(finalizeCommandBlock).toHaveBeenCalledWith(rt);
+    expect(threadReset).toHaveBeenCalledWith(
+      rt,
+      expect.objectContaining({
+        source: "shared_session_reset",
+        clearBackendHistory: false,
+        resetThreadId: true,
+      }),
+    );
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.activeThreadId.value).toBeNull();
   });
 
-  it("preserves reviewer snapshot bindings when a sibling reviewer connection resets the shared session", () => {
+  it("preserves reviewer snapshot bindings while clearing reviewer chat continuity after a sibling lane reset", () => {
     const rt = createRuntime();
     rt.chatSessionId = "reviewer";
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "review this" }];
@@ -309,7 +321,7 @@ describe("ws workspace project sync", () => {
       updateProject: vi.fn(),
     });
 
-    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "reviewer" });
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "main" });
 
     expect(rt.boundReviewSnapshotId.value).toBe("snapshot-9");
     expect(rt.latestReviewArtifact.value).toEqual({ id: "artifact-1", snapshotId: "snapshot-9" });
