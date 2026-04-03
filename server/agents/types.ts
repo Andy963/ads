@@ -42,7 +42,7 @@ export interface AgentAdapter {
   send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult>;
   onEvent(handler: (event: AgentEvent) => void): () => void;
   reset(): void;
-  setWorkingDirectory?(workingDirectory?: string): void;
+  setWorkingDirectory?(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   setModel?(model?: string): void;
   setModelReasoningEffort?(effort?: string): void;
   setDeveloperInstructions?(instructions: string): void;

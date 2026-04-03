@@ -25,7 +25,7 @@ type FakeSession = {
   reset: () => void;
   setModel: (model?: string) => void;
   setModelReasoningEffort: (effort?: string) => void;
-  setWorkingDirectory: (workingDirectory?: string) => void;
+  setWorkingDirectory: (workingDirectory?: string, options?: { preserveSession?: boolean }) => void;
   status: () => { ready: boolean; streaming: boolean };
   getActiveAgentId: () => string;
   listAgents: () => Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean } }>;
@@ -78,9 +78,11 @@ function createFakeSessionFactory() {
         setModelReasoningEffort: (effort) => {
           session.modelReasoningEffort = effort;
         },
-        setWorkingDirectory: (workingDirectory) => {
+        setWorkingDirectory: (workingDirectory, options) => {
           session.workingDirectory = workingDirectory;
-          session.threadId = null;
+          if (!options?.preserveSession) {
+            session.threadId = null;
+          }
         },
         status: () => ({ ready: true, streaming: true }),
         getActiveAgentId: () => session.activeAgentId,
@@ -231,6 +233,7 @@ describe("SessionManager", () => {
     assert.equal(initial.getThreadId(), "thread-80");
 
     manager.setUserCwd(80, nestedWorkspace);
+    assert.equal(initial.getThreadId(), "thread-80");
     assert.equal(storage.getRecord(80)?.cwd, nestedWorkspace);
     assert.equal(storage.getRecord(80)?.threadId, "thread-80");
     assert.deepEqual(storage.getRecord(80)?.agentThreads, { codex: "thread-80" });
@@ -267,6 +270,8 @@ describe("SessionManager", () => {
     manager.setUserCwd(81, "/tmp/project-b");
 
     const record = storage.getRecord(81);
+    const active = manager.getOrCreate(81, "/tmp/project-b") as unknown as FakeSession;
+    assert.equal(active.getThreadId(), null);
     assert.equal(record?.cwd, "/tmp/project-b");
     assert.equal(record?.threadId, undefined);
     assert.deepEqual(record?.agentThreads, {});

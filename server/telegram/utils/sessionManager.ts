@@ -104,7 +104,7 @@ export interface SessionWrapper {
   getThreadId(): string | null;
   reset(): void;
   setModel(model?: string): void;
-  setWorkingDirectory(workingDirectory?: string): void;
+  setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   status(): { ready: boolean; error?: string; streaming: boolean };
   getActiveAgentId(): string;
   listAgents(): Array<{
@@ -160,8 +160,14 @@ export class SessionManager {
     const existing = this.runtime.touch(userId);
     
     if (existing) {
-      if (cwd && this.runtime.updateWorkingDirectory(userId, cwd)) {
-        this.syncStoredState(userId, { cwd, clearThreads: this.shouldClearThreadsForCwdChange(userId, cwd) });
+      if (cwd) {
+        const clearThreads = this.shouldClearThreadsForCwdChange(userId, cwd);
+        if (this.runtime.updateWorkingDirectory(userId, cwd, { preserveSession: !clearThreads })) {
+          if (clearThreads) {
+            this.runtime.setContextRestoreMode(userId, "fresh");
+          }
+          this.syncStoredState(userId, { cwd, clearThreads });
+        }
       }
       this.runtime.ensureContextRestoreMode(userId);
       return existing.session;
@@ -518,9 +524,12 @@ export class SessionManager {
       return;
     }
 
-    this.runtime.updateWorkingDirectory(userId, cwd);
-    this.runtime.setContextRestoreMode(userId, "fresh");
-    this.syncStoredState(userId, { cwd, clearThreads: this.shouldClearThreadsForCwdChange(userId, cwd) });
+    const clearThreads = this.shouldClearThreadsForCwdChange(userId, cwd);
+    this.runtime.updateWorkingDirectory(userId, cwd, { preserveSession: !clearThreads });
+    if (clearThreads) {
+      this.runtime.setContextRestoreMode(userId, "fresh");
+    }
+    this.syncStoredState(userId, { cwd, clearThreads });
   }
 
   getStats(): { total: number; active: number; idle: number; sandboxMode: SandboxMode; defaultModel: string } {

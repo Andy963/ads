@@ -45,7 +45,10 @@ export async function dispatchWsMessage(args: {
   scheduler: WsSchedulerDeps;
   commands: WsCommandRuntimeDeps;
   agents: WsCommandHandlerDeps["agents"];
-  state: Omit<WsCommandHandlerDeps["state"], "cacheKey">;
+  state: Omit<WsCommandHandlerDeps["state"], "cacheKey"> & {
+    broadcastSessionReset?: (payload: unknown) => void;
+    resetSharedSessionBackends?: () => void;
+  };
   reviewerSnapshotBindings: Map<string, string>;
   registerSessionCacheBinding: () => void;
   broadcastJson: (payload: unknown) => void;
@@ -75,6 +78,7 @@ export async function dispatchWsMessage(args: {
 
     const control = await handleWsControlMessage({
       parsed,
+      chatSessionId: args.chatSessionId,
       isReviewerChat: args.isReviewerChat,
       userId: args.userId,
       historyKey: args.historyKey,
@@ -88,6 +92,8 @@ export async function dispatchWsMessage(args: {
       reviewerSnapshotBindings: args.reviewerSnapshotBindings,
       ensureTaskContext: args.tasks.ensureTaskContext as WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"],
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
+      broadcastSessionReset: args.state.broadcastSessionReset,
+      resetSharedSessionBackends: args.state.resetSharedSessionBackends,
       logger: args.logger,
     });
     if (control.handled) {

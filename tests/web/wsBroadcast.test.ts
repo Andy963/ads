@@ -17,6 +17,58 @@ import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
+type FakeSession = {
+  resetCalls: number;
+  threadId: string | null;
+  workingDirectory?: string;
+  send: () => Promise<{ response: string }>;
+  onEvent: () => () => void;
+  getThreadId: () => string | null;
+  reset: () => void;
+  setModel: () => void;
+  setWorkingDirectory: (workingDirectory?: string, options?: { preserveSession?: boolean }) => void;
+  status: () => { ready: boolean; streaming: boolean };
+  getActiveAgentId: () => string;
+  listAgents: () => Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean } }>;
+  switchAgent: () => void;
+};
+
+function createFakeSessionFactory(prefix: string) {
+  let nextId = 1;
+  const created: FakeSession[] = [];
+
+  return {
+    created,
+    factory: ({ cwd }: { cwd: string }) => {
+      const session: FakeSession = {
+        resetCalls: 0,
+        threadId: `${prefix}-thread-${nextId++}`,
+        workingDirectory: cwd,
+        send: async () => ({ response: "ok" }),
+        onEvent: () => () => {},
+        getThreadId: () => session.threadId,
+        reset: () => {
+          session.resetCalls += 1;
+          session.threadId = null;
+        },
+        setModel: () => {},
+        setWorkingDirectory: (workingDirectory, options) => {
+          session.workingDirectory = workingDirectory;
+          if (!options?.preserveSession) {
+            session.threadId = null;
+          }
+        },
+        status: () => ({ ready: true, streaming: false }),
+        getActiveAgentId: () => "codex",
+        listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: false } }],
+        switchAgent: () => {},
+      };
+      created.push(session);
+      return session as unknown as ReturnType<SessionManager["getOrCreate"]>;
+    },
+  };
+}
+
 function waitForWsOpen(client: WebSocket, timeoutMs = 1500): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Timed out waiting for ws open")), timeoutMs);
@@ -64,6 +116,9 @@ describe("web/server/ws/broadcast", () => {
   let port: number;
   let wss: import("ws").WebSocketServer;
   let runAdsCommandLineImpl: (command: string) => Promise<{ ok: boolean; output: string }>;
+  let workerSessions: FakeSession[];
+  let plannerSessions: FakeSession[];
+  let reviewerSessions: FakeSession[];
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -88,15 +143,18 @@ describe("web/server/ws/broadcast", () => {
         workspaceRoot?: string;
       }
     >();
-    const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
-    const plannerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
-    const reviewerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
     const workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     const plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
     const reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
+    const workerFactory = createFakeSessionFactory("worker");
+    const plannerFactory = createFakeSessionFactory("planner");
+    const reviewerFactory = createFakeSessionFactory("reviewer");
+    workerSessions = workerFactory.created;
+    plannerSessions = plannerFactory.created;
+    reviewerSessions = reviewerFactory.created;
 
     wss = attachWebSocketServer({
       server,
@@ -129,9 +187,15 @@ describe("web/server/ws/broadcast", () => {
         persistCwdStore: () => {},
       },
       sessions: {
-        workerSessionManager,
-        plannerSessionManager,
-        reviewerSessionManager,
+        workerSessionManager: new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, {
+          createSession: workerFactory.factory as never,
+        }),
+        plannerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
+          createSession: plannerFactory.factory as never,
+        }),
+        reviewerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
+          createSession: reviewerFactory.factory as never,
+        }),
         getWorkspaceLock: () => lock,
         getPlannerWorkspaceLock: () => lock,
         getReviewerWorkspaceLock: () => lock,
@@ -302,6 +366,12 @@ describe("web/server/ws/broadcast", () => {
     assert.equal(plannerReset.type, "session_reset");
     assert.equal(reviewerReset.type, "session_reset");
     assert.equal(result.type, "result");
+    assert.equal(workerSessions[0]?.resetCalls, 1);
+    assert.equal(plannerSessions[0]?.resetCalls, 1);
+    assert.equal(reviewerSessions[0]?.resetCalls, 1);
+    assert.equal(workerSessions[0]?.threadId, null);
+    assert.equal(plannerSessions[0]?.threadId, null);
+    assert.equal(reviewerSessions[0]?.threadId, null);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(

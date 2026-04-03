@@ -1,7 +1,7 @@
 import type { ContextRestoreMode } from "./sessionState.js";
 
 export interface RuntimeSession {
-  setWorkingDirectory(workingDirectory?: string): void;
+  setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   getThreadId(): string | null;
   reset(): void;
 }
@@ -70,14 +70,14 @@ export class SessionRuntimeRegistry<
     return record;
   }
 
-  updateWorkingDirectory(userId: number, cwd: string): boolean {
+  updateWorkingDirectory(userId: number, cwd: string, options?: { preserveSession?: boolean }): boolean {
     const record = this.sessions.get(userId);
     if (!record || record.cwd === cwd) {
       return false;
     }
     record.cwd = cwd;
     record.lastActivity = Date.now();
-    record.session.setWorkingDirectory(cwd);
+    record.session.setWorkingDirectory(cwd, options);
     this.closeLogger(userId);
     return true;
   }

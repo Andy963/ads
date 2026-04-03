@@ -500,16 +500,16 @@ export class HybridOrchestrator {
     return this.sendWithAgent(agentId, entry, input, options);
   }
 
-  setWorkingDirectory(workingDirectory?: string): void {
+  setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
     this.workingDirectory = workingDirectory;
     const workspaceRoot = detectWorkspaceFrom(workingDirectory ?? process.cwd());
     this.systemPromptManager?.setWorkspaceRoot(workspaceRoot);
-    this.broadcastWorkingDirectory(workingDirectory);
+    this.broadcastWorkingDirectory(workingDirectory, options);
   }
 
-  private broadcastWorkingDirectory(workingDirectory?: string): void {
+  private broadcastWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
     for (const { adapter } of this.adapters.values()) {
-      adapter.setWorkingDirectory?.(workingDirectory);
+      adapter.setWorkingDirectory?.(workingDirectory, options);
     }
   }
 

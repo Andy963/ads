@@ -263,6 +263,37 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
     };
 
+    const resetSharedSessionBackends = (): void => {
+      const sharedLaneSessions = [
+        { chatSessionId: "main", sessionManager: sessions.workerSessionManager },
+        { chatSessionId: "planner", sessionManager: sessions.plannerSessionManager },
+        { chatSessionId: "reviewer", sessionManager: sessions.reviewerSessionManager },
+      ] as const;
+      for (const lane of sharedLaneSessions) {
+        const identity = buildWsConnectionIdentity({
+          authUserId,
+          sessionId,
+          chatSessionId: lane.chatSessionId,
+          randomHex: () => "",
+        });
+        const reviewerHistoryKey = `${authUserId}::${sessionId}::reviewer`;
+        const preservedReviewerSnapshotId =
+          lane.chatSessionId === "reviewer"
+            ? String(
+                reviewerSnapshotBindings.get(reviewerHistoryKey) ??
+                  lane.sessionManager.getSavedReviewerSnapshotId(identity.userId) ??
+                  "",
+              ).trim() || null
+            : null;
+        lane.sessionManager.reset(identity.userId);
+        lane.sessionManager.reset(identity.legacyUserId);
+        if (lane.chatSessionId === "reviewer" && preservedReviewerSnapshotId) {
+          reviewerSnapshotBindings.set(reviewerHistoryKey, preservedReviewerSnapshotId);
+          lane.sessionManager.saveReviewerSnapshotBinding(identity.userId, preservedReviewerSnapshotId);
+        }
+      }
+    };
+
     const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean =>
       abortInFlightHistory({
         interruptControllers: state.interruptControllers,
@@ -385,6 +416,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             cwdStorePath: state.cwdStorePath,
             persistCwdStore: state.persistCwdStore,
             broadcastSessionReset,
+            resetSharedSessionBackends,
           },
           reviewerSnapshotBindings,
           registerSessionCacheBinding,

@@ -80,6 +80,7 @@ export async function handleWsControlMessage(args: {
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
   broadcastSessionReset?: (payload: unknown) => void;
+  resetSharedSessionBackends?: () => void;
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
@@ -108,7 +109,10 @@ export async function handleWsControlMessage(args: {
       `[Web][continuity] reset source=clear_history user=${args.userId} history=${args.historyKey} reviewer=${args.isReviewerChat} preserveRequested=${requestedSnapshotId ?? "none"} preserveApplied=${preservedSnapshotId ?? "none"}`,
     );
     args.historyStore.clear(args.historyKey);
-    args.sessionManager.reset(args.userId);
+    args.resetSharedSessionBackends?.();
+    if (!args.resetSharedSessionBackends) {
+      args.sessionManager.reset(args.userId);
+    }
     if (args.isReviewerChat) {
       args.reviewerSnapshotBindings.delete(args.historyKey);
       args.sessionManager.clearSavedReviewerSnapshotBinding?.(args.userId);

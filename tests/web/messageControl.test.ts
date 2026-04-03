@@ -25,7 +25,7 @@ describe("web/ws/messageControl", () => {
     const sent: unknown[] = [];
     const broadcasted: unknown[] = [];
     const cleared: string[] = [];
-    const reset: number[] = [];
+    let sharedResetCalls = 0;
     const bindings = new Map([["history-1", "snap-1"]]);
     let aborted = 0;
     const controller = new AbortController();
@@ -41,9 +41,7 @@ describe("web/ws/messageControl", () => {
       userId: 7,
       historyKey: "history-1",
       currentCwd: "/tmp/project",
-      sessionManager: {
-        reset: (userId: number) => reset.push(userId),
-      } as any,
+      sessionManager: {} as any,
       orchestrator: { id: "orch" } as any,
       getWorkspaceLock: (() => null) as any,
       historyStore: {
@@ -55,6 +53,9 @@ describe("web/ws/messageControl", () => {
       ensureTaskContext: (() => ({})) as any,
       sendJson: (payload) => sent.push(payload),
       broadcastSessionReset: (payload) => broadcasted.push(payload),
+      resetSharedSessionBackends: () => {
+        sharedResetCalls += 1;
+      },
       logger: { info: () => {}, warn: () => {} },
     });
 
@@ -62,7 +63,7 @@ describe("web/ws/messageControl", () => {
     assert.equal(aborted, 1);
     assert.equal(bindings.has("history-1"), false);
     assert.deepEqual(cleared, ["history-1"]);
-    assert.deepEqual(reset, [7]);
+    assert.equal(sharedResetCalls, 1);
     assert.equal(promptRunEpochs.get("history-1"), 2);
     assert.deepEqual(broadcasted, [{ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" }]);
     assert.deepEqual(sent[0], {

@@ -205,10 +205,12 @@ export class CodexCliAdapter implements AgentAdapter {
     this.threadId = null;
   }
 
-  setWorkingDirectory(workingDirectory?: string): void {
+  setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
     if (this.workingDirectory === workingDirectory) return;
     this.workingDirectory = workingDirectory;
-    this.reset();
+    if (!options?.preserveSession) {
+      this.reset();
+    }
   }
 
   setModel(model?: string): void {
