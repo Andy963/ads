@@ -59,7 +59,15 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     runtimeTasksBusy,
   } = ctx;
 
-  const { threadReset, clearConversationForResume, enqueueMainPrompt, enqueuePrompt, removeQueuedPrompt, pushMessageBeforeLive } = ctx;
+  const {
+    threadReset,
+    clearConversationForResume,
+    enqueueMainPrompt,
+    enqueuePrompt,
+    removeQueuedPrompt,
+    pushMessageBeforeLive,
+    clearPendingPromptReplayState,
+  } = ctx;
 
   const { setNotice, clearNotice } = createNoticeActions({ activeProjectId, normalizeProjectId, getRuntime });
 
@@ -569,6 +577,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const clearActiveChat = (): void => {
     const rt = activeRuntime.value;
     rt.composerDraft.value = "";
+    rt.queuedPrompts.value = [];
+    clearPendingPromptReplayState(rt);
     threadReset(rt, {
       notice: "",
       warning: null,
@@ -583,6 +593,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const rt = activePlannerRuntime.value;
     rt.composerDraft.value = "";
     rt.queuedPrompts.value = [];
+    clearPendingPromptReplayState(rt);
     threadReset(rt, {
       notice: "",
       warning: null,
@@ -597,6 +608,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const rt = activeReviewerRuntime.value;
     rt.composerDraft.value = "";
     rt.queuedPrompts.value = [];
+    clearPendingPromptReplayState(rt);
     rt.boundReviewSnapshotId.value = null;
     rt.latestReviewArtifact.value = null;
     threadReset(rt, {
@@ -613,6 +625,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const rt = activeReviewerRuntime.value;
     rt.composerDraft.value = "";
     rt.queuedPrompts.value = [];
+    clearPendingPromptReplayState(rt);
     const boundSnapshotId = String(rt.boundReviewSnapshotId.value ?? "").trim();
     threadReset(rt, {
       notice: "",

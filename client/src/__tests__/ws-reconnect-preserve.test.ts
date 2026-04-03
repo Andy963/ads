@@ -75,6 +75,18 @@ async function mountReconnectHarness() {
   return { wrapper, controller, rt: controller.getRuntime("default") };
 }
 
+function seedPendingReplayState(rt: any, chatSessionId: string, clientMessageId: string): void {
+  rt.projectSessionId = "default";
+  rt.pendingAckClientMessageId = clientMessageId;
+  rt.queuedPrompts.value = [
+    { id: `${chatSessionId}-queued`, clientMessageId, text: `${chatSessionId} prompt`, images: [], createdAt: Date.now() },
+  ];
+  sessionStorage.setItem(
+    `ads.pendingPrompt.default.${chatSessionId}`,
+    JSON.stringify({ clientMessageId, text: `${chatSessionId} prompt`, createdAt: Date.now() }),
+  );
+}
+
 describe("WS reconnect preserves UI unless thread_reset", () => {
   beforeEach(() => {
     lastWs = null;
@@ -263,6 +275,54 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(rt.messages.value).toHaveLength(0);
     expect(info).toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("clears pending replay state when the user resets the active chat", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    seedPendingReplayState(rt, "main", "main-ack");
+    await settleUi(wrapper);
+
+    controller.clearActiveChat();
+    await settleUi(wrapper);
+
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(lastWs).toBeTruthy();
+    expect(lastWs!.clearHistory).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("clears pending replay state for planner and reviewer reset flows", async () => {
+    const { wrapper, controller } = await mountReconnectHarness();
+    const plannerRt = controller.getPlannerRuntime("default");
+    const reviewerRt = controller.getReviewerRuntime("default");
+
+    seedPendingReplayState(plannerRt, "planner", "planner-ack");
+    controller.clearPlannerChat();
+    await settleUi(wrapper);
+
+    expect(plannerRt.pendingAckClientMessageId).toBeNull();
+    expect(plannerRt.queuedPrompts.value).toEqual([]);
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.planner")).toBeNull();
+
+    seedPendingReplayState(reviewerRt, "reviewer", "reviewer-ack");
+    controller.clearReviewerChat();
+    await settleUi(wrapper);
+
+    expect(reviewerRt.pendingAckClientMessageId).toBeNull();
+    expect(reviewerRt.queuedPrompts.value).toEqual([]);
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.reviewer")).toBeNull();
+
+    seedPendingReplayState(reviewerRt, "reviewer", "reviewer-ack-2");
+    controller.startNewReviewerSession();
+    await settleUi(wrapper);
+
+    expect(reviewerRt.pendingAckClientMessageId).toBeNull();
+    expect(reviewerRt.queuedPrompts.value).toEqual([]);
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.reviewer")).toBeNull();
     wrapper.unmount();
   });
 });
