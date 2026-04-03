@@ -5,6 +5,7 @@ import { defineComponent } from "vue";
 import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
 
 const TEST_TIMEOUT_MS = 40_000;
+const PENDING_PROMPT_KEY = "ads.pendingPrompt.default.main";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -243,7 +244,7 @@ describe("Model selector persistence", () => {
     "waits for welcome effective model before replaying a restored pending prompt",
     async () => {
       sessionStorage.setItem(
-        "ads.pendingPrompt.default.main",
+        PENDING_PROMPT_KEY,
         JSON.stringify({ clientMessageId: "c-1", text: "hello", createdAt: Date.now() }),
       );
 
@@ -276,4 +277,51 @@ describe("Model selector persistence", () => {
     },
     TEST_TIMEOUT_MS,
   );
+
+  it.each([
+    [4401, "Unauthorized"],
+    [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],
+  ])(
+    "does not replay a pre-ack pending prompt after terminal close code %s",
+    async (code) => {
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+
+      wrapper.vm.sendMainPrompt?.("hello");
+      await settleUi(wrapper);
+
+      expect(sessionStorage.getItem(PENDING_PROMPT_KEY)).toContain("\"text\":\"hello\"");
+      lastSendPromptPayload = null;
+
+      lastWorkerWs!.onClose?.({ code, reason: "" });
+      await settleUi(wrapper);
+
+      expect(sessionStorage.getItem(PENDING_PROMPT_KEY)).toBeNull();
+
+      await wrapper.vm.connectWs?.();
+      await settleUi(wrapper);
+      expect(lastWorkerWs).toBeTruthy();
+
+      lastWorkerWs!.onOpen?.();
+      await settleUi(wrapper);
+      lastWorkerWs!.onMessage?.({
+        type: "welcome",
+        threadId: null,
+        chatSessionId: "main",
+        inFlight: false,
+        effectiveModel: "gpt-4.1",
+        effectiveModelReasoningEffort: "high",
+      });
+      await settleUi(wrapper);
+
+      expect(lastSendPromptPayload).toBeNull();
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
 });

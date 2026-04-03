@@ -46,6 +46,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     ingestExploredActivity,
     upsertLiveActivity,
     clearPendingPrompt,
+    clearPendingPromptReplayState,
     threadReset,
     finalizeAssistant,
     commandKeyForWsEvent,
@@ -344,6 +345,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
       rt.delegationsInFlight.value = [];
+      clearPendingPromptReplayState(rt);
       dropReconnectBusyMessage();
     };
 

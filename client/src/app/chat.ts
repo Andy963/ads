@@ -141,10 +141,31 @@ export function createChatActions(ctx: AppContext) {
     }
   };
 
-  const restorePendingPrompt = (rt: ProjectRuntime): void => {
-    if (!rt.projectSessionId) return;
+  const readPendingPrompt = (rt: ProjectRuntime): PersistedPrompt | null => {
+    if (!rt.projectSessionId) return null;
     const key = pendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId);
-    const stored = safeJsonParse<PersistedPrompt>(sessionStorage.getItem(key));
+    return safeJsonParse<PersistedPrompt>(sessionStorage.getItem(key));
+  };
+
+  const clearPendingPromptReplayState = (rt: ProjectRuntime): void => {
+    const pendingIds = new Set<string>();
+    const ackClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
+    if (ackClientMessageId) {
+      pendingIds.add(ackClientMessageId);
+    }
+    const storedClientMessageId = String(readPendingPrompt(rt)?.clientMessageId ?? "").trim();
+    if (storedClientMessageId) {
+      pendingIds.add(storedClientMessageId);
+    }
+    if (pendingIds.size > 0) {
+      rt.queuedPrompts.value = rt.queuedPrompts.value.filter((q) => !pendingIds.has(String(q.clientMessageId ?? "").trim()));
+    }
+    rt.pendingAckClientMessageId = null;
+    clearPendingPrompt(rt);
+  };
+
+  const restorePendingPrompt = (rt: ProjectRuntime): void => {
+    const stored = readPendingPrompt(rt);
     if (!stored) return;
     const clientMessageId = String(stored.clientMessageId ?? "").trim();
     const text = String(stored.text ?? "");
@@ -578,6 +599,7 @@ export function createChatActions(ctx: AppContext) {
     findLastLiveIndex,
     savePendingPrompt,
     clearPendingPrompt,
+    clearPendingPromptReplayState,
     restorePendingPrompt,
     trimChatItems,
     setMessages,
