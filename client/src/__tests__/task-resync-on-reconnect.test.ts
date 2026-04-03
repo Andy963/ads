@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { shallowMount } from "@vue/test-utils";
+import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import { createAppController } from "../app/controller";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -70,31 +71,35 @@ vi.mock("../api/ws", () => {
   return { AdsWebSocket };
 });
 
-vi.mock("../components/LoginGate.vue", () => {
-  return {
-    default: defineComponent({
-      name: "LoginGate",
-      emits: ["logged-in"],
-      mounted() {
-        this.$emit("logged-in", { id: "u-1", username: "admin" });
-      },
-      template: "<div />",
-    }),
-  };
-});
-
 async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
   await wrapper.vm.$nextTick();
   await Promise.resolve();
   await wrapper.vm.$nextTick();
 }
 
-async function ensureWsConnected(wrapper: any): Promise<void> {
-  if (!lastWs) {
-    await wrapper.vm.connectWs?.();
-    await settleUi(wrapper);
+async function mountReconnectHarness() {
+  let controller: ReturnType<typeof createAppController> | null = null;
+  const Harness = defineComponent({
+    name: "TaskReconnectHarness",
+    setup() {
+      controller = createAppController();
+      return {};
+    },
+    template: "<div />",
+  });
+
+  const wrapper = mount(Harness);
+  await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
+  if (!controller) {
+    throw new Error("controller not created");
   }
+
+  controller.loggedIn.value = true;
+  controller.currentUser.value = { id: "u-1", username: "admin" } as any;
+  await controller.connectWs("default");
+  await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
   expect(lastWs).toBeTruthy();
+  return { wrapper, controller, rt: controller.getRuntime("default") };
 }
 
 function makeTask(overrides: Partial<Task>): Task {
@@ -126,12 +131,20 @@ describe("task list resync on ws reconnect", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     lastWs = null;
+    localStorage.clear();
+    sessionStorage.clear();
 
+    let queueStatusFetchCount = 0;
     let tasksFetchCount = 0;
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
-      if (url.includes("/api/task-queue/status"))
+      if (url.includes("/api/task-queue/status")) {
+        queueStatusFetchCount += 1;
+        if (queueStatusFetchCount === 1) {
+          return { enabled: true, running: true, ready: true, streaming: true } satisfies TaskQueueStatus;
+        }
         return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
+      }
       if (url.startsWith("/api/tasks")) {
         tasksFetchCount += 1;
         if (tasksFetchCount === 1) return [makeTask({ status: "running", completedAt: null })] satisfies Task[];
@@ -147,34 +160,37 @@ describe("task list resync on ws reconnect", () => {
     lastWs = null;
     vi.useRealTimers();
     vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
-  it("reloads tasks after reconnect so missed terminal events do not leave stale status", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
+  it("reloads queue state and tasks after reconnect so missed terminal events do not leave stale task state", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
 
-    await ensureWsConnected(wrapper);
-    await settleUi(wrapper);
+    await controller.loadQueueStatus("default");
+    await controller.loadTasks("default");
+    await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
 
-    expect(((wrapper.vm as any).tasks ?? []).map((t: any) => t.status)).toEqual(["running"]);
+    expect(rt.queueStatus.value).toMatchObject({ enabled: true, ready: true, running: true, streaming: true });
+    expect(rt.tasks.value.map((task) => task.status)).toEqual(["running"]);
 
-    // Simulate a WS disconnect that could cause the UI to miss terminal task events.
+    const disconnectedWs = lastWs;
+
     lastWs!.onClose?.({ code: 1006, reason: "" });
-    await settleUi(wrapper);
+    await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
 
-    // Let the reconnect timer fire (scheduleReconnect uses exponential backoff starting at ~800ms).
-    vi.advanceTimersByTime(2000);
-    await Promise.resolve();
-    await settleUi(wrapper);
+    await vi.advanceTimersByTimeAsync(800);
+    await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
 
-    // The reconnect creates a new ws instance; simulate successful connect.
     expect(lastWs).toBeTruthy();
-    lastWs!.onOpen?.();
-    await Promise.resolve();
-    await settleUi(wrapper);
+    expect(lastWs).not.toBe(disconnectedWs);
 
-    expect(((wrapper.vm as any).tasks ?? []).map((t: any) => t.status)).toEqual(["completed"]);
+    lastWs!.onOpen?.();
+    await vi.waitFor(() => {
+      expect(rt.queueStatus.value).toMatchObject({ enabled: true, ready: true, running: false, streaming: false });
+      expect(rt.tasks.value.map((task) => task.status)).toEqual(["completed"]);
+    });
+
     wrapper.unmount();
   });
 });
