@@ -244,4 +244,68 @@ describe("web/server/ws/broadcast", () => {
       // ignore
     }
   });
+
+  it("broadcasts clear_history resets only to sibling connections in the same chat lane", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+    const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
+
+    const mainClientA = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
+    const mainClientB = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
+    const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
+    await waitForWsOpen(mainClientA);
+    await waitForWsOpen(mainClientB);
+    await waitForWsOpen(plannerClient);
+
+    const plannerMessages: WsJson[] = [];
+    const plannerHandler = (raw: RawData) => {
+      try {
+        plannerMessages.push(JSON.parse(raw.toString("utf8")) as WsJson);
+      } catch {
+        // ignore
+      }
+    };
+    plannerClient.on("message", plannerHandler);
+
+    const resetPromise = waitForWsMessage(
+      mainClientB,
+      (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
+      1500,
+    );
+    const resultPromise = waitForWsMessage(
+      mainClientA,
+      (msg) => msg.type === "result" && msg.kind === "clear_history" && msg.ok === true,
+      1500,
+    );
+
+    mainClientA.send(JSON.stringify({ type: "clear_history" }));
+
+    const reset = await resetPromise;
+    const result = await resultPromise;
+    assert.equal(reset.type, "session_reset");
+    assert.equal(result.type, "result");
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      plannerMessages.some((msg) => msg.type === "session_reset"),
+      false,
+    );
+
+    plannerClient.off("message", plannerHandler);
+    try {
+      mainClientA.terminate();
+    } catch {
+      // ignore
+    }
+    try {
+      mainClientB.terminate();
+    } catch {
+      // ignore
+    }
+    try {
+      plannerClient.terminate();
+    } catch {
+      // ignore
+    }
+  });
 });

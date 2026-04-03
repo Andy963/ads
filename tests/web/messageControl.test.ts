@@ -23,6 +23,7 @@ describe("web/ws/messageControl", () => {
 
   it("handles clear_history and reviewer read-only control messages", async () => {
     const sent: unknown[] = [];
+    const broadcasted: unknown[] = [];
     const cleared: string[] = [];
     const reset: number[] = [];
     const bindings = new Map([["history-1", "snap-1"]]);
@@ -35,6 +36,7 @@ describe("web/ws/messageControl", () => {
 
     const clearedHistory = await handleWsControlMessage({
       parsed: { type: "clear_history" },
+      chatSessionId: "planner",
       isReviewerChat: true,
       userId: 7,
       historyKey: "history-1",
@@ -52,6 +54,7 @@ describe("web/ws/messageControl", () => {
       reviewerSnapshotBindings: bindings,
       ensureTaskContext: (() => ({})) as any,
       sendJson: (payload) => sent.push(payload),
+      broadcastSessionReset: (payload) => broadcasted.push(payload),
       logger: { info: () => {}, warn: () => {} },
     });
 
@@ -61,6 +64,7 @@ describe("web/ws/messageControl", () => {
     assert.deepEqual(cleared, ["history-1"]);
     assert.deepEqual(reset, [7]);
     assert.equal(promptRunEpochs.get("history-1"), 2);
+    assert.deepEqual(broadcasted, [{ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" }]);
     assert.deepEqual(sent[0], {
       type: "result",
       ok: true,
@@ -70,6 +74,7 @@ describe("web/ws/messageControl", () => {
 
     const reviewerGuard = await handleWsControlMessage({
       parsed: { type: "command", payload: "ls" },
+      chatSessionId: "reviewer",
       isReviewerChat: true,
       userId: 7,
       historyKey: "history-1",
@@ -93,12 +98,14 @@ describe("web/ws/messageControl", () => {
 
   it("preserves the existing reviewer snapshot binding only when clear_history explicitly requests the same snapshot", async () => {
     const sent: unknown[] = [];
+    const broadcasted: unknown[] = [];
     const bindings = new Map([["history-1", "snap-1"]]);
     const preserved: Array<{ userId: number; snapshotId: string }> = [];
     const clearedSaved: number[] = [];
 
     await handleWsControlMessage({
       parsed: { type: "clear_history", payload: { preserveReviewerSnapshotId: "snap-1" } },
+      chatSessionId: "reviewer",
       isReviewerChat: true,
       userId: 7,
       historyKey: "history-1",
@@ -119,12 +126,14 @@ describe("web/ws/messageControl", () => {
         },
       })) as any,
       sendJson: (payload) => sent.push(payload),
+      broadcastSessionReset: (payload) => broadcasted.push(payload),
       logger: { info: () => {}, warn: () => {} },
     });
 
     assert.equal(bindings.get("history-1"), "snap-1");
     assert.deepEqual(clearedSaved, [7]);
     assert.deepEqual(preserved, [{ userId: 7, snapshotId: "snap-1" }]);
+    assert.deepEqual(broadcasted, [{ type: "session_reset", source: "clear_history", sourceChatSessionId: "reviewer" }]);
     assert.deepEqual(sent[0], {
       type: "result",
       ok: true,
@@ -137,6 +146,7 @@ describe("web/ws/messageControl", () => {
 
     await handleWsControlMessage({
       parsed: { type: "clear_history", payload: { preserveReviewerSnapshotId: "snap-2" } },
+      chatSessionId: "reviewer",
       isReviewerChat: true,
       userId: 7,
       historyKey: "history-1",

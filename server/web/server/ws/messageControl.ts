@@ -65,6 +65,7 @@ export function ensureWsSessionLogger(args: {
 
 export async function handleWsControlMessage(args: {
   parsed: WsMessage;
+  chatSessionId: string;
   isReviewerChat: boolean;
   userId: number;
   historyKey: string;
@@ -78,6 +79,7 @@ export async function handleWsControlMessage(args: {
   reviewerSnapshotBindings: Map<string, string>;
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
+  broadcastSessionReset?: (payload: unknown) => void;
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
@@ -115,6 +117,11 @@ export async function handleWsControlMessage(args: {
         args.sessionManager.saveReviewerSnapshotBinding(args.userId, preservedSnapshotId);
       }
     }
+    args.broadcastSessionReset?.({
+      type: "session_reset",
+      source: "clear_history",
+      sourceChatSessionId: args.chatSessionId,
+    });
     args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
     return { handled: true, orchestrator: args.orchestrator };
   }

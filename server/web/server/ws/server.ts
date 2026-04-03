@@ -251,6 +251,21 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         sendJson: safeJsonSend,
       });
 
+    const broadcastSessionReset = (payload: unknown): void => {
+      for (const [candidate, meta] of state.clientMetaByWs.entries()) {
+        if (candidate === ws) {
+          continue;
+        }
+        if (meta.authUserId !== authUserId || meta.sessionId !== sessionId) {
+          continue;
+        }
+        if (meta.chatSessionId !== chatSessionId) {
+          continue;
+        }
+        safeJsonSend(candidate, payload);
+      }
+    };
+
     const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean =>
       abortInFlightHistory({
         interruptControllers: state.interruptControllers,
@@ -372,6 +387,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             cwdStore: state.cwdStore,
             cwdStorePath: state.cwdStorePath,
             persistCwdStore: state.persistCwdStore,
+            broadcastSessionReset,
           },
           reviewerSnapshotBindings,
           registerSessionCacheBinding,

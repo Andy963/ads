@@ -294,6 +294,42 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     });
   };
 
+  const handleSharedSessionReset = (): void => {
+    const hasVisibleLocalContinuity =
+      rt.messages.value.length > 0 ||
+      Boolean(String(rt.activeThreadId.value ?? "").trim()) ||
+      Boolean(String(rt.pendingAckClientMessageId ?? "").trim()) ||
+      rt.queuedPrompts.value.length > 0 ||
+      rt.turnInFlight ||
+      rt.busy.value;
+
+    cancelPendingResume(rt);
+    rt.busy.value = false;
+    rt.turnInFlight = false;
+    rt.turnHasPatch = false;
+    rt.delegationsInFlight.value = [];
+    rt.pendingAckClientMessageId = null;
+    rt.queuedPrompts.value = [];
+    resetTurnPatchSummary();
+    clearPendingPrompt(rt);
+    clearStepLive(rt);
+    finalizeCommandBlock(rt);
+
+    if (!hasVisibleLocalContinuity) {
+      rt.activeThreadId.value = null;
+      return;
+    }
+
+    threadReset(rt, {
+      notice: "共享上下文已在其他窗格中重置。为避免误导，当前聊天历史已清空。",
+      warning: null,
+      keepLatestTurn: false,
+      clearBackendHistory: false,
+      resetThreadId: true,
+      source: "shared_session_reset",
+    });
+  };
+
   return (msg: unknown): void => {
     if (!isRecord(msg)) return;
     const typeValue = msg.type;
@@ -579,6 +615,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         resetThreadId: true,
         source: "thread_reset_signal",
       });
+      return;
+    }
+
+    if (type === "session_reset") {
+      const sourceChatSessionId = String(msg.sourceChatSessionId ?? "").trim();
+      const currentChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+      if (sourceChatSessionId && sourceChatSessionId !== currentChatSessionId) {
+        return;
+      }
+      handleSharedSessionReset();
       return;
     }
 

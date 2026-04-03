@@ -27,6 +27,8 @@ function createRuntime(): any {
     taskBundleDrafts: { value: [] } satisfies Ref<any[]>,
     queuedPrompts: { value: [] } satisfies Ref<string[]>,
     threadWarning: { value: null } satisfies Ref<string | null>,
+    boundReviewSnapshotId: { value: null } satisfies Ref<string | null>,
+    latestReviewArtifact: { value: null } satisfies Ref<any>,
     chatSessionId: "main",
     ignoreNextHistory: false,
     resumeReplacePending: false,
@@ -38,6 +40,10 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     let n = 0;
     return (prefix: string) => `${prefix}-${++n}`;
   })();
+
+  const clearPendingPrompt = vi.fn();
+  const clearStepLive = vi.fn();
+  const finalizeCommandBlock = vi.fn();
 
   const threadReset = vi.fn((targetRt: any, params: { resetThreadId?: boolean }) => {
     if (params.resetThreadId) {
@@ -56,11 +62,11 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     updateProject: args.updateProject,
     applyResumeHistory: vi.fn(),
     cancelPendingResume: vi.fn(),
-    clearPendingPrompt: vi.fn(),
-    clearStepLive: vi.fn(),
+    clearPendingPrompt,
+    clearStepLive,
     commandKeyForWsEvent: () => null,
     finalizeAssistant: vi.fn(),
-    finalizeCommandBlock: vi.fn(),
+    finalizeCommandBlock,
     flushQueuedPrompts: vi.fn(),
     ingestCommand: vi.fn(),
     ingestCommandActivity: vi.fn(),
@@ -74,7 +80,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     upsertStreamingDelta: vi.fn(),
   });
 
-  return { handler, threadReset };
+  return { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock };
 }
 
 describe("ws workspace project sync", () => {
@@ -227,5 +233,92 @@ describe("ws workspace project sync", () => {
     expect(injected.threadReset).not.toHaveBeenCalled();
     expect(injectedRt.messages.value.map((entry: any) => entry.content)).toEqual(["keep me too"]);
     expect(injectedRt.activeThreadId.value).toBeNull();
+  });
+
+  it("clears stale local continuity when a sibling connection resets the same chat lane", () => {
+    const rt = createRuntime();
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "stale" }];
+    rt.activeThreadId.value = "thread-stale";
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.turnHasPatch = true;
+    rt.delegationsInFlight.value = [{ id: "delegation-1" }];
+    rt.pendingAckClientMessageId = "ack-1";
+    rt.queuedPrompts.value = ["queued"];
+    const updateProject = vi.fn();
+    const { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "main" });
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.turnHasPatch).toBe(false);
+    expect(rt.delegationsInFlight.value).toEqual([]);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(clearPendingPrompt).toHaveBeenCalledWith(rt);
+    expect(clearStepLive).toHaveBeenCalledWith(rt);
+    expect(finalizeCommandBlock).toHaveBeenCalledWith(rt);
+    expect(threadReset).toHaveBeenCalledWith(
+      rt,
+      expect.objectContaining({
+        source: "shared_session_reset",
+        clearBackendHistory: false,
+        resetThreadId: true,
+      }),
+    );
+  });
+
+  it("ignores reset events from a different chat lane", () => {
+    const rt = createRuntime();
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-keep";
+    const { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" });
+
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(clearPendingPrompt).not.toHaveBeenCalled();
+    expect(clearStepLive).not.toHaveBeenCalled();
+    expect(finalizeCommandBlock).not.toHaveBeenCalled();
+    expect(rt.messages.value.map((entry: any) => entry.content)).toEqual(["keep me"]);
+    expect(rt.activeThreadId.value).toBe("thread-keep");
+  });
+
+  it("preserves reviewer snapshot bindings when a sibling reviewer connection resets the shared session", () => {
+    const rt = createRuntime();
+    rt.chatSessionId = "reviewer";
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "review this" }];
+    rt.activeThreadId.value = "reviewer-thread";
+    rt.boundReviewSnapshotId.value = "snapshot-9";
+    rt.latestReviewArtifact.value = { id: "artifact-1", snapshotId: "snapshot-9" };
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "reviewer" });
+
+    expect(rt.boundReviewSnapshotId.value).toBe("snapshot-9");
+    expect(rt.latestReviewArtifact.value).toEqual({ id: "artifact-1", snapshotId: "snapshot-9" });
+    expect(threadReset).toHaveBeenCalledWith(
+      rt,
+      expect.objectContaining({
+        source: "shared_session_reset",
+        resetThreadId: true,
+      }),
+    );
   });
 });
