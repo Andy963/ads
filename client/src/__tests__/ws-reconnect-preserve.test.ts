@@ -1,12 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { shallowMount } from "@vue/test-utils";
+import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import { createAppController } from "../app/controller";
 
-type GetImpl = (url: string) => Promise<unknown>;
-
-let getImpl: GetImpl | null = null;
 let lastWs: {
   onOpen?: () => void;
   onClose?: (ev: { code: number; reason?: string }) => void;
@@ -14,31 +11,6 @@ let lastWs: {
   onMessage?: (msg: unknown) => void;
   clearHistory: () => void;
 } | null = null;
-
-vi.mock("../api/client", () => {
-  class ApiClient {
-    constructor(_: { baseUrl: string }) {}
-
-    async get<T>(url: string): Promise<T> {
-      if (!getImpl) throw new Error("getImpl not set");
-      return (await getImpl(url)) as T;
-    }
-
-    async post<T>(): Promise<T> {
-      throw new Error("not implemented");
-    }
-
-    async patch<T>(): Promise<T> {
-      throw new Error("not implemented");
-    }
-
-    async delete<T>(): Promise<T> {
-      throw new Error("not implemented");
-    }
-  }
-
-  return { ApiClient };
-});
 
 vi.mock("../api/ws", () => {
   class AdsWebSocket {
@@ -70,85 +42,73 @@ vi.mock("../api/ws", () => {
   return { AdsWebSocket };
 });
 
-vi.mock("../components/LoginGate.vue", () => {
-  return {
-    default: defineComponent({
-      name: "LoginGate",
-      emits: ["logged-in"],
-      mounted() {
-        this.$emit("logged-in", { id: "u-1", username: "admin" });
-      },
-      template: "<div />",
-    }),
-  };
-});
-
 async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
   await wrapper.vm.$nextTick();
   await Promise.resolve();
   await wrapper.vm.$nextTick();
 }
 
-async function ensureWsConnected(wrapper: any): Promise<void> {
-  // bootstrap() is async; keep tests deterministic by forcing a ws connect.
-  if (!lastWs) {
-    await wrapper.vm.connectWs?.();
-    await settleUi(wrapper);
+async function mountReconnectHarness() {
+  let controller: ReturnType<typeof createAppController> | null = null;
+  const Harness = defineComponent({
+    name: "ReconnectHarness",
+    setup() {
+      controller = createAppController();
+      return {};
+    },
+    template: "<div />",
+  });
+
+  const wrapper = mount(Harness);
+  await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
+  if (!controller) {
+    throw new Error("controller not created");
   }
+
+  controller.loggedIn.value = true;
+  controller.currentUser.value = { id: "u-1", username: "admin" } as any;
+  await controller.connectWs("default");
+  await settleUi(wrapper as { vm: { $nextTick: () => Promise<void> } });
   expect(lastWs).toBeTruthy();
+  return { wrapper, controller, rt: controller.getRuntime("default") };
 }
 
 describe("WS reconnect preserves UI unless thread_reset", () => {
   beforeEach(() => {
     lastWs = null;
-    getImpl = async (url: string) => {
-      if (url === "/api/models") return [] satisfies ModelConfig[];
-      if (url.includes("/api/task-queue/status"))
-        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-      if (url.startsWith("/api/tasks")) return [] satisfies Task[];
-      if (url.startsWith("/api/paths/validate")) return { ok: false };
-      return {};
-    };
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
   afterEach(() => {
-    getImpl = null;
     lastWs = null;
     vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
   it("does not clear messages on ws close", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
+    const { wrapper, rt } = await mountReconnectHarness();
 
-    await ensureWsConnected(wrapper);
-    (wrapper.vm as any).messages = [
+    rt.messages.value = [
       { id: "u1", role: "user", kind: "text", content: "Hello" },
       { id: "a1", role: "assistant", kind: "text", content: "World" },
     ];
-    (wrapper.vm as any).activeThreadId = "thread-1";
+    rt.activeThreadId.value = "thread-1";
     await settleUi(wrapper);
 
     lastWs!.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper);
 
-    expect((wrapper.vm as any).messages.map((m: any) => m.content)).toEqual(["Hello", "World"]);
-    expect((wrapper.vm as any).activeThreadId).toBe("thread-1");
+    expect(rt.messages.value.map((m: any) => m.content)).toEqual(["Hello", "World"]);
+    expect(rt.activeThreadId.value).toBe("thread-1");
     expect(info).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 
   it("keeps busy true on ws close until welcome resync clears it", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
-
-    const activeProjectId = String((wrapper.vm as any).activeProjectId ?? "").trim();
-    const rt = (wrapper.vm as any).getRuntime?.(activeProjectId);
-    expect(rt).toBeTruthy();
+    const { wrapper, controller, rt } = await mountReconnectHarness();
 
     rt.busy.value = true;
     await settleUi(wrapper);
@@ -158,7 +118,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(rt.busy.value).toBe(true);
 
-    await (wrapper.vm as any).connectWs?.();
+    await controller.connectWs("default");
     await settleUi(wrapper);
     expect(lastWs).toBeTruthy();
 
@@ -173,14 +133,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
   });
 
   it("clears stale local chat continuity when welcome reports a fresh context with no thread", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
-
-    const activeProjectId = String((wrapper.vm as any).activeProjectId ?? "").trim();
-    const rt = (wrapper.vm as any).getRuntime?.(activeProjectId);
-    expect(rt).toBeTruthy();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const { wrapper, rt } = await mountReconnectHarness();
 
     rt.messages.value = [
       { id: "u1", role: "user", kind: "text", content: "Old question" },
@@ -200,14 +154,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
   });
 
   it("treats fresh welcome as authoritative even when an unexpected thread id is present", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
-
-    const activeProjectId = String((wrapper.vm as any).activeProjectId ?? "").trim();
-    const rt = (wrapper.vm as any).getRuntime?.(activeProjectId);
-    expect(rt).toBeTruthy();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const { wrapper, rt } = await mountReconnectHarness();
 
     rt.messages.value = [
       { id: "u1", role: "user", kind: "text", content: "Old question" },
@@ -228,22 +176,19 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
   it("clears messages and records a thread_reset reason when receiving thread_reset", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
+    const { wrapper, rt } = await mountReconnectHarness();
 
-    (wrapper.vm as any).messages = [
+    rt.messages.value = [
       { id: "u1", role: "user", kind: "text", content: "Hello" },
       { id: "a1", role: "assistant", kind: "text", content: "World" },
     ];
-    (wrapper.vm as any).activeThreadId = "thread-1";
+    rt.activeThreadId.value = "thread-1";
     await settleUi(wrapper);
 
     lastWs!.onMessage?.({ type: "thread_reset" });
     await settleUi(wrapper);
 
-    const contents = (wrapper.vm as any).messages.map((m: any) => m.content);
+    const contents = rt.messages.value.map((m: any) => m.content);
     expect(contents.join("\n")).not.toContain("Hello");
     expect(contents.join("\n")).not.toContain("World");
     expect(info).toHaveBeenCalled();
@@ -254,24 +199,21 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
   it("suppresses the clear_history result bubble after user reset", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-    await ensureWsConnected(wrapper);
+    const { wrapper, controller, rt } = await mountReconnectHarness();
 
-    (wrapper.vm as any).messages = [
+    rt.messages.value = [
       { id: "u1", role: "user", kind: "text", content: "Hello" },
       { id: "a1", role: "assistant", kind: "text", content: "World" },
     ];
     await settleUi(wrapper);
 
-    (wrapper.vm as any).clearActiveChat();
+    controller.clearActiveChat();
     await settleUi(wrapper);
 
     lastWs!.onMessage?.({ type: "result", ok: true, output: "ignored", kind: "clear_history" });
     await settleUi(wrapper);
 
-    expect((wrapper.vm as any).messages).toHaveLength(0);
+    expect(rt.messages.value).toHaveLength(0);
     expect(info).toHaveBeenCalled();
     wrapper.unmount();
   });

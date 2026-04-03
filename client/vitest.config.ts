@@ -8,7 +8,7 @@ const repoRoot = path.resolve(webRoot, "..");
 const frontendMaxWorkers =
   process.env.ADS_VITEST_MAX_WORKERS?.trim() ||
   process.env.VITEST_MAX_WORKERS?.trim() ||
-  "50%";
+  "2";
 
 export default defineConfig({
   root: webRoot,
