@@ -176,6 +176,7 @@ const {
   activeLaneBusy,
   activeLaneThreadWarning,
   activeLaneHasResume,
+  activeLaneNewSessionBlocked,
   handleLaneNewSession,
   handleLaneResumeThread,
 } = useLaneRuntimeBridge({
@@ -478,7 +479,7 @@ const reviewerConnectionStatus = computed(() => {
             class="laneTabIconBtn"
             type="button"
             title="新会话"
-            :disabled="activeLaneBusy"
+            :disabled="activeLaneBusy || activeLaneNewSessionBlocked"
             data-testid="lane-new-session"
             @click.stop="handleLaneNewSession"
           >

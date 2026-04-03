@@ -145,8 +145,14 @@ export function useLaneRuntimeBridge(params: {
   });
 
   const activeLaneHasResume = computed(() => activeChatLane.value !== "reviewer");
+  const activeLaneNewSessionBlocked = computed(() => {
+    if (activeChatLane.value === "planner") return !plannerConnected.value;
+    if (activeChatLane.value === "reviewer") return !reviewerConnected.value;
+    return false;
+  });
 
   function handleLaneNewSession(): void {
+    if (activeLaneNewSessionBlocked.value) return;
     if (activeChatLane.value === "planner") params.clearPlannerChat();
     else if (activeChatLane.value === "worker") params.startNewChatSession();
     else params.startNewReviewerSession();
@@ -194,6 +200,7 @@ export function useLaneRuntimeBridge(params: {
     activeLaneBusy,
     activeLaneThreadWarning,
     activeLaneHasResume,
+    activeLaneNewSessionBlocked,
     handleLaneNewSession,
     handleLaneResumeThread,
   };

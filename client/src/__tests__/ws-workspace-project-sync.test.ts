@@ -333,4 +333,33 @@ describe("ws workspace project sync", () => {
       }),
     );
   });
+
+  it("keeps result-driven thread resets local-only instead of clearing backend history again", () => {
+    const rt = createRuntime();
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      threadReset: true,
+      threadId: "thread-new",
+      expectedThreadId: "thread-new",
+    });
+
+    expect(threadReset).toHaveBeenCalledWith(
+      rt,
+      expect.objectContaining({
+        source: "result_thread_reset",
+        keepLatestTurn: true,
+        clearBackendHistory: false,
+        resetThreadId: true,
+      }),
+    );
+  });
 });

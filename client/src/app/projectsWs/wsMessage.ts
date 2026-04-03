@@ -775,7 +775,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           notice: "Context thread was reset. Chat history was cleared to start a new conversation.",
           warning: detail ? `Context thread was reset${detail}.` : null,
           keepLatestTurn: true,
-          clearBackendHistory: true,
+          clearBackendHistory: false,
           resetThreadId: true,
           source: "result_thread_reset",
         });
