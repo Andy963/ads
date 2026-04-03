@@ -23,6 +23,7 @@ import { createDelegationTracker } from "./delegationTracker.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
 import { beginWsPromptRun, isWsPromptAbort, raceWsPromptAbort } from "./promptLifecycle.js";
+import { shouldResumeMissingRuntimeSession } from "./resumeThreadFallback.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -95,7 +96,11 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       orchestrator = reviewerResult.orchestrator;
       return;
     }
-    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, turnCwd);
+    orchestrator = deps.sessions.sessionManager.getOrCreate(
+      deps.context.userId,
+      turnCwd,
+      shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
+    );
     const status = orchestrator.status();
     if (!status.ready) {
       deps.observability.sessionLogger?.logError(status.error ?? "代理未启用");

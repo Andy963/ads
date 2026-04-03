@@ -2,6 +2,7 @@ import { parseSlashCommand } from "../../../codexConfig.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsCommandStateDeps, WsLogger, WsOrchestrator, WsSessionLogger, WsTransportDeps } from "./deps.js";
+import { shouldResumeMissingRuntimeSession } from "./resumeThreadFallback.js";
 
 type SlashCommand = ReturnType<typeof parseSlashCommand>;
 
@@ -145,7 +146,11 @@ export function handleBuiltinCommand(args: {
   } catch (error) {
     args.logger.warn(`[Web] Failed to sync templates after cd: ${(error as Error).message}`);
   }
-  const orchestrator = args.sessionManager.getOrCreate(args.userId, currentCwd);
+  const orchestrator = args.sessionManager.getOrCreate(
+    args.userId,
+    currentCwd,
+    shouldResumeMissingRuntimeSession(args.sessionManager, args.userId),
+  );
 
   let message = `已切换到: ${currentCwd}`;
   if (prevCwd !== currentCwd) {

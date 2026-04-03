@@ -119,6 +119,7 @@ function createPromptDeps(args: {
   clientMessages: unknown[];
   historyStore: MemoryHistoryStore;
   orchestrator: FakeOrchestrator;
+  sessionManager?: Record<string, unknown>;
 }) {
   return {
     request: {
@@ -164,6 +165,7 @@ function createPromptDeps(args: {
         setUserModel: () => {},
         setUserModelReasoningEffort: () => {},
         saveThreadId: () => {},
+        ...(args.sessionManager ?? {}),
       } as any,
       orchestrator: args.orchestrator as any,
       getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
@@ -322,6 +324,41 @@ describe("web slash commands", () => {
     );
   });
 
+  it("resumes saved continuity when a prompt recreates an idle-evicted runtime session", async () => {
+    await withTempWorkspace("ads-web-prompt-resume-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+      const getOrCreateCalls: Array<{ userId: number; cwd?: string; resumeThread?: boolean }> = [];
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: "continue working",
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            hasSession: () => false,
+            getOrCreate: (userId: number, cwd?: string, resumeThread?: boolean) => {
+              getOrCreateCalls.push({ userId, cwd, resumeThread });
+              return orchestrator as any;
+            },
+          },
+        }),
+      );
+
+      assert.deepEqual(getOrCreateCalls, [{ userId: 1, cwd: workspaceRoot, resumeThread: true }]);
+      assert.ok(
+        chatMessages.some(
+          (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
+        ),
+      );
+    });
+  });
+
   it("does not route /search over ws command messages", async () => {
     await withTempWorkspace("ads-web-ws-command-search-", async (workspaceRoot) => {
       const clientMessages: unknown[] = [];
@@ -472,6 +509,7 @@ describe("web slash commands", () => {
       let syncCalled = 0;
       let setUserCwdCalled = 0;
       let sessionManagerCwd: string | null = null;
+      let recreatedWithResumeThread: boolean | undefined;
       let called = false;
 
       const result = await handleCommandMessage(
@@ -490,10 +528,14 @@ describe("web slash commands", () => {
             getUserCwd: () => cwd,
           } as any,
           sessionManager: {
+            hasSession: () => false,
             setUserCwd: (_userId: number, value: string) => {
               sessionManagerCwd = value;
             },
-            getOrCreate: () => new FakeOrchestrator() as any,
+            getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
+              recreatedWithResumeThread = resumeThread;
+              return new FakeOrchestrator() as any;
+            },
             getSavedThreadId: () => undefined,
           } as any,
           runAdsCommandLine: async () => {
@@ -513,6 +555,7 @@ describe("web slash commands", () => {
       assert.equal(sessionManagerCwd, nextCwd);
       assert.equal(setUserCwdCalled, 1);
       assert.equal(syncCalled, 1);
+      assert.equal(recreatedWithResumeThread, true);
       assert.equal(chatMessages.length, 0);
       assert.deepEqual(clientMessages, [{ type: "workspace", root: nextCwd }]);
     });
@@ -524,6 +567,7 @@ describe("web slash commands", () => {
       const chatMessages: unknown[] = [];
       let called = false;
       let switched: { userId: number; agentId: string } | null = null;
+      let recreatedWithResumeThread: boolean | undefined;
       const orchestrator = new FakeOrchestrator();
 
       const result = await handleCommandMessage(
@@ -534,11 +578,15 @@ describe("web slash commands", () => {
           chatMessages,
           historyStore: new MemoryHistoryStore(),
           sessionManager: {
+            hasSession: () => false,
             switchAgent: (userId: number, agentId: string) => {
               switched = { userId, agentId };
               return { success: true, message: "ok" };
             },
-            getOrCreate: () => orchestrator as any,
+            getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
+              recreatedWithResumeThread = resumeThread;
+              return orchestrator as any;
+            },
             getSavedThreadId: () => undefined,
           } as any,
           orchestrator: {} as any,
@@ -554,6 +602,7 @@ describe("web slash commands", () => {
       assert.equal(called, false);
       assert.equal(chatMessages.length, 0);
       assert.deepEqual(switched, { userId: 1, agentId: "codex" });
+      assert.equal(recreatedWithResumeThread, true);
       assert.equal(clientMessages.length, 1);
       assert.equal((clientMessages[0] as { type?: unknown }).type, "agents");
     });

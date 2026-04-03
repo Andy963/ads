@@ -24,6 +24,7 @@ describe("web/ws/commandAgentSwitch", () => {
 
   it("switches agents and prefers the in-memory thread id in the response", () => {
     const sent: unknown[] = [];
+    let recreatedWithResumeThread: boolean | undefined;
     const nextOrchestrator = {
       getActiveAgentId: () => "codex",
       listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
@@ -36,8 +37,12 @@ describe("web/ws/commandAgentSwitch", () => {
       currentCwd: "/tmp/project",
       orchestrator: {} as any,
       sessionManager: {
+        hasSession: () => false,
         switchAgent: () => ({ success: true, message: "ok" }),
-        getOrCreate: () => nextOrchestrator,
+        getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
+          recreatedWithResumeThread = resumeThread;
+          return nextOrchestrator;
+        },
         getSavedThreadId: () => "thread-saved",
       } as any,
       agentAvailability: {
@@ -47,6 +52,7 @@ describe("web/ws/commandAgentSwitch", () => {
     });
 
     assert.equal(orchestrator, nextOrchestrator);
+    assert.equal(recreatedWithResumeThread, true);
     assert.deepEqual(sent, [
       {
         type: "agents",

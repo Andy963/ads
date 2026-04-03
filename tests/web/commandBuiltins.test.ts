@@ -81,6 +81,60 @@ describe("web/ws/commandBuiltins", () => {
     }
   });
 
+  it("resumes saved continuity when /cd recreates an idle-evicted runtime session", () => {
+    const sent: unknown[] = [];
+    let recreatedWithResumeThread: boolean | undefined;
+
+    const result = handleBuiltinCommand({
+      request: {
+        command: "/cd next",
+        slash: { command: "cd", body: "next" },
+        normalizedSlash: "cd",
+        isSilentCommandPayload: false,
+        shouldBroadcast: true,
+      },
+      userId: 7,
+      historyKey: "history-1",
+      currentCwd: "/tmp/project",
+      orchestrator: { id: "orch" } as any,
+      state: {
+        directoryManager: {
+          setUserCwd: () => ({ success: true }),
+          getUserCwd: () => "/tmp/project/next",
+        },
+        workspaceCache: new Map(),
+        cwdStore: new Map(),
+        cwdStorePath: "",
+        persistCwdStore: () => {},
+      } as any,
+      sessionManager: {
+        hasSession: () => false,
+        setUserCwd: () => {},
+        getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
+          recreatedWithResumeThread = resumeThread;
+          return { id: "next" } as any;
+        },
+      } as any,
+      historyStore: new HistoryStore({ namespace: "test-command-builtins-cd", maxEntriesPerSession: 10 }),
+      sendToCommandScope: (payload) => sent.push(payload),
+      transport: {
+        ws: {} as any,
+        sendWorkspaceState: () => {},
+      },
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+      },
+      syncWorkspaceTemplates: () => {},
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(recreatedWithResumeThread, true);
+    assert.deepEqual(sent, [{ type: "result", ok: true, output: "已切换到: /tmp/project/next\n提示: 代理上下文已切换到新目录" }]);
+  });
+
   it("recognizes blocked user slash commands", () => {
     assert.equal(isBlockedUserSlashCommand("search"), true);
     assert.equal(isBlockedUserSlashCommand("ads.status"), true);
