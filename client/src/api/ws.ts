@@ -35,6 +35,12 @@ type WsMessage =
   | { type: "delta"; delta?: string; source?: "chat" | "step" }
   | { type: "result"; ok: boolean; output: string; kind?: string }
   | { type: "error"; message?: string }
+  | {
+      type: "session_reset";
+      source?: string;
+      sourceChatSessionId?: string;
+      preservedReviewerSnapshotId?: string | null;
+    }
   | { type: "thread_reset" }
   | { type: "command"; detail?: string; command?: WsCommandPayload | null }
   | { type: "patch"; patch?: WsPatchPayload | null }

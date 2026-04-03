@@ -321,10 +321,47 @@ describe("ws workspace project sync", () => {
       updateProject: vi.fn(),
     });
 
-    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "main" });
+    handler({
+      type: "session_reset",
+      source: "clear_history",
+      sourceChatSessionId: "main",
+      preservedReviewerSnapshotId: "snapshot-9",
+    });
 
     expect(rt.boundReviewSnapshotId.value).toBe("snapshot-9");
     expect(rt.latestReviewArtifact.value).toEqual({ id: "artifact-1", snapshotId: "snapshot-9" });
+    expect(threadReset).toHaveBeenCalledWith(
+      rt,
+      expect.objectContaining({
+        source: "shared_session_reset",
+        resetThreadId: true,
+      }),
+    );
+  });
+
+  it("clears reviewer snapshot bindings when reviewer clear_history was broadcast without preservation", () => {
+    const rt = createRuntime();
+    rt.chatSessionId = "reviewer";
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "review this" }];
+    rt.activeThreadId.value = "reviewer-thread";
+    rt.boundReviewSnapshotId.value = "snapshot-9";
+    rt.latestReviewArtifact.value = { id: "artifact-1", snapshotId: "snapshot-9" };
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "session_reset",
+      source: "clear_history",
+      sourceChatSessionId: "reviewer",
+      preservedReviewerSnapshotId: null,
+    });
+
+    expect(rt.boundReviewSnapshotId.value).toBeNull();
+    expect(rt.latestReviewArtifact.value).toBeNull();
     expect(threadReset).toHaveBeenCalledWith(
       rt,
       expect.objectContaining({

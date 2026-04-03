@@ -294,7 +294,31 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     });
   };
 
-  const handleSharedSessionReset = (): void => {
+  const handleSharedSessionReset = (payload: Record<string, unknown>): void => {
+    const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    const hasReviewerPreservationMetadata = Object.prototype.hasOwnProperty.call(payload, "preservedReviewerSnapshotId");
+    const preservedReviewerSnapshotId = hasReviewerPreservationMetadata
+      ? typeof payload.preservedReviewerSnapshotId === "string"
+        ? payload.preservedReviewerSnapshotId.trim() || null
+        : null
+      : undefined;
+    if (effectiveChatSessionId === "reviewer") {
+      const currentReviewerSnapshotId = String(rt.boundReviewSnapshotId.value ?? "").trim() || null;
+      const shouldClearReviewerBinding =
+        (hasReviewerPreservationMetadata &&
+          !preservedReviewerSnapshotId &&
+          (Boolean(currentReviewerSnapshotId) || Boolean(rt.latestReviewArtifact.value))) ||
+        Boolean(
+          hasReviewerPreservationMetadata &&
+            preservedReviewerSnapshotId &&
+            ((currentReviewerSnapshotId && currentReviewerSnapshotId !== preservedReviewerSnapshotId) ||
+              (!currentReviewerSnapshotId && rt.latestReviewArtifact.value)),
+        );
+      if (shouldClearReviewerBinding) {
+        rt.boundReviewSnapshotId.value = null;
+        rt.latestReviewArtifact.value = null;
+      }
+    }
     const hasVisibleLocalContinuity =
       rt.messages.value.length > 0 ||
       Boolean(String(rt.activeThreadId.value ?? "").trim()) ||
@@ -619,7 +643,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "session_reset") {
-      handleSharedSessionReset();
+      handleSharedSessionReset(msg as Record<string, unknown>);
       return;
     }
 

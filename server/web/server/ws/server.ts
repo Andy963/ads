@@ -30,9 +30,27 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
   const wss = new WebSocketServer({ server: deps.server });
   const safeJsonSend = createSafeJsonSend(logger);
   const reviewerSnapshotBindings = new Map<string, string>();
+  const seenChatSessionIdsBySharedSession = new Map<string, Set<string>>();
 
   const normalizeWorkspaceRootForMeta = (cwd: string): string => {
     return resolveWorkspaceRootFromDirectory(cwd);
+  };
+
+  const getSharedSessionRegistryKey = (authUserId: string, sessionId: string): string =>
+    `${String(authUserId ?? "").trim()}::${String(sessionId ?? "").trim()}`;
+
+  const registerSeenChatSessionId = (authUserId: string, sessionId: string, chatSessionId: string): void => {
+    const registryKey = getSharedSessionRegistryKey(authUserId, sessionId);
+    const normalizedChatSessionId = String(chatSessionId ?? "").trim();
+    if (!registryKey || !normalizedChatSessionId) {
+      return;
+    }
+    const existing = seenChatSessionIdsBySharedSession.get(registryKey);
+    if (existing) {
+      existing.add(normalizedChatSessionId);
+      return;
+    }
+    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", "planner", "reviewer", normalizedChatSessionId]));
   };
 
   wss.on("error", (error) => {
@@ -145,6 +163,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
     sessionManager.maybeMigrateThreadState(legacyUserId, userId);
     state.clientMetaByWs.set(ws, clientMeta);
+    registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
     ws.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
@@ -263,45 +282,22 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
     };
 
-    const resetSharedSessionBackends = (): void => {
-      const sharedLaneSessions = new Map<string, (typeof sessions)["workerSessionManager"]>([
-        ["main", sessions.workerSessionManager],
-        ["planner", sessions.plannerSessionManager],
-        ["reviewer", sessions.reviewerSessionManager],
-      ]);
+    const getTrackedSharedChatSessionIds = (): string[] => {
+      const registryKey = getSharedSessionRegistryKey(authUserId, sessionId);
+      const tracked = new Set<string>(["main", "planner", "reviewer"]);
+      for (const seenChatSessionId of seenChatSessionIdsBySharedSession.get(registryKey) ?? []) {
+        tracked.add(seenChatSessionId);
+      }
       for (const meta of state.clientMetaByWs.values()) {
         if (meta.authUserId !== authUserId || meta.sessionId !== sessionId) {
           continue;
         }
         const candidateChatSessionId = String(meta.chatSessionId ?? "").trim();
-        if (!candidateChatSessionId || sharedLaneSessions.has(candidateChatSessionId)) {
-          continue;
-        }
-        sharedLaneSessions.set(candidateChatSessionId, sessions.workerSessionManager);
-      }
-      for (const [chatSessionId, sessionManager] of sharedLaneSessions.entries()) {
-        const identity = buildWsConnectionIdentity({
-          authUserId,
-          sessionId,
-          chatSessionId,
-          randomHex: () => "",
-        });
-        const reviewerHistoryKey = `${authUserId}::${sessionId}::reviewer`;
-        const preservedReviewerSnapshotId =
-          chatSessionId === "reviewer"
-            ? String(
-                reviewerSnapshotBindings.get(reviewerHistoryKey) ??
-                  sessionManager.getSavedReviewerSnapshotId(identity.userId) ??
-                  "",
-              ).trim() || null
-            : null;
-        sessionManager.reset(identity.userId);
-        sessionManager.reset(identity.legacyUserId);
-        if (chatSessionId === "reviewer" && preservedReviewerSnapshotId) {
-          reviewerSnapshotBindings.set(reviewerHistoryKey, preservedReviewerSnapshotId);
-          sessionManager.saveReviewerSnapshotBinding(identity.userId, preservedReviewerSnapshotId);
+        if (candidateChatSessionId) {
+          tracked.add(candidateChatSessionId);
         }
       }
+      return [...tracked];
     };
 
     const abortInFlightForHistoryKey = (targetHistoryKey: string): boolean =>
@@ -310,6 +306,58 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         promptRunEpochs: state.promptRunEpochs,
         historyKey: targetHistoryKey,
       });
+
+    const resetSharedSessionState = (options: {
+      sourceChatSessionId: string;
+      reviewerSnapshotIdToPreserve: string | null;
+    }): { preservedReviewerSnapshotId: string | null } => {
+      const trackedSharedLanes = getTrackedSharedChatSessionIds().map((trackedChatSessionId) => {
+        const { sessionManager: trackedSessionManager, historyStore: trackedHistoryStore } = resolveWsLaneResources({
+          chatSessionId: trackedChatSessionId,
+          sessions,
+          history,
+        });
+        const identity = buildWsConnectionIdentity({
+          authUserId,
+          sessionId,
+          chatSessionId: trackedChatSessionId,
+          randomHex: () => "",
+        });
+        return {
+          chatSessionId: trackedChatSessionId,
+          sessionManager: trackedSessionManager,
+          historyStore: trackedHistoryStore,
+          identity,
+        };
+      });
+      const reviewerLane = trackedSharedLanes.find((lane) => lane.chatSessionId === "reviewer");
+      const existingReviewerSnapshotId = reviewerLane
+        ? String(
+            reviewerSnapshotBindings.get(reviewerLane.identity.historyKey) ??
+              reviewerLane.sessionManager.getSavedReviewerSnapshotId(reviewerLane.identity.userId) ??
+              "",
+          ).trim() || null
+        : null;
+      const preservedReviewerSnapshotId =
+        options.sourceChatSessionId === "reviewer" ? options.reviewerSnapshotIdToPreserve : existingReviewerSnapshotId;
+
+      for (const { chatSessionId, sessionManager, historyStore, identity } of trackedSharedLanes) {
+        abortInFlightForHistoryKey(identity.historyKey);
+        historyStore.clear(identity.historyKey);
+        const reviewerHistoryKey = `${authUserId}::${sessionId}::reviewer`;
+        sessionManager.reset(identity.userId);
+        sessionManager.reset(identity.legacyUserId);
+        if (chatSessionId === "reviewer") {
+          reviewerSnapshotBindings.delete(reviewerHistoryKey);
+          sessionManager.clearSavedReviewerSnapshotBinding(identity.userId);
+          if (preservedReviewerSnapshotId) {
+            reviewerSnapshotBindings.set(reviewerHistoryKey, preservedReviewerSnapshotId);
+            sessionManager.saveReviewerSnapshotBinding(identity.userId, preservedReviewerSnapshotId);
+          }
+        }
+      }
+      return { preservedReviewerSnapshotId };
+    };
 
     sendInitialBootstrapMessages({
       ws,
@@ -426,7 +474,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             cwdStorePath: state.cwdStorePath,
             persistCwdStore: state.persistCwdStore,
             broadcastSessionReset,
-            resetSharedSessionBackends,
+            resetSharedSessionState,
           },
           reviewerSnapshotBindings,
           registerSessionCacheBinding,

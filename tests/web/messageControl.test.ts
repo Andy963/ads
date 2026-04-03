@@ -24,8 +24,8 @@ describe("web/ws/messageControl", () => {
   it("handles clear_history and reviewer read-only control messages", async () => {
     const sent: unknown[] = [];
     const broadcasted: unknown[] = [];
-    const cleared: string[] = [];
     let sharedResetCalls = 0;
+    const sharedResetOptions: Array<{ sourceChatSessionId: string; reviewerSnapshotIdToPreserve: string | null }> = [];
     const bindings = new Map([["history-1", "snap-1"]]);
     let aborted = 0;
     const controller = new AbortController();
@@ -45,7 +45,7 @@ describe("web/ws/messageControl", () => {
       orchestrator: { id: "orch" } as any,
       getWorkspaceLock: (() => null) as any,
       historyStore: {
-        clear: (key: string) => cleared.push(key),
+        clear: () => {},
       },
       interruptControllers: new Map([["history-1", controller]]),
       promptRunEpochs,
@@ -53,8 +53,11 @@ describe("web/ws/messageControl", () => {
       ensureTaskContext: (() => ({})) as any,
       sendJson: (payload) => sent.push(payload),
       broadcastSessionReset: (payload) => broadcasted.push(payload),
-      resetSharedSessionBackends: () => {
+      resetSharedSessionState: (options) => {
         sharedResetCalls += 1;
+        sharedResetOptions.push(options);
+        bindings.delete("history-1");
+        return { preservedReviewerSnapshotId: null };
       },
       logger: { info: () => {}, warn: () => {} },
     });
@@ -62,10 +65,12 @@ describe("web/ws/messageControl", () => {
     assert.equal(clearedHistory.handled, true);
     assert.equal(aborted, 1);
     assert.equal(bindings.has("history-1"), false);
-    assert.deepEqual(cleared, ["history-1"]);
     assert.equal(sharedResetCalls, 1);
+    assert.deepEqual(sharedResetOptions, [{ sourceChatSessionId: "planner", reviewerSnapshotIdToPreserve: null }]);
     assert.equal(promptRunEpochs.get("history-1"), 2);
-    assert.deepEqual(broadcasted, [{ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" }]);
+    assert.deepEqual(broadcasted, [
+      { type: "session_reset", source: "clear_history", sourceChatSessionId: "planner", preservedReviewerSnapshotId: null },
+    ]);
     assert.deepEqual(sent[0], {
       type: "result",
       ok: true,
@@ -134,7 +139,14 @@ describe("web/ws/messageControl", () => {
     assert.equal(bindings.get("history-1"), "snap-1");
     assert.deepEqual(clearedSaved, [7]);
     assert.deepEqual(preserved, [{ userId: 7, snapshotId: "snap-1" }]);
-    assert.deepEqual(broadcasted, [{ type: "session_reset", source: "clear_history", sourceChatSessionId: "reviewer" }]);
+    assert.deepEqual(broadcasted, [
+      {
+        type: "session_reset",
+        source: "clear_history",
+        sourceChatSessionId: "reviewer",
+        preservedReviewerSnapshotId: "snap-1",
+      },
+    ]);
     assert.deepEqual(sent[0], {
       type: "result",
       ok: true,

@@ -47,7 +47,10 @@ export async function dispatchWsMessage(args: {
   agents: WsCommandHandlerDeps["agents"];
   state: Omit<WsCommandHandlerDeps["state"], "cacheKey"> & {
     broadcastSessionReset?: (payload: unknown) => void;
-    resetSharedSessionBackends?: () => void;
+    resetSharedSessionState?: (options: {
+      sourceChatSessionId: string;
+      reviewerSnapshotIdToPreserve: string | null;
+    }) => { preservedReviewerSnapshotId: string | null };
   };
   reviewerSnapshotBindings: Map<string, string>;
   registerSessionCacheBinding: () => void;
@@ -93,7 +96,7 @@ export async function dispatchWsMessage(args: {
       ensureTaskContext: args.tasks.ensureTaskContext as WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"],
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
       broadcastSessionReset: args.state.broadcastSessionReset,
-      resetSharedSessionBackends: args.state.resetSharedSessionBackends,
+      resetSharedSessionState: args.state.resetSharedSessionState,
       logger: args.logger,
     });
     if (control.handled) {

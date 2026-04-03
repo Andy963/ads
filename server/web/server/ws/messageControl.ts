@@ -80,7 +80,10 @@ export async function handleWsControlMessage(args: {
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
   broadcastSessionReset?: (payload: unknown) => void;
-  resetSharedSessionBackends?: () => void;
+  resetSharedSessionState?: (options: {
+    sourceChatSessionId: string;
+    reviewerSnapshotIdToPreserve: string | null;
+  }) => { preservedReviewerSnapshotId: string | null };
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
@@ -108,23 +111,29 @@ export async function handleWsControlMessage(args: {
     args.logger.info(
       `[Web][continuity] reset source=clear_history user=${args.userId} history=${args.historyKey} reviewer=${args.isReviewerChat} preserveRequested=${requestedSnapshotId ?? "none"} preserveApplied=${preservedSnapshotId ?? "none"}`,
     );
-    args.historyStore.clear(args.historyKey);
-    args.resetSharedSessionBackends?.();
-    if (!args.resetSharedSessionBackends) {
+    let sharedResetResult: { preservedReviewerSnapshotId: string | null } | null = null;
+    if (args.resetSharedSessionState) {
+      sharedResetResult = args.resetSharedSessionState({
+        sourceChatSessionId: args.chatSessionId,
+        reviewerSnapshotIdToPreserve: preservedSnapshotId,
+      });
+    } else {
+      args.historyStore.clear(args.historyKey);
       args.sessionManager.reset(args.userId);
-    }
-    if (args.isReviewerChat) {
-      args.reviewerSnapshotBindings.delete(args.historyKey);
-      args.sessionManager.clearSavedReviewerSnapshotBinding?.(args.userId);
-      if (preservedSnapshotId) {
-        args.reviewerSnapshotBindings.set(args.historyKey, preservedSnapshotId);
-        args.sessionManager.saveReviewerSnapshotBinding(args.userId, preservedSnapshotId);
+      if (args.isReviewerChat) {
+        args.reviewerSnapshotBindings.delete(args.historyKey);
+        args.sessionManager.clearSavedReviewerSnapshotBinding?.(args.userId);
+        if (preservedSnapshotId) {
+          args.reviewerSnapshotBindings.set(args.historyKey, preservedSnapshotId);
+          args.sessionManager.saveReviewerSnapshotBinding(args.userId, preservedSnapshotId);
+        }
       }
     }
     args.broadcastSessionReset?.({
       type: "session_reset",
       source: "clear_history",
       sourceChatSessionId: args.chatSessionId,
+      preservedReviewerSnapshotId: sharedResetResult?.preservedReviewerSnapshotId ?? (args.isReviewerChat ? preservedSnapshotId : null),
     });
     args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
     return { handled: true, orchestrator: args.orchestrator };
