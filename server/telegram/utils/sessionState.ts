@@ -99,6 +99,10 @@ export function areSessionCwdsCompatible(savedCwd?: string, currentCwd?: string)
   );
 }
 
+export function shouldClearSavedThreadsForCwdChange(savedCwd?: string, nextCwd?: string): boolean {
+  return Boolean(normalizeCwd(savedCwd) && normalizeCwd(nextCwd) && !areSessionCwdsCompatible(savedCwd, nextCwd));
+}
+
 export function resolveResumeState(args: {
   userId: number;
   resumeThread: boolean | undefined;

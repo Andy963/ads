@@ -89,6 +89,18 @@ describe("web/ws/taskResume", () => {
     assert.deepStrictEqual(selection, { threadId: "current", source: "current" });
   });
 
+  it("saved mode keeps saved-resume when cwd rebinding stays within a compatible workspace", () => {
+    const selection = selectTaskResumeThread({
+      request: { mode: "saved" },
+      currentThreadId: null,
+      savedThreadId: undefined,
+      savedResumeThreadId: "saved-resume",
+      savedResumeCwd: "/tmp/project/src",
+      currentCwd: "/tmp/project",
+    });
+    assert.deepStrictEqual(selection, { threadId: "saved-resume", source: "saved" });
+  });
+
   it("current mode prefers current/saved over saved-resume", () => {
     const selection = selectTaskResumeThread({
       request: { mode: "current" },

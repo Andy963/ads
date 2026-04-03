@@ -18,6 +18,7 @@ import {
   getSavedSessionState,
   resolveResumeState,
   type SavedSessionState,
+  shouldClearSavedThreadsForCwdChange,
 } from './sessionState.js';
 import { SessionRuntimeRegistry } from './sessionRuntimeRegistry.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
@@ -160,7 +161,7 @@ export class SessionManager {
     
     if (existing) {
       if (cwd && this.runtime.updateWorkingDirectory(userId, cwd)) {
-        this.syncStoredState(userId, { cwd, clearThreads: true });
+        this.syncStoredState(userId, { cwd, clearThreads: this.shouldClearThreadsForCwdChange(userId, cwd) });
       }
       this.runtime.ensureContextRestoreMode(userId);
       return existing.session;
@@ -519,7 +520,7 @@ export class SessionManager {
 
     this.runtime.updateWorkingDirectory(userId, cwd);
     this.runtime.setContextRestoreMode(userId, "fresh");
-    this.syncStoredState(userId, { cwd, clearThreads: true });
+    this.syncStoredState(userId, { cwd, clearThreads: this.shouldClearThreadsForCwdChange(userId, cwd) });
   }
 
   getStats(): { total: number; active: number; idle: number; sandboxMode: SandboxMode; defaultModel: string } {
@@ -678,6 +679,11 @@ export class SessionManager {
         clearThreads: options?.clearThreads,
       }),
     );
+  }
+
+  private shouldClearThreadsForCwdChange(userId: number, nextCwd: string): boolean {
+    const savedCwd = this.getSavedState(userId)?.cwd ?? this.runtime.getRecord(userId)?.cwd;
+    return shouldClearSavedThreadsForCwdChange(savedCwd, nextCwd);
   }
 
   private disposeSession(userId: number, reason: SessionDisposeReason, options?: { clearSavedThread?: boolean }): void {

@@ -110,6 +110,7 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 500): Prom
 describe("SessionManager", () => {
   let manager: SessionManager;
   let tmpDir: string | null = null;
+  let workspaceDir: string | null = null;
 
   afterEach(() => {
     manager?.destroy();
@@ -117,6 +118,10 @@ describe("SessionManager", () => {
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       tmpDir = null;
+    }
+    if (workspaceDir) {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      workspaceDir = null;
     }
   });
 
@@ -195,6 +200,76 @@ describe("SessionManager", () => {
 
     manager.setUserCwd(123456, "/home/other");
     assert.equal(manager.getUserCwd(123456), "/home/other");
+  });
+
+  it("preserves saved threads across compatible cwd rebinding and reconnect resume", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-workspace-"));
+    const workspaceRoot = workspaceDir;
+    const nestedWorkspace = path.join(workspaceRoot, "nested");
+    fs.mkdirSync(nestedWorkspace, { recursive: true });
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(80, {
+      threadId: "thread-80",
+      cwd: workspaceRoot,
+      agentThreads: { codex: "thread-80" },
+      activeAgentId: "codex",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    const initial = manager.getOrCreate(80, workspaceRoot, true) as unknown as FakeSession;
+    assert.equal(initial.getThreadId(), "thread-80");
+
+    manager.setUserCwd(80, nestedWorkspace);
+    assert.equal(storage.getRecord(80)?.cwd, nestedWorkspace);
+    assert.equal(storage.getRecord(80)?.threadId, "thread-80");
+    assert.deepEqual(storage.getRecord(80)?.agentThreads, { codex: "thread-80" });
+
+    manager.dropSession(80);
+
+    const resumed = manager.getOrCreate(80, nestedWorkspace, true) as unknown as FakeSession;
+    assert.equal(resumed.getThreadId(), "thread-80");
+    assert.equal(manager.getContextRestoreMode(80), "thread_resumed");
+  });
+
+  it("clears saved threads when cwd rebinding crosses to an incompatible workspace", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(81, {
+      threadId: "thread-81",
+      cwd: "/tmp/project-a",
+      agentThreads: { codex: "thread-81" },
+      activeAgentId: "codex",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    manager.getOrCreate(81, "/tmp/project-a", true);
+    manager.setUserCwd(81, "/tmp/project-b");
+
+    const record = storage.getRecord(81);
+    assert.equal(record?.cwd, "/tmp/project-b");
+    assert.equal(record?.threadId, undefined);
+    assert.deepEqual(record?.agentThreads, {});
   });
 
   it("restores saved model, reasoning effort, active agent, and agent thread", () => {
