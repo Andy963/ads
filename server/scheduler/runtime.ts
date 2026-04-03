@@ -1,45 +1,35 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 
-import DatabaseConstructor, { type Database as SqliteDatabase } from "better-sqlite3";
-import { Runner, SqliteQueue, buildDBClient } from "liteque";
-
-import { TaskStore } from "../tasks/store.js";
 import type { Task } from "../tasks/types.js";
-import { OrchestratorTaskExecutor } from "../tasks/executor.js";
-import { SessionManager, resolveSessionAgentAllowlist } from "../telegram/utils/sessionManager.js";
-import { ThreadStorage } from "../telegram/utils/threadStorage.js";
-import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
 import { getErrorMessage } from "../utils/error.js";
+import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
-import { upsertTaskNotificationBinding } from "../web/taskNotifications/store.js";
-import { notifyTaskTerminalViaTelegram } from "../web/taskNotifications/telegramNotifier.js";
 
-import { computeNextCronRunAt } from "./cron.js";
-import { ScheduleStore } from "./store.js";
-import type { StoredSchedule } from "./store.js";
 import {
-  buildExternalId,
-  buildEffectiveTaskPrompt,
-  type SchedulerJobPayload,
+  ensureTaskForRun as ensureTaskForRunHelper,
+  handleScheduledJobComplete,
+  handleScheduledJobError,
+  runScheduledJob as runScheduledJobHelper,
+} from "./runtimeJobLifecycle.js";
+import { triggerScheduleRun } from "./runtimeScheduling.js";
+import {
+  createWorkspaceSchedulerState,
+  disposeWorkspaceSchedulerState,
+  hasDueSchedules,
+  hasQueuedSchedulerJobs,
+} from "./runtimeState.js";
+import {
+  normalizeWorkspaceRoot,
+  type SchedulerExecuteRun,
   type SchedulerExecutionInput,
   type SchedulerExecutionResult,
-  type SchedulerExecuteRun,
+  type SchedulerJobPayload,
   type SchedulerRuntimeLogger,
   type SchedulerWarningContext,
   type WorkspaceSchedulerState,
-  hashTaskId,
-  buildQueueName,
-  normalizeWorkspaceRoot,
-  resolveLitequeDbPath,
-  generateAllocationId,
-  type LitequeDequeuedRow,
-  normalizeQuestions,
-  scheduleRequestsTelegramDelivery,
-  resolveScheduleTelegramChatId,
 } from "./runtimeSupport.js";
+import type { StoredSchedule } from "./store.js";
 
 const defaultLogger = createLogger("SchedulerRuntime");
 
@@ -136,125 +126,35 @@ export class SchedulerRuntime {
       return existing;
     }
 
-    const scheduleStore = new ScheduleStore({ workspacePath: key });
-    const taskStore = new TaskStore({ workspacePath: key });
-    const dbPath = resolveLitequeDbPath(key);
-    const queueDb = buildDBClient(dbPath, { runMigrations: true });
-    const queueRawDb = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
-    queueRawDb.pragma("journal_mode = WAL");
-    queueRawDb.pragma("foreign_keys = ON");
-    queueRawDb.pragma("busy_timeout = 5000");
-    const queue = new SqliteQueue<SchedulerJobPayload>(buildQueueName(key), queueDb, {
-      defaultJobArgs: { numRetries: 0 },
-      keepFailedJobs: true,
-    });
-    this.patchQueueAttemptDequeue(queue, queueRawDb);
-
-    const schedulerModelOverride = String(process.env.ADS_SCHEDULER_MODEL ?? process.env.TASK_QUEUE_DEFAULT_MODEL ?? "").trim() || undefined;
-    const sessionManager = new SessionManager(
-      0,
-      0,
-      "danger-full-access",
-      schedulerModelOverride,
-      new ThreadStorage({
-        namespace: `scheduler:${buildQueueName(key)}`,
-        storagePath: path.join(this.adsStateDir, `scheduler-threads-${buildQueueName(key)}.json`),
-      }),
-      undefined,
-      {
-        agentAllowlist: resolveSessionAgentAllowlist("scheduler-runtime"),
-      },
-    );
-
-    const executor = new OrchestratorTaskExecutor({
-      getOrchestrator: (task) => sessionManager.getOrCreate(hashTaskId(task.id), key, true),
-      store: taskStore,
+    const state = createWorkspaceSchedulerState({
       workspaceRoot: key,
-      autoModelOverride: schedulerModelOverride,
+      adsStateDir: this.adsStateDir,
+      runnerPollMs: this.runnerPollMs,
+      runnerTimeoutSecs: this.runnerTimeoutSecs,
+      runnerConcurrency: this.runnerConcurrency,
+      runJob: async (rawPayload, signal) => await this.runScheduledJob(rawPayload, signal),
+      onComplete: async (rawPayload, result) => {
+        await this.handleJobComplete(rawPayload, result);
+      },
+      onError: async (rawPayload, error, numRetriesLeft, runNumber) => {
+        await this.handleJobError(rawPayload, error, numRetriesLeft, runNumber);
+      },
     });
-
-    const runner = new Runner<SchedulerJobPayload, SchedulerExecutionResult>(
-      queue,
-      {
-        run: async (job) => await this.runScheduledJob(job.data, job.abortSignal),
-        onComplete: async (job, result) => {
-          await this.handleJobComplete(job.data, result);
-        },
-        onError: async (job) => {
-          await this.handleJobError(job.data, job.error, job.numRetriesLeft, job.runNumber);
-        },
-      },
-      {
-        concurrency: this.runnerConcurrency,
-        pollIntervalMs: this.runnerPollMs,
-        timeoutSecs: this.runnerTimeoutSecs,
-      },
-    );
-
-    const state: WorkspaceSchedulerState = {
-      store: scheduleStore,
-      taskStore,
-      queue,
-      queueRawDb,
-      runner,
-      executor,
-      runnerPromise: null,
-      lastTouchedAt: Date.now(),
-    };
     this.states.set(key, state);
     return state;
   }
 
   private disposeState(workspaceRoot: string, state: WorkspaceSchedulerState): void {
-    try {
-      state.runner.stop();
-    } catch {
-      // ignore
-    }
-    try {
-      state.queueRawDb.close();
-    } catch {
-      // ignore
-    }
+    disposeWorkspaceSchedulerState(state);
     this.states.delete(workspaceRoot);
   }
 
   private hasDueSchedules(workspaceRoot: string, now: number): boolean {
-    return new ScheduleStore({ workspacePath: workspaceRoot }).listDueScheduleIds(now, { limit: 1 }).length > 0;
+    return hasDueSchedules(workspaceRoot, now);
   }
 
   private async hasQueuedJobs(workspaceRoot: string, state?: WorkspaceSchedulerState): Promise<boolean> {
-    if (state) {
-      const stats = await state.queue.stats();
-      return stats.pending + stats.pending_retry + stats.running > 0;
-    }
-
-    const dbPath = resolveLitequeDbPath(workspaceRoot);
-    if (!fs.existsSync(dbPath)) {
-      return false;
-    }
-
-    let db: SqliteDatabase | null = null;
-    try {
-      db = new DatabaseConstructor(dbPath, { readonly: true, fileMustExist: true });
-      const row = db
-        .prepare(
-          `SELECT COUNT(1) AS count
-           FROM tasks
-           WHERE queue = ?
-             AND status IN ('pending', 'pending_retry', 'running')`,
-        )
-        .get(buildQueueName(workspaceRoot)) as { count?: unknown } | undefined;
-      return Number(row?.count ?? 0) > 0;
-    } catch {
-      return false;
-    } finally {
-      try {
-        db?.close();
-      } catch {
-        // ignore
-      }
-    }
+    return await hasQueuedSchedulerJobs(workspaceRoot, state);
   }
 
   private async workspaceNeedsMaterialization(workspaceRoot: string, now: number): Promise<boolean> {
@@ -321,7 +221,6 @@ export class SchedulerRuntime {
         try {
           await this.triggerOne({ workspaceRoot: root, scheduleId, nowMs: now });
         } finally {
-          // Ensure lease is released even on failures.
           try {
             store.releaseScheduleLease({ scheduleId, leaseOwner: this.ownerId }, Date.now());
           } catch (error) {
@@ -348,88 +247,14 @@ export class SchedulerRuntime {
   }
 
   private async triggerOne(options: { workspaceRoot: string; scheduleId: string; nowMs: number }): Promise<void> {
-    const root = options.workspaceRoot;
-    const state = this.getState(root);
-    const store = state.store;
-    const schedule = store.getSchedule(options.scheduleId);
-    if (!schedule || !schedule.enabled || schedule.nextRunAt == null) {
-      return;
-    }
-
-    const runAt = schedule.nextRunAt;
-    const externalId = buildExternalId(schedule, runAt);
-    const existingRun = store.getRunByExternalId(externalId);
-    const isTerminal =
-      existingRun?.status === "completed" || existingRun?.status === "failed" || existingRun?.status === "cancelled";
-    if (!isTerminal) {
-      if (!existingRun) {
-        store.insertRun({ scheduleId: schedule.id, externalId, runAt, taskId: null, status: "queued" }, options.nowMs);
-      }
-      this.ensureTaskForRun(
-        {
-          workspaceRoot: root,
-          scheduleId: schedule.id,
-          externalId,
-          runAt,
-        },
-        schedule,
-        options.nowMs,
-      );
-      await state.queue.enqueue(
-        {
-          workspaceRoot: root,
-          scheduleId: schedule.id,
-          externalId,
-          runAt,
-        },
-        {
-          numRetries: Math.max(0, schedule.spec.policy.maxRetries),
-          idempotencyKey: externalId,
-        },
-      );
-    }
-
-    let nextRunError: unknown = null;
-    const nextRunAt = (() => {
-      try {
-        return computeNextCronRunAt({
-          cron: schedule.spec.schedule.cron,
-          timezone: schedule.spec.schedule.timezone,
-          afterMs: runAt,
-        });
-      } catch (error) {
-        nextRunError = error;
-        return null;
-      }
-    })();
-
-    if (nextRunAt == null) {
-      this.warnScheduler(
-        {
-          stage: "compute-next-run",
-          workspaceRoot: root,
-          scheduleId: schedule.id,
-          externalId,
-        },
-        nextRunError ?? new Error("computeNextCronRunAt returned null and schedule will be disabled"),
-      );
-      const disabledSpec = {
-        ...schedule.spec,
-        enabled: false,
-        questions: normalizeQuestions([
-          ...(schedule.spec.questions ?? []),
-          `Cron expression is not supported by runtime: ${String(schedule.spec.schedule.cron ?? "").trim()}`,
-        ]),
-      };
-      store.updateSchedule(
-        schedule.id,
-        { enabled: false, nextRunAt: null, leaseOwner: null, leaseUntil: null, spec: disabledSpec },
-        options.nowMs,
-      );
-      return;
-    }
-
-    store.updateSchedule(schedule.id, { nextRunAt, leaseOwner: null, leaseUntil: null }, options.nowMs);
+    await triggerScheduleRun({
+      workspaceRoot: options.workspaceRoot,
+      scheduleId: options.scheduleId,
+      nowMs: options.nowMs,
+      getState: (workspaceRoot) => this.getState(workspaceRoot),
+      ensureTaskForRun: (payload, schedule, now) => this.ensureTaskForRun(payload, schedule, now),
+      warnScheduler: (context, error) => this.warnScheduler(context, error),
+    });
   }
 
   private startWorkspaceRunner(workspaceRoot: string): void {
@@ -456,116 +281,13 @@ export class SchedulerRuntime {
       });
   }
 
-  private patchQueueAttemptDequeue(queue: SqliteQueue<SchedulerJobPayload>, db: SqliteDatabase): void {
-    const queueName = queue.name();
-    const queueLike = queue as unknown as {
-      attemptDequeue: (options: { timeoutSecs: number }) => Promise<LitequeDequeuedRow | null>;
-    };
-    queueLike.attemptDequeue = async (options: { timeoutSecs: number }) => {
-      const timeoutSecs = Number.isFinite(options.timeoutSecs) ? Math.max(1, Math.floor(options.timeoutSecs)) : 60;
-      const nowMs = Date.now();
-      const nowSec = Math.floor(nowMs / 1000);
-
-      const row = db
-        .prepare(
-          `SELECT
-             id AS id,
-             payload AS payload,
-             priority AS priority,
-             allocationId AS allocationId,
-             numRunsLeft AS numRunsLeft,
-             maxNumRuns AS maxNumRuns
-           FROM tasks
-           WHERE queue = ?
-             AND (availableAt IS NULL OR availableAt <= ?)
-             AND (
-               status = 'pending'
-               OR status = 'pending_retry'
-               OR (status = 'running' AND expireAt IS NOT NULL AND expireAt < ?)
-             )
-           ORDER BY priority ASC, createdAt ASC
-           LIMIT 1`,
-        )
-        .get(queueName, nowMs, nowSec) as LitequeDequeuedRow | undefined;
-
-      if (!row) {
-        return null;
-      }
-
-      if (row.numRunsLeft === 0) {
-        await queue.finalize(row.id, row.allocationId, "failed");
-        return null;
-      }
-
-      const allocationId = generateAllocationId();
-      const result = db
-        .prepare(
-          `UPDATE tasks
-           SET status = 'running',
-               numRunsLeft = ?,
-               allocationId = ?,
-               expireAt = ?
-           WHERE id = ?
-             AND allocationId = ?`,
-        )
-        .run(row.numRunsLeft - 1, allocationId, nowSec + timeoutSecs, row.id, row.allocationId) as { changes?: number };
-
-      if (!result || result.changes !== 1) {
-        return null;
-      }
-
-      return {
-        ...row,
-        allocationId,
-        numRunsLeft: row.numRunsLeft - 1,
-      };
-    };
-  }
-
-  private parsePayload(raw: unknown): SchedulerJobPayload | null {
-    if (!raw || typeof raw !== "object") {
-      return null;
-    }
-    const record = raw as Record<string, unknown>;
-    const workspaceRoot = normalizeWorkspaceRoot(String(record.workspaceRoot ?? ""));
-    const scheduleId = String(record.scheduleId ?? "").trim();
-    const externalId = String(record.externalId ?? "").trim();
-    const runAtRaw = Number(record.runAt);
-    const runAt = Number.isFinite(runAtRaw) ? Math.floor(runAtRaw) : NaN;
-    if (!workspaceRoot || !scheduleId || !externalId || !Number.isFinite(runAt)) {
-      return null;
-    }
-    return { workspaceRoot, scheduleId, externalId, runAt };
-  }
-
   private ensureTaskForRun(payload: SchedulerJobPayload, schedule: StoredSchedule, now: number): Task {
-    const state = this.getState(payload.workspaceRoot);
-    const existing = state.taskStore.getTask(payload.externalId);
-    if (existing) {
-      return existing;
-    }
-    const effectivePrompt = buildEffectiveTaskPrompt(payload, schedule);
-    try {
-      return state.taskStore.createTask(
-        {
-          id: payload.externalId,
-          title: schedule.spec.compiledTask.title,
-          prompt: effectivePrompt,
-          model: "auto",
-          inheritContext: false,
-          maxRetries: Math.max(0, schedule.spec.policy.maxRetries),
-          createdBy: "scheduler",
-        },
-        now,
-        { status: "pending" },
-      );
-    } catch {
-      const fallback = state.taskStore.getTask(payload.externalId);
-      if (!fallback) {
-        throw new Error(`Failed to create scheduler task: ${payload.externalId}`);
-      }
-      return fallback;
-    }
+    return ensureTaskForRunHelper({
+      getState: (workspaceRoot) => this.getState(workspaceRoot),
+      payload,
+      schedule,
+      now,
+    });
   }
 
   private async defaultExecuteRun(input: SchedulerExecutionInput): Promise<SchedulerExecutionResult> {
@@ -590,201 +312,24 @@ export class SchedulerRuntime {
   }
 
   private async runScheduledJob(rawPayload: unknown, signal: AbortSignal): Promise<SchedulerExecutionResult> {
-    const payload = this.parsePayload(rawPayload);
-    if (!payload) {
-      return {};
-    }
-    const state = this.getState(payload.workspaceRoot);
-    const now = Date.now();
-
-    const schedule = state.store.getSchedule(payload.scheduleId);
-    if (!schedule || !schedule.enabled) {
-      try {
-        state.store.updateRunByExternalId(
-          payload.externalId,
-          {
-            status: "cancelled",
-            error: schedule ? "Schedule is disabled" : "Schedule not found",
-            completedAt: now,
-          },
-          now,
-        );
-      } catch (persistError) {
-        this.warnScheduler(
-          {
-            stage: "mark-run-cancelled",
-            workspaceRoot: payload.workspaceRoot,
-            scheduleId: payload.scheduleId,
-            externalId: payload.externalId,
-          },
-          persistError,
-        );
-      }
-      return {};
-    }
-
-    const currentRun = state.store.getRunByExternalId(payload.externalId);
-    if (currentRun?.status === "completed" || currentRun?.status === "cancelled") {
-      return { resultSummary: currentRun.result ?? undefined };
-    }
-
-    const task = this.ensureTaskForRun(payload, schedule, now);
-    const runningTask = state.taskStore.updateTask(
-      task.id,
-      {
-        status: "running",
-        error: null,
-        result: null,
-        startedAt: now,
-        completedAt: null,
-      },
-      now,
-    );
-
-    try {
-      state.store.updateRunByExternalId(
-        payload.externalId,
-        {
-          status: "running",
-          taskId: runningTask.id,
-          error: null,
-          startedAt: now,
-          completedAt: null,
-        },
-        now,
-      );
-    } catch (persistError) {
-      this.warnScheduler(
-        {
-          stage: "mark-run-running",
-          workspaceRoot: payload.workspaceRoot,
-          scheduleId: payload.scheduleId,
-          externalId: payload.externalId,
-          taskId: runningTask.id,
-        },
-        persistError,
-      );
-    }
-
-    if (scheduleRequestsTelegramDelivery(schedule)) {
-      try {
-        upsertTaskNotificationBinding({
-          authUserId: "",
-          workspaceRoot: payload.workspaceRoot,
-          taskId: runningTask.id,
-          taskTitle: runningTask.title,
-          telegramChatId: resolveScheduleTelegramChatId(schedule),
-          now,
-          logger: this.logger,
-        });
-      } catch (persistError) {
-        this.warnScheduler(
-          {
-            stage: "bind-task-telegram",
-            workspaceRoot: payload.workspaceRoot,
-            scheduleId: payload.scheduleId,
-            externalId: payload.externalId,
-            taskId: runningTask.id,
-          },
-          persistError,
-        );
-      }
-    }
-
-    return await this.executeRun({
-      workspaceRoot: payload.workspaceRoot,
-      schedule,
-      task: runningTask,
+    return await runScheduledJobHelper({
+      rawPayload,
       signal,
+      getState: (workspaceRoot) => this.getState(workspaceRoot),
+      executeRun: this.executeRun,
+      warnScheduler: (context, error) => this.warnScheduler(context, error),
+      logger: this.logger,
     });
   }
 
   private async handleJobComplete(rawPayload: unknown, result: SchedulerExecutionResult): Promise<void> {
-    const payload = this.parsePayload(rawPayload);
-    if (!payload) {
-      return;
-    }
-    const state = this.getState(payload.workspaceRoot);
-    const now = Date.now();
-    const resultSummary = String(result.resultSummary ?? "").trim() || null;
-    const schedule = state.store.getSchedule(payload.scheduleId);
-
-    try {
-      state.store.updateRunByExternalId(
-        payload.externalId,
-        {
-          status: "completed",
-          result: resultSummary,
-          error: null,
-          completedAt: now,
-        },
-        now,
-      );
-    } catch (persistError) {
-      this.warnScheduler(
-        {
-          stage: "mark-run-completed",
-          workspaceRoot: payload.workspaceRoot,
-          scheduleId: payload.scheduleId,
-          externalId: payload.externalId,
-          taskId: payload.externalId,
-        },
-        persistError,
-      );
-    }
-
-    const task = state.taskStore.getTask(payload.externalId);
-    if (!task) {
-      return;
-    }
-    try {
-      const completed = state.taskStore.updateTask(
-        task.id,
-        {
-          status: "completed",
-          result: resultSummary,
-          error: null,
-          completedAt: now,
-        },
-        now,
-      );
-      if (completed.result && completed.result.trim()) {
-        try {
-          state.taskStore.saveContext(completed.id, { contextType: "summary", content: completed.result }, now);
-        } catch (persistError) {
-          this.warnScheduler(
-            {
-              stage: "save-summary",
-              workspaceRoot: payload.workspaceRoot,
-              scheduleId: payload.scheduleId,
-              externalId: payload.externalId,
-              taskId: completed.id,
-            },
-            persistError,
-          );
-        }
-      }
-      if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
-        notifyTaskTerminalViaTelegram({
-          logger: this.logger,
-          workspaceRoot: payload.workspaceRoot,
-          task: completed,
-          terminalStatus: "completed",
-          eventTs: now,
-        });
-      }
-    } catch (persistError) {
-      this.warnScheduler(
-        {
-          stage: "mark-task-completed",
-          workspaceRoot: payload.workspaceRoot,
-          scheduleId: payload.scheduleId,
-          externalId: payload.externalId,
-          taskId: task.id,
-        },
-        persistError,
-      );
-    }
+    await handleScheduledJobComplete({
+      rawPayload,
+      result,
+      getState: (workspaceRoot) => this.getState(workspaceRoot),
+      warnScheduler: (context, error) => this.warnScheduler(context, error),
+      logger: this.logger,
+    });
   }
 
   private async handleJobError(
@@ -793,92 +338,14 @@ export class SchedulerRuntime {
     numRetriesLeft: number,
     runNumber: number,
   ): Promise<void> {
-    const payload = this.parsePayload(rawPayload);
-    if (!payload) {
-      return;
-    }
-    const state = this.getState(payload.workspaceRoot);
-    const task = state.taskStore.getTask(payload.externalId);
-    const schedule = state.store.getSchedule(payload.scheduleId);
-    const now = Date.now();
-    const terminal = numRetriesLeft <= 0;
-    const message = getErrorMessage(error);
-
-    try {
-      state.store.updateRunByExternalId(
-        payload.externalId,
-        {
-          status: terminal ? "failed" : "queued",
-          error: message,
-          completedAt: terminal ? now : null,
-        },
-        now,
-      );
-    } catch (persistError) {
-      this.warnScheduler(
-        {
-          stage: terminal ? "mark-run-failed" : "mark-run-queued",
-          workspaceRoot: payload.workspaceRoot,
-          scheduleId: payload.scheduleId,
-          externalId: payload.externalId,
-          taskId: task?.id ?? null,
-        },
-        persistError,
-      );
-    }
-
-    if (!task) {
-      return;
-    }
-
-    try {
-      const updated = state.taskStore.updateTask(
-        task.id,
-        {
-          status: terminal ? "failed" : "pending",
-          error: message,
-          result: null,
-          retryCount: Math.max(task.retryCount, runNumber + 1),
-          completedAt: terminal ? now : null,
-        },
-        now,
-      );
-      if (terminal) {
-        try {
-          state.taskStore.saveContext(updated.id, { contextType: "summary", content: `[Failed]\n${message}` }, now);
-        } catch (persistError) {
-          this.warnScheduler(
-            {
-              stage: "save-summary",
-              workspaceRoot: payload.workspaceRoot,
-              scheduleId: payload.scheduleId,
-              externalId: payload.externalId,
-              taskId: updated.id,
-            },
-            persistError,
-          );
-        }
-        if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
-          notifyTaskTerminalViaTelegram({
-            logger: this.logger,
-            workspaceRoot: payload.workspaceRoot,
-            task: updated,
-            terminalStatus: "failed",
-            eventTs: now,
-          });
-        }
-      }
-    } catch (persistError) {
-      this.warnScheduler(
-        {
-          stage: terminal ? "mark-task-failed" : "mark-task-pending",
-          workspaceRoot: payload.workspaceRoot,
-          scheduleId: payload.scheduleId,
-          externalId: payload.externalId,
-          taskId: task.id,
-        },
-        persistError,
-      );
-    }
+    await handleScheduledJobError({
+      rawPayload,
+      error,
+      numRetriesLeft,
+      runNumber,
+      getState: (workspaceRoot) => this.getState(workspaceRoot),
+      warnScheduler: (context, err) => this.warnScheduler(context, err),
+      logger: this.logger,
+    });
   }
 }

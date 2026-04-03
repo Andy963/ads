@@ -37,6 +37,8 @@ const props = defineProps<{
   headerAction?: { title: string; ariaLabel?: string; testId?: string };
   headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
   threadWarning?: string | null;
+  connectionStatusKind?: "disconnected" | "error" | null;
+  connectionStatusMessage?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -411,6 +413,8 @@ onBeforeUnmount(() => {
       :agent-delegations="agentDelegations"
       :api-token="apiToken"
       :running-task-count="runningTaskCount"
+      :connection-status-kind="connectionStatusKind"
+      :connection-status-message="connectionStatusMessage"
       @update:draft="emit('update:draft', $event)"
       @send="emit('send', $event)"
       @interrupt="emit('interrupt')"
