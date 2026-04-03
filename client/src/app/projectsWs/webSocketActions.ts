@@ -13,6 +13,8 @@ import type { WsDeps } from "./types";
 import { createWsMessageHandler } from "./wsMessage";
 
 export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDeps) {
+  const reconnectBusyMessage = "Connection lost while a request was running. Reconnecting and syncing history…";
+
   const {
     api,
     loggedIn,
@@ -325,7 +327,28 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let disconnectWasBusy = false;
     const shouldSyncTasks = mode === "worker";
 
-    const cleanupDisconnectState = () => {
+    const dropReconnectBusyMessage = () => {
+      const items = rt.messages.value;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i]!;
+        if (item.role === "system" && item.kind === "text" && item.content === reconnectBusyMessage) {
+          rt.messages.value = [...items.slice(0, i), ...items.slice(i + 1)];
+          return;
+        }
+      }
+    };
+
+    const cleanupTerminalCloseState = () => {
+      clearReconnectTimer(rt);
+      rt.busy.value = false;
+      rt.turnInFlight = false;
+      rt.turnHasPatch = false;
+      rt.delegationsInFlight.value = [];
+      dropReconnectBusyMessage();
+    };
+
+    const cleanupDisconnectState = (options?: { showReconnectMessage?: boolean }) => {
+      const showReconnectMessage = options?.showReconnectMessage ?? true;
       if (disconnectCleanupDone) return;
       disconnectCleanupDone = true;
       disconnectWasBusy = rt.busy.value;
@@ -334,12 +357,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       clearStepLive(rt);
       finalizeCommandBlock(rt);
       applyStreamingDisconnectCleanup(rt);
-      if (disconnectWasBusy) {
+      if (disconnectWasBusy && showReconnectMessage) {
         pushMessageBeforeLive(
           {
             role: "system",
             kind: "text",
-            content: "Connection lost while a request was running. Reconnecting and syncing history…",
+            content: reconnectBusyMessage,
           },
           rt,
         );
@@ -364,16 +387,17 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     wsInstance.onClose = (ev) => {
       if (rt.ws !== wsInstance) return;
-      cleanupDisconnectState();
+      const terminalClose = ev.code === 4401 || ev.code === 4409;
+      cleanupDisconnectState({ showReconnectMessage: !terminalClose });
 
       if (ev.code === 4401) {
+        cleanupTerminalCloseState();
         rt.wsError.value = "Unauthorized";
-        clearReconnectTimer(rt);
         return;
       }
       if (ev.code === 4409) {
+        cleanupTerminalCloseState();
         rt.wsError.value = "Max clients reached (increase ADS_WEB_MAX_CLIENTS)";
-        clearReconnectTimer(rt);
         return;
       }
 

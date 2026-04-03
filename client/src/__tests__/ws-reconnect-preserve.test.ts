@@ -4,6 +4,8 @@ import { defineComponent } from "vue";
 
 import { createAppController } from "../app/controller";
 
+const reconnectBusyMessage = "Connection lost while a request was running. Reconnecting and syncing history…";
+
 let lastWs: {
   onOpen?: () => void;
   onClose?: (ev: { code: number; reason?: string }) => void;
@@ -129,6 +131,52 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.busy.value).toBe(false);
+    wrapper.unmount();
+  });
+
+  it.each([
+    [4401, "Unauthorized"],
+    [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],
+  ])("clears busy and reconnect notice for terminal close code %s", async (code, expectedError) => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "Hello" }];
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code, reason: "" });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.wsError.value).toBe(expectedError);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(reconnectBusyMessage);
+    wrapper.unmount();
+  });
+
+  it("removes a reconnect notice and timer when a terminal close follows ws error", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "Hello" }];
+    await settleUi(wrapper);
+
+    lastWs!.onError?.();
+    await settleUi(wrapper);
+
+    expect(rt.reconnectTimer).not.toBeNull();
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(reconnectBusyMessage);
+
+    lastWs!.onClose?.({ code: 4401, reason: "unauthorized" });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.reconnectTimer).toBeNull();
+    expect(rt.wsError.value).toBe("Unauthorized");
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(reconnectBusyMessage);
     wrapper.unmount();
   });
 
