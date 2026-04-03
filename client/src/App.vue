@@ -200,6 +200,7 @@ const {
 const {
   reviewerLatestArtifact,
   reviewerBoundSnapshotId,
+  reviewerBindingMutationBlocked,
   selectedTaskReviewSnapshotId,
   selectedTaskReviewLabel,
   bindReviewerToSelectedSnapshot,
@@ -208,6 +209,7 @@ const {
   tasks,
   selectedId,
   activeReviewerRuntime,
+  reviewerConnected,
   api: computed(() => api),
   resolveActiveWorkspaceRoot,
   clearReviewerChat,
@@ -587,7 +589,7 @@ const reviewerConnectionStatus = computed(() => {
                 <button
                   class="inlineAction"
                   type="button"
-                  :disabled="!selectedTaskReviewSnapshotId"
+                  :disabled="reviewerBindingMutationBlocked || !selectedTaskReviewSnapshotId"
                   data-testid="reviewer-bind-selected-snapshot"
                   @click="bindReviewerToSelectedSnapshot"
                 >
@@ -596,7 +598,7 @@ const reviewerConnectionStatus = computed(() => {
                 <button
                   class="inlineAction"
                   type="button"
-                  :disabled="!reviewerBoundSnapshotId"
+                  :disabled="reviewerBindingMutationBlocked || !reviewerBoundSnapshotId"
                   data-testid="reviewer-clear-snapshot-binding"
                   @click="clearReviewerSnapshotBinding"
                 >

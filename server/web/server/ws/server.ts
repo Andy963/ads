@@ -264,32 +264,42 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     };
 
     const resetSharedSessionBackends = (): void => {
-      const sharedLaneSessions = [
-        { chatSessionId: "main", sessionManager: sessions.workerSessionManager },
-        { chatSessionId: "planner", sessionManager: sessions.plannerSessionManager },
-        { chatSessionId: "reviewer", sessionManager: sessions.reviewerSessionManager },
-      ] as const;
-      for (const lane of sharedLaneSessions) {
+      const sharedLaneSessions = new Map<string, (typeof sessions)["workerSessionManager"]>([
+        ["main", sessions.workerSessionManager],
+        ["planner", sessions.plannerSessionManager],
+        ["reviewer", sessions.reviewerSessionManager],
+      ]);
+      for (const meta of state.clientMetaByWs.values()) {
+        if (meta.authUserId !== authUserId || meta.sessionId !== sessionId) {
+          continue;
+        }
+        const candidateChatSessionId = String(meta.chatSessionId ?? "").trim();
+        if (!candidateChatSessionId || sharedLaneSessions.has(candidateChatSessionId)) {
+          continue;
+        }
+        sharedLaneSessions.set(candidateChatSessionId, sessions.workerSessionManager);
+      }
+      for (const [chatSessionId, sessionManager] of sharedLaneSessions.entries()) {
         const identity = buildWsConnectionIdentity({
           authUserId,
           sessionId,
-          chatSessionId: lane.chatSessionId,
+          chatSessionId,
           randomHex: () => "",
         });
         const reviewerHistoryKey = `${authUserId}::${sessionId}::reviewer`;
         const preservedReviewerSnapshotId =
-          lane.chatSessionId === "reviewer"
+          chatSessionId === "reviewer"
             ? String(
                 reviewerSnapshotBindings.get(reviewerHistoryKey) ??
-                  lane.sessionManager.getSavedReviewerSnapshotId(identity.userId) ??
+                  sessionManager.getSavedReviewerSnapshotId(identity.userId) ??
                   "",
               ).trim() || null
             : null;
-        lane.sessionManager.reset(identity.userId);
-        lane.sessionManager.reset(identity.legacyUserId);
-        if (lane.chatSessionId === "reviewer" && preservedReviewerSnapshotId) {
+        sessionManager.reset(identity.userId);
+        sessionManager.reset(identity.legacyUserId);
+        if (chatSessionId === "reviewer" && preservedReviewerSnapshotId) {
           reviewerSnapshotBindings.set(reviewerHistoryKey, preservedReviewerSnapshotId);
-          lane.sessionManager.saveReviewerSnapshotBinding(identity.userId, preservedReviewerSnapshotId);
+          sessionManager.saveReviewerSnapshotBinding(identity.userId, preservedReviewerSnapshotId);
         }
       }
     };

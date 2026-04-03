@@ -15,6 +15,7 @@ export function useReviewerBinding(params: {
   tasks: Ref<Task[]>;
   selectedId: Ref<string | null>;
   activeReviewerRuntime: Ref<unknown>;
+  reviewerConnected: Ref<boolean>;
   api: Ref<{ get<T>(url: string): Promise<T> }>;
   resolveActiveWorkspaceRoot: () => string | null | undefined;
   clearReviewerChat: () => void;
@@ -26,6 +27,7 @@ export function useReviewerBinding(params: {
   const reviewerBoundSnapshotId = computed(
     () => reviewerRuntime.value.boundReviewSnapshotId.value,
   );
+  const reviewerBindingMutationBlocked = computed(() => !params.reviewerConnected.value);
 
   const selectedTask = computed(() => {
     const id = String(params.selectedId.value ?? "").trim();
@@ -70,6 +72,9 @@ export function useReviewerBinding(params: {
   }
 
   async function bindReviewerToSelectedSnapshot(): Promise<void> {
+    if (reviewerBindingMutationBlocked.value) {
+      return;
+    }
     const snapshotId = String(selectedTaskReviewSnapshotId.value ?? "").trim();
     if (!snapshotId) {
       return;
@@ -84,12 +89,16 @@ export function useReviewerBinding(params: {
   }
 
   function clearReviewerSnapshotBinding(): void {
+    if (reviewerBindingMutationBlocked.value) {
+      return;
+    }
     params.clearReviewerChat();
   }
 
   return {
     reviewerLatestArtifact,
     reviewerBoundSnapshotId,
+    reviewerBindingMutationBlocked,
     selectedTask,
     selectedTaskReviewSnapshotId,
     selectedTaskReviewLabel,

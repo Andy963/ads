@@ -314,15 +314,18 @@ describe("web/server/ws/broadcast", () => {
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
     const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
     const reviewerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.reviewer"];
+    const customWorkerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.worker-custom"];
 
     const mainClientA = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
     const mainClientB = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
     const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
     const reviewerClient = new WebSocket(url, reviewerProtocols, { origin: "http://localhost" });
+    const customWorkerClient = new WebSocket(url, customWorkerProtocols, { origin: "http://localhost" });
     await waitForWsOpen(mainClientA);
     await waitForWsOpen(mainClientB);
     await waitForWsOpen(plannerClient);
     await waitForWsOpen(reviewerClient);
+    await waitForWsOpen(customWorkerClient);
 
     const siblingMessages: WsJson[] = [];
     const siblingHandler = (raw: RawData) => {
@@ -334,6 +337,7 @@ describe("web/server/ws/broadcast", () => {
     };
     plannerClient.on("message", siblingHandler);
     reviewerClient.on("message", siblingHandler);
+    customWorkerClient.on("message", siblingHandler);
 
     const resetPromise = waitForWsMessage(
       mainClientB,
@@ -350,6 +354,11 @@ describe("web/server/ws/broadcast", () => {
       (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
       1500,
     );
+    const customWorkerResetPromise = waitForWsMessage(
+      customWorkerClient,
+      (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
+      1500,
+    );
     const resultPromise = waitForWsMessage(
       mainClientA,
       (msg) => msg.type === "result" && msg.kind === "clear_history" && msg.ok === true,
@@ -361,26 +370,31 @@ describe("web/server/ws/broadcast", () => {
     const reset = await resetPromise;
     const plannerReset = await plannerResetPromise;
     const reviewerReset = await reviewerResetPromise;
+    const customWorkerReset = await customWorkerResetPromise;
     const result = await resultPromise;
     assert.equal(reset.type, "session_reset");
     assert.equal(plannerReset.type, "session_reset");
     assert.equal(reviewerReset.type, "session_reset");
+    assert.equal(customWorkerReset.type, "session_reset");
     assert.equal(result.type, "result");
     assert.equal(workerSessions[0]?.resetCalls, 1);
+    assert.equal(workerSessions[1]?.resetCalls, 1);
     assert.equal(plannerSessions[0]?.resetCalls, 1);
     assert.equal(reviewerSessions[0]?.resetCalls, 1);
     assert.equal(workerSessions[0]?.threadId, null);
+    assert.equal(workerSessions[1]?.threadId, null);
     assert.equal(plannerSessions[0]?.threadId, null);
     assert.equal(reviewerSessions[0]?.threadId, null);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(
       siblingMessages.filter((msg) => msg.type === "session_reset").length,
-      2,
+      3,
     );
 
     plannerClient.off("message", siblingHandler);
     reviewerClient.off("message", siblingHandler);
+    customWorkerClient.off("message", siblingHandler);
     try {
       mainClientA.terminate();
     } catch {
@@ -398,6 +412,11 @@ describe("web/server/ws/broadcast", () => {
     }
     try {
       reviewerClient.terminate();
+    } catch {
+      // ignore
+    }
+    try {
+      customWorkerClient.terminate();
     } catch {
       // ignore
     }

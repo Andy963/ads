@@ -245,6 +245,73 @@ describe("Reviewer pane UI", () => {
     wrapper.unmount();
   });
 
+  it("blocks reviewer binding mutations while disconnected", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false, MarkdownContent: true, DraggableModal: true } },
+    });
+    await settleUi(wrapper);
+
+    lastReviewerWs!.onOpen?.();
+    lastReviewerWs!.onMessage?.({ type: "welcome", inFlight: false, chatSessionId: "reviewer" });
+    await settleUi(wrapper);
+
+    await wrapper.get('[data-testid="lane-tab-reviewer"]').trigger("click");
+    await settleUi(wrapper);
+
+    const reviewerRt = (wrapper.vm as any).activeReviewerRuntime;
+    reviewerRt.messages.value = [
+      { id: "u-1", role: "user", kind: "text", content: "Please review snapshot-old" },
+      { id: "a-1", role: "assistant", kind: "text", content: "Existing reviewer continuity" },
+    ];
+    reviewerRt.activeThreadId.value = "reviewer-thread-old";
+    reviewerRt.boundReviewSnapshotId.value = "snapshot-old";
+    reviewerRt.latestReviewArtifact.value = {
+      id: "artifact-old",
+      taskId: "task-7",
+      snapshotId: "snapshot-old",
+      queueItemId: null,
+      scope: "reviewer",
+      summaryText: "Old artifact",
+      verdict: "analysis",
+      priorArtifactId: null,
+      createdAt: Date.now(),
+    };
+    await settleUi(wrapper);
+
+    lastReviewerWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    expect((wrapper.get('[data-testid="reviewer-bind-selected-snapshot"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('[data-testid="reviewer-clear-snapshot-binding"]').element as HTMLButtonElement).disabled).toBe(true);
+
+    await (wrapper.vm as any).bindReviewerToSelectedSnapshot();
+    await settleUi(wrapper);
+    (wrapper.vm as any).clearReviewerSnapshotBinding();
+    await settleUi(wrapper);
+
+    expect(reviewerRt.boundReviewSnapshotId.value).toBe("snapshot-old");
+    expect(reviewerRt.latestReviewArtifact.value).toEqual({
+      id: "artifact-old",
+      taskId: "task-7",
+      snapshotId: "snapshot-old",
+      queueItemId: null,
+      scope: "reviewer",
+      summaryText: "Old artifact",
+      verdict: "analysis",
+      priorArtifactId: null,
+      createdAt: expect.any(Number),
+    });
+    expect(reviewerRt.activeThreadId.value).toBe("reviewer-thread-old");
+    expect(reviewerRt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual([
+      "Please review snapshot-old",
+      "Existing reviewer continuity",
+    ]);
+    expect(lastReviewerClearHistoryPayload).toBeNull();
+
+    wrapper.unmount();
+  });
+
   it("clears stale reviewer transcript when bootstrap explicitly withholds reviewer continuity", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {
