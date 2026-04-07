@@ -88,6 +88,9 @@ describe("App bootstrap preserves the visible active project", () => {
 
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
+      if (url === "/api/paths/subdirs") {
+        return { dirs: ["project-a", "project-b"], allowedDirs: ["/tmp"] };
+      }
       if (url === "/api/projects") {
         return {
           projects: [

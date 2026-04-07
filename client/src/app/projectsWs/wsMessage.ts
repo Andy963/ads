@@ -9,7 +9,6 @@ import {
 } from "../../lib/chatPreferences";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 
-import { deriveProjectNameFromPath } from "./projectName";
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
 
 type Ref<T> = { value: T };
@@ -197,11 +196,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     wsState: WorkspaceState | null,
   ): Partial<ProjectTab> => {
     const updates: Partial<ProjectTab> = { initialized: true };
-    if (nextPath && (current.id === "default" || !current.path.trim())) {
+    if (nextPath && current.id !== "default" && !current.path.trim()) {
       updates.path = nextPath;
-    }
-    if (current.id === "default" && nextPath) {
-      updates.name = deriveProjectNameFromPath(nextPath);
     }
     if (wsState && Object.prototype.hasOwnProperty.call(wsState, "branch")) {
       updates.branch = String(wsState.branch ?? "");

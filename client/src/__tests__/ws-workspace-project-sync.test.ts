@@ -84,15 +84,15 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
 }
 
 describe("ws workspace project sync", () => {
-  it("syncs default project from welcome workspace payload", () => {
+  it("keeps the synthetic default project rooted externally while still recording workspace state", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();
     const { handler } = createHandler({
       projects: [
         {
           id: "default",
-          path: "",
-          name: "Workspace",
+          path: "/home/andy",
+          name: "andy",
           sessionId: "default",
           chatSessionId: "main",
           initialized: false,
@@ -118,8 +118,6 @@ describe("ws workspace project sync", () => {
     expect(rt.workspacePath.value).toBe("/tmp/demo-project");
     expect(updateProject).toHaveBeenCalledWith("default", {
       initialized: true,
-      path: "/tmp/demo-project",
-      name: "demo-project",
       branch: "main",
     });
   });

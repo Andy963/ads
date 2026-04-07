@@ -24,9 +24,14 @@ describe("projectActions.loadProjectsFromServer", () => {
     expect(before).not.toBeNull();
     expect(before).not.toBe("main");
 
-    vi.spyOn(ctx.api, "get").mockResolvedValue({
-      projects: [],
-      activeProjectId: null,
+    vi.spyOn(ctx.api, "get").mockImplementation(async (url: string) => {
+      if (url === "/api/paths/subdirs") {
+        return { dirs: [], allowedDirs: ["/workspace/root"] };
+      }
+      return {
+        projects: [],
+        activeProjectId: null,
+      };
     });
     await projects.loadProjectsFromServer();
 
@@ -57,12 +62,17 @@ describe("projectActions.loadProjectsFromServer", () => {
 
     expect(ctx.activeProjectId.value).toBe("p2");
 
-    vi.spyOn(ctx.api, "get").mockResolvedValue({
-      projects: [
-        { id: "p1", workspaceRoot: "/tmp/project-a", name: "Project A", chatSessionId: "main" },
-        { id: "p2", workspaceRoot: "/tmp/project-b", name: "Project B", chatSessionId: "main" },
-      ],
-      activeProjectId: null,
+    vi.spyOn(ctx.api, "get").mockImplementation(async (url: string) => {
+      if (url === "/api/paths/subdirs") {
+        return { dirs: ["project-a", "project-b"], allowedDirs: ["/workspace/root"] };
+      }
+      return {
+        projects: [
+          { id: "p1", workspaceRoot: "/tmp/project-a", name: "Project A", chatSessionId: "main" },
+          { id: "p2", workspaceRoot: "/tmp/project-b", name: "Project B", chatSessionId: "main" },
+        ],
+        activeProjectId: null,
+      };
     });
 
     await projects.loadProjectsFromServer();
@@ -93,12 +103,17 @@ describe("projectActions.loadProjectsFromServer", () => {
 
     expect(ctx.activeProjectId.value).toBe("p2");
 
-    vi.spyOn(ctx.api, "get").mockResolvedValue({
-      projects: [
-        { id: "p1", workspaceRoot: "/tmp/project-a", name: "Project A", chatSessionId: "main" },
-        { id: "p2", workspaceRoot: "/tmp/project-b", name: "Project B", chatSessionId: "main" },
-      ],
-      activeProjectId: "p1",
+    vi.spyOn(ctx.api, "get").mockImplementation(async (url: string) => {
+      if (url === "/api/paths/subdirs") {
+        return { dirs: ["project-a", "project-b"], allowedDirs: ["/workspace/root"] };
+      }
+      return {
+        projects: [
+          { id: "p1", workspaceRoot: "/tmp/project-a", name: "Project A", chatSessionId: "main" },
+          { id: "p2", workspaceRoot: "/tmp/project-b", name: "Project B", chatSessionId: "main" },
+        ],
+        activeProjectId: "p1",
+      };
     });
 
     await projects.loadProjectsFromServer();
@@ -121,17 +136,51 @@ describe("projectActions.loadProjectsFromServer", () => {
 
     expect(ctx.activeProjectId.value).toBe("default");
 
-    vi.spyOn(ctx.api, "get").mockResolvedValue({
-      projects: [
-        { id: "p1", workspaceRoot: "/tmp/project-a", name: "Project A", chatSessionId: "main" },
-        { id: "p2", workspaceRoot: "/tmp/project-b", name: "Project B", chatSessionId: "main" },
-      ],
-      activeProjectId: "p2",
+    vi.spyOn(ctx.api, "get").mockImplementation(async (url: string) => {
+      if (url === "/api/paths/subdirs") {
+        return { dirs: ["project-a", "project-b"], allowedDirs: ["/workspace/root"] };
+      }
+      return {
+        projects: [
+          { id: "p1", workspaceRoot: "/tmp/project-a", name: "Project A", chatSessionId: "main" },
+          { id: "p2", workspaceRoot: "/tmp/project-b", name: "Project B", chatSessionId: "main" },
+        ],
+        activeProjectId: "p2",
+      };
     });
 
     await projects.loadProjectsFromServer();
 
     expect(ctx.activeProjectId.value).toBe("p2");
   });
-});
 
+  it("roots the synthetic default project at the first allowed dir from the server", async () => {
+    localStorage.clear();
+
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const deps = {
+      activateProject: vi.fn(async () => {}),
+    };
+    const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, deps);
+
+    ctx.loggedIn.value = true;
+    projects.initializeProjects();
+
+    vi.spyOn(ctx.api, "get").mockImplementation(async (url: string) => {
+      if (url === "/api/paths/subdirs") {
+        return { dirs: ["ads"], allowedDirs: ["/home/andy"] };
+      }
+      return {
+        projects: [],
+        activeProjectId: null,
+      };
+    });
+
+    await projects.loadProjectsFromServer();
+
+    const project = ctx.projects.value.find((entry) => entry.id === "default") ?? null;
+    expect(project?.path).toBe("/home/andy");
+    expect(project?.name).toBe("andy");
+  });
+});

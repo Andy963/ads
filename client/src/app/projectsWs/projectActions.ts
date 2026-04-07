@@ -53,13 +53,26 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   } = ctx;
 
   const projectDialogSubdirs = ref<string[]>([]);
+  const allowedProjectRoots = ref<string[]>([]);
+
+  const normalizeAllowedProjectRoots = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value
+          .map((entry) => normalizeString(entry))
+          .filter(Boolean)
+      : [];
+
+  const getDefaultProjectPath = (fallback = ""): string =>
+    normalizeString(allowedProjectRoots.value[0]) || normalizeString(fallback);
 
   const loadProjectSubdirs = async (): Promise<void> => {
     try {
       const result = await api.get<{ dirs: string[]; allowedDirs: string[] }>("/api/paths/subdirs");
       projectDialogSubdirs.value = result.dirs ?? [];
+      allowedProjectRoots.value = normalizeAllowedProjectRoots(result.allowedDirs);
     } catch {
       projectDialogSubdirs.value = [];
+      allowedProjectRoots.value = [];
     }
   };
 
@@ -140,12 +153,15 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   const loadProjectsFromServer = async (): Promise<void> => {
     if (!loggedIn.value) return;
     try {
-      const result = await api.get<{
-        projects: Array<{ id: string; workspaceRoot: string; name: string; chatSessionId: string; createdAt?: number; updatedAt?: number }>;
-        activeProjectId: string | null;
-      }>(
-        "/api/projects",
-      );
+      const [, result] = await Promise.all([
+        loadProjectSubdirs(),
+        api.get<{
+          projects: Array<{ id: string; workspaceRoot: string; name: string; chatSessionId: string; createdAt?: number; updatedAt?: number }>;
+          activeProjectId: string | null;
+        }>(
+          "/api/projects",
+        ),
+      ]);
       const remote = Array.isArray(result.projects) ? result.projects : [];
 
       // Server is the source of truth. Rebuild the list to avoid localStorage duplicates.
@@ -155,9 +171,10 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
       // Keep a single explicit default entry for UI affordances.
       const prevDefault = projects.value.find((p) => p.id === "default") ?? null;
-      const defaultPath =
+      const defaultPath = getDefaultProjectPath(
         (prevDefault ? normalizeString(prevDefault.path) : "") ||
-        (activeProjectId.value === "default" ? normalizeString(workspacePath.value) : "");
+          (activeProjectId.value === "default" ? normalizeString(workspacePath.value) : ""),
+      );
       const defaultBase = createProjectTab({ path: defaultPath, sessionId: "default", initialized: true });
       const defaultChatSessionId =
         normalizeString(prevDefault?.chatSessionId) ||
