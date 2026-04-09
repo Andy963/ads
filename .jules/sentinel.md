@@ -1,0 +1,4 @@
+## 2024-03-30 - URL Encoded Path Traversal Bypass in HTTP Server
+**Vulnerability:** The custom HTTP server (`server/web/server/httpServer.ts`) was vulnerable to path traversal because URL-encoded characters (like `%2e%2e%2f` for `../`) were not decoded before normalizing the path. This allowed attackers to bypass the `resolved.startsWith(distClientDir)` check because `path.resolve` handles the encoded components literally, but file system functions read the underlying files if the OS decodes them or handles the strings differently.
+**Learning:** Node.js's `path` and `url` string manipulation functions don't automatically URL-decode strings. Security checks on paths must occur after full decoding.
+**Prevention:** URL paths must be manually decoded using `decodeURIComponent` within a try-catch block before normalizing the path, gracefully returning a 400 Bad Request on URIError.
