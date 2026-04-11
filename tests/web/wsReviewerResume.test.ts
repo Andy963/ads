@@ -77,16 +77,38 @@ class FakeReviewerSession {
 }
 
 function waitForWsOpen(client: WebSocket, timeoutMs = 2000): Promise<void> {
+  if (client.readyState === WebSocket.OPEN) {
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Timed out waiting for ws open")), timeoutMs);
-    client.once("open", () => {
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
+      client.off("open", onOpen);
+      client.off("error", onError);
+      client.off("close", onClose);
+    };
+    const onOpen = () => {
+      cleanup();
       resolve();
-    });
-    client.once("error", (error) => {
-      clearTimeout(timer);
+    };
+    const onError = (error: unknown) => {
+      cleanup();
       reject(error);
-    });
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("WebSocket closed before opening"));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for ws open"));
+    }, timeoutMs);
+    client.on("open", onOpen);
+    client.on("error", onError);
+    client.on("close", onClose);
   });
 }
 
@@ -653,15 +675,18 @@ describe("web/server/ws reviewer resume", () => {
       }
     });
 
-    const welcomePromise = waitForWsMessage(client, (msg) => msg.type === "welcome");
     await waitForWsOpen(client);
-    const welcome = await welcomePromise;
     await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const welcome = received.find((msg) => msg.type === "welcome") ?? null;
+    assert.ok(welcome, "Expected welcome message");
 
     assert.equal(welcome.threadId, null);
     assert.equal(welcome.contextMode, "fresh");
     assert.equal(received.some((msg) => msg.type === "history"), false);
-    assert.equal(received.some((msg) => msg.type === "reviewer_snapshot_binding"), false);
+    const binding = received.find((msg) => msg.type === "reviewer_snapshot_binding") ?? null;
+    assert.ok(binding, "Expected reviewer_snapshot_binding payload to clear missing bindings");
+    assert.equal(binding.snapshotId ?? null, null);
     assert.equal(threadStorage.getRecord(userId), undefined);
     assert.deepEqual(
       reviewerCreateCalls.map((call) => ({ cwd: call.cwd, resumeThread: call.resumeThread, resumeThreadId: call.resumeThreadId })),

@@ -166,7 +166,7 @@ export async function handleCodexMessage(
     return;
   }
 
-  const session = sessionManager.getOrCreate(userId, cwd);
+  const session = sessionManager.getOrCreate(userId, cwd, /* resumeThread */ true);
   const activeAgentLabel = 'Codex';
 
   const saveThreadIdIfNeeded = () => {

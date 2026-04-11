@@ -9,7 +9,6 @@ import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills, loadSkillBody, renderSkillMetaInstruction } from "../skills/loader.js";
 import { readSoul } from "../memory/soul.js";
 import { PROJECT_ROOT } from "../utils/projectRoot.js";
-const DEFAULT_INSTRUCTIONS_PATH = path.join(PROJECT_ROOT, "templates", "instructions.md");
 
 export interface ReinjectionConfig {
   enabled: boolean;
@@ -20,6 +19,7 @@ export interface ReinjectionConfig {
 export interface SystemPromptManagerOptions {
   workspaceRoot: string;
   reinjection?: Partial<ReinjectionConfig>;
+  templateRoot?: string;
   logger?: Logger;
 }
 
@@ -77,6 +77,9 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
 export class SystemPromptManager {
   private workspaceRoot: string;
   private workspaceInitialized: boolean;
+  private readonly templateRoot: string;
+  private readonly defaultInstructionsPath: string;
+  private readonly defaultRulesPath: string;
   private readonly logger: Logger;
   private readonly reinjection: ReinjectionConfig;
   private readonly rulesReinjectionTurns: number;
@@ -99,6 +102,9 @@ export class SystemPromptManager {
   constructor(options: SystemPromptManagerOptions) {
     this.workspaceRoot = detectWorkspaceFrom(options.workspaceRoot);
     this.workspaceInitialized = this.checkWorkspaceInitialized(this.workspaceRoot);
+    this.templateRoot = options.templateRoot ? path.resolve(options.templateRoot) : path.join(PROJECT_ROOT, "templates");
+    this.defaultInstructionsPath = path.join(this.templateRoot, "instructions.md");
+    this.defaultRulesPath = path.join(this.templateRoot, "rules.md");
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
       turns: options.reinjection?.turns ?? 6,
@@ -326,39 +332,16 @@ export class SystemPromptManager {
   }
 
   private readInstructions(): FileCache {
-    migrateLegacyWorkspaceAdsIfNeeded(this.workspaceRoot);
-    const instructionsPath = resolveWorkspaceStatePath(this.workspaceRoot, "templates", "instructions.md");
-
-    // Always check workspace instructions first to allow hot-loading after fallback
-    const workspaceCache = this.readFileWithCache(
-      instructionsPath,
+    const cache = this.readFileWithCache(
+      this.defaultInstructionsPath,
       false,
-      "instructions",
-      this.instructionsCache?.path === instructionsPath ? this.instructionsCache : null,
+      "default instructions",
+      this.instructionsCache,
     );
 
-    let cache = workspaceCache;
-
-    if (workspaceCache.hash === "missing") {
-      const fallbackCache = this.readFileWithCache(
-        DEFAULT_INSTRUCTIONS_PATH,
-        false,
-        "default instructions",
-        this.instructionsCache?.path === DEFAULT_INSTRUCTIONS_PATH ? this.instructionsCache : null,
-      );
-
-      if (fallbackCache.hash !== "missing") {
-        cache = fallbackCache;
-        if (!this.instructionsWarningLogged) {
-          this.logger.warn(
-            `workspace instructions missing at ${instructionsPath}, using built-in templates/instructions.md`,
-          );
-          this.instructionsWarningLogged = true;
-        }
-      } else if (!this.instructionsWarningLogged) {
-        this.logger.warn(
-          `instructions missing at ${instructionsPath}, and no default templates/instructions.md found`,
-        );
+    if (cache.hash === "missing") {
+      if (!this.instructionsWarningLogged) {
+        this.logger.warn(`default instructions missing at ${this.defaultInstructionsPath}`);
         this.instructionsWarningLogged = true;
       }
     } else {
@@ -390,50 +373,36 @@ export class SystemPromptManager {
     }
     if (!this.workspaceWarningLogged) {
       this.logger.warn(
-        `workspace not initialized at ${this.workspaceRoot}; instructions/rules falling back to built-in templates.`,
+        `workspace state not initialized at ${this.workspaceRoot}; continuing with built-in templates.`,
       );
       this.workspaceWarningLogged = true;
     }
     return [
       "[Workspace Notice] Workspace not initialized (workspace.json missing).",
-      "Using built-in templates for instructions/rules. Initialize the workspace via Web Console or Telegram to customize.",
+      "Using built-in templates for instructions/rules. Some workspace state features may be unavailable.",
     ].join("\n");
   }
 
   private readRules(): FileCache {
-    migrateLegacyWorkspaceAdsIfNeeded(this.workspaceRoot);
-    const rulesPath = resolveWorkspaceStatePath(this.workspaceRoot, "rules.md");
-    const templateRules = resolveWorkspaceStatePath(this.workspaceRoot, "templates", "rules.md");
-    let cache: FileCache | null = null;
+    const cache = this.readFileWithCache(
+      this.defaultRulesPath,
+      false,
+      "default rules",
+      this.rulesCache,
+    );
 
-    if (fs.existsSync(rulesPath)) {
-      cache = this.readFileWithCache(rulesPath, false, "workspace rules", this.rulesCache);
-    } else if (fs.existsSync(templateRules)) {
-      cache = this.readFileWithCache(templateRules, false, "template rules", this.rulesCache);
+    if (cache.hash === "missing") {
+      if (!this.rulesWarningLogged) {
+        this.logger.warn(`default rules missing at ${this.defaultRulesPath}, continuing without rules`);
+        this.rulesWarningLogged = true;
+      }
     } else {
-      cache = {
-        path: rulesPath,
-        content: "",
-        hash: "missing",
-        mtimeMs: 0,
-      };
-    }
-
-    if (cache.hash === "missing" && !this.rulesWarningLogged) {
-      this.logger.warn(
-        `workspace rules missing at ${rulesPath}, continuing with instructions only`,
-      );
-      this.rulesWarningLogged = true;
+      this.rulesWarningLogged = false;
     }
 
     this.rulesCache = cache;
     if (this.lastRulesHash && cache.hash !== this.lastRulesHash && cache.hash !== "missing") {
       this.pendingReason = this.pendingReason ?? "rules-updated";
-    }
-    if (cache.hash === "missing") {
-      cache.hash = "missing";
-    } else {
-      this.rulesWarningLogged = false;
     }
     return cache;
   }

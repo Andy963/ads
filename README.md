@@ -49,7 +49,7 @@ Comprehensive documentation is being migrated into this repository. Until those 
 
 - `docs/spec/**` — canonical specifications describing features (requirements, design, implementation).
 - `docs/pm2.md` — recommended pm2 deployment (web + telegram as separate apps).
-- `templates/` — the workspace templates synced into centralized `.ads/workspaces/<workspaceId>/templates/`, useful for understanding prompts and spec scaffolding.
+- `templates/` — ADS-owned templates used for prompt injection and spec scaffolding (copied into `dist/templates` at build time).
 - Inline comments in `server/telegram/**` for Telegram bot behavior, including workspace initialization prompts.
 
 Missing guides referenced elsewhere will be restored once the documentation migration completes.
@@ -102,15 +102,15 @@ ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建�
 - `implementation.md` – 实施/验证模板
 - `task.md` – 单任务模板
 
-ADS 会在工作区初始化与 Web Console 启动/切换目录时同步 `templates/` 到 `.ads/workspaces/<workspaceId>/templates/`，如需自定义模板只需编辑这些文件。
+ADS 会在构建时把该目录复制到 `dist/templates`。运行时的系统提示注入会直接读取 ADS 的 `templates/`（而不是依赖每个 workspace 下的模板副本），从而保证在任意项目目录中行为一致。
 
 ### System Prompt Reinjection
 
-- 所有会话会自动注入 `templates/instructions.md` 与工作区规则（集中式存储于 `.ads/workspaces/<workspaceId>/rules.md`）。
+- 所有会话会自动注入 ADS 的 `templates/instructions.md` 与 `templates/rules.md`。
 - 通过以下环境变量调节再注入：
   - `ADS_REINJECTION_ENABLED`（默认 `true`，设置为 `0`/`false` 禁用）
   - `ADS_REINJECTION_TURNS`（默认 `10`）
-  - `ADS_RULES_REINJECTION_TURNS`（默认 `1`，即每轮重新注入 workspace 规则，可调大以降低频率）
+  - `ADS_RULES_REINJECTION_TURNS`（默认 `1`，即每轮重新注入 rules，可调大以降低频率）
 
 ### Codex 配置
 

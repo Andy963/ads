@@ -79,10 +79,9 @@ describe("web/ws/bootstrapDelivery", () => {
         latestArtifact: { id: "art-1" },
       });
 
-      assert.equal((sent[0] as { type?: unknown }).type, "welcome");
-      assert.equal((sent[1] as { type?: unknown }).type, "agents");
-      assert.equal(sent.some((payload) => (payload as { type?: unknown }).type === "history"), false);
-      assert.equal(sent.some((payload) => (payload as { type?: unknown }).type === "reviewer_snapshot_binding"), false);
+      const types = sent.map((payload) => (payload as { type?: unknown }).type);
+      assert.deepEqual(types, ["welcome", "agents", "reviewer_snapshot_binding"]);
+      assert.equal((sent[2] as { snapshotId?: unknown }).snapshotId, null);
     } finally {
       historyStore.clear("history-1");
     }
