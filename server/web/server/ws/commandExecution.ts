@@ -36,7 +36,7 @@ export async function executeCommandLine(args: {
       role: result.ok ? "ai" : "status",
       text: result.output,
       ts: Date.now(),
-      kind: result.ok ? undefined : "command",
+      kind: result.ok ? undefined : "error",
     });
     args.transport.sendWorkspaceState(args.transport.ws, args.currentCwd);
   } catch (error) {

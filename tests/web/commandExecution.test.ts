@@ -35,7 +35,7 @@ describe("web/ws/commandExecution", () => {
 
       assert.deepEqual(sent, [{ type: "result", ok: false, output: "command failed" }]);
       assert.equal(historyStore.get("history-1").at(-1)?.role, "status");
-      assert.equal(historyStore.get("history-1").at(-1)?.kind, "command");
+      assert.equal(historyStore.get("history-1").at(-1)?.kind, "error");
       assert.deepEqual(workspaceStateCalls, [{ ws, workspaceRoot: "/tmp/project" }]);
       assert.equal(interruptControllers.has("history-1"), false);
     } finally {
