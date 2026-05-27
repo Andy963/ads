@@ -906,7 +906,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const payload = msg.command && typeof msg.command === "object" ? (msg.command as Record<string, unknown>) : null;
       const cmd = String(payload?.command ?? "").trim();
       const id = String(payload?.id ?? "").trim();
-      const outputDelta = String(payload?.outputDelta ?? "");
+      let outputDelta = String(payload?.outputDelta ?? "");
+      const rawExitCode = payload?.exit_code ?? payload?.exitCode;
+      const exitCode = typeof rawExitCode === "number" && Number.isFinite(rawExitCode) ? rawExitCode : null;
+      if (exitCode !== null && exitCode !== 0) {
+        const exitLine = `[exit code ${exitCode}]`;
+        if (!outputDelta.includes(exitLine)) {
+          outputDelta = outputDelta.trimEnd() ? `${outputDelta.trimEnd()}\n${exitLine}\n` : `${exitLine}\n`;
+        }
+      }
       const key = commandKeyForWsEvent(cmd, id || null);
       if (!key) return;
       rt.busy.value = true;

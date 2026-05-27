@@ -120,6 +120,27 @@ function createHandler(rt: any) {
 }
 
 describe("ws patch diff dedup", () => {
+  it("adds non-zero command exit codes to execute previews when no output delta is present", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "command",
+      command: {
+        id: "cmd-1",
+        command: "npm test",
+        status: "failed",
+        exit_code: 2,
+      },
+    });
+
+    const execute = rt.messages.value.find((m: any) => m.kind === "execute" && m.command === "npm test");
+    expect(execute).toMatchObject({
+      content: "[exit code 2]",
+      streaming: true,
+    });
+  });
+
   it("merges multiple patch messages into a single system message within a turn", () => {
     const rt = createRuntime();
     const { handler } = createHandler(rt);
