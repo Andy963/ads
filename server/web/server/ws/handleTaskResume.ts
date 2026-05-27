@@ -168,7 +168,14 @@ export async function handleTaskResumeMessage(
 
         const status = orchestrator.status();
         if (!status.ready) {
-          deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: status.error ?? "代理未启用" });
+          const message = status.error ?? "代理未启用";
+          commitTaskResumeError({
+            historyStore: deps.history.historyStore,
+            historyKey: deps.context.historyKey,
+            previousEntries: originalHistoryEntries,
+            message,
+          });
+          deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
           return;
         }
 
@@ -240,7 +247,14 @@ export async function handleTaskResumeMessage(
 
     const status = orchestrator.status();
     if (!status.ready) {
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: status.error ?? "代理未启用" });
+      const message = status.error ?? "代理未启用";
+      commitTaskResumeError({
+        historyStore: deps.history.historyStore,
+        historyKey: deps.context.historyKey,
+        previousEntries: originalHistoryEntries,
+        message,
+      });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
       return;
     }
     try {

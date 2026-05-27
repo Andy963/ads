@@ -364,6 +364,106 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(sent, [{ type: "error", message: "未找到可用于恢复的任务历史" }]);
   });
 
+  it("persists a resume error when fallback agent is not ready", async () => {
+    const sent: unknown[] = [];
+    const historyEntries = [
+      { role: "user", text: "current question", ts: 1 },
+      { role: "ai", text: "current answer", ts: 2 },
+    ];
+    const originalHistoryEntries = historyEntries.map((entry) => ({ ...entry }));
+
+    const initialOrchestrator = {
+      getActiveAgentId: () => "claude",
+      getThreadId: () => "claude-current-thread",
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true }),
+    };
+
+    const fallbackOrchestrator = {
+      getActiveAgentId: () => "claude",
+      getThreadId: () => null,
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: false, error: "Claude credentials are missing" }),
+      send: async () => {
+        throw new Error("should not send when agent is unavailable");
+      },
+    };
+
+    const result = await handleTaskResumeMessage({
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: { mode: "auto" },
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+      },
+      observability: {
+        logger: {
+          info: () => {},
+          debug: () => {},
+          warn: () => {},
+        },
+      },
+      context: {
+        userId: 12,
+        historyKey: "history-agent-missing",
+        currentCwd: "/mnt/d/code/ADS/ads",
+      },
+      sessions: {
+        sessionManager: {
+          getSavedThreadId: () => "claude-saved-thread",
+          getSavedResumeThreadId: () => undefined,
+          getSandboxMode: () => "workspace-write",
+          getCodexEnv: () => undefined,
+          clearSavedResumeThreadId: () => {},
+          dropSession: () => {},
+          getOrCreate: () => fallbackOrchestrator as any,
+          saveThreadId: () => {},
+        } as any,
+        orchestrator: initialOrchestrator as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          clear: () => {
+            historyEntries.length = 0;
+          },
+          add: (_key: string, entry: { role: string; text: string; ts: number; kind?: string }) => {
+            historyEntries.push(entry);
+          },
+          get: () => historyEntries,
+        } as any,
+      },
+      tasks: {
+        ensureTaskContext: () => ({
+          queueRunning: false,
+          taskStore: {
+            getActiveTaskId: () => null,
+            listTasks: () => [],
+            getConversationMessages: () => [],
+          },
+        }) as any,
+      },
+    });
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(historyEntries, [
+      ...originalHistoryEntries,
+      {
+        role: "status",
+        text: "Claude credentials are missing",
+        ts: historyEntries.at(-1)?.ts,
+        kind: "error",
+      },
+    ]);
+    assert.deepEqual(sent, [{ type: "error", message: "Claude credentials are missing" }]);
+  });
+
   it("preserves saved resume continuity when probe fails and falls back to transcript restore", async () => {
     process.env.ADS_CODEX_BIN = process.execPath;
 
