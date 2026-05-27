@@ -68,7 +68,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("shows only the latest execute block when multiple execute messages are consecutive", async () => {
+  it("renders finalized execute history blocks individually", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -76,6 +76,45 @@ describe("chat execute stacking and command collapse", () => {
           { id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" },
           { id: "e-2", role: "system", kind: "execute", content: "out-2", command: "cmd-2" },
           { id: "e-3", role: "system", kind: "execute", content: "out-3", command: "cmd-3" },
+          { id: "a-1", role: "assistant", kind: "text", content: "done" },
+        ],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    const blocks = wrapper.findAll(".execute-block");
+    expect(blocks).toHaveLength(3);
+
+    expect(blocks[0]!.find(".execute-cmd").text()).toContain("cmd-1");
+    expect(blocks[1]!.find(".execute-cmd").text()).toContain("cmd-2");
+    expect(blocks[2]!.find(".execute-cmd").text()).toContain("cmd-3");
+
+    expect(blocks[0]!.find(".execute-output").text()).toContain("out-1");
+    expect(blocks[1]!.find(".execute-output").text()).toContain("out-2");
+    expect(blocks[2]!.find(".execute-output").text()).toContain("out-3");
+
+    wrapper.unmount();
+  });
+
+  it("shows only the latest transient execute preview when multiple previews are consecutive", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [
+          { id: "u-1", role: "user", kind: "text", content: "hi" },
+          { id: "exec:1", role: "system", kind: "execute", content: "out-1", command: "cmd-1", streaming: true },
+          { id: "exec:2", role: "system", kind: "execute", content: "out-2", command: "cmd-2", streaming: true },
+          { id: "exec:3", role: "system", kind: "execute", content: "out-3", command: "cmd-3", streaming: true },
           { id: "a-1", role: "assistant", kind: "text", content: "done" },
         ],
         queuedPrompts: [],
@@ -114,15 +153,15 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("shows only the latest execute block even when many execute messages are consecutive", async () => {
+  it("shows only the latest transient execute preview even when many previews are consecutive", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
           { id: "u-1", role: "user", kind: "text", content: "hi" },
-          { id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" },
-          { id: "e-2", role: "system", kind: "execute", content: "out-2", command: "cmd-2" },
-          { id: "e-3", role: "system", kind: "execute", content: "out-3", command: "cmd-3" },
-          { id: "e-4", role: "system", kind: "execute", content: "out-4", command: "cmd-4" },
+          { id: "exec:1", role: "system", kind: "execute", content: "out-1", command: "cmd-1", streaming: true },
+          { id: "exec:2", role: "system", kind: "execute", content: "out-2", command: "cmd-2", streaming: true },
+          { id: "exec:3", role: "system", kind: "execute", content: "out-3", command: "cmd-3", streaming: true },
+          { id: "exec:4", role: "system", kind: "execute", content: "out-4", command: "cmd-4", streaming: true },
           { id: "a-1", role: "assistant", kind: "text", content: "done" },
         ],
         queuedPrompts: [],
@@ -154,7 +193,14 @@ describe("chat execute stacking and command collapse", () => {
   it("does not render underlays even for large stacks", async () => {
     const execs = Array.from({ length: 20 }, (_, i) => {
       const n = i + 1;
-      return { id: `e-${n}`, role: "system", kind: "execute", content: `out-${n}`, command: `cmd-${n}` } as const;
+      return {
+        id: `exec:${n}`,
+        role: "system",
+        kind: "execute",
+        content: `out-${n}`,
+        command: `cmd-${n}`,
+        streaming: true,
+      } as const;
     });
 
     const wrapper = mount(MainChat, {

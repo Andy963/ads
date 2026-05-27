@@ -43,11 +43,18 @@ const messages = computed<ChatMessage[]>(() => {
   ].join("\n");
 
   return [
-    { id: "u-1", role: "user", kind: "text", content: "Execute block fixture: only the newest execute message is rendered." },
-    { id: "e-1", role: "system", kind: "execute", content: "short output", command: "echo short" },
-    { id: "e-2", role: "system", kind: "execute", content: "", command: "echo no output" },
-    { id: "e-3", role: "system", kind: "execute", content: longOutput, command: longCommand },
-    { id: "e-4", role: "system", kind: "execute", content: patchDiff, command: "git diff -- client/src/lib/markdown.ts" },
+    { id: "u-1", role: "user", kind: "text", content: "Execute block fixture: only the newest live execute preview is rendered." },
+    { id: "exec:1", role: "system", kind: "execute", content: "short output", command: "echo short", streaming: true },
+    { id: "exec:2", role: "system", kind: "execute", content: "", command: "echo no output", streaming: true },
+    { id: "exec:3", role: "system", kind: "execute", content: longOutput, command: longCommand, streaming: true },
+    {
+      id: "exec:4",
+      role: "system",
+      kind: "execute",
+      content: patchDiff,
+      command: "git diff -- client/src/lib/markdown.ts",
+      streaming: true,
+    },
     { id: "a-1", role: "assistant", kind: "text", content: "done" },
   ];
 });
@@ -77,7 +84,7 @@ onMounted(() => {
   <div class="fixture">
     <div class="fixtureHeader">
       <div class="fixtureTitle">Execute Block Fixture</div>
-      <div class="fixtureHint">Use this page to visually confirm only the newest execute preview is shown.</div>
+      <div class="fixtureHint">Use this page to visually confirm only the newest live execute preview is shown.</div>
       <div class="fixtureHint">Execute output is clamped to at most 3 lines; short output should not reserve extra height.</div>
       <label class="fixtureDebugToggle">
         <input v-model="showDebug" type="checkbox" />
