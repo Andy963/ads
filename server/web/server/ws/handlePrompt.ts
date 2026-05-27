@@ -35,7 +35,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     return { handled: false, orchestrator: deps.sessions.orchestrator };
   }
 
-  const sendToClient = (payload: unknown): void => deps.transport.safeJsonSend(deps.transport.ws, payload);
   const sendToChat = (payload: unknown): void => deps.transport.broadcastJson(payload);
 
   let orchestrator = deps.sessions.orchestrator;
@@ -54,7 +53,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         ts: Date.now(),
         kind: "error",
       });
-      sendToClient({ type: "error", message: promptInput.message });
+      sendToChat({ type: "error", message: promptInput.message });
       return;
     }
     const tempAttachments = promptInput.attachments || [];
@@ -109,7 +108,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         ts: Date.now(),
         kind: "error",
       });
-      sendToClient({ type: "error", message });
+      sendToChat({ type: "error", message });
       promptRun.cleanup();
       cleanupAfter();
       return;

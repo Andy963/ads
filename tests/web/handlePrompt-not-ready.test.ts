@@ -38,6 +38,7 @@ describe("web/server/ws handlePrompt not-ready agents", () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-prompt-not-ready-"));
     const historyStore = new MemoryHistoryStore();
     const clientMessages: unknown[] = [];
+    const chatMessages: unknown[] = [];
     const orchestrator = new NotReadyOrchestrator();
 
     try {
@@ -51,7 +52,7 @@ describe("web/server/ws handlePrompt not-ready agents", () => {
         transport: {
           ws: {} as any,
           safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-          broadcastJson: () => {},
+          broadcastJson: (payload) => chatMessages.push(payload),
           sendWorkspaceState: () => {},
         },
         observability: {
@@ -97,7 +98,8 @@ describe("web/server/ws handlePrompt not-ready agents", () => {
       } as any);
 
       assert.equal(result.handled, true);
-      assert.deepEqual(clientMessages, [{ type: "error", message: "Claude credentials are missing" }]);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "error", message: "Claude credentials are missing" }]);
       assert.deepEqual(
         historyStore.get("history-1").map((entry) => ({
           role: entry.role,

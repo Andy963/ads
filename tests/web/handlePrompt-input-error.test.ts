@@ -27,6 +27,7 @@ describe("web/server/ws handlePrompt input errors", () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-prompt-input-error-"));
     const historyStore = new MemoryHistoryStore();
     const clientMessages: unknown[] = [];
+    const chatMessages: unknown[] = [];
 
     try {
       const result = await handlePromptMessage({
@@ -45,7 +46,7 @@ describe("web/server/ws handlePrompt input errors", () => {
         transport: {
           ws: {} as any,
           safeJsonSend: (_ws, payload) => clientMessages.push(payload),
-          broadcastJson: () => {},
+          broadcastJson: (payload) => chatMessages.push(payload),
           sendWorkspaceState: () => {},
         },
         observability: {
@@ -82,7 +83,8 @@ describe("web/server/ws handlePrompt input errors", () => {
       } as any);
 
       assert.equal(result.handled, true);
-      assert.deepEqual(clientMessages, [{ type: "error", message: "不支持的图片类型: text/plain" }]);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "error", message: "不支持的图片类型: text/plain" }]);
       assert.deepEqual(
         historyStore.get("history-1").map((entry) => ({
           role: entry.role,
