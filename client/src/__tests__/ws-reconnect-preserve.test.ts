@@ -3,9 +3,8 @@ import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import { createAppController } from "../app/controller";
+import { RECONNECT_BUSY_MESSAGE } from "../app/projectsWs/reconnectNotice";
 import { EXECUTE_DISCONNECT_NOTICE } from "../lib/chat_sync";
-
-const reconnectBusyMessage = "请求执行中连接中断，正在重连并同步历史…";
 
 let lastWs: {
   onOpen?: () => void;
@@ -262,6 +261,33 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("removes the reconnect busy notice when bootstrap history arrives", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "Hello" }];
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_BUSY_MESSAGE);
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "thread_resumed", threadId: "thread-1" });
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Hello", ts: 1 },
+        { role: "ai", text: "World", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["Hello", "World"]);
+    wrapper.unmount();
+  });
+
   it.each([
     [4401, "Unauthorized"],
     [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],
@@ -279,7 +305,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.busy.value).toBe(false);
     expect(rt.turnInFlight).toBe(false);
     expect(rt.wsError.value).toBe(expectedError);
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(reconnectBusyMessage);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
     wrapper.unmount();
   });
 
@@ -295,7 +321,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.reconnectTimer).not.toBeNull();
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(reconnectBusyMessage);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_BUSY_MESSAGE);
 
     lastWs!.onClose?.({ code: 4401, reason: "unauthorized" });
     await settleUi(wrapper);
@@ -304,7 +330,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.turnInFlight).toBe(false);
     expect(rt.reconnectTimer).toBeNull();
     expect(rt.wsError.value).toBe("Unauthorized");
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(reconnectBusyMessage);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
     wrapper.unmount();
   });
 

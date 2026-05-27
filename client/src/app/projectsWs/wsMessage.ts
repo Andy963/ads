@@ -10,6 +10,7 @@ import {
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
+import { RECONNECT_BUSY_MESSAGE } from "./reconnectNotice";
 
 type Ref<T> = { value: T };
 
@@ -147,6 +148,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       streaming: args.streaming,
       ts: args.ts,
     };
+  };
+
+  const dropReconnectBusyMessage = (): void => {
+    const existing = Array.isArray(rt.messages.value) ? rt.messages.value : [];
+    const next = existing.filter(
+      (item) => !(item.role === "system" && item.kind === "text" && item.content === RECONNECT_BUSY_MESSAGE),
+    );
+    if (next.length !== existing.length) {
+      rt.messages.value = next;
+    }
   };
 
   type PatchFileStat = { added: number | null; removed: number | null };
@@ -735,6 +746,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         rt.awaitingBootstrapHistory = false;
       }
+      dropReconnectBusyMessage();
       applyResumeHistory(next, rt);
       if (!rt.busy.value && !rt.turnInFlight) {
         void flushQueuedPrompts(rt);

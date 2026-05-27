@@ -10,11 +10,10 @@ import type { AppContext, PathValidateResponse, ProjectRuntime, ProjectTab } fro
 import type { ChatActions } from "../chat";
 
 import type { WsDeps } from "./types";
+import { RECONNECT_BUSY_MESSAGE } from "./reconnectNotice";
 import { createWsMessageHandler } from "./wsMessage";
 
 export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDeps) {
-  const reconnectBusyMessage = "请求执行中连接中断，正在重连并同步历史…";
-
   const {
     api,
     loggedIn,
@@ -314,7 +313,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       const items = rt.messages.value;
       for (let i = items.length - 1; i >= 0; i--) {
         const item = items[i]!;
-        if (item.role === "system" && item.kind === "text" && item.content === reconnectBusyMessage) {
+        if (item.role === "system" && item.kind === "text" && item.content === RECONNECT_BUSY_MESSAGE) {
           rt.messages.value = [...items.slice(0, i), ...items.slice(i + 1)];
           return;
         }
@@ -346,7 +345,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           {
             role: "system",
             kind: "text",
-            content: reconnectBusyMessage,
+            content: RECONNECT_BUSY_MESSAGE,
           },
           rt,
         );
