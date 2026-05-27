@@ -3,6 +3,7 @@ import { mount } from "@vue/test-utils";
 
 import TaskBoard from "../components/TaskBoard.vue";
 import type { Task } from "../api/types";
+import type { TaskStage } from "../lib/task_stage";
 
 function makeTask(overrides: Partial<Task>): Task {
   const now = Date.now();
@@ -30,7 +31,7 @@ function makeTask(overrides: Partial<Task>): Task {
   };
 }
 
-async function expandStage(wrapper: ReturnType<typeof mount>, stage: "backlog" | "in_progress" | "in_review" | "done"): Promise<void> {
+async function expandStage(wrapper: ReturnType<typeof mount>, stage: TaskStage): Promise<void> {
   const container = wrapper.get(`[data-testid="task-stage-${stage}"]`);
   await container.get("button.stageHeader").trigger("click");
   await wrapper.vm.$nextTick();

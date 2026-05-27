@@ -5,7 +5,6 @@ import DraggableModal from "./DraggableModal.vue";
 const props = defineProps<{
   task: Task;
   statusLabel: string;
-  showTaskPrompt: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -69,7 +68,7 @@ const emit = defineEmits<{
         </div>
       </div>
 
-      <div v-if="props.showTaskPrompt" class="detailSection">
+      <div class="detailSection">
         <div class="detailSectionTitle">任务描述</div>
         <pre class="detailMono preWrap" data-testid="task-detail-prompt">{{ props.task.prompt }}</pre>
       </div>

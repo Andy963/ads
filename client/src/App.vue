@@ -52,7 +52,6 @@ const {
   runSingleTask,
   cancelTask,
   retryTask,
-  markTaskReviewDone,
   deleteTask,
   onTaskEvent,
   openTaskCreateDialog,
@@ -411,7 +410,6 @@ const plannerConnectionStatus = computed(() => {
                   @runSingle="(id) => runSingleTask(id)"
                   @cancel="cancelTask"
                   @retry="retryTask"
-                  @markDone="markTaskReviewDone"
                   @delete="deleteTask"
                   @create="openTaskCreateDialogHandler"
                 />

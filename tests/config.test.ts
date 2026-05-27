@@ -46,7 +46,6 @@ describe("server config resolvers", () => {
         ADS_WEB_WS_PING_INTERVAL_MS: "-5",
         ADS_WEB_WS_MAX_MISSED_PONGS: "not-a-number",
         ADS_PLANNER_CODEX_MODEL: " gpt-5.4 ",
-        ADS_REVIEWER_CODEX_MODEL: "   ",
         TASK_QUEUE_ENABLED: "off",
         TASK_QUEUE_AUTO_START: "yes",
         ADS_TRACE_WS_DUPLICATION: "true",
@@ -61,7 +60,6 @@ describe("server config resolvers", () => {
     assert.strictEqual(config.sessionTimeoutMs, 24 * 60 * 60 * 1000);
     assert.strictEqual(config.sessionCleanupIntervalMs, 5 * 60 * 1000);
     assert.strictEqual(config.plannerCodexModel, "gpt-5.4");
-    assert.strictEqual(config.reviewerCodexModel, undefined);
     assert.strictEqual(config.taskQueueEnabled, false);
     assert.strictEqual(config.taskQueueAutoStart, true);
     assert.strictEqual(config.traceWsDuplication, true);

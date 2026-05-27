@@ -41,7 +41,6 @@ const emit = defineEmits<{
   (e: "runSingle", id: string): void;
   (e: "cancel", id: string): void;
   (e: "retry", id: string): void;
-  (e: "markDone", id: string): void;
   (e: "delete", id: string): void;
 }>();
 
@@ -112,7 +111,6 @@ const detailTask = computed(() => {
   if (!id) return null;
   return props.tasks.find((task) => task.id === id) ?? null;
 });
-const showTaskPromptInDetail = computed(() => true);
 
 function closeDetail(): void {
   detailId.value = null;
@@ -324,7 +322,6 @@ function toggleQueue(): void {
       v-if="detailTask"
       :task="detailTask"
       :status-label="statusLabel(detailTask.status)"
-      :show-task-prompt="showTaskPromptInDetail"
       @close="closeDetail"
     />
 
