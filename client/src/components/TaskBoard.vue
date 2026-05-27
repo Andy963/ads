@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
 import type { Task, TaskQueueStatus } from "../api/types";
 import type { ApiClient } from "../api/client";
@@ -106,10 +106,7 @@ const {
   workspaceRoot,
 });
 
-const detailId = computed({
-  get: () => props.selectedId ?? null,
-  set: (_value: string | null) => {},
-});
+const detailId = ref<string | null>(null);
 const detailTask = computed(() => {
   const id = String(detailId.value ?? "").trim();
   if (!id) return null;
