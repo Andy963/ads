@@ -37,7 +37,6 @@ export interface AgentRunResult {
 export interface AgentAdapter {
   readonly id: AgentIdentifier;
   readonly metadata: AgentMetadata;
-  getStreamingConfig(): { enabled: boolean; throttleMs: number };
   status(): AgentStatus;
   send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult>;
   onEvent(handler: (event: AgentEvent) => void): () => void;

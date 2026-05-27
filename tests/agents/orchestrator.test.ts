@@ -61,11 +61,6 @@ class DeferredAgentAdapter implements AgentAdapter {
       capabilities: ["text"],
     };
   }
-
-  getStreamingConfig(): { enabled: boolean; throttleMs: number } {
-    return { enabled: false, throttleMs: 0 };
-  }
-
   status() {
     return { ready: true, streaming: false };
   }
@@ -101,11 +96,6 @@ class CaptureAgentAdapter implements AgentAdapter {
       capabilities: ["text"],
     };
   }
-
-  getStreamingConfig(): { enabled: boolean; throttleMs: number } {
-    return { enabled: false, throttleMs: 0 };
-  }
-
   status() {
     return { ready: true, streaming: false };
   }

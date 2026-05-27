@@ -77,10 +77,6 @@ export class GeminiCliAdapter implements AgentAdapter {
     this.id = this.metadata.id;
   }
 
-  getStreamingConfig(): { enabled: boolean; throttleMs: number } {
-    return { enabled: true, throttleMs: 200 };
-  }
-
   status(): AgentStatus {
     return { ready: true, streaming: true };
   }

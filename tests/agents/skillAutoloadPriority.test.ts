@@ -37,11 +37,6 @@ class DummyAdapter implements AgentAdapter {
     vendor: "tests",
     capabilities: ["text"] as const,
   };
-
-  getStreamingConfig(): { enabled: boolean; throttleMs: number } {
-    return { enabled: false, throttleMs: 0 };
-  }
-
   status() {
     return { ready: true, streaming: false };
   }

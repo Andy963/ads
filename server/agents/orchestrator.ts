@@ -477,10 +477,6 @@ export class HybridOrchestrator {
     }
   }
 
-  getStreamingConfig(): { enabled: boolean; throttleMs: number } {
-    return this.activeEntry.adapter.getStreamingConfig();
-  }
-
   status(): AgentStatus & { agentId: AgentIdentifier } {
     const status = this.activeEntry.adapter.status();
     return { ...status, agentId: this.activeAgentId };
