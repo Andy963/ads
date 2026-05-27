@@ -17,8 +17,12 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function withoutLiveAndExecute(items: ChatItem[], liveStepId: string): ChatItem[] {
-  return items.filter((m) => m.id !== liveStepId && m.kind !== "execute");
+function isTransientExecutePreview(item: ChatItem): boolean {
+  return item.kind === "execute" && String(item.id ?? "").startsWith("exec:");
+}
+
+function withoutLiveAndTransientExecute(items: ChatItem[], liveStepId: string): ChatItem[] {
+  return items.filter((m) => m.id !== liveStepId && !isTransientExecutePreview(m));
 }
 
 function toComparable(items: ChatItem[]): ComparableChat[] {
@@ -53,8 +57,8 @@ export function mergeHistoryFromServer(
   serverHistory: ChatItem[],
   liveStepId: string,
 ): ChatItem[] {
-  const local = withoutLiveAndExecute(localMessages, liveStepId);
-  const server = withoutLiveAndExecute(serverHistory, liveStepId);
+  const local = withoutLiveAndTransientExecute(localMessages, liveStepId);
+  const server = withoutLiveAndTransientExecute(serverHistory, liveStepId);
   if (local.length === 0) return server;
   if (server.length === 0) return local;
 

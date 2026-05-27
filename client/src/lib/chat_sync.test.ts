@@ -4,8 +4,8 @@ import {
   STREAM_DISCONNECT_NOTICE,
   finalizeStreamingOnDisconnect,
   mergeHistoryFromServer,
-  type ChatItem,
 } from "./chat_sync";
+import type { ChatItem } from "../app/controllerTypes";
 
 const LIVE = "live-step";
 const LEGACY_STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
@@ -16,6 +16,12 @@ function msg(overrides: Partial<ChatItem>): ChatItem {
     role: overrides.role ?? "assistant",
     kind: overrides.kind ?? "text",
     content: overrides.content ?? "",
+    command: overrides.command,
+    hiddenLineCount: overrides.hiddenLineCount,
+    commandsTotal: overrides.commandsTotal,
+    commandsShown: overrides.commandsShown,
+    commandsLimit: overrides.commandsLimit,
+    ts: overrides.ts,
     streaming: overrides.streaming,
   };
 }
@@ -88,6 +94,100 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     const out = mergeHistoryFromServer(local, server, LIVE);
 
     expect(out.map((m) => m.content)).toEqual(["Existing question", "Existing answer", "Sibling prompt"]);
+  });
+
+  it("keeps persisted execute history when hydrating an empty local transcript", () => {
+    const local: ChatItem[] = [msg({ id: "local-system", role: "system", content: "Connected" })];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Check status" }),
+      msg({
+        id: "h-x-1",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "M client/src/lib/chat_sync.ts",
+      }),
+      msg({ id: "h-a-2", role: "assistant", content: "There is one modified file." }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out).toHaveLength(3);
+    expect(out[1]).toMatchObject({
+      id: "h-x-1",
+      role: "system",
+      kind: "execute",
+      command: "git status --short",
+      content: "M client/src/lib/chat_sync.ts",
+    });
+  });
+
+  it("appends persisted execute history after the newest overlap", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Check status" }),
+      msg({ id: "a1", role: "assistant", content: "Running it now." }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Check status" }),
+      msg({ id: "h-a-1", role: "assistant", content: "Running it now." }),
+      msg({
+        id: "h-x-2",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "M client/src/lib/chat_sync.ts",
+      }),
+      msg({ id: "h-a-3", role: "assistant", content: "There is one modified file." }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out.map((m) => [m.kind, m.content])).toEqual([
+      ["text", "Check status"],
+      ["text", "Running it now."],
+      ["execute", "M client/src/lib/chat_sync.ts"],
+      ["text", "There is one modified file."],
+    ]);
+    expect(out[2]).toMatchObject({ id: "h-x-2", command: "git status --short" });
+  });
+
+  it("drops transient execute previews while preserving persisted execute blocks", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Check status" }),
+      msg({
+        id: "exec:git-status",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "partial output",
+        streaming: true,
+      }),
+      msg({ id: "a1", role: "assistant", content: "Running it now." }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Check status" }),
+      msg({
+        id: "exec:stale-preview",
+        role: "system",
+        kind: "execute",
+        command: "stale",
+        content: "stale",
+        streaming: true,
+      }),
+      msg({ id: "h-a-1", role: "assistant", content: "Running it now." }),
+      msg({
+        id: "h-x-2",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "M client/src/lib/chat_sync.ts",
+      }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out.map((m) => m.id)).toEqual(["u1", "a1", "h-x-2"]);
+    expect(out.map((m) => m.content)).toEqual(["Check status", "Running it now.", "M client/src/lib/chat_sync.ts"]);
   });
 
   it("replaces a truncated last assistant message instead of duplicating it", () => {
