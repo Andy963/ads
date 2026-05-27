@@ -52,6 +52,40 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
+  it("shows the execution context on user messages", () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        messages: [
+          {
+            id: "u-1",
+            role: "user",
+            kind: "text",
+            content: "hello",
+            execution: {
+              agentId: "codex",
+              model: "gpt-4.1",
+              modelReasoningEffort: "xhigh",
+              effectiveAgentId: "claude",
+              effectiveModel: "claude-sonnet",
+            },
+          },
+        ],
+        agents: [{ id: "claude", name: "Claude", ready: true }],
+        activeAgentId: "claude",
+        models: [makeModel("claude-sonnet", "Claude Sonnet", "anthropic")],
+        modelId: "claude-sonnet",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    const text = wrapper.find(".msgExecutionMeta").text();
+    expect(text).toContain("Agent: claude");
+    expect(text).toContain("Model: claude-sonnet");
+    expect(text).not.toContain("gpt-4.1");
+    wrapper.unmount();
+  });
+
   it("defaults to the first available model when current is unset", async () => {
     const wrapper = mount(MainChat, {
       props: {
@@ -115,4 +149,3 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 });
-

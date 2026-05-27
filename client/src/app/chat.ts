@@ -238,11 +238,12 @@ export function createChatActions(ctx: AppContext) {
     runtimeOrActive(rt).messages.value = trimChatItems(items);
   };
 
-  const pushMessageBeforeLive = (item: Omit<ChatItem, "id">, rt?: ProjectRuntime): void => {
+  const pushMessageBeforeLive = (item: Omit<ChatItem, "id"> & { id?: string }, rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
     const existing = state.messages.value.slice();
     const liveIndex = findFirstLiveIndex(existing);
-    const next = { ...item, id: randomId("msg"), ts: item.ts ?? Date.now() };
+    const explicitId = String(item.id ?? "").trim();
+    const next = { ...item, id: explicitId || randomId("msg"), ts: item.ts ?? Date.now() };
     if (liveIndex < 0) {
       setMessages([...existing, next], state);
       return;
@@ -497,12 +498,6 @@ export function createChatActions(ctx: AppContext) {
       finalizeCommandBlock(state);
       clearStepLive(state);
 
-      pushMessageBeforeLive({ role: "user", kind: "text", content: display }, state);
-      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
-      state.delegationsInFlight.value = [];
-      state.busy.value = true;
-      state.turnInFlight = true;
-      state.pendingAckClientMessageId = next.clientMessageId;
       const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
       const effort = queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high";
       const queuedModel = String(next.model ?? "").trim();
@@ -511,6 +506,17 @@ export function createChatActions(ctx: AppContext) {
       const activeAgentId = String(state.activeAgentId.value ?? "").trim();
       const agentId = queuedAgentId || activeAgentId;
       savePendingPrompt(state, { ...next, agentId, model, modelReasoningEffort: effort });
+      const execution = {
+        ...(agentId ? { agentId } : {}),
+        ...(model ? { model } : {}),
+        ...(effort ? { modelReasoningEffort: effort } : {}),
+      };
+      pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution }, state);
+      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
+      state.delegationsInFlight.value = [];
+      state.busy.value = true;
+      state.turnInFlight = true;
+      state.pendingAckClientMessageId = next.clientMessageId;
       const payload =
         next.images.length > 0
           ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId }

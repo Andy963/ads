@@ -14,6 +14,14 @@ export type ChatMessage = {
   commandsLimit?: number;
   ts?: number;
   streaming?: boolean;
+  execution?: {
+    agentId?: string;
+    model?: string;
+    modelReasoningEffort?: string;
+    effectiveAgentId?: string;
+    effectiveModel?: string;
+    effectiveModelReasoningEffort?: string;
+  };
 };
 
 export type RenderMessage = ChatMessage & {

@@ -329,6 +329,23 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  const annotatePendingUserMessageExecution = (payload: Record<string, unknown>): void => {
+    const pendingId = String(rt.pendingAckClientMessageId ?? "").trim();
+    if (!pendingId) return;
+    const target = rt.messages.value.find((m) => m.id === pendingId && m.role === "user");
+    if (!target) return;
+
+    const effectiveAgentId = String(payload.activeAgentId ?? "").trim();
+    const effectiveModel = String(payload.effectiveModel ?? "").trim();
+    const effectiveModelReasoningEffort = String(payload.effectiveModelReasoningEffort ?? "").trim();
+    target.execution = {
+      ...(target.execution ?? {}),
+      ...(effectiveAgentId ? { effectiveAgentId } : {}),
+      ...(effectiveModel ? { effectiveModel } : {}),
+      ...(effectiveModelReasoningEffort ? { effectiveModelReasoningEffort } : {}),
+    };
+  };
+
   const handleSharedSessionReset = (payload: Record<string, unknown>): void => {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "shared";
@@ -913,6 +930,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "result") {
+      annotatePendingUserMessageExecution(msg as Record<string, unknown>);
       cancelPendingResume(rt);
       rt.busy.value = false;
       rt.turnInFlight = false;

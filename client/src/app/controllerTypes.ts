@@ -31,6 +31,15 @@ export type QueuedPrompt = {
   modelReasoningEffort?: string;
 };
 
+export type ChatExecutionContext = {
+  agentId?: string;
+  model?: string;
+  modelReasoningEffort?: string;
+  effectiveAgentId?: string;
+  effectiveModel?: string;
+  effectiveModelReasoningEffort?: string;
+};
+
 export type AgentDelegationInFlight = {
   id: string;
   agentId: string;
@@ -74,6 +83,7 @@ export type ChatItem = {
   commandsLimit?: number;
   ts?: number;
   streaming?: boolean;
+  execution?: ChatExecutionContext;
 };
 
 export type BufferedTaskChatEvent =
