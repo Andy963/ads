@@ -130,7 +130,7 @@ export async function handleTaskResumeMessage(
       sendTaskResumeHistorySnapshot({
         historyStore: deps.history.historyStore,
         historyKey: deps.context.historyKey,
-        send: (payload) => deps.transport.safeJsonSend(deps.transport.ws, payload),
+        send: deps.transport.broadcastJson ?? ((payload) => deps.transport.safeJsonSend(deps.transport.ws, payload)),
       });
     const activeAgentId = orchestrator.getActiveAgentId();
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);

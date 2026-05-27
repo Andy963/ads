@@ -92,6 +92,7 @@ export async function dispatchWsMessage(args: {
       promptRunEpochs: args.promptRunEpochs,
       ensureTaskContext: args.tasks.ensureTaskContext as WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"],
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
+      broadcastJson: args.broadcastJson,
       broadcastSessionReset: args.state.broadcastSessionReset,
       resetSharedSessionState: args.state.resetSharedSessionState,
       logger: args.logger,

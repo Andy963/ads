@@ -211,7 +211,7 @@ export type WsCommandHandlerDeps = {
 
 export type WsTaskResumeHandlerDeps = {
   request: Pick<WsRequestDeps, "parsed">;
-  transport: Pick<WsTransportDeps, "ws" | "safeJsonSend">;
+  transport: Pick<WsTransportDeps, "ws" | "safeJsonSend"> & Partial<Pick<WsTransportDeps, "broadcastJson">>;
   observability: Pick<WsObservabilityDeps, "logger">;
   context: Pick<WsConnectionContextDeps, "userId" | "historyKey" | "currentCwd">;
   sessions: Pick<WsSessionRuntimeDeps, "sessionManager" | "orchestrator" | "getWorkspaceLock">;

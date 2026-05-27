@@ -84,6 +84,7 @@ describe("web/ws/handleTaskResume", () => {
 
   it("prefers current lane history over older task transcripts when thread resume is unavailable", async () => {
     const sent: unknown[] = [];
+    const sessionSent: unknown[] = [];
     const historyEntries = [
       { role: "user", text: "current question", ts: 1 },
       { role: "ai", text: "current answer", ts: 2 },
@@ -125,6 +126,7 @@ describe("web/ws/handleTaskResume", () => {
       transport: {
         ws: {} as any,
         safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+        broadcastJson: (payload: unknown) => sessionSent.push(payload),
       },
       observability: {
         logger: {
@@ -214,7 +216,8 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(dropSessionCalls, [{}]);
     assert.deepEqual(getOrCreateCalls, [{ userId: 9, cwd: "/mnt/d/code/ADS/ads", resumeThread: false }]);
     assert.deepEqual(saveThreadCalls, [{ userId: 9, threadId: "new-claude-session", agentId: "claude" }]);
-    assert.deepEqual(sent.at(-1), {
+    assert.equal(sent.length, 0);
+    assert.deepEqual(sessionSent.at(-1), {
       type: "history",
       items: [
         {

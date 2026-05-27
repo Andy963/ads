@@ -44,6 +44,7 @@ export async function handleWsControlMessage(args: {
   promptRunEpochs?: Map<string, number>;
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
+  broadcastJson?: (payload: unknown) => void;
   broadcastSessionReset?: (payload: unknown) => void;
   resetSharedSessionState?: (options: {
     sourceChatSessionId: string;
@@ -87,6 +88,7 @@ export async function handleWsControlMessage(args: {
       transport: {
         ws: {} as WebSocket,
         safeJsonSend: (_ws, payload) => args.sendJson(payload),
+        broadcastJson: args.broadcastJson,
       },
       observability: {
         logger: {
