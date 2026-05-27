@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChat from "../components/MainChat.vue";
+import MainChatMessageList from "../components/MainChatMessageList.vue";
 
 async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
   await wrapper.vm.$nextTick();
@@ -10,6 +11,41 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 }
 
 describe("chat execute stacking and command collapse", () => {
+  it("emits copy events from execute blocks", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [{ id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" }],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+    await wrapper.find(".executeCopyBtn").trigger("click");
+
+    expect(wrapper.emitted("copyMessage")?.[0]?.[0]).toMatchObject({
+      id: "e-1",
+      kind: "execute",
+      command: "cmd-1",
+      content: "out-1",
+    });
+
+    wrapper.unmount();
+  });
+
   it("renders no execute stack when there are no execute messages", async () => {
     const wrapper = mount(MainChat, {
       props: {

@@ -338,6 +338,39 @@ function closeFilePreview(): void {
             <span class="prompt-tag">&gt;_</span>
             <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
           </div>
+          <div class="execute-actions">
+            <button class="msgCopyBtn executeCopyBtn" type="button" aria-label="Copy command output" @click="emit('copyMessage', m)">
+              <svg
+                v-if="copiedMessageId === m.id"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+              <svg
+                v-else
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+          </div>
         </div>
         <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
         <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
@@ -498,6 +531,18 @@ function closeFilePreview(): void {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+}
+
+.execute-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.executeCopyBtn {
+  width: 24px;
+  height: 24px;
 }
 
 .execute-cmd {

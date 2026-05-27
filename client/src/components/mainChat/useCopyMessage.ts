@@ -15,8 +15,17 @@ export function useCopyMessage() {
     copiedMessageId.value = null;
   };
 
+  const formatCopyText = (message: ChatMessage): string => {
+    if (message.kind !== "execute") {
+      return message.content;
+    }
+    const command = String(message.command ?? "").trim();
+    const output = String(message.content ?? "").trimEnd();
+    return [command ? `$ ${command}` : "", output].filter(Boolean).join("\n");
+  };
+
   const onCopyMessage = async (message: ChatMessage): Promise<void> => {
-    const ok = await copyTextToClipboard(message.content);
+    const ok = await copyTextToClipboard(formatCopyText(message));
     if (!ok) return;
     clearCopiedToast();
     copiedMessageId.value = message.id;
