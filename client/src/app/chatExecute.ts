@@ -86,7 +86,14 @@ export function createExecuteActions(params: {
     const current =
       state.executePreviewByKey.get(normalizedKey) ??
       (() => {
-        const created = { key: normalizedKey, command: normalizedCommand, previewLines: [] as string[], totalLines: 0, remainder: "" };
+        const created = {
+          key: normalizedKey,
+          command: normalizedCommand,
+          previewLines: [] as string[],
+          fullLines: [] as string[],
+          totalLines: 0,
+          remainder: "",
+        };
         state.executePreviewByKey.set(normalizedKey, created);
         state.executeOrder = [...state.executeOrder, normalizedKey];
         return created;
@@ -101,6 +108,7 @@ export function createExecuteActions(params: {
         const line = trimRightLine(rawLine);
         if (!line) continue;
         current.totalLines += 1;
+        current.fullLines.push(line);
         if (current.previewLines.length < maxExecutePreviewLines) {
           current.previewLines.push(line);
         }
@@ -113,13 +121,18 @@ export function createExecuteActions(params: {
       if (partial) preview.push(partial);
     }
 
-    const hiddenLineCount = Math.max(0, current.totalLines - current.previewLines.length);
+    const fullLines = current.fullLines.slice();
+    const partial = trimRightLine(current.remainder);
+    if (partial) fullLines.push(partial);
+    const hiddenLineCount = Math.max(0, fullLines.length - preview.length);
+    const fullContent = fullLines.join("\n");
     const itemId = `exec:${normalizedKey}`;
     const nextItem: ChatItem = {
       id: itemId,
       role: "system",
       kind: "execute",
       content: preview.join("\n"),
+      fullContent: hiddenLineCount > 0 ? fullContent : undefined,
       command: normalizedCommand,
       hiddenLineCount,
       commandsTotal: state.turnCommandCount,

@@ -144,6 +144,7 @@ describe("command UI lifecycle", () => {
     expect(String(execute.content)).toContain("M a");
     expect(String(execute.content)).toContain("M c");
     expect(String(execute.content)).not.toContain("M d");
+    expect(String(execute.fullContent)).toContain("M d");
     expect(execute.hiddenLineCount).toBe(1);
 
     lastWs!.onMessage?.({ type: "result", ok: true, output: "Summary" });
@@ -157,6 +158,7 @@ describe("command UI lifecycle", () => {
     expect(finalizedExecute.command).toBe("git status --porcelain");
     expect(String(finalizedExecute.content)).toContain("M a");
     expect(String(finalizedExecute.content)).toContain("M c");
+    expect(String(finalizedExecute.fullContent)).toContain("M d");
     expect(after.some((m) => m.kind === "command")).toBe(false);
     expect(after.some((m) => m.role === "assistant" && m.kind === "text" && m.content.includes("Summary"))).toBe(true);
 

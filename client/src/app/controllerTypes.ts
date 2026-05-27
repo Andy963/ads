@@ -114,7 +114,10 @@ export type ProjectRuntime = {
   recentCommands: Ref<string[]>;
   turnCommands: string[];
   turnCommandCount: number;
-  executePreviewByKey: Map<string, { key: string; command: string; previewLines: string[]; totalLines: number; remainder: string }>;
+  executePreviewByKey: Map<
+    string,
+    { key: string; command: string; previewLines: string[]; fullLines: string[]; totalLines: number; remainder: string }
+  >;
   executeOrder: string[];
   seenCommandIds: Set<string>;
   pendingImages: Ref<IncomingImage[]>;
