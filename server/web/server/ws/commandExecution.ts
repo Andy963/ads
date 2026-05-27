@@ -36,17 +36,13 @@ export async function executeCommandLine(args: {
       );
     });
     const result = await Promise.race([runPromise, abortPromise]);
-    args.sendToCommandScope(
-      result.ok
-        ? { type: "result", ok: true, output: result.output, kind: "execute", command: args.command }
-        : { type: "result", ok: false, output: result.output },
-    );
+    args.sendToCommandScope({ type: "result", ok: result.ok, output: result.output, kind: "execute", command: args.command });
     args.sessionLogger?.logOutput(result.output);
     args.historyStore.add(args.historyKey, {
       role: "status",
-      text: result.ok ? formatCommandHistoryText(args.command, result.output) : result.output,
+      text: formatCommandHistoryText(args.command, result.output),
       ts: Date.now(),
-      kind: result.ok ? "execute" : "error",
+      kind: "execute",
     });
     if (args.transport.broadcastWorkspaceState) {
       args.transport.broadcastWorkspaceState(args.currentCwd);

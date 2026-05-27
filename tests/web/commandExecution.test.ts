@@ -49,7 +49,7 @@ describe("web/ws/commandExecution", () => {
     }
   });
 
-  it("records command results in history and refreshes workspace state", async () => {
+  it("records failed command results as replayable execute history and refreshes workspace state", async () => {
     const sent: unknown[] = [];
     const workspaceStateCalls: Array<{ ws: unknown; workspaceRoot: string }> = [];
     const historyStore = new HistoryStore({ namespace: "test-command-execution", maxEntriesPerSession: 10 });
@@ -77,9 +77,18 @@ describe("web/ws/commandExecution", () => {
         },
       });
 
-      assert.deepEqual(sent, [{ type: "result", ok: false, output: "command failed" }]);
+      assert.deepEqual(sent, [
+        {
+          type: "result",
+          ok: false,
+          output: "command failed",
+          kind: "execute",
+          command: "ads task status",
+        },
+      ]);
       assert.equal(historyStore.get("history-1").at(-1)?.role, "status");
-      assert.equal(historyStore.get("history-1").at(-1)?.kind, "error");
+      assert.equal(historyStore.get("history-1").at(-1)?.text, "$ ads task status\ncommand failed");
+      assert.equal(historyStore.get("history-1").at(-1)?.kind, "execute");
       assert.deepEqual(workspaceStateCalls, [{ ws, workspaceRoot: "/tmp/project" }]);
       assert.equal(interruptControllers.has("history-1"), false);
     } finally {

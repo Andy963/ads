@@ -827,22 +827,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         });
       }
       applyEffectiveState(msg as Record<string, unknown>);
-      if (rt.pendingCdRequestedPath && msg.ok === false) {
-        if (output.includes("/cd") || output.includes("目录")) {
-          rt.pendingCdRequestedPath = null;
-        }
-      }
       clearStepLive(rt);
       finalizeCommandBlock(rt);
-      if (msg.ok === false) {
-        finalizeAssistant("", rt);
-        const content = output.trim();
-        if (content) {
-          pushMessageBeforeLive({ role: "system", kind: "error", content }, rt);
-        }
-        void flushQueuedPrompts(rt);
-        return;
-      }
       const resultKind = String(msg.kind ?? "").trim();
       const resultCommand = String(msg.command ?? "").trim();
       if (resultKind === "execute" && resultCommand) {
@@ -857,6 +843,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           },
           rt,
         );
+        void flushQueuedPrompts(rt);
+        return;
+      }
+      if (rt.pendingCdRequestedPath && msg.ok === false) {
+        if (output.includes("/cd") || output.includes("目录")) {
+          rt.pendingCdRequestedPath = null;
+        }
+      }
+      if (msg.ok === false) {
+        finalizeAssistant("", rt);
+        const content = output.trim();
+        if (content) {
+          pushMessageBeforeLive({ role: "system", kind: "error", content }, rt);
+        }
         void flushQueuedPrompts(rt);
         return;
       }

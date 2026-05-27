@@ -192,6 +192,35 @@ describe("command UI lifecycle", () => {
     wrapper.unmount();
   });
 
+  it("renders failed command results with command context as execute blocks", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "result",
+      ok: false,
+      kind: "execute",
+      command: "npm test",
+      output: "Tests failed\n",
+    });
+    await settleUi(wrapper);
+
+    const messages = (wrapper.vm as any).messages as Array<any>;
+    const execute = messages.find((m) => m.kind === "execute");
+    expect(execute).toMatchObject({
+      role: "system",
+      kind: "execute",
+      command: "npm test",
+      content: "Tests failed",
+      streaming: false,
+    });
+    expect(messages.some((m) => m.role === "system" && m.kind === "error" && String(m.content ?? "").includes("Tests failed"))).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("renders successful status command results as system messages", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
