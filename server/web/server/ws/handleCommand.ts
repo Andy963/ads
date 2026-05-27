@@ -89,6 +89,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       sessionManager: deps.sessions.sessionManager,
       historyStore: deps.history.historyStore,
       sendToCommandScope,
+      sendToHistoryScope: sendToChat,
       transport: {
         ws: deps.transport.ws,
         sendWorkspaceState: deps.transport.sendWorkspaceState,

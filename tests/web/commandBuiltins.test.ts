@@ -137,6 +137,7 @@ describe("web/ws/commandBuiltins", () => {
 
   it("records missing /cd argument errors so reconnect replay keeps the command result", () => {
     const sent: unknown[] = [];
+    const broadcast: unknown[] = [];
     const loggedErrors: string[] = [];
     const historyStore = new HistoryStore({ namespace: "test-command-builtins-cd-missing", maxEntriesPerSession: 10 });
 
@@ -157,6 +158,7 @@ describe("web/ws/commandBuiltins", () => {
         sessionManager: {} as any,
         historyStore,
         sendToCommandScope: (payload) => sent.push(payload),
+        sendToHistoryScope: (payload) => broadcast.push(payload),
         transport: {
           ws: {} as any,
           sendWorkspaceState: () => {
@@ -173,7 +175,8 @@ describe("web/ws/commandBuiltins", () => {
       });
 
       assert.equal(result.handled, true);
-      assert.deepEqual(sent, [{ type: "result", ok: false, output: "用法: /cd <path>" }]);
+      assert.deepEqual(sent, []);
+      assert.deepEqual(broadcast, [{ type: "result", ok: false, output: "用法: /cd <path>" }]);
       assert.deepEqual(loggedErrors, ["用法: /cd <path>"]);
       assert.deepEqual(
         historyStore
@@ -188,6 +191,7 @@ describe("web/ws/commandBuiltins", () => {
 
   it("records failed /cd results so reconnect replay explains the rejected directory change", () => {
     const sent: unknown[] = [];
+    const broadcast: unknown[] = [];
     const loggedErrors: string[] = [];
     const historyStore = new HistoryStore({ namespace: "test-command-builtins-cd-failed", maxEntriesPerSession: 10 });
 
@@ -212,6 +216,7 @@ describe("web/ws/commandBuiltins", () => {
         sessionManager: {} as any,
         historyStore,
         sendToCommandScope: (payload) => sent.push(payload),
+        sendToHistoryScope: (payload) => broadcast.push(payload),
         transport: {
           ws: {} as any,
           sendWorkspaceState: () => {
@@ -228,7 +233,8 @@ describe("web/ws/commandBuiltins", () => {
       });
 
       assert.equal(result.handled, true);
-      assert.deepEqual(sent, [{ type: "result", ok: false, output: "错误: No such directory" }]);
+      assert.deepEqual(sent, []);
+      assert.deepEqual(broadcast, [{ type: "result", ok: false, output: "错误: No such directory" }]);
       assert.deepEqual(loggedErrors, ["错误: No such directory"]);
       assert.deepEqual(
         historyStore

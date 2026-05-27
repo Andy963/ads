@@ -85,6 +85,7 @@ export function handleBuiltinCommand(args: {
   sessionManager: SessionManager;
   historyStore: HistoryStore;
   sendToCommandScope: (payload: unknown) => void;
+  sendToHistoryScope?: (payload: unknown) => void;
   transport: Pick<WsTransportDeps, "ws" | "sendWorkspaceState" | "broadcastWorkspaceState">;
   logger: WsLogger;
   sessionLogger: WsSessionLogger;
@@ -116,7 +117,7 @@ export function handleBuiltinCommand(args: {
 
   if (!args.request.slash.body) {
     const output = "用法: /cd <path>";
-    args.sendToCommandScope({ type: "result", ok: false, output });
+    (args.sendToHistoryScope ?? args.sendToCommandScope)({ type: "result", ok: false, output });
     args.sessionLogger?.logError(output);
     args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
     return {
@@ -130,7 +131,7 @@ export function handleBuiltinCommand(args: {
   const result = args.state.directoryManager.setUserCwd(args.userId, args.request.slash.body);
   if (!result.success) {
     const output = `错误: ${result.error}`;
-    args.sendToCommandScope({ type: "result", ok: false, output });
+    (args.sendToHistoryScope ?? args.sendToCommandScope)({ type: "result", ok: false, output });
     args.sessionLogger?.logError(output);
     args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
     return {

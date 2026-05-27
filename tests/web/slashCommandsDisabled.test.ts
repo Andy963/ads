@@ -683,6 +683,35 @@ describe("web slash commands", () => {
     });
   });
 
+  it("broadcasts failed /cd results because they are persisted in history", async () => {
+    await withTempWorkspace("ads-web-ws-command-cd-failed-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/cd" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            throw new Error("should not run failed cd as shell command");
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "result", ok: false, output: "用法: /cd <path>" }]);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "用法: /cd <path>", kind: "error" }],
+      );
+    });
+  });
+
   it("supports set_agent control messages", async () => {
     await withTempWorkspace("ads-web-ws-command-agent-", async (workspaceRoot) => {
       const clientMessages: unknown[] = [];
