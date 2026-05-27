@@ -48,6 +48,12 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const promptInput = buildPromptInput(deps.request.parsed.payload, imageDir);
     if (!promptInput.ok) {
       deps.observability.sessionLogger?.logError(promptInput.message);
+      deps.history.historyStore.add(deps.context.historyKey, {
+        role: "status",
+        text: promptInput.message,
+        ts: Date.now(),
+        kind: "error",
+      });
       sendToClient({ type: "error", message: promptInput.message });
       return;
     }
