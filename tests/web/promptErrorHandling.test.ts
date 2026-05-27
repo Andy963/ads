@@ -22,8 +22,10 @@ describe("web/ws/promptErrorHandling", () => {
 
       assert.equal(sent.length, 1);
       assert.deepEqual(sent[0], { type: "error", message: "已中断，输出可能不完整" });
-      // Should not record to history when aborted
-      assert.equal(historyStore.get("h1").length, 0);
+      assert.deepEqual(
+        historyStore.get("h1").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "已中断，输出可能不完整", kind: "error" }],
+      );
     } finally {
       historyStore.clear("h1");
     }

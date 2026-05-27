@@ -88,7 +88,7 @@ function delay(ms: number): Promise<void> {
 }
 
 describe("web/server/ws handlePrompt cancellation", () => {
-  it("interrupt makes late prompt completion unable to write back output, history, or thread state", async () => {
+  it("interrupt records the abort status without writing late output or thread state", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-prompt-cancel-"));
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
@@ -185,8 +185,11 @@ describe("web/server/ws handlePrompt cancellation", () => {
       );
       assert.deepEqual(saveThreadIdCalls, []);
       assert.deepEqual(
-        historyStore.get("history-1").map((entry) => entry.role),
-        ["user"],
+        historyStore.get("history-1").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [
+          { role: "user", text: "hello", kind: undefined },
+          { role: "status", text: "已中断，输出可能不完整", kind: "error" },
+        ],
       );
       assert.equal(clientMessages.length, 0);
     } finally {

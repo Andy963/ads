@@ -13,7 +13,14 @@ export function handlePromptError(args: {
   logPrefix?: string;
 }): void {
   if (args.aborted) {
-    args.sendToChat({ type: "error", message: "已中断，输出可能不完整" });
+    const message = "已中断，输出可能不完整";
+    args.historyStore.add(args.historyKey, {
+      role: "status",
+      text: message,
+      ts: Date.now(),
+      kind: "error",
+    });
+    args.sendToChat({ type: "error", message });
     return;
   }
 
