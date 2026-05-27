@@ -826,7 +826,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             : "")
         : userMessage;
 
-      pushMessageBeforeLive({ role: "system", kind: "text", content: errorContent }, rt);
+      pushMessageBeforeLive({ role: "system", kind: "error", content: errorContent }, rt);
       void flushQueuedPrompts(rt);
       return;
     }

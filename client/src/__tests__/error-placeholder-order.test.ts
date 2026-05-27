@@ -133,6 +133,7 @@ describe("error placeholder cleanup", () => {
 
     const afterError = (wrapper.vm as any).messages as Array<any>;
     expect(afterError.some((m) => m.role === "assistant" && m.streaming)).toBe(false);
+    expect(afterError.some((m) => m.role === "system" && m.kind === "error" && String(m.content ?? "").includes("boom"))).toBe(true);
 
     (wrapper.vm as any).sendMainPrompt("second");
     await settleUi(wrapper);
