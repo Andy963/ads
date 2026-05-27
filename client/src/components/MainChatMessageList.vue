@@ -800,6 +800,12 @@ function closeFilePreview(): void {
   border-color: rgba(208, 215, 222, 0.95);
 }
 
+.msg[data-kind="error"] .bubble {
+  background: rgba(255, 247, 237, 0.96);
+  border-color: rgba(251, 146, 60, 0.55);
+  color: #7c2d12;
+}
+
 .msg[data-id="live-step"] .liveStepBody {
   position: relative;
 }

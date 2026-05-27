@@ -59,7 +59,7 @@ export type ChatPatch = {
 export type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute" | "patch";
+  kind: "text" | "command" | "execute" | "patch" | "error";
   content: string;
   patch?: ChatPatch;
   command?: string;

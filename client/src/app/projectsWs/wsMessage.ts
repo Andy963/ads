@@ -642,6 +642,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         if (role === "user") next.push({ id: `h-u-${idx}`, role: "user", kind: "text", content: trimmed, ts: ts ?? undefined });
         else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed, ts: ts ?? undefined });
+        else if (kind === "error") next.push({ id: `h-e-${idx}`, role: "system", kind: "error", content: trimmed, ts: ts ?? undefined });
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }
       applyResumeHistory(next, rt);

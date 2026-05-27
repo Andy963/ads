@@ -49,6 +49,8 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     }
   });
 
+  const applyResumeHistory = vi.fn();
+
   const handler = createWsMessageHandler({
     projects: { value: args.projects },
     pid: args.pid,
@@ -58,7 +60,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     randomId,
 
     updateProject: args.updateProject,
-    applyResumeHistory: vi.fn(),
+    applyResumeHistory,
     cancelPendingResume: vi.fn(),
     clearPendingPrompt,
     clearStepLive,
@@ -78,10 +80,39 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     upsertStreamingDelta: vi.fn(),
   });
 
-  return { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock };
+  return { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock, applyResumeHistory };
 }
 
 describe("ws workspace project sync", () => {
+  it("preserves error history kind when replaying server history", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, applyResumeHistory } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "user", text: "hello", ts: 10 },
+        { role: "status", kind: "error", text: "Claude credentials are missing", ts: 11 },
+        { role: "status", kind: "status", text: "已恢复上下文", ts: 12 },
+      ],
+    });
+
+    expect(applyResumeHistory).toHaveBeenCalledWith(
+      [
+        { id: "h-u-0", role: "user", kind: "text", content: "hello", ts: 10 },
+        { id: "h-e-1", role: "system", kind: "error", content: "Claude credentials are missing", ts: 11 },
+        { id: "h-s-2", role: "system", kind: "text", content: "已恢复上下文", ts: 12 },
+      ],
+      rt,
+    );
+  });
+
   it("keeps the synthetic default project rooted externally while still recording workspace state", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();
