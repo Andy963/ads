@@ -130,6 +130,87 @@ describe("web/ws/bootstrapDelivery", () => {
     }
   });
 
+  it("replays fresh-mode builtin command status so reconnect keeps visible command results", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-fresh-builtin-status", maxEntriesPerSession: 20 });
+    historyStore.add("history-1", { role: "user", text: "/pwd", ts: 1 });
+    historyStore.add("history-1", { role: "status", text: "当前工作目录: /tmp/project", ts: 2, kind: "status" });
+
+    try {
+      sendInitialBootstrapMessages({
+        ws: {} as any,
+        safeJsonSend: (_ws, payload) => sent.push(payload),
+        sessionManager: {
+          getSavedThreadId: () => undefined,
+          getContextRestoreMode: () => "fresh",
+          getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => null,
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+        sessionId: "session-1",
+        chatSessionId: "custom-worker",
+        workspace: { path: "/tmp/project" },
+        inFlight: false,
+        historyStore,
+        historyKey: "history-1",
+      });
+
+      assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[1] as { type?: unknown }).type, "agents");
+      assert.deepEqual(sent[2], {
+        type: "history",
+        items: [
+          { role: "user", text: "/pwd", ts: 1, kind: undefined },
+          { role: "status", text: "当前工作目录: /tmp/project", ts: 2, kind: "status" },
+        ],
+      });
+    } finally {
+      historyStore.clear("history-1");
+    }
+  });
+
+  it("does not replay fresh-mode generic status notices", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-fresh-generic-status", maxEntriesPerSession: 20 });
+    historyStore.add("history-1", { role: "status", text: "已恢复后端上下文线程。", ts: 1, kind: "status" });
+
+    try {
+      sendInitialBootstrapMessages({
+        ws: {} as any,
+        safeJsonSend: (_ws, payload) => sent.push(payload),
+        sessionManager: {
+          getSavedThreadId: () => undefined,
+          getContextRestoreMode: () => "fresh",
+          getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => null,
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+        sessionId: "session-1",
+        chatSessionId: "custom-worker",
+        workspace: { path: "/tmp/project" },
+        inFlight: false,
+        historyStore,
+        historyKey: "history-1",
+      });
+
+      assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[1] as { type?: unknown }).type, "agents");
+      assert.equal(sent.length, 2);
+    } finally {
+      historyStore.clear("history-1");
+    }
+  });
+
   it("replays history when a fresh-mode runtime already has a live thread", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-fresh-live", maxEntriesPerSession: 20 });

@@ -20,13 +20,21 @@ function buildInFlightStatus(inFlight: boolean): string | null {
   return inFlight ? "上一轮仍在执行，正在等待后端结果。" : null;
 }
 
+function isReplayableBuiltinStatus(entry: HistoryEntry): boolean {
+  if (entry.role !== "status" || entry.kind !== "status") {
+    return false;
+  }
+  const text = String(entry.text ?? "").trim();
+  return text.startsWith("当前工作目录:") || text.startsWith("已切换到:");
+}
+
 function shouldReplayFreshHistory(entries: HistoryEntry[]): boolean {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (!entry || !String(entry.text ?? "").trim()) {
       continue;
     }
-    return entry.role === "status" && (entry.kind === "error" || entry.kind === "execute");
+    return entry.role === "status" && (entry.kind === "error" || entry.kind === "execute" || isReplayableBuiltinStatus(entry));
   }
   return false;
 }
