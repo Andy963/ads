@@ -60,6 +60,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const cleanupAttachments = () => cleanupTempFiles(tempAttachments);
     const userLogEntry = buildUserLogEntry(promptInput.input, deps.context.currentCwd);
     deps.observability.sessionLogger?.logInput(userLogEntry);
+    const historyBeforeCurrentPrompt = deps.history.historyStore.get(deps.context.historyKey).slice();
     if (!deps.request.clientMessageId) {
       deps.history.historyStore.add(deps.context.historyKey, {
         role: "user",
@@ -156,9 +157,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
 
       let effectiveInput: Input = inputToSend;
       if (deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId)) {
-        const historyEntries = deps.history.historyStore
-          .get(deps.context.historyKey)
-          .filter((entry) => entry.ts <= deps.request.receivedAt);
+        const historyEntries = historyBeforeCurrentPrompt.filter((entry) => entry.ts <= deps.request.receivedAt);
         const injectionContext = buildHistoryInjectionContext(historyEntries);
         if (injectionContext) {
           effectiveInput = prependContextToInput(injectionContext, inputToSend);

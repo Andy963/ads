@@ -134,13 +134,14 @@ function createPromptDeps(args: {
   historyStore: MemoryHistoryStore;
   orchestrator: FakeOrchestrator;
   sessionManager?: Record<string, unknown>;
+  receivedAt?: number;
 }) {
   return {
     request: {
       parsed: { type: "prompt" as const, payload: args.payload },
       requestId: "req",
       clientMessageId: null,
-      receivedAt: Date.now(),
+      receivedAt: args.receivedAt ?? Date.now(),
     },
     transport: {
       ws: {} as any,
@@ -336,6 +337,47 @@ describe("web slash commands", () => {
         (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
       ),
     );
+  });
+
+  it("does not inject the current prompt into restored history context", async () => {
+    await withTempWorkspace("ads-web-prompt-history-current-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+      historyStore.add("h", { role: "user", text: "previous question", ts: 100 });
+      historyStore.add("h", { role: "ai", text: "previous answer", ts: 101 });
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: "current question",
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          receivedAt: 200,
+          sessionManager: {
+            needsHistoryInjection: () => true,
+          },
+        }),
+      );
+
+      const sent = inputToText(orchestrator.lastInvokeInput);
+      assert.match(sent, /User: previous question/);
+      assert.match(sent, /Assistant: previous answer/);
+      assert.match(sent, /---\ncurrent question/);
+      assert.equal((sent.match(/current question/g) ?? []).length, 1);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [
+          { role: "user", text: "previous question", kind: undefined },
+          { role: "ai", text: "previous answer", kind: undefined },
+          { role: "user", text: "current question", kind: undefined },
+          { role: "ai", text: "stub response", kind: undefined },
+        ],
+      );
+    });
   });
 
   it("resumes saved continuity when a prompt recreates an idle-evicted runtime session", async () => {
