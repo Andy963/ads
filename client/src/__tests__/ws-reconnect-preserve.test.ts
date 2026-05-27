@@ -11,8 +11,10 @@ let lastWs: {
   onClose?: (ev: { code: number; reason?: string }) => void;
   onError?: () => void;
   onMessage?: (msg: unknown) => void;
+  sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
   clearHistory: () => void;
 } | null = null;
+let lastSentPromptPayload: unknown = null;
 
 vi.mock("../api/ws", () => {
   class AdsWebSocket {
@@ -37,7 +39,9 @@ vi.mock("../api/ws", () => {
     close(): void {}
 
     send(): void {}
-    sendPrompt(): void {}
+    sendPrompt(payload: unknown): void {
+      lastSentPromptPayload = payload;
+    }
     interrupt(): void {}
   }
 
@@ -90,12 +94,14 @@ function seedPendingReplayState(rt: any, chatSessionId: string, clientMessageId:
 describe("WS reconnect preserves UI unless thread_reset", () => {
   beforeEach(() => {
     lastWs = null;
+    lastSentPromptPayload = null;
     localStorage.clear();
     sessionStorage.clear();
   });
 
   afterEach(() => {
     lastWs = null;
+    lastSentPromptPayload = null;
     vi.clearAllMocks();
     localStorage.clear();
     sessionStorage.clear();
@@ -143,6 +149,44 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.busy.value).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("queues a stored pending prompt during busy reconnect and replays it after welcome idle", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.pendingAckClientMessageId = "pending-1";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({ clientMessageId: "pending-1", text: "resume me", createdAt: Date.now(), agentId: "claude" }),
+    );
+    lastSentPromptPayload = null;
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    await controller.connectWs("default");
+    await settleUi(wrapper);
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+    expect(lastSentPromptPayload).toBeNull();
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false, effectiveModel: "gpt-4.1", effectiveModelReasoningEffort: "high" });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toMatchObject({
+      text: "resume me",
+      agentId: "claude",
+      model: "gpt-4.1",
+      model_reasoning_effort: "high",
+    });
+    expect(rt.queuedPrompts.value).toEqual([]);
+
     wrapper.unmount();
   });
 

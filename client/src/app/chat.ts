@@ -186,7 +186,6 @@ export function createChatActions(ctx: AppContext) {
     if (!clientMessageId) return;
     const alreadyQueued = rt.queuedPrompts.value.some((q) => q.clientMessageId === clientMessageId);
     if (alreadyQueued) return;
-    if (runtimeAgentBusy(rt)) return;
     rt.queuedPrompts.value = [
       {
         id: randomId("q"),
