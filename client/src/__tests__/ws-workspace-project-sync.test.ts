@@ -192,6 +192,7 @@ describe("ws workspace project sync", () => {
         { role: "status", kind: "status", text: "已恢复上下文", ts: 12 },
         { role: "status", kind: "command", text: "$ git status", ts: 13 },
         { role: "status", kind: "error", text: "command failed", ts: 14 },
+        { role: "status", kind: "execute", text: "$ git status --short\nM file.ts", ts: 15 },
       ],
     });
 
@@ -201,6 +202,14 @@ describe("ws workspace project sync", () => {
         { id: "h-e-1", role: "system", kind: "error", content: "Claude credentials are missing", ts: 11 },
         { id: "h-s-2", role: "system", kind: "text", content: "已恢复上下文", ts: 12 },
         { id: "h-e-4", role: "system", kind: "error", content: "command failed", ts: 14 },
+        {
+          id: "h-x-5",
+          role: "system",
+          kind: "execute",
+          content: "M file.ts",
+          command: "git status --short",
+          ts: 15,
+        },
       ],
       rt,
     );

@@ -5,6 +5,42 @@ import { HistoryStore } from "../../server/utils/historyStore.js";
 import { executeCommandLine } from "../../server/web/server/ws/commandExecution.js";
 
 describe("web/ws/commandExecution", () => {
+  it("records successful command output as replayable execute history", async () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-command-execution-ok", maxEntriesPerSession: 10 });
+    const interruptControllers = new Map<string, AbortController>();
+
+    try {
+      await executeCommandLine({
+        command: "git status --short",
+        currentCwd: "/tmp/project",
+        historyKey: "history-ok",
+        historyStore,
+        interruptControllers,
+        runAdsCommandLine: async () => ({ ok: true, output: "M file.ts\n" }),
+        sendToCommandScope: (payload) => sent.push(payload),
+        transport: {
+          ws: {} as any,
+          sendWorkspaceState: () => {},
+        },
+        logger: { info: () => {}, warn: () => {}, debug: () => {} },
+        sessionLogger: {
+          logInput: () => {},
+          logOutput: () => {},
+          logError: () => {},
+        },
+      });
+
+      assert.deepEqual(sent, [{ type: "result", ok: true, output: "M file.ts\n" }]);
+      assert.deepEqual(
+        historyStore.get("history-ok").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "$ git status --short\nM file.ts", kind: "execute" }],
+      );
+    } finally {
+      historyStore.clear("history-ok");
+    }
+  });
+
   it("records command results in history and refreshes workspace state", async () => {
     const sent: unknown[] = [];
     const workspaceStateCalls: Array<{ ws: unknown; workspaceRoot: string }> = [];

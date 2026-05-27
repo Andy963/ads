@@ -649,6 +649,21 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const ts = typeof rawTs === "number" && Number.isFinite(rawTs) && rawTs > 0 ? Math.floor(rawTs) : null;
         const trimmed = text.trim();
         if (!trimmed) continue;
+        if (kind === "execute") {
+          const lines = trimmed.split("\n");
+          const commandLine = String(lines[0] ?? "").trim();
+          const command = commandLine.startsWith("$ ") ? commandLine.slice(2).trim() : commandLine;
+          const content = lines.slice(1).join("\n").trim();
+          next.push({
+            id: `h-x-${idx}`,
+            role: "system",
+            kind: "execute",
+            content,
+            command,
+            ts: ts ?? undefined,
+          });
+          continue;
+        }
         const isCommand = kind === "command" || (role === "status" && trimmed.startsWith("$ "));
         if (isCommand) {
           continue;

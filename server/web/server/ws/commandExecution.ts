@@ -2,6 +2,12 @@ import type { HistoryStore } from "../../../utils/historyStore.js";
 import { withWorkspaceContext } from "../../../workspace/asyncWorkspaceContext.js";
 import type { WsLogger, WsSessionLogger, WsTransportDeps } from "./deps.js";
 
+function formatCommandHistoryText(command: string, output: string): string {
+  const commandText = String(command ?? "").trim();
+  const outputText = String(output ?? "").trimEnd();
+  return outputText ? `$ ${commandText}\n${outputText}` : `$ ${commandText}`;
+}
+
 export async function executeCommandLine(args: {
   command: string;
   currentCwd: string;
@@ -33,10 +39,10 @@ export async function executeCommandLine(args: {
     args.sendToCommandScope({ type: "result", ok: result.ok, output: result.output });
     args.sessionLogger?.logOutput(result.output);
     args.historyStore.add(args.historyKey, {
-      role: result.ok ? "ai" : "status",
-      text: result.output,
+      role: "status",
+      text: result.ok ? formatCommandHistoryText(args.command, result.output) : result.output,
       ts: Date.now(),
-      kind: result.ok ? undefined : "error",
+      kind: result.ok ? "execute" : "error",
     });
     if (args.transport.broadcastWorkspaceState) {
       args.transport.broadcastWorkspaceState(args.currentCwd);
