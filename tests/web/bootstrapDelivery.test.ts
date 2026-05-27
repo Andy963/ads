@@ -82,6 +82,7 @@ describe("web/ws/bootstrapDelivery", () => {
   it("announces in-flight backend work during reconnect bootstrap", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-in-flight", maxEntriesPerSession: 20 });
+    historyStore.add("history-1", { role: "user", text: "still running", ts: 1 });
 
     try {
       sendInitialBootstrapMessages({
@@ -109,7 +110,11 @@ describe("web/ws/bootstrapDelivery", () => {
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
-      assert.deepEqual(sent[2], { type: "status", message: "上一轮仍在执行，正在等待后端结果。", kind: "status" });
+      assert.deepEqual(sent[2], {
+        type: "history",
+        items: [{ role: "user", text: "still running", ts: 1, kind: undefined }],
+      });
+      assert.deepEqual(sent[3], { type: "status", message: "上一轮仍在执行，正在等待后端结果。", kind: "status" });
     } finally {
       historyStore.clear("history-1");
     }
