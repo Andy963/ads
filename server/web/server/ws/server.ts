@@ -341,6 +341,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
           receivedAt,
           abortInFlight: () => abortInFlightForHistoryKey(historyKey),
           sendJson: (payload) => safeJsonSend(ws, payload),
+          broadcastJson,
           recordStatusError: (message) =>
             historyStore.add(historyKey, {
               role: "status",

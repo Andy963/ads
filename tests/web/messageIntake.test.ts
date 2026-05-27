@@ -30,6 +30,7 @@ describe("web/ws/messageIntake", () => {
 
   it("handles ping/pong/interrupt control messages immediately", () => {
     const sent: unknown[] = [];
+    const broadcast: unknown[] = [];
     const recordedErrors: string[] = [];
     let aborted = 0;
 
@@ -52,6 +53,7 @@ describe("web/ws/messageIntake", () => {
           return false;
         },
         sendJson: (payload) => sent.push(payload),
+        broadcastJson: (payload) => broadcast.push(payload),
         recordStatusError: (message) => recordedErrors.push(message),
       }),
       true,
@@ -69,9 +71,25 @@ describe("web/ws/messageIntake", () => {
     assert.equal(aborted, 1);
     assert.deepEqual(sent, [
       { type: "pong", ts: 7 },
-      { type: "error", message: "当前没有正在执行的任务" },
     ]);
+    assert.deepEqual(broadcast, [{ type: "error", message: "当前没有正在执行的任务" }]);
     assert.deepEqual(recordedErrors, ["当前没有正在执行的任务"]);
+  });
+
+  it("falls back to the current socket when interrupt errors cannot broadcast", () => {
+    const sent: unknown[] = [];
+
+    assert.equal(
+      handleImmediateWsMessage({
+        parsed: { type: "interrupt" },
+        receivedAt: 8,
+        abortInFlight: () => false,
+        sendJson: (payload) => sent.push(payload),
+      }),
+      true,
+    );
+
+    assert.deepEqual(sent, [{ type: "error", message: "当前没有正在执行的任务" }]);
   });
 
   it("does not record a status error when interrupt aborts an in-flight task", () => {
