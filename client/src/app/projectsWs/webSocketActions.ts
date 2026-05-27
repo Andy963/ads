@@ -339,8 +339,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.needsTaskResync = true;
       rt.connected.value = false;
       clearStepLive(rt);
-      finalizeCommandBlock(rt);
       applyStreamingDisconnectCleanup(rt);
+      finalizeCommandBlock(rt);
       if (disconnectWasBusy && showReconnectMessage) {
         pushMessageBeforeLive(
           {

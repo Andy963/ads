@@ -3,6 +3,7 @@ import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import { createAppController } from "../app/controller";
+import { EXECUTE_DISCONNECT_NOTICE } from "../lib/chat_sync";
 
 const reconnectBusyMessage = "请求执行中连接中断，正在重连并同步历史…";
 
@@ -149,6 +150,39 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.busy.value).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("marks streaming execute output as incomplete before reconnect sync", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.messages.value = [
+      { id: "u1", role: "user", kind: "text", content: "Run tests" },
+      {
+        id: "exec:npm-test",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "line 1",
+        streaming: true,
+      },
+    ] as any;
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    const execute = rt.messages.value.find((m: any) => m.kind === "execute");
+    expect(execute).toMatchObject({
+      role: "system",
+      kind: "execute",
+      command: "npm test",
+      streaming: false,
+      content: `line 1\n${EXECUTE_DISCONNECT_NOTICE}`,
+    });
+    expect(String(execute?.id ?? "")).not.toMatch(/^exec:/);
     wrapper.unmount();
   });
 
