@@ -127,7 +127,7 @@ describe("Lane websocket sessions", () => {
     localStorage.clear();
   });
 
-  it("opens worker, planner, and reviewer chat sessions for the default project", async () => {
+  it("opens worker and planner chat sessions for the default project", async () => {
     const { wrapper } = await mountController();
 
     const chats = wsConnections
@@ -137,7 +137,6 @@ describe("Lane websocket sessions", () => {
 
     expect(chats).toContain("main");
     expect(chats).toContain("planner");
-    expect(chats).toContain("reviewer");
     wrapper.unmount();
   });
 
@@ -146,21 +145,16 @@ describe("Lane websocket sessions", () => {
 
     const workerRt = controller.getRuntime("default");
     const plannerRt = controller.getPlannerRuntime("default");
-    const reviewerRt = controller.getReviewerRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
     const plannerWs = wsByChatSessionId.get("planner");
-    const reviewerWs = wsByChatSessionId.get("reviewer");
 
     expect(workerWs).toBeTruthy();
     expect(plannerWs).toBeTruthy();
-    expect(reviewerWs).toBeTruthy();
 
     workerRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
     plannerRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "planner history" }];
-    reviewerRt.messages.value = [{ id: "r-1", role: "assistant", kind: "text", content: "reviewer history" }];
     workerRt.busy.value = false;
     plannerRt.busy.value = true;
-    reviewerRt.busy.value = false;
     await settleUi(wrapper as any);
 
     plannerWs.onClose?.({ code: 1006, reason: "" });
@@ -168,10 +162,8 @@ describe("Lane websocket sessions", () => {
 
     expect(plannerRt.connected.value).toBe(false);
     expect(workerRt.connected.value).toBe(true);
-    expect(reviewerRt.connected.value).toBe(true);
     expect(plannerRt.busy.value).toBe(true);
     expect(workerRt.busy.value).toBe(false);
-    expect(reviewerRt.busy.value).toBe(false);
 
     plannerWs.onOpen?.();
     await settleUi(wrapper as any);
@@ -189,15 +181,12 @@ describe("Lane websocket sessions", () => {
 
     expect(plannerRt.messages.value.map((entry: any) => entry.content)).toContain("planner restored only");
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
-    expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
 
     await controller.resumePlannerThread();
     expect(plannerWs.send).toHaveBeenCalledWith("task_resume");
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
-    expect(reviewerWs.send).not.toHaveBeenCalledWith("task_resume");
     expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner restored only"]);
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
-    expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
 
     plannerWs.onMessage?.({
       type: "history",
@@ -211,7 +200,6 @@ describe("Lane websocket sessions", () => {
     expect(workerWs.send).toHaveBeenCalledWith("task_resume");
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
     expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
-    expect(reviewerRt.messages.value.map((entry: any) => entry.content)).toEqual(["reviewer history"]);
 
     workerWs.onMessage?.({
       type: "history",
@@ -219,13 +207,6 @@ describe("Lane websocket sessions", () => {
     });
     await settleUi(wrapper as any);
 
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker resumed only"]);
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
-
-    reviewerWs.onMessage?.({ type: "thread_reset" });
-    await settleUi(wrapper as any);
-
-    expect(reviewerRt.messages.value.map((entry: any) => entry.content).join("\n")).not.toContain("reviewer history");
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker resumed only"]);
     expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
     wrapper.unmount();
@@ -264,4 +245,3 @@ describe("Lane websocket sessions", () => {
     wrapper.unmount();
   });
 });
-

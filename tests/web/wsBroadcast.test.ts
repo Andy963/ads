@@ -118,10 +118,8 @@ describe("web/server/ws/broadcast", () => {
   let runAdsCommandLineImpl: (command: string) => Promise<{ ok: boolean; output: string }>;
   let workerSessions: FakeSession[];
   let plannerSessions: FakeSession[];
-  let reviewerSessions: FakeSession[];
   let workerHistoryStore: HistoryStore;
   let plannerHistoryStore: HistoryStore;
-  let reviewerHistoryStore: HistoryStore;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -148,16 +146,13 @@ describe("web/server/ws/broadcast", () => {
     >();
     workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
-    reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
     const workerFactory = createFakeSessionFactory("worker");
     const plannerFactory = createFakeSessionFactory("planner");
-    const reviewerFactory = createFakeSessionFactory("reviewer");
     workerSessions = workerFactory.created;
     plannerSessions = plannerFactory.created;
-    reviewerSessions = reviewerFactory.created;
 
     wss = attachWebSocketServer({
       server,
@@ -196,17 +191,12 @@ describe("web/server/ws/broadcast", () => {
         plannerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
           createSession: plannerFactory.factory as never,
         }),
-        reviewerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
-          createSession: reviewerFactory.factory as never,
-        }),
         getWorkspaceLock: () => lock,
         getPlannerWorkspaceLock: () => lock,
-        getReviewerWorkspaceLock: () => lock,
       },
       history: {
         workerHistoryStore,
         plannerHistoryStore,
-        reviewerHistoryStore,
       },
       tasks: {
         ensureTaskContext: () => ({} as unknown as any),
@@ -312,22 +302,16 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
-  it("broadcasts clear_history resets to sibling connections across chat lanes in the same session", async () => {
+  it("broadcasts lane clear_history resets only to sibling connections in the same chat lane", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
-    const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
-    const reviewerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.reviewer"];
     const customWorkerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.worker-custom"];
 
     const mainClientA = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
     const mainClientB = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
-    const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
-    const reviewerClient = new WebSocket(url, reviewerProtocols, { origin: "http://localhost" });
     const customWorkerClient = new WebSocket(url, customWorkerProtocols, { origin: "http://localhost" });
     await waitForWsOpen(mainClientA);
     await waitForWsOpen(mainClientB);
-    await waitForWsOpen(plannerClient);
-    await waitForWsOpen(reviewerClient);
     await waitForWsOpen(customWorkerClient);
 
     const siblingMessages: WsJson[] = [];
@@ -338,27 +322,10 @@ describe("web/server/ws/broadcast", () => {
         // ignore
       }
     };
-    plannerClient.on("message", siblingHandler);
-    reviewerClient.on("message", siblingHandler);
     customWorkerClient.on("message", siblingHandler);
 
     const resetPromise = waitForWsMessage(
       mainClientB,
-      (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
-      1500,
-    );
-    const plannerResetPromise = waitForWsMessage(
-      plannerClient,
-      (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
-      1500,
-    );
-    const reviewerResetPromise = waitForWsMessage(
-      reviewerClient,
-      (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
-      1500,
-    );
-    const customWorkerResetPromise = waitForWsMessage(
-      customWorkerClient,
       (msg) => msg.type === "session_reset" && msg.source === "clear_history" && msg.sourceChatSessionId === "main",
       1500,
     );
@@ -371,32 +338,21 @@ describe("web/server/ws/broadcast", () => {
     mainClientA.send(JSON.stringify({ type: "clear_history" }));
 
     const reset = await resetPromise;
-    const plannerReset = await plannerResetPromise;
-    const reviewerReset = await reviewerResetPromise;
-    const customWorkerReset = await customWorkerResetPromise;
     const result = await resultPromise;
     assert.equal(reset.type, "session_reset");
-    assert.equal(plannerReset.type, "session_reset");
-    assert.equal(reviewerReset.type, "session_reset");
-    assert.equal(customWorkerReset.type, "session_reset");
     assert.equal(result.type, "result");
     assert.equal(workerSessions[0]?.resetCalls, 1);
-    assert.equal(workerSessions[1]?.resetCalls, 1);
-    assert.equal(plannerSessions[0]?.resetCalls, 1);
-    assert.equal(reviewerSessions[0]?.resetCalls, 1);
+    assert.equal(workerSessions[1]?.resetCalls, 0);
+    assert.equal(plannerSessions.length, 0);
     assert.equal(workerSessions[0]?.threadId, null);
-    assert.equal(workerSessions[1]?.threadId, null);
-    assert.equal(plannerSessions[0]?.threadId, null);
-    assert.equal(reviewerSessions[0]?.threadId, null);
+    assert.notEqual(workerSessions[1]?.threadId, null);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(
       siblingMessages.filter((msg) => msg.type === "session_reset").length,
-      3,
+      0,
     );
 
-    plannerClient.off("message", siblingHandler);
-    reviewerClient.off("message", siblingHandler);
     customWorkerClient.off("message", siblingHandler);
     try {
       mainClientA.terminate();
@@ -405,16 +361,6 @@ describe("web/server/ws/broadcast", () => {
     }
     try {
       mainClientB.terminate();
-    } catch {
-      // ignore
-    }
-    try {
-      plannerClient.terminate();
-    } catch {
-      // ignore
-    }
-    try {
-      reviewerClient.terminate();
     } catch {
       // ignore
     }
@@ -429,21 +375,17 @@ describe("web/server/ws/broadcast", () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
     const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
-    const reviewerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.reviewer"];
     const customWorkerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.worker-custom"];
 
     const mainClient = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
     const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
-    const reviewerClient = new WebSocket(url, reviewerProtocols, { origin: "http://localhost" });
     const customWorkerClient = new WebSocket(url, customWorkerProtocols, { origin: "http://localhost" });
     await waitForWsOpen(mainClient);
     await waitForWsOpen(plannerClient);
-    await waitForWsOpen(reviewerClient);
     await waitForWsOpen(customWorkerClient);
 
     workerHistoryStore.add("test::test-session::main", { role: "user", text: "main stale", ts: Date.now() });
     plannerHistoryStore.add("test::test-session::planner", { role: "user", text: "planner stale", ts: Date.now() });
-    reviewerHistoryStore.add("test::test-session::reviewer", { role: "user", text: "reviewer stale", ts: Date.now() });
     workerHistoryStore.add("test::test-session::worker-custom", { role: "user", text: "custom stale", ts: Date.now() });
 
     try {
@@ -458,17 +400,15 @@ describe("web/server/ws/broadcast", () => {
       (msg) => msg.type === "result" && msg.kind === "clear_history" && msg.ok === true,
       1500,
     );
-    mainClient.send(JSON.stringify({ type: "clear_history" }));
+    mainClient.send(JSON.stringify({ type: "clear_history", payload: { scope: "shared" } }));
     const result = await resultPromise;
     assert.equal(result.type, "result");
 
     assert.equal(workerSessions[0]?.resetCalls, 1);
     assert.equal(workerSessions[1]?.resetCalls, 1);
     assert.equal(plannerSessions[0]?.resetCalls, 1);
-    assert.equal(reviewerSessions[0]?.resetCalls, 1);
     assert.deepEqual(workerHistoryStore.get("test::test-session::main"), []);
     assert.deepEqual(plannerHistoryStore.get("test::test-session::planner"), []);
-    assert.deepEqual(reviewerHistoryStore.get("test::test-session::reviewer"), []);
     assert.deepEqual(workerHistoryStore.get("test::test-session::worker-custom"), []);
 
     const reconnectedCustomWorkerClient = new WebSocket(url, customWorkerProtocols, { origin: "http://localhost" });
@@ -485,11 +425,6 @@ describe("web/server/ws/broadcast", () => {
     }
     try {
       plannerClient.terminate();
-    } catch {
-      // ignore
-    }
-    try {
-      reviewerClient.terminate();
     } catch {
       // ignore
     }

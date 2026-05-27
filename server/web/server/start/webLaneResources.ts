@@ -159,11 +159,7 @@ function createLaneRuntime(args: {
         threadStorage.value,
         undefined,
         {
-          agentAllowlist: resolveSessionAgentAllowlist(args.namespace === WEB_WORKER_NAMESPACE
-            ? "web-worker"
-            : args.namespace === WEB_PLANNER_NAMESPACE
-              ? "web-planner"
-              : "web-reviewer"),
+          agentAllowlist: resolveSessionAgentAllowlist(args.namespace === WEB_PLANNER_NAMESPACE ? "web-planner" : "web-worker"),
           ...args.sessionManagerOptions,
         },
       ),

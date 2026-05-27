@@ -8,7 +8,6 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected" | "failed";
 export type TaskExecutionIsolation = "default" | "required";
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
@@ -52,11 +51,6 @@ export interface Task {
   retryCount: number;
   maxRetries: number;
   executionIsolation: TaskExecutionIsolation;
-  reviewRequired: boolean;
-  reviewStatus: TaskReviewStatus;
-  reviewSnapshotId?: string | null;
-  reviewConclusion?: string | null;
-  reviewedAt?: number | null;
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
@@ -106,9 +100,6 @@ export interface CreateTaskInput {
   model?: string;
   priority?: number;
   maxRetries?: number;
-  reviewRequired?: boolean;
-  reviewArtifactId?: string;
-  reviewSnapshotId?: string;
   execution?: {
     isolation?: TaskExecutionIsolation;
   };
@@ -156,87 +147,6 @@ export type TaskEventPayload =
   | { event: "message"; data: { taskId: string; role: string; content: string } }
   | { event: "message:delta"; data: { taskId: string; role: string; delta: string; modelUsed?: string | null; source?: "chat" | "step" } }
   | { event: "command"; data: { taskId: string; command: string } };
-
-export type ReviewQueueItemStatus = "pending" | "running" | "passed" | "rejected" | "failed";
-
-export type ReviewQueueItem = {
-  id: string;
-  taskId: string;
-  snapshotId: string;
-  status: ReviewQueueItemStatus;
-  error: string | null;
-  conclusion: string | null;
-  createdAt: number;
-  startedAt: number | null;
-  completedAt: number | null;
-  taskTitle: string;
-  taskStatus: TaskStatus | null;
-  reviewRequired: boolean | null;
-  reviewStatus: TaskReviewStatus | null;
-  reviewConclusion: string | null;
-};
-
-export type ReviewQueueResponse = {
-  items: ReviewQueueItem[];
-};
-
-export type ReviewSnapshotPatchFile = {
-  path: string;
-  added: number | null;
-  removed: number | null;
-};
-
-export type ReviewSnapshotPatch = {
-  files: ReviewSnapshotPatchFile[];
-  diff: string;
-  truncated?: boolean;
-};
-
-export type ReviewSnapshot = {
-  id: string;
-  taskId: string;
-  taskRunId: string | null;
-  executionIsolation: TaskExecutionIsolation;
-  worktreeDir: string | null;
-  branchName: string | null;
-  baseHead: string | null;
-  endHead: string | null;
-  applyStatus: TaskRunApplyStatus | null;
-  captureStatus: TaskRunCaptureStatus | null;
-  specRef: string | null;
-  worktreeDir: string;
-  patch: ReviewSnapshotPatch | null;
-  changedFiles: string[];
-  lintSummary: string;
-  testSummary: string;
-  createdAt: number;
-};
-
-export type ReviewArtifactSummary = {
-  id: string;
-  taskId: string;
-  snapshotId: string;
-  queueItemId: string | null;
-  scope: "queue" | "reviewer";
-  summaryText: string;
-  verdict: "passed" | "rejected" | "analysis";
-  priorArtifactId: string | null;
-  createdAt: number;
-};
-
-export type ReviewArtifact = ReviewArtifactSummary & {
-  historyKey?: string | null;
-  promptText?: string;
-  responseText?: string;
-};
-
-export type ReviewArtifactResponse = {
-  artifact: ReviewArtifactSummary | null;
-};
-
-export type ReviewArtifactListResponse = {
-  items: ReviewArtifactSummary[];
-};
 
 export type TaskBundleTask = {
   externalId?: string;

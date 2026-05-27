@@ -20,7 +20,6 @@ let lastWorkerWs: {
   clearHistory: () => void;
 } | null = null;
 let _lastPlannerWs: typeof lastWorkerWs = null;
-let _lastReviewerWs: typeof lastWorkerWs = null;
 
 let lastSendPromptPayload: unknown = null;
 
@@ -63,8 +62,6 @@ vi.mock("../api/ws", () => {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
       if (chatSessionId === "planner") {
         _lastPlannerWs = this as unknown as typeof lastWorkerWs;
-      } else if (chatSessionId === "reviewer") {
-        _lastReviewerWs = this as unknown as typeof lastWorkerWs;
       } else {
         lastWorkerWs = this as unknown as typeof lastWorkerWs;
       }
@@ -126,7 +123,6 @@ describe("Model selector persistence", () => {
   beforeEach(() => {
     lastWorkerWs = null;
     _lastPlannerWs = null;
-    _lastReviewerWs = null;
     lastSendPromptPayload = null;
     try {
       localStorage.clear();
@@ -151,7 +147,6 @@ describe("Model selector persistence", () => {
     getImpl = null;
     lastWorkerWs = null;
     _lastPlannerWs = null;
-    _lastReviewerWs = null;
     lastSendPromptPayload = null;
     vi.clearAllMocks();
     try {

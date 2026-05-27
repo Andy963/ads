@@ -43,8 +43,6 @@ describe("planner/taskBundleApprover", () => {
             inheritContext: input.inheritContext ?? true,
             retryCount: 0,
             maxRetries: input.maxRetries ?? 0,
-            reviewRequired: true,
-            reviewStatus: "pending",
             createdAt: now,
           };
           tasksById.set(task.id, task);
@@ -113,8 +111,6 @@ describe("planner/taskBundleApprover", () => {
       inheritContext: true,
       retryCount: 0,
       maxRetries: 0,
-      reviewRequired: true,
-      reviewStatus: "pending",
       createdAt: 1,
     };
     let deleteCalls = 0;
@@ -183,8 +179,6 @@ describe("planner/taskBundleApprover", () => {
             retryCount: 0,
             maxRetries: input.maxRetries ?? 0,
             executionIsolation: input.executionIsolation ?? "default",
-            reviewRequired: true,
-            reviewStatus: "pending",
             createdAt: now,
           };
         },

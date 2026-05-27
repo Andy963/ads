@@ -27,7 +27,6 @@ const promptEl = ref<HTMLTextAreaElement | null>(null);
 const agentId = ref("");
 const priority = ref(0);
 const maxRetries = ref(3);
-const reviewRequired = ref(false);
 
 const bootstrapEnabled = ref(false);
 const bootstrapProject = ref("");
@@ -207,7 +206,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     ...(agentId.value ? { agentId: agentId.value } : {}),
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
-    reviewRequired: reviewRequired.value,
     attachments: uploadedIds.length ? uploadedIds : undefined,
     bootstrap: bootstrapConfig,
   });
@@ -217,7 +215,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   bootstrapEnabled.value = false;
   bootstrapProject.value = "";
   bootstrapMaxIterations.value = 10;
-  reviewRequired.value = false;
   clearAllAttachments();
 }
 
@@ -230,12 +227,10 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
       <TaskCreateFormConfigFields
         :title="title"
-        :review-required="reviewRequired"
         :bootstrap-enabled="bootstrapEnabled"
         :bootstrap-project="bootstrapProject"
         :bootstrap-max-iterations="bootstrapMaxIterations"
         @update:title="title = $event"
-        @update:review-required="reviewRequired = $event"
         @update:bootstrap-enabled="bootstrapEnabled = $event"
         @update:bootstrap-project="bootstrapProject = $event"
         @update:bootstrap-max-iterations="bootstrapMaxIterations = $event"
@@ -374,10 +369,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
       <div class="actions">
         <div class="actionsLeft">
-          <label class="inlineToggle">
-            <input type="checkbox" :checked="reviewRequired" @change="reviewRequired = ($event.target as HTMLInputElement).checked" data-testid="task-create-review-required" />
-            <span class="toggleLabel">需要审核</span>
-          </label>
           <label class="inlineToggle">
             <input type="checkbox" :checked="bootstrapEnabled" @change="bootstrapEnabled = ($event.target as HTMLInputElement).checked" data-testid="task-create-bootstrap-toggle" />
             <span class="toggleLabel">自举模式</span>

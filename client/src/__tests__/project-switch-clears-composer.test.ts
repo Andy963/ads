@@ -81,7 +81,7 @@ function getLaneTextarea(wrapper: any, lane: "planner" | "worker"): any {
   return wrapper.get(`[data-testid="lane-panel-${lane}"] textarea.composer-input`);
 }
 
-async function switchLane(wrapper: any, lane: "planner" | "worker" | "reviewer"): Promise<void> {
+async function switchLane(wrapper: any, lane: "planner" | "worker"): Promise<void> {
   await wrapper.get(`[data-testid="lane-tab-${lane}"]`).trigger("click");
   await settleUi(wrapper);
 }
@@ -206,36 +206,4 @@ describe("Project and lane composer draft isolation", () => {
     wrapper.unmount();
   }, 30_000);
 
-  it("returns from the reviewer lane to the worker lane on project switches", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, {
-      global: { stubs: { LoginGate: false, MainChatView: false, MainChatComposerPanel: false } },
-    });
-    await settleUi(wrapper);
-
-    await getLaneTextarea(wrapper, "worker").setValue("worker context A");
-    await switchLane(wrapper, "reviewer");
-    expect((wrapper.vm as any).activeChatLane).toBe("reviewer");
-
-    const projectRows = wrapper.findAll("button.projectRow");
-    const rowB = projectRows.find((row) => row.text().includes("B")) ?? null;
-    expect(rowB).toBeTruthy();
-    await rowB!.trigger("click");
-    await settleUi(wrapper);
-
-    expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
-    expect((wrapper.vm as any).activeChatLane).toBe("worker");
-    expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("");
-
-    const rowA = wrapper.findAll("button.projectRow").find((row) => row.text().includes("A")) ?? null;
-    expect(rowA).toBeTruthy();
-    await rowA!.trigger("click");
-    await settleUi(wrapper);
-
-    expect((wrapper.vm as any).activeProjectId).toBe("sess-a");
-    expect((wrapper.vm as any).activeChatLane).toBe("worker");
-    expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("worker context A");
-
-    wrapper.unmount();
-  }, 30_000);
 });

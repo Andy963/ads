@@ -26,7 +26,7 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "planner" || chatSessionId === "reviewer") return;
+      if (chatSessionId === "planner") return;
       lastWs = this as unknown as typeof lastWs;
     }
 
@@ -295,10 +295,9 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("clears pending replay state for planner and reviewer reset flows", async () => {
+  it("clears pending replay state for planner reset flows", async () => {
     const { wrapper, controller } = await mountReconnectHarness();
     const plannerRt = controller.getPlannerRuntime("default");
-    const reviewerRt = controller.getReviewerRuntime("default");
 
     seedPendingReplayState(plannerRt, "planner", "planner-ack");
     controller.clearPlannerChat();
@@ -307,22 +306,6 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(plannerRt.pendingAckClientMessageId).toBeNull();
     expect(plannerRt.queuedPrompts.value).toEqual([]);
     expect(sessionStorage.getItem("ads.pendingPrompt.default.planner")).toBeNull();
-
-    seedPendingReplayState(reviewerRt, "reviewer", "reviewer-ack");
-    controller.clearReviewerChat();
-    await settleUi(wrapper);
-
-    expect(reviewerRt.pendingAckClientMessageId).toBeNull();
-    expect(reviewerRt.queuedPrompts.value).toEqual([]);
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.reviewer")).toBeNull();
-
-    seedPendingReplayState(reviewerRt, "reviewer", "reviewer-ack-2");
-    controller.startNewReviewerSession();
-    await settleUi(wrapper);
-
-    expect(reviewerRt.pendingAckClientMessageId).toBeNull();
-    expect(reviewerRt.queuedPrompts.value).toEqual([]);
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.reviewer")).toBeNull();
     wrapper.unmount();
   });
 });

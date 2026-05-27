@@ -2,7 +2,7 @@ import type { Task } from "../api/types";
 
 type DisplayTask = Pick<Task, "status" | "priority" | "createdAt">;
 
-export function shouldDisplayTask(task: Pick<Task, "status" | "reviewRequired" | "reviewStatus">): boolean {
+export function shouldDisplayTask(task: Pick<Task, "status">): boolean {
   void task;
   return true;
 }

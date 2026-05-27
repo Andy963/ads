@@ -58,16 +58,6 @@ export function resolveTaskQueueSessionCleanupIntervalMs(): number {
   });
 }
 
-export function summarizeReviewArtifactText(text: string): string {
-  const normalized = String(text ?? "").trim();
-  if (!normalized) {
-    return "No reviewer summary provided.";
-  }
-  const firstParagraph = normalized.split(/\n\s*\n/)[0]?.trim() ?? normalized;
-  const summary = firstParagraph || normalized;
-  return summary.length <= 400 ? summary : `${summary.slice(0, 399)}…`;
-}
-
 export function createTaskQueueMetrics(): TaskQueueMetrics {
   const names: TaskQueueMetricName[] = [
     "TASK_ADDED",

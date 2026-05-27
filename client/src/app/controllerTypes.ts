@@ -1,6 +1,6 @@
 import type { Ref } from "vue";
 
-import type { ReviewArtifactSummary, Task, TaskBundleDraft, TaskQueueStatus } from "../api/types";
+import type { Task, TaskBundleDraft, TaskQueueStatus } from "../api/types";
 import type { createLiveActivityWindow } from "../lib/live_activity";
 
 export type WorkspaceState = { path?: string; rules?: string; modified?: string[]; branch?: string };
@@ -119,8 +119,6 @@ export type ProjectRuntime = {
   taskBundleDrafts: Ref<TaskBundleDraft[]>;
   taskBundleDraftsBusy: Ref<boolean>;
   taskBundleDraftsError: Ref<string | null>;
-  latestReviewArtifact: Ref<ReviewArtifactSummary | null>;
-  boundReviewSnapshotId: Ref<string | null>;
   delegationsInFlight: Ref<AgentDelegationInFlight[]>;
   ignoreNextHistory: boolean;
   resumeReplacePending: boolean;

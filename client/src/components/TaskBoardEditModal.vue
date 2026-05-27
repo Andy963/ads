@@ -16,7 +16,6 @@ const props = defineProps<{
   agentId: string;
   priority: number;
   maxRetries: number;
-  reviewRequired: boolean;
   bootstrapEnabled: boolean;
   bootstrapProject: string;
   bootstrapMaxIterations: number;
@@ -34,7 +33,6 @@ const emit = defineEmits<{
   (e: "update:agentId", value: string): void;
   (e: "update:priority", value: number): void;
   (e: "update:maxRetries", value: number): void;
-  (e: "update:reviewRequired", value: boolean): void;
   (e: "update:bootstrapEnabled", value: boolean): void;
   (e: "update:bootstrapProject", value: string): void;
   (e: "update:bootstrapMaxIterations", value: number): void;
@@ -65,11 +63,6 @@ const priorityModel = computed({
 const maxRetriesModel = computed({
   get: () => props.maxRetries,
   set: (value: number) => emit("update:maxRetries", value),
-});
-
-const reviewRequiredModel = computed({
-  get: () => props.reviewRequired,
-  set: (value: boolean) => emit("update:reviewRequired", value),
 });
 
 const bootstrapEnabledModel = computed({
@@ -131,10 +124,6 @@ onMounted(() => {
 
         <div class="actions">
           <div class="actionsLeft">
-            <label class="inlineToggle">
-              <input v-model="reviewRequiredModel" type="checkbox" data-testid="task-edit-review-required" />
-              <span class="toggleLabel">需要审核</span>
-            </label>
             <label class="inlineToggle">
               <input v-model="bootstrapEnabledModel" type="checkbox" data-testid="task-edit-bootstrap-toggle" />
               <span class="toggleLabel">自举模式</span>

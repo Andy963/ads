@@ -123,8 +123,6 @@ describe("web/ws/handleTaskResume", () => {
                 agentId: null,
                 retryCount: 0,
                 maxRetries: 0,
-                reviewRequired: false,
-                reviewStatus: "none",
                 createdAt: 1,
                 completedAt: 2,
               }];
@@ -379,8 +377,6 @@ describe("web/ws/handleTaskResume", () => {
                     agentId: null,
                     retryCount: 0,
                     maxRetries: 0,
-                    reviewRequired: false,
-                    reviewStatus: "none",
                     createdAt: 1,
                     completedAt: 2,
                   }]
@@ -519,8 +515,6 @@ describe("web/ws/handleTaskResume", () => {
                     agentId: null,
                     retryCount: 0,
                     maxRetries: 0,
-                    reviewRequired: false,
-                    reviewStatus: "none",
                     createdAt: 1,
                     completedAt: 2,
                   }]

@@ -80,10 +80,8 @@ describe("web/server/ws reconnect cwd restore", () => {
     const directoryManager = new DirectoryManager([workspaceRoot]);
     const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
     const plannerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
-    const reviewerSessionManager = new SessionManager(0, 0, "read-only", "test-model");
     const workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     const plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
-    const reviewerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-reviewer" });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
 
@@ -124,15 +122,12 @@ describe("web/server/ws reconnect cwd restore", () => {
       sessions: {
         workerSessionManager,
         plannerSessionManager,
-        reviewerSessionManager,
         getWorkspaceLock: () => lock,
         getPlannerWorkspaceLock: () => lock,
-        getReviewerWorkspaceLock: () => lock,
       },
       history: {
         workerHistoryStore,
         plannerHistoryStore,
-        reviewerHistoryStore,
       },
       tasks: {
         ensureTaskContext: () => ({} as any),

@@ -70,7 +70,6 @@ export type SessionAgentSurface =
   | "telegram"
   | "web-worker"
   | "web-planner"
-  | "web-reviewer"
   | "task-queue"
   | "scheduler-runtime"
   | "scheduler-compiler";
@@ -274,58 +273,6 @@ export class SessionManager {
 
   getSavedState(userId: number): SavedSessionState | undefined {
     return getSavedSessionState(this.threadStorage, userId);
-  }
-
-  getSavedReviewerSnapshotId(userId: number): string | undefined {
-    const raw = this.threadStorage?.getRecord(userId)?.reviewerSnapshotId;
-    const trimmed = typeof raw === "string" ? raw.trim() : "";
-    return trimmed || undefined;
-  }
-
-  saveReviewerSnapshotBinding(userId: number, snapshotId: string): void {
-    const storage = this.threadStorage;
-    const cleaned = String(snapshotId ?? "").trim();
-    if (!storage || !cleaned) {
-      return;
-    }
-    const record = storage.getRecord(userId);
-    storage.setRecord(userId, {
-      threadId: record?.threadId,
-      cwd: record?.cwd,
-      agentThreads: { ...(record?.agentThreads ?? {}) },
-      model: record?.model,
-      modelReasoningEffort: record?.modelReasoningEffort,
-      activeAgentId: record?.activeAgentId,
-      reviewerSnapshotId: cleaned,
-    });
-  }
-
-  clearSavedReviewerSnapshotBinding(userId: number): void {
-    const storage = this.threadStorage;
-    if (!storage) {
-      return;
-    }
-    const record = storage.getRecord(userId);
-    if (!record) {
-      return;
-    }
-    const hasSavedThreads = Boolean(record.threadId) || Object.keys(record.agentThreads ?? {}).length > 0;
-    if (!record.reviewerSnapshotId && !hasSavedThreads) {
-      return;
-    }
-    if (!record.model && !record.modelReasoningEffort && !record.activeAgentId) {
-      storage.removeThread(userId);
-      return;
-    }
-    storage.setRecord(userId, {
-      threadId: undefined,
-      cwd: record.cwd,
-      agentThreads: {},
-      model: record.model,
-      modelReasoningEffort: record.modelReasoningEffort,
-      activeAgentId: record.activeAgentId,
-      reviewerSnapshotId: undefined,
-    });
   }
 
   maybeMigrateThreadState(fromUserId: number, toUserId: number): boolean {

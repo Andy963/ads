@@ -49,26 +49,26 @@ describe("shared prepared statements on state.db", () => {
 
       const plannerThreads = new ThreadStorage({ namespace: "web-planner", stateDbPath });
       const plannerHistory = new HistoryStore({ namespace: "web-planner", storagePath: stateDbPath });
-      const reviewerThreads = new ThreadStorage({ namespace: "web-reviewer", stateDbPath });
-      const reviewerHistory = new HistoryStore({ namespace: "web-reviewer", storagePath: stateDbPath });
+      const customThreads = new ThreadStorage({ namespace: "web-custom", stateDbPath });
+      const customHistory = new HistoryStore({ namespace: "web-custom", storagePath: stateDbPath });
 
       assert.equal(prepareCount, afterWorkerLane);
 
       workerThreads.setRecord(1, { threadId: "worker-thread", cwd: "/tmp/worker", agentThreads: { codex: "worker-thread" } });
       plannerThreads.setRecord(1, { threadId: "planner-thread", cwd: "/tmp/planner", agentThreads: { codex: "planner-thread" } });
-      reviewerThreads.setRecord(1, { threadId: "reviewer-thread", cwd: "/tmp/reviewer", agentThreads: { codex: "reviewer-thread" } });
+      customThreads.setRecord(1, { threadId: "custom-thread", cwd: "/tmp/custom", agentThreads: { codex: "custom-thread" } });
 
       workerHistory.add("session-1", { role: "user", text: "worker-entry", ts: 1 });
       plannerHistory.add("session-1", { role: "user", text: "planner-entry", ts: 2 });
-      reviewerHistory.add("session-1", { role: "user", text: "reviewer-entry", ts: 3 });
+      customHistory.add("session-1", { role: "user", text: "custom-entry", ts: 3 });
 
       assert.equal(workerThreads.getRecord(1)?.threadId, "worker-thread");
       assert.equal(plannerThreads.getRecord(1)?.threadId, "planner-thread");
-      assert.equal(reviewerThreads.getRecord(1)?.threadId, "reviewer-thread");
+      assert.equal(customThreads.getRecord(1)?.threadId, "custom-thread");
 
       assert.deepEqual(workerHistory.get("session-1").map((entry) => entry.text), ["worker-entry"]);
       assert.deepEqual(plannerHistory.get("session-1").map((entry) => entry.text), ["planner-entry"]);
-      assert.deepEqual(reviewerHistory.get("session-1").map((entry) => entry.text), ["reviewer-entry"]);
+      assert.deepEqual(customHistory.get("session-1").map((entry) => entry.text), ["custom-entry"]);
     } finally {
       (db as { prepare: typeof db.prepare }).prepare = originalPrepare as typeof db.prepare;
     }

@@ -23,11 +23,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     pendingSwitchProjectId,
     runtimeByProjectId,
     plannerRuntimeByProjectId,
-    reviewerRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
     getPlannerRuntime,
-    getReviewerRuntime,
     maxTurnCommands,
   } = ctx;
 
@@ -112,9 +110,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     for (const rt of plannerRuntimeByProjectId.values()) {
       closeRuntimeConnection(rt);
     }
-    for (const rt of reviewerRuntimeByProjectId.values()) {
-      closeRuntimeConnection(rt);
-    }
   };
 
   const mergeProjectsInto = (target: ProjectTab, candidate: ProjectTab): ProjectTab => {
@@ -165,13 +160,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
         plannerRuntimeByProjectId.delete(oldKey);
       }
-      const reviewerRt = reviewerRuntimeByProjectId.get(oldKey);
-      if (reviewerRt) {
-        if (!reviewerRuntimeByProjectId.has(nextKey)) {
-          reviewerRuntimeByProjectId.set(nextKey, reviewerRt);
-        }
-        reviewerRuntimeByProjectId.delete(oldKey);
-      }
     }
     deps.persistProjects();
   };
@@ -202,14 +190,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  type WsMode = "worker" | "planner" | "reviewer";
+  type WsMode = "worker" | "planner";
 
   const resolveChatSessionId = (project: ProjectTab, mode: WsMode): string => {
     if (mode === "planner") {
       return "planner";
-    }
-    if (mode === "reviewer") {
-      return "reviewer";
     }
     return String(project.chatSessionId ?? "").trim() || "main";
   };
@@ -229,7 +214,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.reconnectAttempts += 1;
     rt.reconnectTimer = window.setTimeout(() => {
       rt.reconnectTimer = null;
-      const connectFn = mode === "planner" ? connectPlannerWs : mode === "reviewer" ? connectReviewerWs : connectWs;
+      const connectFn = mode === "planner" ? connectPlannerWs : connectWs;
       void connectFn(projectId).catch(() => {
         scheduleReconnect(mode, projectId, rt, "connect failed");
       });
@@ -239,9 +224,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const getRuntimeForMode = (mode: WsMode, pid: string): ProjectRuntime => {
     if (mode === "planner") {
       return getPlannerRuntime(pid);
-    }
-    if (mode === "reviewer") {
-      return getReviewerRuntime(pid);
     }
     return getRuntime(pid);
   };
@@ -464,15 +446,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const connectPlannerWs = async (projectId: string = activeProjectId.value): Promise<void> =>
     connectWsInternal("planner", projectId);
 
-  const connectReviewerWs = async (projectId: string = activeProjectId.value): Promise<void> =>
-    connectWsInternal("reviewer", projectId);
-
   return {
     clearReconnectTimer,
     closeRuntimeConnection,
     closeAllConnections,
     connectWs,
     connectPlannerWs,
-    connectReviewerWs,
   };
 }

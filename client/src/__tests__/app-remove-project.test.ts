@@ -97,6 +97,13 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
   await wrapper.vm.$nextTick();
 }
 
+async function waitForProjectIds(wrapper: { vm: { $nextTick: () => Promise<void>; projects: Array<{ id: string }> } }, ids: string[]): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    await settleUi(wrapper);
+    if (JSON.stringify(idsFromVm(wrapper)) === JSON.stringify(ids)) return;
+  }
+}
+
 function idsFromVm(wrapper: { vm: { projects: Array<{ id: string }> } }): string[] {
   return wrapper.vm.projects.map((p) => p.id);
 }
@@ -162,7 +169,7 @@ describe("App.removeProject", () => {
 
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
+    await waitForProjectIds(wrapper as any, ["default", "p1", "p2", "p3"]);
 
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1", "p2", "p3"]);
     expect((wrapper.vm as any).activeProjectId).toBe("p2");
@@ -173,7 +180,7 @@ describe("App.removeProject", () => {
     expect(deleteCalls).toEqual(["/api/projects/p2"]);
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1", "p3"]);
     expect((wrapper.vm as any).activeProjectId).toBe("p1");
-    expect([...wsCloseCalls].sort()).toEqual(["p2:main", "p2:planner", "p2:reviewer"].sort());
+    expect([...wsCloseCalls].sort()).toEqual(["p2:main", "p2:planner"].sort());
 
     wrapper.unmount();
   });
@@ -193,7 +200,7 @@ describe("App.removeProject", () => {
 
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
+    await waitForProjectIds(wrapper as any, ["default"]);
 
     expect(idsFromVm(wrapper as any)).toEqual(["default"]);
     expect((wrapper.vm as any).activeProjectId).toBe("default");
@@ -217,7 +224,7 @@ describe("App.removeProject", () => {
 
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
+    await waitForProjectIds(wrapper as any, ["default", "p1", "p2"]);
 
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1", "p2"]);
 

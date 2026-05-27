@@ -11,6 +11,10 @@ import { handleTaskCollectionRoutes } from "./tasks/collection.js";
 import { handleTaskByIdRoute } from "./tasks/taskById.js";
 import { buildTaskAttachments, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./tasks/shared.js";
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
 

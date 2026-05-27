@@ -2,26 +2,14 @@
 import type { Task } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
 
-type ReviewBadge = {
-  label: string;
-  title: string;
-  status: "none" | "pending" | "running" | "passed" | "rejected" | "failed";
-};
-
 const props = defineProps<{
   task: Task;
   statusLabel: string;
-  reviewedAtText: string;
-  reviewBadge: ReviewBadge | null;
-  canMarkReviewDone: boolean;
-  canViewReviewNotes: boolean;
   showTaskPrompt: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
-  (e: "markDone", id: string): void;
-  (e: "viewReviewNotes"): void;
 }>();
 </script>
 
@@ -30,15 +18,6 @@ const emit = defineEmits<{
     <div class="detailModalHeader" data-drag-handle>
       <div class="detailModalTitle">{{ props.task.title || "(未命名任务)" }}</div>
       <div class="detailModalHeaderActions">
-        <button
-          v-if="props.canMarkReviewDone"
-          class="btnPrimary btnCompact"
-          type="button"
-          data-testid="task-review-mark-done"
-          @click="emit('markDone', props.task.id)"
-        >
-          标记完成
-        </button>
         <button
           class="iconBtn"
           type="button"
@@ -87,51 +66,6 @@ const emit = defineEmits<{
         <div v-if="props.task.latestRun?.worktreeDir" class="detailMetaRow">
           <span class="detailMetaKey">Worktree</span>
           <span class="detailMetaValue detailMono">{{ props.task.latestRun.worktreeDir }}</span>
-        </div>
-      </div>
-
-      <div v-if="props.task.reviewRequired" class="detailSection" data-testid="task-review-detail">
-        <div class="detailSectionTitle">审核</div>
-        <div class="detailMetaGrid">
-          <div class="detailMetaRow">
-            <span class="detailMetaKey">状态</span>
-            <span
-              v-if="props.reviewBadge"
-              class="badge"
-              :data-review="props.reviewBadge.status"
-              :title="props.reviewBadge.title"
-            >
-              {{ props.reviewBadge.label }}
-            </span>
-            <span v-else class="detailMetaValue">-</span>
-          </div>
-          <div class="detailMetaRow">
-            <span class="detailMetaKey">时间</span>
-            <span class="detailMetaValue">{{ props.reviewedAtText || "-" }}</span>
-          </div>
-          <div class="detailMetaRow">
-            <span class="detailMetaKey">快照</span>
-            <span class="detailMetaValue detailMono">{{ props.task.reviewSnapshotId ? props.task.reviewSnapshotId.slice(0, 8) : "-" }}</span>
-            <button
-              class="btnSecondary btnCompact"
-              type="button"
-              data-testid="task-review-view-notes"
-              :disabled="!props.canViewReviewNotes"
-              @click="emit('viewReviewNotes')"
-            >
-              查看审核备注
-            </button>
-          </div>
-        </div>
-
-        <div class="detailConclusion">
-          <div class="detailSectionTitle sub">结论</div>
-          <pre
-            v-if="props.task.reviewConclusion"
-            class="detailMono preWrap"
-            data-testid="task-review-conclusion"
-          >{{ props.task.reviewConclusion }}</pre>
-          <div v-else class="detailEmpty" data-testid="task-review-conclusion-empty">暂无审核结论</div>
         </div>
       </div>
 

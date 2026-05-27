@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { getDatabase, getDatabaseInfo, resetDatabaseForTests } from "../../server/storage/database.js";
+import { getDatabase, getDatabaseInfo, resetDatabaseForTests, SCHEMA_VERSION } from "../../server/storage/database.js";
 import { withWorkspaceContext } from "../../server/workspace/asyncWorkspaceContext.js";
 import { initializeWorkspace } from "../../server/workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
@@ -278,6 +278,6 @@ describe("storage/database", () => {
     assert.ok(taskRunCols.includes("error"));
 
     const version = migrated.prepare("SELECT version FROM schema_version WHERE id = 1").get() as { version: number };
-    assert.strictEqual(version.version, 18);
+    assert.strictEqual(version.version, SCHEMA_VERSION);
   });
 });

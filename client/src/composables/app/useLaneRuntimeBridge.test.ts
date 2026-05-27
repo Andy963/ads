@@ -32,7 +32,6 @@ describe("useLaneRuntimeBridge", () => {
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
       activePlannerRuntime: shallowRef(plannerRuntime),
-      activeReviewerRuntime: shallowRef(createRuntime()),
       queueStatus: ref(null),
       tasks: ref([]),
       queuedPrompts: ref([]),
@@ -40,7 +39,6 @@ describe("useLaneRuntimeBridge", () => {
       agentBusy: ref(false),
       clearPlannerChat: () => {},
       startNewChatSession: () => {},
-      startNewReviewerSession: () => {},
       resumePlannerThread: () => {},
       resumeTaskThread: () => {},
     });
@@ -48,7 +46,7 @@ describe("useLaneRuntimeBridge", () => {
     expect(bridge.activeChatLane.value).toBe("worker");
   });
 
-  it("returns reviewer and planner lanes to worker when the active project changes", async () => {
+  it("returns planner lane to worker when the active project changes", async () => {
     const plannerRuntime = {
       ...createRuntime(),
       taskBundleDrafts: ref([]),
@@ -62,7 +60,6 @@ describe("useLaneRuntimeBridge", () => {
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
       activePlannerRuntime: shallowRef(plannerRuntime),
-      activeReviewerRuntime: shallowRef(createRuntime()),
       queueStatus: ref(null),
       tasks: ref([]),
       queuedPrompts: ref([]),
@@ -70,15 +67,9 @@ describe("useLaneRuntimeBridge", () => {
       agentBusy: ref(false),
       clearPlannerChat: () => {},
       startNewChatSession: () => {},
-      startNewReviewerSession: () => {},
       resumePlannerThread: () => {},
       resumeTaskThread: () => {},
     });
-
-    bridge.activeChatLane.value = "reviewer";
-    activeProjectId.value = "p2";
-    await nextTick();
-    expect(bridge.activeChatLane.value).toBe("worker");
 
     bridge.activeChatLane.value = "planner";
     activeProjectId.value = "p3";
@@ -86,10 +77,9 @@ describe("useLaneRuntimeBridge", () => {
     expect(bridge.activeChatLane.value).toBe("worker");
   });
 
-  it("blocks disconnected planner/reviewer lane resets but keeps worker new-session available", () => {
+  it("blocks disconnected planner lane resets but keeps worker new-session available", () => {
     const clearPlannerChat = vi.fn();
     const startNewChatSession = vi.fn();
-    const startNewReviewerSession = vi.fn();
 
     const bridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
@@ -102,10 +92,6 @@ describe("useLaneRuntimeBridge", () => {
         taskBundleDraftsBusy: ref(false),
         taskBundleDraftsError: ref<string | null>(null),
       }),
-      activeReviewerRuntime: shallowRef({
-        ...createRuntime(),
-        connected: ref(false),
-      }),
       queueStatus: ref(null),
       tasks: ref([]),
       queuedPrompts: ref([]),
@@ -113,7 +99,6 @@ describe("useLaneRuntimeBridge", () => {
       agentBusy: ref(false),
       clearPlannerChat,
       startNewChatSession,
-      startNewReviewerSession,
       resumePlannerThread: () => {},
       resumeTaskThread: () => {},
     });
@@ -123,20 +108,14 @@ describe("useLaneRuntimeBridge", () => {
     bridge.handleLaneNewSession();
     expect(clearPlannerChat).not.toHaveBeenCalled();
 
-    bridge.activeChatLane.value = "reviewer";
-    expect(bridge.activeLaneNewSessionBlocked.value).toBe(true);
-    bridge.handleLaneNewSession();
-    expect(startNewReviewerSession).not.toHaveBeenCalled();
-
     bridge.activeChatLane.value = "worker";
     expect(bridge.activeLaneNewSessionBlocked.value).toBe(false);
     bridge.handleLaneNewSession();
     expect(startNewChatSession).toHaveBeenCalledTimes(1);
   });
 
-  it("allows planner and reviewer lane resets again once their own websocket reconnects", () => {
+  it("allows planner lane resets again once its websocket reconnects", () => {
     const clearPlannerChat = vi.fn();
-    const startNewReviewerSession = vi.fn();
 
     const plannerBridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
@@ -149,7 +128,6 @@ describe("useLaneRuntimeBridge", () => {
         taskBundleDraftsBusy: ref(false),
         taskBundleDraftsError: ref<string | null>(null),
       }),
-      activeReviewerRuntime: shallowRef(createRuntime()),
       queueStatus: ref(null),
       tasks: ref([]),
       queuedPrompts: ref([]),
@@ -157,7 +135,6 @@ describe("useLaneRuntimeBridge", () => {
       agentBusy: ref(false),
       clearPlannerChat,
       startNewChatSession: () => {},
-      startNewReviewerSession: () => {},
       resumePlannerThread: () => {},
       resumeTaskThread: () => {},
     });
@@ -166,36 +143,5 @@ describe("useLaneRuntimeBridge", () => {
     expect(plannerBridge.activeLaneNewSessionBlocked.value).toBe(false);
     plannerBridge.handleLaneNewSession();
     expect(clearPlannerChat).toHaveBeenCalledTimes(1);
-
-    const reviewerBridge = useLaneRuntimeBridge({
-      activeProjectId: ref("p1"),
-      activeProject: ref({ chatSessionId: "main" }),
-      activeRuntime: shallowRef(createRuntime()),
-      activePlannerRuntime: shallowRef({
-        ...createRuntime(),
-        taskBundleDrafts: ref([]),
-        taskBundleDraftsBusy: ref(false),
-        taskBundleDraftsError: ref<string | null>(null),
-      }),
-      activeReviewerRuntime: shallowRef({
-        ...createRuntime(),
-        connected: ref(true),
-      }),
-      queueStatus: ref(null),
-      tasks: ref([]),
-      queuedPrompts: ref([]),
-      pendingImages: ref([]),
-      agentBusy: ref(false),
-      clearPlannerChat: () => {},
-      startNewChatSession: () => {},
-      startNewReviewerSession,
-      resumePlannerThread: () => {},
-      resumeTaskThread: () => {},
-    });
-
-    reviewerBridge.activeChatLane.value = "reviewer";
-    expect(reviewerBridge.activeLaneNewSessionBlocked.value).toBe(false);
-    reviewerBridge.handleLaneNewSession();
-    expect(startNewReviewerSession).toHaveBeenCalledTimes(1);
   });
 });

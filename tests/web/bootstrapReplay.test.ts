@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildHistoryBootstrapPayload, buildReviewerBootstrapPayloads } from "../../server/web/server/ws/bootstrapReplay.js";
+import { buildHistoryBootstrapPayload } from "../../server/web/server/ws/bootstrapReplay.js";
 
 describe("web/ws/bootstrapReplay", () => {
   it("sanitizes ai history and keeps only the latest /cd command", () => {
@@ -20,37 +20,5 @@ describe("web/ws/bootstrapReplay", () => {
         { role: "user", text: "/cd /tmp/b", ts: 4 },
       ],
     });
-  });
-
-  it("builds reviewer bootstrap payloads for reviewer lanes and explicitly clears missing bindings", () => {
-    assert.deepEqual(
-      buildReviewerBootstrapPayloads({
-        isReviewerChat: true,
-        boundSnapshotId: "snap-1",
-        latestArtifact: { id: "art-1", snapshotId: "snap-1" } as any,
-      }),
-      [
-        { type: "reviewer_snapshot_binding", snapshotId: "snap-1" },
-        { type: "reviewer_artifact", artifact: { id: "art-1", snapshotId: "snap-1" } },
-      ],
-    );
-
-    assert.deepEqual(
-      buildReviewerBootstrapPayloads({
-        isReviewerChat: true,
-        boundSnapshotId: null,
-        latestArtifact: { id: "art-stale", snapshotId: "snap-stale" } as any,
-      }),
-      [{ type: "reviewer_snapshot_binding", snapshotId: null }],
-    );
-
-    assert.deepEqual(
-      buildReviewerBootstrapPayloads({
-        isReviewerChat: false,
-        boundSnapshotId: "snap-1",
-        latestArtifact: { id: "art-1" } as any,
-      }),
-      [],
-    );
   });
 });

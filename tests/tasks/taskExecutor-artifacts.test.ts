@@ -152,55 +152,7 @@ describe("tasks/executor artifacts", () => {
     assert.match(prompts[0] ?? "", new RegExp(tailMarker));
   });
 
-  it("injects explicit reviewer artifact references only when present", async () => {
-    const store = new TaskStore();
-    const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
-    store.saveContext(
-      task.id,
-      {
-        contextType: "artifact:review_artifact_reference",
-        content: JSON.stringify({
-          reviewArtifactId: "artifact-1",
-          snapshotId: "snapshot-1",
-          taskId: "source-task",
-          verdict: "analysis",
-          scope: "reviewer",
-          summaryText: "Use a guard clause.",
-          responseText: "Use a guard clause before the expensive branch.",
-        }),
-      },
-      Date.now(),
-    );
-
-    const prompts: string[] = [];
-    const orchestrator = {
-      setModel() {},
-      setWorkingDirectory() {},
-      onEvent() {
-        return () => undefined;
-      },
-      async invokeAgent(_: string, input: string) {
-        prompts.push(String(input));
-        return { response: "ok" };
-      },
-    };
-
-    const executor = new OrchestratorTaskExecutor({
-      getOrchestrator: () => orchestrator as any,
-      store,
-      workspaceRoot: tmpDir,
-      autoModelOverride: "mock",
-    });
-
-    await executor.execute(task, {});
-
-    assert.equal(prompts.length, 1);
-    assert.match(prompts[0] ?? "", /reviewArtifactId: artifact-1/);
-    assert.match(prompts[0] ?? "", /snapshotId: snapshot-1/);
-    assert.match(prompts[0] ?? "", /Use a guard clause before the expensive branch\./);
-  });
-
-  it("persists explicit worktree references for reviewer snapshot binding", () => {
+  it("persists explicit worktree references", () => {
     const store = new TaskStore();
     const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
 
@@ -226,7 +178,6 @@ describe("tasks/executor artifacts", () => {
       prompt: "update note",
       model: "auto",
       executionIsolation: "required",
-      reviewRequired: false,
     }) as Task;
 
     let workingDirectory = "";
@@ -274,7 +225,6 @@ describe("tasks/executor artifacts", () => {
       prompt: "commit note update",
       model: "auto",
       executionIsolation: "required",
-      reviewRequired: false,
     }) as Task;
 
     let workingDirectory = "";
@@ -311,17 +261,16 @@ describe("tasks/executor artifacts", () => {
     assert.equal(latestRun?.status, "completed");
   });
 
-  it("records committed isolated changes for review-required runs", async () => {
+  it("records committed isolated changes for required-isolation runs", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "repo-"));
     await initRepo(workspaceRoot);
 
     const store = new TaskStore();
     const task = store.createTask({
-      title: "isolated review",
+      title: "isolated changes",
       prompt: "commit note update",
       model: "auto",
       executionIsolation: "required",
-      reviewRequired: true,
     }) as Task;
 
     let workingDirectory = "";
@@ -334,9 +283,9 @@ describe("tasks/executor artifacts", () => {
         return () => {};
       },
       async invokeAgent() {
-        fs.writeFileSync(path.join(workingDirectory, "note.txt"), "reviewed\n", "utf8");
+        fs.writeFileSync(path.join(workingDirectory, "note.txt"), "changed\n", "utf8");
         await git(workingDirectory, ["add", "note.txt"]);
-        await git(workingDirectory, ["commit", "-m", "review"]);
+        await git(workingDirectory, ["commit", "-m", "change"]);
         return { response: "done" };
       },
     };
@@ -357,8 +306,8 @@ describe("tasks/executor artifacts", () => {
     assert.deepEqual(payload.paths, ["note.txt"]);
 
     const latestRun = store.getLatestTaskRun(task.id);
-    assert.equal(latestRun?.captureStatus, "pending");
-    assert.equal(latestRun?.applyStatus, "pending");
+    assert.equal(latestRun?.captureStatus, "skipped");
+    assert.equal(latestRun?.applyStatus, "applied");
   });
 
   it("closes pending sub-statuses when isolated execution fails", async () => {
@@ -371,7 +320,6 @@ describe("tasks/executor artifacts", () => {
       prompt: "fail",
       model: "auto",
       executionIsolation: "required",
-      reviewRequired: true,
     }) as Task;
 
     const orchestrator = {
@@ -396,7 +344,7 @@ describe("tasks/executor artifacts", () => {
 
     const latestRun = store.getLatestTaskRun(task.id);
     assert.equal(latestRun?.status, "failed");
-    assert.equal(latestRun?.captureStatus, "failed");
+    assert.equal(latestRun?.captureStatus, "skipped");
     assert.equal(latestRun?.applyStatus, "failed");
   });
 
@@ -410,7 +358,6 @@ describe("tasks/executor artifacts", () => {
       prompt: "cancel",
       model: "auto",
       executionIsolation: "required",
-      reviewRequired: true,
     }) as Task;
 
     const orchestrator = {
@@ -447,7 +394,6 @@ describe("tasks/executor artifacts", () => {
       prompt: "setup",
       model: "auto",
       executionIsolation: "required",
-      reviewRequired: true,
     }) as Task;
 
     const orchestrator = {
@@ -472,7 +418,7 @@ describe("tasks/executor artifacts", () => {
 
     const latestRun = store.getLatestTaskRun(task.id);
     assert.equal(latestRun?.status, "failed");
-    assert.equal(latestRun?.captureStatus, "failed");
+    assert.equal(latestRun?.captureStatus, "skipped");
     assert.equal(latestRun?.applyStatus, "failed");
   });
 });

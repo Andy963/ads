@@ -473,10 +473,7 @@ export function createChatActions(ctx: AppContext) {
         next.images.length > 0
           ? { text: promptText, images: next.images, model_reasoning_effort: effort, model }
           : { text: promptText, model_reasoning_effort: effort, model };
-      const reviewerSnapshotId =
-        state.chatSessionId === "reviewer" ? String(state.boundReviewSnapshotId.value ?? "").trim() : "";
-      const finalPayload = reviewerSnapshotId ? { ...payload, snapshotId: reviewerSnapshotId } : payload;
-      state.ws.sendPrompt(finalPayload, next.clientMessageId);
+      state.ws.sendPrompt(payload, next.clientMessageId);
     } catch {
       state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
     }

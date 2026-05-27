@@ -1,6 +1,6 @@
 import type { ChatActions } from "../chat";
 import type { ChatItem, ChatPatch, ChatPatchFile, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
-import type { ReviewArtifactSummary, TaskBundleDraft } from "../../api/types";
+import type { TaskBundleDraft } from "../../api/types";
 import {
   buildModelIdStorageKey,
   buildReasoningEffortStorageKey,
@@ -264,61 +264,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
-  const clearStaleReviewerContinuity = (): void => {
-    const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
-    if (effectiveChatSessionId !== "reviewer") {
-      return;
-    }
-    const hasStaleLocalContinuity =
-      Boolean(String(rt.activeThreadId.value ?? "").trim()) ||
-      Boolean(String(rt.boundReviewSnapshotId.value ?? "").trim()) ||
-      Boolean(rt.latestReviewArtifact.value) ||
-      rt.messages.value.length > 0;
-    rt.boundReviewSnapshotId.value = null;
-    rt.latestReviewArtifact.value = null;
-    if (!hasStaleLocalContinuity) {
-      return;
-    }
-    resetTurnPatchSummary();
-    threadReset(rt, {
-      notice: "Reviewer continuity was unavailable from the backend. Stale local reviewer history was cleared to avoid mismatched context.",
-      warning: null,
-      keepLatestTurn: false,
-      clearBackendHistory: false,
-      resetThreadId: true,
-      source: "reviewer_bootstrap_missing",
-    });
-  };
-
   const handleSharedSessionReset = (payload: Record<string, unknown>): void => {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "shared";
     const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
     if (resetScope === "lane" && sourceChatSessionId && sourceChatSessionId !== effectiveChatSessionId) {
       return;
-    }
-    const hasReviewerPreservationMetadata = Object.prototype.hasOwnProperty.call(payload, "preservedReviewerSnapshotId");
-    const preservedReviewerSnapshotId = hasReviewerPreservationMetadata
-      ? typeof payload.preservedReviewerSnapshotId === "string"
-        ? payload.preservedReviewerSnapshotId.trim() || null
-        : null
-      : undefined;
-    if (effectiveChatSessionId === "reviewer") {
-      const currentReviewerSnapshotId = String(rt.boundReviewSnapshotId.value ?? "").trim() || null;
-      const shouldClearReviewerBinding =
-        (hasReviewerPreservationMetadata &&
-          !preservedReviewerSnapshotId &&
-          (Boolean(currentReviewerSnapshotId) || Boolean(rt.latestReviewArtifact.value))) ||
-        Boolean(
-          hasReviewerPreservationMetadata &&
-            preservedReviewerSnapshotId &&
-            ((currentReviewerSnapshotId && currentReviewerSnapshotId !== preservedReviewerSnapshotId) ||
-              (!currentReviewerSnapshotId && rt.latestReviewArtifact.value)),
-        );
-      if (shouldClearReviewerBinding) {
-        rt.boundReviewSnapshotId.value = null;
-        rt.latestReviewArtifact.value = null;
-      }
     }
     const hasVisibleLocalContinuity =
       rt.messages.value.length > 0 ||
@@ -480,53 +431,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
-    if (type === "reviewer_artifact") {
-      const artifact = msg.artifact;
-      const boundSnapshotId = String(rt.boundReviewSnapshotId.value ?? "").trim();
-      if (!boundSnapshotId) {
-        return;
-      }
-      const artifactSnapshotId =
-        artifact && typeof artifact === "object" ? String((artifact as Record<string, unknown>).snapshotId ?? "").trim() : "";
-      if (boundSnapshotId && artifactSnapshotId && artifactSnapshotId !== boundSnapshotId) {
-        return;
-      }
-      rt.latestReviewArtifact.value =
-        artifact && typeof artifact === "object"
-          ? ({
-              id: String((artifact as Record<string, unknown>).id ?? "").trim(),
-              taskId: String((artifact as Record<string, unknown>).taskId ?? "").trim(),
-              snapshotId: String((artifact as Record<string, unknown>).snapshotId ?? "").trim(),
-              queueItemId:
-                (artifact as Record<string, unknown>).queueItemId == null
-                  ? null
-                  : String((artifact as Record<string, unknown>).queueItemId ?? "").trim() || null,
-              scope: String((artifact as Record<string, unknown>).scope ?? "").trim() === "queue" ? "queue" : "reviewer",
-              summaryText: String((artifact as Record<string, unknown>).summaryText ?? ""),
-              verdict: (() => {
-                const verdict = String((artifact as Record<string, unknown>).verdict ?? "").trim().toLowerCase();
-                return verdict === "passed" || verdict === "rejected" ? verdict : "analysis";
-              })(),
-              priorArtifactId:
-                (artifact as Record<string, unknown>).priorArtifactId == null
-                  ? null
-                  : String((artifact as Record<string, unknown>).priorArtifactId ?? "").trim() || null,
-              createdAt: Number((artifact as Record<string, unknown>).createdAt ?? 0) || 0,
-            } satisfies ReviewArtifactSummary)
-          : null;
-      return;
-    }
-
-    if (type === "reviewer_snapshot_binding") {
-      const snapshotId = String(msg.snapshotId ?? "").trim();
-      if (!snapshotId) {
-        clearStaleReviewerContinuity();
-        return;
-      }
-      rt.boundReviewSnapshotId.value = snapshotId;
-      return;
-    }
-
     if (type === "welcome") {
       let nextPath = "";
       let wsState: WorkspaceState | null = null;
@@ -549,13 +453,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
       const rawServerThreadId = String(msg.threadId ?? "").trim();
       const serverChatSessionId = String(msg.chatSessionId ?? "").trim();
-      const effectiveChatSessionId = serverChatSessionId || rt.chatSessionId;
       if (serverChatSessionId) {
         rt.chatSessionId = serverChatSessionId;
-      }
-      if (effectiveChatSessionId === "reviewer") {
-        rt.boundReviewSnapshotId.value = null;
-        rt.latestReviewArtifact.value = null;
       }
       applyEffectiveState(msg as Record<string, unknown>);
       const handshakeReset = Boolean(msg.reset);

@@ -7,7 +7,7 @@ import MainChatMessageList from "./MainChatMessageList.vue";
 import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { analyzeMarkdownOutline } from "../lib/markdown";
-import type { ModelConfig, ReviewArtifactSummary } from "../api/types";
+import type { ModelConfig } from "../api/types";
 
 const props = defineProps<{
   title?: string;
@@ -33,7 +33,6 @@ const props = defineProps<{
   apiToken?: string;
   runningTaskCount?: number;
   workspaceRoot?: string | null;
-  reviewArtifact?: ReviewArtifactSummary | null;
   headerAction?: { title: string; ariaLabel?: string; testId?: string };
   headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
   threadWarning?: string | null;
@@ -236,12 +235,6 @@ const liveStepCanToggleExpanded = computed(() => {
   return liveStepHasMeaningfulBody.value || liveStepOutlineHiddenCount.value > 0 || liveStepHasOverflow.value;
 });
 const showActiveBorder = computed(() => props.busy);
-const reviewArtifactVerdictLabel = computed(() => {
-  const verdict = String(props.reviewArtifact?.verdict ?? "").trim().toLowerCase();
-  if (verdict === "passed") return "passed";
-  if (verdict === "rejected") return "rejected";
-  return "analysis";
-});
 
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
@@ -358,23 +351,6 @@ onBeforeUnmount(() => {
       @resume-thread="emit('resumeThread')"
     />
     <div ref="listRef" class="chat" @scroll="handleScroll">
-      <section
-        v-if="reviewArtifact"
-        class="reviewArtifactBanner"
-        data-testid="review-artifact-banner"
-        :data-verdict="reviewArtifactVerdictLabel"
-      >
-        <div class="reviewArtifactBannerHeader">
-          <span class="reviewArtifactBannerTitle">Latest review artifact</span>
-          <span class="reviewArtifactVerdict">{{ reviewArtifactVerdictLabel }}</span>
-        </div>
-        <div class="reviewArtifactMeta">
-          <span class="reviewArtifactMetaItem">Artifact <code>{{ reviewArtifact.id }}</code></span>
-          <span class="reviewArtifactMetaItem">Snapshot <code>{{ reviewArtifact.snapshotId }}</code></span>
-          <span class="reviewArtifactMetaItem">Task <code>{{ reviewArtifact.taskId }}</code></span>
-        </div>
-        <div class="reviewArtifactSummary">{{ reviewArtifact.summaryText }}</div>
-      </section>
       <MainChatMessageList
         :messages="messages"
         :copied-message-id="copiedMessageId"

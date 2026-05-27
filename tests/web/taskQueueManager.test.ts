@@ -39,7 +39,6 @@ describe("web/taskQueue manager", () => {
     allowedDirs?: string[];
     available?: boolean;
     autoStart?: boolean;
-    reviewSessionManager?: object;
   }) {
     const broadcasts: unknown[] = [];
     const histories: Array<{ sessionId: string; entry: { role: string; text: string; ts: number; kind?: string } }> = [];
@@ -65,7 +64,6 @@ describe("web/taskQueue manager", () => {
       recordToSessionHistories: (sessionId, entry) => {
         histories.push({ sessionId, entry });
       },
-      reviewSessionManager: options?.reviewSessionManager as any,
     });
     return { manager, broadcasts, histories };
   }
@@ -120,51 +118,4 @@ describe("web/taskQueue manager", () => {
       ),
     );
   });
-
-  it("fails review-required tasks closed when runtime review enqueue wiring cannot build a snapshot", () => {
-    const { manager, broadcasts } = createManager({ reviewSessionManager: {} });
-    const ctx = manager.ensureTaskContext(tmpDir);
-    createdContexts.push(ctx);
-
-    const now = Date.now();
-    const task = ctx.taskStore.createTask(
-      { title: "Needs review", prompt: "Do work", model: "auto", reviewRequired: true },
-      now,
-      { status: "completed" },
-    );
-    const run = ctx.taskStore.createTaskRun(
-      {
-        taskId: task.id,
-        executionIsolation: "required",
-        workspaceRoot: tmpDir,
-        status: "completed",
-        captureStatus: "pending",
-        applyStatus: "pending",
-      },
-      now,
-    );
-    const completed = ctx.taskStore.updateTask(task.id, { status: "completed", result: "done" }, now);
-
-    ctx.taskQueue.emit("task:completed", { task: completed });
-
-    const failedTask = ctx.taskStore.getTask(task.id);
-    const failedRun = ctx.taskStore.getTaskRun(run.id);
-    assert.equal(failedTask?.status, "failed");
-    assert.equal(failedTask?.reviewStatus, "failed");
-    assert.equal(failedTask?.reviewConclusion, "review_snapshot_patch_missing");
-    assert.equal(failedRun?.status, "failed");
-    assert.equal(failedRun?.captureStatus, "failed");
-    assert.equal(failedRun?.applyStatus, "failed");
-    assert.ok(
-      broadcasts.some(
-        (payload) =>
-          typeof payload === "object" &&
-          payload !== null &&
-          (payload as { event?: string; data?: { id?: string; reviewStatus?: string } }).event === "task:updated" &&
-          (payload as { data?: { id?: string; reviewStatus?: string } }).data?.id === task.id &&
-          (payload as { data?: { reviewStatus?: string } }).data?.reviewStatus === "failed",
-      ),
-    );
-  });
 });
-

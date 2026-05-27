@@ -40,8 +40,6 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     taskBundleDrafts: ref([]),
     taskBundleDraftsBusy: ref(false),
     taskBundleDraftsError: ref<string | null>(null),
-    latestReviewArtifact: ref(null),
-    boundReviewSnapshotId: ref<string | null>(null),
     delegationsInFlight: ref([]),
     ignoreNextHistory: false,
     resumeReplacePending: false,

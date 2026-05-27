@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
-import type { ReviewSnapshot, Task, TaskQueueStatus } from "../api/types";
+import type { Task, TaskQueueStatus } from "../api/types";
 import type { ApiClient } from "../api/client";
 import TaskBoardDetailModal from "./TaskBoardDetailModal.vue";
-import TaskBoardReviewSnapshotModal from "./TaskBoardReviewSnapshotModal.vue";
 import TaskBoardEditModal from "./TaskBoardEditModal.vue";
 import { deriveTaskStage, type TaskStage } from "../lib/task_stage";
 import {
@@ -15,8 +14,7 @@ import {
   type TaskUpdates,
 } from "./taskBoard/useTaskBoardEditing";
 import { usePendingTaskDnD } from "./taskBoard/usePendingTaskDnD";
-import { useTaskBoardReviewSnapshot } from "./taskBoard/useTaskBoardReviewSnapshot";
-import { reviewBadge, statusLabel, useTaskBoardStages } from "./taskBoard/useTaskBoardStages";
+import { statusLabel, useTaskBoardStages } from "./taskBoard/useTaskBoardStages";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
@@ -68,7 +66,6 @@ type TaskBoardAction = "reorder" | "runSingle" | "edit" | "rerun" | "cancel" | "
 const ALLOWED_ACTIONS_BY_STAGE: Record<TaskStage, TaskBoardAction[]> = {
   backlog: ["reorder", "runSingle", "edit", "delete"],
   in_progress: ["cancel", "retry", "rerun", "delete"],
-  in_review: ["delete"],
   done: ["delete"],
 };
 
@@ -109,25 +106,20 @@ const {
   workspaceRoot,
 });
 
-const {
-  detailId,
-  detailTask,
-  showTaskPromptInDetail,
-  canViewReviewNotes,
-  canMarkReviewDone,
-  reviewSnapshotOpen,
-  reviewSnapshot,
-  reviewSnapshotBusy,
-  reviewSnapshotError,
-  closeDetail,
-  closeReviewSnapshot,
-  openReviewSnapshot,
-  formatTs,
-} = useTaskBoardReviewSnapshot({
-  tasks: tasksRef,
-  api: computed(() => props.api),
-  workspaceRoot,
+const detailId = computed({
+  get: () => props.selectedId ?? null,
+  set: (_value: string | null) => {},
 });
+const detailTask = computed(() => {
+  const id = String(detailId.value ?? "").trim();
+  if (!id) return null;
+  return props.tasks.find((task) => task.id === id) ?? null;
+});
+const showTaskPromptInDetail = computed(() => true);
+
+function closeDetail(): void {
+  detailId.value = null;
+}
 
 const {
   editingId,
@@ -137,7 +129,6 @@ const {
   editAgentId,
   editPriority,
   editMaxRetries,
-  editReviewRequired,
   editBootstrapEnabled,
   editBootstrapProject,
   editBootstrapMaxIterations,
@@ -260,10 +251,6 @@ function toggleQueue(): void {
                   <div class="row-top">
                     <div class="row-head">
                       <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
-                      <span v-if="reviewBadge(t)" class="badge" :data-review="reviewBadge(t)!.status"
-                        :title="reviewBadge(t)!.title">
-                        {{ reviewBadge(t)!.label }}
-                      </span>
                     </div>
                   </div>
                 </button>
@@ -340,24 +327,8 @@ function toggleQueue(): void {
       v-if="detailTask"
       :task="detailTask"
       :status-label="statusLabel(detailTask.status)"
-      :reviewed-at-text="formatTs(detailTask.reviewedAt)"
-      :review-badge="reviewBadge(detailTask)"
-      :can-mark-review-done="canMarkReviewDone"
-      :can-view-review-notes="canViewReviewNotes"
       :show-task-prompt="showTaskPromptInDetail"
       @close="closeDetail"
-      @mark-done="emit('markDone', $event)"
-      @view-review-notes="openReviewSnapshot"
-    />
-
-    <TaskBoardReviewSnapshotModal
-      v-if="reviewSnapshotOpen"
-      :task-id="detailTask?.id ?? null"
-      :snapshot-id="detailTask?.reviewSnapshotId ?? null"
-      :snapshot="reviewSnapshot"
-      :busy="reviewSnapshotBusy"
-      :error="reviewSnapshotError"
-      @close="closeReviewSnapshot"
     />
 
     <TaskBoardEditModal
@@ -369,7 +340,6 @@ function toggleQueue(): void {
       :agent-id="editAgentId"
       :priority="editPriority"
       :max-retries="editMaxRetries"
-      :review-required="editReviewRequired"
       :bootstrap-enabled="editBootstrapEnabled"
       :bootstrap-project="editBootstrapProject"
       :bootstrap-max-iterations="editBootstrapMaxIterations"
@@ -384,7 +354,6 @@ function toggleQueue(): void {
       @update:agent-id="editAgentId = $event"
       @update:priority="editPriority = $event"
       @update:max-retries="editMaxRetries = $event"
-      @update:review-required="editReviewRequired = $event"
       @update:bootstrap-enabled="editBootstrapEnabled = $event"
       @update:bootstrap-project="editBootstrapProject = $event"
       @update:bootstrap-max-iterations="editBootstrapMaxIterations = $event"

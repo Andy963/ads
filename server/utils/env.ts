@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { createLogger } from "./logger.js";
@@ -10,6 +11,14 @@ const logger = createLogger("Env");
 let loaded = false;
 
 const DEFAULT_ENV_SEARCH_MAX_DEPTH = 25;
+
+function isSystemTempRoot(dir: string): boolean {
+  try {
+    return fs.realpathSync(dir) === fs.realpathSync(os.tmpdir());
+  } catch {
+    return path.resolve(dir) === path.resolve(os.tmpdir());
+  }
+}
 
 function resolveExplicitEnvPath(): string | null {
   const raw = process.env.ADS_ENV_PATH;
@@ -23,11 +32,11 @@ function resolveExplicitEnvPath(): string | null {
 function findSearchBoundary(startDir: string): string | null {
   let current = startDir;
   while (true) {
-    if (
-      fs.existsSync(path.join(current, "package.json")) ||
-      fs.existsSync(path.join(current, ".git"))
-    ) {
+    if (fs.existsSync(path.join(current, "package.json"))) {
       return current;
+    }
+    if (fs.existsSync(path.join(current, ".git"))) {
+      return isSystemTempRoot(current) ? null : current;
     }
     const parent = path.dirname(current);
     if (parent === current) {

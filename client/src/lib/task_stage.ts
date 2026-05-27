@@ -1,13 +1,12 @@
 import type { Task } from "../api/types";
 
-export type TaskStage = "backlog" | "in_progress" | "in_review" | "done";
+export type TaskStage = "backlog" | "in_progress" | "done";
 
-export function deriveTaskStage(task: Pick<Task, "status" | "reviewRequired" | "reviewStatus">): TaskStage {
+export function deriveTaskStage(task: Pick<Task, "status">): TaskStage {
   const status = task.status;
 
   if (status === "completed") {
-    if (!task.reviewRequired) return "done";
-    return task.reviewStatus === "passed" ? "done" : "in_review";
+    return "done";
   }
 
   if (status === "planning" || status === "running" || status === "failed") {
@@ -16,4 +15,3 @@ export function deriveTaskStage(task: Pick<Task, "status" | "reviewRequired" | "
 
   return "backlog";
 }
-

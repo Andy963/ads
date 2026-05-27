@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { createLogger } from "../utils/logger.js";
@@ -32,6 +33,14 @@ function existsSync(target: string): boolean {
 
 function resolveAbsolute(target: string): string {
   return path.resolve(target);
+}
+
+function isSystemTempRoot(dir: string): boolean {
+  try {
+    return fs.realpathSync(dir) === fs.realpathSync(os.tmpdir());
+  } catch {
+    return path.resolve(dir) === path.resolve(os.tmpdir());
+  }
 }
 
 function listTemplateFiles(): string[] {
@@ -127,6 +136,9 @@ function findMarker(marker: string, startDir: string, maxDepth = 10): string | n
   for (let depth = 0; depth < maxDepth; depth += 1) {
     const candidate = path.join(current, marker);
     if (existsSync(candidate)) {
+      if (marker === GIT_MARKER && isSystemTempRoot(current)) {
+        return null;
+      }
       return current;
     }
     const parent = path.dirname(current);

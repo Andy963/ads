@@ -596,8 +596,6 @@ describe("web/ws/planner-draft-spec-guard", () => {
                 agentId: null,
                 retryCount: 0,
                 maxRetries: 0,
-                reviewRequired: true,
-                reviewStatus: "pending",
                 createdAt: now,
               };
               tasksById.set(task.id, task);
@@ -631,7 +629,6 @@ describe("web/ws/planner-draft-spec-guard", () => {
             },
           },
           taskQueue: { resume: () => void (resumeCalled += 1) },
-          reviewStore: {} as any,
           queueAutoStart: false,
           queueRunning: false,
           dequeueInProgress: false,

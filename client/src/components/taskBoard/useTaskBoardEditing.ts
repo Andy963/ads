@@ -11,7 +11,7 @@ type BootstrapConfig = {
 };
 
 export type TaskUpdates = Partial<
-  Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries" | "reviewRequired">
+  Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries">
 > & {
   bootstrap?: BootstrapConfig | null;
 };
@@ -95,7 +95,6 @@ export function useTaskBoardEditing(params: {
   const editAgentId = ref("");
   const editPriority = ref(0);
   const editMaxRetries = ref(3);
-  const editReviewRequired = ref(false);
   const editBootstrapEnabled = ref(false);
   const editBootstrapProject = ref("");
   const editBootstrapMaxIterations = ref(10);
@@ -152,7 +151,6 @@ export function useTaskBoardEditing(params: {
     editAgentId.value = pickDefaultAgentId(task.agentId);
     editPriority.value = task.priority ?? 0;
     editMaxRetries.value = task.maxRetries ?? 3;
-    editReviewRequired.value = Boolean(task.reviewRequired);
     const bootstrap = readBootstrapConfig(task);
     editBootstrapEnabled.value = Boolean(bootstrap);
     editBootstrapProject.value = bootstrap?.projectRef ?? "";
@@ -202,7 +200,6 @@ export function useTaskBoardEditing(params: {
         agentId: editAgentId.value.trim() ? editAgentId.value.trim() : null,
         priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
         maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
-        reviewRequired: editReviewRequired.value,
         ...(editBootstrapEnabled.value
           ? { bootstrap: { enabled: true, projectRef, maxIterations } }
           : priorBootstrap
@@ -221,7 +218,6 @@ export function useTaskBoardEditing(params: {
     editAgentId,
     editPriority,
     editMaxRetries,
-    editReviewRequired,
     editBootstrapEnabled,
     editBootstrapProject,
     editBootstrapMaxIterations,

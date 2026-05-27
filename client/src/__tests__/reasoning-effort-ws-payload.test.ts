@@ -61,9 +61,6 @@ vi.mock("../api/ws", () => {
         lastPlannerWs = this as unknown as typeof lastWs;
         return;
       } else {
-        if (chatSessionId === "reviewer") {
-          return;
-        }
         lastWs = this as unknown as typeof lastWs;
       }
     }

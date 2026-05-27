@@ -8,15 +8,12 @@ describe("web/ws/laneResources", () => {
     const sessions = {
       workerSessionManager: { id: "worker-session" },
       plannerSessionManager: { id: "planner-session" },
-      reviewerSessionManager: { id: "reviewer-session" },
       getWorkspaceLock: () => "worker-lock",
       getPlannerWorkspaceLock: () => "planner-lock",
-      getReviewerWorkspaceLock: () => "reviewer-lock",
     };
     const history = {
       workerHistoryStore: { id: "worker-history" },
       plannerHistoryStore: { id: "planner-history" },
-      reviewerHistoryStore: { id: "reviewer-history" },
     };
 
     const resolved = resolveWsLaneResources({
@@ -26,25 +23,21 @@ describe("web/ws/laneResources", () => {
     });
 
     assert.equal(resolved.isPlannerChat, false);
-    assert.equal(resolved.isReviewerChat, false);
     assert.equal((resolved.sessionManager as any).id, "worker-session");
     assert.equal((resolved.historyStore as any).id, "worker-history");
     assert.equal(resolved.getWorkspaceLock("/tmp"), "worker-lock");
   });
 
-  it("selects planner and reviewer resources for their dedicated lanes", () => {
+  it("selects planner resources for planner and worker resources for other lanes", () => {
     const sessions = {
       workerSessionManager: { id: "worker-session" },
       plannerSessionManager: { id: "planner-session" },
-      reviewerSessionManager: { id: "reviewer-session" },
       getWorkspaceLock: () => "worker-lock",
       getPlannerWorkspaceLock: () => "planner-lock",
-      getReviewerWorkspaceLock: () => "reviewer-lock",
     };
     const history = {
       workerHistoryStore: { id: "worker-history" },
       plannerHistoryStore: { id: "planner-history" },
-      reviewerHistoryStore: { id: "reviewer-history" },
     };
 
     const planner = resolveWsLaneResources({
@@ -53,20 +46,18 @@ describe("web/ws/laneResources", () => {
       history: history as any,
     });
     assert.equal(planner.isPlannerChat, true);
-    assert.equal(planner.isReviewerChat, false);
     assert.equal((planner.sessionManager as any).id, "planner-session");
     assert.equal((planner.historyStore as any).id, "planner-history");
     assert.equal(planner.getWorkspaceLock("/tmp"), "planner-lock");
 
-    const reviewer = resolveWsLaneResources({
-      chatSessionId: "reviewer",
+    const other = resolveWsLaneResources({
+      chatSessionId: "custom-worker",
       sessions: sessions as any,
       history: history as any,
     });
-    assert.equal(reviewer.isPlannerChat, false);
-    assert.equal(reviewer.isReviewerChat, true);
-    assert.equal((reviewer.sessionManager as any).id, "reviewer-session");
-    assert.equal((reviewer.historyStore as any).id, "reviewer-history");
-    assert.equal(reviewer.getWorkspaceLock("/tmp"), "reviewer-lock");
+    assert.equal(other.isPlannerChat, false);
+    assert.equal((other.sessionManager as any).id, "worker-session");
+    assert.equal((other.historyStore as any).id, "worker-history");
+    assert.equal(other.getWorkspaceLock("/tmp"), "worker-lock");
   });
 });

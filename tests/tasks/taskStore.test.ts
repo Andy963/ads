@@ -365,8 +365,6 @@ describe("tasks/taskStore", () => {
         parentTaskId: `  ${nextParent.id}  `,
         threadId: "  thread-next  ",
         createdBy: "  owner  ",
-        reviewSnapshotId: "  review-1  ",
-        reviewConclusion: "  passed  ",
       },
       Date.now(),
     );
@@ -376,8 +374,6 @@ describe("tasks/taskStore", () => {
     assert.equal(updated.parentTaskId, nextParent.id);
     assert.equal(updated.threadId, "thread-next");
     assert.equal(updated.createdBy, "owner");
-    assert.equal(updated.reviewSnapshotId, "review-1");
-    assert.equal(updated.reviewConclusion, "passed");
   });
 
   it("should normalize legacy whitespace fields when reading tasks", () => {
@@ -387,9 +383,9 @@ describe("tasks/taskStore", () => {
 
     db.prepare(
       `UPDATE tasks
-       SET model = ?, agent_id = ?, parent_task_id = ?, thread_id = ?, review_snapshot_id = ?, review_conclusion = ?, created_by = ?
+       SET model = ?, agent_id = ?, parent_task_id = ?, thread_id = ?, created_by = ?
        WHERE id = ?`,
-    ).run("   ", "  codex  ", null, "  thread-legacy  ", "  review-legacy  ", "  done  ", "  owner  ", created.id);
+    ).run("   ", "  codex  ", null, "  thread-legacy  ", "  owner  ", created.id);
 
     const fetched = store.getTask(created.id);
     assert.ok(fetched);
@@ -397,8 +393,6 @@ describe("tasks/taskStore", () => {
     assert.equal(fetched.agentId, "codex");
     assert.equal(fetched.parentTaskId, null);
     assert.equal(fetched.threadId, "thread-legacy");
-    assert.equal(fetched.reviewSnapshotId, "review-legacy");
-    assert.equal(fetched.reviewConclusion, "done");
     assert.equal(fetched.createdBy, "owner");
   });
 
@@ -485,17 +479,12 @@ describe("tasks/taskStore", () => {
     assert.equal(completedAgain.completedAt, 1234);
   });
 
-  it("should only archive completed tasks created without pending review", () => {
+  it("should archive completed tasks immediately", () => {
     const store = new TaskStore();
     const now = Date.now();
 
-    const completed = store.createTask({ title: "No Review", prompt: "P" }, now, { status: "completed" });
+    const completed = store.createTask({ title: "Completed", prompt: "P" }, now, { status: "completed" });
     assert.equal(completed.archivedAt, now);
-
-    const reviewPending = store.createTask({ title: "Review Required", prompt: "P", reviewRequired: true }, now, {
-      status: "completed",
-    });
-    assert.equal(reviewPending.archivedAt, null);
   });
 
   it("should clear archivedAt when a completed task is reopened", () => {

@@ -60,7 +60,6 @@ describe("TaskCreateForm submit-and-run", () => {
       prompt: "Do something",
       priority: 0,
       maxRetries: 3,
-      reviewRequired: false,
     });
 
     wrapper.unmount();

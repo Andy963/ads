@@ -83,13 +83,13 @@ describe("web/ws/promptErrorHandling", () => {
         historyStore,
         historyKey: "h3",
         sendToChat: () => {},
-        logPrefix: "Reviewer Prompt Error",
+        logPrefix: "Custom Prompt Error",
       });
 
       assert.equal(warnings.length, 1);
       assert.ok(
-        warnings[0].includes("[Reviewer Prompt Error]"),
-        `expected [Reviewer Prompt Error] prefix, got: ${warnings[0]}`,
+        warnings[0].includes("[Custom Prompt Error]"),
+        `expected [Custom Prompt Error] prefix, got: ${warnings[0]}`,
       );
     } finally {
       historyStore.clear("h3");

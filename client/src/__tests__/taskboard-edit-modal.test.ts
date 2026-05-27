@@ -82,7 +82,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        reviewRequired: false,
       },
     });
 
@@ -212,7 +211,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        reviewRequired: false,
       },
     });
 
@@ -256,7 +254,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        reviewRequired: false,
       },
     });
 
@@ -359,7 +356,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        reviewRequired: false,
         bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 },
       },
     });
@@ -409,7 +405,6 @@ describe("TaskBoard edit modal", () => {
         agentId: "codex",
         priority: 0,
         maxRetries: 3,
-        reviewRequired: false,
         bootstrap: null,
       },
     });

@@ -119,22 +119,6 @@ function inProgressStatusWeight(status: Task["status"]): number {
   }
 }
 
-function inReviewStatusWeight(status: Task["reviewStatus"]): number {
-  switch (status) {
-    case "running":
-      return 0;
-    case "pending":
-      return 1;
-    case "rejected":
-      return 2;
-    case "none":
-      return 3;
-    case "passed":
-    default:
-      return 9;
-  }
-}
-
 function finiteOrInfinity(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   return Number.POSITIVE_INFINITY;
@@ -190,22 +174,6 @@ function compareInProgressTasks(a: Task, b: Task): number {
   return a.id.localeCompare(b.id);
 }
 
-function compareInReviewTasks(a: Task, b: Task): number {
-  const wa = inReviewStatusWeight(a.reviewStatus);
-  const wb = inReviewStatusWeight(b.reviewStatus);
-  if (wa !== wb) return wa - wb;
-
-  const reviewedA = finiteOrZero(a.reviewedAt);
-  const reviewedB = finiteOrZero(b.reviewedAt);
-  if (reviewedA !== reviewedB) return reviewedB - reviewedA;
-
-  const completedA = finiteOrZero(a.completedAt);
-  const completedB = finiteOrZero(b.completedAt);
-  if (completedA !== completedB) return completedB - completedA;
-
-  return a.id.localeCompare(b.id);
-}
-
 function compareDoneTasks(a: Task, b: Task): number {
   const completedA = finiteOrZero(a.completedAt);
   const completedB = finiteOrZero(b.completedAt);
@@ -220,7 +188,6 @@ function defaultStageCollapsed(): Record<TaskStage, boolean> {
   return {
     backlog: true,
     in_progress: true,
-    in_review: true,
     done: true,
   };
 }
@@ -231,8 +198,6 @@ function stageTitle(stage: TaskStage): string {
       return "待办";
     case "in_progress":
       return "进行中";
-    case "in_review":
-      return "审核中";
     case "done":
       return "已完成";
   }
@@ -261,27 +226,6 @@ export function statusLabel(status: string): string {
   }
 }
 
-export function reviewBadge(task: Task): { label: string; status: Task["reviewStatus"]; title?: string } | null {
-  if (!task.reviewRequired) return null;
-  const status = task.reviewStatus ?? "none";
-  const conclusion = String(task.reviewConclusion ?? "").trim() || undefined;
-  switch (status) {
-    case "running":
-      return { label: "审核中", status };
-    case "passed":
-      return { label: "通过", status, title: conclusion };
-    case "rejected":
-      return { label: "驳回", status, title: conclusion };
-    case "failed":
-      return { label: "失败", status, title: conclusion };
-    case "pending":
-      return { label: "待审", status };
-    case "none":
-    default:
-      return { label: "待审", status: status === "none" ? "pending" : status };
-  }
-}
-
 export function useTaskBoardStages(params: {
   tasks: Ref<Task[]>;
   workspaceRoot: Ref<string | null | undefined>;
@@ -290,7 +234,6 @@ export function useTaskBoardStages(params: {
     const buckets: Record<TaskStage, Task[]> = {
       backlog: [],
       in_progress: [],
-      in_review: [],
       done: [],
     };
     for (const task of params.tasks.value) {
@@ -299,14 +242,13 @@ export function useTaskBoardStages(params: {
 
     buckets.backlog.sort(compareBacklogTasks);
     buckets.in_progress.sort(compareInProgressTasks);
-    buckets.in_review.sort(compareInReviewTasks);
     buckets.done.sort(compareDoneTasks);
     return buckets;
   });
 
   const stageSections = computed(() => {
     const buckets = stageBuckets.value;
-    const stages: TaskStage[] = ["backlog", "in_progress", "in_review", "done"];
+    const stages: TaskStage[] = ["backlog", "in_progress", "done"];
     return stages.map((stage) => ({
       stage,
       title: stageTitle(stage),
@@ -354,6 +296,5 @@ export function useTaskBoardStages(params: {
     toggleStageCollapse,
     taskColorVars,
     statusLabel,
-    reviewBadge,
   };
 }

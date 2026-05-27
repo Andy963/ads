@@ -60,7 +60,6 @@ describe("ThreadStorage", () => {
       model: "gpt-4o",
       modelReasoningEffort: "xhigh",
       activeAgentId: "codex",
-      reviewerSnapshotId: "snapshot-3",
       agentThreads: {},
     });
 
@@ -68,7 +67,6 @@ describe("ThreadStorage", () => {
     assert.equal(record?.model, "gpt-4o");
     assert.equal(record?.modelReasoningEffort, "xhigh");
     assert.equal(record?.activeAgentId, "codex");
-    assert.equal(record?.reviewerSnapshotId, "snapshot-3");
     assert.equal(record?.threadId, undefined);
     assert.deepEqual(record?.agentThreads, {});
 
@@ -78,6 +76,5 @@ describe("ThreadStorage", () => {
     assert.equal(record?.model, "gpt-4o");
     assert.equal(record?.modelReasoningEffort, "xhigh");
     assert.equal(record?.activeAgentId, "codex");
-    assert.equal(record?.reviewerSnapshotId, "snapshot-3");
   });
 });

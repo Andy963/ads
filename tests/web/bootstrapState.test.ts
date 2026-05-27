@@ -124,7 +124,7 @@ describe("web/ws/bootstrapState", () => {
     assert.equal(makeState("thread_resumed").threadId, "thread-saved");
   });
 
-  it("can suppress saved thread fallback when reviewer continuity is not safely bound", () => {
+  it("can suppress saved thread fallback when continuity is not safely bound", () => {
     const state = buildWsBootstrapState({
       sessionManager: {
         getSavedThreadId: () => "thread-saved",
