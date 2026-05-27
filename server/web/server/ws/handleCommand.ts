@@ -54,6 +54,13 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       sanitizeInput: deps.commands.sanitizeInput,
     });
     if (!parsedCommand.ok) {
+      deps.observability.sessionLogger?.logError(parsedCommand.message);
+      deps.history.historyStore.add(deps.context.historyKey, {
+        role: "status",
+        text: parsedCommand.message,
+        ts: Date.now(),
+        kind: "error",
+      });
       sendToClient({ type: "error", message: parsedCommand.message });
       return;
     }

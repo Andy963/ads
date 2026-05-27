@@ -394,6 +394,32 @@ describe("web slash commands", () => {
     });
   });
 
+  it("records invalid command payload errors for reconnect replay", async () => {
+    await withTempWorkspace("ads-web-ws-command-invalid-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.deepEqual(clientMessages, [{ type: "error", message: "Payload must be a command string" }]);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "Payload must be a command string", kind: "error" }],
+      );
+      assert.equal(chatMessages.length, 0);
+    });
+  });
+
   it("does not route /search over ws command messages", async () => {
     await withTempWorkspace("ads-web-ws-command-search-", async (workspaceRoot) => {
       const clientMessages: unknown[] = [];
