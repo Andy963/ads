@@ -7,6 +7,7 @@ import {
   normalizeModelId,
   normalizeReasoningEffort,
 } from "../lib/chatPreferences";
+import { supportsAgentModel } from "../lib/model_agent";
 
 import type { CreateTaskInput, ModelConfig, Task, TaskDetail, TaskQueueStatus } from "../api/types";
 import type { AppContext } from "./controller";
@@ -498,6 +499,23 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     persistModelId(rt);
   };
 
+  const alignRuntimeModelForAgent = (rt: ProjectRuntime, agentId: string): void => {
+    const nextAgentId = String(agentId ?? "").trim();
+    if (!nextAgentId) return;
+    const current = normalizeModelId(rt.modelId.value);
+    if (current === "auto") return;
+    const enabledModels = models.value.filter((model) => model.isEnabled);
+    const currentModel = enabledModels.find((model) => String(model.modelId ?? model.id ?? "").trim() === current);
+    if (currentModel && supportsAgentModel({ agentId: nextAgentId, model: currentModel })) {
+      return;
+    }
+    const fallback = enabledModels.find((model) => supportsAgentModel({ agentId: nextAgentId, model }));
+    const fallbackId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
+    if (!fallbackId || fallbackId === current) return;
+    rt.modelId.value = normalizeModelId(fallbackId);
+    persistModelId(rt);
+  };
+
   const switchMainAgent = (agentId: string): void => {
     apiError.value = null;
     const next = String(agentId ?? "").trim();
@@ -505,6 +523,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const rt = activeRuntime.value;
     if (rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) {
       rt.activeAgentId.value = next;
+      alignRuntimeModelForAgent(rt, next);
     }
     rt.ws?.send?.("set_agent", { agentId: next });
   };
@@ -516,6 +535,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const rt = activePlannerRuntime.value;
     if (rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) {
       rt.activeAgentId.value = next;
+      alignRuntimeModelForAgent(rt, next);
     }
     rt.ws?.send?.("set_agent", { agentId: next });
   };

@@ -226,6 +226,45 @@ describe("reasoning effort WS payload", () => {
     wrapper.unmount();
   });
 
+  it("aligns the model with an optimistically selected agent before immediate prompts", async () => {
+    getImpl = async (url: string) => {
+      if (url === "/api/models")
+        return [
+          { id: "gpt", modelId: "gpt-4.1", displayName: "GPT", provider: "openai", isEnabled: true },
+          { id: "claude", modelId: "claude-sonnet", displayName: "Claude", provider: "anthropic", isEnabled: true },
+        ] satisfies ModelConfig[];
+      if (url.includes("/api/task-queue/status"))
+        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
+      if (url.startsWith("/api/tasks")) return [] satisfies Task[];
+      if (url.startsWith("/api/paths/validate")) return { ok: false };
+      return {};
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "codex",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.setMainModelId?.("gpt-4.1");
+    wrapper.vm.switchMainAgent?.("claude");
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude", model: "claude-sonnet" });
+    wrapper.unmount();
+  });
+
   it("keeps planner default model_reasoning_effort at high", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
