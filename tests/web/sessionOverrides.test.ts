@@ -8,6 +8,7 @@ describe("web/sessionOverrides", () => {
     const calls: Array<{ type: string; value?: string }> = [];
     const sessionManager = {
       getUserModel: () => "gpt-4.1",
+      getOrCreate: () => ({ setModelConfig: () => {} }),
       setUserModel: (_userId: number, value?: string) => {
         calls.push({ type: "model", value });
       },
@@ -36,6 +37,7 @@ describe("web/sessionOverrides", () => {
     const calls: Array<{ type: string; value?: string }> = [];
     const sessionManager = {
       getUserModel: () => "gpt-4o",
+      getOrCreate: () => ({ setModelConfig: () => {} }),
       setUserModel: (_userId: number, value?: string) => {
         calls.push({ type: "model", value });
       },
@@ -61,6 +63,7 @@ describe("web/sessionOverrides", () => {
     const calls: Array<{ type: string; value?: string }> = [];
     const sessionManager = {
       getUserModel: () => "gpt-4o",
+      getOrCreate: () => ({ setModelConfig: () => {} }),
       setUserModel: (_userId: number, value?: string) => {
         calls.push({ type: "model", value });
       },

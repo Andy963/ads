@@ -52,6 +52,17 @@ function appendImageReferencesToPrompt(args: { prompt: string; imagePaths: strin
   return `${basePrompt}\n\nAttached images (local paths):\n${lines.join("\n")}\n`;
 }
 
+function resolveClaudeModelForCli(model: string, options?: { disable1mContext?: boolean }): string {
+  const normalized = String(model ?? "").trim();
+  if (!normalized || options?.disable1mContext) return normalized;
+  const lower = normalized.toLowerCase();
+  if (lower.includes("[1m]")) return normalized;
+  if (/^claude-(sonnet|opus)-4-[67](?:\b|$)/.test(lower)) {
+    return `${normalized}[1m]`;
+  }
+  return normalized;
+}
+
 function summarizeStderr(stderr: string, maxLength = 200): string {
   const normalized = String(stderr ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) return "(empty)";
@@ -83,6 +94,8 @@ export class ClaudeCliAdapter implements AgentAdapter {
   private readonly sandboxMode: SandboxMode;
   private workingDirectory?: string;
   private model?: string;
+  private betas: string[] = [];
+  private disable1mContext = false;
   private sessionId: string | null;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private sendChain: Promise<void> = Promise.resolve();
@@ -152,6 +165,25 @@ export class ClaudeCliAdapter implements AgentAdapter {
     this.reset();
   }
 
+  setModelConfig(config?: Record<string, unknown> | null): void {
+    const cfg = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+    const rawBetas = cfg.betas;
+    const betas = Array.isArray(rawBetas)
+      ? rawBetas.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+      : [];
+    const disable1mContext = cfg.disable1mContext === true;
+    if (
+      this.disable1mContext === disable1mContext &&
+      this.betas.length === betas.length &&
+      this.betas.every((entry, index) => entry === betas[index])
+    ) {
+      return;
+    }
+    this.betas = betas;
+    this.disable1mContext = disable1mContext;
+    this.reset();
+  }
+
   getThreadId(): string | null {
     return this.sessionId;
   }
@@ -202,7 +234,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
       args.push("--resume", sessionId);
     }
     if (this.model) {
-      args.push("--model", this.model);
+      args.push("--model", resolveClaudeModelForCli(this.model, { disable1mContext: this.disable1mContext }));
+    }
+    if (this.betas.length > 0) {
+      args.push("--betas", ...this.betas);
     }
     if (imagePaths.length > 0) {
       const dirs = uniq(imagePaths.map((p) => path.dirname(p)));

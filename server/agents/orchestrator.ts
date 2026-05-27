@@ -51,6 +51,7 @@ export class HybridOrchestrator {
   private activeAgentId: AgentIdentifier;
   private workingDirectory?: string;
   private model?: string;
+  private modelConfig?: Record<string, unknown> | null;
   private modelReasoningEffort?: string;
   private readonly systemPromptManager?: SystemPromptManager;
   private readonly skillAutoloadEnabled: boolean;
@@ -97,6 +98,9 @@ export class HybridOrchestrator {
     }
     if (this.model) {
       adapter.setModel?.(this.model);
+    }
+    if (this.modelConfig) {
+      adapter.setModelConfig?.(this.modelConfig);
     }
     if (this.modelReasoningEffort) {
       adapter.setModelReasoningEffort?.(this.modelReasoningEffort);
@@ -516,6 +520,13 @@ export class HybridOrchestrator {
   setModel(model?: string): void {
     this.model = model;
     this.broadcastModel(model);
+  }
+
+  setModelConfig(config?: Record<string, unknown> | null): void {
+    this.modelConfig = config ?? null;
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setModelConfig?.(this.modelConfig);
+    }
   }
 
   getModel(): string | undefined {

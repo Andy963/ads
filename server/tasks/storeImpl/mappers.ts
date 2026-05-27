@@ -7,7 +7,6 @@ import {
   normalizeTaskCaptureStatus,
   normalizeTaskExecutionIsolation,
   normalizeTaskModel,
-  normalizeTaskReviewStatus,
   normalizeTaskRunStatus,
   normalizeTaskStatus,
   parseJson,
@@ -46,11 +45,6 @@ export function toTask(row: Record<string, unknown>): Task {
     retryCount: toNumber(row.retry_count),
     maxRetries: toNumber(row.max_retries, 3),
     executionIsolation: normalizeTaskExecutionIsolation(row.execution_isolation),
-    reviewRequired: Boolean(row.review_required),
-    reviewStatus: normalizeTaskReviewStatus(row.review_status),
-    reviewSnapshotId: normalizeNullableString(row.review_snapshot_id),
-    reviewConclusion: normalizeNullableString(row.review_conclusion),
-    reviewedAt: toNullableNumber(row.reviewed_at),
     createdAt,
     startedAt: toNullableNumber(row.started_at),
     completedAt: toNullableNumber(row.completed_at),
@@ -123,8 +117,11 @@ export function toConversationMessage(row: Record<string, unknown>): Conversatio
 }
 
 export function toModelConfig(row: Record<string, unknown>): ModelConfig {
+  const id = String(row.id ?? "");
+  const modelId = String(row.model_id ?? "").trim() || id;
   return {
-    id: String(row.id ?? ""),
+    id,
+    modelId,
     displayName: String(row.display_name ?? ""),
     provider: String(row.provider ?? ""),
     isEnabled: Boolean(row.is_enabled),

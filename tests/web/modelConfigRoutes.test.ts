@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resetDatabaseForTests } from "../../server/storage/database.js";
-import { TaskStore } from "../../server/tasks/store.js";
+import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
+
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { handleModelRoutes } from "../../server/web/server/api/routes/models.js";
 
 type FakeReq = {
@@ -60,19 +61,17 @@ function parseJson<T>(body: string): T {
 
 describe("web/model-config routes", () => {
   let tmpDir: string;
-  let taskStore: TaskStore;
-  const originalEnv = { ...process.env };
+  let db: DatabaseType;
+  let modelStore: ReturnType<typeof createGlobalModelConfigStore>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-model-config-routes-"));
-    process.env.ADS_DATABASE_PATH = path.join(tmpDir, "tasks.db");
-    resetDatabaseForTests();
-    taskStore = new TaskStore();
+    db = new DatabaseConstructor(path.join(tmpDir, "state.db"));
+    modelStore = createGlobalModelConfigStore(db);
   });
 
   afterEach(() => {
-    resetDatabaseForTests();
-    process.env = { ...originalEnv };
+    db.close();
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -81,34 +80,26 @@ describe("web/model-config routes", () => {
   });
 
   it("POST creates trimmed model configs and PATCH preserves unspecified fields", async () => {
-    const deps = {
-      resolveTaskContext() {
-        return { taskStore };
-      },
-    };
-
     const createResPayload = createRes();
     assert.equal(
-      await handleModelRoutes(
-        {
-          req: createReq("POST", {
-            id: "  model-1  ",
-            displayName: "  Claude Sonnet  ",
-            provider: "  anthropic  ",
-            isEnabled: false,
-            configJson: { temperature: 0.2 },
-          }) as any,
-          res: createResPayload as any,
-          url: new URL("http://localhost/api/model-configs"),
-          pathname: "/api/model-configs",
-        } as any,
-        deps as any,
-      ),
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: "  claude-sonnet-4-6  ",
+          displayName: "  Claude Sonnet  ",
+          provider: "  anthropic  ",
+          isEnabled: false,
+          configJson: { temperature: 0.2 },
+        }) as any,
+        res: createResPayload as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
       true,
     );
     assert.equal(createResPayload.statusCode, 200);
     const created = parseJson<{
       id: string;
+      modelId: string;
       displayName: string;
       provider: string;
       isEnabled: boolean;
@@ -116,7 +107,9 @@ describe("web/model-config routes", () => {
       configJson: Record<string, unknown> | null;
       updatedAt?: number | null;
     }>(createResPayload.body);
-    assert.equal(created.id, "model-1");
+    assert.match(created.id, /^model-[0-9a-f-]+$/);
+    assert.notEqual(created.id, created.modelId);
+    assert.equal(created.modelId, "claude-sonnet-4-6");
     assert.equal(created.displayName, "Claude Sonnet");
     assert.equal(created.provider, "anthropic");
     assert.equal(created.isEnabled, false);
@@ -126,20 +119,18 @@ describe("web/model-config routes", () => {
 
     const patchResPayload = createRes();
     assert.equal(
-      await handleModelRoutes(
-        {
-          req: createReq("PATCH", { displayName: "  Claude Sonnet 4.1  ", isDefault: true }) as any,
-          res: patchResPayload as any,
-          url: new URL("http://localhost/api/model-configs/model-1"),
-          pathname: "/api/model-configs/model-1",
-        } as any,
-        deps as any,
-      ),
+      await handleModelRoutes({
+        req: createReq("PATCH", { displayName: "  Claude Sonnet 4.1  ", isDefault: true }) as any,
+        res: patchResPayload as any,
+        url: new URL(`http://localhost/api/model-configs/${created.id}`),
+        pathname: `/api/model-configs/${created.id}`,
+      } as any, { modelStore }),
       true,
     );
     assert.equal(patchResPayload.statusCode, 200);
     const updated = parseJson<{
       id: string;
+      modelId: string;
       displayName: string;
       provider: string;
       isEnabled: boolean;
@@ -147,7 +138,8 @@ describe("web/model-config routes", () => {
       configJson: Record<string, unknown> | null;
       updatedAt?: number | null;
     }>(patchResPayload.body);
-    assert.equal(updated.id, "model-1");
+    assert.equal(updated.id, created.id);
+    assert.equal(updated.modelId, "claude-sonnet-4-6");
     assert.equal(updated.displayName, "Claude Sonnet 4.1");
     assert.equal(updated.provider, "anthropic");
     assert.equal(updated.isEnabled, false);
@@ -156,57 +148,148 @@ describe("web/model-config routes", () => {
     assert.equal(typeof updated.updatedAt, "number");
   });
 
-  it("rejects reserved auto model id", async () => {
-    const deps = {
-      resolveTaskContext() {
-        return { taskStore };
-      },
-    };
+  it("PATCH can update the agent model id without changing the row id", async () => {
+    modelStore.upsertModelConfig({
+      id: "old-model",
+      modelId: "old-agent-model",
+      displayName: "Old Model",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: false,
+      configJson: null,
+    });
+
     const res = createRes();
     assert.equal(
-      await handleModelRoutes(
-        {
-          req: createReq("POST", {
-            id: " auto ",
-            displayName: "Auto",
-            provider: "internal",
-          }) as any,
-          res: res as any,
-          url: new URL("http://localhost/api/model-configs"),
-          pathname: "/api/model-configs",
-        } as any,
-        deps as any,
-      ),
+      await handleModelRoutes({
+        req: createReq("PATCH", { modelId: " new-agent-model ", displayName: "New Model" }) as any,
+        res: res as any,
+        url: new URL("http://localhost/api/model-configs/old-model"),
+        pathname: "/api/model-configs/old-model",
+      } as any, { modelStore }),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    const updated = parseJson<{ id: string; modelId: string; displayName: string }>(res.body);
+    assert.equal(updated.id, "old-model");
+    assert.equal(updated.modelId, "new-agent-model");
+    assert.equal(updated.displayName, "New Model");
+    assert.equal(modelStore.getModelConfig("old-model")?.modelId, "new-agent-model");
+  });
+
+  it("rejects reserved auto agent model id", async () => {
+    const res = createRes();
+    assert.equal(
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: " auto ",
+          displayName: "Auto",
+          provider: "internal",
+        }) as any,
+        res: res as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
       true,
     );
     assert.equal(res.statusCode, 400);
     assert.deepEqual(parseJson<{ error: string }>(res.body), { error: "Invalid model id" });
   });
 
-  it("rejects blank-only display names after trim", async () => {
-    const deps = {
-      resolveTaskContext() {
-        return { taskStore };
-      },
-    };
+  it("defaults blank-only display names to model id", async () => {
     const res = createRes();
     assert.equal(
-      await handleModelRoutes(
-        {
-          req: createReq("POST", {
-            id: "model-2",
-            displayName: "   ",
-            provider: "anthropic",
-          }) as any,
-          res: res as any,
-          url: new URL("http://localhost/api/model-configs"),
-          pathname: "/api/model-configs",
-        } as any,
-        deps as any,
-      ),
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: "model-2",
+          displayName: "   ",
+          provider: "anthropic",
+        }) as any,
+        res: res as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
       true,
     );
-    assert.equal(res.statusCode, 400);
-    assert.deepEqual(parseJson<{ error: string }>(res.body), { error: "Invalid payload" });
+    assert.equal(res.statusCode, 200);
+    const created = parseJson<{ id: string; modelId: string; displayName: string }>(res.body);
+    assert.match(created.id, /^model-[0-9a-f-]+$/);
+    assert.equal(created.modelId, "model-2");
+    assert.equal(created.displayName, "model-2");
+  });
+
+  it("POST updates an existing config when the agent model id already exists", async () => {
+    const first = createRes();
+    assert.equal(
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: "gpt-5.2",
+          displayName: "GPT 5.2",
+          provider: "openai",
+        }) as any,
+        res: first as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
+      true,
+    );
+    const created = parseJson<{ id: string }>(first.body);
+
+    const second = createRes();
+    assert.equal(
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: "gpt-5.2",
+          displayName: "GPT 5.2 Updated",
+          provider: "openai",
+        }) as any,
+        res: second as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
+      true,
+    );
+    const updated = parseJson<{ id: string; displayName: string }>(second.body);
+    assert.equal(updated.id, created.id);
+    assert.equal(updated.displayName, "GPT 5.2 Updated");
+    assert.equal(modelStore.listModelConfigs().length, 1);
+  });
+
+  it("GET /api/models returns enabled configs from the global state database", async () => {
+    modelStore.upsertModelConfig({
+      id: "gpt-5.4",
+      displayName: "GPT-5.4",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: true,
+      configJson: null,
+    });
+    modelStore.upsertModelConfig({
+      id: "old-model",
+      displayName: "Old Model",
+      provider: "openai",
+      isEnabled: false,
+      isDefault: false,
+      configJson: null,
+    });
+
+    const res = createRes();
+    assert.equal(
+      await handleModelRoutes({
+        req: createReq("GET") as any,
+        res: res as any,
+        url: new URL("http://localhost/api/models"),
+        pathname: "/api/models",
+      } as any, { modelStore }),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    const models = parseJson<Array<{ id: string }>>(res.body);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["gpt-5.4"],
+    );
   });
 });

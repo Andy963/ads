@@ -30,10 +30,11 @@ export function createTaskStoreModelConfigOps(deps: { db: DatabaseType; stmts: T
     if (!id) {
       throw new Error("model config id is required");
     }
-    const displayName = String(config.displayName ?? "").trim();
-    if (!displayName) {
-      throw new Error("model config displayName is required");
+    const modelId = String(config.modelId ?? config.id ?? "").trim();
+    if (!modelId) {
+      throw new Error("model config modelId is required");
     }
+    const displayName = String(config.displayName ?? "").trim() || modelId;
     const provider = String(config.provider ?? "").trim();
     if (!provider) {
       throw new Error("model config provider is required");
@@ -48,7 +49,16 @@ export function createTaskStoreModelConfigOps(deps: { db: DatabaseType; stmts: T
       if (isDefault) {
         stmts.clearDefaultModelConfigsStmt.run();
       }
-      stmts.upsertModelConfigStmt.run(id, displayName, provider, isEnabled ? 1 : 0, isDefault ? 1 : 0, configJsonText, now);
+      stmts.upsertModelConfigStmt.run(
+        id,
+        modelId,
+        displayName,
+        provider,
+        isEnabled ? 1 : 0,
+        isDefault ? 1 : 0,
+        configJsonText,
+        now,
+      );
     });
     tx();
 

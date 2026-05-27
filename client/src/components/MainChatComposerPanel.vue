@@ -159,7 +159,7 @@ function supportsAgentModel(args: { agentId: string; model: ModelConfig }): bool
   }
 
   const provider = String(args.model.provider ?? "").trim().toLowerCase();
-  const modelId = String(args.model.id ?? "").trim();
+  const modelId = String(args.model.modelId ?? args.model.id ?? "").trim();
 
   if (agentId === "claude") {
     if (provider.includes("anthropic")) return true;
@@ -187,22 +187,24 @@ const effectiveModelId = computed(() => {
   const options = filteredModelOptions.value;
   if (options.length === 0) return "";
   const current = normalizeModelId(props.modelId);
-  if (!isUnsetModelId(current) && options.some((m) => String(m.id ?? "").trim() === current)) {
+  if (!isUnsetModelId(current) && options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current)) {
     return current;
   }
-  return String(options[0]?.id ?? "").trim();
+  const first = options[0];
+  return String(first?.modelId ?? first?.id ?? "").trim();
 });
 
 watch(
-  () => [selectedAgentId.value, props.modelId, filteredModelOptions.value.map((m) => String(m.id ?? "").trim()).join("\n")],
+  () => [selectedAgentId.value, props.modelId, filteredModelOptions.value.map((m) => String(m.modelId ?? m.id ?? "").trim()).join("\n")],
   () => {
     const options = filteredModelOptions.value;
     if (options.length === 0) return;
-    const desired = String(options[0]?.id ?? "").trim();
+    const first = options[0];
+    const desired = String(first?.modelId ?? first?.id ?? "").trim();
     if (!desired) return;
 
     const current = normalizeModelId(props.modelId);
-    if (!isUnsetModelId(current) && options.some((m) => String(m.id ?? "").trim() === current)) {
+    if (!isUnsetModelId(current) && options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current)) {
       return;
     }
 
@@ -214,7 +216,7 @@ watch(
 );
 
 function formatModelLabel(model: ModelConfig): string {
-  const id = String(model.id ?? "").trim();
+  const id = String(model.modelId ?? model.id ?? "").trim();
   const name = String(model.displayName ?? "").trim() || id;
   return name || "model";
 }
@@ -436,7 +438,7 @@ const {
               @change="onModelChange"
             >
               <option v-if="filteredModelOptions.length === 0" value="" disabled>No models</option>
-              <option v-for="m in filteredModelOptions" :key="m.id" :value="m.id">
+              <option v-for="m in filteredModelOptions" :key="m.id" :value="m.modelId || m.id">
                 {{ formatModelLabel(m) }}
               </option>
             </select>

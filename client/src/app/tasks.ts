@@ -97,8 +97,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
     const enabledModels = models.value.filter((m) => m.isEnabled);
     if (enabledModels.length === 0) return;
-    const enabledIds = new Set(enabledModels.map((m) => m.id));
-    const defaultModelId = enabledModels[0]!.id;
+    const enabledIds = new Set(enabledModels.map((m) => String(m.modelId ?? m.id ?? "").trim()).filter(Boolean));
+    const firstModel = enabledModels[0]!;
+    const defaultModelId = String(firstModel.modelId ?? firstModel.id ?? "").trim();
 
     const ensureRuntimeModelId = (rt: ProjectRuntime): void => {
       const sessionId = resolveStorageSessionId(rt);

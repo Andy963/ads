@@ -209,6 +209,53 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
+  it("enables 1m context for Claude 4.6 and 4.7 models", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'printf "%s\\n" "$@" >"$dir/args.txt"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary, model: "claude-sonnet-4-6" });
+    const result = await adapter.send("hello");
+    assert.equal(result.response, "OK");
+
+    const args = (await fs.readFile(path.join(dir, "args.txt"), "utf-8")).split(/\r?\n/).filter(Boolean);
+    const modelIndex = args.indexOf("--model");
+    assert.notEqual(modelIndex, -1);
+    assert.equal(args[modelIndex + 1], "claude-sonnet-4-6[1m]");
+  });
+
+  it("can disable the automatic 1m model suffix through model config", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'printf "%s\\n" "$@" >"$dir/args.txt"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary, model: "claude-sonnet-4-6" });
+    adapter.setModelConfig({ disable1mContext: true });
+    const result = await adapter.send("hello");
+    assert.equal(result.response, "OK");
+
+    const args = (await fs.readFile(path.join(dir, "args.txt"), "utf-8")).split(/\r?\n/).filter(Boolean);
+    const modelIndex = args.indexOf("--model");
+    assert.notEqual(modelIndex, -1);
+    assert.equal(args[modelIndex + 1], "claude-sonnet-4-6");
+  });
+
   it("captures session id and resumes it across sends", async () => {
     const sessionA = "11111111-1111-1111-1111-111111111111";
     const { binary, dir } = await createExecutableScript([

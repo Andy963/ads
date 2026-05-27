@@ -75,17 +75,12 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         retry_count,
         max_retries,
         execution_isolation,
-        review_required,
-        review_status,
-        review_snapshot_id,
-        review_conclusion,
-        reviewed_at,
         created_at,
         started_at,
         completed_at,
         archived_at,
         created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
 
     getTaskStmt: db.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`),
@@ -144,11 +139,6 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         retry_count = ?,
         max_retries = ?,
         execution_isolation = ?,
-        review_required = ?,
-        review_status = ?,
-        review_snapshot_id = ?,
-        review_conclusion = ?,
-        reviewed_at = ?,
         created_at = ?,
         started_at = ?,
         completed_at = ?,
@@ -231,14 +221,16 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
     upsertModelConfigStmt: db.prepare(`
       INSERT INTO model_configs (
         id,
+        model_id,
         display_name,
         provider,
         is_enabled,
         is_default,
         config_json,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
+        model_id = excluded.model_id,
         display_name = excluded.display_name,
         provider = excluded.provider,
         is_enabled = excluded.is_enabled,

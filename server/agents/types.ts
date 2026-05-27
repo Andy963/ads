@@ -44,6 +44,7 @@ export interface AgentAdapter {
   reset(): void;
   setWorkingDirectory?(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   setModel?(model?: string): void;
+  setModelConfig?(config?: Record<string, unknown> | null): void;
   setModelReasoningEffort?(effort?: string): void;
   setDeveloperInstructions?(instructions: string): void;
   getThreadId?(): string | null;
