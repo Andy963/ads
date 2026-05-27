@@ -9,8 +9,12 @@ export function broadcastJsonToHistoryKey(args: {
   historyKey: string;
   payload: unknown;
   sendJson: (ws: WebSocket, payload: unknown) => void;
+  excludeWs?: WebSocket;
 }): void {
   for (const [candidate, meta] of args.clientMetaByWs.entries()) {
+    if (args.excludeWs && candidate === args.excludeWs) {
+      continue;
+    }
     if (meta.historyKey !== args.historyKey) {
       continue;
     }

@@ -249,4 +249,59 @@ describe("web/server/ws/preflight-persistence", () => {
       }
     }
   });
+
+  it("broadcasts preflight-persisted user history to sibling lane connections", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const sender = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const sibling = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await Promise.all([waitForWsOpen(sender), waitForWsOpen(sibling)]);
+
+      sender.send(JSON.stringify({ type: "command", payload: "echo slow" }));
+      sender.send(JSON.stringify({ type: "command", payload: "echo queued", client_message_id: "m2" }));
+
+      const history = await waitForWsMessage(
+        sibling,
+        (msg) =>
+          msg.type === "history" &&
+          Array.isArray(msg.items) &&
+          msg.items.some((entry) => {
+            const candidate = entry as { role?: unknown; text?: unknown; kind?: unknown };
+            return (
+              candidate.role === "user" &&
+              candidate.text === "echo queued" &&
+              candidate.kind === "client_message_id:m2"
+            );
+          }),
+        2000,
+      );
+      assert.equal(history.type, "history");
+
+      const senderHistory = await Promise.race([
+        waitForWsMessage(
+          sender,
+          (msg) =>
+            msg.type === "history" &&
+            Array.isArray(msg.items) &&
+            msg.items.some((entry) => (entry as { text?: unknown }).text === "echo queued"),
+          250,
+        ).catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
+      ]);
+      assert.equal(senderHistory, null);
+    } finally {
+      try {
+        sender.terminate();
+      } catch {
+        // ignore
+      }
+      try {
+        sibling.terminate();
+      } catch {
+        // ignore
+      }
+    }
+  });
 });

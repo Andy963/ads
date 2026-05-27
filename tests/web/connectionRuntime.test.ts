@@ -22,6 +22,25 @@ describe("web/ws/connectionRuntime", () => {
     assert.deepEqual(sent, [{ ws: wsA, payload: { type: "result" } }]);
   });
 
+  it("can exclude the source socket from a history-key broadcast", () => {
+    const wsA = {} as any;
+    const wsB = {} as any;
+    const sent: Array<{ ws: unknown; payload: unknown }> = [];
+
+    broadcastJsonToHistoryKey({
+      clientMetaByWs: new Map([
+        [wsA, { historyKey: "h1" } as any],
+        [wsB, { historyKey: "h1" } as any],
+      ]),
+      historyKey: "h1",
+      payload: { type: "history", items: [] },
+      sendJson: (ws, payload) => sent.push({ ws, payload }),
+      excludeWs: wsA,
+    });
+
+    assert.deepEqual(sent, [{ ws: wsB, payload: { type: "history", items: [] } }]);
+  });
+
   it("aborts in-flight work when present", () => {
     let aborted = 0;
     const controller = new AbortController();

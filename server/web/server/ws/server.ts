@@ -15,6 +15,7 @@ import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./sess
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { sendInitialBootstrapMessages } from "./bootstrapDelivery.js";
+import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
 import { buildWsConnectionIdentity } from "./connectionIdentity.js";
 import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnection } from "./connectionRuntime.js";
@@ -225,6 +226,19 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         payload,
         sendJson: safeJsonSend,
       });
+    const broadcastHistoryToSiblingConnections = (): void => {
+      const payload = buildHistoryBootstrapPayload(historyStore.get(historyKey));
+      if (!payload) {
+        return;
+      }
+      broadcastJsonToHistoryKey({
+        clientMetaByWs: state.clientMetaByWs,
+        historyKey,
+        payload,
+        sendJson: safeJsonSend,
+        excludeWs: ws,
+      });
+    };
     const broadcastWorkspaceState = (workspaceRoot: string): void => {
       try {
         broadcastJson({ type: "workspace", data: getWorkspaceState(workspaceRoot) });
@@ -372,6 +386,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         historyKey,
         sanitizeInput: commands.sanitizeInput,
         sendJson: (payload) => safeJsonSend(ws, payload),
+        broadcastPersistedHistory: broadcastHistoryToSiblingConnections,
         traceWsDuplication: config.traceWsDuplication,
         warn: logger.warn,
         sessionId,
