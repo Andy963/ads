@@ -345,9 +345,9 @@ function closeFilePreview(): void {
               <path :d="caretPath(isCommandTreeOpen(m.id, getCommandTreeCommands(m).length))" />
             </svg>
           </span>
-          <span class="prompt-tag">Executes</span>
+          <span class="prompt-tag">执行</span>
           <span class="command-count">
-            {{ getCommandTreeTotalCount(m) }} 条命令<span v-if="hasCommandTreeOverflow(m)"> (showing last {{ getCommandTreeShownCount(m) }})</span>
+            {{ getCommandTreeTotalCount(m) }} 条命令<span v-if="hasCommandTreeOverflow(m)">（显示最近 {{ getCommandTreeShownCount(m) }} 条）</span>
           </span>
         </button>
         <div v-if="isCommandTreeOpen(m.id, getCommandTreeCommands(m).length)" class="command-tree">
@@ -364,7 +364,7 @@ function closeFilePreview(): void {
             <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
           </div>
           <div class="execute-actions">
-            <button class="msgCopyBtn executeCopyBtn" type="button" aria-label="Copy command output" @click="emit('copyMessage', m)">
+            <button class="msgCopyBtn executeCopyBtn" type="button" aria-label="复制命令输出" @click="emit('copyMessage', m)">
               <svg
                 v-if="copiedMessageId === m.id"
                 width="14"
@@ -408,9 +408,9 @@ function closeFilePreview(): void {
           :aria-expanded="isExecuteExpanded(m.id)"
           @click="toggleExecuteExpanded(m.id)"
         >
-          {{ isExecuteExpanded(m.id) ? "Collapse output" : `… ${m.hiddenLineCount ?? 0} more lines` }}
+          {{ isExecuteExpanded(m.id) ? "收起输出" : `… 还有 ${m.hiddenLineCount ?? 0} 行` }}
         </button>
-        <div v-else-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
+        <div v-else-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… 还有 {{ m.hiddenLineCount }} 行</div>
       </div>
       <div v-else-if="m.kind === 'patch'" :class="['bubble', 'bubble--compact', 'patchCard']">
         <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
@@ -462,18 +462,18 @@ function closeFilePreview(): void {
                 <span class="liveStepOutlineBullet" aria-hidden="true">•</span>
                 <span class="liveStepOutlineText">{{ title }}</span>
               </div>
-              <div v-if="liveStepOutlineHiddenCount > 0" class="liveStepOutlineMore">+{{ liveStepOutlineHiddenCount }} more</div>
+              <div v-if="liveStepOutlineHiddenCount > 0" class="liveStepOutlineMore">+{{ liveStepOutlineHiddenCount }} 条</div>
             </div>
           </div>
           <div v-if="liveStepCanToggleExpanded" class="liveStepToggleRow">
             <button class="liveStepToggleBtn" type="button" :aria-expanded="liveStepExpanded" @click.stop="emit('toggleLiveStepExpanded')">
-              {{ liveStepExpanded ? "Collapse" : "Expand" }}
+              {{ liveStepExpanded ? "收起" : "展开" }}
             </button>
           </div>
         </div>
         <MarkdownContent v-else :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
         <div v-if="shouldShowMsgActions(m)" class="msgActions">
-          <button class="msgCopyBtn" type="button" aria-label="Copy message" @click="emit('copyMessage', m)">
+          <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="emit('copyMessage', m)">
             <svg
               v-if="copiedMessageId === m.id"
               width="14"

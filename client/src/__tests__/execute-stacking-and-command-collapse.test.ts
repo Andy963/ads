@@ -83,12 +83,12 @@ describe("chat execute stacking and command collapse", () => {
     expect(wrapper.find(".execute-output").text()).not.toContain("line 5");
     const toggle = wrapper.find(".execute-more--button");
     expect(toggle.exists()).toBe(true);
-    expect(toggle.text()).toContain("2 more lines");
+    expect(toggle.text()).toContain("还有 2 行");
 
     await toggle.trigger("click");
 
     expect(wrapper.find(".execute-output").text()).toContain("line 5");
-    expect(wrapper.find(".execute-more--button").text()).toContain("Collapse output");
+    expect(wrapper.find(".execute-more--button").text()).toContain("收起输出");
 
     wrapper.unmount();
   });

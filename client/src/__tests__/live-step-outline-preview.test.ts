@@ -54,13 +54,13 @@ describe("live-step outline preview", () => {
 
     const toggle = wrapper.find(".liveStepToggleBtn");
     expect(toggle.exists()).toBe(true);
-    expect(toggle.text()).toContain("Expand");
+    expect(toggle.text()).toContain("展开");
 
     await toggle.trigger("click");
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find(".liveStepOutline").exists()).toBe(false);
-    expect(wrapper.find(".liveStepToggleBtn").text()).toContain("Collapse");
+    expect(wrapper.find(".liveStepToggleBtn").text()).toContain("收起");
 
     wrapper.unmount();
   });
