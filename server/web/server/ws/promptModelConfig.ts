@@ -63,6 +63,29 @@ function labelForHistoryInjectionEntry(entry: HistoryInjectionEntry): string | n
   return null;
 }
 
+function trimHistoryInjectionLines(lines: string[], maxChars: number): string {
+  const kept: string[] = [];
+  let totalChars = 0;
+
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] ?? "";
+    const separatorChars = kept.length > 0 ? 1 : 0;
+    const nextTotal = totalChars + separatorChars + line.length;
+
+    if (kept.length > 0 && nextTotal > maxChars) {
+      break;
+    }
+    if (kept.length === 0 && line.length > maxChars) {
+      return line.slice(line.length - maxChars);
+    }
+
+    kept.unshift(line);
+    totalChars = nextTotal;
+  }
+
+  return kept.join("\n");
+}
+
 export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): string | null {
   const relevant = entries
     .map((entry) => ({ entry, label: labelForHistoryInjectionEntry(entry) }))
@@ -82,10 +105,7 @@ export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): 
   if (lines.length === 0) {
     return null;
   }
-  let transcript = lines.join("\n");
-  if (transcript.length > HISTORY_INJECTION_MAX_CHARS) {
-    transcript = transcript.slice(transcript.length - HISTORY_INJECTION_MAX_CHARS);
-  }
+  const transcript = trimHistoryInjectionLines(lines, HISTORY_INJECTION_MAX_CHARS);
   return [
     "[Context restore] Recent chat history (for reference only). Do not repeat it; answer the user's next request directly:",
     "",

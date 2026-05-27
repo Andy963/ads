@@ -62,6 +62,26 @@ describe("context resume — history injection", () => {
     assert.ok(result.length <= 10_000);
   });
 
+  it("trims long transcript on history entry boundaries", () => {
+    const entries = Array.from({ length: 20 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "ai",
+      text: `entry ${i.toString().padStart(2, "0")}: ${"x".repeat(790)}`,
+    }));
+    const result = buildHistoryInjectionContext(entries);
+    assert.ok(result);
+
+    const transcript = result
+      .split(
+        "[Context restore] Recent chat history (for reference only). Do not repeat it; answer the user's next request directly:\n\n",
+      )[1]
+      ?.split("\n\n---\n\n")[0];
+    assert.ok(transcript);
+    const firstLine = transcript.split("\n")[0] ?? "";
+    assert.match(firstLine, /^(User|Assistant): entry \d{2}:/);
+    assert.ok(!transcript.includes("entry 00:"));
+    assert.ok(transcript.includes("entry 19:"));
+  });
+
   it("prepends context to string input", () => {
     const result = prependContextToInput("CONTEXT\n", "user prompt");
     assert.equal(result, "CONTEXT\nuser prompt");
