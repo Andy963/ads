@@ -163,6 +163,38 @@ describe("reasoning effort WS payload", () => {
     expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "xhigh", model: "auto" });
   });
 
+  it("includes the active agent id on prompt payloads", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "welcome",
+      threadId: null,
+      chatSessionId: "main",
+      activeAgentId: "claude",
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "claude",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toContain('"agentId":"claude"');
+  });
+
   it("keeps planner default model_reasoning_effort at high", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });

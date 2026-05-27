@@ -3,6 +3,7 @@ import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import { getStateDatabase } from "../../../state/database.js";
 import { createGlobalModelConfigStore } from "../../../state/globalModelConfigStore.js";
 import {
+  parseAgentIdFromPayload,
   parseModelFromPayload,
   parseModelReasoningEffortFromPayload,
 } from "./promptModelConfig.js";
@@ -14,6 +15,14 @@ export function applySessionOverrides(args: {
 }): { notice?: string } {
   const { sessionManager, userId, payload } = args;
   let notice: string | undefined;
+
+  const agentOverride = parseAgentIdFromPayload(payload);
+  if (agentOverride.present && agentOverride.agentId) {
+    const switchResult = sessionManager.switchAgent(userId, agentOverride.agentId);
+    if (!switchResult.success) {
+      throw new Error(switchResult.message);
+    }
+  }
 
   const modelOverride = parseModelFromPayload(payload);
   if (modelOverride.present && modelOverride.model) {

@@ -40,6 +40,19 @@ export function parseModelFromPayload(payload: unknown): { present: boolean; mod
   return { present: true, model: normalized };
 }
 
+export function parseAgentIdFromPayload(payload: unknown): { present: boolean; agentId?: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { present: false };
+  }
+  const rec = payload as Record<string, unknown>;
+  const raw = rec["agentId"] ?? rec["agent_id"] ?? rec["agent"];
+  if (raw === undefined) {
+    return { present: false };
+  }
+  const normalized = typeof raw === "string" ? raw.trim() : "";
+  return normalized ? { present: true, agentId: normalized } : { present: true };
+}
+
 export function buildHistoryInjectionContext(entries: Array<{ role: string; text: string }>): string | null {
   const relevant = entries.filter((e) => e.role === "user" || e.role === "ai");
   if (relevant.length === 0) {

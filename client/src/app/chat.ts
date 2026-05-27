@@ -10,7 +10,7 @@ import { createStreamingActions } from "./chatStreaming";
 export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
 
-type PersistedPrompt = { clientMessageId: string; text: string; createdAt: number };
+type PersistedPrompt = { clientMessageId: string; text: string; createdAt: number; agentId?: string };
 type UploadedImageAttachment = {
   id: string;
   url: string;
@@ -123,6 +123,7 @@ export function createChatActions(ctx: AppContext) {
       clientMessageId: prompt.clientMessageId,
       text: prompt.text,
       createdAt: prompt.createdAt,
+      agentId: prompt.agentId,
     };
     try {
       sessionStorage.setItem(key, JSON.stringify(payload));
@@ -169,12 +170,13 @@ export function createChatActions(ctx: AppContext) {
     if (!stored) return;
     const clientMessageId = String(stored.clientMessageId ?? "").trim();
     const text = String(stored.text ?? "");
+    const agentId = String(stored.agentId ?? "").trim();
     if (!clientMessageId) return;
     const alreadyQueued = rt.queuedPrompts.value.some((q) => q.clientMessageId === clientMessageId);
     if (alreadyQueued) return;
     if (runtimeAgentBusy(rt)) return;
     rt.queuedPrompts.value = [
-      { id: randomId("q"), clientMessageId, text, images: [], createdAt: Number(stored.createdAt) || Date.now() },
+      { id: randomId("q"), clientMessageId, text, images: [], createdAt: Number(stored.createdAt) || Date.now(), agentId },
       ...rt.queuedPrompts.value,
     ];
   };
@@ -413,9 +415,10 @@ export function createChatActions(ctx: AppContext) {
     const content = String(text ?? "").trim();
     const imgs = Array.isArray(images) ? images : [];
     if (!content && imgs.length === 0) return;
+    const agentId = String(state.activeAgentId.value ?? "").trim();
     state.queuedPrompts.value = [
       ...state.queuedPrompts.value,
-      { id: randomId("q"), clientMessageId: randomUuid(), text: content, images: imgs, createdAt: Date.now() },
+      { id: randomId("q"), clientMessageId: randomUuid(), text: content, images: imgs, createdAt: Date.now(), agentId },
     ];
     void flushQueuedPrompts(state);
   };
@@ -466,13 +469,14 @@ export function createChatActions(ctx: AppContext) {
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
-      savePendingPrompt(state, next);
       const effort = String(state.modelReasoningEffort.value ?? "").trim() || "high";
       const model = String(state.modelId.value ?? "").trim() || "auto";
+      const agentId = String(state.activeAgentId.value ?? next.agentId ?? "").trim();
+      savePendingPrompt(state, { ...next, agentId });
       const payload =
         next.images.length > 0
-          ? { text: promptText, images: next.images, model_reasoning_effort: effort, model }
-          : { text: promptText, model_reasoning_effort: effort, model };
+          ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId }
+          : { text: promptText, model_reasoning_effort: effort, model, agentId };
       state.ws.sendPrompt(payload, next.clientMessageId);
     } catch {
       state.queuedPrompts.value = [next, ...state.queuedPrompts.value];

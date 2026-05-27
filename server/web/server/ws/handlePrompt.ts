@@ -85,6 +85,17 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       turnCwd,
       shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
     );
+    orchestrator.setWorkingDirectory(turnCwd);
+    const { notice: rotationNotice } = applySessionOverrides({
+      sessionManager: deps.sessions.sessionManager,
+      userId: deps.context.userId,
+      payload: deps.request.parsed.payload,
+    });
+    orchestrator = deps.sessions.sessionManager.getOrCreate(
+      deps.context.userId,
+      turnCwd,
+      shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
+    );
     const status = orchestrator.status();
     if (!status.ready) {
       deps.observability.sessionLogger?.logError(status.error ?? "代理未启用");
@@ -93,12 +104,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       cleanupAfter();
       return;
     }
-    orchestrator.setWorkingDirectory(turnCwd);
-    const { notice: rotationNotice } = applySessionOverrides({
-      sessionManager: deps.sessions.sessionManager,
-      userId: deps.context.userId,
-      payload: deps.request.parsed.payload,
-    });
     const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
       orchestrator,
       turnCwd,
