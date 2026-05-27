@@ -310,6 +310,48 @@ describe("Model selector persistence", () => {
     TEST_TIMEOUT_MS,
   );
 
+  it(
+    "preserves stored model options when replaying a restored pending prompt",
+    async () => {
+      sessionStorage.setItem(
+        PENDING_PROMPT_KEY,
+        JSON.stringify({
+          clientMessageId: "c-model",
+          text: "hello",
+          createdAt: Date.now(),
+          model: "gpt-4o",
+          modelReasoningEffort: "medium",
+        }),
+      );
+
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+
+      lastWorkerWs!.onMessage?.({
+        type: "welcome",
+        threadId: null,
+        chatSessionId: "main",
+        effectiveModel: "gpt-4.1",
+        effectiveModelReasoningEffort: "high",
+      });
+      await settleUi(wrapper);
+
+      expect(lastSendPromptPayload).toBeTruthy();
+      expect(lastSendPromptPayload).toMatchObject({
+        text: "hello",
+        model: "gpt-4o",
+        model_reasoning_effort: "medium",
+      });
+
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   it.each([
     [4401, "Unauthorized"],
     [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],

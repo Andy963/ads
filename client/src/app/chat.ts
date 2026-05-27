@@ -10,7 +10,15 @@ import { createStreamingActions } from "./chatStreaming";
 export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
 
-type PersistedPrompt = { clientMessageId: string; text: string; createdAt: number; agentId?: string };
+type PersistedPrompt = {
+  clientMessageId: string;
+  text: string;
+  createdAt: number;
+  agentId?: string;
+  model?: string;
+  modelReasoningEffort?: string;
+  model_reasoning_effort?: string;
+};
 type UploadedImageAttachment = {
   id: string;
   url: string;
@@ -124,6 +132,8 @@ export function createChatActions(ctx: AppContext) {
       text: prompt.text,
       createdAt: prompt.createdAt,
       agentId: prompt.agentId,
+      model: prompt.model,
+      modelReasoningEffort: prompt.modelReasoningEffort,
     };
     try {
       sessionStorage.setItem(key, JSON.stringify(payload));
@@ -171,12 +181,23 @@ export function createChatActions(ctx: AppContext) {
     const clientMessageId = String(stored.clientMessageId ?? "").trim();
     const text = String(stored.text ?? "");
     const agentId = String(stored.agentId ?? "").trim();
+    const model = String(stored.model ?? "").trim();
+    const modelReasoningEffort = String(stored.modelReasoningEffort ?? stored.model_reasoning_effort ?? "").trim();
     if (!clientMessageId) return;
     const alreadyQueued = rt.queuedPrompts.value.some((q) => q.clientMessageId === clientMessageId);
     if (alreadyQueued) return;
     if (runtimeAgentBusy(rt)) return;
     rt.queuedPrompts.value = [
-      { id: randomId("q"), clientMessageId, text, images: [], createdAt: Number(stored.createdAt) || Date.now(), agentId },
+      {
+        id: randomId("q"),
+        clientMessageId,
+        text,
+        images: [],
+        createdAt: Number(stored.createdAt) || Date.now(),
+        agentId,
+        model,
+        modelReasoningEffort,
+      },
       ...rt.queuedPrompts.value,
     ];
   };
@@ -418,7 +439,14 @@ export function createChatActions(ctx: AppContext) {
     const agentId = String(state.activeAgentId.value ?? "").trim();
     state.queuedPrompts.value = [
       ...state.queuedPrompts.value,
-      { id: randomId("q"), clientMessageId: randomUuid(), text: content, images: imgs, createdAt: Date.now(), agentId },
+      {
+        id: randomId("q"),
+        clientMessageId: randomUuid(),
+        text: content,
+        images: imgs,
+        createdAt: Date.now(),
+        agentId,
+      },
     ];
     void flushQueuedPrompts(state);
   };
@@ -469,12 +497,14 @@ export function createChatActions(ctx: AppContext) {
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
-      const effort = String(state.modelReasoningEffort.value ?? "").trim() || "high";
-      const model = String(state.modelId.value ?? "").trim() || "auto";
+      const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
+      const effort = queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high";
+      const queuedModel = String(next.model ?? "").trim();
+      const model = queuedModel || String(state.modelId.value ?? "").trim() || "auto";
       const queuedAgentId = String(next.agentId ?? "").trim();
       const activeAgentId = String(state.activeAgentId.value ?? "").trim();
       const agentId = queuedAgentId || activeAgentId;
-      savePendingPrompt(state, { ...next, agentId });
+      savePendingPrompt(state, { ...next, agentId, model, modelReasoningEffort: effort });
       const payload =
         next.images.length > 0
           ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId }

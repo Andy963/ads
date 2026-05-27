@@ -27,6 +27,8 @@ export type QueuedPrompt = {
   images: IncomingImage[];
   createdAt: number;
   agentId?: string;
+  model?: string;
+  modelReasoningEffort?: string;
 };
 
 export type AgentDelegationInFlight = {

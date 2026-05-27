@@ -128,6 +128,7 @@ describe("reasoning effort WS payload", () => {
     lastPlannerSendPromptPayload = null;
     try {
       localStorage.clear();
+      sessionStorage.clear();
     } catch {
       // ignore
     }
@@ -148,6 +149,11 @@ describe("reasoning effort WS payload", () => {
     lastSendPromptPayload = null;
     lastPlannerSendPromptPayload = null;
     vi.clearAllMocks();
+    try {
+      sessionStorage.clear();
+    } catch {
+      // ignore
+    }
   });
 
   it("defaults worker model_reasoning_effort to xhigh", async () => {
