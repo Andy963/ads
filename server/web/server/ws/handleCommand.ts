@@ -62,7 +62,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
         ts: Date.now(),
         kind: "error",
       });
-      sendToClient({ type: "error", message: parsedCommand.message });
+      sendToChat({ type: "error", message: parsedCommand.message });
       return;
     }
 

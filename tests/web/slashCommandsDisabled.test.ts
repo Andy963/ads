@@ -472,12 +472,12 @@ describe("web slash commands", () => {
       );
 
       assert.equal(result.handled, true);
-      assert.deepEqual(clientMessages, [{ type: "error", message: "Payload must be a command string" }]);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "error", message: "Payload must be a command string" }]);
       assert.deepEqual(
         historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
         [{ role: "status", text: "Payload must be a command string", kind: "error" }],
       );
-      assert.equal(chatMessages.length, 0);
     });
   });
 
