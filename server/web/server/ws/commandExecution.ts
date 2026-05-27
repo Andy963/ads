@@ -51,6 +51,12 @@ export async function executeCommandLine(args: {
       }
       args.sendToCommandScope({ type: "error", message: "已中断，输出可能不完整" });
       args.sessionLogger?.logError("已中断，输出可能不完整");
+      args.historyStore.add(args.historyKey, {
+        role: "status",
+        text: "已中断，输出可能不完整",
+        ts: Date.now(),
+        kind: "error",
+      });
     } else {
       args.sendToCommandScope({ type: "error", message });
       args.sessionLogger?.logError(message);
