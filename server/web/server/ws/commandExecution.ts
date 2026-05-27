@@ -63,18 +63,18 @@ export async function executeCommandLine(args: {
       args.sessionLogger?.logError("已中断，输出可能不完整");
       args.historyStore.add(args.historyKey, {
         role: "status",
-        text: "已中断，输出可能不完整",
+        text: formatCommandHistoryText(args.command, "已中断，输出可能不完整"),
         ts: Date.now(),
-        kind: "error",
+        kind: "execute",
       });
     } else {
       args.sendToCommandScope({ type: "error", message });
       args.sessionLogger?.logError(message);
       args.historyStore.add(args.historyKey, {
         role: "status",
-        text: message,
+        text: formatCommandHistoryText(args.command, message),
         ts: Date.now(),
-        kind: "error",
+        kind: "execute",
       });
     }
   } finally {

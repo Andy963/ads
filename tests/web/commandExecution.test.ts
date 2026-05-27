@@ -146,7 +146,7 @@ describe("web/ws/commandExecution", () => {
       assert.deepEqual(loggedErrors, ["已中断，输出可能不完整"]);
       assert.deepEqual(
         historyStore.get("history-2").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
-        [{ role: "status", text: "已中断，输出可能不完整", kind: "error" }],
+        [{ role: "status", text: "$ sleep forever\n已中断，输出可能不完整", kind: "execute" }],
       );
       assert.equal(interruptControllers.has("history-2"), false);
     } finally {
@@ -189,7 +189,7 @@ describe("web/ws/commandExecution", () => {
       assert.deepEqual(loggedErrors, ["command crashed"]);
       assert.deepEqual(
         historyStore.get("history-3").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
-        [{ role: "status", text: "command crashed", kind: "error" }],
+        [{ role: "status", text: "$ ads task status\ncommand crashed", kind: "execute" }],
       );
       assert.equal(interruptControllers.has("history-3"), false);
     } finally {
