@@ -22,21 +22,20 @@ export function handleSetAgentCommand(args: {
   sessionManager: SessionManager;
   historyStore: Pick<HistoryStore, "add">;
   agentAvailability: AgentAvailability;
-  sendToClient: (payload: unknown) => void;
   sendToSession: (payload: unknown) => void;
 }): WsOrchestrator {
   const agentId = readAgentId(args.payload);
 
   if (!agentId) {
     const message = "Payload must include agentId";
-    args.sendToClient({ type: "error", message });
+    args.sendToSession({ type: "error", message });
     args.historyStore.add(args.historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
     return args.orchestrator;
   }
 
   const switchResult = args.sessionManager.switchAgent(args.userId, agentId);
   if (!switchResult.success) {
-    args.sendToClient({ type: "error", message: switchResult.message });
+    args.sendToSession({ type: "error", message: switchResult.message });
     args.historyStore.add(args.historyKey, { role: "status", text: switchResult.message, ts: Date.now(), kind: "error" });
     return args.orchestrator;
   }

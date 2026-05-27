@@ -33,7 +33,6 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       sessionManager: deps.sessions.sessionManager,
       historyStore: deps.history.historyStore,
       agentAvailability: deps.agents.agentAvailability,
-      sendToClient,
       sendToSession: sendToChat,
     });
 

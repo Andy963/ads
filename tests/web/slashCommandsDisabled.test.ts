@@ -734,13 +734,14 @@ describe("web slash commands", () => {
   it("returns an error when set_agent targets an unassembled agent", async () => {
     await withTempWorkspace("ads-web-ws-command-agent-error-", async (workspaceRoot) => {
       const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
 
       const result = await handleCommandMessage(
         createCommandDeps({
           parsed: { type: "set_agent", payload: { agentId: "claude" } as any },
           workspaceRoot,
           clientMessages,
-          chatMessages: [],
+          chatMessages,
           historyStore: new MemoryHistoryStore(),
           sessionManager: {
             switchAgent: () => ({ success: false, message: '❌ Agent "claude" is not registered' }),
@@ -751,7 +752,8 @@ describe("web slash commands", () => {
       );
 
       assert.equal(result.handled, true);
-      assert.deepEqual(clientMessages, [{ type: "error", message: '❌ Agent "claude" is not registered' }]);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "error", message: '❌ Agent "claude" is not registered' }]);
     });
   });
 });

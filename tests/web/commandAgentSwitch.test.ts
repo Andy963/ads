@@ -6,7 +6,7 @@ import { handleSetAgentCommand } from "../../server/web/server/ws/commandAgentSw
 
 describe("web/ws/commandAgentSwitch", () => {
   it("rejects payloads without agentId and records the error for reconnect replay", () => {
-    const sent: unknown[] = [];
+    const sessionSent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-command-agent-switch-missing", maxEntriesPerSession: 10 });
     const originalOrchestrator = { id: "original" } as any;
 
@@ -20,12 +20,11 @@ describe("web/ws/commandAgentSwitch", () => {
         sessionManager: {} as any,
         historyStore,
         agentAvailability: {} as any,
-        sendToClient: (payload) => sent.push(payload),
-        sendToSession: (payload) => sent.push(payload),
+        sendToSession: (payload) => sessionSent.push(payload),
       });
 
       assert.equal(orchestrator, originalOrchestrator);
-      assert.deepEqual(sent, [{ type: "error", message: "Payload must include agentId" }]);
+      assert.deepEqual(sessionSent, [{ type: "error", message: "Payload must include agentId" }]);
       assert.deepEqual(
         historyStore
           .get("history-missing-agent")
@@ -38,7 +37,7 @@ describe("web/ws/commandAgentSwitch", () => {
   });
 
   it("records rejected agent switches for reconnect replay", () => {
-    const sent: unknown[] = [];
+    const sessionSent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-command-agent-switch-rejected", maxEntriesPerSession: 10 });
     const originalOrchestrator = { id: "original" } as any;
 
@@ -54,12 +53,11 @@ describe("web/ws/commandAgentSwitch", () => {
         } as any,
         historyStore,
         agentAvailability: {} as any,
-        sendToClient: (payload) => sent.push(payload),
-        sendToSession: (payload) => sent.push(payload),
+        sendToSession: (payload) => sessionSent.push(payload),
       });
 
       assert.equal(orchestrator, originalOrchestrator);
-      assert.deepEqual(sent, [{ type: "error", message: 'Agent "claude" is not registered' }]);
+      assert.deepEqual(sessionSent, [{ type: "error", message: 'Agent "claude" is not registered' }]);
       assert.deepEqual(
         historyStore
           .get("history-rejected-agent")
@@ -106,7 +104,6 @@ describe("web/ws/commandAgentSwitch", () => {
         agentAvailability: {
           mergeStatus: (_agentId: string, status: unknown) => ({ ...(status as object), error: undefined }),
         } as any,
-        sendToClient: (payload) => clientSent.push(payload),
         sendToSession: (payload) => sessionSent.push(payload),
       });
 
