@@ -378,6 +378,34 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("applies reconnect bootstrap history while backend work is still in flight", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.messages.value = [
+      { id: "u1", role: "user", kind: "text", content: "Run tests" },
+      { id: "a1", role: "assistant", kind: "text", content: "partial", streaming: true },
+    ];
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_BUSY_MESSAGE);
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: true, contextMode: "fresh" });
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [{ role: "user", text: "Run tests", ts: 1, kind: "client_message_id:prompt-1" }],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["Run tests"]);
+    wrapper.unmount();
+  });
+
   it.each([
     [4401, "Unauthorized"],
     [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],

@@ -62,6 +62,17 @@ function shouldHydrateExecuteMetadata(local: ChatItem, server: ChatItem): boolea
   );
 }
 
+function isDisconnectMarkedTail(item: ChatItem): boolean {
+  const content = String(item.content ?? "");
+  if (item.role === "assistant" && item.kind === "text") {
+    return content.includes(STREAM_DISCONNECT_NOTICE) || content.includes(LEGACY_STREAM_DISCONNECT_NOTICE);
+  }
+  if (item.kind === "execute") {
+    return content.includes(EXECUTE_DISCONNECT_NOTICE);
+  }
+  return false;
+}
+
 function hydrateOverlappingExecuteMetadata(local: ChatItem[], localIdx: number, serverItem: ChatItem): ChatItem[] {
   const localItem = local[localIdx];
   if (!localItem || !shouldHydrateExecuteMetadata(localItem, serverItem)) return local;
@@ -145,7 +156,13 @@ export function mergeHistoryFromServer(
   const tailStart = Math.min(server.length, Math.max(0, lastMatchedServerIdx + 1));
   const tail = server.slice(tailStart);
   const hydratedLocal = hydrateOverlappingExecuteMetadata(local, lastMatchedLocalIdx, server[lastMatchedServerIdx]!);
-  if (tail.length === 0) return hydratedLocal;
+  if (tail.length === 0) {
+    const localTail = hydratedLocal.slice(lastMatchedLocalIdx + 1);
+    if (localTail.length > 0 && localTail.every(isDisconnectMarkedTail)) {
+      return hydratedLocal.slice(0, lastMatchedLocalIdx + 1);
+    }
+    return hydratedLocal;
+  }
 
   // If the local tail is a truncated version of the server's next message (common after disconnect),
   // replace it instead of duplicating it.

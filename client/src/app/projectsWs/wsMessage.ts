@@ -594,6 +594,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const serverThreadId = contextMode === "fresh" ? "" : rawServerThreadId;
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       const hasStaleLocalContinuity = Boolean(prevThreadId) || rt.messages.value.length > 0;
+      const welcomeInFlight = inFlight === true;
       if (handshakeReset) {
         resetTurnPatchSummary();
         threadReset(rt, {
@@ -604,7 +605,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           resetThreadId: true,
           source: "welcome_reset",
         });
-      } else if (contextMode === "fresh" && hasStaleLocalContinuity) {
+      } else if (contextMode === "fresh" && hasStaleLocalContinuity && !welcomeInFlight) {
         resetTurnPatchSummary();
         threadReset(rt, {
           notice: "后端已是全新上下文。为避免误导，旧的本地聊天历史已清空。",
@@ -701,9 +702,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "history") {
       const resumeReplacePending = rt.resumeReplacePending;
+      const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
+      const hasReconnectBusyMessage = rt.messages.value.some(
+        (item) => item.role === "system" && item.kind === "text" && item.content === RECONNECT_BUSY_MESSAGE,
+      );
+      const shouldAcceptReconnectHistory = hasReconnectBusyMessage && items.length > 0;
       if (
         !rt.awaitingBootstrapHistory &&
         !resumeReplacePending &&
+        !shouldAcceptReconnectHistory &&
         (rt.busy.value || rt.queuedPrompts.value.length > 0) &&
         rt.messages.value.length > 0
       ) {
@@ -713,7 +720,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         rt.ignoreNextHistory = false;
         return;
       }
-      const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       rt.recentCommands.value = [];
       rt.seenCommandIds.clear();
       const next: ChatItem[] = [];

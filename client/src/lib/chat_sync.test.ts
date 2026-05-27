@@ -424,6 +424,24 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out[1]!.content).toBe("Partial response");
   });
 
+  it("drops a disconnect-marked local tail when server history stops at the matching user message", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Hi" }),
+      msg({
+        id: "a1",
+        role: "assistant",
+        kind: "text",
+        content: `Part\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+      }),
+    ];
+    const server: ChatItem[] = [msg({ id: "s1", role: "user", content: "Hi" })];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out.map((m) => m.id)).toEqual(["u1"]);
+  });
+
   it("replaces a truncated execute tail when server history has the completed command output", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Run tests" }),
