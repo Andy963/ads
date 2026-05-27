@@ -289,6 +289,42 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("does not drop a pending replay when only older history has the same text", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.pendingAckClientMessageId = "pending-new";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({ clientMessageId: "pending-new", text: "repeat", createdAt: Date.now(), agentId: "claude" }),
+    );
+    lastSentPromptPayload = null;
+    await settleUi(wrapper);
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "thread_resumed", threadId: "thread-1" });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "repeat", ts: 1, kind: "client_message_id:older" },
+        { role: "ai", text: "old answer", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toMatchObject({
+      text: "repeat",
+      agentId: "claude",
+    });
+    expect(rt.pendingAckClientMessageId).toBe("pending-new");
+    expect(rt.queuedPrompts.value).toEqual([]);
+    wrapper.unmount();
+  });
+
   it("replays pending prompts after a reset welcome without waiting for history", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 

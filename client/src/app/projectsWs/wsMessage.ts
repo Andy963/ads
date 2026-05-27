@@ -731,20 +731,41 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }
       if (rt.awaitingBootstrapHistory) {
-        const newestServerUser = [...items]
-          .reverse()
-          .map((item) => {
-            const entry = item as { role?: unknown; text?: unknown };
-            return String(entry.role ?? "") === "user" ? String(entry.text ?? "").trim() : "";
-          })
-          .find((text) => Boolean(text));
-        if (newestServerUser) {
+        const serverUserClientMessageIds = new Set<string>();
+        let newestServerUser = "";
+        for (const item of [...items].reverse()) {
+          const entry = item as { role?: unknown; text?: unknown; kind?: unknown };
+          if (String(entry.role ?? "") !== "user") {
+            continue;
+          }
+          const kind = String(entry.kind ?? "").trim();
+          if (kind.startsWith("client_message_id:")) {
+            const clientMessageId = kind.slice("client_message_id:".length).trim();
+            if (clientMessageId) {
+              serverUserClientMessageIds.add(clientMessageId);
+            }
+          }
+          if (!newestServerUser) {
+            newestServerUser = String(entry.text ?? "").trim();
+          }
+        }
+        if (serverUserClientMessageIds.size > 0 || newestServerUser) {
           const before = rt.queuedPrompts.value;
-          const after = before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
+          const after =
+            serverUserClientMessageIds.size > 0
+              ? before.filter((prompt) => !serverUserClientMessageIds.has(String(prompt.clientMessageId ?? "").trim()))
+              : before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
           if (after.length !== before.length) {
+            const afterIds = new Set(after.map((prompt) => String(prompt.clientMessageId ?? "").trim()).filter(Boolean));
+            const removedIds = before
+              .map((prompt) => String(prompt.clientMessageId ?? "").trim())
+              .filter((clientMessageId) => clientMessageId && !afterIds.has(clientMessageId));
             rt.queuedPrompts.value = after;
-            rt.pendingAckClientMessageId = null;
-            clearPendingPrompt(rt);
+            const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
+            if (!pendingAckClientMessageId || removedIds.includes(pendingAckClientMessageId)) {
+              rt.pendingAckClientMessageId = null;
+              clearPendingPrompt(rt);
+            }
           }
         }
         rt.awaitingBootstrapHistory = false;
