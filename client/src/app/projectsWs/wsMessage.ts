@@ -13,6 +13,8 @@ import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } fr
 
 type Ref<T> = { value: T };
 
+const HISTORY_EXECUTE_PREVIEW_LINES = 3;
+
 export type WsMessageHandlerArgs = {
   projects: Ref<ProjectTab[]>;
   pid: string;
@@ -653,13 +655,19 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           const lines = trimmed.split("\n");
           const commandLine = String(lines[0] ?? "").trim();
           const command = commandLine.startsWith("$ ") ? commandLine.slice(2).trim() : commandLine;
-          const content = lines.slice(1).join("\n").trim();
+          const outputLines = lines
+            .slice(1)
+            .map((line) => String(line ?? "").replace(/\s+$/, ""))
+            .filter((line) => line.trim());
+          const previewLines = outputLines.slice(0, HISTORY_EXECUTE_PREVIEW_LINES);
+          const hiddenLineCount = Math.max(0, outputLines.length - previewLines.length);
           next.push({
             id: `h-x-${idx}`,
             role: "system",
             kind: "execute",
-            content,
+            content: previewLines.join("\n"),
             command,
+            hiddenLineCount: hiddenLineCount || undefined,
             ts: ts ?? undefined,
           });
           continue;

@@ -215,6 +215,44 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("truncates replayed execute history consistently with live previews", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, applyResumeHistory } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "history",
+      items: [
+        {
+          role: "status",
+          kind: "execute",
+          text: "$ npm test\nline 1\nline 2\nline 3\nline 4\nline 5\n",
+          ts: 20,
+        },
+      ],
+    });
+
+    expect(applyResumeHistory).toHaveBeenCalledWith(
+      [
+        {
+          id: "h-x-0",
+          role: "system",
+          kind: "execute",
+          content: "line 1\nline 2\nline 3",
+          command: "npm test",
+          hiddenLineCount: 2,
+          ts: 20,
+        },
+      ],
+      rt,
+    );
+  });
+
   it("marks sibling preflight updates as in-flight without adding transcript entries", () => {
     const rt = createRuntime();
     const { handler, pushMessageBeforeLive } = createHandler({
