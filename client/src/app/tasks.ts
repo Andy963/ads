@@ -559,7 +559,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     clearNotice(pid);
 
     if (runtimeTasksBusy(rt) || Boolean(rt.queueStatus.value?.running)) {
-      rt.apiError.value = "任务执行中，无法恢复";
+      const msg = "任务执行中，无法恢复";
+      rt.apiError.value = msg;
+      pushMessageBeforeLive({ role: "system", kind: "error", content: msg }, rt);
       return;
     }
 
@@ -574,6 +576,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       rt.apiError.value = msg;
+      pushMessageBeforeLive({ role: "system", kind: "error", content: `恢复上下文失败：${msg}` }, rt);
     }
   };
 
@@ -586,7 +589,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     if (rt.busy.value || runtimeTasksBusy(workerRt) || Boolean(workerRt.queueStatus.value?.running)) {
       const msg = "任务执行中，无法恢复";
       rt.apiError.value = msg;
-      pushMessageBeforeLive({ role: "system", kind: "text", content: msg }, rt);
+      pushMessageBeforeLive({ role: "system", kind: "error", content: msg }, rt);
       return;
     }
 
@@ -600,7 +603,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       rt.apiError.value = msg;
-      pushMessageBeforeLive({ role: "system", kind: "text", content: `恢复上下文失败：${msg}` }, rt);
+      pushMessageBeforeLive({ role: "system", kind: "error", content: `恢复上下文失败：${msg}` }, rt);
     }
   };
 

@@ -234,6 +234,7 @@ describe("Lane websocket sessions", () => {
     await settleUi(wrapper as any);
 
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history", "worker resume failed"]);
+    expect(workerRt.messages.value.at(-1)?.kind).toBe("error");
 
     await controller.resumePlannerThread();
     expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history"]);
@@ -242,6 +243,36 @@ describe("Lane websocket sessions", () => {
     await settleUi(wrapper as any);
 
     expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history", "planner resume failed"]);
+    expect(plannerRt.messages.value.at(-1)?.kind).toBe("error");
+    wrapper.unmount();
+  });
+
+  it("shows blocked resume attempts as error messages in the target lane", async () => {
+    const { wrapper, controller } = await mountController();
+
+    const workerRt = controller.getRuntime("default");
+    const plannerRt = controller.getPlannerRuntime("default");
+    const workerWs = wsByChatSessionId.get("main");
+    const plannerWs = wsByChatSessionId.get("planner");
+
+    workerRt.queueStatus.value = { enabled: true, running: true, ready: true, streaming: false } satisfies TaskQueueStatus;
+
+    await controller.resumeTaskThread();
+    await controller.resumePlannerThread();
+    await settleUi(wrapper as any);
+
+    expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
+    expect(plannerWs.send).not.toHaveBeenCalledWith("task_resume");
+    expect(workerRt.messages.value.at(-1)).toMatchObject({
+      role: "system",
+      kind: "error",
+      content: "任务执行中，无法恢复",
+    });
+    expect(plannerRt.messages.value.at(-1)).toMatchObject({
+      role: "system",
+      kind: "error",
+      content: "任务执行中，无法恢复",
+    });
     wrapper.unmount();
   });
 });
