@@ -10,7 +10,7 @@ export async function executeCommandLine(args: {
   interruptControllers: Map<string, AbortController>;
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sendToCommandScope: (payload: unknown) => void;
-  transport: Pick<WsTransportDeps, "ws" | "sendWorkspaceState">;
+  transport: Pick<WsTransportDeps, "ws" | "sendWorkspaceState" | "broadcastWorkspaceState">;
   logger: WsLogger;
   sessionLogger: WsSessionLogger;
 }): Promise<void> {
@@ -38,7 +38,11 @@ export async function executeCommandLine(args: {
       ts: Date.now(),
       kind: result.ok ? undefined : "error",
     });
-    args.transport.sendWorkspaceState(args.transport.ws, args.currentCwd);
+    if (args.transport.broadcastWorkspaceState) {
+      args.transport.broadcastWorkspaceState(args.currentCwd);
+    } else {
+      args.transport.sendWorkspaceState(args.transport.ws, args.currentCwd);
+    }
   } catch (error) {
     const aborted = controller.signal.aborted;
     const message = (error as Error).message ?? String(error);

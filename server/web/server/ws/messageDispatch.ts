@@ -55,6 +55,7 @@ export async function dispatchWsMessage(args: {
   broadcastJson: (payload: unknown) => void;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
   sendWorkspaceState: (ws: WebSocket, workspaceRoot: string) => void;
+  broadcastWorkspaceState?: (workspaceRoot: string) => void;
   traceWsDuplication: boolean;
   logger: WsLogger;
   updateWorkspaceRootMeta: (cwd: string) => void;
@@ -123,6 +124,7 @@ export async function dispatchWsMessage(args: {
         safeJsonSend: args.safeJsonSend,
         broadcastJson: args.broadcastJson,
         sendWorkspaceState: args.sendWorkspaceState,
+        broadcastWorkspaceState: args.broadcastWorkspaceState,
       },
       observability: {
         logger: args.logger,
@@ -164,6 +166,7 @@ export async function dispatchWsMessage(args: {
         safeJsonSend: args.safeJsonSend,
         broadcastJson: args.broadcastJson,
         sendWorkspaceState: args.sendWorkspaceState,
+        broadcastWorkspaceState: args.broadcastWorkspaceState,
       },
       observability: {
         logger: args.logger,

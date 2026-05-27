@@ -225,6 +225,13 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         payload,
         sendJson: safeJsonSend,
       });
+    const broadcastWorkspaceState = (workspaceRoot: string): void => {
+      try {
+        broadcastJson({ type: "workspace", data: getWorkspaceState(workspaceRoot) });
+      } catch {
+        // ignore
+      }
+    };
 
     const broadcastSessionReset = (payload: unknown): void => {
       const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
@@ -414,6 +421,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
           broadcastJson,
           safeJsonSend,
           sendWorkspaceState,
+          broadcastWorkspaceState,
           traceWsDuplication: config.traceWsDuplication,
           logger,
           updateWorkspaceRootMeta: (cwd) => {

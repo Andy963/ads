@@ -93,6 +93,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       transport: {
         ws: deps.transport.ws,
         sendWorkspaceState: deps.transport.sendWorkspaceState,
+        broadcastWorkspaceState: deps.transport.broadcastWorkspaceState,
       },
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
@@ -119,6 +120,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       transport: {
         ws: deps.transport.ws,
         sendWorkspaceState: deps.transport.sendWorkspaceState,
+        broadcastWorkspaceState: deps.transport.broadcastWorkspaceState,
       },
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,

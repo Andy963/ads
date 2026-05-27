@@ -294,7 +294,11 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         });
       }
       deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
-      deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
+      if (deps.transport.broadcastWorkspaceState) {
+        deps.transport.broadcastWorkspaceState(turnCwd);
+      } else {
+        deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
+      }
     } catch (error) {
       if (isWsPromptAbort(error)) {
         const activePromise = typeof collaborativeTurnPromise !== "undefined" ? collaborativeTurnPromise : undefined;

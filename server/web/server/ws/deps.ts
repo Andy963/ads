@@ -132,6 +132,7 @@ export type WsTransportDeps = {
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
   broadcastJson: (payload: unknown) => void;
   sendWorkspaceState: (ws: WebSocket, workspaceRoot: string) => void;
+  broadcastWorkspaceState?: (workspaceRoot: string) => void;
 };
 
 export type WsConnectionContextDeps = {

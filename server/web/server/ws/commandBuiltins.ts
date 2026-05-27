@@ -85,7 +85,7 @@ export function handleBuiltinCommand(args: {
   sessionManager: SessionManager;
   historyStore: HistoryStore;
   sendToCommandScope: (payload: unknown) => void;
-  transport: Pick<WsTransportDeps, "ws" | "sendWorkspaceState">;
+  transport: Pick<WsTransportDeps, "ws" | "sendWorkspaceState" | "broadcastWorkspaceState">;
   logger: WsLogger;
   sessionLogger: WsSessionLogger;
   syncWorkspaceTemplates: () => void;
@@ -166,7 +166,11 @@ export function handleBuiltinCommand(args: {
     args.sendToCommandScope({ type: "result", ok: true, output: message });
     args.sessionLogger?.logOutput(message);
   }
-  args.transport.sendWorkspaceState(args.transport.ws, currentCwd);
+  if (args.transport.broadcastWorkspaceState) {
+    args.transport.broadcastWorkspaceState(currentCwd);
+  } else {
+    args.transport.sendWorkspaceState(args.transport.ws, currentCwd);
+  }
 
   return {
     handled: true,

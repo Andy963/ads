@@ -256,7 +256,7 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
-  it("broadcasts command results to another active connection in the same session", async () => {
+  it("broadcasts command results and workspace state to another active connection in the same session", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
 
@@ -284,10 +284,13 @@ describe("web/server/ws/broadcast", () => {
     await waitForWsOpen(clientB);
 
     const resultPromise = waitForWsMessage(clientB, (msg) => msg.type === "result" && msg.output === "done");
+    const workspacePromise = waitForWsMessage(clientB, (msg) => msg.type === "workspace");
     resolveRun?.({ ok: true, output: "done" });
 
     const result = await resultPromise;
+    const workspace = await workspacePromise;
     assert.equal(result.type, "result");
+    assert.equal(workspace.type, "workspace");
 
     try {
       clientA.terminate();
