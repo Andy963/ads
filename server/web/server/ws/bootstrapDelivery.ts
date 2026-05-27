@@ -26,7 +26,7 @@ function shouldReplayFreshHistory(entries: HistoryEntry[]): boolean {
     if (!entry || !String(entry.text ?? "").trim()) {
       continue;
     }
-    return entry.role === "status" && entry.kind === "error";
+    return entry.role === "status" && (entry.kind === "error" || entry.kind === "execute");
   }
   return false;
 }
