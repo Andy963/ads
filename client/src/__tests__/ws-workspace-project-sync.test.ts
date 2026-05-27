@@ -229,6 +229,41 @@ describe("ws workspace project sync", () => {
     expect(injected.threadReset).not.toHaveBeenCalled();
     expect(injectedRt.messages.value.map((entry: any) => entry.content)).toEqual(["keep me too"]);
     expect(injectedRt.activeThreadId.value).toBeNull();
+    expect(injectedRt.threadWarning.value).toContain("下一轮发送时会注入最近聊天历史");
+  });
+
+  it("clears the history injection warning after a result establishes a backend thread", () => {
+    const rt = createRuntime();
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-local";
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "welcome",
+      inFlight: false,
+      threadId: null,
+      contextMode: "history_injection",
+    });
+
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.threadWarning.value).toContain("下一轮发送时会注入最近聊天历史");
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      threadId: "thread-restored",
+      expectedThreadId: "",
+      threadReset: false,
+    });
+
+    expect(rt.activeThreadId.value).toBe("thread-restored");
+    expect(rt.threadWarning.value).toBeNull();
   });
 
   it("clears stale thread warnings once a later welcome confirms the current thread", () => {

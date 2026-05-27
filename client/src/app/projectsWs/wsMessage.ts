@@ -547,6 +547,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           resetThreadId: true,
           source: "welcome_fresh_context",
         });
+      } else if (contextMode === "history_injection" && hasStaleLocalContinuity) {
+        rt.threadWarning.value = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
       } else if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
         rt.threadWarning.value =
           `Backend thread changed without an explicit reset marker (prev=${prevThreadId}, now=${serverThreadId}). ` +
