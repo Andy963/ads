@@ -1,11 +1,9 @@
 import path from "node:path";
 
 import type { Logger } from "../../../utils/logger.js";
-import { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { validateWorkspacePath } from "../api/routes/workspacePath.js";
 import { createTaskQueueContext } from "./context.js";
-import { createReviewPipeline } from "./reviewPipeline.js";
 import { bindTaskQueueRuntime, promoteQueuedTasksToPending as promoteQueuedTasksToPendingRuntime } from "./runtime.js";
 import type { TaskQueueContext } from "./types.js";
 
@@ -27,9 +25,6 @@ export function createTaskQueueManager(deps: {
   logger: Logger;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
   recordToSessionHistories: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
-  reviewSessionManager?: SessionManager;
-  broadcastToReviewerSession?: (sessionId: string, payload: unknown) => void;
-  recordToReviewerHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): {
   ensureTaskContext: (workspaceRootForContext: string) => TaskQueueContext;
   resolveTaskWorkspaceRoot: (url: URL) => string;
@@ -58,33 +53,12 @@ export function createTaskQueueManager(deps: {
     });
     taskContexts.set(key, ctx);
 
-    const reviewPipeline = createReviewPipeline({
-      ctx,
-      sessionId: ctx.sessionId,
-      reviewSessionManager: deps.reviewSessionManager,
-      broadcastToSession: deps.broadcastToSession,
-      broadcastToReviewerSession: deps.broadcastToReviewerSession,
-      recordToReviewerHistories: deps.recordToReviewerHistories,
-    });
-
     bindTaskQueueRuntime({
       ctx,
       logger: deps.logger,
       available: deps.available,
       broadcastToSession: deps.broadcastToSession,
       recordToSessionHistories: deps.recordToSessionHistories,
-      ensureReviewEnqueued: reviewPipeline.ensureReviewEnqueued,
-      runReviewLoop: reviewPipeline.runReviewLoop,
-      onReviewEnqueueFailure: (taskId, error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        reviewPipeline.failReviewPipeline({
-          taskId,
-          taskRunId: ctx.taskStore.getLatestTaskRun(taskId)?.id ?? null,
-          errorMessage: `review_enqueue_failed:${message}`,
-          now: Date.now(),
-          captureStatus: "failed",
-        });
-      },
     });
 
     return ctx;

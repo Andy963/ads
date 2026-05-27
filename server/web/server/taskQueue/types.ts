@@ -1,5 +1,4 @@
 import type { AttachmentStore } from "../../../attachments/store.js";
-import type { ReviewStore } from "../../../tasks/reviewStore.js";
 import type { TaskQueue } from "../../../tasks/queue.js";
 import type { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
@@ -32,7 +31,6 @@ export type TaskQueueContext = {
   taskStore: QueueTaskStore;
   attachmentStore: AttachmentStore;
   taskQueue: TaskQueue;
-  reviewStore: ReviewStore;
   queueAutoStart: boolean;
   queueRunning: boolean;
   dequeueInProgress: boolean;

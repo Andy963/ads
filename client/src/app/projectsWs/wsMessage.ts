@@ -292,6 +292,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
   const handleSharedSessionReset = (payload: Record<string, unknown>): void => {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "shared";
+    const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
+    if (resetScope === "lane" && sourceChatSessionId && sourceChatSessionId !== effectiveChatSessionId) {
+      return;
+    }
     const hasReviewerPreservationMetadata = Object.prototype.hasOwnProperty.call(payload, "preservedReviewerSnapshotId");
     const preservedReviewerSnapshotId = hasReviewerPreservationMetadata
       ? typeof payload.preservedReviewerSnapshotId === "string"

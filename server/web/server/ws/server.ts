@@ -7,7 +7,7 @@ import { getStateDatabase } from "../../../state/database.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
-import { getWorkspaceState, truncateForLog } from "../../utils.js";
+import { getWorkspaceState } from "../../utils.js";
 import type { AttachWebSocketServerDeps } from "./deps.js";
 import { dispatchWsMessage, type IncomingWsMessage } from "./messageDispatch.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
@@ -20,8 +20,6 @@ import { buildWsConnectionIdentity } from "./connectionIdentity.js";
 import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnection } from "./connectionRuntime.js";
 import { resolveWsLaneResources } from "./laneResources.js";
 import { preflightPersistAndAck } from "./preflight.js";
-import { shouldResumeReviewerThread } from "./reviewerSnapshotContext.js";
-import { toReviewArtifactSummary } from "../../../tasks/reviewStore.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
 
@@ -29,7 +27,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
   const { auth, agents, commands, config, history, logger, scheduler, sessions, state, tasks } = deps;
   const wss = new WebSocketServer({ server: deps.server });
   const safeJsonSend = createSafeJsonSend(logger);
-  const reviewerSnapshotBindings = new Map<string, string>();
   const seenChatSessionIdsBySharedSession = new Map<string, Set<string>>();
 
   const normalizeWorkspaceRootForMeta = (cwd: string): string => {
@@ -50,7 +47,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       existing.add(normalizedChatSessionId);
       return;
     }
-    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", "planner", "reviewer", normalizedChatSessionId]));
+    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", "planner", normalizedChatSessionId]));
   };
 
   wss.on("error", (error) => {
@@ -129,7 +126,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
     const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: config.workspaceRoot });
     const chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
-    const { isReviewerChat, sessionManager, historyStore, getWorkspaceLock } = resolveWsLaneResources({
+    const { sessionManager, historyStore, getWorkspaceLock } = resolveWsLaneResources({
       chatSessionId,
       sessions,
       history,
@@ -212,53 +209,12 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       // ignore
     }
 
-    const boundSnapshotId = (() => {
-      if (!isReviewerChat) {
-        return null;
-      }
-      const inMemorySnapshotId = String(reviewerSnapshotBindings.get(historyKey) ?? "").trim() || null;
-      const persistedSnapshotId = String(sessionManager.getSavedReviewerSnapshotId(userId) ?? "").trim() || null;
-      const candidateSnapshotId = inMemorySnapshotId || persistedSnapshotId;
-      const candidateSource = inMemorySnapshotId ? "memory" : persistedSnapshotId ? "storage" : "none";
-      if (!candidateSnapshotId) {
-        return null;
-      }
-      try {
-        const taskCtx = tasks.ensureTaskContext(normalizeWorkspaceRootForMeta(currentCwd));
-        if (!taskCtx.reviewStore.getSnapshot(candidateSnapshotId)) {
-          logger.info(
-            `[Web][continuity] reviewer snapshot binding cleared user=${userId} history=${historyKey} snapshot=${candidateSnapshotId} source=${candidateSource} reason=snapshot_missing`,
-          );
-          reviewerSnapshotBindings.delete(historyKey);
-          sessionManager.clearSavedReviewerSnapshotBinding(userId);
-          return null;
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn(
-          `[Web][continuity] reviewer snapshot binding cleared user=${userId} history=${historyKey} snapshot=${candidateSnapshotId} source=${candidateSource} reason=lookup_failed err=${truncateForLog(message)}`,
-        );
-        reviewerSnapshotBindings.delete(historyKey);
-        sessionManager.clearSavedReviewerSnapshotBinding(userId);
-        return null;
-      }
-      reviewerSnapshotBindings.set(historyKey, candidateSnapshotId);
-      logger.info(
-        `[Web][continuity] reviewer snapshot binding restored user=${userId} history=${historyKey} snapshot=${candidateSnapshotId} source=${candidateSource}`,
-      );
-      return candidateSnapshotId;
-    })();
-    const resumeThread = isReviewerChat
-      ? shouldResumeReviewerThread({
-          boundSnapshotId,
-          hasSession: sessionManager.hasSession(userId),
-        })
-      : !sessionManager.hasSession(userId);
+    const resumeThread = !sessionManager.hasSession(userId);
     let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
     const contextMode = sessionManager.getContextRestoreMode(userId);
 
     logger.info(
-      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size} restore=${contextMode}${boundSnapshotId ? ` reviewerSnapshot=${truncateForLog(boundSnapshotId, 48)}` : ""}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,
+      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size} restore=${contextMode}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,
     );
     const inFlight = state.interruptControllers.has(historyKey);
 
@@ -271,11 +227,17 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       });
 
     const broadcastSessionReset = (payload: unknown): void => {
+      const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
+      const resetScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
+      const sourceChatSessionId = String(payloadRecord.sourceChatSessionId ?? "").trim();
       for (const [candidate, meta] of state.clientMetaByWs.entries()) {
         if (candidate === ws) {
           continue;
         }
         if (meta.authUserId !== authUserId || meta.sessionId !== sessionId) {
+          continue;
+        }
+        if (resetScope !== "shared" && sourceChatSessionId && meta.chatSessionId !== sourceChatSessionId) {
           continue;
         }
         safeJsonSend(candidate, payload);
@@ -284,7 +246,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
     const getTrackedSharedChatSessionIds = (): string[] => {
       const registryKey = getSharedSessionRegistryKey(authUserId, sessionId);
-      const tracked = new Set<string>(["main", "planner", "reviewer"]);
+      const tracked = new Set<string>(["main", "planner"]);
       for (const seenChatSessionId of seenChatSessionIdsBySharedSession.get(registryKey) ?? []) {
         tracked.add(seenChatSessionId);
       }
@@ -307,10 +269,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         historyKey: targetHistoryKey,
       });
 
-    const resetSharedSessionState = (options: {
+    const resetSharedSessionState = (_options: {
       sourceChatSessionId: string;
-      reviewerSnapshotIdToPreserve: string | null;
-    }): { preservedReviewerSnapshotId: string | null } => {
+    }): void => {
       const trackedSharedLanes = getTrackedSharedChatSessionIds().map((trackedChatSessionId) => {
         const { sessionManager: trackedSessionManager, historyStore: trackedHistoryStore } = resolveWsLaneResources({
           chatSessionId: trackedChatSessionId,
@@ -330,33 +291,14 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
           identity,
         };
       });
-      const reviewerLane = trackedSharedLanes.find((lane) => lane.chatSessionId === "reviewer");
-      const existingReviewerSnapshotId = reviewerLane
-        ? String(
-            reviewerSnapshotBindings.get(reviewerLane.identity.historyKey) ??
-              reviewerLane.sessionManager.getSavedReviewerSnapshotId(reviewerLane.identity.userId) ??
-              "",
-          ).trim() || null
-        : null;
-      const preservedReviewerSnapshotId =
-        options.sourceChatSessionId === "reviewer" ? options.reviewerSnapshotIdToPreserve : existingReviewerSnapshotId;
 
       for (const { chatSessionId, sessionManager, historyStore, identity } of trackedSharedLanes) {
+        void chatSessionId;
         abortInFlightForHistoryKey(identity.historyKey);
         historyStore.clear(identity.historyKey);
-        const reviewerHistoryKey = `${authUserId}::${sessionId}::reviewer`;
         sessionManager.reset(identity.userId);
         sessionManager.reset(identity.legacyUserId);
-        if (chatSessionId === "reviewer") {
-          reviewerSnapshotBindings.delete(reviewerHistoryKey);
-          sessionManager.clearSavedReviewerSnapshotBinding(identity.userId);
-          if (preservedReviewerSnapshotId) {
-            reviewerSnapshotBindings.set(reviewerHistoryKey, preservedReviewerSnapshotId);
-            sessionManager.saveReviewerSnapshotBinding(identity.userId, preservedReviewerSnapshotId);
-          }
-        }
       }
-      return { preservedReviewerSnapshotId };
     };
 
     sendInitialBootstrapMessages({
@@ -372,20 +314,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       inFlight,
       historyStore,
       historyKey,
-      isReviewerChat,
-      boundSnapshotId,
-      latestArtifact: (() => {
-        if (!isReviewerChat || !boundSnapshotId) {
-          return null;
-        }
-        try {
-          const taskCtx = tasks.ensureTaskContext(normalizeWorkspaceRootForMeta(currentCwd));
-          const latestArtifact = taskCtx.reviewStore.getLatestArtifact({ snapshotId: boundSnapshotId });
-          return latestArtifact ? toReviewArtifactSummary(latestArtifact) : null;
-        } catch {
-          return null;
-        }
-      })(),
     });
 
     let messageChain = Promise.resolve();
@@ -450,7 +378,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
           historyKey,
           currentCwd,
           cacheKey,
-          isReviewerChat,
           sessionManager,
           orchestrator,
           getWorkspaceLock,
@@ -476,7 +403,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             broadcastSessionReset,
             resetSharedSessionState,
           },
-          reviewerSnapshotBindings,
           registerSessionCacheBinding,
           broadcastJson,
           safeJsonSend,

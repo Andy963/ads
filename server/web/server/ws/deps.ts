@@ -80,16 +80,13 @@ export type WsStateDeps = {
 export type WsSessionDeps = {
   workerSessionManager: SessionManager;
   plannerSessionManager: SessionManager;
-  reviewerSessionManager: SessionManager;
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
   getPlannerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  getReviewerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
 };
 
 export type WsHistoryDeps = {
   workerHistoryStore: HistoryStore;
   plannerHistoryStore: HistoryStore;
-  reviewerHistoryStore: HistoryStore;
 };
 
 export type WsTaskDeps = {
@@ -197,7 +194,6 @@ export type WsPromptHandlerDeps = {
   history: WsHistoryRuntimeDeps;
   tasks: WsTaskRuntimeDeps;
   scheduler: WsSchedulerDeps;
-  reviewerSnapshotBindings?: Map<string, string>;
 };
 
 export type WsCommandHandlerDeps = {

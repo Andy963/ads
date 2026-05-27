@@ -1,7 +1,6 @@
 import type {
   ConversationStatus,
   TaskExecutionIsolation,
-  TaskReviewStatus,
   TaskRole,
   TaskRunApplyStatus,
   TaskRunCaptureStatus,
@@ -41,21 +40,6 @@ export function normalizeTaskStatus(value: unknown): TaskStatus {
       return raw;
     default:
       return "pending";
-  }
-}
-
-export function normalizeTaskReviewStatus(value: unknown): TaskReviewStatus {
-  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
-  switch (raw) {
-    case "none":
-    case "pending":
-    case "running":
-    case "passed":
-    case "rejected":
-    case "failed":
-      return raw;
-    default:
-      return "none";
   }
 }
 

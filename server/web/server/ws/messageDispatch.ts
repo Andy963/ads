@@ -34,7 +34,6 @@ export async function dispatchWsMessage(args: {
   historyKey: string;
   currentCwd: string;
   cacheKey: string;
-  isReviewerChat: boolean;
   sessionManager: SessionManager;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   getWorkspaceLock: WsSessionRuntimeDeps["getWorkspaceLock"];
@@ -49,10 +48,8 @@ export async function dispatchWsMessage(args: {
     broadcastSessionReset?: (payload: unknown) => void;
     resetSharedSessionState?: (options: {
       sourceChatSessionId: string;
-      reviewerSnapshotIdToPreserve: string | null;
-    }) => { preservedReviewerSnapshotId: string | null };
+    }) => void;
   };
-  reviewerSnapshotBindings: Map<string, string>;
   registerSessionCacheBinding: () => void;
   broadcastJson: (payload: unknown) => void;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
@@ -82,7 +79,6 @@ export async function dispatchWsMessage(args: {
     const control = await handleWsControlMessage({
       parsed,
       chatSessionId: args.chatSessionId,
-      isReviewerChat: args.isReviewerChat,
       userId: args.userId,
       historyKey: args.historyKey,
       currentCwd,
@@ -92,7 +88,6 @@ export async function dispatchWsMessage(args: {
       historyStore: args.historyStore,
       interruptControllers: args.interruptControllers,
       promptRunEpochs: args.promptRunEpochs,
-      reviewerSnapshotBindings: args.reviewerSnapshotBindings,
       ensureTaskContext: args.tasks.ensureTaskContext as WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"],
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
       broadcastSessionReset: args.state.broadcastSessionReset,
@@ -141,7 +136,6 @@ export async function dispatchWsMessage(args: {
       },
       tasks: args.tasks,
       scheduler: args.scheduler,
-      reviewerSnapshotBindings: args.reviewerSnapshotBindings,
     });
     if (promptResult.handled) {
       return { orchestrator: promptResult.orchestrator, currentCwd };

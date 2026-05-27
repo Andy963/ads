@@ -272,7 +272,7 @@ describe("ws workspace project sync", () => {
     );
   });
 
-  it("clears stale local continuity when a sibling chat lane resets the shared session", () => {
+  it("ignores lane-local resets from a different chat lane", () => {
     const rt = createRuntime();
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
     rt.activeThreadId.value = "thread-keep";
@@ -286,7 +286,33 @@ describe("ws workspace project sync", () => {
       updateProject: vi.fn(),
     });
 
-    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" });
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner", scope: "lane" });
+
+    expect(clearPendingPrompt).not.toHaveBeenCalled();
+    expect(clearStepLive).not.toHaveBeenCalled();
+    expect(finalizeCommandBlock).not.toHaveBeenCalled();
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.queuedPrompts.value).toEqual(["queued"]);
+    expect(rt.activeThreadId.value).toBe("thread-keep");
+  });
+
+  it("clears stale local continuity when a sibling chat lane explicitly resets the shared session", () => {
+    const rt = createRuntime();
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-keep";
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.queuedPrompts.value = ["queued"];
+    const { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner", scope: "shared" });
 
     expect(clearPendingPrompt).toHaveBeenCalledWith(rt);
     expect(clearStepLive).toHaveBeenCalledWith(rt);

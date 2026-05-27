@@ -4,8 +4,7 @@ import type { AgentAvailability } from "../../../agents/health/agentAvailability
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
-import { buildHistoryBootstrapPayload, buildReviewerBootstrapPayloads } from "./bootstrapReplay.js";
-import { hasReviewerSnapshotContext } from "./reviewerSnapshotContext.js";
+import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 
 export function sendInitialBootstrapMessages(args: {
   ws: WebSocket;
@@ -20,18 +19,13 @@ export function sendInitialBootstrapMessages(args: {
   inFlight: boolean;
   historyStore: HistoryStore;
   historyKey: string;
-  isReviewerChat: boolean;
-  boundSnapshotId: string | null;
-  latestArtifact?: Record<string, unknown> | null;
 }): void {
-  const allowReviewerContinuityBootstrap =
-    !args.isReviewerChat || hasReviewerSnapshotContext({ boundSnapshotId: args.boundSnapshotId });
   const bootstrapState = buildWsBootstrapState({
     sessionManager: args.sessionManager,
     orchestrator: args.orchestrator,
     userId: args.userId,
     agentAvailability: args.agentAvailability,
-    allowSavedThreadFallback: allowReviewerContinuityBootstrap,
+    allowSavedThreadFallback: true,
   });
 
   args.safeJsonSend(
@@ -53,16 +47,7 @@ export function sendInitialBootstrapMessages(args: {
   );
 
   const historyPayload = buildHistoryBootstrapPayload(args.historyStore.get(args.historyKey));
-  if (historyPayload && allowReviewerContinuityBootstrap) {
+  if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
-  }
-
-  const reviewerBootstrapPayloads = buildReviewerBootstrapPayloads({
-    isReviewerChat: args.isReviewerChat,
-    boundSnapshotId: args.boundSnapshotId,
-    latestArtifact: args.latestArtifact,
-  });
-  for (const payload of reviewerBootstrapPayloads) {
-    args.safeJsonSend(args.ws, payload);
   }
 }

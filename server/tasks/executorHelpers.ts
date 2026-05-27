@@ -16,16 +16,6 @@ type WorkspacePatchFileStat = { path: string; added: number | null; removed: num
 type WorkspacePatchPayload = { files: WorkspacePatchFileStat[]; diff: string; truncated: boolean };
 type TaskWorkspacePatchArtifact = { paths: string[]; patch: WorkspacePatchPayload | null; reason?: string; createdAt: number };
 type TaskWorktreeReferenceContext = { worktreeDir: string; source?: string; createdAt: number };
-type ReviewArtifactReferenceContext = {
-  reviewArtifactId?: string;
-  snapshotId?: string;
-  taskId?: string;
-  verdict?: string | null;
-  scope?: string | null;
-  summaryText?: string;
-  responseText?: string;
-  createdAt?: number;
-};
 
 export type BootstrapModelParams = {
   bootstrap?: {
@@ -69,44 +59,6 @@ export function formatWorkspacePatchArtifactForPrompt(context: TaskContext | nul
   lines.push("```diff");
   lines.push(String(patch.diff ?? "").trimEnd());
   lines.push("```");
-  return lines.join("\n");
-}
-
-export function formatReviewArtifactReferenceForPrompt(context: TaskContext | null): string {
-  if (!context) return "";
-  const parsed = safeParseJson<ReviewArtifactReferenceContext>(context.content);
-  if (!parsed) return "";
-  const reviewArtifactId = String(parsed.reviewArtifactId ?? "").trim();
-  const snapshotId = String(parsed.snapshotId ?? "").trim();
-  const taskId = String(parsed.taskId ?? "").trim();
-  if (!reviewArtifactId || !snapshotId) return "";
-
-  const lines: string[] = [];
-  lines.push("Explicit reviewer guidance artifact:");
-  lines.push(`- reviewArtifactId: ${reviewArtifactId}`);
-  lines.push(`- snapshotId: ${snapshotId}`);
-  if (taskId) {
-    lines.push(`- sourceTaskId: ${taskId}`);
-  }
-  const verdict = String(parsed.verdict ?? "").trim();
-  if (verdict) {
-    lines.push(`- verdict: ${verdict}`);
-  }
-  const scope = String(parsed.scope ?? "").trim();
-  if (scope) {
-    lines.push(`- scope: ${scope}`);
-  }
-  const summaryText = String(parsed.summaryText ?? "").trim();
-  if (summaryText) {
-    lines.push("- summary:");
-    lines.push(summaryText);
-  }
-  const responseText = String(parsed.responseText ?? "").trim();
-  if (responseText) {
-    lines.push("");
-    lines.push("Reviewer response:");
-    lines.push(responseText);
-  }
   return lines.join("\n");
 }
 

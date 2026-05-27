@@ -20,14 +20,11 @@ export type WebSocketHub = {
   safeSendText: (ws: WebSocket, text: string) => void;
   safeSendJson: (ws: WebSocket, payload: unknown) => void;
   broadcastToSession: (broadcastSessionId: string, payload: unknown) => void;
-  broadcastToReviewerSession: (broadcastSessionId: string, payload: unknown) => void;
   recordToSessionHistories: (broadcastSessionId: string, entry: WebSocketHistoryEntry) => void;
-  recordToReviewerHistories: (broadcastSessionId: string, entry: WebSocketHistoryEntry) => void;
 };
 
 export function createWebSocketHub(args: {
   workerHistoryStore: { add: (key: string, entry: WebSocketHistoryEntry) => void };
-  reviewerHistoryStore: { add: (key: string, entry: WebSocketHistoryEntry) => void };
 }): WebSocketHub {
   const WS_READY_STATE_OPEN = 1;
   const clients: Set<WebSocket> = new Set();
@@ -56,7 +53,7 @@ export function createWebSocketHub(args: {
 
   const isWorkerChatSession = (chatSessionId: string): boolean => {
     const chat = String(chatSessionId ?? "").trim();
-    return chat !== "planner" && chat !== "reviewer";
+    return chat !== "planner";
   };
 
   const isWorkerBroadcastTarget = (
@@ -64,20 +61,6 @@ export function createWebSocketHub(args: {
     meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
   ): boolean => {
     if (!isWorkerChatSession(meta.chatSessionId)) return false;
-    return matchesBroadcastSessionId({
-      broadcastSessionId,
-      connectionSessionId: meta.sessionId,
-      connectionWorkspaceRoot: meta.workspaceRoot,
-    });
-  };
-
-  const isReviewerBroadcastTarget = (
-    broadcastSessionId: string,
-    meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
-  ): boolean => {
-    if (meta.chatSessionId !== "reviewer") {
-      return false;
-    }
     return matchesBroadcastSessionId({
       broadcastSessionId,
       connectionSessionId: meta.sessionId,
@@ -95,22 +78,6 @@ export function createWebSocketHub(args: {
 
     for (const [ws, meta] of clientMetaByWs.entries()) {
       if (!isWorkerBroadcastTarget(broadcastSessionId, meta)) {
-        continue;
-      }
-      safeSendText(ws, encoded);
-    }
-  };
-
-  const broadcastToReviewerSession = (broadcastSessionId: string, payload: unknown): void => {
-    let encoded = "";
-    try {
-      encoded = JSON.stringify(payload);
-    } catch {
-      return;
-    }
-
-    for (const [ws, meta] of clientMetaByWs.entries()) {
-      if (!isReviewerBroadcastTarget(broadcastSessionId, meta)) {
         continue;
       }
       safeSendText(ws, encoded);
@@ -135,33 +102,13 @@ export function createWebSocketHub(args: {
     }
   };
 
-  const recordToReviewerHistories = (broadcastSessionId: string, entry: WebSocketHistoryEntry): void => {
-    const written = new Set<string>();
-    for (const meta of clientMetaByWs.values()) {
-      if (!isReviewerBroadcastTarget(broadcastSessionId, meta)) {
-        continue;
-      }
-      if (written.has(meta.historyKey)) {
-        continue;
-      }
-      written.add(meta.historyKey);
-      try {
-        args.reviewerHistoryStore.add(meta.historyKey, entry);
-      } catch {
-        // ignore
-      }
-    }
-  };
-
   return {
     clients,
     clientMetaByWs,
     safeSendText,
     safeSendJson,
     broadcastToSession,
-    broadcastToReviewerSession,
     recordToSessionHistories,
-    recordToReviewerHistories,
   };
 }
 

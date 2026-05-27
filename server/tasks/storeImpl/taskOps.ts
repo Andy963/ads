@@ -12,7 +12,6 @@ import {
   normalizeTaskCaptureStatus,
   normalizeTaskExecutionIsolation,
   normalizeTaskModel,
-  normalizeTaskReviewStatus,
   normalizeTaskRunStatus,
   normalizeTaskStatus,
 } from "./normalize.js";
@@ -49,8 +48,6 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     task.agentId = normalizeNullableString(task.agentId);
     task.parentTaskId = normalizeNullableString(task.parentTaskId);
     task.threadId = normalizeNullableString(task.threadId);
-    task.reviewSnapshotId = normalizeNullableString(task.reviewSnapshotId);
-    task.reviewConclusion = normalizeNullableString(task.reviewConclusion);
     task.createdBy = normalizeNullableString(task.createdBy);
   };
 
@@ -58,15 +55,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     task.status = normalizeTaskStatus(task.status);
     task.inheritContext = Boolean(task.inheritContext);
     task.executionIsolation = normalizeTaskExecutionIsolation(task.executionIsolation);
-    task.reviewRequired = Boolean(task.reviewRequired);
-    task.reviewStatus = normalizeTaskReviewStatus(task.reviewStatus);
     normalizeTaskIdentityFields(task);
     task.priority = normalizeFiniteNumberOr(task.priority, existing?.priority ?? 0);
     task.queueOrder = normalizeFiniteNumberOr(task.queueOrder, existing?.queueOrder ?? task.createdAt);
     task.queuedAt = normalizeNullableFiniteNumber(task.queuedAt) ?? (existing?.queuedAt ?? null);
     task.retryCount = normalizeFiniteNumberOr(task.retryCount, existing?.retryCount ?? 0);
     task.maxRetries = normalizeFiniteNumberOr(task.maxRetries, existing?.maxRetries ?? 3);
-    task.reviewedAt = normalizeNullableFiniteNumber(task.reviewedAt) ?? (existing?.reviewedAt ?? null);
 
     if (!String(task.title ?? "").trim()) {
       const prompt = String(task.prompt ?? "");
@@ -89,12 +83,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     if (["completed", "failed", "cancelled"].includes(task.status) && !task.completedAt) {
       task.completedAt = existing?.completedAt ?? now;
     }
-    if (task.status === "completed") {
-      const shouldArchive = !task.reviewRequired || task.reviewStatus === "passed";
-      task.archivedAt = shouldArchive ? task.archivedAt ?? now : null;
-    } else {
-      task.archivedAt = null;
-    }
+    task.archivedAt = task.status === "completed" ? task.archivedAt ?? now : null;
   };
 
   const resolveThreadId = (input: CreateTaskInput, taskId: string, inheritContext: boolean): string => {
@@ -148,7 +137,6 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
         : status === "queued"
           ? now
           : null;
-    const reviewRequired = Boolean(input.reviewRequired);
     const executionIsolation = normalizeTaskExecutionIsolation(input.executionIsolation);
 
     const task: Task = {
@@ -171,15 +159,10 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       retryCount: 0,
       maxRetries: typeof input.maxRetries === "number" ? Math.max(0, Math.floor(input.maxRetries)) : 3,
       executionIsolation,
-      reviewRequired,
-      reviewStatus: "none",
-      reviewSnapshotId: null,
-      reviewConclusion: null,
-      reviewedAt: null,
       createdAt: now,
       startedAt: null,
       completedAt: null,
-      archivedAt: status === "completed" && !reviewRequired ? now : null,
+      archivedAt: status === "completed" ? now : null,
       createdBy: normalizeNullableString(input.createdBy),
     };
     normalizeTaskWritableFields(task);
@@ -204,11 +187,6 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.retryCount,
       task.maxRetries,
       task.executionIsolation,
-      task.reviewRequired ? 1 : 0,
-      task.reviewStatus,
-      task.reviewSnapshotId ?? null,
-      task.reviewConclusion ?? null,
-      task.reviewedAt ?? null,
       task.createdAt,
       task.startedAt ?? null,
       task.completedAt ?? null,
@@ -287,11 +265,6 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.retryCount,
       merged.maxRetries,
       merged.executionIsolation,
-      merged.reviewRequired ? 1 : 0,
-      merged.reviewStatus,
-      merged.reviewSnapshotId ?? null,
-      merged.reviewConclusion ?? null,
-      merged.reviewedAt ?? null,
       merged.createdAt,
       merged.startedAt ?? null,
       merged.completedAt ?? null,

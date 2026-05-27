@@ -1,6 +1,6 @@
 import { computed, ref, watch, type Ref } from "vue";
 
-export type ChatLane = "planner" | "worker" | "reviewer";
+export type ChatLane = "planner" | "worker";
 
 type RuntimePrompt = { id: string; text: string; images: unknown[] };
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
@@ -45,7 +45,6 @@ export function useLaneRuntimeBridge(params: {
   activeProject: Ref<{ chatSessionId?: string } | null>;
   activeRuntime: Ref<unknown>;
   activePlannerRuntime: Ref<unknown>;
-  activeReviewerRuntime: Ref<unknown>;
   queueStatus: Ref<{ running?: boolean } | null>;
   tasks: Ref<Array<{ status: string }>>;
   queuedPrompts: Ref<Array<{ id: string; text: string; images: unknown[] }>>;
@@ -53,7 +52,6 @@ export function useLaneRuntimeBridge(params: {
   agentBusy: Ref<boolean>;
   clearPlannerChat: () => void;
   startNewChatSession: () => void;
-  startNewReviewerSession: () => void;
   resumePlannerThread: () => void;
   resumeTaskThread: () => void;
 }) {
@@ -62,14 +60,13 @@ export function useLaneRuntimeBridge(params: {
     () => params.activeProjectId.value,
     (nextProjectId, prevProjectId) => {
       if (!prevProjectId || nextProjectId === prevProjectId) return;
-      if (activeChatLane.value === "planner" || activeChatLane.value === "reviewer") {
+      if (activeChatLane.value === "planner") {
         activeChatLane.value = "worker";
       }
     },
   );
   const plannerRuntime = computed(() => asPlannerRuntimeShape(params.activePlannerRuntime.value));
   const workerRuntime = computed(() => asRuntimeShape(params.activeRuntime.value));
-  const reviewerRuntime = computed(() => asRuntimeShape(params.activeReviewerRuntime.value));
 
   const plannerMessages = computed(() => plannerRuntime.value.messages.value);
   const plannerQueuedPrompts = computed(() =>
@@ -113,49 +110,26 @@ export function useLaneRuntimeBridge(params: {
       params.tasks.value.some((task) => task.status === "planning" || task.status === "running"),
   );
 
-  const reviewerMessages = computed(() => reviewerRuntime.value.messages.value);
-  const reviewerConnected = computed(() => reviewerRuntime.value.connected.value);
-  const reviewerQueuedPrompts = computed(() =>
-    mapQueuedPrompts(reviewerRuntime.value.queuedPrompts.value),
-  );
-  const reviewerPendingImages = computed(() => reviewerRuntime.value.pendingImages.value);
-  const reviewerBusy = computed(() => reviewerRuntime.value.busy.value);
-  const reviewerThreadWarning = computed(() => reviewerRuntime.value.threadWarning.value);
-  const reviewerAgents = computed(() => reviewerRuntime.value.availableAgents.value);
-  const reviewerActiveAgentId = computed(() => reviewerRuntime.value.activeAgentId.value);
-  const reviewerAgentDelegations = computed(() => reviewerRuntime.value.delegationsInFlight.value);
-  const reviewerComposerDraft = computed({
-    get: () => reviewerRuntime.value.composerDraft.value,
-    set: (value: string) => {
-      reviewerRuntime.value.composerDraft.value = value;
-    },
-  });
-  const reviewerChatKey = computed(() => `${params.activeProjectId.value}:reviewer`);
-
   const activeLaneBusy = computed(() => {
     if (activeChatLane.value === "planner") return plannerBusy.value;
-    if (activeChatLane.value === "reviewer") return reviewerBusy.value;
     return params.agentBusy.value;
   });
 
   const activeLaneThreadWarning = computed(() => {
     if (activeChatLane.value === "planner") return plannerThreadWarning.value;
-    if (activeChatLane.value === "worker") return workerThreadWarning.value;
-    return reviewerThreadWarning.value;
+    return workerThreadWarning.value;
   });
 
-  const activeLaneHasResume = computed(() => activeChatLane.value !== "reviewer");
+  const activeLaneHasResume = computed(() => true);
   const activeLaneNewSessionBlocked = computed(() => {
     if (activeChatLane.value === "planner") return !plannerConnected.value;
-    if (activeChatLane.value === "reviewer") return !reviewerConnected.value;
     return false;
   });
 
   function handleLaneNewSession(): void {
     if (activeLaneNewSessionBlocked.value) return;
     if (activeChatLane.value === "planner") params.clearPlannerChat();
-    else if (activeChatLane.value === "worker") params.startNewChatSession();
-    else params.startNewReviewerSession();
+    else params.startNewChatSession();
   }
 
   function handleLaneResumeThread(): void {
@@ -186,17 +160,6 @@ export function useLaneRuntimeBridge(params: {
     workerChatKey,
     workerQueuedPrompts,
     resumeThreadBlocked,
-    reviewerMessages,
-    reviewerConnected,
-    reviewerQueuedPrompts,
-    reviewerPendingImages,
-    reviewerBusy,
-    reviewerThreadWarning,
-    reviewerAgents,
-    reviewerActiveAgentId,
-    reviewerAgentDelegations,
-    reviewerComposerDraft,
-    reviewerChatKey,
     activeLaneBusy,
     activeLaneThreadWarning,
     activeLaneHasResume,

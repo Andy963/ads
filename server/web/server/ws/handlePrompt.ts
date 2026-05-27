@@ -18,7 +18,6 @@ import {
 } from "./promptModelConfig.js";
 import { applySessionOverrides } from "./sessionOverrides.js";
 import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
-import { handleReviewerPromptMessage } from "./reviewerPrompt.js";
 import { createDelegationTracker } from "./delegationTracker.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
@@ -81,21 +80,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       promptRunEpochs: deps.sessions.promptRunEpochs,
     });
     const controller = promptRun.controller;
-    const reviewerResult = await handleReviewerPromptMessage({
-      deps,
-      workspaceRoot,
-      turnCwd,
-      inputToSend,
-      controller,
-      promptRun,
-      sendToClient,
-      sendToChat,
-      cleanupAfter,
-    });
-    if (reviewerResult.handled) {
-      orchestrator = reviewerResult.orchestrator;
-      return;
-    }
     orchestrator = deps.sessions.sessionManager.getOrCreate(
       deps.context.userId,
       turnCwd,

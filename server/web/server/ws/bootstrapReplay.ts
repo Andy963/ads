@@ -31,20 +31,3 @@ export function buildHistoryBootstrapPayload(entries: HistoryEntry[]): { type: "
       : sanitizedHistory;
   return { type: "history", items };
 }
-
-export function buildReviewerBootstrapPayloads(args: {
-  isReviewerChat: boolean;
-  boundSnapshotId: string | null;
-  latestArtifact?: Record<string, unknown> | null;
-}): Array<Record<string, unknown>> {
-  if (!args.isReviewerChat) {
-    return [];
-  }
-  const payloads: Array<Record<string, unknown>> = [
-    { type: "reviewer_snapshot_binding", snapshotId: args.boundSnapshotId ?? null },
-  ];
-  if (args.boundSnapshotId && args.latestArtifact) {
-    payloads.push({ type: "reviewer_artifact", artifact: args.latestArtifact });
-  }
-  return payloads;
-}

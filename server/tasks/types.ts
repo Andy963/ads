@@ -10,7 +10,6 @@ export type TaskStatus =
 
 export type TaskRole = "system" | "user" | "assistant" | "tool";
 
-export type TaskReviewStatus = "none" | "pending" | "running" | "passed" | "rejected" | "failed";
 export type TaskExecutionIsolation = "default" | "required";
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
@@ -70,11 +69,6 @@ export interface Task {
   retryCount: number;
   maxRetries: number;
   executionIsolation?: TaskExecutionIsolation;
-  reviewRequired: boolean;
-  reviewStatus: TaskReviewStatus;
-  reviewSnapshotId?: string | null;
-  reviewConclusion?: string | null;
-  reviewedAt?: number | null;
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
@@ -96,7 +90,6 @@ export interface CreateTaskInput {
   threadId?: string | null;
   maxRetries?: number;
   executionIsolation?: TaskExecutionIsolation;
-  reviewRequired?: boolean;
   createdBy?: string | null;
 }
 
@@ -152,6 +145,7 @@ export interface TaskMessage {
 
 export interface ModelConfig {
   id: string;
+  modelId?: string | null;
   displayName: string;
   provider: string;
   isEnabled: boolean;

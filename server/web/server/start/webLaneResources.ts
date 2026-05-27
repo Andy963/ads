@@ -11,7 +11,6 @@ import { WorkspaceLockPool } from "../workspaceLockPool.js";
 
 export const WEB_WORKER_NAMESPACE = "web-worker";
 export const WEB_PLANNER_NAMESPACE = "web-planner";
-export const WEB_REVIEWER_NAMESPACE = "web-reviewer";
 
 export type MaterializationState = {
   materialized: boolean;
@@ -119,7 +118,6 @@ export type WebLaneRuntime = {
 export type WebLaneResources = {
   worker: WebLaneRuntime;
   planner: WebLaneRuntime;
-  reviewer: WebLaneRuntime;
 };
 
 function createLaneRuntime(args: {
@@ -191,10 +189,8 @@ export function createWebLaneResources(args: {
   sessionTimeoutMs: number;
   sessionCleanupIntervalMs: number;
   plannerCodexModel?: string;
-  reviewerCodexModel?: string;
   workerSessionManagerOptions?: SessionManagerOptions;
   plannerSessionManagerOptions?: SessionManagerOptions;
-  reviewerSessionManagerOptions?: SessionManagerOptions;
 }): WebLaneResources {
   return {
     worker: createLaneRuntime({
@@ -215,16 +211,6 @@ export function createWebLaneResources(args: {
       stateDbPath: args.stateDbPath,
       lazy: true,
       sessionManagerOptions: args.plannerSessionManagerOptions,
-    }),
-    reviewer: createLaneRuntime({
-      namespace: WEB_REVIEWER_NAMESPACE,
-      sandboxMode: "read-only",
-      defaultModel: args.reviewerCodexModel,
-      sessionTimeoutMs: args.sessionTimeoutMs,
-      sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
-      stateDbPath: args.stateDbPath,
-      lazy: true,
-      sessionManagerOptions: args.reviewerSessionManagerOptions,
     }),
   };
 }

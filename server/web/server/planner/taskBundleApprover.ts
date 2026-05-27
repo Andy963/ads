@@ -128,7 +128,6 @@ export function normalizeCreateTaskInput(
     inheritContext,
     maxRetries,
     executionIsolation,
-    reviewRequired: true,
     createdBy: createdBy ?? "planner_draft",
     attachments: attachments.length ? attachments : undefined,
   };

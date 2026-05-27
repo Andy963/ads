@@ -18,7 +18,6 @@ import { handleTaskRoutes } from "./routes/tasks.js";
 import { handleTaskBundleDraftRoutes } from "./routes/taskBundleDrafts.js";
 import { handlePreferenceRoutes } from "./routes/preferences.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
-import { handleReviewQueueRoutes } from "./routes/reviewQueue.js";
 import { handleFileRoutes } from "./routes/files.js";
 
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
@@ -91,7 +90,7 @@ export function createApiRequestHandler(deps: {
     if (await handleFileRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
     if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;
     if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
-    if (await handleModelRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
+    if (await handleModelRoutes(routeCtx)) return true;
     if (
       await handleTaskQueueRoutes(routeCtx, {
         taskQueueAvailable: deps.taskQueueAvailable,
@@ -101,7 +100,6 @@ export function createApiRequestHandler(deps: {
     )
       return true;
     if (await handleAttachmentRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext, buildAttachmentRawUrl })) return true;
-    if (await handleReviewQueueRoutes(routeCtx, sharedDeps)) return true;
     if (await handleTaskRoutes(routeCtx, sharedDeps)) return true;
 
     sendJson(res, 404, { error: "Not Found" });

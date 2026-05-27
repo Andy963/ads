@@ -5,7 +5,6 @@ import { SessionManager, resolveSessionAgentAllowlist } from "../../../telegram/
 import { AttachmentStore } from "../../../attachments/store.js";
 import { OrchestratorTaskExecutor } from "../../../tasks/executor.js";
 import { TaskQueue } from "../../../tasks/queue.js";
-import { ReviewStore } from "../../../tasks/reviewStore.js";
 import { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
 import { TaskRunController } from "../../taskRunController.js";
 import { deriveProjectSessionId } from "../projectSessionId.js";
@@ -29,7 +28,6 @@ export function createTaskQueueContext(args: {
   const sessionId = deriveProjectSessionId(workspaceRoot);
   const taskStore = new QueueTaskStore({ workspacePath: workspaceRoot });
   const attachmentStore = new AttachmentStore({ workspacePath: workspaceRoot });
-  const reviewStore = new ReviewStore({ workspacePath: workspaceRoot });
 
   const taskQueueStatusUserId = 0;
   const taskQueueModelOverride = String(process.env.TASK_QUEUE_DEFAULT_MODEL ?? "").trim() || undefined;
@@ -71,7 +69,6 @@ export function createTaskQueueContext(args: {
     taskStore,
     attachmentStore,
     taskQueue,
-    reviewStore,
     queueAutoStart: args.autoStart,
     queueRunning: false,
     dequeueInProgress: false,

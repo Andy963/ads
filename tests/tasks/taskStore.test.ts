@@ -206,6 +206,7 @@ describe("tasks/taskStore", () => {
     const saved = store.upsertModelConfig(
       {
         id: "claude-sonnet",
+        modelId: "claude-sonnet-4-6",
         displayName: "Claude Sonnet",
         provider: "anthropic",
         isEnabled: true,
@@ -216,6 +217,7 @@ describe("tasks/taskStore", () => {
     );
 
     assert.equal(saved.id, "claude-sonnet");
+    assert.equal(saved.modelId, "claude-sonnet-4-6");
     assert.equal(saved.isDefault, true);
     assert.deepEqual(saved.configJson, { maxTokens: 4096 });
     assert.equal(saved.updatedAt, now);
@@ -223,12 +225,31 @@ describe("tasks/taskStore", () => {
     const listed = store.listModelConfigs();
     assert.equal(listed.length, 1);
     assert.equal(listed[0]?.id, "claude-sonnet");
+    assert.equal(listed[0]?.modelId, "claude-sonnet-4-6");
     assert.equal(listed[0]?.displayName, "Claude Sonnet");
     assert.equal(listed[0]?.provider, "anthropic");
     assert.equal(listed[0]?.isEnabled, true);
     assert.equal(listed[0]?.isDefault, true);
     assert.deepEqual(listed[0]?.configJson, { maxTokens: 4096 });
     assert.equal(listed[0]?.updatedAt, now);
+  });
+
+  it("should default blank model config display names to modelId", () => {
+    const store = new TaskStore();
+
+    const saved = store.upsertModelConfig({
+      id: "generated-id",
+      modelId: "gpt-5.2",
+      displayName: "",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: false,
+      configJson: null,
+    });
+
+    assert.equal(saved.id, "generated-id");
+    assert.equal(saved.modelId, "gpt-5.2");
+    assert.equal(saved.displayName, "gpt-5.2");
   });
 
   it("should sort model configs by default first, otherwise by most recently updated", () => {

@@ -115,7 +115,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         model: z.string().min(1).optional(),
         priority: z.number().finite().optional(),
         maxRetries: z.number().int().min(0).optional(),
-        reviewRequired: z.boolean().optional(),
         execution: z
           .object({
             isolation: z.enum(["default", "required"]).optional(),
@@ -132,7 +131,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     }
     const parsed = updateResult.data;
     const keys = Object.keys(parsed).filter((k) =>
-      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "reviewRequired", "execution", "bootstrap"].includes(k),
+      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "execution", "bootstrap"].includes(k),
     );
     if (keys.length === 0) {
       sendJson(res, 400, { error: "No updates provided" });
@@ -156,7 +155,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     if (parsed.model !== undefined) updates.model = parsed.model;
     if (parsed.priority !== undefined) updates.priority = parsed.priority;
     if (parsed.maxRetries !== undefined) updates.maxRetries = parsed.maxRetries;
-    if (parsed.reviewRequired !== undefined) updates.reviewRequired = parsed.reviewRequired;
     if (parsed.execution?.isolation !== undefined) updates.executionIsolation = parsed.execution.isolation;
     if (parsed.bootstrap !== undefined) {
       const base = (() => {

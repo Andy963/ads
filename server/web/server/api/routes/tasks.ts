@@ -11,10 +11,6 @@ import { handleTaskCollectionRoutes } from "./tasks/collection.js";
 import { handleTaskByIdRoute } from "./tasks/taskById.js";
 import { buildTaskAttachments, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./tasks/shared.js";
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
 
@@ -42,46 +38,6 @@ export async function handleTaskRoutes(ctx: ApiRouteContext, deps: ApiSharedDeps
       deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: Date.now() });
     }
     sendJson(res, 200, { success: true, task });
-    return true;
-  }
-
-  const markReviewDoneMatch = /^\/api\/tasks\/([^/]+)\/review\/mark-done$/.exec(pathname);
-  if (markReviewDoneMatch && req.method === "POST") {
-    const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
-    if (!taskCtx) return true;
-    const taskId = markReviewDoneMatch[1] ?? "";
-    const existing = taskCtx.taskStore.getTask(taskId);
-    if (!existing) {
-      sendJson(res, 404, { error: "Not Found" });
-      return true;
-    }
-    if (!existing.reviewRequired) {
-      sendJson(res, 409, { error: "Task review is not enabled" });
-      return true;
-    }
-    if (existing.status !== "completed") {
-      sendJson(res, 409, { error: `Task not markable as done in status: ${existing.status}` });
-      return true;
-    }
-
-    const now = Date.now();
-    const existingConclusion = String(existing.reviewConclusion ?? "").trim();
-    const reviewConclusion = existingConclusion || "manually marked as done";
-    const reviewedAt =
-      typeof existing.reviewedAt === "number" && Number.isFinite(existing.reviewedAt) && existing.reviewedAt > 0
-        ? existing.reviewedAt
-        : now;
-
-    let updated = existing;
-    try {
-      updated = taskCtx.taskStore.updateTask(taskId, { reviewStatus: "passed", reviewConclusion, reviewedAt }, now);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      sendJson(res, 400, { error: message });
-      return true;
-    }
-    deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: updated, ts: now });
-    sendJson(res, 200, { success: true, task: updated });
     return true;
   }
 

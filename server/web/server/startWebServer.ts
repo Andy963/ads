@@ -32,7 +32,6 @@ import { DirectoryManager } from "../../telegram/utils/directoryManager.js";
 import {
   createWebLaneResources,
   WEB_PLANNER_NAMESPACE,
-  WEB_REVIEWER_NAMESPACE,
   WEB_WORKER_NAMESPACE,
 } from "./start/webLaneResources.js";
 import { preferInMemoryThreadId } from "./ws/threadIds.js";
@@ -118,7 +117,7 @@ function migrateLegacyWebLaneNamespaces(): void {
     const now = Date.now();
 
     // Thread state: cannot partition by lane (user_hash is irreversible), so copy all.
-    for (const target of [WEB_WORKER_NAMESPACE, WEB_PLANNER_NAMESPACE, WEB_REVIEWER_NAMESPACE]) {
+    for (const target of [WEB_WORKER_NAMESPACE, WEB_PLANNER_NAMESPACE]) {
       db.prepare(
         `INSERT OR IGNORE INTO thread_state (namespace, user_hash, thread_id, cwd, updated_at)
          SELECT ?, user_hash, thread_id, cwd, updated_at
@@ -248,7 +247,6 @@ export async function startWebServer(): Promise<void> {
     sessionTimeoutMs: webSessionTimeoutMs,
     sessionCleanupIntervalMs: webSessionCleanupIntervalMs,
     plannerCodexModel: webConfig.plannerCodexModel,
-    reviewerCodexModel: webConfig.reviewerCodexModel,
     workerSessionManagerOptions: {
       onDispose: ({ userId }) => {
         directoryManager.clearUserCwd(userId);
@@ -261,16 +259,9 @@ export async function startWebServer(): Promise<void> {
         sessionCacheRegistry?.clearForUser(userId);
       },
     },
-    reviewerSessionManagerOptions: {
-      onDispose: ({ userId }) => {
-        directoryManager.clearUserCwd(userId);
-        sessionCacheRegistry?.clearForUser(userId);
-      },
-    },
   });
   const sessionManager = laneResources.worker.sessionManager;
   const plannerSessionManager = laneResources.planner.sessionManager;
-  const reviewerSessionManager = laneResources.reviewer.sessionManager;
   sessionCacheRegistry = createSessionCacheRegistry({
     workspaceCache,
     cwdStore,
@@ -278,15 +269,12 @@ export async function startWebServer(): Promise<void> {
     persistCwdStore,
     hasActiveSession: (userId) =>
       sessionManager.hasSession(userId) ||
-      plannerSessionManager.hasSession(userId) ||
-      reviewerSessionManager.hasSession(userId),
+      plannerSessionManager.hasSession(userId),
   });
   const getWorkspaceLock = laneResources.worker.getWorkspaceLock;
   const getPlannerWorkspaceLock = laneResources.planner.getWorkspaceLock;
-  const getReviewerWorkspaceLock = laneResources.reviewer.getWorkspaceLock;
   const wsHub = createWebSocketHub({
     workerHistoryStore: laneResources.worker.historyStore,
-    reviewerHistoryStore: laneResources.reviewer.historyStore,
   });
 
   const taskQueueManager = createTaskQueueManager({
@@ -299,9 +287,6 @@ export async function startWebServer(): Promise<void> {
     logger,
     broadcastToSession: wsHub.broadcastToSession,
     recordToSessionHistories: wsHub.recordToSessionHistories,
-    reviewSessionManager: reviewerSessionManager,
-    broadcastToReviewerSession: wsHub.broadcastToReviewerSession,
-    recordToReviewerHistories: wsHub.recordToReviewerHistories,
   });
 
   startTaskTerminalTelegramRetryLoop({ logger });
@@ -318,7 +303,6 @@ export async function startWebServer(): Promise<void> {
     new Set([
       ...sessionManager.getConfiguredAgentIds(),
       ...plannerSessionManager.getConfiguredAgentIds(),
-      ...reviewerSessionManager.getConfiguredAgentIds(),
     ]),
   );
   const broadcastAgentsSnapshot = (): void => {
@@ -326,9 +310,7 @@ export async function startWebServer(): Promise<void> {
       const manager =
         meta.chatSessionId === "planner"
           ? plannerSessionManager
-          : meta.chatSessionId === "reviewer"
-            ? reviewerSessionManager
-            : sessionManager;
+          : sessionManager;
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
       const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
       const activeAgentId = orchestrator.getActiveAgentId();
@@ -422,15 +404,12 @@ export async function startWebServer(): Promise<void> {
     sessions: {
       workerSessionManager: sessionManager,
       plannerSessionManager,
-      reviewerSessionManager,
       getWorkspaceLock,
       getPlannerWorkspaceLock,
-      getReviewerWorkspaceLock,
     },
     history: {
       workerHistoryStore: laneResources.worker.historyStore,
       plannerHistoryStore: laneResources.planner.historyStore,
-      reviewerHistoryStore: laneResources.reviewer.historyStore,
     },
     tasks: {
       ensureTaskContext: taskQueueManager.ensureTaskContext,

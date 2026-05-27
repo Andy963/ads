@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
@@ -8,13 +8,13 @@ import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
+import ModelManager from "./components/ModelManager.vue";
 
 import { createAppController } from "./app/controller";
 import type { TaskBundle, TaskBundleDraftSpecFileKey, TaskBundleDraftSpecFileUpdate } from "./api/types";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
-import { useReviewerBinding } from "./composables/app/useReviewerBinding";
-import { CirclePlus, Refresh, ChatDotRound } from "@element-plus/icons-vue";
+import { CirclePlus, Refresh, ChatDotRound, Setting } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -60,13 +60,10 @@ const {
   resumePlannerThread,
   clearActiveChat,
   clearPlannerChat,
-  clearReviewerChat,
-  startNewReviewerSession,
   startNewChatSession,
   messages,
   activeRuntime,
   activePlannerRuntime,
-  activeReviewerRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
@@ -80,27 +77,20 @@ const {
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
-  sendReviewerPrompt,
   setMainModelId,
   setPlannerModelId,
-  setReviewerModelId,
   setMainModelReasoningEffort,
   setPlannerModelReasoningEffort,
-  setReviewerModelReasoningEffort,
   switchMainAgent,
   switchPlannerAgent,
-  switchReviewerAgent,
   interruptActive,
   interruptPlanner,
   addPendingImages,
   clearPendingImages,
   addPlannerPendingImages,
   clearPlannerPendingImages,
-  addReviewerPendingImages,
-  clearReviewerPendingImages,
   removeQueuedPrompt,
   removePlannerQueuedPrompt,
-  removeReviewerQueuedPrompt,
   apiNotice,
   taskCreateDialogOpen,
   closeTaskCreateDialog,
@@ -133,10 +123,11 @@ const {
   deleteConfirmButtonEl,
 } = createAppController();
 
+const modelManagerOpen = ref(false);
+
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "planner", label: "Planner" },
   { id: "worker", label: "Worker" },
-  { id: "reviewer", label: "Reviewer" },
 ];
 
 const {
@@ -162,17 +153,6 @@ const {
   workerChatKey,
   workerQueuedPrompts,
   resumeThreadBlocked,
-  reviewerMessages,
-  reviewerConnected,
-  reviewerQueuedPrompts,
-  reviewerPendingImages,
-  reviewerBusy,
-  reviewerThreadWarning,
-  reviewerAgents,
-  reviewerActiveAgentId,
-  reviewerAgentDelegations,
-  reviewerComposerDraft,
-  reviewerChatKey,
   activeLaneBusy,
   activeLaneThreadWarning,
   activeLaneHasResume,
@@ -184,7 +164,6 @@ const {
   activeProject,
   activeRuntime,
   activePlannerRuntime,
-  activeReviewerRuntime,
   queueStatus,
   tasks,
   queuedPrompts,
@@ -192,27 +171,8 @@ const {
   agentBusy,
   clearPlannerChat,
   startNewChatSession,
-  startNewReviewerSession,
   resumePlannerThread,
   resumeTaskThread,
-});
-
-const {
-  reviewerLatestArtifact,
-  reviewerBoundSnapshotId,
-  reviewerBindingMutationBlocked,
-  selectedTaskReviewSnapshotId,
-  selectedTaskReviewLabel,
-  bindReviewerToSelectedSnapshot,
-  clearReviewerSnapshotBinding,
-} = useReviewerBinding({
-  tasks,
-  selectedId,
-  activeReviewerRuntime,
-  reviewerConnected,
-  api: computed(() => api),
-  resolveActiveWorkspaceRoot,
-  clearReviewerChat,
 });
 
 const {
@@ -270,6 +230,18 @@ function openTaskCreateDialogHandler(): void {
   openTaskCreateDialog();
 }
 
+function openModelManager(): void {
+  modelManagerOpen.value = true;
+}
+
+function closeModelManager(): void {
+  modelManagerOpen.value = false;
+}
+
+function onModelManagerChanged(): void {
+  void loadModels();
+}
+
 const runningTaskCount = computed(() =>
   tasks.value.filter((t) => t.status === "running" || t.status === "planning").length,
 );
@@ -287,13 +259,6 @@ const plannerConnectionStatus = computed(() => {
   const error = String(activePlannerRuntime.value.wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
   if (!plannerConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
-  return null;
-});
-
-const reviewerConnectionStatus = computed(() => {
-  const error = String(activeReviewerRuntime.value.wsError.value ?? "").trim();
-  if (error) return { kind: "error" as const, message: error };
-  if (!reviewerConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return null;
 });
 
@@ -330,6 +295,16 @@ const reviewerConnectionStatus = computed(() => {
         </div>
       </div>
       <div class="right">
+        <button
+          type="button"
+          class="topbarIconBtn"
+          title="管理模型"
+          aria-label="管理模型"
+          data-testid="model-manager-open"
+          @click="openModelManager"
+        >
+          <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
+        </button>
         <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
       </div>
     </header>
@@ -567,74 +542,6 @@ const reviewerConnectionStatus = computed(() => {
               @removeQueued="removeQueuedPrompt"
             />
           </section>
-
-          <section
-            :id="'lane-panel-reviewer'"
-            v-show="activeChatLane === 'reviewer'"
-            class="lanePanel"
-            role="tabpanel"
-            aria-labelledby="lane-tab-reviewer"
-            data-testid="lane-panel-reviewer"
-          >
-            <div class="reviewerBindingBar" data-testid="reviewer-binding-bar">
-              <div class="reviewerBindingMeta">
-                <span class="reviewerBindingLabel">Bound snapshot</span>
-                <code class="reviewerBindingValue">{{ reviewerBoundSnapshotId || "unbound" }}</code>
-              </div>
-              <div class="reviewerBindingMeta">
-                <span class="reviewerBindingLabel">Selected task</span>
-                <span class="reviewerBindingText">{{ selectedTaskReviewLabel }}</span>
-              </div>
-              <div class="reviewerBindingActions">
-                <button
-                  class="inlineAction"
-                  type="button"
-                  :disabled="reviewerBindingMutationBlocked || !selectedTaskReviewSnapshotId"
-                  data-testid="reviewer-bind-selected-snapshot"
-                  @click="bindReviewerToSelectedSnapshot"
-                >
-                  Use selected snapshot
-                </button>
-                <button
-                  class="inlineAction"
-                  type="button"
-                  :disabled="reviewerBindingMutationBlocked || !reviewerBoundSnapshotId"
-                  data-testid="reviewer-clear-snapshot-binding"
-                  @click="clearReviewerSnapshotBinding"
-                >
-                  Clear binding
-                </button>
-              </div>
-            </div>
-            <MainChatView
-              :key="reviewerChatKey"
-              class="chatHost"
-              :messages="reviewerMessages"
-              :draft="reviewerComposerDraft"
-              :queued-prompts="reviewerQueuedPrompts"
-              :pending-images="reviewerPendingImages"
-              :connected="reviewerConnected"
-              :busy="reviewerBusy"
-              :agents="reviewerAgents"
-              :active-agent-id="reviewerActiveAgentId"
-              :models="models"
-              :model-id="activeReviewerRuntime.modelId.value"
-              :model-reasoning-effort="activeReviewerRuntime.modelReasoningEffort.value"
-              :agent-delegations="reviewerAgentDelegations"
-              :review-artifact="reviewerLatestArtifact"
-              :workspace-root="resolveActiveWorkspaceRoot()"
-              :connection-status-kind="reviewerConnectionStatus?.kind ?? null"
-              :connection-status-message="reviewerConnectionStatus?.message ?? null"
-              @send="sendReviewerPrompt"
-              @update:draft="reviewerComposerDraft = $event"
-              @switchAgent="switchReviewerAgent"
-              @setModel="setReviewerModelId"
-              @setReasoningEffort="setReviewerModelReasoningEffort"
-              @addImages="addReviewerPendingImages"
-              @clearImages="clearReviewerPendingImages"
-              @removeQueued="removeReviewerQueuedPrompt"
-            />
-          </section>
         </div>
       </section>
     </main>
@@ -653,6 +560,10 @@ const reviewerConnectionStatus = computed(() => {
         @reset-thread="clearActiveChat"
         @cancel="closeTaskCreateDialog"
       />
+    </DraggableModal>
+
+    <DraggableModal v-if="modelManagerOpen" card-variant="large" @close="closeModelManager">
+      <ModelManager :api="api" @close="closeModelManager" @changed="onModelManagerChanged" />
     </DraggableModal>
 
     <div v-if="projectDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeProjectDialog">

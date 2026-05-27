@@ -146,9 +146,6 @@ export function bindTaskQueueRuntime(args: {
     sessionId: string,
     entry: { role: string; text: string; ts: number; kind?: string },
   ) => void;
-  ensureReviewEnqueued: (taskId: string, now?: number) => void;
-  runReviewLoop: () => Promise<void>;
-  onReviewEnqueueFailure: (taskId: string, error: unknown) => void;
 }) {
   const { ctx } = args;
   const promote = () =>
@@ -231,13 +228,6 @@ export function bindTaskQueueRuntime(args: {
         text: task.result.trim(),
         ts: Date.now(),
       });
-    }
-    if (task.reviewRequired) {
-      try {
-        args.ensureReviewEnqueued(task.id);
-      } catch (error) {
-        args.onReviewEnqueueFailure(task.id, error);
-      }
     }
     try {
       notifyTaskTerminalViaTelegram({
@@ -328,9 +318,6 @@ export function bindTaskQueueRuntime(args: {
     promote();
     ctx.runController.maybePauseAfterDrain(ctx);
   });
-
-  void args.runReviewLoop();
-
   if (args.available) {
     const status = ctx.getStatusOrchestrator().status();
     if (ctx.queueAutoStart) {

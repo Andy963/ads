@@ -15,7 +15,6 @@ import {
   truncate,
   getLatestContextOfType,
   formatWorkspacePatchArtifactForPrompt,
-  formatReviewArtifactReferenceForPrompt,
   persistTaskWorktreeReference,
   extractBootstrapConfig,
   resolveBootstrapProjectRef,
@@ -167,7 +166,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           executionIsolation,
           workspaceRoot: this.workspaceRoot,
           status: "preparing",
-          captureStatus: task.reviewRequired && executionIsolation === "required" ? "pending" : "skipped",
+          captureStatus: "skipped",
           applyStatus: executionIsolation === "required" ? "pending" : "skipped",
         },
         startedAt,
@@ -231,7 +230,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
             status: "running",
             startedAt,
             applyStatus: "skipped",
-            captureStatus: task.reviewRequired ? "pending" : "skipped",
+            captureStatus: "skipped",
           },
           startedAt,
         );
@@ -254,9 +253,6 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
       const latestPatchContext =
         getLatestContextOfType(contexts, "artifact:previous_workspace_patch") ?? getLatestContextOfType(contexts, "artifact:workspace_patch");
       const patchHint = formatWorkspacePatchArtifactForPrompt(latestPatchContext);
-      const reviewArtifactHint = formatReviewArtifactReferenceForPrompt(
-        getLatestContextOfType(contexts, "artifact:review_artifact_reference"),
-      );
 
       try {
         const history = this.store
@@ -299,8 +295,6 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         const prompt = [
           "你正在执行一个任务队列中的任务。请完成任务并输出结果。",
           "",
-          reviewArtifactHint ? reviewArtifactHint : "",
-          reviewArtifactHint ? "" : "",
           patchHint ? patchHint : "",
           patchHint ? "" : "",
           historySnippet ? "（上下文）\n" + historySnippet : "",
@@ -414,7 +408,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         options?.hooks?.onMessage?.({ role: "assistant", content: lastOutput, modelUsed: modelForStorage });
 
         const endHead = taskRun.worktreeDir ? await readGitHead(taskRun.worktreeDir, options?.signal) : taskRun.endHead;
-        if (executionIsolation === "required" && taskRun.worktreeDir && taskRun.baseHead && !task.reviewRequired) {
+        if (executionIsolation === "required" && taskRun.worktreeDir && taskRun.baseHead) {
           const applyResult = await applyTaskRunChanges({
             workspaceRoot: taskRun.workspaceRoot,
             worktreeDir: taskRun.worktreeDir,
@@ -452,7 +446,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
             {
               endHead,
               status: "completed",
-              captureStatus: executionIsolation === "required" && task.reviewRequired ? "pending" : "skipped",
+              captureStatus: "skipped",
               applyStatus: executionIsolation === "required" ? "pending" : "skipped",
               error: null,
             },

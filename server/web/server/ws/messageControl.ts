@@ -3,50 +3,17 @@ import type { WebSocket } from "ws";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { WsLogger, WsPromptSessionLogger, WsTaskResumeHandlerDeps } from "./deps.js";
 import { invalidateWsPromptRun } from "./promptLifecycle.js";
-import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import type { WsMessage } from "./schema.js";
 
-function parsePreservedReviewerSnapshotId(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return null;
-  }
-  const record = payload as Record<string, unknown>;
-  const raw = record.preserveReviewerSnapshotId;
-  const snapshotId = typeof raw === "string" ? raw.trim() : "";
-  return snapshotId || null;
-}
+type ClearHistoryScope = "lane" | "shared";
 
-function resolveReviewerSnapshotBindingToPreserve(args: {
-  parsed: WsMessage;
-  isReviewerChat: boolean;
-  userId: number;
-  historyKey: string;
-  currentCwd: string;
-  sessionManager: SessionManager;
-  reviewerSnapshotBindings: Map<string, string>;
-  ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
-}): string | null {
-  if (!args.isReviewerChat) {
-    return null;
+function resolveClearHistoryScope(payload: unknown): ClearHistoryScope {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return "lane";
   }
-  const requestedSnapshotId = parsePreservedReviewerSnapshotId(args.parsed.payload);
-  if (!requestedSnapshotId) {
-    return null;
-  }
-  const currentBinding =
-    String(args.reviewerSnapshotBindings.get(args.historyKey) ?? "").trim() ||
-    String((args.sessionManager as SessionManager).getSavedReviewerSnapshotId?.(args.userId) ?? "").trim();
-  if (!currentBinding || currentBinding !== requestedSnapshotId) {
-    return null;
-  }
-  try {
-    const workspaceRoot = resolveWorkspaceRootFromDirectory(args.currentCwd);
-    const taskCtx = args.ensureTaskContext(workspaceRoot);
-    return taskCtx.reviewStore.getSnapshot(requestedSnapshotId) ? requestedSnapshotId : null;
-  } catch {
-    return null;
-  }
+  const scope = String((payload as Record<string, unknown>).scope ?? "").trim().toLowerCase();
+  return scope === "shared" || scope === "project" ? "shared" : "lane";
 }
 
 export function ensureWsSessionLogger(args: {
@@ -66,7 +33,6 @@ export function ensureWsSessionLogger(args: {
 export async function handleWsControlMessage(args: {
   parsed: WsMessage;
   chatSessionId: string;
-  isReviewerChat: boolean;
   userId: number;
   historyKey: string;
   currentCwd: string;
@@ -76,20 +42,19 @@ export async function handleWsControlMessage(args: {
   historyStore: WsTaskResumeHandlerDeps["history"]["historyStore"];
   interruptControllers?: Map<string, AbortController>;
   promptRunEpochs?: Map<string, number>;
-  reviewerSnapshotBindings: Map<string, string>;
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
   broadcastSessionReset?: (payload: unknown) => void;
   resetSharedSessionState?: (options: {
     sourceChatSessionId: string;
-    reviewerSnapshotIdToPreserve: string | null;
-  }) => { preservedReviewerSnapshotId: string | null };
+  }) => void;
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }> {
   if (args.parsed.type === "clear_history") {
+    const scope = resolveClearHistoryScope(args.parsed.payload);
     if (args.interruptControllers) {
       invalidateWsPromptRun({
         historyKey: args.historyKey,
@@ -97,53 +62,26 @@ export async function handleWsControlMessage(args: {
         promptRunEpochs: args.promptRunEpochs,
       });
     }
-    const preservedSnapshotId = resolveReviewerSnapshotBindingToPreserve({
-      parsed: args.parsed,
-      isReviewerChat: args.isReviewerChat,
-      userId: args.userId,
-      historyKey: args.historyKey,
-      currentCwd: args.currentCwd,
-      sessionManager: args.sessionManager,
-      reviewerSnapshotBindings: args.reviewerSnapshotBindings,
-      ensureTaskContext: args.ensureTaskContext,
-    });
-    const requestedSnapshotId = parsePreservedReviewerSnapshotId(args.parsed.payload);
     args.logger.info(
-      `[Web][continuity] reset source=clear_history user=${args.userId} history=${args.historyKey} reviewer=${args.isReviewerChat} preserveRequested=${requestedSnapshotId ?? "none"} preserveApplied=${preservedSnapshotId ?? "none"}`,
+      `[Web][continuity] reset source=clear_history scope=${scope} user=${args.userId} history=${args.historyKey}`,
     );
-    let sharedResetResult: { preservedReviewerSnapshotId: string | null } | null = null;
-    if (args.resetSharedSessionState) {
-      sharedResetResult = args.resetSharedSessionState({
-        sourceChatSessionId: args.chatSessionId,
-        reviewerSnapshotIdToPreserve: preservedSnapshotId,
-      });
+    if (scope === "shared" && args.resetSharedSessionState) {
+      args.resetSharedSessionState({ sourceChatSessionId: args.chatSessionId });
     } else {
       args.historyStore.clear(args.historyKey);
       args.sessionManager.reset(args.userId);
-      if (args.isReviewerChat) {
-        args.reviewerSnapshotBindings.delete(args.historyKey);
-        args.sessionManager.clearSavedReviewerSnapshotBinding?.(args.userId);
-        if (preservedSnapshotId) {
-          args.reviewerSnapshotBindings.set(args.historyKey, preservedSnapshotId);
-          args.sessionManager.saveReviewerSnapshotBinding(args.userId, preservedSnapshotId);
-        }
-      }
     }
     args.broadcastSessionReset?.({
       type: "session_reset",
       source: "clear_history",
       sourceChatSessionId: args.chatSessionId,
-      preservedReviewerSnapshotId: sharedResetResult?.preservedReviewerSnapshotId ?? (args.isReviewerChat ? preservedSnapshotId : null),
+      scope,
     });
     args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
     return { handled: true, orchestrator: args.orchestrator };
   }
 
   if (args.parsed.type === "task_resume") {
-    if (args.isReviewerChat) {
-      args.sendJson({ type: "error", message: "Reviewer lane does not support resuming threads." });
-      return { handled: true, orchestrator: args.orchestrator };
-    }
     const resume = await handleTaskResumeMessage({
       request: { parsed: args.parsed },
       transport: {
@@ -175,11 +113,6 @@ export async function handleWsControlMessage(args: {
       },
     });
     return { handled: true, orchestrator: resume.orchestrator ?? args.orchestrator };
-  }
-
-  if (args.isReviewerChat && (args.parsed.type === "command" || args.parsed.type === "set_agent")) {
-    args.sendJson({ type: "error", message: "Reviewer lane is read-only and does not accept commands." });
-    return { handled: true, orchestrator: args.orchestrator };
   }
 
   return { handled: false, orchestrator: args.orchestrator };
