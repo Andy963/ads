@@ -267,6 +267,32 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("replays pending prompts after a reset welcome without waiting for history", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.pendingAckClientMessageId = "pending-reset";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({ clientMessageId: "pending-reset", text: "run after reset", createdAt: Date.now(), agentId: "claude" }),
+    );
+    lastSentPromptPayload = null;
+    await settleUi(wrapper);
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({ type: "welcome", reset: true, inFlight: false, contextMode: "thread_resumed", threadId: "thread-1" });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toMatchObject({
+      text: "run after reset",
+      agentId: "claude",
+    });
+    expect(rt.awaitingBootstrapHistory).toBe(false);
+    expect(rt.queuedPrompts.value).toEqual([]);
+    wrapper.unmount();
+  });
+
   it("removes the reconnect busy notice when bootstrap history arrives", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 

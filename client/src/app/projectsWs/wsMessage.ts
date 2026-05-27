@@ -568,6 +568,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const handshakeReset = Boolean(msg.reset);
       const contextMode = String(msg.contextMode ?? "").trim();
       rt.awaitingBootstrapHistory =
+        !handshakeReset &&
         (contextMode === "thread_resumed" || contextMode === "history_injection" || Boolean(rawServerThreadId)) &&
         rt.queuedPrompts.value.length > 0;
       const serverThreadId = contextMode === "fresh" ? "" : rawServerThreadId;
