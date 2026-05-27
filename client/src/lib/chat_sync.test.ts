@@ -236,6 +236,45 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out.map((m) => m.content)).toEqual(["Check status", "Running it now.", "M client/src/lib/chat_sync.ts"]);
   });
 
+  it("drops streaming execute previews even when their ids are not exec-prefixed", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Check status" }),
+      msg({
+        id: "preview-with-custom-id",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "partial local output",
+        streaming: true,
+      }),
+      msg({ id: "a1", role: "assistant", content: "Running it now." }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Check status" }),
+      msg({
+        id: "server-preview-with-custom-id",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "partial server output",
+        streaming: true,
+      }),
+      msg({ id: "h-a-1", role: "assistant", content: "Running it now." }),
+      msg({
+        id: "h-x-2",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "M client/src/lib/chat_sync.ts",
+      }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out.map((m) => m.id)).toEqual(["u1", "a1", "h-x-2"]);
+    expect(out.map((m) => m.content)).toEqual(["Check status", "Running it now.", "M client/src/lib/chat_sync.ts"]);
+  });
+
   it("replaces a truncated last assistant message instead of duplicating it", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Hi" }),

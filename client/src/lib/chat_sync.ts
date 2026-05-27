@@ -19,7 +19,7 @@ function escapeRegExp(text: string): string {
 }
 
 function isTransientExecutePreview(item: ChatItem): boolean {
-  return item.kind === "execute" && String(item.id ?? "").startsWith("exec:");
+  return item.kind === "execute" && (item.streaming === true || String(item.id ?? "").startsWith("exec:"));
 }
 
 function withoutLiveAndTransientExecute(items: ChatItem[], liveStepId: string): ChatItem[] {
