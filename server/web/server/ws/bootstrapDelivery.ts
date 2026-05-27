@@ -2,7 +2,7 @@ import type { WebSocket } from "ws";
 
 import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import type { HistoryStore } from "../../../utils/historyStore.js";
+import type { HistoryEntry, HistoryStore } from "../../../utils/historyStore.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 
@@ -18,6 +18,17 @@ function buildContextRestoreStatus(contextMode: string): string | null {
 
 function buildInFlightStatus(inFlight: boolean): string | null {
   return inFlight ? "上一轮仍在执行，正在等待后端结果。" : null;
+}
+
+function shouldReplayFreshHistory(entries: HistoryEntry[]): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (!entry || !String(entry.text ?? "").trim()) {
+      continue;
+    }
+    return entry.role === "status" && entry.kind === "error";
+  }
+  return false;
 }
 
 export function sendInitialBootstrapMessages(args: {
@@ -60,8 +71,13 @@ export function sendInitialBootstrapMessages(args: {
     }),
   );
 
-  const shouldReplayHistory = args.inFlight || bootstrapState.contextMode !== "fresh" || Boolean(bootstrapState.threadId);
-  const historyPayload = shouldReplayHistory ? buildHistoryBootstrapPayload(args.historyStore.get(args.historyKey)) : null;
+  const historyEntries = args.historyStore.get(args.historyKey);
+  const shouldReplayHistory =
+    args.inFlight ||
+    bootstrapState.contextMode !== "fresh" ||
+    Boolean(bootstrapState.threadId) ||
+    shouldReplayFreshHistory(historyEntries);
+  const historyPayload = shouldReplayHistory ? buildHistoryBootstrapPayload(historyEntries) : null;
   if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
   }

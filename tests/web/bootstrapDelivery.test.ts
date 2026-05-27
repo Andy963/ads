@@ -42,6 +42,50 @@ describe("web/ws/bootstrapDelivery", () => {
     }
   });
 
+  it("replays fresh-mode terminal error history so reconnect explains failed turns", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-fresh-error", maxEntriesPerSession: 20 });
+    historyStore.add("history-1", { role: "user", text: "hello", ts: 1 });
+    historyStore.add("history-1", { role: "status", text: "已中断，输出可能不完整", ts: 2, kind: "error" });
+
+    try {
+      sendInitialBootstrapMessages({
+        ws: {} as any,
+        safeJsonSend: (_ws, payload) => sent.push(payload),
+        sessionManager: {
+          getSavedThreadId: () => undefined,
+          getContextRestoreMode: () => "fresh",
+          getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => null,
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+        sessionId: "session-1",
+        chatSessionId: "custom-worker",
+        workspace: { path: "/tmp/project" },
+        inFlight: false,
+        historyStore,
+        historyKey: "history-1",
+      });
+
+      assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[1] as { type?: unknown }).type, "agents");
+      assert.deepEqual(sent[2], {
+        type: "history",
+        items: [
+          { role: "user", text: "hello", ts: 1, kind: undefined },
+          { role: "status", text: "已中断，输出可能不完整", ts: 2, kind: "error" },
+        ],
+      });
+    } finally {
+      historyStore.clear("history-1");
+    }
+  });
+
   it("replays history when a fresh-mode runtime already has a live thread", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-fresh-live", maxEntriesPerSession: 20 });
