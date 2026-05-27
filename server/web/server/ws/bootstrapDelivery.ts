@@ -42,6 +42,23 @@ function shouldReplayFreshHistory(entries: HistoryEntry[]): boolean {
   return false;
 }
 
+function trimTrailingFreshStatusNotices(entries: HistoryEntry[]): HistoryEntry[] {
+  let end = entries.length;
+  while (end > 0) {
+    const entry = entries[end - 1];
+    if (!entry || !String(entry.text ?? "").trim()) {
+      end -= 1;
+      continue;
+    }
+    if (entry.role === "status" && entry.kind === "status" && !isReplayableBuiltinStatus(entry)) {
+      end -= 1;
+      continue;
+    }
+    break;
+  }
+  return end === entries.length ? entries : entries.slice(0, end);
+}
+
 export function sendInitialBootstrapMessages(args: {
   ws: WebSocket;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
@@ -88,7 +105,9 @@ export function sendInitialBootstrapMessages(args: {
     bootstrapState.contextMode !== "fresh" ||
     Boolean(bootstrapState.threadId) ||
     shouldReplayFreshHistory(historyEntries);
-  const historyPayload = shouldReplayHistory ? buildHistoryBootstrapPayload(historyEntries) ?? { type: "history", items: [] } : null;
+  const replayHistoryEntries =
+    bootstrapState.contextMode === "fresh" ? trimTrailingFreshStatusNotices(historyEntries) : historyEntries;
+  const historyPayload = shouldReplayHistory ? buildHistoryBootstrapPayload(replayHistoryEntries) ?? { type: "history", items: [] } : null;
   if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
   }

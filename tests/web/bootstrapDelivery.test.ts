@@ -168,7 +168,6 @@ describe("web/ws/bootstrapDelivery", () => {
         items: [
           { role: "user", text: "npm test", ts: 1, kind: undefined },
           { role: "status", text: "$ npm test\nTests failed", ts: 2, kind: "execute" },
-          { role: "status", text: "已恢复后端上下文线程。", ts: 3, kind: "status" },
         ],
       });
     } finally {
