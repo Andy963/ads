@@ -471,7 +471,9 @@ export function createChatActions(ctx: AppContext) {
       state.pendingAckClientMessageId = next.clientMessageId;
       const effort = String(state.modelReasoningEffort.value ?? "").trim() || "high";
       const model = String(state.modelId.value ?? "").trim() || "auto";
-      const agentId = String(state.activeAgentId.value ?? next.agentId ?? "").trim();
+      const queuedAgentId = String(next.agentId ?? "").trim();
+      const activeAgentId = String(state.activeAgentId.value ?? "").trim();
+      const agentId = queuedAgentId || activeAgentId;
       savePendingPrompt(state, { ...next, agentId });
       const payload =
         next.images.length > 0

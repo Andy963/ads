@@ -273,6 +273,43 @@ describe("Model selector persistence", () => {
     TEST_TIMEOUT_MS,
   );
 
+  it(
+    "preserves the stored agent id when replaying a restored pending prompt",
+    async () => {
+      sessionStorage.setItem(
+        PENDING_PROMPT_KEY,
+        JSON.stringify({ clientMessageId: "c-agent", text: "hello", createdAt: Date.now(), agentId: "claude" }),
+      );
+
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+
+      lastWorkerWs!.onMessage?.({
+        type: "welcome",
+        threadId: null,
+        chatSessionId: "main",
+        activeAgentId: "codex",
+        effectiveModel: "gpt-4.1",
+        effectiveModelReasoningEffort: "high",
+      });
+      await settleUi(wrapper);
+
+      expect(lastSendPromptPayload).toBeTruthy();
+      expect(lastSendPromptPayload).toMatchObject({
+        text: "hello",
+        agentId: "claude",
+        model: "gpt-4.1",
+      });
+
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   it.each([
     [4401, "Unauthorized"],
     [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],
