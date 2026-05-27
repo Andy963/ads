@@ -621,6 +621,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const content = String(msg.message ?? msg.output ?? msg.text ?? "").trim();
       if (!content) return;
       const kind = String(msg.kind ?? "").trim() === "error" ? "error" : "text";
+      const last = rt.messages.value.at(-1);
+      if (last?.role === "system" && last.kind === kind && String(last.content ?? "").trim() === content) {
+        return;
+      }
       pushMessageBeforeLive({ role: "system", kind, content }, rt);
       return;
     }

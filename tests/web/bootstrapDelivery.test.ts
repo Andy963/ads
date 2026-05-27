@@ -111,6 +111,49 @@ describe("web/ws/bootstrapDelivery", () => {
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
       assert.equal((sent[2] as { type?: unknown }).type, "history");
+      assert.deepEqual(sent[3], {
+        type: "status",
+        message: "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。",
+        kind: "status",
+      });
+    } finally {
+      historyStore.clear("history-1");
+    }
+  });
+
+  it("announces restored backend thread continuity after bootstrap history", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-thread-resumed", maxEntriesPerSession: 20 });
+    historyStore.add("history-1", { role: "user", text: "hello", ts: 1 });
+
+    try {
+      sendInitialBootstrapMessages({
+        ws: {} as any,
+        safeJsonSend: (_ws, payload) => sent.push(payload),
+        sessionManager: {
+          getSavedThreadId: () => "thread-saved",
+          getContextRestoreMode: () => "thread_resumed",
+          getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => "thread-live",
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+        sessionId: "session-1",
+        chatSessionId: "custom-worker",
+        workspace: { path: "/tmp/project" },
+        inFlight: false,
+        historyStore,
+        historyKey: "history-1",
+      });
+
+      assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[1] as { type?: unknown }).type, "agents");
+      assert.equal((sent[2] as { type?: unknown }).type, "history");
+      assert.deepEqual(sent[3], { type: "status", message: "已恢复后端上下文线程。", kind: "status" });
     } finally {
       historyStore.clear("history-1");
     }

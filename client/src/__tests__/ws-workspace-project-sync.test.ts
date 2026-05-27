@@ -97,6 +97,8 @@ describe("ws workspace project sync", () => {
 
     handler({ type: "status", message: "已切换到代理: Codex", kind: "status" });
     handler({ type: "status", message: "switch failed", kind: "error" });
+    rt.messages.value = [{ id: "s-1", role: "system", kind: "text", content: "已切换到代理: Codex" }];
+    handler({ type: "status", message: "已切换到代理: Codex", kind: "status" });
 
     expect(pushMessageBeforeLive).toHaveBeenCalledWith(
       { role: "system", kind: "text", content: "已切换到代理: Codex" },
@@ -106,6 +108,7 @@ describe("ws workspace project sync", () => {
       { role: "system", kind: "error", content: "switch failed" },
       rt,
     );
+    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(2);
   });
 
   it("renders result notices as system chat entries while keeping the toast notice", () => {

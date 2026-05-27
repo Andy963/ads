@@ -6,6 +6,16 @@ import type { HistoryStore } from "../../../utils/historyStore.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 
+function buildContextRestoreStatus(contextMode: string): string | null {
+  if (contextMode === "thread_resumed") {
+    return "已恢复后端上下文线程。";
+  }
+  if (contextMode === "history_injection") {
+    return "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
+  }
+  return null;
+}
+
 export function sendInitialBootstrapMessages(args: {
   ws: WebSocket;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
@@ -50,5 +60,9 @@ export function sendInitialBootstrapMessages(args: {
   const historyPayload = shouldReplayHistory ? buildHistoryBootstrapPayload(args.historyStore.get(args.historyKey)) : null;
   if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
+  }
+  const restoreStatus = buildContextRestoreStatus(bootstrapState.contextMode);
+  if (restoreStatus) {
+    args.safeJsonSend(args.ws, { type: "status", message: restoreStatus, kind: "status" });
   }
 }
