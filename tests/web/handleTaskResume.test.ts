@@ -267,8 +267,101 @@ describe("web/ws/handleTaskResume", () => {
     assert.equal(result.handled, true);
     assert.equal(result.orchestrator, fallbackOrchestrator);
     assert.deepEqual(saveThreadCalls, []);
-    assert.deepEqual(historyEntries, originalHistoryEntries);
+    assert.deepEqual(historyEntries, [
+      ...originalHistoryEntries,
+      {
+        role: "status",
+        text: "恢复失败: restore exploded",
+        ts: historyEntries.at(-1)?.ts,
+        kind: "error",
+      },
+    ]);
     assert.deepEqual(sent, [{ type: "error", message: "恢复失败: restore exploded" }]);
+  });
+
+  it("persists a resume error when no context is available", async () => {
+    const sent: unknown[] = [];
+    const historyEntries: Array<{ role: string; text: string; ts: number; kind?: string }> = [];
+
+    const initialOrchestrator = {
+      getActiveAgentId: () => "codex",
+      getThreadId: () => null,
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true }),
+    };
+
+    const result = await handleTaskResumeMessage({
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: { mode: "auto" },
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+      },
+      observability: {
+        logger: {
+          info: () => {},
+          debug: () => {},
+          warn: () => {},
+        },
+      },
+      context: {
+        userId: 11,
+        historyKey: "history-empty",
+        currentCwd: "/mnt/d/code/ADS/ads",
+      },
+      sessions: {
+        sessionManager: {
+          getSavedThreadId: () => undefined,
+          getSavedResumeThreadId: () => undefined,
+          getSandboxMode: () => "workspace-write",
+          getCodexEnv: () => undefined,
+          clearSavedResumeThreadId: () => {},
+          dropSession: () => {},
+          getOrCreate: () => initialOrchestrator as any,
+          saveThreadId: () => {},
+        } as any,
+        orchestrator: initialOrchestrator as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          clear: () => {
+            historyEntries.length = 0;
+          },
+          add: (_key: string, entry: { role: string; text: string; ts: number; kind?: string }) => {
+            historyEntries.push(entry);
+          },
+          get: () => historyEntries,
+        } as any,
+      },
+      tasks: {
+        ensureTaskContext: () => ({
+          queueRunning: false,
+          taskStore: {
+            getActiveTaskId: () => null,
+            listTasks: () => [],
+            getConversationMessages: () => [],
+          },
+        }) as any,
+      },
+    });
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(historyEntries, [
+      {
+        role: "status",
+        text: "未找到可用于恢复的任务历史",
+        ts: historyEntries[0]?.ts,
+        kind: "error",
+      },
+    ]);
+    assert.deepEqual(sent, [{ type: "error", message: "未找到可用于恢复的任务历史" }]);
   });
 
   it("preserves saved resume continuity when probe fails and falls back to transcript restore", async () => {

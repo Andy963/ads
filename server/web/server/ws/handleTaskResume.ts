@@ -64,6 +64,39 @@ function commitTaskResumeHistory(args: {
   }
 }
 
+function commitTaskResumeError(args: {
+  historyStore: Pick<WsTaskResumeHandlerDeps["history"]["historyStore"], "clear" | "add">;
+  historyKey: string;
+  previousEntries: readonly HistoryEntry[];
+  message: string;
+}): void {
+  const originalEntries = cloneHistoryEntries(args.previousEntries);
+  const nextEntries = [
+    ...cloneHistoryEntries(args.previousEntries),
+    {
+      role: "status",
+      text: args.message,
+      ts: Date.now(),
+      kind: "error",
+    },
+  ];
+
+  try {
+    replaceHistoryEntries({
+      historyStore: args.historyStore,
+      historyKey: args.historyKey,
+      entries: nextEntries,
+    });
+  } catch (error) {
+    replaceHistoryEntries({
+      historyStore: args.historyStore,
+      historyKey: args.historyKey,
+      entries: originalEntries,
+    });
+    throw error;
+  }
+}
+
 export async function handleTaskResumeMessage(
   deps: WsTaskResumeHandlerDeps,
 ): Promise<{ handled: boolean; orchestrator?: ReturnType<SessionManager["getOrCreate"]> }> {
@@ -185,7 +218,14 @@ export async function handleTaskResumeMessage(
       deps.observability.logger.warn(
         `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=unavailable reason=no_resume_context`,
       );
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: "未找到可用于恢复的任务历史" });
+      const message = "未找到可用于恢复的任务历史";
+      commitTaskResumeError({
+        historyStore: deps.history.historyStore,
+        historyKey: deps.context.historyKey,
+        previousEntries: originalHistoryEntries,
+        message,
+      });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
       return;
     }
     const { transcript, statusText } = resumeContext;
@@ -225,7 +265,14 @@ export async function handleTaskResumeMessage(
       deps.observability.logger.warn(
         `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} failed err=${truncateForLog(message)}`,
       );
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: `恢复失败: ${message}` });
+      const errorMessage = `恢复失败: ${message}`;
+      commitTaskResumeError({
+        historyStore: deps.history.historyStore,
+        historyKey: deps.context.historyKey,
+        previousEntries: originalHistoryEntries,
+        message: errorMessage,
+      });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: errorMessage });
       return;
     }
 
