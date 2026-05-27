@@ -201,6 +201,31 @@ describe("reasoning effort WS payload", () => {
     expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toContain('"agentId":"claude"');
   });
 
+  it("uses an optimistically selected ready agent for immediate prompts", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "codex",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.switchMainAgent?.("claude");
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
+    wrapper.unmount();
+  });
+
   it("keeps planner default model_reasoning_effort at high", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
@@ -213,6 +238,32 @@ describe("reasoning effort WS payload", () => {
 
     expect(lastPlannerSendPromptPayload).toBeTruthy();
     expect(lastPlannerSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
+  });
+
+  it("uses an optimistically selected planner agent for immediate planner prompts", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+    await ensurePlannerWsConnected(wrapper);
+
+    lastPlannerWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "codex",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.switchPlannerAgent?.("claude");
+    wrapper.vm.sendPlannerPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastPlannerSendPromptPayload).toBeTruthy();
+    expect(lastPlannerSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
+    wrapper.unmount();
   });
 
   it("restores persisted reasoning effort and overrides defaults", async () => {

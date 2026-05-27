@@ -503,6 +503,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const next = String(agentId ?? "").trim();
     if (!next) return;
     const rt = activeRuntime.value;
+    if (rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) {
+      rt.activeAgentId.value = next;
+    }
     rt.ws?.send?.("set_agent", { agentId: next });
   };
 
@@ -511,6 +514,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const next = String(agentId ?? "").trim();
     if (!next) return;
     const rt = activePlannerRuntime.value;
+    if (rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) {
+      rt.activeAgentId.value = next;
+    }
     rt.ws?.send?.("set_agent", { agentId: next });
   };
 
