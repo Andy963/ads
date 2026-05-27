@@ -91,11 +91,31 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
     );
     orchestrator.setWorkingDirectory(turnCwd);
-    const { notice: rotationNotice, agentNotice } = applySessionOverrides({
-      sessionManager: deps.sessions.sessionManager,
-      userId: deps.context.userId,
-      payload: deps.request.parsed.payload,
-    });
+    let rotationNotice: string | undefined;
+    let agentNotice: string | undefined;
+    try {
+      const overrideResult = applySessionOverrides({
+        sessionManager: deps.sessions.sessionManager,
+        userId: deps.context.userId,
+        payload: deps.request.parsed.payload,
+      });
+      rotationNotice = overrideResult.notice;
+      agentNotice = overrideResult.agentNotice;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.observability.sessionLogger?.logError(message);
+      deps.observability.logger.warn(`[Prompt Override Error] ${message}`);
+      deps.history.historyStore.add(deps.context.historyKey, {
+        role: "status",
+        text: message,
+        ts: Date.now(),
+        kind: "error",
+      });
+      sendToChat({ type: "error", message });
+      promptRun.cleanup();
+      cleanupAfter();
+      return;
+    }
     const overrideNotice =
       [agentNotice, rotationNotice].filter((notice): notice is string => Boolean(notice)).join("\n") || undefined;
     const status = orchestrator.status();

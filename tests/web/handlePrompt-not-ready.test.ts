@@ -34,6 +34,88 @@ class NotReadyOrchestrator {
 }
 
 describe("web/server/ws handlePrompt not-ready agents", () => {
+  it("persists prompt agent override failures so reconnect history shows the failed turn", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-prompt-agent-missing-"));
+    const historyStore = new MemoryHistoryStore();
+    const clientMessages: unknown[] = [];
+    const chatMessages: unknown[] = [];
+    const orchestrator = new NotReadyOrchestrator();
+
+    try {
+      const result = await handlePromptMessage({
+        request: {
+          parsed: { type: "prompt", payload: { text: "hello", agentId: "missing" } },
+          requestId: "req-1",
+          clientMessageId: null,
+          receivedAt: 123,
+        },
+        transport: {
+          ws: {} as any,
+          safeJsonSend: (_ws, payload) => clientMessages.push(payload),
+          broadcastJson: (payload) => chatMessages.push(payload),
+          sendWorkspaceState: () => {},
+        },
+        observability: {
+          logger: { info: () => {}, warn: () => {}, debug: () => {} },
+          sessionLogger: {
+            logInput: () => {},
+            logOutput: () => {},
+            logError: () => {},
+            logEvent: () => {},
+            attachThreadId: () => {},
+          },
+          traceWsDuplication: false,
+        },
+        context: {
+          authUserId: "test-user",
+          sessionId: "session-1",
+          chatSessionId: "main",
+          userId: 1,
+          historyKey: "history-1",
+          currentCwd: workspaceRoot,
+        },
+        sessions: {
+          sessionManager: {
+            getOrCreate: () => orchestrator,
+            switchAgent: (_userId: number, agentId: string) => ({
+              success: false,
+              message: `Agent "${agentId}" is not registered`,
+            }),
+            getSavedThreadId: () => undefined,
+            needsHistoryInjection: () => false,
+            clearHistoryInjection: () => {},
+          },
+          orchestrator,
+          getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }),
+          interruptControllers: new Map<string, AbortController>(),
+          promptRunEpochs: new Map<string, number>(),
+        },
+        history: {
+          historyStore,
+        },
+        tasks: {},
+        scheduler: {},
+      } as any);
+
+      assert.equal(result.handled, true);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "error", message: 'Agent "missing" is not registered' }]);
+      assert.deepEqual(
+        historyStore.get("history-1").map((entry) => ({
+          role: entry.role,
+          text: entry.text,
+          kind: entry.kind,
+        })),
+        [
+          { role: "user", text: "hello", kind: undefined },
+          { role: "status", text: 'Agent "missing" is not registered', kind: "error" },
+        ],
+      );
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("persists the agent readiness failure so reconnect history shows the failed turn", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-prompt-not-ready-"));
     const historyStore = new MemoryHistoryStore();
