@@ -692,6 +692,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (typeof inFlight !== "boolean") return;
       rt.busy.value = inFlight;
       rt.turnInFlight = inFlight;
+      if (!inFlight) {
+        void flushQueuedPrompts(rt);
+      }
       return;
     }
 

@@ -43,6 +43,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
   const clearStepLive = vi.fn();
   const finalizeAssistant = vi.fn();
   const finalizeCommandBlock = vi.fn();
+  const flushQueuedPrompts = vi.fn();
   const pushMessageBeforeLive = vi.fn();
 
   const threadReset = vi.fn((targetRt: any, params: { resetThreadId?: boolean }) => {
@@ -69,7 +70,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     commandKeyForWsEvent: () => null,
     finalizeAssistant,
     finalizeCommandBlock,
-    flushQueuedPrompts: vi.fn(),
+    flushQueuedPrompts,
     ingestCommand: vi.fn(),
     ingestCommandActivity: vi.fn(),
     ingestExploredActivity: vi.fn(),
@@ -89,6 +90,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     clearStepLive,
     finalizeAssistant,
     finalizeCommandBlock,
+    flushQueuedPrompts,
     applyResumeHistory,
     pushMessageBeforeLive,
   };
@@ -256,7 +258,7 @@ describe("ws workspace project sync", () => {
 
   it("marks sibling preflight updates as in-flight without adding transcript entries", () => {
     const rt = createRuntime();
-    const { handler, pushMessageBeforeLive } = createHandler({
+    const { handler, pushMessageBeforeLive, flushQueuedPrompts } = createHandler({
       projects: [],
       pid: "default",
       rt,
@@ -268,6 +270,25 @@ describe("ws workspace project sync", () => {
     expect(rt.busy.value).toBe(true);
     expect(rt.turnInFlight).toBe(true);
     expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+    expect(flushQueuedPrompts).not.toHaveBeenCalled();
+  });
+
+  it("flushes queued prompts when an in-flight update reports idle", () => {
+    const rt = createRuntime();
+    const { handler, flushQueuedPrompts } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    handler({ type: "in_flight", inFlight: false });
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(flushQueuedPrompts).toHaveBeenCalledWith(rt);
   });
 
   it("keeps the synthetic default project rooted externally while still recording workspace state", () => {
