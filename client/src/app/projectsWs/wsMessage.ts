@@ -398,8 +398,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.availableAgents.value = agents;
       if (activeAgentId) {
         rt.activeAgentId.value = activeAgentId;
-      } else if (!rt.activeAgentId.value && agents.length > 0) {
-        rt.activeAgentId.value = agents[0]!.id;
+      } else {
+        const currentActiveAgentId = String(rt.activeAgentId.value ?? "").trim();
+        const currentReady = Boolean(currentActiveAgentId) && agents.some((agent) => agent.id === currentActiveAgentId && agent.ready);
+        const readyFallback = agents.find((agent) => agent.ready)?.id ?? "";
+        if (readyFallback && !currentReady) {
+          rt.activeAgentId.value = readyFallback;
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(rec, "threadId")) {

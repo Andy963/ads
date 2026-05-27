@@ -86,4 +86,30 @@ describe("ws agents snapshot", () => {
     expect(rt.availableAgents.value[1].ready).toBe(false);
     expect(rt.activeThreadId.value).toBe("thread-123");
   });
+
+  it("falls back to the first ready agent when the active agent is omitted or unavailable", () => {
+    const rt = createRuntime();
+    const handler = createHandler(rt);
+
+    handler({
+      type: "agents",
+      agents: [
+        { id: "codex", name: "Codex", ready: false, error: "missing api key" },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+
+    expect(rt.activeAgentId.value).toBe("claude");
+
+    rt.activeAgentId.value = "codex";
+    handler({
+      type: "agents",
+      agents: [
+        { id: "codex", name: "Codex", ready: false, error: "missing api key" },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+
+    expect(rt.activeAgentId.value).toBe("claude");
+  });
 });
