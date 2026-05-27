@@ -1,0 +1,620 @@
+import type { Input, ThreadEvent, ThreadItem, Usage } from "../protocol/types.js";
+import type {
+  AgentAdapter,
+  AgentMetadata,
+  AgentRunResult,
+  AgentSendOptions,
+  AgentStatus,
+} from "../types.js";
+import type { AgentEvent } from "../../codex/events.js";
+import { mapThreadEventToAgentEvent } from "../../codex/events.js";
+import type { SandboxMode } from "../../telegram/config.js";
+import { createLogger } from "../../utils/logger.js";
+import { createAbortError } from "../../utils/abort.js";
+import {
+  CodexAppServerDaemonRegistry,
+  getSharedDaemonRegistry,
+  type DaemonOptions,
+} from "../../codex/appServer/daemonRegistry.js";
+import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
+
+const logger = createLogger("CodexAppServerAdapter");
+
+export const CODEX_APP_SERVER_ADAPTER_ID = "codex-appserver";
+
+const DEFAULT_METADATA: AgentMetadata = {
+  id: CODEX_APP_SERVER_ADAPTER_ID,
+  name: "Codex (app-server)",
+  vendor: "OpenAI",
+  description: "Codex daemon over the experimental app-server JSON-RPC protocol",
+  capabilities: ["text", "images", "files", "commands"],
+};
+
+export interface CodexAppServerAdapterOptions {
+  /** Project identifier used by the daemon registry to keep one daemon per project. */
+  projectId: string;
+  binary?: string;
+  sandboxMode?: SandboxMode;
+  workingDirectory?: string;
+  model?: string;
+  modelReasoningEffort?: string;
+  resumeThreadId?: string;
+  env?: NodeJS.ProcessEnv;
+  developerInstructions?: string;
+  /** Inject a custom registry (mainly for tests). */
+  registry?: CodexAppServerDaemonRegistry;
+  metadata?: Partial<AgentMetadata>;
+  /** Override the per-turn timeout (ms). 0 disables. */
+  turnTimeoutMs?: number;
+}
+
+interface UserInputPart {
+  type: "text" | "localImage";
+  text?: string;
+  text_elements?: unknown[];
+  path?: string;
+}
+
+function inputToUserInput(input: Input): UserInputPart[] {
+  const parts: UserInputPart[] = [];
+  if (typeof input === "string") {
+    if (input.length > 0) {
+      parts.push({ type: "text", text: input, text_elements: [] });
+    }
+    return parts;
+  }
+  if (!Array.isArray(input)) {
+    const str = String(input ?? "");
+    if (str) {
+      parts.push({ type: "text", text: str, text_elements: [] });
+    }
+    return parts;
+  }
+  for (const piece of input) {
+    const current = piece as { type?: string; text?: string; path?: string };
+    if (current.type === "text" && typeof current.text === "string") {
+      parts.push({ type: "text", text: current.text, text_elements: [] });
+    } else if (current.type === "local_image" && typeof current.path === "string") {
+      parts.push({ type: "localImage", path: current.path });
+    }
+  }
+  if (parts.length === 0) {
+    parts.push({ type: "text", text: "", text_elements: [] });
+  }
+  return parts;
+}
+
+function extractText(part: { text?: string }): string {
+  return typeof part.text === "string" ? part.text : "";
+}
+
+/**
+ * Translate an app-server `ThreadItem` (camelCase) into the snake_case shape
+ * expected by `mapThreadEventToAgentEvent` and downstream consumers.
+ *
+ * Returns `null` for item types we do not yet bridge.
+ */
+function translateItem(appItem: unknown): ThreadItem | null {
+  if (!appItem || typeof appItem !== "object") return null;
+  const obj = appItem as Record<string, unknown>;
+  const type = obj.type;
+  const id = typeof obj.id === "string" ? obj.id : undefined;
+
+  switch (type) {
+    case "agentMessage":
+      return {
+        type: "agent_message",
+        id,
+        text: typeof obj.text === "string" ? obj.text : "",
+      } as ThreadItem;
+    case "reasoning": {
+      const content = Array.isArray(obj.content) ? obj.content : [];
+      const text = content.filter((part): part is string => typeof part === "string").join("\n");
+      return { type: "reasoning", id, text } as ThreadItem;
+    }
+    case "commandExecution":
+      return {
+        type: "command_execution",
+        id,
+        command: typeof obj.command === "string" ? obj.command : "",
+        status: typeof obj.status === "string" ? obj.status : undefined,
+        exit_code: typeof obj.exitCode === "number" ? obj.exitCode : undefined,
+        aggregated_output:
+          typeof obj.aggregatedOutput === "string" ? obj.aggregatedOutput : undefined,
+      } as ThreadItem;
+    case "fileChange": {
+      const rawChanges = Array.isArray(obj.changes) ? obj.changes : [];
+      const changes = rawChanges
+        .map((change) => {
+          if (!change || typeof change !== "object") return null;
+          const c = change as Record<string, unknown>;
+          const kind = typeof c.kind === "string" ? c.kind : "modify";
+          const pathValue = typeof c.path === "string" ? c.path : "";
+          return { kind, path: pathValue };
+        })
+        .filter((entry): entry is { kind: string; path: string } => entry !== null);
+      return { type: "file_change", id, changes } as ThreadItem;
+    }
+    case "mcpToolCall":
+    case "dynamicToolCall":
+      return {
+        type: "tool_call",
+        id,
+        status: typeof obj.status === "string" ? obj.status : undefined,
+        server: typeof obj.server === "string" ? obj.server : undefined,
+        tool: typeof obj.tool === "string" ? obj.tool : undefined,
+      } as ThreadItem;
+    case "webSearch":
+      return {
+        type: "web_search",
+        id,
+        status: undefined,
+        query: typeof obj.query === "string" ? obj.query : "",
+      } as ThreadItem;
+    case "plan":
+      // No exact equivalent — surface as agent_message so the UI gets the text.
+      return {
+        type: "agent_message",
+        id,
+        text: typeof obj.text === "string" ? obj.text : "",
+      } as ThreadItem;
+    default:
+      return null;
+  }
+}
+
+interface TurnState {
+  responseText: string;
+  agentMessageBuffers: Map<string, string>;
+  usage: Usage | null;
+  threadIdFromStarted: string | null;
+  turnId: string | null;
+  failed: boolean;
+  failureMessage: string | null;
+}
+
+/**
+ * Adapter that drives a persistent `codex app-server` daemon via JSON-RPC.
+ *
+ * Implements the same `AgentAdapter` contract as `CodexCliAdapter` so the
+ * orchestrator can swap them transparently. The legacy id `"codex"` is kept
+ * for the CLI adapter; this implementation registers under the distinct id
+ * `"codex-appserver"` so both can coexist.
+ */
+export class CodexAppServerAdapter implements AgentAdapter {
+  readonly id: string;
+  readonly metadata: AgentMetadata;
+
+  private readonly projectId: string;
+  private readonly registry: CodexAppServerDaemonRegistry;
+  private readonly binary?: string;
+  private readonly sandboxMode: SandboxMode;
+  private workingDirectory?: string;
+  private model?: string;
+  private modelReasoningEffort?: string;
+  private threadId: string | null;
+  private developerInstructions?: string;
+  private spawnEnv?: NodeJS.ProcessEnv;
+  private readonly turnTimeoutMs: number;
+  private readonly listeners = new Set<(event: AgentEvent) => void>();
+
+  constructor(options: CodexAppServerAdapterOptions) {
+    if (!options.projectId || typeof options.projectId !== "string") {
+      throw new Error("CodexAppServerAdapter requires a non-empty projectId");
+    }
+    this.projectId = options.projectId;
+    this.registry = options.registry ?? getSharedDaemonRegistry();
+    this.binary = options.binary;
+    this.sandboxMode = options.sandboxMode ?? "workspace-write";
+    this.workingDirectory = options.workingDirectory;
+    this.model = options.model;
+    this.modelReasoningEffort = options.modelReasoningEffort;
+    this.threadId = options.resumeThreadId?.trim() || null;
+    this.developerInstructions = options.developerInstructions;
+    this.spawnEnv = options.env;
+    this.turnTimeoutMs = options.turnTimeoutMs ?? 0;
+    this.metadata = {
+      ...DEFAULT_METADATA,
+      ...options.metadata,
+      id: options.metadata?.id ?? DEFAULT_METADATA.id,
+      name: options.metadata?.name ?? DEFAULT_METADATA.name,
+      vendor: options.metadata?.vendor ?? DEFAULT_METADATA.vendor,
+      capabilities: options.metadata?.capabilities ?? DEFAULT_METADATA.capabilities,
+    };
+    this.id = this.metadata.id;
+  }
+
+  getStreamingConfig(): { enabled: boolean; throttleMs: number } {
+    return { enabled: true, throttleMs: 200 };
+  }
+
+  status(): AgentStatus {
+    return { ready: true, streaming: true };
+  }
+
+  onEvent(handler: (event: AgentEvent) => void): () => void {
+    this.listeners.add(handler);
+    return () => this.listeners.delete(handler);
+  }
+
+  reset(): void {
+    this.threadId = null;
+  }
+
+  setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
+    if (this.workingDirectory === workingDirectory) return;
+    this.workingDirectory = workingDirectory;
+    if (!options?.preserveSession) {
+      this.reset();
+    }
+    // Daemon cwd change: drop the existing process so the next send respawns.
+    void this.registry.stop(this.projectId).catch((err) => {
+      logger.debug(`registry.stop failed: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+
+  setModel(model?: string): void {
+    const normalized = String(model ?? "").trim();
+    if (!normalized) {
+      if (!this.model) return;
+      this.model = undefined;
+      this.reset();
+      return;
+    }
+    const lower = normalized.toLowerCase();
+    if (
+      lower.startsWith("gemini") ||
+      lower.startsWith("auto-gemini") ||
+      lower.includes("gemini") ||
+      lower.startsWith("claude") ||
+      lower === "sonnet" ||
+      lower === "opus" ||
+      lower === "haiku"
+    ) {
+      return;
+    }
+    if (this.model === normalized) return;
+    this.model = normalized;
+    this.reset();
+  }
+
+  setModelReasoningEffort(effort?: string): void {
+    const normalized = String(effort ?? "").trim();
+    const next = normalized || undefined;
+    if (this.modelReasoningEffort === next) return;
+    this.modelReasoningEffort = next;
+  }
+
+  setDeveloperInstructions(instructions: string): void {
+    this.developerInstructions = instructions || undefined;
+  }
+
+  getThreadId(): string | null {
+    return this.threadId;
+  }
+
+  async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    const userInput = inputToUserInput(input);
+    const promptCharCount = userInput
+      .filter((p) => p.type === "text")
+      .reduce((acc, part) => acc + extractText(part).length, 0);
+    if (promptCharCount === 0 && !userInput.some((p) => p.type === "localImage")) {
+      throw new Error("Prompt 不能为空");
+    }
+
+    const daemonOptions: DaemonOptions = {
+      binary: this.binary,
+      workingDirectory: this.workingDirectory,
+      env: options?.env
+        ? { ...this.spawnEnv, ...options.env }
+        : this.spawnEnv,
+    };
+    const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+
+    const state: TurnState = {
+      responseText: "",
+      agentMessageBuffers: new Map(),
+      usage: null,
+      threadIdFromStarted: null,
+      turnId: null,
+      failed: false,
+      failureMessage: null,
+    };
+
+    const cleanupFns: Array<() => void> = [];
+    const emit = (event: ThreadEvent) => {
+      const mapped = mapThreadEventToAgentEvent(event, Date.now());
+      if (mapped) {
+        this.emitEvent(mapped);
+      }
+    };
+
+    let turnDone: (value: void) => void;
+    let turnFail: (reason: Error) => void;
+    const turnPromise = new Promise<void>((resolve, reject) => {
+      turnDone = resolve;
+      turnFail = reject;
+    });
+
+    cleanupFns.push(
+      client.onNotification("thread/started", (params) => {
+        const threadId = extractThreadId(params);
+        if (threadId) {
+          state.threadIdFromStarted = threadId;
+          emit({ type: "thread.started", thread_id: threadId });
+        }
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("turn/started", (params) => {
+        const turnId = extractTurnId(params);
+        if (turnId) {
+          state.turnId = turnId;
+        }
+        emit({ type: "turn.started" });
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("turn/completed", (params) => {
+        const usage = extractUsageFromTurnPayload(params);
+        if (usage) {
+          state.usage = usage;
+        }
+        emit({ type: "turn.completed", usage: usage ?? undefined });
+        turnDone();
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("thread/tokenUsage/updated", (params) => {
+        const usage = extractUsageFromTokenUsage(params);
+        if (usage) {
+          state.usage = usage;
+        }
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("item/started", (params) => {
+        const item = (params as { item?: unknown }).item;
+        const translated = translateItem(item);
+        if (translated) {
+          emit({ type: "item.started", item: translated });
+        }
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("item/completed", (params) => {
+        const item = (params as { item?: unknown }).item;
+        const translated = translateItem(item);
+        if (!translated) return;
+        if (translated.type === "agent_message" && typeof translated.text === "string") {
+          // The completed agent_message carries the canonical final text.
+          state.responseText = translated.text;
+          if (translated.id) {
+            state.agentMessageBuffers.set(translated.id, translated.text);
+          }
+        }
+        emit({ type: "item.completed", item: translated });
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("item/agentMessage/delta", (params) => {
+        const payload = params as { itemId?: string; delta?: string };
+        const itemId = typeof payload.itemId === "string" ? payload.itemId : "__current__";
+        const delta = typeof payload.delta === "string" ? payload.delta : "";
+        const next = (state.agentMessageBuffers.get(itemId) ?? "") + delta;
+        state.agentMessageBuffers.set(itemId, next);
+        state.responseText = next;
+        emit({
+          type: "item.updated",
+          item: { type: "agent_message", id: itemId, text: next } as ThreadItem,
+        });
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("error", (params) => {
+        const message = extractErrorMessage(params);
+        state.failed = true;
+        state.failureMessage = message;
+        emit({ type: "turn.failed", error: { message } });
+        turnFail(new Error(message));
+      }),
+    );
+
+    const closeUnsub = client.onClose((code) => {
+      const message = `codex app-server closed unexpectedly (exit=${code ?? "null"})`;
+      state.failed = true;
+      state.failureMessage = message;
+      turnFail(new Error(message));
+    });
+    cleanupFns.push(closeUnsub);
+
+    const abortSignal = options?.signal;
+    let abortListener: (() => void) | null = null;
+    let aborted = false;
+    if (abortSignal) {
+      abortListener = () => {
+        aborted = true;
+        const turnId = state.turnId;
+        const threadId = state.threadIdFromStarted ?? this.threadId;
+        if (turnId && threadId) {
+          client
+            .request("turn/interrupt", { threadId, turnId })
+            .catch((err) =>
+              logger.debug(
+                `turn/interrupt failed: ${err instanceof Error ? err.message : err}`,
+              ),
+            );
+        }
+        turnFail(createAbortError("用户中断了请求"));
+      };
+      if (abortSignal.aborted) {
+        abortListener();
+      } else {
+        abortSignal.addEventListener("abort", abortListener, { once: true });
+      }
+    }
+
+    try {
+      let threadId = this.threadId;
+      if (!threadId) {
+        const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
+          "thread/start",
+          this.buildThreadStartParams(),
+          { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
+        );
+        const newId = startResult?.thread?.id;
+        if (typeof newId === "string" && newId.length > 0) {
+          threadId = newId;
+          this.threadId = newId;
+        } else if (state.threadIdFromStarted) {
+          threadId = state.threadIdFromStarted;
+          this.threadId = state.threadIdFromStarted;
+        } else {
+          throw new Error("codex app-server did not return a thread id");
+        }
+      }
+
+      await client.request(
+        "turn/start",
+        this.buildTurnStartParams(threadId, userInput),
+        { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
+      );
+
+      await turnPromise;
+
+      if (aborted) {
+        throw createAbortError("用户中断了请求");
+      }
+      if (state.failed) {
+        throw new Error(state.failureMessage ?? "codex app-server reported failure");
+      }
+
+      return {
+        response: state.responseText.trim(),
+        usage: state.usage,
+        agentId: this.id,
+      };
+    } finally {
+      for (const fn of cleanupFns) {
+        try {
+          fn();
+        } catch {
+          // ignore
+        }
+      }
+      if (abortSignal && abortListener) {
+        abortSignal.removeEventListener("abort", abortListener);
+      }
+    }
+  }
+
+  private buildThreadStartParams(): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      experimentalRawEvents: false,
+      persistExtendedHistory: false,
+    };
+    if (this.workingDirectory) params.cwd = this.workingDirectory;
+    if (this.model) params.model = this.model;
+    if (this.developerInstructions) params.developerInstructions = this.developerInstructions;
+    if (this.sandboxMode === "read-only") {
+      params.sandbox = "read-only";
+    } else if (this.sandboxMode === "danger-full-access") {
+      params.sandbox = "danger-full-access";
+    } else {
+      params.sandbox = "workspace-write";
+    }
+    return params;
+  }
+
+  private buildTurnStartParams(threadId: string, input: UserInputPart[]): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      threadId,
+      input,
+    };
+    if (this.model) params.model = this.model;
+    if (this.modelReasoningEffort) params.effort = this.modelReasoningEffort;
+    if (this.workingDirectory) params.cwd = this.workingDirectory;
+    return params;
+  }
+
+  private emitEvent(event: AgentEvent): void {
+    for (const handler of this.listeners) {
+      try {
+        handler(event);
+      } catch (err) {
+        logger.warn(`event handler failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
+}
+
+function extractThreadId(params: unknown): string | null {
+  if (!params || typeof params !== "object") return null;
+  const obj = params as Record<string, unknown>;
+  const thread = obj.thread;
+  if (thread && typeof thread === "object") {
+    const id = (thread as Record<string, unknown>).id;
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  const direct = obj.threadId;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  return null;
+}
+
+function extractTurnId(params: unknown): string | null {
+  if (!params || typeof params !== "object") return null;
+  const obj = params as Record<string, unknown>;
+  const turn = obj.turn;
+  if (turn && typeof turn === "object") {
+    const id = (turn as Record<string, unknown>).id;
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  const direct = obj.turnId;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  return null;
+}
+
+function extractUsageFromTurnPayload(params: unknown): Usage | null {
+  if (!params || typeof params !== "object") return null;
+  const obj = params as Record<string, unknown>;
+  const usage = obj.usage;
+  if (usage && typeof usage === "object") {
+    return usage as Usage;
+  }
+  return null;
+}
+
+function extractUsageFromTokenUsage(params: unknown): Usage | null {
+  if (!params || typeof params !== "object") return null;
+  const obj = params as Record<string, unknown>;
+  const usage: Usage = {};
+  let any = false;
+  for (const [src, dst] of [
+    ["inputTokens", "input_tokens"],
+    ["outputTokens", "output_tokens"],
+    ["totalTokens", "total_tokens"],
+  ] as const) {
+    const value = obj[src];
+    if (typeof value === "number") {
+      usage[dst] = value;
+      any = true;
+    }
+  }
+  return any ? usage : null;
+}
+
+function extractErrorMessage(params: unknown): string {
+  if (!params || typeof params !== "object") {
+    return "codex app-server reported an error";
+  }
+  const obj = params as Record<string, unknown>;
+  const err = obj.error;
+  if (err && typeof err === "object") {
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg.length > 0) return msg;
+  }
+  if (typeof obj.message === "string" && obj.message.length > 0) return obj.message;
+  return "codex app-server reported an error";
+}
+
+export type { CodexAppServerClient };

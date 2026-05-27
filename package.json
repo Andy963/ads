@@ -37,7 +37,8 @@
     "web:init-admin": "tsx server/web/auth/initAdminCli.ts",
     "web:reset-admin": "tsx server/web/auth/resetAdminCli.ts",
     "lint": "eslint . --ext .ts",
-    "skills:migrate": "tsx server/skills/migrate.ts"
+    "skills:migrate": "tsx server/skills/migrate.ts",
+    "codex:regen-types": "node scripts/generate-codex-app-server-types.js"
   },
   "engines": {
     "node": ">=20"

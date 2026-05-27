@@ -33,6 +33,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist/", "node_modules/", ".ads/", ".agent/", ".worktrees/"],
+    ignores: ["dist/", "node_modules/", ".ads/", ".agent/", ".worktrees/", "server/codex/appServer/protocol/"],
   }
 );
