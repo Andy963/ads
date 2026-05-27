@@ -231,6 +231,93 @@ describe("ws workspace project sync", () => {
     expect(injectedRt.activeThreadId.value).toBeNull();
   });
 
+  it("clears stale thread warnings once a later welcome confirms the current thread", () => {
+    const rt = createRuntime();
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-local";
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "welcome",
+      inFlight: false,
+      threadId: "thread-server",
+      contextMode: "thread_resumed",
+    });
+
+    expect(rt.threadWarning.value).toContain("Backend thread changed");
+    expect(rt.activeThreadId.value).toBe("thread-server");
+
+    handler({
+      type: "welcome",
+      inFlight: false,
+      threadId: "thread-server",
+      contextMode: "thread_resumed",
+    });
+
+    expect(rt.threadWarning.value).toBeNull();
+    expect(rt.activeThreadId.value).toBe("thread-server");
+  });
+
+  it("warns when a result silently changes the backend thread without a reset marker", () => {
+    const rt = createRuntime();
+    rt.activeThreadId.value = "thread-prev";
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      threadId: "thread-next",
+      expectedThreadId: "thread-prev",
+      threadReset: false,
+    });
+
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.activeThreadId.value).toBe("thread-next");
+    expect(rt.threadWarning.value).toContain("Backend thread changed");
+  });
+
+  it("clears stale result thread warnings after the backend reports the same thread again", () => {
+    const rt = createRuntime();
+    rt.activeThreadId.value = "thread-prev";
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      threadId: "thread-next",
+      threadReset: false,
+    });
+
+    expect(rt.threadWarning.value).toContain("Backend thread changed");
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done again",
+      threadId: "thread-next",
+      threadReset: false,
+    });
+
+    expect(rt.threadWarning.value).toBeNull();
+  });
+
   it("clears stale local continuity when a sibling connection resets the same chat lane", () => {
     const rt = createRuntime();
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "stale" }];

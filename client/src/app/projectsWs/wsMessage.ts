@@ -264,6 +264,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  const clearThreadWarningIfCurrent = (threadId: string): void => {
+    if (!threadId) return;
+    const activeThreadId = String(rt.activeThreadId.value ?? "").trim();
+    if (!activeThreadId || activeThreadId === threadId) {
+      rt.threadWarning.value = null;
+    }
+  };
+
   const handleSharedSessionReset = (payload: Record<string, unknown>): void => {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "shared";
@@ -338,6 +346,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
       if (Object.prototype.hasOwnProperty.call(rec, "threadId")) {
         const threadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
+        clearThreadWarningIfCurrent(threadId);
         rt.activeThreadId.value = threadId || null;
       }
       return;
@@ -542,6 +551,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         rt.threadWarning.value =
           `Backend thread changed without an explicit reset marker (prev=${prevThreadId}, now=${serverThreadId}). ` +
           "UI was preserved, but model context may not match chat history.";
+      } else {
+        clearThreadWarningIfCurrent(serverThreadId);
       }
       rt.activeThreadId.value = serverThreadId || null;
 
@@ -744,11 +755,19 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       }
       const threadId = String(msg.threadId ?? "").trim();
-      if (threadId) {
-        rt.activeThreadId.value = threadId;
-      }
       const expectedThreadId = String(msg.expectedThreadId ?? "").trim();
       const didThreadReset = Boolean(msg.threadReset);
+      if (threadId) {
+        const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
+        if (!didThreadReset && prevThreadId && prevThreadId !== threadId) {
+          rt.threadWarning.value =
+            `Backend thread changed without an explicit reset marker (prev=${prevThreadId}, now=${threadId}). ` +
+            "UI was preserved, but model context may not match chat history.";
+        } else {
+          clearThreadWarningIfCurrent(threadId);
+        }
+        rt.activeThreadId.value = threadId;
+      }
       if (didThreadReset) {
         const detail = expectedThreadId && threadId ? ` (expected=${expectedThreadId}, actual=${threadId})` : "";
         threadReset(rt, {
