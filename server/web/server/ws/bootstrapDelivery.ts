@@ -46,7 +46,7 @@ export function sendInitialBootstrapMessages(args: {
     }),
   );
 
-  const shouldReplayHistory = bootstrapState.contextMode !== "fresh";
+  const shouldReplayHistory = bootstrapState.contextMode !== "fresh" || Boolean(bootstrapState.threadId);
   const historyPayload = shouldReplayHistory ? buildHistoryBootstrapPayload(args.historyStore.get(args.historyKey)) : null;
   if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
