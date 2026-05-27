@@ -16,6 +16,10 @@ function buildContextRestoreStatus(contextMode: string): string | null {
   return null;
 }
 
+function buildInFlightStatus(inFlight: boolean): string | null {
+  return inFlight ? "上一轮仍在执行，正在等待后端结果。" : null;
+}
+
 export function sendInitialBootstrapMessages(args: {
   ws: WebSocket;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
@@ -64,5 +68,9 @@ export function sendInitialBootstrapMessages(args: {
   const restoreStatus = buildContextRestoreStatus(bootstrapState.contextMode);
   if (restoreStatus) {
     args.safeJsonSend(args.ws, { type: "status", message: restoreStatus, kind: "status" });
+  }
+  const inFlightStatus = buildInFlightStatus(args.inFlight);
+  if (inFlightStatus) {
+    args.safeJsonSend(args.ws, { type: "status", message: inFlightStatus, kind: "status" });
   }
 }
