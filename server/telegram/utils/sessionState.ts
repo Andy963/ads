@@ -13,7 +13,6 @@ export type SavedSessionState = {
   model?: string;
   modelReasoningEffort?: string;
   activeAgentId?: AgentIdentifier;
-  reviewerSnapshotId?: string;
 };
 
 export type ContextRestoreMode = "fresh" | "thread_resumed" | "history_injection";
@@ -59,7 +58,6 @@ export function getSavedSessionState(storage: ThreadStorage | undefined, userId:
     model: record.model,
     modelReasoningEffort: record.modelReasoningEffort,
     activeAgentId: record.activeAgentId as AgentIdentifier | undefined,
-    reviewerSnapshotId: record.reviewerSnapshotId,
   };
 }
 
@@ -230,8 +228,7 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     Object.keys(normalized).length === 0 &&
     !record.model &&
     !record.modelReasoningEffort &&
-    !record.activeAgentId &&
-    !record.reviewerSnapshotId
+    !record.activeAgentId
   ) {
     storage.removeThread(userId);
     return;
@@ -243,7 +240,6 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     model: record.model,
     modelReasoningEffort: record.modelReasoningEffort,
     activeAgentId: record.activeAgentId,
-    reviewerSnapshotId: record.reviewerSnapshotId,
   });
 }
 
@@ -273,7 +269,6 @@ export function buildSyncedSessionState(args: {
       args.sessionState?.activeAgentId ||
       args.storedState?.activeAgentId ||
       "codex",
-    reviewerSnapshotId: args.storedState?.reviewerSnapshotId,
   };
 }
 

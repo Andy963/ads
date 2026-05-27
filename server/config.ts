@@ -23,7 +23,6 @@ export interface WebConfig {
   sessionCleanupIntervalMs: number;
   allowedOriginsRaw?: string;
   plannerCodexModel?: string;
-  reviewerCodexModel?: string;
   taskQueueEnabled: boolean;
   taskQueueAutoStart: boolean;
   traceWsDuplication: boolean;
@@ -83,7 +82,6 @@ const webConfigSchema = z.object({
   sessionCleanupIntervalMs: z.number().int().min(0),
   allowedOriginsRaw: z.string().optional(),
   plannerCodexModel: z.string().optional(),
-  reviewerCodexModel: z.string().optional(),
   taskQueueEnabled: z.boolean(),
   taskQueueAutoStart: z.boolean(),
   traceWsDuplication: z.boolean(),
@@ -281,7 +279,6 @@ export function resolveWebConfig(options: DomainConfigOptions = {}): WebConfig {
     sessionCleanupIntervalMs: resolveWebSessionCleanupIntervalMs(env),
     allowedOriginsRaw: env.ADS_WEB_ALLOWED_ORIGINS,
     plannerCodexModel: normalizeOptionalString(env.ADS_PLANNER_CODEX_MODEL),
-    reviewerCodexModel: normalizeOptionalString(env.ADS_REVIEWER_CODEX_MODEL),
     taskQueueEnabled: parseBooleanFlag(env.TASK_QUEUE_ENABLED, true),
     taskQueueAutoStart: parseBooleanFlag(env.TASK_QUEUE_AUTO_START, false),
     traceWsDuplication: parseBooleanFlag(env.ADS_TRACE_WS_DUPLICATION, false),

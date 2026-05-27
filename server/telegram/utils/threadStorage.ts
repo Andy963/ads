@@ -35,7 +35,6 @@ interface ThreadState {
   model?: string;
   modelReasoningEffort?: string;
   activeAgentId?: string;
-  reviewerSnapshotId?: string;
 }
 
 const logger = createLogger('ThreadStorage');
@@ -227,7 +226,6 @@ export class ThreadStorage {
             Object.prototype.hasOwnProperty.call(parsed, "model") ||
             Object.prototype.hasOwnProperty.call(parsed, "modelReasoningEffort") ||
             Object.prototype.hasOwnProperty.call(parsed, "activeAgentId") ||
-            Object.prototype.hasOwnProperty.call(parsed, "reviewerSnapshotId") ||
             Object.prototype.hasOwnProperty.call(parsed, "version");
           if (hasStructuredState) {
             const agentThreads = this.normalizeAgentThreads(parsed.agentThreads);
@@ -247,11 +245,7 @@ export class ThreadStorage {
               typeof parsed.activeAgentId === "string" && parsed.activeAgentId.trim()
                 ? parsed.activeAgentId.trim()
                 : undefined;
-            const reviewerSnapshotId =
-              typeof parsed.reviewerSnapshotId === "string" && parsed.reviewerSnapshotId.trim()
-                ? parsed.reviewerSnapshotId.trim()
-                : undefined;
-            return { threadId, agentThreads, model, modelReasoningEffort, activeAgentId, reviewerSnapshotId };
+            return { threadId, agentThreads, model, modelReasoningEffort, activeAgentId };
           }
 
           const agentThreads: Record<string, string> = {};
@@ -289,11 +283,7 @@ export class ThreadStorage {
         : undefined;
     const activeAgentId =
       typeof state.activeAgentId === "string" && state.activeAgentId.trim() ? state.activeAgentId.trim() : undefined;
-    const reviewerSnapshotId =
-      typeof state.reviewerSnapshotId === "string" && state.reviewerSnapshotId.trim()
-        ? state.reviewerSnapshotId.trim()
-        : undefined;
-    const hasMetadata = Boolean(model || modelReasoningEffort || activeAgentId || reviewerSnapshotId);
+    const hasMetadata = Boolean(model || modelReasoningEffort || activeAgentId);
     if (keys.length === 0 && !hasMetadata) {
       return null;
     }
@@ -310,7 +300,6 @@ export class ThreadStorage {
       model,
       modelReasoningEffort,
       activeAgentId,
-      reviewerSnapshotId,
     });
   }
 
@@ -341,7 +330,6 @@ export class ThreadStorage {
       model: existing?.model,
       modelReasoningEffort: existing?.modelReasoningEffort,
       activeAgentId: existing?.activeAgentId,
-      reviewerSnapshotId: existing?.reviewerSnapshotId,
     });
   }
 
