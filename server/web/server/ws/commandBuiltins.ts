@@ -115,7 +115,10 @@ export function handleBuiltinCommand(args: {
   }
 
   if (!args.request.slash.body) {
-    args.sendToCommandScope({ type: "result", ok: false, output: "用法: /cd <path>" });
+    const output = "用法: /cd <path>";
+    args.sendToCommandScope({ type: "result", ok: false, output });
+    args.sessionLogger?.logError(output);
+    args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
     return {
       handled: true,
       currentCwd: args.currentCwd,
@@ -129,6 +132,7 @@ export function handleBuiltinCommand(args: {
     const output = `错误: ${result.error}`;
     args.sendToCommandScope({ type: "result", ok: false, output });
     args.sessionLogger?.logError(output);
+    args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
     return {
       handled: true,
       currentCwd: args.currentCwd,
