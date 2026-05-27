@@ -47,6 +47,8 @@ function inputToText(input: unknown): string {
 
 class FakeOrchestrator {
   lastInvokeInput: unknown = null;
+  lastInvokeAgentId: string | null = null;
+  activeAgentId = "codex";
 
   status(): { ready: boolean; error?: string; streaming: boolean } {
     return { ready: true, streaming: true };
@@ -57,7 +59,7 @@ class FakeOrchestrator {
   }
 
   getActiveAgentId(): string {
-    return "codex";
+    return this.activeAgentId;
   }
 
   listAgents(): Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean; error?: string } }> {
@@ -66,11 +68,22 @@ class FakeOrchestrator {
         metadata: { id: "codex", name: "Codex" },
         status: { ready: true, streaming: true },
       },
+      {
+        metadata: { id: "claude", name: "Claude" },
+        status: { ready: true, streaming: true },
+      },
     ];
   }
 
   hasAgent(agentId: string): boolean {
-    return agentId === "codex";
+    return agentId === "codex" || agentId === "claude";
+  }
+
+  switchAgent(agentId: string): void {
+    if (!this.hasAgent(agentId)) {
+      throw new Error(`Agent "${agentId}" is not registered`);
+    }
+    this.activeAgentId = agentId;
   }
 
   onEvent(_handler: (event: unknown) => void): () => void {
@@ -79,6 +92,7 @@ class FakeOrchestrator {
 
   async invokeAgent(agentId: string, input: unknown): Promise<{ response: string; usage: null; agentId: string }> {
     this.lastInvokeInput = input;
+    this.lastInvokeAgentId = agentId;
     return { response: "stub response", usage: null, agentId };
   }
 
@@ -382,6 +396,53 @@ describe("web slash commands", () => {
 
       const notice = "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。";
       const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as { notice?: string } | undefined;
+      assert.equal(result?.notice, notice);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [
+          { role: "user", text: "continue working", kind: undefined },
+          { role: "status", text: notice, kind: "status" },
+          { role: "ai", text: "stub response", kind: undefined },
+        ],
+      );
+    });
+  });
+
+  it("records prompt agent switch notices and invokes the selected agent", async () => {
+    await withTempWorkspace("ads-web-prompt-agent-notice-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: { text: "continue working", agentId: "claude" },
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            switchAgent: (_userId: number, agentId: string) => {
+              orchestrator.switchAgent(agentId);
+              return { success: true, message: "ok" };
+            },
+            getEffectiveState: () => ({
+              model: "test-model",
+              modelReasoningEffort: "high",
+              activeAgentId: orchestrator.getActiveAgentId(),
+            }),
+          },
+        }),
+      );
+
+      const notice = "已切换到代理: claude";
+      const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as
+        | { notice?: string; activeAgentId?: string }
+        | undefined;
+      assert.equal(orchestrator.lastInvokeAgentId, "claude");
+      assert.equal(result?.activeAgentId, "claude");
       assert.equal(result?.notice, notice);
       assert.deepEqual(
         historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),

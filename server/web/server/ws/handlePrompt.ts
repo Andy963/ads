@@ -92,11 +92,13 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
     );
     orchestrator.setWorkingDirectory(turnCwd);
-    const { notice: rotationNotice } = applySessionOverrides({
+    const { notice: rotationNotice, agentNotice } = applySessionOverrides({
       sessionManager: deps.sessions.sessionManager,
       userId: deps.context.userId,
       payload: deps.request.parsed.payload,
     });
+    const overrideNotice =
+      [agentNotice, rotationNotice].filter((notice): notice is string => Boolean(notice)).join("\n") || undefined;
     const status = orchestrator.status();
     if (!status.ready) {
       const message = status.error ?? "代理未启用，请配置凭证";
@@ -277,16 +279,16 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         effectiveModel: effectiveState.model,
         effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
         activeAgentId: effectiveState.activeAgentId,
-        notice: rotationNotice,
+        notice: overrideNotice,
       });
       if (deps.observability.sessionLogger) {
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
-      if (rotationNotice) {
+      if (overrideNotice) {
         deps.history.historyStore.add(deps.context.historyKey, {
           role: "status",
-          text: rotationNotice,
+          text: overrideNotice,
           ts: Date.now(),
           kind: "status",
         });

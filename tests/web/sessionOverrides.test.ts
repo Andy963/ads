@@ -102,6 +102,7 @@ describe("web/sessionOverrides", () => {
         return { success: true, message: "ok" };
       },
       getUserModel: () => "gpt-4o",
+      getEffectiveState: () => ({ activeAgentId: "codex" }),
       getOrCreate: () => ({ setModelConfig: () => {} }),
       setUserModel: (_userId: number, value?: string) => {
         calls.push({ type: "model", value });
@@ -121,6 +122,7 @@ describe("web/sessionOverrides", () => {
     });
 
     assert.equal(result.notice, undefined);
+    assert.equal(result.agentNotice, "已切换到代理: claude");
     assert.deepEqual(calls, [
       { type: "agent", value: "claude" },
       { type: "effort", value: "high" },
