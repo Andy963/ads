@@ -1,7 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
+import { readMarkdownFile, writeMarkdownFile } from "./markdownStore.js";
 
 const SOUL_FILE = "soul.md";
 
@@ -22,18 +20,12 @@ export function resolveSoulPath(workspaceRoot: string): string {
 }
 
 export function readSoul(workspaceRoot: string): string {
-  const soulPath = resolveSoulPath(workspaceRoot);
-  try {
-    return fs.readFileSync(soulPath, "utf8");
-  } catch {
-    return "";
-  }
+  return readMarkdownFile(resolveSoulPath(workspaceRoot));
 }
 
 export function writeSoul(workspaceRoot: string, content: string): void {
-  const soulPath = resolveSoulPath(workspaceRoot);
-  fs.mkdirSync(path.dirname(soulPath), { recursive: true });
-  fs.writeFileSync(soulPath, content, "utf8");
+  const maxTokens = Number.parseInt(String(process.env.ADS_SOUL_MAX_TOKENS ?? "512"), 10);
+  writeMarkdownFile(resolveSoulPath(workspaceRoot), content, { maxTokens: Number.isFinite(maxTokens) ? maxTokens : 512 });
 }
 
 function parsePreferences(content: string): { prefs: Preference[]; sectionStart: number; sectionEnd: number } {

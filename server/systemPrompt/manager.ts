@@ -8,6 +8,7 @@ import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "..
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills, loadSkillBody, renderSkillMetaInstruction } from "../skills/loader.js";
 import { readSoul } from "../memory/soul.js";
+import { readMemory } from "../memory/memory.js";
 import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 export interface ReinjectionConfig {
@@ -86,6 +87,7 @@ export class SystemPromptManager {
   private instructionsCache: FileCache | null = null;
   private rulesCache: FileCache | null = null;
   private lastSoulHash: string | null = null;
+  private lastMemoryHash: string | null = null;
   private lastSkillsHash: string | null = null;
   private requestedSkillNames: string[] = [];
   private hasInjected = false;
@@ -130,6 +132,7 @@ export class SystemPromptManager {
     this.instructionsCache = null;
     this.rulesCache = null;
     this.lastSoulHash = null;
+    this.lastMemoryHash = null;
     this.lastSkillsHash = null;
     this.requestedSkillNames = [];
     this.instructionsWarningLogged = false;
@@ -163,11 +166,15 @@ export class SystemPromptManager {
     const instructionsCache = this.readInstructions();
     const rulesCache = this.readRules();
     const soulHash = this.computeSoulHash();
+    const memoryHash = this.computeMemoryHash();
     const skillsHash = this.computeSkillsHash();
 
     if (this.hasInjected) {
       if (this.lastSoulHash && soulHash !== this.lastSoulHash) {
         this.pendingReason = this.pendingReason ?? "soul-updated";
+      }
+      if (this.lastMemoryHash && memoryHash !== this.lastMemoryHash) {
+        this.pendingReason = this.pendingReason ?? "memory-updated";
       }
       if (this.lastSkillsHash && skillsHash !== this.lastSkillsHash) {
         this.pendingReason = this.pendingReason ?? "skills-updated";
@@ -206,6 +213,10 @@ export class SystemPromptManager {
     if (soulBlock) {
       textParts.push(soulBlock);
     }
+    const memoryBlock = this.renderMemoryBlock();
+    if (memoryBlock) {
+      textParts.push(memoryBlock);
+    }
     if (textParts.length === 0) {
       return null;
     }
@@ -218,6 +229,7 @@ export class SystemPromptManager {
     }
     this.lastRulesInjectionTurn = this.turnCount;
     this.lastSoulHash = soulHash;
+    this.lastMemoryHash = memoryHash;
     this.lastSkillsHash = skillsHash;
     if (!rulesOnly && instructions) {
       this.lastInstructionsHash = instructions.hash;
@@ -262,6 +274,22 @@ export class SystemPromptManager {
     }
   }
 
+  private renderMemoryBlock(): string | null {
+    if (String(process.env.ADS_MEMORY_INJECTION_ENABLED ?? "true").trim().toLowerCase() === "false") {
+      return null;
+    }
+    try {
+      const content = readMemory(this.workspaceRoot);
+      const trimmed = content.trim();
+      if (!trimmed) {
+        return null;
+      }
+      return `<memory>\n${trimmed}\n</memory>`;
+    } catch {
+      return null;
+    }
+  }
+
   private renderRequestedSkillsBlock(): string | null {
     if (this.requestedSkillNames.length === 0) {
       return null;
@@ -284,6 +312,15 @@ export class SystemPromptManager {
   private computeSoulHash(): string {
     try {
       const content = readSoul(this.workspaceRoot);
+      return crypto.createHash("sha1").update(content ?? "").digest("hex");
+    } catch {
+      return crypto.createHash("sha1").update("").digest("hex");
+    }
+  }
+
+  private computeMemoryHash(): string {
+    try {
+      const content = readMemory(this.workspaceRoot);
       return crypto.createHash("sha1").update(content ?? "").digest("hex");
     } catch {
       return crypto.createHash("sha1").update("").digest("hex");

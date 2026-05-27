@@ -624,6 +624,99 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 19,
+    description: "Model configs - separate immutable config id from agent model id",
+    up: (db) => {
+      const names = getTableColumnNames(db, "model_configs");
+      if (!names.has("model_id")) {
+        db.exec(`ALTER TABLE model_configs ADD COLUMN model_id TEXT`);
+      }
+      db.exec(`
+        UPDATE model_configs
+        SET model_id = id
+        WHERE model_id IS NULL OR TRIM(model_id) = ''
+      `);
+    },
+  },
+  {
+    version: 20,
+    description: "Hermes memory - FTS indexes for task and conversation messages",
+    up: (db) => {
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS task_messages_fts USING fts5(
+          content,
+          content='task_messages',
+          content_rowid='id',
+          tokenize='unicode61 remove_diacritics 2'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS task_messages_ai AFTER INSERT ON task_messages BEGIN
+          INSERT INTO task_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS task_messages_ad AFTER DELETE ON task_messages BEGIN
+          INSERT INTO task_messages_fts(task_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS task_messages_au AFTER UPDATE ON task_messages BEGIN
+          INSERT INTO task_messages_fts(task_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+          INSERT INTO task_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(
+          content,
+          content='conversation_messages',
+          content_rowid='id',
+          tokenize='unicode61 remove_diacritics 2'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS conversation_messages_ai AFTER INSERT ON conversation_messages BEGIN
+          INSERT INTO conversation_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS conversation_messages_ad AFTER DELETE ON conversation_messages BEGIN
+          INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS conversation_messages_au AFTER UPDATE ON conversation_messages BEGIN
+          INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+          INSERT INTO conversation_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+
+      db.exec(`
+        INSERT INTO task_messages_fts(rowid, content)
+        SELECT id, content FROM task_messages
+        WHERE id NOT IN (SELECT rowid FROM task_messages_fts)
+          AND length(content) <= 65536
+        LIMIT 500
+      `);
+      db.exec(`
+        INSERT INTO conversation_messages_fts(rowid, content)
+        SELECT id, content FROM conversation_messages
+        WHERE id NOT IN (SELECT rowid FROM conversation_messages_fts)
+          AND length(content) <= 65536
+        LIMIT 500
+      `);
+    },
+  },
+  {
+    version: 21,
+    description:
+      "Repair model_configs.model_id for dbs that skipped v19 (column missing after schema_version was bumped by a divergent legacy v19)",
+    up: (db) => {
+      const names = getTableColumnNames(db, "model_configs");
+      if (!names.has("model_id")) {
+        db.exec(`ALTER TABLE model_configs ADD COLUMN model_id TEXT`);
+      }
+      db.exec(`
+        UPDATE model_configs
+        SET model_id = id
+        WHERE model_id IS NULL OR TRIM(model_id) = ''
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

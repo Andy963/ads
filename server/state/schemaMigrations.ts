@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Database as DatabaseType } from "better-sqlite3";
 
 export interface StateSchemaMigration {
@@ -105,6 +107,73 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
           ON web_task_bundle_drafts(namespace, auth_user_id, workspace_root, request_id)
           WHERE request_id IS NOT NULL AND request_id != '';
       `);
+    },
+  },
+  {
+    version: 2,
+    description: "Hermes architecture - compaction snapshots and tool metrics",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS compaction_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          trigger TEXT NOT NULL CHECK(trigger IN ('soft','hard','manual')),
+          tokens_before INTEGER,
+          tokens_after INTEGER,
+          content TEXT NOT NULL,
+          truncated TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_compaction_ws_ts
+          ON compaction_snapshots(workspace_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS tool_call_metrics (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          status TEXT NOT NULL
+        );
+      `);
+    },
+  },
+  {
+    version: 3,
+    description: "Model configs - reissue opaque ids for legacy rows whose id was the agent model id",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS model_configs (
+          id TEXT PRIMARY KEY,
+          model_id TEXT,
+          display_name TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          is_enabled INTEGER NOT NULL DEFAULT 1,
+          is_default INTEGER NOT NULL DEFAULT 0,
+          config_json TEXT,
+          updated_at INTEGER
+        )
+      `);
+      const columns = db
+        .prepare("PRAGMA table_info(model_configs)")
+        .all() as Array<{ name?: string }>;
+      if (!columns.some((column) => column.name === "model_id")) {
+        db.exec("ALTER TABLE model_configs ADD COLUMN model_id TEXT");
+      }
+      db.exec(`
+        UPDATE model_configs
+        SET model_id = id
+        WHERE model_id IS NULL OR TRIM(model_id) = ''
+      `);
+      const legacyRows = db
+        .prepare("SELECT id FROM model_configs WHERE id NOT LIKE 'model-%'")
+        .all() as Array<{ id: string }>;
+      const updateIdStmt = db.prepare("UPDATE model_configs SET id = ? WHERE id = ?");
+      for (const row of legacyRows) {
+        updateIdStmt.run(`model-${randomUUID()}`, row.id);
+      }
     },
   },
 ];
