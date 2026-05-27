@@ -226,7 +226,7 @@ export function createTaskEventActions(
         if (!data) return;
         startTaskTerminalCleanup(data.task.id, state);
         upsertTask(data.task, state);
-        pushMessageBeforeLive({ role: "system", kind: "text", content: `[任务失败] ${data.error}` }, state);
+        pushMessageBeforeLive({ role: "system", kind: "error", content: `[任务失败] ${data.error}` }, state);
         finishTaskTerminalCleanup(state);
         return;
       }
@@ -235,7 +235,7 @@ export function createTaskEventActions(
         if (!task) return;
         startTaskTerminalCleanup(task.id, state);
         upsertTask(task, state);
-        pushMessageBeforeLive({ role: "system", kind: "text", content: "[已终止]" }, state);
+        pushMessageBeforeLive({ role: "system", kind: "error", content: "[已终止]" }, state);
         finishTaskTerminalCleanup(state);
         return;
       }
