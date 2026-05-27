@@ -36,7 +36,11 @@ export async function executeCommandLine(args: {
       );
     });
     const result = await Promise.race([runPromise, abortPromise]);
-    args.sendToCommandScope({ type: "result", ok: result.ok, output: result.output });
+    args.sendToCommandScope(
+      result.ok
+        ? { type: "result", ok: true, output: result.output, kind: "execute", command: args.command }
+        : { type: "result", ok: false, output: result.output },
+    );
     args.sessionLogger?.logOutput(result.output);
     args.historyStore.add(args.historyKey, {
       role: "status",

@@ -31,7 +31,15 @@ describe("web/ws/commandExecution", () => {
         },
       });
 
-      assert.deepEqual(sent, [{ type: "result", ok: true, output: "M file.ts\n" }]);
+      assert.deepEqual(sent, [
+        {
+          type: "result",
+          ok: true,
+          output: "M file.ts\n",
+          kind: "execute",
+          command: "git status --short",
+        },
+      ]);
       assert.deepEqual(
         historyStore.get("history-ok").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
         [{ role: "status", text: "$ git status --short\nM file.ts", kind: "execute" }],

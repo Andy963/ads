@@ -835,6 +835,23 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         void flushQueuedPrompts(rt);
         return;
       }
+      const resultKind = String(msg.kind ?? "").trim();
+      const resultCommand = String(msg.command ?? "").trim();
+      if (resultKind === "execute" && resultCommand) {
+        finalizeAssistant("", rt);
+        pushMessageBeforeLive(
+          {
+            role: "system",
+            kind: "execute",
+            command: resultCommand,
+            content: output.trimEnd(),
+            streaming: false,
+          },
+          rt,
+        );
+        void flushQueuedPrompts(rt);
+        return;
+      }
       finalizeAssistant(output, rt);
       void flushQueuedPrompts(rt);
       return;

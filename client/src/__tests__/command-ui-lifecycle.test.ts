@@ -163,6 +163,35 @@ describe("command UI lifecycle", () => {
     wrapper.unmount();
   });
 
+  it("renders successful command results as execute blocks instead of assistant replies", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "result",
+      ok: true,
+      kind: "execute",
+      command: "git status --short",
+      output: "M file.ts\n",
+    });
+    await settleUi(wrapper);
+
+    const messages = (wrapper.vm as any).messages as Array<any>;
+    const execute = messages.find((m) => m.kind === "execute");
+    expect(execute).toMatchObject({
+      role: "system",
+      kind: "execute",
+      command: "git status --short",
+      content: "M file.ts",
+      streaming: false,
+    });
+    expect(messages.some((m) => m.role === "assistant" && String(m.content ?? "").includes("M file.ts"))).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("does not keep an empty streaming placeholder when the turn returns an empty result", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
