@@ -8,6 +8,7 @@ import {
 } from "./chat_sync";
 
 const LIVE = "live-step";
+const LEGACY_STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
 
 function msg(overrides: Partial<ChatItem>): ChatItem {
   return {
@@ -109,6 +110,28 @@ describe("chat_sync.mergeHistoryFromServer", () => {
 
     expect(out).toHaveLength(2);
     expect(out[1]!.id).toBe("a1");
+    expect(out[1]!.content).toBe("Partial response");
+  });
+
+  it("still replaces assistant messages that have the legacy disconnect marker", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Hi" }),
+      msg({
+        id: "a1",
+        role: "assistant",
+        kind: "text",
+        content: `Part\n\n${LEGACY_STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "Hi" }),
+      msg({ id: "s2", role: "assistant", kind: "text", content: "Partial response" }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out).toHaveLength(2);
     expect(out[1]!.content).toBe("Partial response");
   });
 

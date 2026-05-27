@@ -2,12 +2,14 @@ import type { ChatItem } from "../app/controllerTypes";
 
 type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string };
 
-export const STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
+const LEGACY_STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
+export const STREAM_DISCONNECT_NOTICE = "[连接中断：这段回复尚未完成，正在等待重连同步]";
 
 function normalizeContentForMerge(text: string): string {
   return String(text ?? "")
     .replace(/\r\n/g, "\n")
     .replace(new RegExp(`\\n\\n${escapeRegExp(STREAM_DISCONNECT_NOTICE)}$`), "")
+    .replace(new RegExp(`\\n\\n${escapeRegExp(LEGACY_STREAM_DISCONNECT_NOTICE)}$`), "")
     .trim();
 }
 
@@ -38,7 +40,7 @@ export function finalizeStreamingOnDisconnect(items: ChatItem[], liveStepId: str
       next = [...next.slice(0, i), ...next.slice(i + 1)];
       continue;
     }
-    const markedContent = content.includes(STREAM_DISCONNECT_NOTICE)
+    const markedContent = content.includes(STREAM_DISCONNECT_NOTICE) || content.includes(LEGACY_STREAM_DISCONNECT_NOTICE)
       ? content
       : `${content.trimEnd()}\n\n${STREAM_DISCONNECT_NOTICE}`;
     next[i] = { ...m, streaming: false, content: markedContent };
