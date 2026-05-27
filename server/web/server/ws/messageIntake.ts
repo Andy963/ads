@@ -49,6 +49,7 @@ export function handleImmediateWsMessage(args: {
   receivedAt: number;
   abortInFlight: () => boolean;
   sendJson: (payload: unknown) => void;
+  recordStatusError?: (message: string) => void;
 }): boolean {
   if (args.parsed.type === "ping") {
     args.sendJson({ type: "pong", ts: args.receivedAt });
@@ -60,7 +61,9 @@ export function handleImmediateWsMessage(args: {
   if (args.parsed.type === "interrupt") {
     const found = args.abortInFlight();
     if (!found) {
-      args.sendJson({ type: "error", message: "当前没有正在执行的任务" });
+      const message = "当前没有正在执行的任务";
+      args.sendJson({ type: "error", message });
+      args.recordStatusError?.(message);
     }
     return true;
   }
