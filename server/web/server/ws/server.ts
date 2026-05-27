@@ -239,6 +239,15 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         excludeWs: ws,
       });
     };
+    const broadcastInFlightToSiblingConnections = (): void => {
+      broadcastJsonToHistoryKey({
+        clientMetaByWs: state.clientMetaByWs,
+        historyKey,
+        payload: { type: "in_flight", inFlight: true },
+        sendJson: safeJsonSend,
+        excludeWs: ws,
+      });
+    };
     const broadcastWorkspaceState = (workspaceRoot: string): void => {
       try {
         broadcastJson({ type: "workspace", data: getWorkspaceState(workspaceRoot) });
@@ -387,6 +396,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         sanitizeInput: commands.sanitizeInput,
         sendJson: (payload) => safeJsonSend(ws, payload),
         broadcastPersistedHistory: broadcastHistoryToSiblingConnections,
+        broadcastInFlight: broadcastInFlightToSiblingConnections,
         traceWsDuplication: config.traceWsDuplication,
         warn: logger.warn,
         sessionId,

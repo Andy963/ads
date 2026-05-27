@@ -19,6 +19,7 @@ describe("web/ws/preflight", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight", maxEntriesPerSession: 20 });
     const sent: unknown[] = [];
     let broadcastPersistedHistoryCalls = 0;
+    let broadcastInFlightCalls = 0;
     const warnings: string[] = [];
     const sanitizeInput = (payload: unknown) => String(payload ?? "");
 
@@ -34,6 +35,9 @@ describe("web/ws/preflight", () => {
         sendJson: (payload) => sent.push(payload),
         broadcastPersistedHistory: () => {
           broadcastPersistedHistoryCalls += 1;
+        },
+        broadcastInFlight: () => {
+          broadcastInFlightCalls += 1;
         },
         traceWsDuplication: true,
         warn: (message) => warnings.push(message),
@@ -52,6 +56,9 @@ describe("web/ws/preflight", () => {
         broadcastPersistedHistory: () => {
           broadcastPersistedHistoryCalls += 1;
         },
+        broadcastInFlight: () => {
+          broadcastInFlightCalls += 1;
+        },
         traceWsDuplication: true,
         warn: (message) => warnings.push(message),
         sessionId: "session-1",
@@ -65,6 +72,7 @@ describe("web/ws/preflight", () => {
         { type: "ack", client_message_id: "m1", duplicate: true },
       ]);
       assert.equal(broadcastPersistedHistoryCalls, 1);
+      assert.equal(broadcastInFlightCalls, 1);
       assert.equal(historyStore.get("history-1").filter((entry) => entry.kind === "client_message_id:m1").length, 1);
       assert.equal(warnings.length, 1);
     } finally {

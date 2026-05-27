@@ -34,6 +34,7 @@ export function preflightPersistAndAck(args: {
   sanitizeInput: (payload: unknown) => string;
   sendJson: (payload: unknown) => void;
   broadcastPersistedHistory?: () => void;
+  broadcastInFlight?: () => void;
   traceWsDuplication: boolean;
   warn: (message: string) => void;
   sessionId: string;
@@ -65,6 +66,7 @@ export function preflightPersistAndAck(args: {
       return { enqueue: false };
     }
     args.broadcastPersistedHistory?.();
+    args.broadcastInFlight?.();
     return { enqueue: true };
   }
 
@@ -92,6 +94,7 @@ export function preflightPersistAndAck(args: {
       return { enqueue: false };
     }
     args.broadcastPersistedHistory?.();
+    args.broadcastInFlight?.();
     return { enqueue: true };
   }
 

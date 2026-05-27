@@ -259,10 +259,7 @@ describe("web/server/ws/preflight-persistence", () => {
     try {
       await Promise.all([waitForWsOpen(sender), waitForWsOpen(sibling)]);
 
-      sender.send(JSON.stringify({ type: "command", payload: "echo slow" }));
-      sender.send(JSON.stringify({ type: "command", payload: "echo queued", client_message_id: "m2" }));
-
-      const history = await waitForWsMessage(
+      const siblingHistory = waitForWsMessage(
         sibling,
         (msg) =>
           msg.type === "history" &&
@@ -274,10 +271,22 @@ describe("web/server/ws/preflight-persistence", () => {
               candidate.text === "echo queued" &&
               candidate.kind === "client_message_id:m2"
             );
-          }),
+        }),
         2000,
       );
+      const siblingInFlight = waitForWsMessage(
+        sibling,
+        (msg) => msg.type === "in_flight" && msg.inFlight === true,
+        2000,
+      );
+
+      sender.send(JSON.stringify({ type: "command", payload: "echo slow" }));
+      sender.send(JSON.stringify({ type: "command", payload: "echo queued", client_message_id: "m2" }));
+
+      const history = await siblingHistory;
       assert.equal(history.type, "history");
+      const inFlight = await siblingInFlight;
+      assert.deepEqual(inFlight, { type: "in_flight", inFlight: true });
 
       const senderHistory = await Promise.race([
         waitForWsMessage(

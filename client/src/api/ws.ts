@@ -32,6 +32,7 @@ type WsMessage =
     }
   | { type: "ack"; client_message_id?: string; duplicate?: boolean }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
+  | { type: "in_flight"; inFlight?: boolean }
   | { type: "delta"; delta?: string; source?: "chat" | "step" }
   | { type: "result"; ok: boolean; output: string; kind?: string }
   | { type: "error"; message?: string }

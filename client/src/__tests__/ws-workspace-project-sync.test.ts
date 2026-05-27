@@ -206,6 +206,22 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("marks sibling preflight updates as in-flight without adding transcript entries", () => {
+    const rt = createRuntime();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "in_flight", inFlight: true });
+
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+  });
+
   it("keeps the synthetic default project rooted externally while still recording workspace state", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();

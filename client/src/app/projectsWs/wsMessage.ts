@@ -662,6 +662,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "in_flight") {
+      const inFlight = (msg as { inFlight?: unknown }).inFlight;
+      if (typeof inFlight !== "boolean") return;
+      rt.busy.value = inFlight;
+      rt.turnInFlight = inFlight;
+      return;
+    }
+
     if (type === "delta") {
       rt.busy.value = true;
       rt.turnInFlight = true;
