@@ -222,6 +222,8 @@ describe("web/ws/handleTaskResume", () => {
     assert.equal(sent.length, 0);
     assert.deepEqual(sessionSent.at(-1), {
       type: "history",
+      threadId: "new-claude-session",
+      contextMode: "history_injection",
       items: [
         {
           role: "user",
@@ -665,6 +667,8 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(saveThreadCalls, [{ userId: 7, threadId: "new-thread", agentId: "codex" }]);
     assert.deepEqual(sent.at(-1), {
       type: "history",
+      threadId: "new-thread",
+      contextMode: "history_injection",
       items: [
         {
           role: "status",
@@ -804,6 +808,8 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(warnings, []);
     assert.deepEqual(sent.at(-1), {
       type: "history",
+      threadId: "new-claude-session",
+      contextMode: "history_injection",
       items: [
         {
           role: "status",

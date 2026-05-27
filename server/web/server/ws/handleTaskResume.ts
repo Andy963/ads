@@ -135,11 +135,16 @@ export async function handleTaskResumeMessage(
       return;
     }
 
-    const sendHistorySnapshot = () =>
+    const sendHistorySnapshot = (metadata?: {
+      threadId?: string | null;
+      contextMode?: "thread_resumed" | "history_injection";
+    }) =>
       sendTaskResumeHistorySnapshot({
         historyStore: deps.history.historyStore,
         historyKey: deps.context.historyKey,
         send: deps.transport.broadcastJson ?? ((payload) => deps.transport.safeJsonSend(deps.transport.ws, payload)),
+        threadId: metadata?.threadId,
+        contextMode: metadata?.contextMode,
       });
     const activeAgentId = orchestrator.getActiveAgentId();
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
@@ -203,7 +208,10 @@ export async function handleTaskResumeMessage(
         deps.observability.logger.info(
           `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=thread_resumed source=${selection.source ?? "unknown"} thread=${threadIdToResume}`,
         );
-        sendHistorySnapshot();
+        sendHistorySnapshot({
+          threadId: orchestrator.getThreadId() ?? threadIdToResume,
+          contextMode: "thread_resumed",
+        });
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -311,7 +319,10 @@ export async function handleTaskResumeMessage(
       previousEntries: originalHistoryEntries,
       statusText,
     });
-    sendHistorySnapshot();
+    sendHistorySnapshot({
+      threadId: orchestrator.getThreadId(),
+      contextMode: "history_injection",
+    });
   });
 
   return { handled: true, orchestrator };

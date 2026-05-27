@@ -720,6 +720,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         rt.ignoreNextHistory = false;
         return;
       }
+      const historyThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
+      const historyContextMode = String((msg as { contextMode?: unknown }).contextMode ?? "").trim();
+      if (historyThreadId) {
+        rt.activeThreadId.value = historyThreadId;
+        if (historyContextMode === "thread_resumed" || historyContextMode === "history_injection") {
+          rt.threadWarning.value = null;
+        } else {
+          clearThreadWarningIfCurrent(historyThreadId);
+        }
+      }
       rt.recentCommands.value = [];
       rt.seenCommandIds.clear();
       const next: ChatItem[] = [];

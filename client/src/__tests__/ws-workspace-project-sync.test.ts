@@ -246,6 +246,32 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("updates active thread metadata from task resume history snapshots", () => {
+    const rt = createRuntime();
+    rt.threadWarning.value = "stale warning";
+    const updateProject = vi.fn();
+    const { handler, applyResumeHistory } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "history",
+      threadId: "thread-restored",
+      contextMode: "history_injection",
+      items: [{ role: "status", kind: "status", text: "已从当前对话恢复上下文", ts: 12 }],
+    });
+
+    expect(rt.activeThreadId.value).toBe("thread-restored");
+    expect(rt.threadWarning.value).toBeNull();
+    expect(applyResumeHistory).toHaveBeenCalledWith(
+      [{ id: "h-s-0", role: "system", kind: "text", content: "已从当前对话恢复上下文", ts: 12 }],
+      rt,
+    );
+  });
+
   it("truncates replayed execute history consistently with live previews", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();

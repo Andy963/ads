@@ -34,9 +34,14 @@ export function sendTaskResumeHistorySnapshot(args: {
   historyStore: Pick<HistoryStore, "get">;
   historyKey: string;
   send: (payload: unknown) => void;
+  threadId?: string | null;
+  contextMode?: "thread_resumed" | "history_injection";
 }): void {
+  const threadId = String(args.threadId ?? "").trim();
   args.send({
     type: "history",
     items: buildTaskResumeHistorySnapshot(args.historyStore.get(args.historyKey)),
+    ...(threadId ? { threadId } : {}),
+    ...(args.contextMode ? { contextMode: args.contextMode } : {}),
   });
 }
