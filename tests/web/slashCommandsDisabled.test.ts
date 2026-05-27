@@ -113,7 +113,7 @@ function sanitizeCommandPayload(payload: unknown): string {
 }
 
 function createPromptDeps(args: {
-  payload: string;
+  payload: unknown;
   workspaceRoot: string;
   chatMessages: unknown[];
   clientMessages: unknown[];
@@ -355,6 +355,41 @@ describe("web slash commands", () => {
         chatMessages.some(
           (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
         ),
+      );
+    });
+  });
+
+  it("records model rotation notices so reconnect replay explains the context change", async () => {
+    await withTempWorkspace("ads-web-prompt-model-notice-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: { text: "continue working", model: "gpt-4o" },
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            getUserModel: () => "gpt-4.1",
+          },
+        }),
+      );
+
+      const notice = "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。";
+      const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as { notice?: string } | undefined;
+      assert.equal(result?.notice, notice);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [
+          { role: "user", text: "continue working", kind: undefined },
+          { role: "status", text: notice, kind: "status" },
+          { role: "ai", text: "stub response", kind: undefined },
+        ],
       );
     });
   });

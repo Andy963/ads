@@ -247,6 +247,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const notice = String(payload.notice ?? "").trim();
     if (notice) {
       rt.apiNotice.value = notice;
+      pushMessageBeforeLive({ role: "system", kind: "text", content: notice }, rt);
       if (rt.noticeTimer !== null) {
         try {
           clearTimeout(rt.noticeTimer);

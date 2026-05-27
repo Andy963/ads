@@ -283,6 +283,14 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
+      if (rotationNotice) {
+        deps.history.historyStore.add(deps.context.historyKey, {
+          role: "status",
+          text: rotationNotice,
+          ts: Date.now(),
+          kind: "status",
+        });
+      }
       deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
       deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
     } catch (error) {

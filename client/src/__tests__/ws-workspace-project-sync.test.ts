@@ -108,6 +108,36 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("renders result notices as system chat entries while keeping the toast notice", () => {
+    const rt = createRuntime();
+    rt.apiNotice = { value: null } satisfies Ref<string | null>;
+    rt.noticeTimer = null;
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      notice: "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。",
+    });
+
+    expect(rt.apiNotice.value).toBe("模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。");
+    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
+      {
+        role: "system",
+        kind: "text",
+        content: "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。",
+      },
+      rt,
+    );
+  });
+
   it("preserves error history kind when replaying server history", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();
