@@ -129,6 +129,7 @@ export type ProjectRuntime = {
   delegationsInFlight: Ref<AgentDelegationInFlight[]>;
   ignoreNextHistory: boolean;
   resumeReplacePending: boolean;
+  awaitingBootstrapHistory: boolean;
   ws: unknown;
   reconnectTimer: number | null;
   reconnectAttempts: number;

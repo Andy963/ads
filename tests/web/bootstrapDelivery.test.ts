@@ -248,6 +248,43 @@ describe("web/ws/bootstrapDelivery", () => {
     }
   });
 
+  it("sends an empty history marker when restored context has no replay entries", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-empty-restored", maxEntriesPerSession: 20 });
+
+    try {
+      sendInitialBootstrapMessages({
+        ws: {} as any,
+        safeJsonSend: (_ws, payload) => sent.push(payload),
+        sessionManager: {
+          getSavedThreadId: () => "thread-saved",
+          getContextRestoreMode: () => "thread_resumed",
+          getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => "thread-live",
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+        sessionId: "session-1",
+        chatSessionId: "custom-worker",
+        workspace: { path: "/tmp/project" },
+        inFlight: false,
+        historyStore,
+        historyKey: "history-1",
+      });
+
+      assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[1] as { type?: unknown }).type, "agents");
+      assert.deepEqual(sent[2], { type: "history", items: [] });
+      assert.deepEqual(sent[3], { type: "status", message: "已恢复后端上下文线程。", kind: "status" });
+    } finally {
+      historyStore.clear("history-1");
+    }
+  });
+
   it("announces in-flight backend work during reconnect bootstrap", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-in-flight", maxEntriesPerSession: 20 });

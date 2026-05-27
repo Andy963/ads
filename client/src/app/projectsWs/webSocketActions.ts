@@ -358,6 +358,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.connected.value = true;
       rt.wsError.value = null;
       rt.reconnectAttempts = 0;
+      rt.awaitingBootstrapHistory = false;
       clearReconnectTimer(rt);
       restorePendingPrompt(rt);
       if (shouldSyncTasks && rt.needsTaskResync) {

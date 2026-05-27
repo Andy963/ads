@@ -556,6 +556,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       applyEffectiveState(msg as Record<string, unknown>);
       const handshakeReset = Boolean(msg.reset);
       const contextMode = String(msg.contextMode ?? "").trim();
+      rt.awaitingBootstrapHistory =
+        (contextMode === "thread_resumed" || contextMode === "history_injection" || Boolean(rawServerThreadId)) &&
+        rt.queuedPrompts.value.length > 0;
       const serverThreadId = contextMode === "fresh" ? "" : rawServerThreadId;
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       const hasStaleLocalContinuity = Boolean(prevThreadId) || rt.messages.value.length > 0;
@@ -605,7 +608,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       syncProjectFromWorkspaceState(current, nextPath, wsState);
 
-      if ((typeof inFlight === "boolean" && !inFlight) || (typeof inFlight !== "boolean" && !rt.turnInFlight)) {
+      if (
+        !rt.awaitingBootstrapHistory &&
+        ((typeof inFlight === "boolean" && !inFlight) || (typeof inFlight !== "boolean" && !rt.turnInFlight))
+      ) {
         void flushQueuedPrompts(rt);
       }
       return;
@@ -662,7 +668,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "history") {
       const resumeReplacePending = rt.resumeReplacePending;
-      if (!resumeReplacePending && (rt.busy.value || rt.queuedPrompts.value.length > 0) && rt.messages.value.length > 0) return;
+      if (
+        !rt.awaitingBootstrapHistory &&
+        !resumeReplacePending &&
+        (rt.busy.value || rt.queuedPrompts.value.length > 0) &&
+        rt.messages.value.length > 0
+      ) {
+        return;
+      }
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
         return;
@@ -703,7 +716,29 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         else if (kind === "error") next.push({ id: `h-e-${idx}`, role: "system", kind: "error", content: trimmed, ts: ts ?? undefined });
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }
+      if (rt.awaitingBootstrapHistory) {
+        const newestServerUser = [...items]
+          .reverse()
+          .map((item) => {
+            const entry = item as { role?: unknown; text?: unknown };
+            return String(entry.role ?? "") === "user" ? String(entry.text ?? "").trim() : "";
+          })
+          .find((text) => Boolean(text));
+        if (newestServerUser) {
+          const before = rt.queuedPrompts.value;
+          const after = before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
+          if (after.length !== before.length) {
+            rt.queuedPrompts.value = after;
+            rt.pendingAckClientMessageId = null;
+            clearPendingPrompt(rt);
+          }
+        }
+        rt.awaitingBootstrapHistory = false;
+      }
       applyResumeHistory(next, rt);
+      if (!rt.busy.value && !rt.turnInFlight) {
+        void flushQueuedPrompts(rt);
+      }
       return;
     }
 

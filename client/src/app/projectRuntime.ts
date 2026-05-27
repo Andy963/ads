@@ -43,6 +43,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     delegationsInFlight: ref([]),
     ignoreNextHistory: false,
     resumeReplacePending: false,
+    awaitingBootstrapHistory: false,
     ws: null,
     reconnectTimer: null,
     reconnectAttempts: 0,

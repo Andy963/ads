@@ -224,6 +224,44 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("does not replay a pending prompt before bootstrap history can confirm completion", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.pendingAckClientMessageId = "pending-1";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({ clientMessageId: "pending-1", text: "resume me", createdAt: Date.now(), agentId: "claude" }),
+    );
+    lastSentPromptPayload = null;
+    await settleUi(wrapper);
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "thread_resumed", threadId: "thread-1" });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "resume me", ts: 1 },
+        { role: "ai", text: "done", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["resume me", "done"]);
+    wrapper.unmount();
+  });
+
   it.each([
     [4401, "Unauthorized"],
     [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],
