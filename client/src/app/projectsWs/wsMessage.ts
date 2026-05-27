@@ -530,7 +530,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (handshakeReset) {
         resetTurnPatchSummary();
         threadReset(rt, {
-          notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
+          notice: "上下文线程已重置。为避免误导，聊天历史已清空。",
           warning: null,
           keepLatestTurn: false,
           clearBackendHistory: false,
@@ -540,7 +540,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       } else if (contextMode === "fresh" && hasStaleLocalContinuity) {
         resetTurnPatchSummary();
         threadReset(rt, {
-          notice: "Fresh backend context detected. Stale local chat history was cleared to avoid misleading continuity.",
+          notice: "后端已是全新上下文。为避免误导，旧的本地聊天历史已清空。",
           warning: null,
           keepLatestTurn: false,
           clearBackendHistory: false,
@@ -551,8 +551,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         rt.threadWarning.value = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
       } else if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
         rt.threadWarning.value =
-          `Backend thread changed without an explicit reset marker (prev=${prevThreadId}, now=${serverThreadId}). ` +
-          "UI was preserved, but model context may not match chat history.";
+          `后端线程已变化但没有显式重置标记（原=${prevThreadId}，现=${serverThreadId}）。` +
+          "当前界面已保留，但模型上下文可能与聊天历史不一致。";
       } else {
         clearThreadWarningIfCurrent(serverThreadId);
       }
@@ -601,7 +601,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "thread_reset") {
       resetTurnPatchSummary();
       threadReset(rt, {
-        notice: "Context thread was reset. Chat history was cleared to avoid misleading context.",
+        notice: "上下文线程已重置。为避免误导，聊天历史已清空。",
         warning: null,
         keepLatestTurn: false,
         clearBackendHistory: false,
@@ -763,18 +763,18 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
         if (!didThreadReset && prevThreadId && prevThreadId !== threadId) {
           rt.threadWarning.value =
-            `Backend thread changed without an explicit reset marker (prev=${prevThreadId}, now=${threadId}). ` +
-            "UI was preserved, but model context may not match chat history.";
+            `后端线程已变化但没有显式重置标记（原=${prevThreadId}，现=${threadId}）。` +
+            "当前界面已保留，但模型上下文可能与聊天历史不一致。";
         } else {
           clearThreadWarningIfCurrent(threadId);
         }
         rt.activeThreadId.value = threadId;
       }
       if (didThreadReset) {
-        const detail = expectedThreadId && threadId ? ` (expected=${expectedThreadId}, actual=${threadId})` : "";
+        const detail = expectedThreadId && threadId ? `（预期=${expectedThreadId}，实际=${threadId}）` : "";
         threadReset(rt, {
-          notice: "Context thread was reset. Chat history was cleared to start a new conversation.",
-          warning: detail ? `Context thread was reset${detail}.` : null,
+          notice: "上下文线程已重置。聊天历史已清空，并从新的对话继续。",
+          warning: detail ? `上下文线程已重置${detail}。` : null,
           keepLatestTurn: true,
           clearBackendHistory: false,
           resetThreadId: true,

@@ -284,7 +284,7 @@ describe("ws workspace project sync", () => {
       contextMode: "thread_resumed",
     });
 
-    expect(rt.threadWarning.value).toContain("Backend thread changed");
+    expect(rt.threadWarning.value).toContain("后端线程已变化");
     expect(rt.activeThreadId.value).toBe("thread-server");
 
     handler({
@@ -319,7 +319,7 @@ describe("ws workspace project sync", () => {
 
     expect(threadReset).not.toHaveBeenCalled();
     expect(rt.activeThreadId.value).toBe("thread-next");
-    expect(rt.threadWarning.value).toContain("Backend thread changed");
+    expect(rt.threadWarning.value).toContain("后端线程已变化");
   });
 
   it("clears stale result thread warnings after the backend reports the same thread again", () => {
@@ -340,7 +340,7 @@ describe("ws workspace project sync", () => {
       threadReset: false,
     });
 
-    expect(rt.threadWarning.value).toContain("Backend thread changed");
+    expect(rt.threadWarning.value).toContain("后端线程已变化");
 
     handler({
       type: "result",

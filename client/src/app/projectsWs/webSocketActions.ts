@@ -13,7 +13,7 @@ import type { WsDeps } from "./types";
 import { createWsMessageHandler } from "./wsMessage";
 
 export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDeps) {
-  const reconnectBusyMessage = "Connection lost while a request was running. Reconnecting and syncing history…";
+  const reconnectBusyMessage = "请求执行中连接中断，正在重连并同步历史…";
 
   const {
     api,

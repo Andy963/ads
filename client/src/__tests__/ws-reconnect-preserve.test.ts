@@ -4,7 +4,7 @@ import { defineComponent } from "vue";
 
 import { createAppController } from "../app/controller";
 
-const reconnectBusyMessage = "Connection lost while a request was running. Reconnecting and syncing history…";
+const reconnectBusyMessage = "请求执行中连接中断，正在重连并同步历史…";
 
 let lastWs: {
   onOpen?: () => void;
