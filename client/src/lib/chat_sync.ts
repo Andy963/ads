@@ -45,6 +45,26 @@ function canReplaceLocalTailWithServer(local: ChatItem, server: ChatItem): boole
   return Boolean(localCommand) && localCommand === serverCommand;
 }
 
+function shouldHydrateExecuteMetadata(local: ChatItem, server: ChatItem): boolean {
+  if (local.kind !== "execute" || server.kind !== "execute") return false;
+  const localCommand = String(local.command ?? "").trim();
+  const serverCommand = String(server.command ?? "").trim();
+  if (!localCommand || localCommand !== serverCommand) return false;
+  return Boolean(server.fullContent && server.fullContent !== local.fullContent) || server.hiddenLineCount !== local.hiddenLineCount;
+}
+
+function hydrateOverlappingExecuteMetadata(local: ChatItem[], localIdx: number, serverItem: ChatItem): ChatItem[] {
+  const localItem = local[localIdx];
+  if (!localItem || !shouldHydrateExecuteMetadata(localItem, serverItem)) return local;
+  const next = local.slice();
+  next[localIdx] = {
+    ...localItem,
+    fullContent: serverItem.fullContent ?? localItem.fullContent,
+    hiddenLineCount: serverItem.hiddenLineCount ?? localItem.hiddenLineCount,
+  };
+  return next;
+}
+
 export function finalizeStreamingOnDisconnect(items: ChatItem[], liveStepId: string): ChatItem[] {
   let next = items.slice();
   for (let i = next.length - 1; i >= 0; i--) {
@@ -86,13 +106,19 @@ export function mergeHistoryFromServer(
 
   const localCmp = toComparable(local);
   const serverCmp = toComparable(server);
-  const localComparableKeys = new Set(localCmp.map((item) => comparableKey(item)));
+  const localComparableKeyToIdx = new Map<string, number>();
+  for (let i = 0; i < localCmp.length; i += 1) {
+    localComparableKeyToIdx.set(comparableKey(localCmp[i]!), i);
+  }
   let lastMatchedServerIdx = -1;
+  let lastMatchedLocalIdx = -1;
 
   // Find the newest server message that already exists locally; local history may have been trimmed.
   for (let s = serverCmp.length - 1; s >= 0; s--) {
-    if (localComparableKeys.has(comparableKey(serverCmp[s]!))) {
+    const localIdx = localComparableKeyToIdx.get(comparableKey(serverCmp[s]!));
+    if (localIdx !== undefined) {
       lastMatchedServerIdx = s;
+      lastMatchedLocalIdx = localIdx;
       break;
     }
   }
@@ -106,11 +132,12 @@ export function mergeHistoryFromServer(
 
   const tailStart = Math.min(server.length, Math.max(0, lastMatchedServerIdx + 1));
   const tail = server.slice(tailStart);
-  if (tail.length === 0) return local;
+  const hydratedLocal = hydrateOverlappingExecuteMetadata(local, lastMatchedLocalIdx, server[lastMatchedServerIdx]!);
+  if (tail.length === 0) return hydratedLocal;
 
   // If the local tail is a truncated version of the server's next message (common after disconnect),
   // replace it instead of duplicating it.
-  const lastLocal = local[local.length - 1]!;
+  const lastLocal = hydratedLocal[hydratedLocal.length - 1]!;
   const firstNew = tail[0]!;
   if (canReplaceLocalTailWithServer(lastLocal, firstNew)) {
     const localText = normalizeContentForMerge(lastLocal.content);
@@ -119,9 +146,9 @@ export function mergeHistoryFromServer(
     const replacesEmptyExecuteNotice = lastLocal.kind === "execute" && !localText && Boolean(serverText);
     if (serverText && (replacesTruncatedTail || replacesEmptyExecuteNotice)) {
       const replaced = { ...firstNew, id: lastLocal.id };
-      return [...local.slice(0, -1), replaced, ...tail.slice(1)];
+      return [...hydratedLocal.slice(0, -1), replaced, ...tail.slice(1)];
     }
   }
 
-  return [...local, ...tail];
+  return [...hydratedLocal, ...tail];
 }

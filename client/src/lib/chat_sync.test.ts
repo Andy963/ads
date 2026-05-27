@@ -17,6 +17,7 @@ function msg(overrides: Partial<ChatItem>): ChatItem {
     role: overrides.role ?? "assistant",
     kind: overrides.kind ?? "text",
     content: overrides.content ?? "",
+    fullContent: overrides.fullContent,
     command: overrides.command,
     hiddenLineCount: overrides.hiddenLineCount,
     commandsTotal: overrides.commandsTotal,
@@ -195,6 +196,45 @@ describe("chat_sync.mergeHistoryFromServer", () => {
       ["text", "There is one modified file."],
     ]);
     expect(out[2]).toMatchObject({ id: "h-x-2", command: "git status --short" });
+  });
+
+  it("hydrates overlapping execute metadata before appending the server tail", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run tests" }),
+      msg({
+        id: "local-exec",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "line 1\nline 2\nline 3",
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Run tests" }),
+      msg({
+        id: "h-x-1",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "line 1\nline 2\nline 3",
+        fullContent: "line 1\nline 2\nline 3\nline 4\nline 5",
+        hiddenLineCount: 2,
+      }),
+      msg({ id: "h-a-2", role: "assistant", content: "Tests failed." }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out).toHaveLength(3);
+    expect(out[1]).toMatchObject({
+      id: "local-exec",
+      kind: "execute",
+      command: "npm test",
+      content: "line 1\nline 2\nline 3",
+      fullContent: "line 1\nline 2\nline 3\nline 4\nline 5",
+      hiddenLineCount: 2,
+    });
+    expect(out[2]).toMatchObject({ content: "Tests failed." });
   });
 
   it("drops transient execute previews while preserving persisted execute blocks", () => {
