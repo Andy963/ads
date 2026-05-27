@@ -616,6 +616,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "status") {
+      const content = String(msg.message ?? msg.output ?? msg.text ?? "").trim();
+      if (!content) return;
+      const kind = String(msg.kind ?? "").trim() === "error" ? "error" : "text";
+      pushMessageBeforeLive({ role: "system", kind, content }, rt);
+      return;
+    }
+
     if (type === "history") {
       const resumeReplacePending = rt.resumeReplacePending;
       if (!resumeReplacePending && (rt.busy.value || rt.queuedPrompts.value.length > 0) && rt.messages.value.length > 0) return;

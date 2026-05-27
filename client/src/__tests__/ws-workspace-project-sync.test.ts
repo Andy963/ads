@@ -42,6 +42,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
   const clearPendingPrompt = vi.fn();
   const clearStepLive = vi.fn();
   const finalizeCommandBlock = vi.fn();
+  const pushMessageBeforeLive = vi.fn();
 
   const threadReset = vi.fn((targetRt: any, params: { resetThreadId?: boolean }) => {
     if (params.resetThreadId) {
@@ -71,7 +72,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     ingestCommand: vi.fn(),
     ingestCommandActivity: vi.fn(),
     ingestExploredActivity: vi.fn(),
-    pushMessageBeforeLive: vi.fn(),
+    pushMessageBeforeLive,
     shouldIgnoreStepDelta: () => false,
     threadReset,
     upsertExecuteBlock: vi.fn(),
@@ -80,10 +81,33 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     upsertStreamingDelta: vi.fn(),
   });
 
-  return { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock, applyResumeHistory };
+  return { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock, applyResumeHistory, pushMessageBeforeLive };
 }
 
 describe("ws workspace project sync", () => {
+  it("renders status websocket messages as system chat entries", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({ type: "status", message: "已切换到代理: Codex", kind: "status" });
+    handler({ type: "status", message: "switch failed", kind: "error" });
+
+    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
+      { role: "system", kind: "text", content: "已切换到代理: Codex" },
+      rt,
+    );
+    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
+      { role: "system", kind: "error", content: "switch failed" },
+      rt,
+    );
+  });
+
   it("preserves error history kind when replaying server history", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();

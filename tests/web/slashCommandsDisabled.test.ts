@@ -603,8 +603,9 @@ describe("web slash commands", () => {
       assert.equal(chatMessages.length, 0);
       assert.deepEqual(switched, { userId: 1, agentId: "codex" });
       assert.equal(recreatedWithResumeThread, true);
-      assert.equal(clientMessages.length, 1);
+      assert.equal(clientMessages.length, 2);
       assert.equal((clientMessages[0] as { type?: unknown }).type, "agents");
+      assert.deepEqual(clientMessages[1], { type: "status", message: "已切换到代理: Codex", kind: "status" });
     });
   });
 

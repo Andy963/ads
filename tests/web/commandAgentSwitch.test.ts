@@ -71,6 +71,7 @@ describe("web/ws/commandAgentSwitch", () => {
 
   it("switches agents and prefers the in-memory thread id in the response", () => {
     const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-command-agent-switch-ok", maxEntriesPerSession: 10 });
     let recreatedWithResumeThread: boolean | undefined;
     const nextOrchestrator = {
       getActiveAgentId: () => "codex",
@@ -78,37 +79,48 @@ describe("web/ws/commandAgentSwitch", () => {
       getThreadId: () => "thread-live",
     } as any;
 
-    const orchestrator = handleSetAgentCommand({
-      payload: { agentId: "codex" },
-      userId: 7,
-      historyKey: "history-1",
-      currentCwd: "/tmp/project",
-      orchestrator: {} as any,
-      sessionManager: {
-        hasSession: () => false,
-        switchAgent: () => ({ success: true, message: "ok" }),
-        getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
-          recreatedWithResumeThread = resumeThread;
-          return nextOrchestrator;
-        },
-        getSavedThreadId: () => "thread-saved",
-      } as any,
-      historyStore: new HistoryStore({ namespace: "test-command-agent-switch-ok", maxEntriesPerSession: 10 }),
-      agentAvailability: {
-        mergeStatus: (_agentId: string, status: unknown) => ({ ...(status as object), error: undefined }),
-      } as any,
-      sendToClient: (payload) => sent.push(payload),
-    });
+    try {
+      const orchestrator = handleSetAgentCommand({
+        payload: { agentId: "codex" },
+        userId: 7,
+        historyKey: "history-agent-ok",
+        currentCwd: "/tmp/project",
+        orchestrator: {} as any,
+        sessionManager: {
+          hasSession: () => false,
+          switchAgent: () => ({ success: true, message: "ok" }),
+          getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
+            recreatedWithResumeThread = resumeThread;
+            return nextOrchestrator;
+          },
+          getSavedThreadId: () => "thread-saved",
+        } as any,
+        historyStore,
+        agentAvailability: {
+          mergeStatus: (_agentId: string, status: unknown) => ({ ...(status as object), error: undefined }),
+        } as any,
+        sendToClient: (payload) => sent.push(payload),
+      });
 
-    assert.equal(orchestrator, nextOrchestrator);
-    assert.equal(recreatedWithResumeThread, true);
-    assert.deepEqual(sent, [
-      {
-        type: "agents",
-        activeAgentId: "codex",
-        agents: [{ id: "codex", name: "Codex", ready: true, error: undefined }],
-        threadId: "thread-live",
-      },
-    ]);
+      assert.equal(orchestrator, nextOrchestrator);
+      assert.equal(recreatedWithResumeThread, true);
+      assert.deepEqual(sent, [
+        {
+          type: "agents",
+          activeAgentId: "codex",
+          agents: [{ id: "codex", name: "Codex", ready: true, error: undefined }],
+          threadId: "thread-live",
+        },
+        { type: "status", message: "已切换到代理: Codex", kind: "status" },
+      ]);
+      assert.deepEqual(
+        historyStore
+          .get("history-agent-ok")
+          .map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "已切换到代理: Codex", kind: "status" }],
+      );
+    } finally {
+      historyStore.clear("history-agent-ok");
+    }
   });
 });

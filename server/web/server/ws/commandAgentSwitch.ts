@@ -45,23 +45,28 @@ export function handleSetAgentCommand(args: {
     shouldResumeMissingRuntimeSession(args.sessionManager, args.userId),
   );
   const activeAgentId = orchestrator.getActiveAgentId();
+  const agents = orchestrator.listAgents().map((entry) => {
+    const merged = args.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
+    return {
+      id: entry.metadata.id,
+      name: entry.metadata.name,
+      ready: merged.ready,
+      error: merged.error,
+    };
+  });
+  const activeAgentName = agents.find((entry) => entry.id === activeAgentId)?.name ?? activeAgentId;
+  const statusText = `已切换到代理: ${activeAgentName}`;
   args.sendToClient({
     type: "agents",
     activeAgentId,
-    agents: orchestrator.listAgents().map((entry) => {
-      const merged = args.agentAvailability.mergeStatus(entry.metadata.id, entry.status);
-      return {
-        id: entry.metadata.id,
-        name: entry.metadata.name,
-        ready: merged.ready,
-        error: merged.error,
-      };
-    }),
+    agents,
     threadId: preferInMemoryThreadId({
       inMemoryThreadId: orchestrator.getThreadId(),
       savedThreadId: args.sessionManager.getSavedThreadId(args.userId, activeAgentId),
     }),
   });
+  args.sendToClient({ type: "status", message: statusText, kind: "status" });
+  args.historyStore.add(args.historyKey, { role: "status", text: statusText, ts: Date.now(), kind: "status" });
 
   return orchestrator;
 }
