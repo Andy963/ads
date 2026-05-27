@@ -4,6 +4,7 @@ type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content:
 
 const LEGACY_STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
 export const STREAM_DISCONNECT_NOTICE = "[连接中断：这段回复尚未完成，正在等待重连同步]";
+export const EXECUTE_DISCONNECT_NOTICE = "[连接中断：命令输出可能不完整，正在等待重连同步]";
 
 function normalizeContentForMerge(text: string): string {
   return String(text ?? "")
@@ -38,6 +39,16 @@ export function finalizeStreamingOnDisconnect(items: ChatItem[], liveStepId: str
   for (let i = next.length - 1; i >= 0; i--) {
     const m = next[i]!;
     if (m.id === liveStepId) continue;
+    if (m.kind === "execute" && m.streaming) {
+      const content = String(m.content ?? "");
+      const markedContent = content.includes(EXECUTE_DISCONNECT_NOTICE)
+        ? content
+        : content.trim()
+          ? `${content.trimEnd()}\n${EXECUTE_DISCONNECT_NOTICE}`
+          : EXECUTE_DISCONNECT_NOTICE;
+      next[i] = { ...m, streaming: false, content: markedContent };
+      continue;
+    }
     if (m.role !== "assistant" || !m.streaming) continue;
     const content = String(m.content ?? "");
     if (!content.trim()) {

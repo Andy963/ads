@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  EXECUTE_DISCONNECT_NOTICE,
   STREAM_DISCONNECT_NOTICE,
   finalizeStreamingOnDisconnect,
   mergeHistoryFromServer,
@@ -58,6 +59,51 @@ describe("chat_sync.finalizeStreamingOnDisconnect", () => {
     const out = finalizeStreamingOnDisconnect(items, LIVE);
 
     expect(out[0]!.content).toBe(`Partial\n\n${STREAM_DISCONNECT_NOTICE}`);
+  });
+
+  it("marks streaming execute previews as interrupted until reconnect history arrives", () => {
+    const items: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run status" }),
+      msg({
+        id: "exec:status",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "M file.ts",
+        streaming: true,
+      }),
+      msg({
+        id: "exec:empty",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "",
+        streaming: true,
+      }),
+      msg({
+        id: "exec-final-1",
+        role: "system",
+        kind: "execute",
+        command: "echo done",
+        content: "done",
+        streaming: false,
+      }),
+    ];
+
+    const out = finalizeStreamingOnDisconnect(items, LIVE);
+
+    expect(out.find((x) => x.id === "exec:status")).toMatchObject({
+      streaming: false,
+      content: `M file.ts\n${EXECUTE_DISCONNECT_NOTICE}`,
+    });
+    expect(out.find((x) => x.id === "exec:empty")).toMatchObject({
+      streaming: false,
+      content: EXECUTE_DISCONNECT_NOTICE,
+    });
+    expect(out.find((x) => x.id === "exec-final-1")).toMatchObject({
+      streaming: false,
+      content: "done",
+    });
   });
 });
 
