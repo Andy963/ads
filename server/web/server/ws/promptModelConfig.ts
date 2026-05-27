@@ -68,7 +68,20 @@ function truncateHistoryInjectionText(entry: HistoryInjectionEntry, text: string
   if (text.length <= HISTORY_INJECTION_MAX_CHARS_PER_ENTRY) {
     return text;
   }
-  if (entry.role === "status" && (entry.kind === "execute" || entry.kind === "error")) {
+  if (entry.role === "status" && entry.kind === "execute") {
+    const normalized = text.replace(/\r\n/g, "\n");
+    const firstNewlineIndex = normalized.indexOf("\n");
+    if (firstNewlineIndex > 0) {
+      const commandHeader = normalized.slice(0, firstNewlineIndex).trimEnd();
+      const output = normalized.slice(firstNewlineIndex + 1);
+      const tailBudget = HISTORY_INJECTION_MAX_CHARS_PER_ENTRY - commandHeader.length - 2;
+      if (commandHeader.startsWith("$ ") && output && tailBudget > 0) {
+        return `${commandHeader}\n…${output.slice(Math.max(0, output.length - tailBudget))}`;
+      }
+    }
+    return `…${normalized.slice(Math.max(0, normalized.length - HISTORY_INJECTION_MAX_CHARS_PER_ENTRY))}`;
+  }
+  if (entry.role === "status" && entry.kind === "error") {
     return `…${text.slice(text.length - HISTORY_INJECTION_MAX_CHARS_PER_ENTRY)}`;
   }
   return `${text.slice(0, HISTORY_INJECTION_MAX_CHARS_PER_ENTRY)}…`;

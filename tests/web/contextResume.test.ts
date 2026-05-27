@@ -52,7 +52,7 @@ describe("context resume — history injection", () => {
     assert.ok(result.includes("…"));
   });
 
-  it("keeps the end of long command output entries", () => {
+  it("keeps the command and end of long command output entries", () => {
     const commandOutput = [
       `$ npm test`,
       "early output ".repeat(100),
@@ -64,8 +64,7 @@ describe("context resume — history injection", () => {
       { role: "status", kind: "execute", text: commandOutput },
     ]);
     assert.ok(result);
-    assert.ok(result.includes("Command output: …"));
-    assert.ok(!result.includes("$ npm test"));
+    assert.ok(result.includes("Command output: $ npm test\n…"));
     assert.ok(result.includes("Tests: 1 failed, 20 passed"));
     assert.ok(result.includes("Error: expected recovered context"));
     assert.ok(result.includes("[exit code 1]"));
