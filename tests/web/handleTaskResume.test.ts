@@ -14,6 +14,74 @@ describe("web/ws/handleTaskResume", () => {
     process.env.ADS_CODEX_BIN = originalCodexBin;
   });
 
+  it("records busy resume rejections in history so reconnect replay explains the failure", async () => {
+    const sent: unknown[] = [];
+    const historyEntries = [{ role: "user", text: "keep this", ts: 1 }];
+
+    await handleTaskResumeMessage({
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: { mode: "auto" },
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+      },
+      observability: {
+        logger: {
+          info: () => {},
+          debug: () => {},
+          warn: () => {},
+        },
+      },
+      context: {
+        userId: 9,
+        historyKey: "history-busy",
+        currentCwd: "/mnt/d/code/ADS/ads",
+      },
+      sessions: {
+        sessionManager: {} as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => "thread-current",
+        } as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          clear: () => {
+            historyEntries.length = 0;
+          },
+          add: (_key: string, entry: { role: string; text: string; ts: number; kind?: string }) => {
+            historyEntries.push(entry);
+          },
+          get: () => historyEntries,
+        } as any,
+      },
+      tasks: {
+        ensureTaskContext: () => ({
+          queueRunning: true,
+          taskStore: {
+            getActiveTaskId: () => "task-running",
+          },
+        }),
+      },
+    } as any);
+
+    assert.deepEqual(sent, [{ type: "error", message: "任务执行中，无法恢复上下文" }]);
+    assert.deepEqual(
+      historyEntries.map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+      [
+        { role: "user", text: "keep this", kind: undefined },
+        { role: "status", text: "任务执行中，无法恢复上下文", kind: "error" },
+      ],
+    );
+  });
+
   it("prefers current lane history over older task transcripts when thread resume is unavailable", async () => {
     const sent: unknown[] = [];
     const historyEntries = [

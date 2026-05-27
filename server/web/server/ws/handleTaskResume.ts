@@ -110,9 +110,19 @@ export async function handleTaskResumeMessage(
 
   await lock.runExclusive(async () => {
     const taskCtx = deps.tasks.ensureTaskContext(resumeWorkspaceRoot);
+    const originalHistoryEntries = cloneHistoryEntries(
+      deps.history.historyStore.get(deps.context.historyKey),
+    );
 
     if (taskCtx.queueRunning || taskCtx.taskStore.getActiveTaskId()) {
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: "任务执行中，无法恢复上下文" });
+      const message = "任务执行中，无法恢复上下文";
+      commitTaskResumeError({
+        historyStore: deps.history.historyStore,
+        historyKey: deps.context.historyKey,
+        previousEntries: originalHistoryEntries,
+        message,
+      });
+      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
       return;
     }
 
@@ -122,10 +132,6 @@ export async function handleTaskResumeMessage(
         historyKey: deps.context.historyKey,
         send: (payload) => deps.transport.safeJsonSend(deps.transport.ws, payload),
       });
-    const originalHistoryEntries = cloneHistoryEntries(
-      deps.history.historyStore.get(deps.context.historyKey),
-    );
-
     const activeAgentId = orchestrator.getActiveAgentId();
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
