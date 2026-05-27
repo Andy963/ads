@@ -56,29 +56,32 @@ function createHandler(rt: any) {
     const firstLine = delta.split("\n").find((line) => line.trim().length > 0) ?? "";
     const preview = firstLine.replace(/\s+$/, "");
 
+    const itemId = `exec:${normalizedKey}`;
+    const existing = targetRt.messages.value.slice();
+    const idx = existing.findIndex((m: any) => m && m.id === itemId);
+    const previousContent = idx >= 0 ? String(existing[idx]?.content ?? "") : "";
+    const nextContent = preview || previousContent;
+
     targetRt.executePreviewByKey.set(normalizedKey, {
       key: normalizedKey,
       command: normalizedCmd,
-      previewLines: preview ? [preview] : [],
-      totalLines: preview ? 1 : 0,
+      previewLines: nextContent ? [nextContent] : [],
+      totalLines: nextContent ? 1 : 0,
       remainder: "",
     });
     if (!targetRt.executeOrder.includes(normalizedKey)) {
       targetRt.executeOrder = [...targetRt.executeOrder, normalizedKey];
     }
 
-    const itemId = `exec:${normalizedKey}`;
     const nextItem = {
       id: itemId,
       role: "system",
       kind: "execute",
-      content: preview,
+      content: nextContent,
       command: normalizedCmd,
       hiddenLineCount: 0,
       streaming: true,
     };
-    const existing = targetRt.messages.value.slice();
-    const idx = existing.findIndex((m: any) => m && m.id === itemId);
     if (idx >= 0) {
       existing[idx] = nextItem;
       targetRt.messages.value = existing;
@@ -139,6 +142,26 @@ describe("ws patch diff dedup", () => {
       content: "[exit code 2]",
       streaming: true,
     });
+  });
+
+  it("does not append duplicate exit codes when terminal command events repeat", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+    const event = {
+      type: "command",
+      command: {
+        id: "cmd-1",
+        command: "npm test",
+        status: "failed",
+        exit_code: 2,
+      },
+    };
+
+    handler(event);
+    handler(event);
+
+    const execute = rt.messages.value.find((m: any) => m.kind === "execute" && m.command === "npm test");
+    expect(execute?.content).toBe("[exit code 2]");
   });
 
   it("merges multiple patch messages into a single system message within a turn", () => {
