@@ -114,6 +114,15 @@ export async function handleTaskResumeMessage(
       deps.history.historyStore.get(deps.context.historyKey),
     );
 
+    const sendError = (message: string) => {
+      const payload = { type: "error", message };
+      if (deps.transport.broadcastJson) {
+        deps.transport.broadcastJson(payload);
+        return;
+      }
+      deps.transport.safeJsonSend(deps.transport.ws, payload);
+    };
+
     if (taskCtx.queueRunning || taskCtx.taskStore.getActiveTaskId()) {
       const message = "任务执行中，无法恢复上下文";
       commitTaskResumeError({
@@ -122,7 +131,7 @@ export async function handleTaskResumeMessage(
         previousEntries: originalHistoryEntries,
         message,
       });
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
+      sendError(message);
       return;
     }
 
@@ -181,7 +190,7 @@ export async function handleTaskResumeMessage(
             previousEntries: originalHistoryEntries,
             message,
           });
-          deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
+          sendError(message);
           return;
         }
 
@@ -238,7 +247,7 @@ export async function handleTaskResumeMessage(
         previousEntries: originalHistoryEntries,
         message,
       });
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
+      sendError(message);
       return;
     }
     const { transcript, statusText } = resumeContext;
@@ -260,7 +269,7 @@ export async function handleTaskResumeMessage(
         previousEntries: originalHistoryEntries,
         message,
       });
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message });
+      sendError(message);
       return;
     }
     try {
@@ -292,7 +301,7 @@ export async function handleTaskResumeMessage(
         previousEntries: originalHistoryEntries,
         message: errorMessage,
       });
-      deps.transport.safeJsonSend(deps.transport.ws, { type: "error", message: errorMessage });
+      sendError(errorMessage);
       return;
     }
 

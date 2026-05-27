@@ -16,6 +16,7 @@ describe("web/ws/handleTaskResume", () => {
 
   it("records busy resume rejections in history so reconnect replay explains the failure", async () => {
     const sent: unknown[] = [];
+    const sessionSent: unknown[] = [];
     const historyEntries = [{ role: "user", text: "keep this", ts: 1 }];
 
     await handleTaskResumeMessage({
@@ -28,6 +29,7 @@ describe("web/ws/handleTaskResume", () => {
       transport: {
         ws: {} as any,
         safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+        broadcastJson: (payload: unknown) => sessionSent.push(payload),
       },
       observability: {
         logger: {
@@ -72,7 +74,8 @@ describe("web/ws/handleTaskResume", () => {
       },
     } as any);
 
-    assert.deepEqual(sent, [{ type: "error", message: "任务执行中，无法恢复上下文" }]);
+    assert.equal(sent.length, 0);
+    assert.deepEqual(sessionSent, [{ type: "error", message: "任务执行中，无法恢复上下文" }]);
     assert.deepEqual(
       historyEntries.map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
       [
