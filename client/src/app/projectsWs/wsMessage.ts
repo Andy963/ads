@@ -852,6 +852,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         void flushQueuedPrompts(rt);
         return;
       }
+      if (resultKind === "status") {
+        finalizeAssistant("", rt);
+        const content = output.trim();
+        if (content) {
+          pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+        }
+        void flushQueuedPrompts(rt);
+        return;
+      }
       finalizeAssistant(output, rt);
       void flushQueuedPrompts(rt);
       return;

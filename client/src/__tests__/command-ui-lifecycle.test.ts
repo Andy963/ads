@@ -192,6 +192,27 @@ describe("command UI lifecycle", () => {
     wrapper.unmount();
   });
 
+  it("renders successful status command results as system messages", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "result",
+      ok: true,
+      kind: "status",
+      output: "当前工作目录: /tmp/project",
+    });
+    await settleUi(wrapper);
+
+    const messages = (wrapper.vm as any).messages as Array<any>;
+    expect(messages.some((m) => m.role === "system" && m.kind === "text" && m.content === "当前工作目录: /tmp/project")).toBe(true);
+    expect(messages.some((m) => m.role === "assistant" && String(m.content ?? "").includes("当前工作目录"))).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("does not keep an empty streaming placeholder when the turn returns an empty result", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });

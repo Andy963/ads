@@ -72,7 +72,7 @@ describe("web/ws/commandBuiltins", () => {
       });
 
       assert.equal(result.handled, true);
-      assert.deepEqual(sent, [{ type: "result", ok: true, output: "当前工作目录: /tmp/project" }]);
+      assert.deepEqual(sent, [{ type: "result", ok: true, output: "当前工作目录: /tmp/project", kind: "status" }]);
       assert.deepEqual(logged, ["当前工作目录: /tmp/project"]);
       assert.equal(historyStore.get("history-1").at(-1)?.kind, "status");
       assert.equal(historyStore.get("history-1").at(-1)?.text, "当前工作目录: /tmp/project");
@@ -132,7 +132,14 @@ describe("web/ws/commandBuiltins", () => {
 
     assert.equal(result.handled, true);
     assert.equal(recreatedWithResumeThread, true);
-    assert.deepEqual(sent, [{ type: "result", ok: true, output: "已切换到: /tmp/project/next\n提示: 代理上下文已切换到新目录" }]);
+    assert.deepEqual(sent, [
+      {
+        type: "result",
+        ok: true,
+        output: "已切换到: /tmp/project/next\n提示: 代理上下文已切换到新目录",
+        kind: "status",
+      },
+    ]);
   });
 
   it("records missing /cd argument errors so reconnect replay keeps the command result", () => {

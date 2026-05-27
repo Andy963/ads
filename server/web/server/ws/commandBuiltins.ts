@@ -97,7 +97,7 @@ export function handleBuiltinCommand(args: {
 } {
   if (args.request.slash?.command === "pwd") {
     const output = `当前工作目录: ${args.currentCwd}`;
-    args.sendToCommandScope({ type: "result", ok: true, output });
+    args.sendToCommandScope({ type: "result", ok: true, output, kind: "status" });
     args.sessionLogger?.logOutput(output);
     args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
     return {
@@ -164,7 +164,7 @@ export function handleBuiltinCommand(args: {
     message += "\n提示: 已在相同目录，无需重置会话";
   }
   if (!args.request.isSilentCommandPayload) {
-    args.sendToCommandScope({ type: "result", ok: true, output: message });
+    args.sendToCommandScope({ type: "result", ok: true, output: message, kind: "status" });
     args.sessionLogger?.logOutput(message);
   }
   if (args.transport.broadcastWorkspaceState) {
