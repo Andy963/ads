@@ -50,7 +50,11 @@ function shouldHydrateExecuteMetadata(local: ChatItem, server: ChatItem): boolea
   const localCommand = String(local.command ?? "").trim();
   const serverCommand = String(server.command ?? "").trim();
   if (!localCommand || localCommand !== serverCommand) return false;
-  return Boolean(server.fullContent && server.fullContent !== local.fullContent) || server.hiddenLineCount !== local.hiddenLineCount;
+  return (
+    Boolean(server.fullContent && server.fullContent !== local.fullContent) ||
+    server.hiddenLineCount !== local.hiddenLineCount ||
+    String(local.content ?? "").includes(EXECUTE_DISCONNECT_NOTICE)
+  );
 }
 
 function hydrateOverlappingExecuteMetadata(local: ChatItem[], localIdx: number, serverItem: ChatItem): ChatItem[] {
@@ -59,6 +63,9 @@ function hydrateOverlappingExecuteMetadata(local: ChatItem[], localIdx: number, 
   const next = local.slice();
   next[localIdx] = {
     ...localItem,
+    content: String(localItem.content ?? "").includes(EXECUTE_DISCONNECT_NOTICE)
+      ? serverItem.content
+      : localItem.content,
     fullContent: serverItem.fullContent ?? localItem.fullContent,
     hiddenLineCount: serverItem.hiddenLineCount ?? localItem.hiddenLineCount,
   };

@@ -237,6 +237,43 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out[2]).toMatchObject({ content: "Tests failed." });
   });
 
+  it("clears execute disconnect markers when the completed server history overlaps", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run tests" }),
+      msg({
+        id: "local-exec",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: `line 1\nline 2\nline 3\n${EXECUTE_DISCONNECT_NOTICE}`,
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Run tests" }),
+      msg({
+        id: "h-x-1",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "line 1\nline 2\nline 3",
+        fullContent: "line 1\nline 2\nline 3\nline 4",
+        hiddenLineCount: 1,
+      }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out).toHaveLength(2);
+    expect(out[1]).toMatchObject({
+      id: "local-exec",
+      kind: "execute",
+      command: "npm test",
+      content: "line 1\nline 2\nline 3",
+      fullContent: "line 1\nline 2\nline 3\nline 4",
+      hiddenLineCount: 1,
+    });
+  });
+
   it("drops transient execute previews while preserving persisted execute blocks", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Check status" }),
