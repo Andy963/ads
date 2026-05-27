@@ -34,6 +34,9 @@ function shouldReplayFreshHistory(entries: HistoryEntry[]): boolean {
     if (!entry || !String(entry.text ?? "").trim()) {
       continue;
     }
+    if (entry.role === "status" && entry.kind === "status" && !isReplayableBuiltinStatus(entry)) {
+      continue;
+    }
     return entry.role === "status" && (entry.kind === "error" || entry.kind === "execute" || isReplayableBuiltinStatus(entry));
   }
   return false;
