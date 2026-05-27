@@ -198,6 +198,39 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out[2]).toMatchObject({ id: "h-x-2", command: "git status --short" });
   });
 
+  it("does not match execute overlap across different commands with identical output", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run commands" }),
+      msg({
+        id: "local-exec",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "ok",
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Run commands" }),
+      msg({
+        id: "h-x-1",
+        role: "system",
+        kind: "execute",
+        command: "git status --short",
+        content: "ok",
+      }),
+      msg({ id: "h-a-2", role: "assistant", content: "Done." }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out.map((m) => [m.kind, m.command ?? "", m.content])).toEqual([
+      ["text", "", "Run commands"],
+      ["execute", "npm test", "ok"],
+      ["execute", "git status --short", "ok"],
+      ["text", "", "Done."],
+    ]);
+  });
+
   it("hydrates overlapping execute metadata before appending the server tail", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Run tests" }),

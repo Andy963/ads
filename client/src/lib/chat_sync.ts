@@ -1,6 +1,6 @@
 import type { ChatItem } from "../app/controllerTypes";
 
-type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string };
+type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string; command: string };
 
 const LEGACY_STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
 export const STREAM_DISCONNECT_NOTICE = "[连接中断：这段回复尚未完成，正在等待重连同步]";
@@ -28,11 +28,16 @@ function withoutLiveAndTransientExecute(items: ChatItem[], liveStepId: string): 
 }
 
 function toComparable(items: ChatItem[]): ComparableChat[] {
-  return items.map((m) => ({ role: m.role, kind: m.kind, content: normalizeContentForMerge(m.content) }));
+  return items.map((m) => ({
+    role: m.role,
+    kind: m.kind,
+    content: normalizeContentForMerge(m.content),
+    command: m.kind === "execute" ? String(m.command ?? "").trim() : "",
+  }));
 }
 
 function comparableKey(chat: ComparableChat): string {
-  return `${chat.role}\u0000${chat.kind}\u0000${chat.content}`;
+  return `${chat.role}\u0000${chat.kind}\u0000${chat.command}\u0000${chat.content}`;
 }
 
 function canReplaceLocalTailWithServer(local: ChatItem, server: ChatItem): boolean {
