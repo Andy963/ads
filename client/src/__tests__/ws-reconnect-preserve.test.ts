@@ -244,6 +244,12 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.queuedPrompts.value).toHaveLength(1);
 
+    lastWs!.onMessage?.({ type: "in_flight", inFlight: false });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
     lastWs!.onMessage?.({
       type: "history",
       items: [
