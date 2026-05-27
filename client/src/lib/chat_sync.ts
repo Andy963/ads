@@ -11,6 +11,7 @@ function normalizeContentForMerge(text: string): string {
     .replace(/\r\n/g, "\n")
     .replace(new RegExp(`\\n\\n${escapeRegExp(STREAM_DISCONNECT_NOTICE)}$`), "")
     .replace(new RegExp(`\\n\\n${escapeRegExp(LEGACY_STREAM_DISCONNECT_NOTICE)}$`), "")
+    .replace(new RegExp(`(?:^|\\n)${escapeRegExp(EXECUTE_DISCONNECT_NOTICE)}$`), "")
     .trim();
 }
 
@@ -32,6 +33,16 @@ function toComparable(items: ChatItem[]): ComparableChat[] {
 
 function comparableKey(chat: ComparableChat): string {
   return `${chat.role}\u0000${chat.kind}\u0000${chat.content}`;
+}
+
+function canReplaceLocalTailWithServer(local: ChatItem, server: ChatItem): boolean {
+  if (local.role !== server.role || local.kind !== server.kind) return false;
+  if (local.role === "assistant" && local.kind === "text") return true;
+  if (local.kind !== "execute") return false;
+
+  const localCommand = String(local.command ?? "").trim();
+  const serverCommand = String(server.command ?? "").trim();
+  return Boolean(localCommand) && localCommand === serverCommand;
 }
 
 export function finalizeStreamingOnDisconnect(items: ChatItem[], liveStepId: string): ChatItem[] {
@@ -101,15 +112,12 @@ export function mergeHistoryFromServer(
   // replace it instead of duplicating it.
   const lastLocal = local[local.length - 1]!;
   const firstNew = tail[0]!;
-  if (
-    lastLocal.role === firstNew.role &&
-    lastLocal.kind === firstNew.kind &&
-    lastLocal.role === "assistant" &&
-    lastLocal.kind === "text"
-  ) {
+  if (canReplaceLocalTailWithServer(lastLocal, firstNew)) {
     const localText = normalizeContentForMerge(lastLocal.content);
     const serverText = normalizeContentForMerge(firstNew.content);
-    if (localText && serverText && serverText.startsWith(localText) && serverText.length > localText.length) {
+    const replacesTruncatedTail = localText && serverText.startsWith(localText) && serverText.length > localText.length;
+    const replacesEmptyExecuteNotice = lastLocal.kind === "execute" && !localText && Boolean(serverText);
+    if (serverText && (replacesTruncatedTail || replacesEmptyExecuteNotice)) {
       const replaced = { ...firstNew, id: lastLocal.id };
       return [...local.slice(0, -1), replaced, ...tail.slice(1)];
     }

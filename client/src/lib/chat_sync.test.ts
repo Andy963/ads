@@ -314,6 +314,76 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out[1]!.content).toBe("Partial response");
   });
 
+  it("replaces a truncated execute tail when server history has the completed command output", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run tests" }),
+      msg({
+        id: "exec-final-1",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: `line 1\n${EXECUTE_DISCONNECT_NOTICE}`,
+        streaming: false,
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "Run tests" }),
+      msg({
+        id: "h-x-2",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "line 1\nline 2\n[exit code 1]",
+      }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out).toHaveLength(2);
+    expect(out[1]).toMatchObject({
+      id: "exec-final-1",
+      role: "system",
+      kind: "execute",
+      command: "npm test",
+      content: "line 1\nline 2\n[exit code 1]",
+    });
+  });
+
+  it("replaces an empty disconnected execute tail when server history has command output", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run pwd" }),
+      msg({
+        id: "exec-final-1",
+        role: "system",
+        kind: "execute",
+        command: "pwd",
+        content: EXECUTE_DISCONNECT_NOTICE,
+        streaming: false,
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "Run pwd" }),
+      msg({
+        id: "h-x-2",
+        role: "system",
+        kind: "execute",
+        command: "pwd",
+        content: "/home/andy/ads",
+      }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out).toHaveLength(2);
+    expect(out[1]).toMatchObject({
+      id: "exec-final-1",
+      role: "system",
+      kind: "execute",
+      command: "pwd",
+      content: "/home/andy/ads",
+    });
+  });
+
   it("still replaces assistant messages that have the legacy disconnect marker", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Hi" }),
