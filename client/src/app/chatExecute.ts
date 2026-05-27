@@ -41,6 +41,7 @@ export function createExecuteActions(params: {
     setMessages,
     pushRecentCommand,
     dropEmptyAssistantPlaceholder,
+    randomId,
     maxExecutePreviewLines,
     maxTurnCommands,
     isLiveMessageId,
@@ -172,13 +173,17 @@ export function createExecuteActions(params: {
   const finalizeCommandBlock = (rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
     const existing = state.messages.value.slice();
-    const withoutExecute: ChatItem[] = [];
+    let changed = false;
+    const finalized: ChatItem[] = [];
     for (let i = 0; i < existing.length; i++) {
       const m = existing[i]!;
-      if (m.kind === "execute") {
+      const isTransientExecute = m.kind === "execute" && (m.streaming === true || String(m.id ?? "").startsWith("exec:"));
+      if (isTransientExecute) {
+        finalized.push({ ...m, id: randomId("exec-final"), streaming: false });
+        changed = true;
         continue;
       }
-      withoutExecute.push(m);
+      finalized.push(m);
     }
 
     state.recentCommands.value = [];
@@ -188,7 +193,7 @@ export function createExecuteActions(params: {
     state.executeOrder = [];
     state.seenCommandIds.clear();
 
-    if (withoutExecute.length !== existing.length) setMessages(withoutExecute, state);
+    if (changed) setMessages(finalized, state);
   };
 
   return { ingestCommand, commandKeyForWsEvent, upsertExecuteBlock, finalizeCommandBlock };
