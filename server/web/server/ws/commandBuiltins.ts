@@ -166,6 +166,7 @@ export function handleBuiltinCommand(args: {
   if (!args.request.isSilentCommandPayload) {
     args.sendToCommandScope({ type: "result", ok: true, output: message, kind: "status" });
     args.sessionLogger?.logOutput(message);
+    args.historyStore.add(args.historyKey, { role: "status", text: message, ts: Date.now(), kind: "status" });
   }
   if (args.transport.broadcastWorkspaceState) {
     args.transport.broadcastWorkspaceState(currentCwd);
