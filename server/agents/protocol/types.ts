@@ -75,6 +75,24 @@ export interface ErrorItem {
   [key: string]: unknown;
 }
 
+export interface SubagentDispatchItem {
+  type: "subagent_dispatch";
+  id?: string;
+  /** The subagent type identifier (e.g. "general-purpose", "Explore"). */
+  subagent_type: string;
+  /** Short human-readable label describing the dispatched task. */
+  description: string;
+  /** Prompt handed to the subagent. */
+  prompt: string;
+  /** Tool-use id from the underlying CLI, used to correlate start/result. */
+  tool_use_id: string;
+  /** Status mirrors other long-running items: in_progress | completed | failed. */
+  status?: string;
+  /** Final response text from the subagent (present on item.completed). */
+  result?: string;
+  [key: string]: unknown;
+}
+
 export type ThreadItem =
   | CommandExecutionItem
   | FileChangeItem
@@ -83,7 +101,8 @@ export type ThreadItem =
   | TodoListItem
   | AgentMessageItem
   | ReasoningItem
-  | ErrorItem;
+  | ErrorItem
+  | SubagentDispatchItem;
 
 export type ThreadEventType =
   | "thread.started"

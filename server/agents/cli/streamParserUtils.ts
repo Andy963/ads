@@ -1,7 +1,7 @@
 import type { ThreadEvent } from "../protocol/types.js";
 import { mapThreadEventToAgentEvent, type AgentEvent } from "../../codex/events.js";
 
-export type ToolKind = "command" | "file_change" | "web_search" | "tool_call";
+export type ToolKind = "command" | "file_change" | "web_search" | "subagent" | "tool_call";
 
 export interface TrackedTool {
   name: string;

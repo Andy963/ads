@@ -4,6 +4,7 @@ import type { AgentEvent } from "../../../codex/events.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
+import { truncateForLog } from "../../utils.js";
 import { extractCommandPayload } from "./utils.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
@@ -226,6 +227,56 @@ export function attachWorkerPromptHandler(args: {
           ts: Date.now(),
           kind: "command",
         });
+      }
+      return;
+    }
+    if (rawItemType === "subagent_dispatch" && (raw.type === "item.started" || raw.type === "item.completed")) {
+      const item = rawItem as {
+        subagent_type?: unknown;
+        description?: unknown;
+        prompt?: unknown;
+        tool_use_id?: unknown;
+        id?: unknown;
+      };
+      const subagentType = String(item.subagent_type ?? "").trim() || "subagent";
+      const description = String(item.description ?? "").trim() || subagentType;
+      const subagentPrompt = String(item.prompt ?? "").trim();
+      const toolUseId = String(item.tool_use_id ?? item.id ?? "").trim();
+      // Stable id based on the underlying CLI tool_use_id — start and result reuse the same id.
+      const delegationId = toolUseId || `subagent-${event.timestamp}`;
+
+      if (raw.type === "item.started") {
+        args.sendToChat({
+          type: "agent",
+          event: "delegation:start",
+          delegationId,
+          agentId: subagentType,
+          agentName: description,
+          prompt: truncateForLog(subagentPrompt, 200),
+          ts: Date.now(),
+        });
+        handleExploredEntry({
+          category: "Agent",
+          summary: `${description}（${subagentType}）在后台执行：${truncateForLog(subagentPrompt, 140)}`,
+          ts: Date.now(),
+          source: "tool_hook",
+        } as ExploredEntry);
+      } else {
+        args.sendToChat({
+          type: "agent",
+          event: "delegation:result",
+          delegationId,
+          agentId: subagentType,
+          agentName: description,
+          prompt: truncateForLog(subagentPrompt, 200),
+          ts: Date.now(),
+        });
+        handleExploredEntry({
+          category: "Agent",
+          summary: `✓ ${description} 完成：${truncateForLog(subagentPrompt, 140)}`,
+          ts: Date.now(),
+          source: "tool_hook",
+        } as ExploredEntry);
       }
       return;
     }

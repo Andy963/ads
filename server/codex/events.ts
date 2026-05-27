@@ -4,6 +4,7 @@ import type {
   ItemCompletedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
+  SubagentDispatchItem,
   ToolCallItem,
   ThreadErrorEvent,
   ThreadEvent,
@@ -30,6 +31,7 @@ export type AgentPhase =
   | "responding"
   | "completed"
   | "connection"
+  | "subagent"
   | "error";
 
 export interface AgentEvent {
@@ -190,6 +192,8 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
       };
     case "web_search":
       return mapWebSearch(event, item, timestamp);
+    case "subagent_dispatch":
+      return mapSubagentDispatch(event, item as SubagentDispatchItem, timestamp);
     case "todo_list": {
       const detail = formatTodoListPreview(item);
       const title =
@@ -272,6 +276,24 @@ function mapWebSearch(event: ItemEvent, item: WebSearchItem, timestamp: number):
     phase: "tool",
     title,
     detail: truncate(item.query),
+    timestamp,
+    raw: event,
+  };
+}
+
+function mapSubagentDispatch(event: ItemEvent, item: SubagentDispatchItem, timestamp: number): AgentEvent | null {
+  if (event.type === "item.updated") {
+    return null;
+  }
+  const isCompleted = event.type === "item.completed";
+  const subagentType = String(item.subagent_type ?? "").trim() || "subagent";
+  const description = String(item.description ?? "").trim() || subagentType;
+  const title = isCompleted ? "子代理完成" : "调度子代理";
+  const detail = description ? `${subagentType}: ${description}` : subagentType;
+  return {
+    phase: "subagent",
+    title,
+    detail: truncate(detail),
     timestamp,
     raw: event,
   };
