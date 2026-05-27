@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import { createLogger } from "../utils/logger.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { loadSkillRegistry } from "./registryMetadata.js";
+import { SkillFrontmatterV1Schema, type SkillFrontmatterV1 } from "./schema.js";
 
 const logger = createLogger("SkillLoader");
 
@@ -24,6 +26,14 @@ export interface SkillMetadata {
   description: string;
   location: string;
   source: "workspace" | "ads" | "state" | "global" | "builtin";
+  version: number;
+  provides: string[];
+  priority: number;
+  platforms: Array<"linux" | "macos" | "win32">;
+  requiredEnv: Array<{ name: string; prompt?: string; secret: boolean }>;
+  triggers: { keywords: string[]; intents: string[] };
+  entrypoints: Array<{ cmd: string; script?: string; argsTemplate: string[]; description?: string }>;
+  deprecated: boolean;
 }
 
 function isWorkspaceSkillsEnabled(workspacePath: string): boolean {
@@ -67,14 +77,22 @@ function readSkillFileWithCache(skillFile: string, source: SkillMetadata["source
     const content = fs.readFileSync(resolved, "utf-8");
     const dirName = path.basename(path.dirname(resolved));
     const frontmatter = parseFrontmatter(content);
-    const name = String(frontmatter.name ?? dirName).trim();
-    const description = String(frontmatter.description ?? "No description provided.").trim();
+    const normalizedFrontmatter = {
+      ...frontmatter,
+      name: String(frontmatter.name ?? dirName).trim(),
+      description: String(frontmatter.description ?? "No description provided.").trim(),
+    };
+    const parsed = SkillFrontmatterV1Schema.safeParse(normalizedFrontmatter);
+    if (!parsed.success) {
+      logger.warn(`Invalid SKILL.md frontmatter at ${resolved}: ${parsed.error.message}`);
+    }
+    const skill = parsed.success ? parsed.data : buildLegacySkillFrontmatter(normalizedFrontmatter);
 
     const next: SkillFileCacheEntry = {
       mtimeMs: stats.mtimeMs,
       size: stats.size,
       content,
-      meta: name ? { name, description, location: resolved, source } : null,
+      meta: skill.name ? toSkillMetadata(skill, resolved, source) : null,
     };
     skillFileCache.set(cacheKey, next);
     return next;
@@ -84,6 +102,65 @@ function readSkillFileWithCache(skillFile: string, source: SkillMetadata["source
     }
     return null;
   }
+}
+
+function buildLegacySkillFrontmatter(frontmatter: Record<string, unknown>): SkillFrontmatterV1 {
+  const name = String(frontmatter.name ?? "").trim();
+  return {
+    name: /^[a-z0-9][a-z0-9-]*$/.test(name) ? name : "",
+    description: String(frontmatter.description ?? "No description provided.").trim() || "No description provided.",
+    version: 1,
+    provides: [],
+    priority: 100,
+    platforms: ["linux", "macos", "win32"],
+    required_env: [],
+    triggers: { keywords: [], intents: [] },
+    entrypoints: [],
+    deprecated: false,
+  };
+}
+
+function toSkillMetadata(skill: SkillFrontmatterV1, location: string, source: SkillMetadata["source"]): SkillMetadata {
+  return {
+    name: skill.name,
+    description: skill.description,
+    location,
+    source,
+    version: skill.version,
+    provides: skill.provides,
+    priority: skill.priority,
+    platforms: skill.platforms,
+    requiredEnv: skill.required_env,
+    triggers: skill.triggers,
+    entrypoints: skill.entrypoints.map((entry) => ({
+      cmd: entry.cmd,
+      script: entry.script,
+      argsTemplate: entry.args_template,
+      description: entry.description,
+    })),
+    deprecated: skill.deprecated,
+  };
+}
+
+function applyRegistryOverrides(skills: SkillMetadata[], workspacePath: string): SkillMetadata[] {
+  const registry = loadSkillRegistry(workspacePath);
+  if (!registry) return skills;
+  const maybeWhitelisted = registry.mode === "whitelist"
+    ? skills.filter((skill) => registry.skills.get(skill.name.toLowerCase())?.enabled === true)
+    : skills;
+  return maybeWhitelisted
+    .map((skill) => {
+      const override = registry.skills.get(skill.name.toLowerCase());
+      if (!override) return skill;
+      if (!override.enabled) return null;
+      return {
+        ...skill,
+        provides: override.provides.length > 0 ? override.provides : skill.provides,
+        priority: override.priority,
+        deprecated: true,
+      };
+    })
+    .filter((skill): skill is SkillMetadata => skill !== null);
 }
 
 function pruneSkillFileCache(activeRoots: Array<{ dir: string; source: SkillMetadata["source"] }>): void {
@@ -156,7 +233,8 @@ export function discoverSkills(workspacePath: string, builtinRoot?: string): Ski
 
   pruneSkillFileCache(roots);
 
-  return Array.from(byName.values()).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  return applyRegistryOverrides(Array.from(byName.values()), workspacePath)
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
 }
 
 export function loadSkillBody(name: string, workspacePath: string, builtinRoot?: string): string | null {

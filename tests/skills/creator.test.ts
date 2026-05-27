@@ -61,6 +61,7 @@ describe("skills/creator", () => {
     const content = fs.readFileSync(path.join(saved.skillDir, "SKILL.md"), "utf8");
     assert.match(content, /name: my-draft-skill/);
     assert.match(content, /description: "Draft description"/);
+    assert.match(content, /version: 1/);
 
     const validated = validateSkillDirectory(saved.skillDir);
     assert.equal(validated.valid, true, validated.message);

@@ -36,7 +36,8 @@
     "web": "node dist/server/cli.js web",
     "web:init-admin": "tsx server/web/auth/initAdminCli.ts",
     "web:reset-admin": "tsx server/web/auth/resetAdminCli.ts",
-    "lint": "eslint . --ext .ts"
+    "lint": "eslint . --ext .ts",
+    "skills:migrate": "tsx server/skills/migrate.ts"
   },
   "engines": {
     "node": ">=20"

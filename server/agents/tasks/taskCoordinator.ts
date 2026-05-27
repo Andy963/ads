@@ -7,6 +7,8 @@ import { createLogger, type Logger } from "../../utils/logger.js";
 import { TaskSpecSchema, TaskResultSchema, SupervisorVerdictSchema, extractJsonPayload, type TaskResult, type TaskSpec } from "./schemas.js";
 import { TaskStore, type TaskStatus } from "./taskStore.js";
 import { runVerification, type VerificationReport } from "./verificationRunner.js";
+import { shouldDistill } from "../../skills/distillation/heuristics.js";
+import { writeSkillDraft } from "../../skills/distillation/drafts.js";
 
 const GIT_ONLY_PATTERN = /\b(git\s+)?(commit|push|pull|fetch|tag|stash|log|merge|rebase|cherry-pick|checkout|branch|reset|revert|remote|clone|init|diff|show|bisect|archive|bundle|gc|reflog|shortlog|describe|am|format-patch|send-email)\b/i;
 
@@ -301,6 +303,28 @@ export class TaskCoordinator {
         if (accept) {
           this.store.updateStatus(taskId, "ACCEPTED", Date.now(), null);
           this.store.appendMessage(taskId, { role: "supervisor", kind: "verdict", payload: { accept: true, note } });
+          const changedFiles = task.result?.changedFiles ?? [];
+          if (shouldDistill({ toolCalls: [], changedFiles })) {
+            try {
+              const draft = writeSkillDraft({
+                workspaceRoot: this.options.workspaceRoot,
+                name: task.spec.goal.slice(0, 64),
+                description: `Reusable workflow distilled from accepted task ${taskId}`,
+                body: [
+                  "## Overview",
+                  "",
+                  task.result?.summary || task.spec.goal,
+                  "",
+                  "## Changed Files",
+                  "",
+                  ...changedFiles.map((file) => `- ${file}`),
+                ].join("\n"),
+              });
+              this.store.appendMessage(taskId, { role: "system", kind: "skill_draft", payload: draft });
+            } catch (error) {
+              this.logger.warn(`[SkillDistill] failed for ${taskId}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
           this.store.updateStatus(taskId, "DONE", Date.now(), null);
           continue;
         }

@@ -253,8 +253,8 @@ describe("skills/loader", () => {
 
   it("renderCompactSkills formats skills as XML", () => {
     const skills: SkillMetadata[] = [
-      { name: "alpha", description: "First skill", location: "/tmp/a", source: "state" },
-      { name: "beta", description: "Second skill", location: "/tmp/b", source: "global" },
+      makeSkillMeta("alpha", "First skill", "/tmp/a", "state"),
+      makeSkillMeta("beta", "Second skill", "/tmp/b", "global"),
     ];
     const output = renderCompactSkills(skills);
     assert.ok(output.includes("<available_skills>"));
@@ -263,6 +263,38 @@ describe("skills/loader", () => {
     assert.ok(output.includes('source="state"'));
     assert.ok(output.includes('source="global"'));
     assert.ok(output.includes("First skill"));
+  });
+
+  it("loads SKILL.md v1 frontmatter fields", () => {
+    createSkill(adsStateDir, "v1-skill", [
+      "---",
+      "name: v1-skill",
+      "description: A v1 skill",
+      "version: 1",
+      "provides: [audio.transcribe]",
+      "priority: 7",
+      "platforms: [linux]",
+      "required_env:",
+      "  - name: API_KEY",
+      "    secret: true",
+      "triggers:",
+      "  keywords: [audio]",
+      "  intents: [transcribe]",
+      "entrypoints:",
+      "  - cmd: node",
+      "    args_template: [script.js]",
+      "---",
+      "Body",
+    ].join("\n"));
+
+    const skill = discoverSkills(workspaceRoot, NO_BUILTINS).find((s) => s.name === "v1-skill");
+    assert.ok(skill);
+    assert.deepEqual(skill.provides, ["audio.transcribe"]);
+    assert.equal(skill.priority, 7);
+    assert.deepEqual(skill.platforms, ["linux"]);
+    assert.equal(skill.requiredEnv[0]?.name, "API_KEY");
+    assert.deepEqual(skill.triggers.keywords, ["audio"]);
+    assert.equal(skill.entrypoints[0]?.cmd, "node");
   });
 
   it("renderCompactSkills returns empty string for no skills", () => {
@@ -288,3 +320,25 @@ describe("skills/loader", () => {
     assert.deepEqual(sorted, [`${prefix}alpha`, `${prefix}mid`, `${prefix}zeta`]);
   });
 });
+
+function makeSkillMeta(
+  name: string,
+  description: string,
+  location: string,
+  source: SkillMetadata["source"],
+): SkillMetadata {
+  return {
+    name,
+    description,
+    location,
+    source,
+    version: 1,
+    provides: [],
+    priority: 100,
+    platforms: ["linux", "macos", "win32"],
+    requiredEnv: [],
+    triggers: { keywords: [], intents: [] },
+    entrypoints: [],
+    deprecated: false,
+  };
+}

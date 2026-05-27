@@ -4,14 +4,24 @@ import path from "node:path";
 
 import yaml from "yaml";
 
+import { SkillFrontmatterV1Schema } from "./schema.js";
+
 const MAX_SKILL_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 const ALLOWED_RESOURCE_DIRS = new Set(["scripts", "references", "assets"]);
-const ALLOWED_FRONTMATTER_KEYS = new Set(["name", "description", "metadata"]);
 
 const SKILL_TEMPLATE = `---
 name: {skill_name}
 description: "[TODO: Describe what this skill does and when to use it]"
+version: 1
+provides: []
+priority: 100
+platforms: [linux, macos, win32]
+required_env: []
+triggers:
+  keywords: []
+  intents: []
+entrypoints: []
 ---
 
 # {skill_title}
@@ -264,16 +274,7 @@ export function validateSkillDirectory(skillDir: string): ValidateSkillResult {
   }
 
   const dict = parsed as Record<string, unknown>;
-  const unexpectedKeys = Object.keys(dict).filter((k) => !ALLOWED_FRONTMATTER_KEYS.has(k));
-  if (unexpectedKeys.length > 0) {
-    const allowed = [...ALLOWED_FRONTMATTER_KEYS].sort().join(", ");
-    const unexpected = unexpectedKeys.sort().join(", ");
-    return {
-      valid: false,
-      message: `Unexpected key(s) in SKILL.md frontmatter: ${unexpected}. Allowed properties are: ${allowed}`,
-      skillDir: resolvedDir,
-    };
-  }
+  const parsedFrontmatter = SkillFrontmatterV1Schema.safeParse(dict);
 
   const name = String(dict.name ?? "").trim();
   const description = String(dict.description ?? "").trim();
@@ -315,6 +316,9 @@ export function validateSkillDirectory(skillDir: string): ValidateSkillResult {
       message: `Description is too long (${description.length} characters). Maximum is ${MAX_DESCRIPTION_LENGTH} characters.`,
       skillDir: resolvedDir,
     };
+  }
+  if (!parsedFrontmatter.success) {
+    return { valid: false, message: `Invalid SKILL.md frontmatter: ${parsedFrontmatter.error.message}`, skillDir: resolvedDir };
   }
 
   return { valid: true, message: "Skill is valid!", skillDir: resolvedDir };
@@ -397,6 +401,15 @@ function buildSkillMarkdown(params: { skillName: string; description: string; bo
     "---",
     `name: ${params.skillName}`,
     `description: "${safeDescription}"`,
+    "version: 1",
+    "provides: []",
+    "priority: 100",
+    "platforms: [linux, macos, win32]",
+    "required_env: []",
+    "triggers:",
+    "  keywords: []",
+    "  intents: []",
+    "entrypoints: []",
     "---",
     "",
     `# ${skillTitle}`,

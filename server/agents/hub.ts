@@ -9,6 +9,7 @@ import { ActivityTracker, resolveExploredConfig } from "../utils/activityTracker
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { SupervisorPromptLoader } from "./tasks/supervisorPrompt.js";
 import { isCoordinatorEnabled, TaskCoordinator } from "./tasks/taskCoordinator.js";
+import { executeToolDirectives, stripToolDirectives } from "../skills/builtinTools.js";
 
 export type { CollaborationHooks, CollaborativeTurnOptions, CollaborativeTurnResult, DelegationSummary } from "./hub/types.js";
 import type { CollaborativeTurnOptions, CollaborativeTurnResult, DelegationSummary } from "./hub/types.js";
@@ -171,10 +172,22 @@ export async function runCollaborativeTurn(
       }
     }
 
+    const toolResults = await executeToolDirectives({
+      text: result.response,
+      workspaceRoot,
+      sessionId: historySessionId,
+    });
+    if (toolResults.length > 0) {
+      result = {
+        ...result,
+        response: [stripToolDirectives(result.response), "", ...toolResults].join("\n").trim(),
+      };
+    }
+
     const explored = exploredTracker
       ? exploredTracker.compact({ maxItems: exploredConfig.maxItems, dedupe: exploredConfig.dedupe })
       : undefined;
-    const finalResponse = stripDelegationBlocks(result.response);
+    const finalResponse = stripToolDirectives(stripDelegationBlocks(result.response));
     return { ...result, response: finalResponse, delegations: allDelegations, supervisorRounds: rounds, explored };
   } finally {
     unsubscribeExplored();
