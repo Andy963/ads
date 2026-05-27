@@ -20,7 +20,7 @@ export function useCopyMessage() {
       return message.content;
     }
     const command = String(message.command ?? "").trim();
-    const output = String(message.content ?? "").trimEnd();
+    const output = String(message.fullContent ?? message.content ?? "").trimEnd();
     return [command ? `$ ${command}` : "", output].filter(Boolean).join("\n");
   };
 

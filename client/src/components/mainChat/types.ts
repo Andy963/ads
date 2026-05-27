@@ -5,6 +5,7 @@ export type ChatMessage = {
   role: "user" | "assistant" | "system";
   kind: "text" | "command" | "execute" | "patch";
   content: string;
+  fullContent?: string;
   patch?: ChatPatch;
   command?: string;
   hiddenLineCount?: number;

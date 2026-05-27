@@ -661,11 +661,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             .filter((line) => line.trim());
           const previewLines = outputLines.slice(0, HISTORY_EXECUTE_PREVIEW_LINES);
           const hiddenLineCount = Math.max(0, outputLines.length - previewLines.length);
+          const fullContent = outputLines.join("\n");
           next.push({
             id: `h-x-${idx}`,
             role: "system",
             kind: "execute",
             content: previewLines.join("\n"),
+            fullContent: hiddenLineCount > 0 ? fullContent : undefined,
             command,
             hiddenLineCount: hiddenLineCount || undefined,
             ts: ts ?? undefined,

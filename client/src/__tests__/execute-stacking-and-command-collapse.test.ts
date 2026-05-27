@@ -46,6 +46,53 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
+  it("expands replayed execute blocks with retained full output", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          {
+            id: "e-1",
+            role: "system",
+            kind: "execute",
+            content: "line 1\nline 2\nline 3",
+            fullContent: "line 1\nline 2\nline 3\nline 4\nline 5",
+            command: "npm test",
+            hiddenLineCount: 2,
+          },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    expect(wrapper.find(".execute-output").text()).not.toContain("line 5");
+    const toggle = wrapper.find(".execute-more--button");
+    expect(toggle.exists()).toBe(true);
+    expect(toggle.text()).toContain("2 more lines");
+
+    await toggle.trigger("click");
+
+    expect(wrapper.find(".execute-output").text()).toContain("line 5");
+    expect(wrapper.find(".execute-more--button").text()).toContain("Collapse output");
+
+    wrapper.unmount();
+  });
+
   it("renders no execute stack when there are no execute messages", async () => {
     const wrapper = mount(MainChat, {
       props: {

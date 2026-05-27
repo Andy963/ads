@@ -63,6 +63,7 @@ export type ChatItem = {
   role: "user" | "assistant" | "system";
   kind: "text" | "command" | "execute" | "patch" | "error";
   content: string;
+  fullContent?: string;
   patch?: ChatPatch;
   command?: string;
   hiddenLineCount?: number;

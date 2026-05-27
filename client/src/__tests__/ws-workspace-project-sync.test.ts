@@ -244,6 +244,7 @@ describe("ws workspace project sync", () => {
           role: "system",
           kind: "execute",
           content: "line 1\nline 2\nline 3",
+          fullContent: "line 1\nline 2\nline 3\nline 4\nline 5",
           command: "npm test",
           hiddenLineCount: 2,
           ts: 20,

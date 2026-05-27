@@ -28,6 +28,7 @@ const emit = defineEmits<{
 }>();
 
 const openCommandTrees = ref<Set<string>>(new Set());
+const expandedExecuteIds = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 
@@ -267,6 +268,30 @@ function toggleCommandTree(id: string): void {
   openCommandTrees.value = next;
 }
 
+function executeFullContent(m: RenderMessage): string {
+  return String(m.fullContent ?? "").trimEnd();
+}
+
+function hasExpandableExecuteOutput(m: RenderMessage): boolean {
+  const full = executeFullContent(m);
+  return m.kind === "execute" && Boolean(full) && full !== String(m.content ?? "").trimEnd();
+}
+
+function isExecuteExpanded(id: string): boolean {
+  return expandedExecuteIds.value.has(id);
+}
+
+function getExecuteOutput(m: RenderMessage): string {
+  return hasExpandableExecuteOutput(m) && isExecuteExpanded(m.id) ? executeFullContent(m) : String(m.content ?? "");
+}
+
+function toggleExecuteExpanded(id: string): void {
+  const next = new Set(expandedExecuteIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedExecuteIds.value = next;
+}
+
 function caretPath(open: boolean): string {
   return open ? "M6 8l4 4 4-4" : "M8 6l4 4-4 4";
 }
@@ -372,8 +397,20 @@ function closeFilePreview(): void {
             </button>
           </div>
         </div>
-        <pre v-if="m.content.trim()" class="execute-output">{{ m.content }}</pre>
-        <div v-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
+        <pre
+          v-if="getExecuteOutput(m).trim()"
+          :class="['execute-output', { 'execute-output--expanded': hasExpandableExecuteOutput(m) && isExecuteExpanded(m.id) }]"
+        >{{ getExecuteOutput(m) }}</pre>
+        <button
+          v-if="hasExpandableExecuteOutput(m)"
+          class="execute-more execute-more--button"
+          type="button"
+          :aria-expanded="isExecuteExpanded(m.id)"
+          @click="toggleExecuteExpanded(m.id)"
+        >
+          {{ isExecuteExpanded(m.id) ? "Collapse output" : `… ${m.hiddenLineCount ?? 0} more lines` }}
+        </button>
+        <div v-else-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… {{ m.hiddenLineCount }} more lines</div>
       </div>
       <div v-else-if="m.kind === 'patch'" :class="['bubble', 'bubble--compact', 'patchCard']">
         <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
@@ -571,11 +608,31 @@ function closeFilePreview(): void {
   flex: 0 0 auto;
 }
 
+.execute-output--expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  max-height: 260px;
+  overflow: auto;
+}
+
 .execute-more {
   margin-top: 4px;
   font-size: 12px;
   color: #94a3b8;
   flex: 0 0 auto;
+}
+
+.execute-more--button {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.execute-more--button:hover {
+  color: #0f172a;
 }
 
 .patchCard {
