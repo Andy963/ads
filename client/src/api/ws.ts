@@ -80,22 +80,26 @@ export class AdsWebSocket {
     this.chatSessionId = String(options.chatSessionId ?? "").trim() || "main";
   }
 
-  send(type: string, payload?: unknown, options?: { clientMessageId?: string }): void {
+  send(type: string, payload?: unknown, options?: { clientMessageId?: string }): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
     try {
       const clientMessageId = String(options?.clientMessageId ?? "").trim();
       const msg =
         clientMessageId
           ? { type, payload, client_message_id: clientMessageId }
           : { type, payload };
-      this.ws?.send(JSON.stringify(msg));
+      this.ws.send(JSON.stringify(msg));
+      return true;
     } catch {
-      // ignore
+      return false;
     }
   }
 
-  sendPrompt(payload: unknown, clientMessageId?: string): void {
+  sendPrompt(payload: unknown, clientMessageId?: string): boolean {
     const id = String(clientMessageId ?? "").trim() || cryptoRandomUuid();
-    this.send("prompt", payload, { clientMessageId: id });
+    return this.send("prompt", payload, { clientMessageId: id });
   }
 
   interrupt(): void {

@@ -224,6 +224,27 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("keeps a prompt queued when websocket send is not accepted", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+
+    lastWs!.sendPrompt = vi.fn(() => false);
+    controller.enqueuePrompt("send later", [], rt);
+    await settleUi(wrapper);
+
+    expect(lastWs!.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(rt.connected.value).toBe(false);
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(rt.queuedPrompts.value.map((q: any) => q.text)).toEqual(["send later"]);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain("send later");
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).not.toBeNull();
+    wrapper.unmount();
+  });
+
   it("does not replay a pending prompt before bootstrap history can confirm completion", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 

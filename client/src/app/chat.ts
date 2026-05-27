@@ -461,6 +461,13 @@ export function createChatActions(ctx: AppContext) {
 
     const next = state.queuedPrompts.value[0]!;
     state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
+    const messagesBeforeFlush = state.messages.value.slice();
+    const delegationsBeforeFlush = state.delegationsInFlight.value.slice();
+    const busyBeforeFlush = state.busy.value;
+    const turnInFlightBeforeFlush = state.turnInFlight;
+    const turnHasPatchBeforeFlush = state.turnHasPatch;
+    const pendingAckBeforeFlush = state.pendingAckClientMessageId;
+    let sendAccepted = false;
 
     try {
       let display = "";
@@ -508,9 +515,22 @@ export function createChatActions(ctx: AppContext) {
         next.images.length > 0
           ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId }
           : { text: promptText, model_reasoning_effort: effort, model, agentId };
-      state.ws.sendPrompt(payload, next.clientMessageId);
+      sendAccepted = state.ws.sendPrompt(payload, next.clientMessageId) !== false;
+      if (!sendAccepted) {
+        throw new Error("WebSocket prompt send was not accepted");
+      }
     } catch {
-      state.queuedPrompts.value = [next, ...state.queuedPrompts.value];
+      state.messages.value = messagesBeforeFlush;
+      state.delegationsInFlight.value = delegationsBeforeFlush;
+      state.busy.value = busyBeforeFlush;
+      state.turnInFlight = turnInFlightBeforeFlush;
+      state.turnHasPatch = turnHasPatchBeforeFlush;
+      state.pendingAckClientMessageId = pendingAckBeforeFlush;
+      if (!sendAccepted) {
+        state.connected.value = false;
+      }
+      const remaining = state.queuedPrompts.value.filter((q) => q.clientMessageId !== next.clientMessageId);
+      state.queuedPrompts.value = [next, ...remaining];
     }
   };
 
