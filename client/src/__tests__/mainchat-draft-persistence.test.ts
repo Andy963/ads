@@ -46,4 +46,29 @@ describe("MainChat draft persistence", () => {
 
     wrapper.unmount();
   });
+
+  it("renders active agent delegation status in Chinese", () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        title: "Worker",
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: true,
+        draft: "",
+        agentDelegations: [
+          { id: "d1", agentId: "claude", agentName: "Claude", prompt: "Review", startedAt: Date.now() },
+          { id: "d2", agentId: "gemini", agentName: "Gemini", prompt: "Check", startedAt: Date.now() },
+        ],
+      },
+      global: { stubs: { MarkdownContent: true } },
+    });
+
+    const bar = wrapper.get(".delegationBar");
+    expect(bar.attributes("aria-label")).toBe("代理委托状态");
+    expect(bar.text()).toContain("正在委托: Claude, Gemini");
+
+    wrapper.unmount();
+  });
 });

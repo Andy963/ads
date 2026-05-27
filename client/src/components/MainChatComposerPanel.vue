@@ -202,11 +202,11 @@ const agentDelegationLabel = computed(() => {
     if (!label) continue;
     if (!names.includes(label)) names.push(label);
   }
-  if (names.length === 0) return "Delegating to agents…";
+  if (names.length === 0) return "正在委托代理…";
   const shown = names.slice(0, 3).join(", ");
   const hidden = Math.max(0, names.length - 3);
-  const suffix = hidden ? ` +${hidden} more` : "";
-  return `Delegating to: ${shown}${suffix}`;
+  const suffix = hidden ? ` +${hidden}` : "";
+  return `正在委托: ${shown}${suffix}`;
 });
 
 const normalizedConnectionStatusKind = computed(() =>
@@ -285,7 +285,7 @@ const {
 
 <template>
   <div class="composer">
-    <div v-if="agentDelegationLabel" class="delegationBar" aria-label="Agent delegation status">
+    <div v-if="agentDelegationLabel" class="delegationBar" aria-label="代理委托状态">
       <span class="delegationSpinner" aria-hidden="true" />
       <span class="delegationText">{{ agentDelegationLabel }}</span>
     </div>
