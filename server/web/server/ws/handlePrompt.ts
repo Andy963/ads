@@ -98,8 +98,15 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     );
     const status = orchestrator.status();
     if (!status.ready) {
+      const message = status.error ?? "代理未启用，请配置凭证";
       deps.observability.sessionLogger?.logError(status.error ?? "代理未启用");
-      sendToClient({ type: "error", message: status.error ?? "代理未启用，请配置凭证" });
+      deps.history.historyStore.add(deps.context.historyKey, {
+        role: "status",
+        text: message,
+        ts: Date.now(),
+        kind: "error",
+      });
+      sendToClient({ type: "error", message });
       promptRun.cleanup();
       cleanupAfter();
       return;
