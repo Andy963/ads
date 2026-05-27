@@ -52,6 +52,25 @@ describe("context resume — history injection", () => {
     assert.ok(result.includes("…"));
   });
 
+  it("keeps the end of long command output entries", () => {
+    const commandOutput = [
+      `$ npm test`,
+      "early output ".repeat(100),
+      "Tests: 1 failed, 20 passed",
+      "Error: expected recovered context",
+      "[exit code 1]",
+    ].join("\n");
+    const result = buildHistoryInjectionContext([
+      { role: "status", kind: "execute", text: commandOutput },
+    ]);
+    assert.ok(result);
+    assert.ok(result.includes("Command output: …"));
+    assert.ok(!result.includes("$ npm test"));
+    assert.ok(result.includes("Tests: 1 failed, 20 passed"));
+    assert.ok(result.includes("Error: expected recovered context"));
+    assert.ok(result.includes("[exit code 1]"));
+  });
+
   it("limits total transcript length", () => {
     const entries = Array.from({ length: 50 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "ai",

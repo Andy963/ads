@@ -2,6 +2,7 @@ import type { Input, InputTextPart } from "../../../agents/protocol/types.js";
 
 const HISTORY_INJECTION_MAX_ENTRIES = 20;
 const HISTORY_INJECTION_MAX_CHARS = 8_000;
+const HISTORY_INJECTION_MAX_CHARS_PER_ENTRY = 800;
 
 type HistoryInjectionEntry = { role: string; text: string; kind?: string };
 
@@ -63,6 +64,16 @@ function labelForHistoryInjectionEntry(entry: HistoryInjectionEntry): string | n
   return null;
 }
 
+function truncateHistoryInjectionText(entry: HistoryInjectionEntry, text: string): string {
+  if (text.length <= HISTORY_INJECTION_MAX_CHARS_PER_ENTRY) {
+    return text;
+  }
+  if (entry.role === "status" && (entry.kind === "execute" || entry.kind === "error")) {
+    return `…${text.slice(text.length - HISTORY_INJECTION_MAX_CHARS_PER_ENTRY)}`;
+  }
+  return `${text.slice(0, HISTORY_INJECTION_MAX_CHARS_PER_ENTRY)}…`;
+}
+
 function trimHistoryInjectionLines(lines: string[], maxChars: number): string {
   const kept: string[] = [];
   let totalChars = 0;
@@ -98,8 +109,7 @@ export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): 
   for (const { entry, label } of recent) {
     const text = String(entry.text ?? "").trim();
     if (!text) continue;
-    const maxPerEntry = 800;
-    const truncated = text.length <= maxPerEntry ? text : `${text.slice(0, maxPerEntry)}…`;
+    const truncated = truncateHistoryInjectionText(entry, text);
     lines.push(`${label}: ${truncated}`);
   }
   if (lines.length === 0) {
