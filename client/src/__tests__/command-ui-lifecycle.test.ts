@@ -194,6 +194,37 @@ describe("command UI lifecycle", () => {
     wrapper.unmount();
   });
 
+  it("truncates long command result blocks while preserving full output", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "result",
+      ok: true,
+      kind: "execute",
+      command: "npm test",
+      output: "line 1\nline 2\nline 3\nline 4\n",
+    });
+    await settleUi(wrapper);
+
+    const messages = (wrapper.vm as any).messages as Array<any>;
+    const execute = messages.find((m) => m.kind === "execute");
+    expect(execute).toMatchObject({
+      role: "system",
+      kind: "execute",
+      command: "npm test",
+      content: "line 1\nline 2\nline 3",
+      fullContent: "line 1\nline 2\nline 3\nline 4",
+      hiddenLineCount: 1,
+      streaming: false,
+    });
+    expect(String(execute.content)).not.toContain("line 4");
+
+    wrapper.unmount();
+  });
+
   it("renders failed command results with command context as execute blocks", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });

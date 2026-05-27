@@ -120,6 +120,35 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  const buildExecuteMessage = (args: {
+    id: string;
+    command: string;
+    output: string;
+    ts?: number;
+    streaming?: boolean;
+  }): ChatItem => {
+    const normalizedCommand = String(args.command ?? "").trim();
+    const outputLines = String(args.output ?? "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => String(line ?? "").replace(/\s+$/, ""))
+      .filter((line) => line.trim());
+    const previewLines = outputLines.slice(0, HISTORY_EXECUTE_PREVIEW_LINES);
+    const hiddenLineCount = Math.max(0, outputLines.length - previewLines.length);
+    const fullContent = outputLines.join("\n");
+    return {
+      id: args.id,
+      role: "system",
+      kind: "execute",
+      content: previewLines.join("\n"),
+      fullContent: hiddenLineCount > 0 ? fullContent : undefined,
+      command: normalizedCommand,
+      hiddenLineCount: hiddenLineCount || undefined,
+      streaming: args.streaming,
+      ts: args.ts,
+    };
+  };
+
   type PatchFileStat = { added: number | null; removed: number | null };
 
   let turnPatchMessageId: string | null = null;
@@ -655,23 +684,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           const lines = trimmed.split("\n");
           const commandLine = String(lines[0] ?? "").trim();
           const command = commandLine.startsWith("$ ") ? commandLine.slice(2).trim() : commandLine;
-          const outputLines = lines
-            .slice(1)
-            .map((line) => String(line ?? "").replace(/\s+$/, ""))
-            .filter((line) => line.trim());
-          const previewLines = outputLines.slice(0, HISTORY_EXECUTE_PREVIEW_LINES);
-          const hiddenLineCount = Math.max(0, outputLines.length - previewLines.length);
-          const fullContent = outputLines.join("\n");
-          next.push({
-            id: `h-x-${idx}`,
-            role: "system",
-            kind: "execute",
-            content: previewLines.join("\n"),
-            fullContent: hiddenLineCount > 0 ? fullContent : undefined,
-            command,
-            hiddenLineCount: hiddenLineCount || undefined,
-            ts: ts ?? undefined,
-          });
+          next.push(
+            buildExecuteMessage({
+              id: `h-x-${idx}`,
+              command,
+              output: lines.slice(1).join("\n"),
+              ts: ts ?? undefined,
+            }),
+          );
           continue;
         }
         const isCommand = kind === "command" || (role === "status" && trimmed.startsWith("$ "));
@@ -839,13 +859,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (resultKind === "execute" && resultCommand) {
         finalizeAssistant("", rt);
         pushMessageBeforeLive(
-          {
-            role: "system",
-            kind: "execute",
-            command: resultCommand,
-            content: output.trimEnd(),
-            streaming: false,
-          },
+          buildExecuteMessage({ id: randomId("exec-result"), command: resultCommand, output, streaming: false }),
           rt,
         );
         void flushQueuedPrompts(rt);
