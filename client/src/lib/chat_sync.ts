@@ -2,8 +2,17 @@ import type { ChatItem } from "../app/controllerTypes";
 
 type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string };
 
+export const STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
+
 function normalizeContentForMerge(text: string): string {
-  return String(text ?? "").replace(/\r\n/g, "\n").trim();
+  return String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(new RegExp(`\\n\\n${escapeRegExp(STREAM_DISCONNECT_NOTICE)}$`), "")
+    .trim();
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function withoutLiveAndExecute(items: ChatItem[], liveStepId: string): ChatItem[] {
@@ -29,7 +38,10 @@ export function finalizeStreamingOnDisconnect(items: ChatItem[], liveStepId: str
       next = [...next.slice(0, i), ...next.slice(i + 1)];
       continue;
     }
-    next[i] = { ...m, streaming: false };
+    const markedContent = content.includes(STREAM_DISCONNECT_NOTICE)
+      ? content
+      : `${content.trimEnd()}\n\n${STREAM_DISCONNECT_NOTICE}`;
+    next[i] = { ...m, streaming: false, content: markedContent };
   }
   return next;
 }

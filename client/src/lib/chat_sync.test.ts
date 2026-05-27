@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 
-import { finalizeStreamingOnDisconnect, mergeHistoryFromServer, type ChatItem } from "./chat_sync";
+import {
+  STREAM_DISCONNECT_NOTICE,
+  finalizeStreamingOnDisconnect,
+  mergeHistoryFromServer,
+  type ChatItem,
+} from "./chat_sync";
 
 const LIVE = "live-step";
 
@@ -15,7 +20,7 @@ function msg(overrides: Partial<ChatItem>): ChatItem {
 }
 
 describe("chat_sync.finalizeStreamingOnDisconnect", () => {
-  it("removes empty streaming assistant bubbles and stops streaming for non-empty ones", () => {
+  it("removes empty streaming assistant bubbles and marks non-empty ones as interrupted", () => {
     const items: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Hi" }),
       msg({ id: "a1", role: "assistant", streaming: true, content: "" }),
@@ -26,8 +31,26 @@ describe("chat_sync.finalizeStreamingOnDisconnect", () => {
     const out = finalizeStreamingOnDisconnect(items, LIVE);
 
     expect(out.find((x) => x.id === "a1")).toBeUndefined();
-    expect(out.find((x) => x.id === "a2")).toMatchObject({ streaming: false, content: "Partial" });
+    expect(out.find((x) => x.id === "a2")).toMatchObject({
+      streaming: false,
+      content: `Partial\n\n${STREAM_DISCONNECT_NOTICE}`,
+    });
     expect(out.find((x) => x.id === LIVE)).toBeDefined();
+  });
+
+  it("does not duplicate the disconnect marker when cleanup runs more than once", () => {
+    const items: ChatItem[] = [
+      msg({
+        id: "a1",
+        role: "assistant",
+        streaming: true,
+        content: `Partial\n\n${STREAM_DISCONNECT_NOTICE}`,
+      }),
+    ];
+
+    const out = finalizeStreamingOnDisconnect(items, LIVE);
+
+    expect(out[0]!.content).toBe(`Partial\n\n${STREAM_DISCONNECT_NOTICE}`);
   });
 });
 
@@ -61,6 +84,29 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     ];
 
     const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out).toHaveLength(2);
+    expect(out[1]!.id).toBe("a1");
+    expect(out[1]!.content).toBe("Partial response");
+  });
+
+  it("replaces a disconnect-marked assistant message when server history has the completed response", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Hi" }),
+      msg({
+        id: "a1",
+        role: "assistant",
+        kind: "text",
+        content: `Part\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "Hi" }),
+      msg({ id: "s2", role: "assistant", kind: "text", content: "Partial response" }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
     expect(out).toHaveLength(2);
     expect(out[1]!.id).toBe("a1");
     expect(out[1]!.content).toBe("Partial response");
