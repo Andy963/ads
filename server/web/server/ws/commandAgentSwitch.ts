@@ -9,7 +9,8 @@ function readAgentId(payload: unknown): string {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return "";
   }
-  return String((payload as Record<string, unknown>).agentId ?? "").trim();
+  const rec = payload as Record<string, unknown>;
+  return String(rec.agentId ?? rec.agent_id ?? rec.agent ?? "").trim();
 }
 
 export function handleSetAgentCommand(args: {
