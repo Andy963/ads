@@ -335,6 +335,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     rt.turnInFlight = false;
     rt.turnHasPatch = false;
     rt.delegationsInFlight.value = [];
+    rt.awaitingBootstrapHistory = false;
     rt.pendingAckClientMessageId = null;
     rt.queuedPrompts.value = [];
     resetTurnPatchSummary();
@@ -650,6 +651,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "thread_reset") {
       resetTurnPatchSummary();
+      rt.awaitingBootstrapHistory = false;
       threadReset(rt, {
         notice: "上下文线程已重置。为避免误导，聊天历史已清空。",
         warning: null,
@@ -890,6 +892,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       if (didThreadReset) {
         const detail = expectedThreadId && threadId ? `（预期=${expectedThreadId}，实际=${threadId}）` : "";
+        rt.awaitingBootstrapHistory = false;
         threadReset(rt, {
           notice: "上下文线程已重置。聊天历史已清空，并从新的对话继续。",
           warning: detail ? `上下文线程已重置${detail}。` : null,

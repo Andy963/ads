@@ -116,6 +116,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
       { id: "a1", role: "assistant", kind: "text", content: "World" },
     ];
     rt.activeThreadId.value = "thread-1";
+    rt.awaitingBootstrapHistory = true;
     await settleUi(wrapper);
 
     lastWs!.onClose?.({ code: 1006, reason: "" });
@@ -425,6 +426,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const contents = rt.messages.value.map((m: any) => m.content);
     expect(contents.join("\n")).not.toContain("Hello");
     expect(contents.join("\n")).not.toContain("World");
+    expect(rt.awaitingBootstrapHistory).toBe(false);
     expect(info).toHaveBeenCalled();
     const args = info.mock.calls.map((c) => c[1]).filter(Boolean);
     expect(args.some((payload: any) => payload?.reason === "thread_reset")).toBe(true);
