@@ -74,6 +74,22 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out.map((m) => m.content)).toEqual(["Hi", "Hello", "Next", "Ack"]);
   });
 
+  it("appends a sibling preflight user message to an existing transcript", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Existing question" }),
+      msg({ id: "a1", role: "assistant", content: "Existing answer" }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "Existing question" }),
+      msg({ id: "s2", role: "assistant", content: "Existing answer" }),
+      msg({ id: "s3", role: "user", content: "Sibling prompt" }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out.map((m) => m.content)).toEqual(["Existing question", "Existing answer", "Sibling prompt"]);
+  });
+
   it("replaces a truncated last assistant message instead of duplicating it", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Hi" }),
