@@ -34,6 +34,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       historyStore: deps.history.historyStore,
       agentAvailability: deps.agents.agentAvailability,
       sendToClient,
+      sendToSession: sendToChat,
     });
 
     return { handled: true, orchestrator, currentCwd };

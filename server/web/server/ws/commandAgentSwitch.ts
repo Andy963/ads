@@ -23,6 +23,7 @@ export function handleSetAgentCommand(args: {
   historyStore: Pick<HistoryStore, "add">;
   agentAvailability: AgentAvailability;
   sendToClient: (payload: unknown) => void;
+  sendToSession: (payload: unknown) => void;
 }): WsOrchestrator {
   const agentId = readAgentId(args.payload);
 
@@ -57,7 +58,7 @@ export function handleSetAgentCommand(args: {
   });
   const activeAgentName = agents.find((entry) => entry.id === activeAgentId)?.name ?? activeAgentId;
   const statusText = `已切换到代理: ${activeAgentName}`;
-  args.sendToClient({
+  args.sendToSession({
     type: "agents",
     activeAgentId,
     agents,
@@ -66,7 +67,7 @@ export function handleSetAgentCommand(args: {
       savedThreadId: args.sessionManager.getSavedThreadId(args.userId, activeAgentId),
     }),
   });
-  args.sendToClient({ type: "status", message: statusText, kind: "status" });
+  args.sendToSession({ type: "status", message: statusText, kind: "status" });
   args.historyStore.add(args.historyKey, { role: "status", text: statusText, ts: Date.now(), kind: "status" });
 
   return orchestrator;

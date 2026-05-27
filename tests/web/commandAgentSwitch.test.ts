@@ -21,6 +21,7 @@ describe("web/ws/commandAgentSwitch", () => {
         historyStore,
         agentAvailability: {} as any,
         sendToClient: (payload) => sent.push(payload),
+        sendToSession: (payload) => sent.push(payload),
       });
 
       assert.equal(orchestrator, originalOrchestrator);
@@ -54,6 +55,7 @@ describe("web/ws/commandAgentSwitch", () => {
         historyStore,
         agentAvailability: {} as any,
         sendToClient: (payload) => sent.push(payload),
+        sendToSession: (payload) => sent.push(payload),
       });
 
       assert.equal(orchestrator, originalOrchestrator);
@@ -70,7 +72,8 @@ describe("web/ws/commandAgentSwitch", () => {
   });
 
   it("switches agents and prefers the in-memory thread id in the response", () => {
-    const sent: unknown[] = [];
+    const clientSent: unknown[] = [];
+    const sessionSent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-command-agent-switch-ok", maxEntriesPerSession: 10 });
     let switchedAgentId = "";
     let recreatedWithResumeThread: boolean | undefined;
@@ -103,13 +106,15 @@ describe("web/ws/commandAgentSwitch", () => {
         agentAvailability: {
           mergeStatus: (_agentId: string, status: unknown) => ({ ...(status as object), error: undefined }),
         } as any,
-        sendToClient: (payload) => sent.push(payload),
+        sendToClient: (payload) => clientSent.push(payload),
+        sendToSession: (payload) => sessionSent.push(payload),
       });
 
       assert.equal(orchestrator, nextOrchestrator);
       assert.equal(switchedAgentId, "codex");
       assert.equal(recreatedWithResumeThread, true);
-      assert.deepEqual(sent, [
+      assert.deepEqual(clientSent, []);
+      assert.deepEqual(sessionSent, [
         {
           type: "agents",
           activeAgentId: "codex",
