@@ -385,6 +385,62 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "goal:status") {
+      const data = (msg as { data?: Record<string, unknown> }).data;
+      if (!data || typeof data !== "object") return;
+      const taskId = String(data.taskId ?? "").trim();
+      if (!taskId) return;
+      const list = Array.isArray(rt.tasks.value) ? rt.tasks.value : [];
+      const idx = list.findIndex((t) => t.id === taskId);
+      if (idx < 0) return;
+      const status = String(data.status ?? "").trim() as
+        | "active"
+        | "paused"
+        | "blocked"
+        | "usageLimited"
+        | "budgetLimited"
+        | "complete"
+        | "";
+      const tokensUsed = typeof data.tokensUsed === "number" ? data.tokensUsed : null;
+      const timeUsedSeconds = typeof data.timeUsedSeconds === "number" ? data.timeUsedSeconds : null;
+      const tokenBudget =
+        data.tokenBudget == null
+          ? null
+          : typeof data.tokenBudget === "number"
+            ? data.tokenBudget
+            : Number(data.tokenBudget);
+      const objective = typeof data.objective === "string" ? data.objective : list[idx]?.goalObjective ?? null;
+      const next = {
+        ...list[idx]!,
+        goalMode: true,
+        goalStatus: status || null,
+        goalTokensUsed: tokensUsed,
+        goalTimeUsedSeconds: timeUsedSeconds,
+        goalTokenBudget: Number.isFinite(tokenBudget as number) ? (tokenBudget as number) : null,
+        goalObjective: objective,
+      };
+      rt.tasks.value = [...list.slice(0, idx), next, ...list.slice(idx + 1)];
+      return;
+    }
+
+    if (type === "goal:cleared") {
+      const data = (msg as { data?: Record<string, unknown> }).data;
+      if (!data || typeof data !== "object") return;
+      const taskId = String(data.taskId ?? "").trim();
+      if (!taskId) return;
+      const list = Array.isArray(rt.tasks.value) ? rt.tasks.value : [];
+      const idx = list.findIndex((t) => t.id === taskId);
+      if (idx < 0) return;
+      const next = {
+        ...list[idx]!,
+        goalStatus: null,
+        goalTokensUsed: null,
+        goalTimeUsedSeconds: null,
+      };
+      rt.tasks.value = [...list.slice(0, idx), next, ...list.slice(idx + 1)];
+      return;
+    }
+
     if (type === "ack") {
       const id = String(msg.client_message_id ?? "").trim();
       if (id && rt.pendingAckClientMessageId === id) {

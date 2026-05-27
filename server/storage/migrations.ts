@@ -717,6 +717,31 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 22,
+    description: "Codex Goal Mode - per-task goal fields (goal_mode, goal_objective, goal_token_budget, goal_status, goal_tokens_used, goal_time_used_seconds)",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("goal_mode")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_mode INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!names.has("goal_objective")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_objective TEXT`);
+      }
+      if (!names.has("goal_token_budget")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_token_budget INTEGER`);
+      }
+      if (!names.has("goal_status")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_status TEXT`);
+      }
+      if (!names.has("goal_tokens_used")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_tokens_used INTEGER`);
+      }
+      if (!names.has("goal_time_used_seconds")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_time_used_seconds INTEGER`);
+      }
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

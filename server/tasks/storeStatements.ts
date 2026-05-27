@@ -79,8 +79,14 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         started_at,
         completed_at,
         archived_at,
-        created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_by,
+        goal_mode,
+        goal_objective,
+        goal_token_budget,
+        goal_status,
+        goal_tokens_used,
+        goal_time_used_seconds
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
 
     getTaskStmt: db.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`),
@@ -143,7 +149,13 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         started_at = ?,
         completed_at = ?,
         archived_at = ?,
-        created_by = ?
+        created_by = ?,
+        goal_mode = ?,
+        goal_objective = ?,
+        goal_token_budget = ?,
+        goal_status = ?,
+        goal_tokens_used = ?,
+        goal_time_used_seconds = ?
       WHERE id = ?
     `),
 

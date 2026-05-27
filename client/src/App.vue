@@ -120,6 +120,9 @@ const {
   cancelDeleteTask,
   confirmDeleteTask,
   deleteConfirmButtonEl,
+  goalPause,
+  goalResume,
+  goalClear,
 } = createAppController();
 
 const modelManagerOpen = ref(false);
@@ -412,6 +415,9 @@ const plannerConnectionStatus = computed(() => {
                   @retry="retryTask"
                   @delete="deleteTask"
                   @create="openTaskCreateDialogHandler"
+                  @goal-pause="(id) => goalPause(id)"
+                  @goal-resume="(id) => goalResume(id)"
+                  @goal-clear="(id) => goalClear(id)"
                 />
               </div>
             </div>

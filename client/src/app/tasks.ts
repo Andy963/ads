@@ -686,5 +686,17 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     setPlannerModelReasoningEffort,
     setMainModelId,
     setPlannerModelId,
+    goalPause: (taskId: string, projectId: string = activeProjectId.value): void => {
+      const rt = getRuntime(normalizeProjectId(projectId));
+      rt.ws?.send("goal:pause", { taskId });
+    },
+    goalResume: (taskId: string, projectId: string = activeProjectId.value): void => {
+      const rt = getRuntime(normalizeProjectId(projectId));
+      rt.ws?.send("goal:resume", { taskId });
+    },
+    goalClear: (taskId: string, projectId: string = activeProjectId.value): void => {
+      const rt = getRuntime(normalizeProjectId(projectId));
+      rt.ws?.send("goal:clear", { taskId });
+    },
   };
 }

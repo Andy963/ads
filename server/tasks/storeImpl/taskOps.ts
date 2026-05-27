@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import type { TaskStoreStatements } from "../storeStatements.js";
-import type { CreateTaskInput, CreateTaskRunInput, Task, TaskExecutionIsolation, TaskFilter, TaskRun, TaskStatus } from "../types.js";
+import type { CreateTaskInput, CreateTaskRunInput, Task, TaskExecutionIsolation, TaskFilter, TaskGoalStatus, TaskRun, TaskStatus } from "../types.js";
 
 import { toTask, toTaskRun } from "./mappers.js";
 import {
@@ -43,6 +43,36 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     return Number.isFinite(next) ? next : null;
   };
 
+  const GOAL_STATUS_VALUES = new Set<TaskGoalStatus>([
+    "active",
+    "paused",
+    "blocked",
+    "usageLimited",
+    "budgetLimited",
+    "complete",
+  ]);
+
+  const normalizeGoalStatus = (value: unknown): TaskGoalStatus | null => {
+    if (value == null) return null;
+    const str = String(value).trim();
+    return GOAL_STATUS_VALUES.has(str as TaskGoalStatus) ? (str as TaskGoalStatus) : null;
+  };
+
+  const normalizeGoalObjective = (value: unknown): string | null => {
+    if (value == null) return null;
+    const str = String(value);
+    return str.length > 0 ? str : null;
+  };
+
+  const normalizeTaskGoalFields = (task: Task, existing?: Task): void => {
+    task.goalMode = Boolean(task.goalMode);
+    task.goalObjective = normalizeGoalObjective(task.goalObjective ?? existing?.goalObjective ?? null);
+    task.goalTokenBudget = normalizeNullableFiniteNumber(task.goalTokenBudget) ?? existing?.goalTokenBudget ?? null;
+    task.goalStatus = normalizeGoalStatus(task.goalStatus ?? existing?.goalStatus ?? null);
+    task.goalTokensUsed = normalizeNullableFiniteNumber(task.goalTokensUsed) ?? existing?.goalTokensUsed ?? null;
+    task.goalTimeUsedSeconds = normalizeNullableFiniteNumber(task.goalTimeUsedSeconds) ?? existing?.goalTimeUsedSeconds ?? null;
+  };
+
   const normalizeTaskIdentityFields = (task: Task): void => {
     task.model = normalizeTaskModel(task.model);
     task.agentId = normalizeNullableString(task.agentId);
@@ -61,6 +91,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     task.queuedAt = normalizeNullableFiniteNumber(task.queuedAt) ?? (existing?.queuedAt ?? null);
     task.retryCount = normalizeFiniteNumberOr(task.retryCount, existing?.retryCount ?? 0);
     task.maxRetries = normalizeFiniteNumberOr(task.maxRetries, existing?.maxRetries ?? 3);
+    normalizeTaskGoalFields(task, existing);
 
     if (!String(task.title ?? "").trim()) {
       const prompt = String(task.prompt ?? "");
@@ -164,6 +195,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       completedAt: null,
       archivedAt: status === "completed" ? now : null,
       createdBy: normalizeNullableString(input.createdBy),
+      goalMode: Boolean(input.goalMode),
+      goalObjective: normalizeGoalObjective(input.goalObjective ?? null),
+      goalTokenBudget: normalizeNullableFiniteNumber(input.goalTokenBudget),
+      goalStatus: null,
+      goalTokensUsed: null,
+      goalTimeUsedSeconds: null,
     };
     normalizeTaskWritableFields(task);
     applyTaskLifecycleFields(task, now);
@@ -192,6 +229,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.completedAt ?? null,
       task.archivedAt ?? null,
       task.createdBy ?? null,
+      task.goalMode ? 1 : 0,
+      task.goalObjective ?? null,
+      task.goalTokenBudget ?? null,
+      task.goalStatus ?? null,
+      task.goalTokensUsed ?? null,
+      task.goalTimeUsedSeconds ?? null,
     );
 
     return task;
@@ -270,6 +313,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.completedAt ?? null,
       merged.archivedAt ?? null,
       merged.createdBy ?? null,
+      merged.goalMode ? 1 : 0,
+      merged.goalObjective ?? null,
+      merged.goalTokenBudget ?? null,
+      merged.goalStatus ?? null,
+      merged.goalTokensUsed ?? null,
+      merged.goalTimeUsedSeconds ?? null,
       merged.id,
     );
 

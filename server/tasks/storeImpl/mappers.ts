@@ -1,4 +1,4 @@
-import type { Conversation, ConversationMessage, ModelConfig, Task, TaskMessage, TaskRun } from "../types.js";
+import type { Conversation, ConversationMessage, ModelConfig, Task, TaskGoalStatus, TaskMessage, TaskRun } from "../types.js";
 import {
   normalizeConversationStatus,
   normalizeNullableString,
@@ -21,6 +21,29 @@ function toNullableNumber(value: unknown): number | null {
     return null;
   }
   return typeof value === "number" ? value : Number(value);
+}
+
+function toNullableString(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+  const str = String(value);
+  return str.length > 0 ? str : null;
+}
+
+const GOAL_STATUS_VALUES: ReadonlySet<TaskGoalStatus> = new Set([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+
+function toGoalStatus(value: unknown): TaskGoalStatus | null {
+  if (value == null) return null;
+  const str = String(value).trim();
+  return GOAL_STATUS_VALUES.has(str as TaskGoalStatus) ? (str as TaskGoalStatus) : null;
 }
 
 export function toTask(row: Record<string, unknown>): Task {
@@ -50,6 +73,12 @@ export function toTask(row: Record<string, unknown>): Task {
     completedAt: toNullableNumber(row.completed_at),
     archivedAt: toNullableNumber(row.archived_at),
     createdBy: normalizeNullableString(row.created_by),
+    goalMode: Boolean(row.goal_mode),
+    goalObjective: toNullableString(row.goal_objective),
+    goalTokenBudget: toNullableNumber(row.goal_token_budget),
+    goalStatus: toGoalStatus(row.goal_status),
+    goalTokensUsed: toNullableNumber(row.goal_tokens_used),
+    goalTimeUsedSeconds: toNullableNumber(row.goal_time_used_seconds),
     latestRun: null,
   };
 }

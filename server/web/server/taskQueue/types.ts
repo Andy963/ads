@@ -37,5 +37,5 @@ export type TaskQueueContext = {
   metrics: TaskQueueMetrics;
   runController: TaskRunController;
   getStatusOrchestrator: () => ReturnType<SessionManager["getOrCreate"]>;
-  getTaskQueueOrchestrator: (task: { id: string }) => ReturnType<SessionManager["getOrCreate"]>;
+  getTaskQueueOrchestrator: (task: { id: string; goalMode?: boolean }) => ReturnType<SessionManager["getOrCreate"]>;
 };

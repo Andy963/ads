@@ -213,6 +213,27 @@ export function bindTaskQueueRuntime(args: {
       kind: "command",
     });
   });
+  ctx.taskQueue.on("goal:status", ({ task, goal }) => {
+    args.broadcastToSession(ctx.sessionId, {
+      type: "goal:status",
+      data: {
+        taskId: task.id,
+        status: goal.status,
+        objective: goal.objective,
+        tokensUsed: goal.tokensUsed,
+        timeUsedSeconds: goal.timeUsedSeconds,
+        tokenBudget: goal.tokenBudget,
+      },
+      ts: Date.now(),
+    });
+  });
+  ctx.taskQueue.on("goal:cleared", ({ task }) => {
+    args.broadcastToSession(ctx.sessionId, {
+      type: "goal:cleared",
+      data: { taskId: task.id },
+      ts: Date.now(),
+    });
+  });
   ctx.taskQueue.on("task:completed", ({ task }) => {
     recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
     recordTaskWorkspacePatchArtifact(ctx, task.id);

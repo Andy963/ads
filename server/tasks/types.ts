@@ -8,6 +8,14 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
+export type TaskGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
 export type TaskRole = "system" | "user" | "assistant" | "tool";
 
 export type TaskExecutionIsolation = "default" | "required";
@@ -74,6 +82,12 @@ export interface Task {
   completedAt?: number | null;
   archivedAt?: number | null;
   createdBy?: string | null;
+  goalMode: boolean;
+  goalObjective?: string | null;
+  goalTokenBudget?: number | null;
+  goalStatus?: TaskGoalStatus | null;
+  goalTokensUsed?: number | null;
+  goalTimeUsedSeconds?: number | null;
   latestRun?: TaskRun | null;
 }
 
@@ -91,6 +105,9 @@ export interface CreateTaskInput {
   maxRetries?: number;
   executionIsolation?: TaskExecutionIsolation;
   createdBy?: string | null;
+  goalMode?: boolean;
+  goalObjective?: string | null;
+  goalTokenBudget?: number | null;
 }
 
 export interface TaskRun {

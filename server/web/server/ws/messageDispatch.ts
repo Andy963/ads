@@ -2,6 +2,7 @@ import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import { handleCommandMessage } from "./handleCommand.js";
+import { handleGoalControlMessage } from "./handleGoalControl.js";
 import type {
   WsCommandHandlerDeps,
   WsCommandRuntimeDeps,
@@ -96,6 +97,18 @@ export async function dispatchWsMessage(args: {
     });
     if (control.handled) {
       return { orchestrator: control.orchestrator, currentCwd };
+    }
+
+    const goalHandled = await handleGoalControlMessage({
+      parsed,
+      currentCwd,
+      ensureTaskContext: args.tasks.ensureTaskContext,
+      sessionManager: args.sessionManager,
+      sendJson: (payload) => args.safeJsonSend(args.ws, payload),
+      logger: args.logger,
+    });
+    if (goalHandled) {
+      return { orchestrator, currentCwd };
     }
 
     const promptResult = await handlePromptMessage({

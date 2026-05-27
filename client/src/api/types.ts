@@ -31,6 +31,14 @@ export interface TaskRun {
   completedAt: number | null;
 }
 
+export type TaskGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
 export interface Task {
   id: string;
   title: string;
@@ -58,6 +66,12 @@ export interface Task {
   createdBy?: string | null;
   attachments?: Attachment[];
   latestRun?: TaskRun | null;
+  goalMode?: boolean;
+  goalObjective?: string | null;
+  goalTokenBudget?: number | null;
+  goalStatus?: TaskGoalStatus | null;
+  goalTokensUsed?: number | null;
+  goalTimeUsedSeconds?: number | null;
 }
 
 export interface TaskMessage {
@@ -105,6 +119,9 @@ export interface CreateTaskInput {
   };
   attachments?: string[];
   bootstrap?: BootstrapConfig;
+  goalMode?: boolean;
+  goalObjective?: string | null;
+  goalTokenBudget?: number | null;
 }
 
 export interface ModelConfig {

@@ -156,6 +156,14 @@ export class TaskQueue extends EventEmitter {
               source: "chat",
             }),
           onCommand: (payload: { command: string }) => this.emit("command", { task: runningTask, command: payload.command }),
+          onGoalUpdate: (goal: {
+            status: string;
+            objective: string;
+            tokensUsed: number;
+            timeUsedSeconds: number;
+            tokenBudget: number | null;
+          }) => this.emit("goal:status", { task: runningTask, goal }),
+          onGoalCleared: () => this.emit("goal:cleared", { task: runningTask }),
         };
 
         const { resultSummary } = await this.executor.execute(runningTask, {

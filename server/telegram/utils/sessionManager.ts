@@ -3,6 +3,7 @@ import { createLogger } from '../../utils/logger.js';
 import type { AgentEvent } from '../../codex/events.js';
 import type { Input } from '../../agents/protocol/types.js';
 import { CodexCliAdapter } from '../../agents/adapters/codexCliAdapter.js';
+import { CodexAppServerAdapter } from '../../agents/adapters/codexAppServerAdapter.js';
 import { ClaudeCliAdapter } from '../../agents/adapters/claudeCliAdapter.js';
 import { GeminiCliAdapter } from '../../agents/adapters/geminiCliAdapter.js';
 import type { AgentAdapter, AgentIdentifier, AgentRunResult, AgentSendOptions } from '../../agents/types.js';
@@ -155,7 +156,12 @@ export class SessionManager {
     }
   }
 
-  getOrCreate(userId: number, cwd?: string, resumeThread?: boolean): HybridOrchestrator {
+  getOrCreate(
+    userId: number,
+    cwd?: string,
+    resumeThread?: boolean,
+    options?: { projectId?: string; useGoalAdapter?: boolean },
+  ): HybridOrchestrator {
     const existing = this.runtime.touch(userId);
     
     if (existing) {
@@ -217,6 +223,8 @@ export class SessionManager {
       userModelReasoningEffort,
       activeAgentId,
       workspaceRoot,
+      projectId: options?.projectId,
+      useGoalAdapter: options?.useGoalAdapter,
     });
 
     this.runtime.trackSession(userId, session, effectiveCwd);
@@ -536,6 +544,8 @@ export class SessionManager {
     userModelReasoningEffort?: string;
     activeAgentId?: AgentIdentifier;
     workspaceRoot: string;
+    projectId?: string;
+    useGoalAdapter?: boolean;
   }): HybridOrchestrator {
     const adapters = this.createAdapters(args);
 
@@ -562,21 +572,41 @@ export class SessionManager {
     resumeThreadId?: string;
     resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
     userModel?: string;
+    projectId?: string;
+    useGoalAdapter?: boolean;
   }): AgentAdapter[] {
     const allowlist = this.getConfiguredAgentIds();
     const adapters: AgentAdapter[] = [];
+    const projectId = String(args.projectId ?? "").trim();
+    const useGoalAdapter = Boolean(args.useGoalAdapter) && projectId.length > 0;
 
     for (const agentId of allowlist) {
       if (agentId === "codex") {
-        adapters.push(
-          new CodexCliAdapter({
-            sandboxMode: this.sandboxMode,
-            model: args.userModel,
-            workingDirectory: args.effectiveCwd,
-            resumeThreadId: args.resumeThreadIds?.codex ?? args.resumeThreadId,
-            env: this.codexEnv,
-          }),
-        );
+        if (useGoalAdapter) {
+          // Goal Mode: instantiate the app-server adapter under the `codex` id
+          // so the orchestrator routes codex turns through the daemon path.
+          adapters.push(
+            new CodexAppServerAdapter({
+              projectId,
+              sandboxMode: this.sandboxMode,
+              model: args.userModel,
+              workingDirectory: args.effectiveCwd,
+              resumeThreadId: args.resumeThreadIds?.codex ?? args.resumeThreadId,
+              env: this.codexEnv,
+              metadata: { id: "codex" },
+            }),
+          );
+        } else {
+          adapters.push(
+            new CodexCliAdapter({
+              sandboxMode: this.sandboxMode,
+              model: args.userModel,
+              workingDirectory: args.effectiveCwd,
+              resumeThreadId: args.resumeThreadIds?.codex ?? args.resumeThreadId,
+              env: this.codexEnv,
+            }),
+          );
+        }
         continue;
       }
 

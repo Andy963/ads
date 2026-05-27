@@ -42,6 +42,9 @@ const emit = defineEmits<{
   (e: "cancel", id: string): void;
   (e: "retry", id: string): void;
   (e: "delete", id: string): void;
+  (e: "goal-pause", id: string): void;
+  (e: "goal-resume", id: string): void;
+  (e: "goal-clear", id: string): void;
 }>();
 
 const agentOptions = computed(() => {
@@ -246,6 +249,12 @@ function toggleQueue(): void {
                   <div class="row-top">
                     <div class="row-head">
                       <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
+                      <span
+                        v-if="t.goalMode"
+                        class="goalBadge"
+                        :data-goal-status="t.goalStatus ?? 'none'"
+                        :title="`Goal Mode: ${t.goalStatus ?? '未启动'}`"
+                      >🎯</span>
                     </div>
                   </div>
                 </button>
@@ -323,6 +332,9 @@ function toggleQueue(): void {
       :task="detailTask"
       :status-label="statusLabel(detailTask.status)"
       @close="closeDetail"
+      @goal-pause="(id) => emit('goal-pause', id)"
+      @goal-resume="(id) => emit('goal-resume', id)"
+      @goal-clear="(id) => emit('goal-clear', id)"
     />
 
     <TaskBoardEditModal

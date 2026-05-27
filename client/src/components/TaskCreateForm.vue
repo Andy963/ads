@@ -32,6 +32,10 @@ const bootstrapEnabled = ref(false);
 const bootstrapProject = ref("");
 const bootstrapMaxIterations = ref(10);
 
+const goalModeEnabled = ref(false);
+const goalObjective = ref("");
+const goalTokenBudget = ref<number | null>(null);
+
 const agentOptions = computed(() => {
   const raw = Array.isArray(props.agents) ? props.agents : [];
   return raw
@@ -208,6 +212,16 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
     attachments: uploadedIds.length ? uploadedIds : undefined,
     bootstrap: bootstrapConfig,
+    ...(goalModeEnabled.value
+      ? {
+          goalMode: true,
+          goalObjective: goalObjective.value.trim() ? goalObjective.value.trim() : null,
+          goalTokenBudget:
+            goalTokenBudget.value != null && Number.isFinite(goalTokenBudget.value)
+              ? Math.max(1, Math.floor(goalTokenBudget.value))
+              : null,
+        }
+      : {}),
   });
 
   title.value = "";
@@ -215,6 +229,9 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   bootstrapEnabled.value = false;
   bootstrapProject.value = "";
   bootstrapMaxIterations.value = 10;
+  goalModeEnabled.value = false;
+  goalObjective.value = "";
+  goalTokenBudget.value = null;
   clearAllAttachments();
 }
 
@@ -373,6 +390,10 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
             <input type="checkbox" :checked="bootstrapEnabled" @change="bootstrapEnabled = ($event.target as HTMLInputElement).checked" data-testid="task-create-bootstrap-toggle" />
             <span class="toggleLabel">自举模式</span>
           </label>
+          <label class="inlineToggle">
+            <input type="checkbox" :checked="goalModeEnabled" @change="goalModeEnabled = ($event.target as HTMLInputElement).checked" data-testid="task-create-goal-toggle" />
+            <span class="toggleLabel">目标模式</span>
+          </label>
         </div>
         <div class="actionsRight">
           <button class="btnSecondary" type="button" @click="emit('cancel')">取消</button>
@@ -402,6 +423,31 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
             max="10"
             data-testid="task-create-bootstrap-max-iterations"
             @input="bootstrapMaxIterations = Number(($event.target as HTMLInputElement).value)"
+          />
+        </label>
+      </div>
+
+      <div v-if="goalModeEnabled" class="bootstrapConfig goalConfig">
+        <label class="field bootstrapProjectField">
+          <span class="label">目标 (Objective)</span>
+          <textarea
+            class="goalObjectiveInput"
+            rows="2"
+            :value="goalObjective"
+            placeholder="留空将使用任务描述作为目标"
+            data-testid="task-create-goal-objective"
+            @input="goalObjective = ($event.target as HTMLTextAreaElement).value"
+          />
+        </label>
+        <label class="field bootstrapIterationsField">
+          <span class="label">Token 预算</span>
+          <input
+            :value="goalTokenBudget ?? ''"
+            type="number"
+            min="1"
+            placeholder="选填"
+            data-testid="task-create-goal-token-budget"
+            @input="goalTokenBudget = ($event.target as HTMLInputElement).value ? Number(($event.target as HTMLInputElement).value) : null"
           />
         </label>
       </div>
@@ -939,6 +985,27 @@ textarea {
 }
 
 .bootstrapConfig input:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.8);
+  background: white;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.goalConfig .goalObjectiveInput {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  background: rgba(248, 250, 252, 0.95);
+  color: #1e293b;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 38px;
+  font-family: inherit;
+}
+
+.goalConfig .goalObjectiveInput:focus {
   outline: none;
   border-color: rgba(37, 99, 235, 0.8);
   background: white;

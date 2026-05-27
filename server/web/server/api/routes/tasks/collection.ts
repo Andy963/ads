@@ -157,6 +157,9 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
         execution: executionSchema,
         attachments: z.array(z.string().min(1)).optional(),
         bootstrap: bootstrapSchema,
+        goalMode: z.boolean().optional(),
+        goalObjective: z.string().nullable().optional(),
+        goalTokenBudget: z.number().nullable().optional(),
       })
       .passthrough();
     const result = schema.safeParse(body ?? {});
@@ -186,6 +189,12 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
           maxRetries: parsed.maxRetries,
           executionIsolation: parsed.execution?.isolation,
           createdBy: "web",
+          goalMode: Boolean(parsed.goalMode),
+          goalObjective: parsed.goalObjective ?? null,
+          goalTokenBudget:
+            typeof parsed.goalTokenBudget === "number" && Number.isFinite(parsed.goalTokenBudget)
+              ? parsed.goalTokenBudget
+              : null,
         },
         now,
         { status: "queued" },

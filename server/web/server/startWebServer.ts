@@ -208,6 +208,15 @@ async function ensureWebPidFile(): Promise<string> {
       return;
     }
     shutdownHandled = true;
+    // Best-effort stop of any shared Codex app-server daemons.
+    void (async () => {
+      try {
+        const mod = await import("../../codex/appServer/daemonRegistry.js");
+        await mod.getSharedDaemonRegistry().stopAll();
+      } catch (err) {
+        logger.warn(`[shutdown] stopAll daemons failed: ${err instanceof Error ? err.message : err}`);
+      }
+    })();
     closeSharedDatabases(logger);
     cleanup();
   };

@@ -8,7 +8,7 @@ import { prepareTaskExecutionWorktree, readGitHead } from "../bootstrap/worktree
 import { mergeStreamingText } from "../utils/streamingText.js";
 
 import type { TaskStore } from "./store.js";
-import type { Task } from "./types.js";
+import type { Task, TaskGoalStatus } from "./types.js";
 import { applyTaskRunChanges, collectWorktreeChangedPaths } from "./applyBack.js";
 import { selectAgentForTask } from "./agentSelection.js";
 import {
@@ -26,6 +26,14 @@ export interface TaskExecutorHooks {
   onMessage?: (message: { role: string; content: string; modelUsed?: string | null }) => void;
   onMessageDelta?: (message: { role: string; delta: string; modelUsed?: string | null }) => void;
   onCommand?: (payload: { command: string }) => void;
+  onGoalUpdate?: (goal: {
+    status: TaskGoalStatus;
+    objective: string;
+    tokensUsed: number;
+    timeUsedSeconds: number;
+    tokenBudget: number | null;
+  }) => void;
+  onGoalCleared?: () => void;
 }
 
 export interface TaskExecutor {
@@ -358,18 +366,97 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         });
 
         let result;
+        const goalUnsubs: Array<() => void> = [];
         try {
+          // Subscribe to goal updates upfront (no-op for non-app-server adapters)
+          // so the first goal notification is captured.
+          if (task.goalMode) {
+            const adapter = orchestrator.getAdapter(agentId);
+            if (adapter && typeof (adapter as { onGoalUpdate?: unknown }).onGoalUpdate === "function") {
+              const goalAdapter = adapter as unknown as {
+                onGoalUpdate: (cb: (goal: {
+                  status: TaskGoalStatus;
+                  objective: string;
+                  tokensUsed: number;
+                  timeUsedSeconds: number;
+                  tokenBudget: number | null;
+                }) => void) => () => void;
+                onGoalCleared: (cb: () => void) => () => void;
+              };
+              goalUnsubs.push(
+                goalAdapter.onGoalUpdate((goal) => {
+                  try {
+                    this.store.updateTask(task.id, {
+                      goalStatus: goal.status,
+                      goalObjective: goal.objective,
+                      goalTokensUsed: goal.tokensUsed,
+                      goalTimeUsedSeconds: goal.timeUsedSeconds,
+                      goalTokenBudget: goal.tokenBudget ?? null,
+                    });
+                  } catch {
+                    // ignore: best-effort persistence
+                  }
+                  options?.hooks?.onGoalUpdate?.({
+                    status: goal.status,
+                    objective: goal.objective,
+                    tokensUsed: goal.tokensUsed,
+                    timeUsedSeconds: goal.timeUsedSeconds,
+                    tokenBudget: goal.tokenBudget ?? null,
+                  });
+                }),
+              );
+              goalUnsubs.push(
+                goalAdapter.onGoalCleared(() => {
+                  try {
+                    this.store.updateTask(task.id, {
+                      goalStatus: null,
+                      goalTokensUsed: null,
+                      goalTimeUsedSeconds: null,
+                    });
+                  } catch {
+                    // ignore
+                  }
+                  options?.hooks?.onGoalCleared?.();
+                }),
+              );
+            }
+          }
+
           const env = this.getAgentEnv?.(task, agentId);
           result = await orchestrator.invokeAgent(agentId, prompt, {
             signal: options?.signal,
             streaming: true,
             env,
           });
+
+          // Set the goal AFTER the first turn so threadId is available. For
+          // single-turn tasks this still records the goal for later reads.
+          if (task.goalMode) {
+            const adapter = orchestrator.getAdapter(agentId);
+            if (adapter && typeof (adapter as { setGoal?: unknown }).setGoal === "function") {
+              const goalAdapter = adapter as unknown as {
+                setGoal: (opts: { objective?: string; tokenBudget?: number | null }) => Promise<unknown>;
+              };
+              const objective = String(task.goalObjective ?? "").trim() || String(task.prompt ?? "").trim();
+              try {
+                await goalAdapter.setGoal({
+                  objective,
+                  tokenBudget: task.goalTokenBudget ?? null,
+                });
+              } catch (err) {
+                // Non-fatal: log via console for diagnostic only.
+                console.warn(`[executor] setGoal failed for task ${task.id}: ${err instanceof Error ? err.message : err}`);
+              }
+            }
+          }
         } finally {
           try {
             unsubscribe();
           } catch {
             // ignore
+          }
+          for (const fn of goalUnsubs) {
+            try { fn(); } catch { /* ignore */ }
           }
         }
 

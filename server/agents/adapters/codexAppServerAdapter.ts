@@ -17,6 +17,13 @@ import {
   type DaemonOptions,
 } from "../../codex/appServer/daemonRegistry.js";
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
+import type { ThreadGoal } from "../../codex/appServer/protocol/v2/ThreadGoal.js";
+import type { ThreadGoalStatus } from "../../codex/appServer/protocol/v2/ThreadGoalStatus.js";
+import type { ThreadGoalSetParams } from "../../codex/appServer/protocol/v2/ThreadGoalSetParams.js";
+import type { ThreadGoalSetResponse } from "../../codex/appServer/protocol/v2/ThreadGoalSetResponse.js";
+import type { ThreadGoalGetResponse } from "../../codex/appServer/protocol/v2/ThreadGoalGetResponse.js";
+import type { ThreadGoalClearResponse } from "../../codex/appServer/protocol/v2/ThreadGoalClearResponse.js";
+import type { ThreadGoalUpdatedNotification } from "../../codex/appServer/protocol/v2/ThreadGoalUpdatedNotification.js";
 
 const logger = createLogger("CodexAppServerAdapter");
 
@@ -197,6 +204,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private spawnEnv?: NodeJS.ProcessEnv;
   private readonly turnTimeoutMs: number;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private readonly goalUpdateHandlers = new Set<(goal: ThreadGoal) => void>();
+  private readonly goalClearedHandlers = new Set<() => void>();
+  private goalSubscriptionsAttached = false;
+  private goalSubscriptionCleanup: Array<() => void> = [];
 
   constructor(options: CodexAppServerAdapterOptions) {
     if (!options.projectId || typeof options.projectId !== "string") {
@@ -239,6 +250,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   reset(): void {
     this.threadId = null;
+    this.detachGoalSubscriptions();
   }
 
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
@@ -247,6 +259,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     if (!options?.preserveSession) {
       this.reset();
     }
+    this.detachGoalSubscriptions();
     // Daemon cwd change: drop the existing process so the next send respawns.
     void this.registry.stop(this.projectId).catch((err) => {
       logger.debug(`registry.stop failed: ${err instanceof Error ? err.message : err}`);
@@ -291,6 +304,144 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   getThreadId(): string | null {
     return this.threadId;
+  }
+
+  /**
+   * Ensure the underlying daemon is running and goal notification handlers are
+   * subscribed. Safe to call multiple times.
+   */
+  private async ensureGoalSubscriptions(): Promise<CodexAppServerClient> {
+    const daemonOptions: DaemonOptions = {
+      binary: this.binary,
+      workingDirectory: this.workingDirectory,
+      env: this.spawnEnv,
+    };
+    const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+    if (this.goalSubscriptionsAttached) {
+      return client;
+    }
+    this.goalSubscriptionsAttached = true;
+
+    const off1 = client.onNotification("thread/goal/updated", (params) => {
+      const p = params as ThreadGoalUpdatedNotification | undefined;
+      const goal = p?.goal;
+      if (!goal) return;
+      if (this.threadId && goal.threadId && goal.threadId !== this.threadId) return;
+      for (const handler of this.goalUpdateHandlers) {
+        try {
+          handler(goal);
+        } catch (err) {
+          logger.warn(`goal update handler threw: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    });
+    const off2 = client.onNotification("thread/goal/cleared", (params) => {
+      const threadId = (params as { threadId?: string } | undefined)?.threadId;
+      if (this.threadId && threadId && threadId !== this.threadId) return;
+      for (const handler of this.goalClearedHandlers) {
+        try {
+          handler();
+        } catch (err) {
+          logger.warn(`goal cleared handler threw: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    });
+    const off3 = client.onClose(() => {
+      // If the daemon goes away, drop our subscription flag so a future call
+      // re-attaches against the fresh client.
+      this.goalSubscriptionsAttached = false;
+      this.goalSubscriptionCleanup = [];
+    });
+    this.goalSubscriptionCleanup = [off1, off2, off3];
+    return client;
+  }
+
+  private detachGoalSubscriptions(): void {
+    for (const fn of this.goalSubscriptionCleanup) {
+      try {
+        fn();
+      } catch {
+        // ignore
+      }
+    }
+    this.goalSubscriptionCleanup = [];
+    this.goalSubscriptionsAttached = false;
+  }
+
+  /**
+   * Issue `thread/goal/set` against the active thread. Requires a thread to be
+   * started — callers should typically run an initial `send()` first.
+   */
+  async setGoal(opts: {
+    objective?: string;
+    status?: ThreadGoalStatus;
+    tokenBudget?: number | null;
+  }): Promise<ThreadGoal> {
+    if (!this.threadId) {
+      throw new Error("setGoal requires an active thread (call send() first)");
+    }
+    const client = await this.ensureGoalSubscriptions();
+    const params: ThreadGoalSetParams = {
+      threadId: this.threadId,
+      objective: opts.objective ?? null,
+      status: opts.status ?? null,
+      tokenBudget: opts.tokenBudget ?? null,
+    };
+    const response = await client.request<ThreadGoalSetParams, ThreadGoalSetResponse>(
+      "thread/goal/set",
+      params,
+    );
+    return response.goal;
+  }
+
+  /** Fetch the current goal for the active thread, or null if none is set. */
+  async getGoal(): Promise<ThreadGoal | null> {
+    if (!this.threadId) {
+      throw new Error("getGoal requires an active thread");
+    }
+    const client = await this.ensureGoalSubscriptions();
+    const response = await client.request<{ threadId: string }, ThreadGoalGetResponse>(
+      "thread/goal/get",
+      { threadId: this.threadId },
+    );
+    return response.goal ?? null;
+  }
+
+  /** Clear the goal on the active thread. No-op if not set; resolves either way. */
+  async clearGoal(): Promise<void> {
+    if (!this.threadId) {
+      throw new Error("clearGoal requires an active thread");
+    }
+    const client = await this.ensureGoalSubscriptions();
+    await client.request<{ threadId: string }, ThreadGoalClearResponse>(
+      "thread/goal/clear",
+      { threadId: this.threadId },
+    );
+  }
+
+  onGoalUpdate(handler: (goal: ThreadGoal) => void): () => void {
+    this.goalUpdateHandlers.add(handler);
+    // Best-effort: attach the live subscription so handlers actually fire.
+    void this.ensureGoalSubscriptions().catch((err) => {
+      logger.debug(
+        `ensureGoalSubscriptions failed in onGoalUpdate: ${err instanceof Error ? err.message : err}`,
+      );
+    });
+    return () => {
+      this.goalUpdateHandlers.delete(handler);
+    };
+  }
+
+  onGoalCleared(handler: () => void): () => void {
+    this.goalClearedHandlers.add(handler);
+    void this.ensureGoalSubscriptions().catch((err) => {
+      logger.debug(
+        `ensureGoalSubscriptions failed in onGoalCleared: ${err instanceof Error ? err.message : err}`,
+      );
+    });
+    return () => {
+      this.goalClearedHandlers.delete(handler);
+    };
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {

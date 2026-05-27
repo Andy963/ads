@@ -48,9 +48,12 @@ export function createTaskQueueContext(args: {
   );
   const getStatusOrchestrator = () =>
     taskQueueSessionManager.getOrCreate(taskQueueStatusUserId, workspaceRoot, true);
-  const getTaskQueueOrchestrator = (task: { id: string }) => {
+  const getTaskQueueOrchestrator = (task: { id: string; goalMode?: boolean }) => {
     const userId = hashTaskId(task.id);
-    return taskQueueSessionManager.getOrCreate(userId, workspaceRoot, true);
+    return taskQueueSessionManager.getOrCreate(userId, workspaceRoot, true, {
+      projectId: sessionId,
+      useGoalAdapter: Boolean(task.goalMode),
+    });
   };
 
   const executor = new OrchestratorTaskExecutor({

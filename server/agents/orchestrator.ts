@@ -126,6 +126,15 @@ export class HybridOrchestrator {
     return this.adapters.has(agentId);
   }
 
+  /**
+   * Retrieve the underlying adapter for an agent id (e.g. to access
+   * adapter-specific extensions like Codex Goal Mode RPCs). Returns null when
+   * the adapter is not registered.
+   */
+  getAdapter(agentId: AgentIdentifier): AgentAdapter | null {
+    return this.adapters.get(agentId)?.adapter ?? null;
+  }
+
   listAgents(): AgentDescriptor[] {
     return Array.from(this.adapters.values()).map(({ adapter, metadata }) => ({
       metadata,
