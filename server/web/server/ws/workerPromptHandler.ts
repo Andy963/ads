@@ -78,6 +78,24 @@ export function formatWriteExploredSummary(
   return coreSummary && diffstat ? `${coreSummary} ${diffstat}` : coreSummary;
 }
 
+function isTerminalCommandStatus(status: unknown): boolean {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  return (
+    normalized === "completed" ||
+    normalized === "failed" ||
+    normalized === "declined" ||
+    normalized === "cancelled"
+  );
+}
+
+function formatCommandHistoryText(command: string, output: string, exitCode?: number): string {
+  const commandText = String(command ?? "").trim();
+  const outputText = String(output ?? "").trimEnd();
+  const exitText = typeof exitCode === "number" && exitCode !== 0 ? `[exit code ${exitCode}]` : "";
+  const body = [outputText, exitText].filter(Boolean).join("\n");
+  return body ? `$ ${commandText}\n${body}` : `$ ${commandText}`;
+}
+
 export function attachWorkerPromptHandler(args: {
   orchestrator: EventSource;
   turnCwd: string;
@@ -94,6 +112,7 @@ export function attachWorkerPromptHandler(args: {
   let lastReasoningText = "";
   const lastCommandOutputsByKey = new Map<string, string>();
   const announcedCommandKeys = new Set<string>();
+  const persistedCommandKeys = new Set<string>();
   let hasCommandOutput = false;
   let exploredHeaderSent = false;
 
@@ -204,7 +223,9 @@ export function attachWorkerPromptHandler(args: {
         hasCommandOutput = true;
       }
 
-      if (!isNewCommand && !outputDelta) {
+      const isTerminalCommand = isTerminalCommandStatus(commandPayload.status);
+      const shouldPersistTerminalCommand = isTerminalCommand && !persistedCommandKeys.has(commandKey);
+      if (!isNewCommand && !outputDelta && !shouldPersistTerminalCommand) {
         return;
       }
 
@@ -226,6 +247,15 @@ export function attachWorkerPromptHandler(args: {
           text: `$ ${commandLine}`,
           ts: Date.now(),
           kind: "command",
+        });
+      }
+      if (shouldPersistTerminalCommand) {
+        persistedCommandKeys.add(commandKey);
+        args.historyStore.add(args.historyKey, {
+          role: "status",
+          text: formatCommandHistoryText(commandLine, nextOutput, commandPayload.exit_code),
+          ts: Date.now(),
+          kind: "execute",
         });
       }
       return;

@@ -7,26 +7,34 @@ import {
 } from "../../server/web/server/ws/handlePrompt.js";
 
 describe("context resume — history injection", () => {
-  it("builds transcript from user/ai entries only", () => {
+  it("builds transcript from conversation and context-bearing status entries", () => {
     const entries = [
       { role: "user", text: "hello" },
       { role: "ai", text: "hi there" },
-      { role: "status", text: "command ran" },
+      { role: "status", text: "$ git status --short\nM file.ts", kind: "execute" },
+      { role: "status", text: "command failed", kind: "error" },
+      { role: "status", text: "已恢复后端上下文线程。", kind: "status" },
+      { role: "status", text: "$ git status", kind: "command" },
       { role: "user", text: "do something" },
     ];
     const result = buildHistoryInjectionContext(entries);
     assert.ok(result);
     assert.ok(result.includes("User: hello"));
     assert.ok(result.includes("Assistant: hi there"));
-    assert.ok(!result.includes("command ran"));
+    assert.ok(result.includes("Command output: $ git status --short\nM file.ts"));
+    assert.ok(result.includes("System error: command failed"));
+    assert.ok(!result.includes("已恢复后端上下文线程"));
+    assert.ok(!result.includes("Command output: $ git status\n"));
     assert.ok(result.includes("User: do something"));
     assert.ok(result.includes("[Context restore]"));
   });
 
-  it("returns null when no user/ai entries", () => {
+  it("returns null when no context-bearing entries exist", () => {
     const entries = [
       { role: "status", text: "system started" },
       { role: "command", text: "ls -la" },
+      { role: "status", text: "$ git status", kind: "command" },
+      { role: "status", text: "已恢复后端上下文线程。", kind: "status" },
     ];
     assert.equal(buildHistoryInjectionContext(entries), null);
   });

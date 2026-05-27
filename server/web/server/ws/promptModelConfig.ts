@@ -3,6 +3,8 @@ import type { Input, InputTextPart } from "../../../agents/protocol/types.js";
 const HISTORY_INJECTION_MAX_ENTRIES = 20;
 const HISTORY_INJECTION_MAX_CHARS = 8_000;
 
+type HistoryInjectionEntry = { role: string; text: string; kind?: string };
+
 export function parseModelReasoningEffortFromPayload(payload: unknown): { present: boolean; effort?: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { present: false };
@@ -53,20 +55,29 @@ export function parseAgentIdFromPayload(payload: unknown): { present: boolean; a
   return normalized ? { present: true, agentId: normalized } : { present: true };
 }
 
-export function buildHistoryInjectionContext(entries: Array<{ role: string; text: string }>): string | null {
-  const relevant = entries.filter((e) => e.role === "user" || e.role === "ai");
+function labelForHistoryInjectionEntry(entry: HistoryInjectionEntry): string | null {
+  if (entry.role === "user") return "User";
+  if (entry.role === "ai") return "Assistant";
+  if (entry.role === "status" && entry.kind === "execute") return "Command output";
+  if (entry.role === "status" && entry.kind === "error") return "System error";
+  return null;
+}
+
+export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): string | null {
+  const relevant = entries
+    .map((entry) => ({ entry, label: labelForHistoryInjectionEntry(entry) }))
+    .filter((item): item is { entry: HistoryInjectionEntry; label: string } => Boolean(item.label));
   if (relevant.length === 0) {
     return null;
   }
   const recent = relevant.slice(-HISTORY_INJECTION_MAX_ENTRIES);
   const lines: string[] = [];
-  for (const entry of recent) {
-    const role = entry.role === "user" ? "User" : "Assistant";
+  for (const { entry, label } of recent) {
     const text = String(entry.text ?? "").trim();
     if (!text) continue;
     const maxPerEntry = 800;
     const truncated = text.length <= maxPerEntry ? text : `${text.slice(0, maxPerEntry)}…`;
-    lines.push(`${role}: ${truncated}`);
+    lines.push(`${label}: ${truncated}`);
   }
   if (lines.length === 0) {
     return null;
