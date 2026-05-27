@@ -54,6 +54,12 @@ export async function executeCommandLine(args: {
     } else {
       args.sendToCommandScope({ type: "error", message });
       args.sessionLogger?.logError(message);
+      args.historyStore.add(args.historyKey, {
+        role: "status",
+        text: message,
+        ts: Date.now(),
+        kind: "error",
+      });
     }
   } finally {
     args.interruptControllers.delete(args.historyKey);

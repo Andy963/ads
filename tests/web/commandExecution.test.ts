@@ -91,4 +91,47 @@ describe("web/ws/commandExecution", () => {
     assert.deepEqual(loggedErrors, ["已中断，输出可能不完整"]);
     assert.equal(interruptControllers.has("history-2"), false);
   });
+
+  it("records thrown command errors in history so reconnect replay explains the failed command", async () => {
+    const sent: unknown[] = [];
+    const loggedErrors: string[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-command-execution-error", maxEntriesPerSession: 10 });
+    const interruptControllers = new Map<string, AbortController>();
+
+    try {
+      await executeCommandLine({
+        command: "ads task status",
+        currentCwd: "/tmp/project",
+        historyKey: "history-3",
+        historyStore,
+        interruptControllers,
+        runAdsCommandLine: async () => {
+          throw new Error("command crashed");
+        },
+        sendToCommandScope: (payload) => sent.push(payload),
+        transport: {
+          ws: {} as any,
+          sendWorkspaceState: () => {
+            throw new Error("failed command should not refresh workspace state");
+          },
+        },
+        logger: { info: () => {}, warn: () => {}, debug: () => {} },
+        sessionLogger: {
+          logInput: () => {},
+          logOutput: () => {},
+          logError: (text) => loggedErrors.push(text),
+        },
+      });
+
+      assert.deepEqual(sent, [{ type: "error", message: "command crashed" }]);
+      assert.deepEqual(loggedErrors, ["command crashed"]);
+      assert.deepEqual(
+        historyStore.get("history-3").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "command crashed", kind: "error" }],
+      );
+      assert.equal(interruptControllers.has("history-3"), false);
+    } finally {
+      historyStore.clear("history-3");
+    }
+  });
 });
