@@ -142,7 +142,9 @@ describe("web/ws/commandExecution", () => {
       await execution;
       resolveRun?.({ ok: true, output: "late output" });
 
-      assert.deepEqual(sent, [{ type: "error", message: "已中断，输出可能不完整" }]);
+      assert.deepEqual(sent, [
+        { type: "result", ok: false, output: "已中断，输出可能不完整", kind: "execute", command: "sleep forever" },
+      ]);
       assert.deepEqual(loggedErrors, ["已中断，输出可能不完整"]);
       assert.deepEqual(
         historyStore.get("history-2").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
@@ -185,7 +187,9 @@ describe("web/ws/commandExecution", () => {
         },
       });
 
-      assert.deepEqual(sent, [{ type: "error", message: "command crashed" }]);
+      assert.deepEqual(sent, [
+        { type: "result", ok: false, output: "command crashed", kind: "execute", command: "ads task status" },
+      ]);
       assert.deepEqual(loggedErrors, ["command crashed"]);
       assert.deepEqual(
         historyStore.get("history-3").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),

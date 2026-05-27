@@ -233,14 +233,18 @@ describe("web/server/ws/interrupt", () => {
 
     const interrupted = waitForWsMessage(
       client,
-      (msg) => msg.type === "error" && msg.message === "已中断，输出可能不完整",
+      (msg) =>
+        msg.type === "result" &&
+        msg.kind === "execute" &&
+        msg.command === "echo hello" &&
+        msg.output === "已中断，输出可能不完整",
       1500,
     );
 
     client.send(JSON.stringify({ type: "interrupt" }));
 
     const result = await interrupted;
-    assert.equal(result.type, "error");
+    assert.equal(result.type, "result");
 
     resolveRun?.({ ok: true, output: "done" });
 
@@ -276,13 +280,17 @@ describe("web/server/ws/interrupt", () => {
 
     const interrupted = waitForWsMessage(
       clientB,
-      (msg) => msg.type === "error" && msg.message === "已中断，输出可能不完整",
+      (msg) =>
+        msg.type === "result" &&
+        msg.kind === "execute" &&
+        msg.command === "echo hello" &&
+        msg.output === "已中断，输出可能不完整",
       1500,
     );
     clientB.send(JSON.stringify({ type: "interrupt" }));
 
     const result = await interrupted;
-    assert.equal(result.type, "error");
+    assert.equal(result.type, "result");
 
     try {
       clientA.terminate();
@@ -412,12 +420,16 @@ describe("web/server/ws/interrupt", () => {
 
     const interruptedPromise = waitForWsMessage(
       clientB,
-      (msg) => msg.type === "error" && msg.message === "已中断，输出可能不完整",
+      (msg) =>
+        msg.type === "result" &&
+        msg.kind === "execute" &&
+        msg.command === "echo hello" &&
+        msg.output === "已中断，输出可能不完整",
       1500,
     );
     clientB.send(JSON.stringify({ type: "interrupt" }));
     const interrupted = await interruptedPromise;
-    assert.equal(interrupted.message, "已中断，输出可能不完整");
+    assert.equal(interrupted.output, "已中断，输出可能不完整");
     assert.equal(interruptControllers.size, 0);
 
     resolveRun?.({ ok: true, output: "late output" });

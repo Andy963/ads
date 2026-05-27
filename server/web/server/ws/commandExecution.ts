@@ -53,22 +53,23 @@ export async function executeCommandLine(args: {
     const aborted = controller.signal.aborted;
     const message = (error as Error).message ?? String(error);
     if (aborted) {
+      const output = "已中断，输出可能不完整";
       if (runPromise) {
         void runPromise.catch((innerError) => {
           const detail = innerError instanceof Error ? innerError.message : String(innerError);
           args.logger.debug(`[Web] runAdsCommandLine settled after abort: ${detail}`);
         });
       }
-      args.sendToCommandScope({ type: "error", message: "已中断，输出可能不完整" });
-      args.sessionLogger?.logError("已中断，输出可能不完整");
+      args.sendToCommandScope({ type: "result", ok: false, output, kind: "execute", command: args.command });
+      args.sessionLogger?.logError(output);
       args.historyStore.add(args.historyKey, {
         role: "status",
-        text: formatCommandHistoryText(args.command, "已中断，输出可能不完整"),
+        text: formatCommandHistoryText(args.command, output),
         ts: Date.now(),
         kind: "execute",
       });
     } else {
-      args.sendToCommandScope({ type: "error", message });
+      args.sendToCommandScope({ type: "result", ok: false, output: message, kind: "execute", command: args.command });
       args.sessionLogger?.logError(message);
       args.historyStore.add(args.historyKey, {
         role: "status",
