@@ -27,9 +27,11 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
     orchestrator = handleSetAgentCommand({
       payload: deps.request.parsed.payload,
       userId: deps.context.userId,
+      historyKey: deps.context.historyKey,
       currentCwd,
       orchestrator,
       sessionManager: deps.sessions.sessionManager,
+      historyStore: deps.history.historyStore,
       agentAvailability: deps.agents.agentAvailability,
       sendToClient,
     });

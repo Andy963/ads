@@ -1,5 +1,6 @@
 import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsOrchestrator } from "./deps.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
 import { shouldResumeMissingRuntimeSession } from "./resumeThreadFallback.js";
@@ -14,22 +15,27 @@ function readAgentId(payload: unknown): string {
 export function handleSetAgentCommand(args: {
   payload: unknown;
   userId: number;
+  historyKey: string;
   currentCwd: string;
   orchestrator: WsOrchestrator;
   sessionManager: SessionManager;
+  historyStore: Pick<HistoryStore, "add">;
   agentAvailability: AgentAvailability;
   sendToClient: (payload: unknown) => void;
 }): WsOrchestrator {
   const agentId = readAgentId(args.payload);
 
   if (!agentId) {
-    args.sendToClient({ type: "error", message: "Payload must include agentId" });
+    const message = "Payload must include agentId";
+    args.sendToClient({ type: "error", message });
+    args.historyStore.add(args.historyKey, { role: "status", text: message, ts: Date.now(), kind: "error" });
     return args.orchestrator;
   }
 
   const switchResult = args.sessionManager.switchAgent(args.userId, agentId);
   if (!switchResult.success) {
     args.sendToClient({ type: "error", message: switchResult.message });
+    args.historyStore.add(args.historyKey, { role: "status", text: switchResult.message, ts: Date.now(), kind: "error" });
     return args.orchestrator;
   }
 

@@ -21,6 +21,7 @@ function createRuntime(): any {
     seenCommandIds: new Set<string>(),
     liveActivity: {},
     activeThreadId: { value: null } satisfies Ref<string | null>,
+    threadWarning: { value: null } satisfies Ref<string | null>,
     workspacePath: { value: "" } satisfies Ref<string>,
     availableAgents: { value: [] } satisfies Ref<any[]>,
     activeAgentId: { value: "" } satisfies Ref<string>,
@@ -86,4 +87,3 @@ describe("ws agents snapshot", () => {
     expect(rt.activeThreadId.value).toBe("thread-123");
   });
 });
-

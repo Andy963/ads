@@ -1,25 +1,72 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import { HistoryStore } from "../../server/utils/historyStore.js";
 import { handleSetAgentCommand } from "../../server/web/server/ws/commandAgentSwitch.js";
 
 describe("web/ws/commandAgentSwitch", () => {
-  it("rejects payloads without agentId", () => {
+  it("rejects payloads without agentId and records the error for reconnect replay", () => {
     const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-command-agent-switch-missing", maxEntriesPerSession: 10 });
     const originalOrchestrator = { id: "original" } as any;
 
-    const orchestrator = handleSetAgentCommand({
-      payload: {},
-      userId: 7,
-      currentCwd: "/tmp/project",
-      orchestrator: originalOrchestrator,
-      sessionManager: {} as any,
-      agentAvailability: {} as any,
-      sendToClient: (payload) => sent.push(payload),
-    });
+    try {
+      const orchestrator = handleSetAgentCommand({
+        payload: {},
+        userId: 7,
+        historyKey: "history-missing-agent",
+        currentCwd: "/tmp/project",
+        orchestrator: originalOrchestrator,
+        sessionManager: {} as any,
+        historyStore,
+        agentAvailability: {} as any,
+        sendToClient: (payload) => sent.push(payload),
+      });
 
-    assert.equal(orchestrator, originalOrchestrator);
-    assert.deepEqual(sent, [{ type: "error", message: "Payload must include agentId" }]);
+      assert.equal(orchestrator, originalOrchestrator);
+      assert.deepEqual(sent, [{ type: "error", message: "Payload must include agentId" }]);
+      assert.deepEqual(
+        historyStore
+          .get("history-missing-agent")
+          .map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "Payload must include agentId", kind: "error" }],
+      );
+    } finally {
+      historyStore.clear("history-missing-agent");
+    }
+  });
+
+  it("records rejected agent switches for reconnect replay", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-command-agent-switch-rejected", maxEntriesPerSession: 10 });
+    const originalOrchestrator = { id: "original" } as any;
+
+    try {
+      const orchestrator = handleSetAgentCommand({
+        payload: { agentId: "claude" },
+        userId: 7,
+        historyKey: "history-rejected-agent",
+        currentCwd: "/tmp/project",
+        orchestrator: originalOrchestrator,
+        sessionManager: {
+          switchAgent: () => ({ success: false, message: 'Agent "claude" is not registered' }),
+        } as any,
+        historyStore,
+        agentAvailability: {} as any,
+        sendToClient: (payload) => sent.push(payload),
+      });
+
+      assert.equal(orchestrator, originalOrchestrator);
+      assert.deepEqual(sent, [{ type: "error", message: 'Agent "claude" is not registered' }]);
+      assert.deepEqual(
+        historyStore
+          .get("history-rejected-agent")
+          .map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: 'Agent "claude" is not registered', kind: "error" }],
+      );
+    } finally {
+      historyStore.clear("history-rejected-agent");
+    }
   });
 
   it("switches agents and prefers the in-memory thread id in the response", () => {
@@ -34,6 +81,7 @@ describe("web/ws/commandAgentSwitch", () => {
     const orchestrator = handleSetAgentCommand({
       payload: { agentId: "codex" },
       userId: 7,
+      historyKey: "history-1",
       currentCwd: "/tmp/project",
       orchestrator: {} as any,
       sessionManager: {
@@ -45,6 +93,7 @@ describe("web/ws/commandAgentSwitch", () => {
         },
         getSavedThreadId: () => "thread-saved",
       } as any,
+      historyStore: new HistoryStore({ namespace: "test-command-agent-switch-ok", maxEntriesPerSession: 10 }),
       agentAvailability: {
         mergeStatus: (_agentId: string, status: unknown) => ({ ...(status as object), error: undefined }),
       } as any,

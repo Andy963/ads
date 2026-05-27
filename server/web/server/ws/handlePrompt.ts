@@ -97,11 +97,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       userId: deps.context.userId,
       payload: deps.request.parsed.payload,
     });
-    orchestrator = deps.sessions.sessionManager.getOrCreate(
-      deps.context.userId,
-      turnCwd,
-      shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
-    );
     const status = orchestrator.status();
     if (!status.ready) {
       const message = status.error ?? "代理未启用，请配置凭证";
