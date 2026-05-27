@@ -41,6 +41,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
 
   const clearPendingPrompt = vi.fn();
   const clearStepLive = vi.fn();
+  const finalizeAssistant = vi.fn();
   const finalizeCommandBlock = vi.fn();
   const pushMessageBeforeLive = vi.fn();
 
@@ -66,7 +67,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     clearPendingPrompt,
     clearStepLive,
     commandKeyForWsEvent: () => null,
-    finalizeAssistant: vi.fn(),
+    finalizeAssistant,
     finalizeCommandBlock,
     flushQueuedPrompts: vi.fn(),
     ingestCommand: vi.fn(),
@@ -81,7 +82,16 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     upsertStreamingDelta: vi.fn(),
   });
 
-  return { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock, applyResumeHistory, pushMessageBeforeLive };
+  return {
+    handler,
+    threadReset,
+    clearPendingPrompt,
+    clearStepLive,
+    finalizeAssistant,
+    finalizeCommandBlock,
+    applyResumeHistory,
+    pushMessageBeforeLive,
+  };
 }
 
 describe("ws workspace project sync", () => {
@@ -137,6 +147,29 @@ describe("ws workspace project sync", () => {
         kind: "text",
         content: "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。",
       },
+      rt,
+    );
+  });
+
+  it("renders failed result payloads as system errors instead of assistant replies", () => {
+    const rt = createRuntime();
+    const { handler, finalizeAssistant, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "result",
+      ok: false,
+      output: "错误: No such directory",
+    });
+
+    expect(finalizeAssistant).toHaveBeenCalledWith("", rt);
+    expect(finalizeAssistant).not.toHaveBeenCalledWith("错误: No such directory", rt);
+    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
+      { role: "system", kind: "error", content: "错误: No such directory" },
       rt,
     );
   });

@@ -803,6 +803,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       clearStepLive(rt);
       finalizeCommandBlock(rt);
+      if (msg.ok === false) {
+        finalizeAssistant("", rt);
+        const content = output.trim();
+        if (content) {
+          pushMessageBeforeLive({ role: "system", kind: "error", content }, rt);
+        }
+        void flushQueuedPrompts(rt);
+        return;
+      }
       finalizeAssistant(output, rt);
       void flushQueuedPrompts(rt);
       return;
