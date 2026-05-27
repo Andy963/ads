@@ -153,6 +153,35 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("does not duplicate a result notice already shown in the current turn", () => {
+    const rt = createRuntime();
+    rt.apiNotice = { value: null } satisfies Ref<string | null>;
+    rt.noticeTimer = null;
+    const notice = "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。";
+    rt.messages.value = [
+      { id: "u-1", role: "user", kind: "text", content: "hello" },
+      { id: "n-1", role: "system", kind: "text", content: notice },
+      { id: "a-1", role: "assistant", kind: "text", content: "done" },
+    ];
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done again",
+      notice,
+    });
+
+    expect(rt.apiNotice.value).toBe(notice);
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+  });
+
   it("renders failed result payloads as system errors instead of assistant replies", () => {
     const rt = createRuntime();
     const { handler, finalizeAssistant, pushMessageBeforeLive } = createHandler({

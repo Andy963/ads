@@ -289,7 +289,21 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const notice = String(payload.notice ?? "").trim();
     if (notice) {
       rt.apiNotice.value = notice;
-      pushMessageBeforeLive({ role: "system", kind: "text", content: notice }, rt);
+      let alreadyShownInCurrentTail = false;
+      for (let i = rt.messages.value.length - 1; i >= 0; i--) {
+        const item = rt.messages.value[i];
+        if (!item) continue;
+        if (item.role === "user") {
+          break;
+        }
+        if (item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === notice) {
+          alreadyShownInCurrentTail = true;
+          break;
+        }
+      }
+      if (!alreadyShownInCurrentTail) {
+        pushMessageBeforeLive({ role: "system", kind: "text", content: notice }, rt);
+      }
       if (rt.noticeTimer !== null) {
         try {
           clearTimeout(rt.noticeTimer);
