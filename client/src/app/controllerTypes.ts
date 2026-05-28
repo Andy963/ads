@@ -29,6 +29,7 @@ export type QueuedPrompt = {
   agentId?: string;
   model?: string;
   modelReasoningEffort?: string;
+  restoredFromStorage?: boolean;
 };
 
 export type ChatExecutionContext = {

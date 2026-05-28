@@ -9,6 +9,7 @@ import { createStreamingActions } from "./chatStreaming";
 
 export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
+const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
 
 type PersistedPrompt = {
   clientMessageId: string;
@@ -196,6 +197,7 @@ export function createChatActions(ctx: AppContext) {
         agentId,
         model,
         modelReasoningEffort,
+        restoredFromStorage: true,
       },
       ...rt.queuedPrompts.value,
     ];
@@ -512,6 +514,9 @@ export function createChatActions(ctx: AppContext) {
         ...(effort ? { modelReasoningEffort: effort } : {}),
       };
       pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution }, state);
+      if (next.restoredFromStorage) {
+        pushMessageBeforeLive({ role: "system", kind: "text", content: PENDING_PROMPT_REPLAY_NOTICE }, state);
+      }
       pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
       state.delegationsInFlight.value = [];
       state.busy.value = true;

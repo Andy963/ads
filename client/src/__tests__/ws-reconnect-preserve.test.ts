@@ -6,6 +6,8 @@ import { createAppController } from "../app/controller";
 import { RECONNECT_BUSY_MESSAGE } from "../app/projectsWs/reconnectNotice";
 import { EXECUTE_DISCONNECT_NOTICE } from "../lib/chat_sync";
 
+const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
+
 let lastWs: {
   onOpen?: () => void;
   onClose?: (ev: { code: number; reason?: string }) => void;
@@ -286,6 +288,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.pendingAckClientMessageId).toBeNull();
     expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["resume me", "done"]);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(PENDING_PROMPT_REPLAY_NOTICE);
     wrapper.unmount();
   });
 
@@ -322,6 +325,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     });
     expect(rt.pendingAckClientMessageId).toBe("pending-new");
     expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(PENDING_PROMPT_REPLAY_NOTICE);
     wrapper.unmount();
   });
 
