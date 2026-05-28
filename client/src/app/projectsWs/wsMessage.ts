@@ -742,6 +742,22 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "context_injection") {
+      const rec = msg as Record<string, unknown>;
+      const entryCount = Number(rec.entryCount);
+      if (!Number.isFinite(entryCount) || entryCount <= 0) return;
+      const earliestRaw = Number(rec.earliestTs);
+      const earliestTs = Number.isFinite(earliestRaw) && earliestRaw > 0 ? earliestRaw : null;
+      const sinceLabel = earliestTs ? ` (起自 ${new Date(earliestTs).toLocaleString()})` : "";
+      const content = `已注入最近 ${Math.floor(entryCount)} 条聊天历史作为本轮上下文${sinceLabel}。`;
+      const last = rt.messages.value.at(-1);
+      if (last?.role === "system" && last.kind === "text" && String(last.content ?? "").trim() === content) {
+        return;
+      }
+      pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+      return;
+    }
+
     if (type === "status") {
       const content = String(msg.message ?? msg.output ?? msg.text ?? "").trim();
       if (!content) return;

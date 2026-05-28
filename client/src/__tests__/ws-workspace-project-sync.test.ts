@@ -246,6 +246,48 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("renders context_injection broadcast as a system notice", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "context_injection",
+      entryCount: 4,
+      earliestTs: 1000,
+      latestTs: 5000,
+    });
+
+    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(1);
+    const firstCall = pushMessageBeforeLive.mock.calls[0]?.[0] as
+      | { role: string; kind: string; content: string }
+      | undefined;
+    expect(firstCall?.role).toBe("system");
+    expect(firstCall?.kind).toBe("text");
+    expect(firstCall?.content).toMatch(/^已注入最近 4 条聊天历史作为本轮上下文/);
+  });
+
+  it("ignores empty context_injection broadcasts", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({ type: "context_injection", entryCount: 0 });
+    handler({ type: "context_injection" });
+
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+  });
+
   it("restores user execution metadata from replayed history", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();

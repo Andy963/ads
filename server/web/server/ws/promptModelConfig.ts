@@ -4,7 +4,14 @@ const HISTORY_INJECTION_MAX_ENTRIES = 20;
 const HISTORY_INJECTION_MAX_CHARS = 8_000;
 const HISTORY_INJECTION_MAX_CHARS_PER_ENTRY = 800;
 
-type HistoryInjectionEntry = { role: string; text: string; kind?: string };
+type HistoryInjectionEntry = { role: string; text: string; kind?: string; ts?: number };
+
+export type HistoryInjectionDetails = {
+  text: string;
+  entryCount: number;
+  earliestTs?: number;
+  latestTs?: number;
+};
 
 export function parseModelReasoningEffortFromPayload(payload: unknown): { present: boolean; effort?: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -87,8 +94,12 @@ function truncateHistoryInjectionText(entry: HistoryInjectionEntry, text: string
   return `${text.slice(0, HISTORY_INJECTION_MAX_CHARS_PER_ENTRY)}…`;
 }
 
-function trimHistoryInjectionLines(lines: string[], maxChars: number): string {
+function trimHistoryInjectionLines(lines: string[], maxChars: number): {
+  text: string;
+  keptIndices: number[];
+} {
   const kept: string[] = [];
+  const keptIndices: number[] = [];
   let totalChars = 0;
 
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -100,17 +111,18 @@ function trimHistoryInjectionLines(lines: string[], maxChars: number): string {
       break;
     }
     if (kept.length === 0 && line.length > maxChars) {
-      return line.slice(line.length - maxChars);
+      return { text: line.slice(line.length - maxChars), keptIndices: [i] };
     }
 
     kept.unshift(line);
+    keptIndices.unshift(i);
     totalChars = nextTotal;
   }
 
-  return kept.join("\n");
+  return { text: kept.join("\n"), keptIndices };
 }
 
-export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): string | null {
+export function buildHistoryInjectionDetails(entries: HistoryInjectionEntry[]): HistoryInjectionDetails | null {
   const relevant = entries
     .map((entry) => ({ entry, label: labelForHistoryInjectionEntry(entry) }))
     .filter((item): item is { entry: HistoryInjectionEntry; label: string } => Boolean(item.label));
@@ -119,17 +131,33 @@ export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): 
   }
   const recent = relevant.slice(-HISTORY_INJECTION_MAX_ENTRIES);
   const lines: string[] = [];
+  const lineEntries: HistoryInjectionEntry[] = [];
   for (const { entry, label } of recent) {
     const text = String(entry.text ?? "").trim();
     if (!text) continue;
     const truncated = truncateHistoryInjectionText(entry, text);
     lines.push(`${label}: ${truncated}`);
+    lineEntries.push(entry);
   }
   if (lines.length === 0) {
     return null;
   }
-  const transcript = trimHistoryInjectionLines(lines, HISTORY_INJECTION_MAX_CHARS);
-  return [
+  const { text: transcript, keptIndices } = trimHistoryInjectionLines(lines, HISTORY_INJECTION_MAX_CHARS);
+  if (!transcript) {
+    return null;
+  }
+  const includedEntries = keptIndices
+    .map((idx) => lineEntries[idx])
+    .filter((entry): entry is HistoryInjectionEntry => Boolean(entry));
+  let earliestTs: number | undefined;
+  let latestTs: number | undefined;
+  for (const entry of includedEntries) {
+    const ts = typeof entry.ts === "number" && Number.isFinite(entry.ts) ? entry.ts : undefined;
+    if (typeof ts !== "number") continue;
+    if (earliestTs === undefined || ts < earliestTs) earliestTs = ts;
+    if (latestTs === undefined || ts > latestTs) latestTs = ts;
+  }
+  const text = [
     "[Context restore] Recent chat history (for reference only). Do not repeat it; answer the user's next request directly:",
     "",
     transcript,
@@ -137,6 +165,17 @@ export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): 
     "---",
     "",
   ].join("\n");
+  return {
+    text,
+    entryCount: includedEntries.length,
+    earliestTs,
+    latestTs,
+  };
+}
+
+export function buildHistoryInjectionContext(entries: HistoryInjectionEntry[]): string | null {
+  const details = buildHistoryInjectionDetails(entries);
+  return details ? details.text : null;
 }
 
 export function prependContextToInput(context: string, input: Input): Input {

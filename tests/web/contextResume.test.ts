@@ -5,6 +5,7 @@ import {
   buildHistoryInjectionContext,
   prependContextToInput,
 } from "../../server/web/server/ws/handlePrompt.js";
+import { buildHistoryInjectionDetails } from "../../server/web/server/ws/promptModelConfig.js";
 
 describe("context resume — history injection", () => {
   it("builds transcript from conversation and context-bearing status entries", () => {
@@ -114,5 +115,29 @@ describe("context resume — history injection", () => {
     assert.equal(arr.length, 2);
     assert.equal(arr[0].text, "CONTEXT\n");
     assert.equal(arr[1].text, "user prompt");
+  });
+
+  it("summarizes injection details with entry count and timestamps", () => {
+    const details = buildHistoryInjectionDetails([
+      { role: "user", text: "hi", ts: 100 },
+      { role: "ai", text: "hello", ts: 200 },
+      { role: "status", text: "$ git status", kind: "command", ts: 250 },
+      { role: "status", text: "command failed", kind: "error", ts: 300 },
+    ]);
+    assert.ok(details);
+    assert.equal(details.entryCount, 3);
+    assert.equal(details.earliestTs, 100);
+    assert.equal(details.latestTs, 300);
+    assert.ok(details.text.includes("User: hi"));
+    assert.ok(details.text.includes("Assistant: hello"));
+    assert.ok(details.text.includes("System error: command failed"));
+  });
+
+  it("returns null details when no entries qualify", () => {
+    assert.equal(buildHistoryInjectionDetails([]), null);
+    assert.equal(
+      buildHistoryInjectionDetails([{ role: "status", text: "noise", kind: "status" }]),
+      null,
+    );
   });
 });

@@ -13,7 +13,7 @@ import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
 import { processScheduleOutput } from "../planner/scheduleHandler.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
 import {
-  buildHistoryInjectionContext,
+  buildHistoryInjectionDetails,
   prependContextToInput,
 } from "./promptModelConfig.js";
 import { applySessionOverrides } from "./sessionOverrides.js";
@@ -158,12 +158,20 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       let effectiveInput: Input = inputToSend;
       if (deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId)) {
         const historyEntries = historyBeforeCurrentPrompt.filter((entry) => entry.ts <= deps.request.receivedAt);
-        const injectionContext = buildHistoryInjectionContext(historyEntries);
-        if (injectionContext) {
-          effectiveInput = prependContextToInput(injectionContext, inputToSend);
+        const injectionDetails = buildHistoryInjectionDetails(historyEntries);
+        if (injectionDetails) {
+          effectiveInput = prependContextToInput(injectionDetails.text, inputToSend);
           deps.observability.logger.info(
-            `[ContextRestore] Injected ${historyEntries.length} history entries for user=${deps.context.userId} session=${deps.context.sessionId}`,
+            `[ContextRestore] Injected ${injectionDetails.entryCount} history entries for user=${deps.context.userId} session=${deps.context.sessionId}`,
           );
+          sendToChat({
+            type: "context_injection",
+            entryCount: injectionDetails.entryCount,
+            earliestTs: injectionDetails.earliestTs,
+            latestTs: injectionDetails.latestTs,
+            clientMessageId: deps.request.clientMessageId ?? undefined,
+            ts: Date.now(),
+          });
         }
         deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
