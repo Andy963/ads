@@ -101,6 +101,38 @@ describe("state/database", () => {
     assert.strictEqual(row.updated_at, 123);
   });
 
+  it("dedupes history client messages by id after metadata-bearing kind migration", () => {
+    const seedDb = getStateDatabase();
+    seedDb.prepare(
+      `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("web", "s1", "user", "hello", 1, "client_message_id:p1;prompt_meta:agent=claude");
+    seedDb.exec("DROP INDEX IF EXISTS idx_history_entries_client_message_id");
+    seedDb.exec("UPDATE schema_version SET version = 3 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const info = insert.run("web", "s1", "user", "duplicate", 2, "client_message_id:p1;prompt_meta:agent=codex");
+    const rows = db
+      .prepare(
+        `SELECT text, kind
+         FROM history_entries
+         WHERE namespace = ? AND session_id = ?
+         ORDER BY id ASC`,
+      )
+      .all("web", "s1") as Array<{ text: string; kind: string }>;
+
+    assert.strictEqual(info.changes, 0);
+    assert.deepStrictEqual(rows, [
+      { text: "hello", kind: "client_message_id:p1;prompt_meta:agent=claude" },
+    ]);
+  });
+
   it("should enable WAL mode", () => {
     const db = getStateDatabase();
     const result = db.pragma("journal_mode") as Array<{ journal_mode: string }>;

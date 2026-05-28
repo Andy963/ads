@@ -5,6 +5,7 @@ import type { Database as DatabaseType, Statement as StatementType } from "bette
 
 import { getStateDatabase } from "../state/database.js";
 import { prepareMigrationMarkerStatements } from "../state/migrations.js";
+import { sameHistoryClientMessageKind } from "./historyKind.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { parseBooleanFlag } from "./flags.js";
 import { createLogger } from "./logger.js";
@@ -110,8 +111,8 @@ export class HistoryStore {
 
     if (!this.useSqlite || !this.db || !this.insertStmt) {
       const existing = this.store.get(normalizedKey) ?? [];
-      if (String(normalized.kind ?? "").startsWith("client_message_id:")) {
-        const already = existing.some((e) => e.kind === normalized.kind);
+      if (sameHistoryClientMessageKind(normalized.kind, normalized.kind)) {
+        const already = existing.some((e) => sameHistoryClientMessageKind(e.kind, normalized.kind));
         if (already) {
           return false;
         }

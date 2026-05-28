@@ -16,6 +16,32 @@ type Ref<T> = { value: T };
 
 const HISTORY_EXECUTE_PREVIEW_LINES = 3;
 
+function decodeHistoryKindValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return "";
+  }
+}
+
+function parseExecutionFromHistoryKind(kind: string): ChatItem["execution"] | undefined {
+  const marker = ";prompt_meta:";
+  const markerIndex = kind.indexOf(marker);
+  if (markerIndex < 0) return undefined;
+  const raw = kind.slice(markerIndex + marker.length);
+  const execution: NonNullable<ChatItem["execution"]> = {};
+  for (const part of raw.split(",")) {
+    const [keyRaw, valueRaw = ""] = part.split("=");
+    const key = String(keyRaw ?? "").trim();
+    const value = decodeHistoryKindValue(valueRaw).trim();
+    if (!key || !value) continue;
+    if (key === "agent") execution.agentId = value;
+    else if (key === "model") execution.model = value;
+    else if (key === "effort") execution.modelReasoningEffort = value;
+  }
+  return Object.keys(execution).length > 0 ? execution : undefined;
+}
+
 export type WsMessageHandlerArgs = {
   projects: Ref<ProjectTab[]>;
   pid: string;
@@ -777,8 +803,17 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (isCommand) {
           continue;
         }
-        if (role === "user") next.push({ id: `h-u-${idx}`, role: "user", kind: "text", content: trimmed, ts: ts ?? undefined });
-        else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed, ts: ts ?? undefined });
+        if (role === "user") {
+          const execution = parseExecutionFromHistoryKind(kind);
+          next.push({
+            id: `h-u-${idx}`,
+            role: "user",
+            kind: "text",
+            content: trimmed,
+            ts: ts ?? undefined,
+            ...(execution ? { execution } : {}),
+          });
+        } else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed, ts: ts ?? undefined });
         else if (kind === "error") next.push({ id: `h-e-${idx}`, role: "system", kind: "error", content: trimmed, ts: ts ?? undefined });
         else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
       }

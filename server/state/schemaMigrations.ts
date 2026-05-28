@@ -45,7 +45,11 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
           ON history_entries(namespace, session_id, id);
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_history_entries_client_message_id
-          ON history_entries(namespace, session_id, kind)
+          ON history_entries(
+            namespace,
+            session_id,
+            substr(kind, length('client_message_id:') + 1, instr(kind || ';', ';') - length('client_message_id:') - 1)
+          )
           WHERE kind LIKE 'client_message_id:%';
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -174,6 +178,23 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       for (const row of legacyRows) {
         updateIdStmt.run(`model-${randomUUID()}`, row.id);
       }
+    },
+  },
+  {
+    version: 4,
+    description: "History entries - dedupe client messages by id while preserving metadata in kind",
+    up: (db) => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_history_entries_client_message_id;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_history_entries_client_message_id
+          ON history_entries(
+            namespace,
+            session_id,
+            substr(kind, length('client_message_id:') + 1, instr(kind || ';', ';') - length('client_message_id:') - 1)
+          )
+          WHERE kind LIKE 'client_message_id:%';
+      `);
     },
   },
 ];

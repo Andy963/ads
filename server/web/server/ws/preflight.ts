@@ -1,6 +1,7 @@
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsMessage } from "./schema.js";
 
+import { buildClientMessageHistoryKind } from "../../../utils/historyKind.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
 
 export function shouldPersistCommandMessage(args: {
@@ -43,13 +44,27 @@ export function preflightPersistAndAck(args: {
   if (!args.clientMessageId) {
     return { enqueue: true };
   }
-  const entryKind = `client_message_id:${args.clientMessageId}`;
-
   if (args.parsed.type === "prompt") {
     const textResult = buildPromptHistoryText(args.parsed.payload, args.sanitizeInput);
     if (!textResult.ok) {
       return { enqueue: true };
     }
+    const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
+      ? (args.parsed.payload as Record<string, unknown>)
+      : {};
+    const entryKind = buildClientMessageHistoryKind({
+      clientMessageId: args.clientMessageId,
+      metadata: {
+        agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
+        model: typeof payload.model === "string" ? payload.model : undefined,
+        modelReasoningEffort:
+          typeof payload.modelReasoningEffort === "string"
+            ? payload.modelReasoningEffort
+            : typeof payload.model_reasoning_effort === "string"
+              ? payload.model_reasoning_effort
+              : undefined,
+      },
+    });
     const inserted = args.historyStore.add(args.historyKey, {
       role: "user",
       text: textResult.text,
@@ -71,6 +86,7 @@ export function preflightPersistAndAck(args: {
   }
 
   if (args.parsed.type === "command") {
+    const entryKind = buildClientMessageHistoryKind({ clientMessageId: args.clientMessageId });
     const cmd = shouldPersistCommandMessage({
       sanitizeInput: args.sanitizeInput,
       payload: args.parsed.payload,

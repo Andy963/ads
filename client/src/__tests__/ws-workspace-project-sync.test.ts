@@ -246,6 +246,47 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("restores user execution metadata from replayed history", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, applyResumeHistory } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "history",
+      items: [
+        {
+          role: "user",
+          text: "hello",
+          ts: 10,
+          kind: "client_message_id:p1;prompt_meta:agent=claude,model=claude-sonnet,effort=high",
+        },
+      ],
+    });
+
+    expect(applyResumeHistory).toHaveBeenCalledWith(
+      [
+        {
+          id: "h-u-0",
+          role: "user",
+          kind: "text",
+          content: "hello",
+          ts: 10,
+          execution: {
+            agentId: "claude",
+            model: "claude-sonnet",
+            modelReasoningEffort: "high",
+          },
+        },
+      ],
+      rt,
+    );
+  });
+
   it("updates active thread metadata from task resume history snapshots", () => {
     const rt = createRuntime();
     rt.threadWarning.value = "stale warning";
