@@ -196,4 +196,56 @@ describe("ClaudeStreamParser", () => {
     assert.equal(events[1]?.phase, "error");
     assert.ok(parser.getLastError()?.includes("boom"));
   });
+
+  it("maps TodoWrite tool_use to a todo_list item with normalized statuses", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+
+    const started = parser.parseLine({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "plan-1",
+            name: "TodoWrite",
+            input: {
+              todos: [
+                { content: "First step", status: "completed" },
+                { content: "Second step", status: "in_progress" },
+                { content: "Third step", status: "pending" },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(started.length, 1);
+    assert.equal(started[0]?.phase, "analysis");
+    const rawStarted = started[0]!.raw as { type?: string; item?: { type?: string; items?: Array<{ text?: string; status?: string }> } };
+    assert.equal(rawStarted.type, "item.started");
+    assert.equal(rawStarted.item?.type, "todo_list");
+    assert.deepEqual(
+      rawStarted.item?.items?.map((entry) => ({ text: entry.text, status: entry.status })),
+      [
+        { text: "First step", status: "completed" },
+        { text: "Second step", status: "in_progress" },
+        { text: "Third step", status: "pending" },
+      ],
+    );
+
+    const completed = parser.parseLine({
+      type: "user",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "plan-1", content: "Todos updated", is_error: false },
+        ],
+      },
+    });
+    assert.equal(completed.length, 1);
+    const rawCompleted2 = completed[0]!.raw as { type?: string; item?: { type?: string; status?: string } };
+    assert.equal(rawCompleted2.type, "item.completed");
+    assert.equal(rawCompleted2.item?.type, "todo_list");
+    assert.equal(rawCompleted2.item?.status, "completed");
+  });
 });

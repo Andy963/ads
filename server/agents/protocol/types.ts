@@ -50,7 +50,8 @@ export interface WebSearchItem {
 export interface TodoListItem {
   type: "todo_list";
   id?: string;
-  items?: Array<{ text?: string; completed?: boolean }>;
+  status?: string;
+  items?: Array<{ text?: string; completed?: boolean; status?: string }>;
   [key: string]: unknown;
 }
 

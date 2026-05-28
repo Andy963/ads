@@ -6,6 +6,7 @@ import { attachWorkerPromptHandler } from "../../server/web/server/ws/workerProm
 function createHarness() {
   const sent: unknown[] = [];
   const history: Array<{ role: string; text: string; kind?: string }> = [];
+  const upserts: Array<{ role: string; text: string; kind?: string }> = [];
   let eventHandler: ((event: any) => void) | null = null;
 
   attachWorkerPromptHandler({
@@ -24,6 +25,10 @@ function createHarness() {
         history.push({ role: entry.role, text: entry.text, kind: entry.kind });
         return true;
       },
+      upsertEntryByKind: (_key, entry) => {
+        upserts.push({ role: entry.role, text: entry.text, kind: entry.kind });
+        return "inserted";
+      },
     },
     sendToChat: (payload) => sent.push(payload),
     logger: { info: () => {}, debug: () => {} },
@@ -31,7 +36,7 @@ function createHarness() {
   });
 
   assert.ok(eventHandler);
-  return { emit: eventHandler, sent, history };
+  return { emit: eventHandler, sent, history, upserts };
 }
 
 function commandEvent(args: {
@@ -146,5 +151,65 @@ describe("web/server/ws/workerPromptHandler", () => {
       { role: "status", text: "$ git status --short\nM file.ts", kind: "execute" },
     ]);
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
+  });
+
+  it("forwards todo_list events as plan messages and persists snapshots by kind", () => {
+    const { emit, sent, upserts } = createHarness();
+
+    const baseEvent = (eventType: "item.started" | "item.updated" | "item.completed", items: Array<{ text: string; status: string }>) => ({
+      phase: "analysis",
+      title: "todo",
+      timestamp: Date.now(),
+      raw: {
+        type: eventType,
+        item: {
+          type: "todo_list",
+          id: "plan-1",
+          status: eventType === "item.completed" ? "completed" : "in_progress",
+          items: items.map((entry) => ({ text: entry.text, status: entry.status })),
+        },
+      },
+    });
+
+    emit(
+      baseEvent("item.started", [
+        { text: "Step A", status: "pending" },
+        { text: "Step B", status: "pending" },
+      ]),
+    );
+    emit(
+      baseEvent("item.updated", [
+        { text: "Step A", status: "in_progress" },
+        { text: "Step B", status: "pending" },
+      ]),
+    );
+    emit(
+      baseEvent("item.completed", [
+        { text: "Step A", status: "completed" },
+        { text: "Step B", status: "completed" },
+      ]),
+    );
+
+    const planMessages = sent.filter((payload) => (payload as { type?: unknown }).type === "plan") as Array<{
+      planId: string;
+      status: string;
+      items: Array<{ text: string; status: string }>;
+    }>;
+    assert.equal(planMessages.length, 3);
+    assert.equal(planMessages[0]?.status, "in_progress");
+    assert.equal(planMessages[2]?.status, "completed");
+    assert.equal(planMessages[2]?.items[0]?.status, "completed");
+
+    // All three updates share the same plan kind so they upsert in place.
+    assert.equal(upserts.length, 3);
+    for (const entry of upserts) {
+      assert.equal(entry.kind, "plan:plan-1");
+      assert.equal(entry.role, "status");
+    }
+    // Final upsert must include the completed items.
+    const finalPersisted = upserts[upserts.length - 1]?.text ?? "";
+    const parsed = JSON.parse(finalPersisted) as { items: Array<{ status: string }>; status: string };
+    assert.equal(parsed.status, "completed");
+    assert.deepEqual(parsed.items.map((entry) => entry.status), ["completed", "completed"]);
   });
 });

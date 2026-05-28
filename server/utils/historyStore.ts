@@ -29,6 +29,8 @@ type HistoryStoreStatements = {
   setMigrationMarkerStmt: SqliteStatement;
   selectByClientMessageKindStmt: SqliteStatement;
   updateKindByIdStmt: SqliteStatement;
+  selectIdByExactKindStmt: SqliteStatement;
+  updateTextAndTsByIdStmt: SqliteStatement;
 };
 
 const historyStoreStatementsCache = new WeakMap<DatabaseType, HistoryStoreStatements>();
@@ -72,6 +74,8 @@ export class HistoryStore {
   private setMigrationMarkerStmt?: SqliteStatement;
   private selectByClientMessageKindStmt?: SqliteStatement;
   private updateKindByIdStmt?: SqliteStatement;
+  private selectIdByExactKindStmt?: SqliteStatement;
+  private updateTextAndTsByIdStmt?: SqliteStatement;
 
   constructor(options: HistoryStoreOptions = {}) {
     this.storagePath = options.storagePath ?? path.join(resolveAdsStateDir(), "state.db");
@@ -248,6 +252,62 @@ export class HistoryStore {
     }
   }
 
+  upsertEntryByKind(sessionId: string, entry: HistoryEntry): "inserted" | "updated" | "skipped" {
+    const normalized = this.normalize(entry);
+    if (!normalized) return "skipped";
+    const normalizedKey = String(sessionId ?? "").trim();
+    if (!normalizedKey) return "skipped";
+    const kindKey = String(normalized.kind ?? "").trim();
+    if (!kindKey) return "skipped";
+
+    if (!this.useSqlite || !this.db || !this.selectIdByExactKindStmt || !this.updateTextAndTsByIdStmt || !this.insertStmt) {
+      const existing = this.store.get(normalizedKey) ?? [];
+      const idx = existing.findIndex((e) => String(e.kind ?? "") === kindKey);
+      if (idx >= 0) {
+        const prev = existing[idx];
+        if (prev && prev.text === normalized.text && prev.ts === normalized.ts) {
+          return "skipped";
+        }
+        const next = existing.slice();
+        next[idx] = { ...next[idx], text: normalized.text, ts: normalized.ts };
+        this.store.set(normalizedKey, next);
+        this.persist();
+        return "updated";
+      }
+      existing.push(normalized);
+      const trimmed = this.trim(existing);
+      this.store.set(normalizedKey, trimmed);
+      this.persist();
+      return "inserted";
+    }
+
+    try {
+      const row = this.selectIdByExactKindStmt.get(this.namespace, normalizedKey, kindKey) as
+        | { id?: number; text?: string | null; ts?: number | null }
+        | undefined;
+      if (row && typeof row.id === "number") {
+        if (row.text === normalized.text && row.ts === normalized.ts) {
+          return "skipped";
+        }
+        this.updateTextAndTsByIdStmt.run(normalized.text, normalized.ts, row.id);
+        return "updated";
+      }
+      this.insertStmt.run(
+        this.namespace,
+        normalizedKey,
+        normalized.role,
+        normalized.text,
+        normalized.ts,
+        normalized.kind ?? null,
+      );
+      this.trimSqlite(normalizedKey);
+      return "inserted";
+    } catch (error) {
+      logger.warn(`[HistoryStore] Failed to upsert history entry by kind (sqlite)`, error);
+      return "skipped";
+    }
+  }
+
   private normalize(entry: HistoryEntry): HistoryEntry | null {
     const role = String(entry.role || "").trim();
     const text = String(entry.text ?? "").trim();
@@ -285,6 +345,8 @@ export class HistoryStore {
     this.setMigrationMarkerStmt = statements.setMigrationMarkerStmt;
     this.selectByClientMessageKindStmt = statements.selectByClientMessageKindStmt;
     this.updateKindByIdStmt = statements.updateKindByIdStmt;
+    this.selectIdByExactKindStmt = statements.selectIdByExactKindStmt;
+    this.updateTextAndTsByIdStmt = statements.updateTextAndTsByIdStmt;
   }
 
   private trimSqlite(sessionId: string): void {
@@ -440,6 +502,15 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
   const updateKindByIdStmt = db.prepare(
     `UPDATE history_entries SET kind = ? WHERE id = ?`,
   );
+  const selectIdByExactKindStmt = db.prepare(
+    `SELECT id, text, ts FROM history_entries
+     WHERE namespace = ? AND session_id = ? AND kind = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+  );
+  const updateTextAndTsByIdStmt = db.prepare(
+    `UPDATE history_entries SET text = ?, ts = ? WHERE id = ?`,
+  );
   const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
   const statements = {
     insertStmt,
@@ -451,6 +522,8 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
     setMigrationMarkerStmt,
     selectByClientMessageKindStmt,
     updateKindByIdStmt,
+    selectIdByExactKindStmt,
+    updateTextAndTsByIdStmt,
   };
   historyStoreStatementsCache.set(db, statements);
   return statements;

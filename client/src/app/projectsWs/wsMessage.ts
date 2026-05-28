@@ -1,5 +1,15 @@
 import type { ChatActions } from "../chat";
-import type { ChatItem, ChatPatch, ChatPatchFile, ProjectRuntime, ProjectTab, WorkspaceState } from "../controllerTypes";
+import type {
+  ChatItem,
+  ChatPatch,
+  ChatPatchFile,
+  ChatPlan,
+  ChatPlanItem,
+  ChatPlanItemStatus,
+  ProjectRuntime,
+  ProjectTab,
+  WorkspaceState,
+} from "../controllerTypes";
 import type { TaskBundleDraft } from "../../api/types";
 import {
   buildModelIdStorageKey,
@@ -847,6 +857,52 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (isCommand) {
           continue;
         }
+        if (kind.startsWith("plan:") || kind === "plan") {
+          const planId = kind.startsWith("plan:") ? kind.slice("plan:".length).trim() || `plan-${idx}` : `plan-${idx}`;
+          let parsed: { planId?: unknown; status?: unknown; items?: unknown } | null = null;
+          try {
+            parsed = JSON.parse(trimmed) as { planId?: unknown; status?: unknown; items?: unknown };
+          } catch {
+            parsed = null;
+          }
+          if (!parsed || typeof parsed !== "object") continue;
+          const itemsRaw = Array.isArray(parsed.items) ? parsed.items : [];
+          const planItems: ChatPlanItem[] = [];
+          for (const planEntry of itemsRaw) {
+            if (!planEntry || typeof planEntry !== "object" || Array.isArray(planEntry)) continue;
+            const rec = planEntry as Record<string, unknown>;
+            const text = String(rec.text ?? rec.content ?? "").trim();
+            if (!text) continue;
+            const itemStatusRaw = String(rec.status ?? "").trim().toLowerCase();
+            const planStatus: ChatPlanItemStatus =
+              itemStatusRaw === "completed"
+                ? "completed"
+                : itemStatusRaw === "in_progress"
+                  ? "in_progress"
+                  : "pending";
+            planItems.push({ text, status: planStatus });
+          }
+          if (planItems.length === 0) continue;
+          const planStatusRaw = String(parsed.status ?? "").trim().toLowerCase();
+          const planStatus: ChatPlan["status"] =
+            planStatusRaw === "completed"
+              ? "completed"
+              : planStatusRaw === "failed"
+                ? "failed"
+                : "in_progress";
+          const persistedPlanId = String(parsed.planId ?? "").trim() || planId;
+          next.push({
+            id: `plan:${persistedPlanId}`,
+            role: "system",
+            kind: "plan",
+            content: planItems
+              .map((entry) => `${entry.status === "completed" ? "[x]" : entry.status === "in_progress" ? "[~]" : "[ ]"} ${entry.text}`)
+              .join("\n"),
+            plan: { planId: persistedPlanId, status: planStatus, items: planItems },
+            ts: ts ?? undefined,
+          });
+          continue;
+        }
         if (role === "user") {
           const execution = parseExecutionFromHistoryKind(kind);
           next.push({
@@ -957,6 +1013,45 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           ingestExploredActivity(rt.liveActivity, category, summary);
           upsertLiveActivity(rt);
         }
+      }
+      return;
+    }
+
+    if (type === "plan") {
+      const rec = msg as Record<string, unknown>;
+      const planId = String(rec.planId ?? rec.plan_id ?? "").trim();
+      if (!planId) return;
+      const statusRaw = String(rec.status ?? "").trim().toLowerCase();
+      const status: ChatPlan["status"] =
+        statusRaw === "completed" ? "completed" : statusRaw === "failed" ? "failed" : "in_progress";
+      const itemsRaw = Array.isArray(rec.items) ? rec.items : [];
+      const items: ChatPlanItem[] = [];
+      for (const entry of itemsRaw) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const obj = entry as Record<string, unknown>;
+        const text = String(obj.text ?? obj.content ?? "").trim();
+        if (!text) continue;
+        const itemStatus = String(obj.status ?? "").trim().toLowerCase();
+        const normalizedStatus: ChatPlanItemStatus =
+          itemStatus === "completed"
+            ? "completed"
+            : itemStatus === "in_progress"
+              ? "in_progress"
+              : "pending";
+        items.push({ text, status: normalizedStatus });
+      }
+      const plan: ChatPlan = { planId, status, items };
+      const tsRaw = Number(rec.ts);
+      const ts = Number.isFinite(tsRaw) && tsRaw > 0 ? tsRaw : Date.now();
+      const itemId = `plan:${planId}`;
+      const existing = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
+      const content = items.map((entry) => `${entry.status === "completed" ? "[x]" : entry.status === "in_progress" ? "[~]" : "[ ]"} ${entry.text}`).join("\n");
+      const idx = existing.findIndex((m) => String(m?.id ?? "") === itemId);
+      if (idx >= 0) {
+        existing[idx] = { ...existing[idx]!, content, plan, ts };
+        rt.messages.value = existing;
+      } else {
+        pushMessageBeforeLive({ id: itemId, role: "system", kind: "plan", content, plan, ts }, rt);
       }
       return;
     }

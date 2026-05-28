@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
 import type { ChatMessage, RenderMessage } from "./mainChat/types";
+import type { ChatPlan, ChatPlanItemStatus } from "../app/controllerTypes";
 import { PATCH_DIFF_FALLBACK_KEY, splitUnifiedDiffByPath } from "../lib/patchDiff";
 import type { MarkdownFilePreviewLink } from "../lib/markdown";
 
@@ -173,6 +174,25 @@ function buildPatchRows(m: RenderMessage): PatchRenderRow[] {
 
 function isPatchExpanded(messageId: string, rowKey: string): boolean {
   return expandedPatchKeys.value.has(patchExpandKey(messageId, rowKey));
+}
+
+function planItemMarker(status: ChatPlanItemStatus): string {
+  if (status === "completed") return "☑";
+  if (status === "in_progress") return "◐";
+  return "☐";
+}
+
+function planCardSummary(plan: ChatPlan): string {
+  const total = plan.items.length;
+  if (total === 0) return "暂无计划项";
+  const done = plan.items.filter((entry) => entry.status === "completed").length;
+  const inProgress = plan.items.filter((entry) => entry.status === "in_progress").length;
+  if (plan.status === "completed") return `共 ${total} 项 · 全部完成`;
+  if (plan.status === "failed") return `共 ${total} 项 · 计划失败`;
+  if (inProgress > 0) {
+    return `共 ${total} 项 · 已完成 ${done} · 进行中 ${inProgress}`;
+  }
+  return `共 ${total} 项 · 已完成 ${done}`;
 }
 
 function togglePatchExpanded(messageId: string, rowKey: string): void {
@@ -475,6 +495,23 @@ function userExecutionBadges(m: RenderMessage): string[] {
         </div>
         <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
       </div>
+      <div v-else-if="m.kind === 'plan' && m.plan" :class="['bubble', 'bubble--compact', 'planCard']" :data-plan-status="m.plan.status ?? 'in_progress'">
+        <div class="planCardHeader">
+          <span class="prompt-tag">计划</span>
+          <span class="planCardSummary">{{ planCardSummary(m.plan) }}</span>
+        </div>
+        <ul class="planCardList">
+          <li
+            v-for="(item, itemIdx) in m.plan.items"
+            :key="`${m.id}-${itemIdx}`"
+            class="planCardItem"
+            :data-status="item.status"
+          >
+            <span class="planCardCheckbox" aria-hidden="true">{{ planItemMarker(item.status) }}</span>
+            <span class="planCardText" :class="{ 'planCardText--done': item.status === 'completed' }">{{ item.text }}</span>
+          </li>
+        </ul>
+      </div>
       <div
         v-else
         :class="[
@@ -675,6 +712,79 @@ function userExecutionBadges(m: RenderMessage): string[] {
 
 .execute-more--button:hover {
   color: #0f172a;
+}
+
+.planCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #cbd5f5;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+.planCard[data-plan-status="completed"] {
+  border-color: #86efac;
+  background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%);
+}
+
+.planCard[data-plan-status="failed"] {
+  border-color: #fca5a5;
+  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+}
+
+.planCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.planCardSummary {
+  color: #475569;
+  font-size: 12px;
+}
+
+.planCardList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.planCardItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.planCardCheckbox {
+  flex: 0 0 auto;
+  font-size: 14px;
+  color: #475569;
+  line-height: 1.45;
+}
+
+.planCardItem[data-status="completed"] .planCardCheckbox {
+  color: #16a34a;
+}
+
+.planCardItem[data-status="in_progress"] .planCardCheckbox {
+  color: #2563eb;
+}
+
+.planCardText {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.planCardText--done {
+  color: #64748b;
+  text-decoration: line-through;
 }
 
 .patchCard {

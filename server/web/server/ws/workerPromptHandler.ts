@@ -100,7 +100,7 @@ export function attachWorkerPromptHandler(args: {
   orchestrator: EventSource;
   turnCwd: string;
   historyKey: string;
-  historyStore: Pick<HistoryStore, "add">;
+  historyStore: Pick<HistoryStore, "add" | "upsertEntryByKind">;
   sendToChat: (payload: unknown) => void;
   logger: Logger;
   sessionLogger: SessionLogger;
@@ -165,6 +165,61 @@ export function attachWorkerPromptHandler(args: {
       if (delta) {
         const payload = prev ? delta : `[analysis] ${delta}`;
         args.sendToChat({ type: "delta", delta: payload, source: "step" });
+      }
+      return;
+    }
+    if (rawItemType === "todo_list" && (raw.type === "item.started" || raw.type === "item.updated" || raw.type === "item.completed")) {
+      const item = rawItem as { id?: unknown; status?: unknown; items?: unknown };
+      const planId = String(item.id ?? "").trim() || `plan-${event.timestamp}`;
+      const planStatusRaw = String(item.status ?? "").trim().toLowerCase();
+      const planStatus =
+        raw.type === "item.completed"
+          ? planStatusRaw === "failed"
+            ? "failed"
+            : "completed"
+          : planStatusRaw === "completed"
+            ? "completed"
+            : "in_progress";
+      const rawItems = Array.isArray(item.items) ? item.items : [];
+      const items = rawItems
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") return null;
+          const rec = entry as Record<string, unknown>;
+          const text = String(rec.text ?? rec.content ?? rec.subject ?? rec.task ?? "").trim();
+          if (!text) return null;
+          const statusRaw = String(rec.status ?? "").trim().toLowerCase();
+          let status: "pending" | "in_progress" | "completed" = "pending";
+          if (rec.completed === true || statusRaw === "completed" || statusRaw === "done") {
+            status = "completed";
+          } else if (
+            statusRaw === "in_progress" ||
+            statusRaw === "active" ||
+            statusRaw === "doing" ||
+            statusRaw === "running"
+          ) {
+            status = "in_progress";
+          }
+          return { text, status };
+        })
+        .filter((entry): entry is { text: string; status: "pending" | "in_progress" | "completed" } => entry !== null);
+      const ts = Date.now();
+      args.sendToChat({
+        type: "plan",
+        planId,
+        status: planStatus,
+        items,
+        ts,
+      });
+      const persistText = JSON.stringify({ planId, status: planStatus, items });
+      try {
+        args.historyStore.upsertEntryByKind(args.historyKey, {
+          role: "status",
+          text: persistText,
+          ts,
+          kind: `plan:${planId}`,
+        });
+      } catch (err) {
+        args.logger.debug(`[Plan] failed to persist plan snapshot: ${err instanceof Error ? err.message : String(err)}`);
       }
       return;
     }

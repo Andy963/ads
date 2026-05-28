@@ -921,4 +921,116 @@ describe("ws workspace project sync", () => {
       }),
     );
   });
+
+  it("renders a plan WS broadcast as a plan chat item with checklist", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "plan",
+      planId: "p1",
+      status: "in_progress",
+      items: [
+        { text: "First step", status: "completed" },
+        { text: "Second step", status: "in_progress" },
+        { text: "Third step", status: "pending" },
+      ],
+      ts: 100,
+    });
+
+    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(1);
+    const first = pushMessageBeforeLive.mock.calls[0]?.[0] as
+      | { id: string; role: string; kind: string; plan: { items: Array<{ status: string }>; status: string } }
+      | undefined;
+    expect(first?.id).toBe("plan:p1");
+    expect(first?.role).toBe("system");
+    expect(first?.kind).toBe("plan");
+    expect(first?.plan?.status).toBe("in_progress");
+    expect(first?.plan?.items?.map((entry) => entry.status)).toEqual([
+      "completed",
+      "in_progress",
+      "pending",
+    ]);
+  });
+
+  it("updates an existing plan chat item in place on later plan broadcasts", () => {
+    const rt = createRuntime();
+    rt.messages.value = [
+      {
+        id: "plan:p9",
+        role: "system",
+        kind: "plan",
+        content: "[ ] step",
+        plan: { planId: "p9", status: "in_progress", items: [{ text: "step", status: "pending" }] },
+      },
+    ];
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "plan",
+      planId: "p9",
+      status: "completed",
+      items: [{ text: "step", status: "completed" }],
+      ts: 200,
+    });
+
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+    expect(rt.messages.value).toHaveLength(1);
+    const updated = rt.messages.value[0] as {
+      kind: string;
+      plan: { status: string; items: Array<{ status: string }> };
+    };
+    expect(updated.kind).toBe("plan");
+    expect(updated.plan.status).toBe("completed");
+    expect(updated.plan.items[0].status).toBe("completed");
+  });
+
+  it("replays plan history entries into plan chat items", () => {
+    const rt = createRuntime();
+    const { handler, applyResumeHistory } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    const stored = JSON.stringify({
+      planId: "p2",
+      status: "in_progress",
+      items: [
+        { text: "Audit", status: "completed" },
+        { text: "Implement", status: "in_progress" },
+      ],
+    });
+
+    handler({
+      type: "history",
+      items: [{ role: "status", text: stored, ts: 50, kind: "plan:p2" }],
+    });
+
+    expect(applyResumeHistory).toHaveBeenCalledTimes(1);
+    const replayed = applyResumeHistory.mock.calls[0]?.[0] as Array<{
+      id: string;
+      kind: string;
+      plan?: { planId: string; items: Array<{ status: string }> };
+    }>;
+    expect(replayed).toHaveLength(1);
+    expect(replayed[0].id).toBe("plan:p2");
+    expect(replayed[0].kind).toBe("plan");
+    expect(replayed[0].plan?.items.map((entry) => entry.status)).toEqual([
+      "completed",
+      "in_progress",
+    ]);
+  });
 });

@@ -187,4 +187,46 @@ describe("web/ws/preflight", () => {
       historyStore.clear("history-eff");
     }
   });
+
+  it("upserts history entries by stable kind key without duplicating", () => {
+    const historyStore = new HistoryStore({
+      namespace: "test-preflight-upsert-kind",
+      maxEntriesPerSession: 20,
+    });
+
+    try {
+      const insertResult = historyStore.upsertEntryByKind("history-plan", {
+        role: "status",
+        text: JSON.stringify({ planId: "P1", status: "in_progress", items: [{ text: "step a", status: "pending" }] }),
+        ts: 1000,
+        kind: "plan:P1",
+      });
+      assert.equal(insertResult, "inserted");
+
+      const updateResult = historyStore.upsertEntryByKind("history-plan", {
+        role: "status",
+        text: JSON.stringify({ planId: "P1", status: "in_progress", items: [{ text: "step a", status: "completed" }] }),
+        ts: 1100,
+        kind: "plan:P1",
+      });
+      assert.equal(updateResult, "updated");
+
+      const entries = historyStore.get("history-plan");
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0]?.kind, "plan:P1");
+      assert.ok(entries[0]?.text.includes("completed"));
+      assert.equal(entries[0]?.ts, 1100);
+
+      const skipped = historyStore.upsertEntryByKind("history-plan", {
+        role: "status",
+        text: JSON.stringify({ planId: "P1", status: "in_progress", items: [{ text: "step a", status: "completed" }] }),
+        ts: 1100,
+        kind: "plan:P1",
+      });
+      assert.equal(skipped, "skipped");
+      assert.equal(historyStore.get("history-plan").length, 1);
+    } finally {
+      historyStore.clear("history-plan");
+    }
+  });
 });

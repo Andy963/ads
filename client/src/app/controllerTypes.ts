@@ -68,13 +68,27 @@ export type ChatPatch = {
   truncated?: boolean;
 };
 
+export type ChatPlanItemStatus = "pending" | "in_progress" | "completed";
+
+export type ChatPlanItem = {
+  text: string;
+  status: ChatPlanItemStatus;
+};
+
+export type ChatPlan = {
+  planId: string;
+  status?: "in_progress" | "completed" | "failed";
+  items: ChatPlanItem[];
+};
+
 export type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute" | "patch" | "error";
+  kind: "text" | "command" | "execute" | "patch" | "error" | "plan";
   content: string;
   fullContent?: string;
   patch?: ChatPatch;
+  plan?: ChatPlan;
   command?: string;
   hiddenLineCount?: number;
   // When commands are truncated for UI safety, preserve the real count so the UI can

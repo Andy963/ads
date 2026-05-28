@@ -1,6 +1,14 @@
 import type { ThreadEvent } from "../protocol/types.js";
 import type { AgentEvent } from "../../codex/events.js";
-import { asRecord, attachCliPayload, extractStringField, mapEvent, type ToolKind, type TrackedTool } from "./streamParserUtils.js";
+import {
+  asRecord,
+  attachCliPayload,
+  extractStringField,
+  mapEvent,
+  normalizePlanItems,
+  type ToolKind,
+  type TrackedTool,
+} from "./streamParserUtils.js";
 
 function classifyToolName(name: string): ToolKind {
   const key = name.trim().toLowerCase();
@@ -8,6 +16,7 @@ function classifyToolName(name: string): ToolKind {
   if (key === "edit" || key === "write" || key === "notebookedit") return "file_change";
   if (key === "websearch" || key === "web_search") return "web_search";
   if (key === "task") return "subagent";
+  if (key === "todowrite" || key === "todo_write" || key === "update_plan" || key === "updateplan") return "plan";
   return "tool_call";
 }
 
@@ -192,6 +201,26 @@ export class ClaudeStreamParser {
       );
     }
 
+    if (kind === "plan") {
+      const items = normalizePlanItems(input);
+      return attachCliPayload(
+        {
+          type: "item.started",
+          item: {
+            type: "todo_list",
+            id,
+            status: "in_progress",
+            items: items.map((entry) => ({
+              text: entry.text,
+              status: entry.status,
+              completed: entry.status === "completed",
+            })),
+          },
+        } as unknown as ThreadEvent,
+        payload,
+      );
+    }
+
     return attachCliPayload(
       {
         type: "item.started",
@@ -295,6 +324,33 @@ export class ClaudeStreamParser {
         events.push(...mapEvent(ev));
         if (isError) {
           const msg = resultText.trim() ? `Claude subagent failed: ${resultText.trim()}` : "Claude subagent failed";
+          events.push(...mapEvent(attachCliPayload({ type: "error", message: msg } as unknown as ThreadEvent, payload)));
+          this.lastError = msg;
+        }
+        continue;
+      }
+
+      if (tool.kind === "plan") {
+        const items = normalizePlanItems(tool.input);
+        const ev = attachCliPayload(
+          {
+            type: "item.completed",
+            item: {
+              type: "todo_list",
+              id: toolUseId,
+              status: isError ? "failed" : "completed",
+              items: items.map((entry) => ({
+                text: entry.text,
+                status: entry.status,
+                completed: entry.status === "completed",
+              })),
+            },
+          } as unknown as ThreadEvent,
+          payload,
+        );
+        events.push(...mapEvent(ev));
+        if (isError) {
+          const msg = resultText.trim() ? `Claude plan tool failed: ${resultText.trim()}` : "Claude plan tool failed";
           events.push(...mapEvent(attachCliPayload({ type: "error", message: msg } as unknown as ThreadEvent, payload)));
           this.lastError = msg;
         }
