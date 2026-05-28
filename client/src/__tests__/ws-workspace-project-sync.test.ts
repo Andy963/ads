@@ -308,9 +308,58 @@ describe("ws workspace project sync", () => {
     expect(rt.activeThreadId.value).toBe("thread-restored");
     expect(rt.threadWarning.value).toBeNull();
     expect(applyResumeHistory).toHaveBeenCalledWith(
-      [{ id: "h-s-0", role: "system", kind: "text", content: "已从当前对话恢复上下文", ts: 12 }],
+      [
+        {
+          id: "h-restore-history_injection",
+          role: "system",
+          kind: "text",
+          content: "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。",
+          ts: undefined,
+        },
+        { id: "h-s-0", role: "system", kind: "text", content: "已从当前对话恢复上下文", ts: 12 },
+      ],
       rt,
     );
+  });
+
+  it("prepends restored thread mode to replayed history and suppresses duplicate restore status", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, applyResumeHistory, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "history",
+      threadId: "thread-restored",
+      contextMode: "thread_resumed",
+      items: [{ role: "user", text: "hello", ts: 10 }],
+    });
+
+    expect(applyResumeHistory).toHaveBeenCalledWith(
+      [
+        {
+          id: "h-restore-thread_resumed",
+          role: "system",
+          kind: "text",
+          content: "已恢复后端上下文线程。",
+          ts: undefined,
+        },
+        { id: "h-u-0", role: "user", kind: "text", content: "hello", ts: 10 },
+      ],
+      rt,
+    );
+
+    rt.messages.value = [
+      { id: "h-restore-thread_resumed", role: "system", kind: "text", content: "已恢复后端上下文线程。" },
+      { id: "h-u-0", role: "user", kind: "text", content: "hello" },
+    ];
+    handler({ type: "status", message: "已恢复后端上下文线程。", kind: "status" });
+
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
   });
 
   it("truncates replayed execute history consistently with live previews", () => {

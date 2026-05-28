@@ -15,6 +15,8 @@ import { RECONNECT_BUSY_MESSAGE } from "./reconnectNotice";
 type Ref<T> = { value: T };
 
 const HISTORY_EXECUTE_PREVIEW_LINES = 3;
+const THREAD_RESUMED_NOTICE = "已恢复后端上下文线程。";
+const HISTORY_INJECTION_NOTICE = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
 
 function decodeHistoryKindValue(value: string): string {
   try {
@@ -40,6 +42,12 @@ function parseExecutionFromHistoryKind(kind: string): ChatItem["execution"] | un
     else if (key === "effort") execution.modelReasoningEffort = value;
   }
   return Object.keys(execution).length > 0 ? execution : undefined;
+}
+
+function contextModeNotice(contextMode: string): string {
+  if (contextMode === "thread_resumed") return THREAD_RESUMED_NOTICE;
+  if (contextMode === "history_injection") return HISTORY_INJECTION_NOTICE;
+  return "";
 }
 
 export type WsMessageHandlerArgs = {
@@ -659,7 +667,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           source: "welcome_fresh_context",
         });
       } else if (contextMode === "history_injection" && hasStaleLocalContinuity) {
-        rt.threadWarning.value = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
+        rt.threadWarning.value = HISTORY_INJECTION_NOTICE;
       } else if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
         rt.threadWarning.value =
           `后端线程已变化但没有显式重置标记（原=${prevThreadId}，现=${serverThreadId}）。` +
@@ -735,6 +743,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const content = String(msg.message ?? msg.output ?? msg.text ?? "").trim();
       if (!content) return;
       const kind = String(msg.kind ?? "").trim() === "error" ? "error" : "text";
+      if (
+        kind === "text" &&
+        (content === THREAD_RESUMED_NOTICE || content === HISTORY_INJECTION_NOTICE) &&
+        rt.messages.value.some((item) => item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === content)
+      ) {
+        return;
+      }
       const last = rt.messages.value.at(-1);
       if (last?.role === "system" && last.kind === kind && String(last.content ?? "").trim() === content) {
         return;
@@ -765,6 +780,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       const historyThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
       const historyContextMode = String((msg as { contextMode?: unknown }).contextMode ?? "").trim();
+      const restoreNotice = contextModeNotice(historyContextMode);
       if (historyThreadId) {
         rt.activeThreadId.value = historyThreadId;
         if (historyContextMode === "thread_resumed" || historyContextMode === "history_injection") {
@@ -776,6 +792,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.recentCommands.value = [];
       rt.seenCommandIds.clear();
       const next: ChatItem[] = [];
+      if (restoreNotice) {
+        next.push({
+          id: `h-restore-${historyContextMode}`,
+          role: "system",
+          kind: "text",
+          content: restoreNotice,
+          ts: undefined,
+        });
+      }
       for (let idx = 0; idx < items.length; idx++) {
         const entry = items[idx] as { role?: unknown; text?: unknown; kind?: unknown; ts?: unknown };
         const role = String(entry.role ?? "");
