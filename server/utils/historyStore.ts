@@ -5,7 +5,12 @@ import type { Database as DatabaseType, Statement as StatementType } from "bette
 
 import { getStateDatabase } from "../state/database.js";
 import { prepareMigrationMarkerStatements } from "../state/migrations.js";
-import { sameHistoryClientMessageKind } from "./historyKind.js";
+import {
+  getHistoryClientMessageId,
+  mergePromptExecutionMetadataIntoKind,
+  sameHistoryClientMessageKind,
+  type PromptExecutionMetadata,
+} from "./historyKind.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { parseBooleanFlag } from "./flags.js";
 import { createLogger } from "./logger.js";
@@ -22,6 +27,8 @@ type HistoryStoreStatements = {
   deleteOlderStmt: SqliteStatement;
   getMigrationMarkerStmt: SqliteStatement;
   setMigrationMarkerStmt: SqliteStatement;
+  selectByClientMessageKindStmt: SqliteStatement;
+  updateKindByIdStmt: SqliteStatement;
 };
 
 const historyStoreStatementsCache = new WeakMap<DatabaseType, HistoryStoreStatements>();
@@ -63,6 +70,8 @@ export class HistoryStore {
   private deleteOlderStmt?: SqliteStatement;
   private getMigrationMarkerStmt?: SqliteStatement;
   private setMigrationMarkerStmt?: SqliteStatement;
+  private selectByClientMessageKindStmt?: SqliteStatement;
+  private updateKindByIdStmt?: SqliteStatement;
 
   constructor(options: HistoryStoreOptions = {}) {
     this.storagePath = options.storagePath ?? path.join(resolveAdsStateDir(), "state.db");
@@ -184,6 +193,61 @@ export class HistoryStore {
     }
   }
 
+  updatePromptExecutionMetadata(
+    sessionId: string,
+    clientMessageId: string,
+    metadata: PromptExecutionMetadata,
+  ): boolean {
+    const normalizedSessionId = String(sessionId ?? "").trim();
+    const normalizedClientMessageId = String(clientMessageId ?? "").trim();
+    if (!normalizedSessionId || !normalizedClientMessageId) {
+      return false;
+    }
+    if (!this.useSqlite || !this.db || !this.selectByClientMessageKindStmt || !this.updateKindByIdStmt) {
+      const existing = this.store.get(normalizedSessionId);
+      if (!existing) return false;
+      let updated = false;
+      const next = existing.map((entry) => {
+        if (getHistoryClientMessageId(entry.kind) !== normalizedClientMessageId) {
+          return entry;
+        }
+        const mergedKind = mergePromptExecutionMetadataIntoKind({
+          kind: entry.kind ?? "",
+          metadata,
+        });
+        if (!mergedKind || mergedKind === entry.kind) {
+          return entry;
+        }
+        updated = true;
+        return { ...entry, kind: mergedKind };
+      });
+      if (!updated) return false;
+      this.store.set(normalizedSessionId, next);
+      this.persist();
+      return true;
+    }
+
+    try {
+      const row = this.selectByClientMessageKindStmt.get(
+        this.namespace,
+        normalizedSessionId,
+        `client_message_id:${normalizedClientMessageId}`,
+        `client_message_id:${normalizedClientMessageId};%`,
+      ) as { id?: number; kind?: string | null } | undefined;
+      if (!row || typeof row.id !== "number") return false;
+      const mergedKind = mergePromptExecutionMetadataIntoKind({
+        kind: row.kind ?? "",
+        metadata,
+      });
+      if (!mergedKind || mergedKind === row.kind) return false;
+      this.updateKindByIdStmt.run(mergedKind, row.id);
+      return true;
+    } catch (error) {
+      logger.warn(`[HistoryStore] Failed to update prompt execution metadata (sqlite)`, error);
+      return false;
+    }
+  }
+
   private normalize(entry: HistoryEntry): HistoryEntry | null {
     const role = String(entry.role || "").trim();
     const text = String(entry.text ?? "").trim();
@@ -219,6 +283,8 @@ export class HistoryStore {
     this.deleteOlderStmt = statements.deleteOlderStmt;
     this.getMigrationMarkerStmt = statements.getMigrationMarkerStmt;
     this.setMigrationMarkerStmt = statements.setMigrationMarkerStmt;
+    this.selectByClientMessageKindStmt = statements.selectByClientMessageKindStmt;
+    this.updateKindByIdStmt = statements.updateKindByIdStmt;
   }
 
   private trimSqlite(sessionId: string): void {
@@ -364,6 +430,16 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
   const deleteOlderStmt = db.prepare(
     `DELETE FROM history_entries WHERE namespace = ? AND session_id = ? AND id < ?`,
   );
+  const selectByClientMessageKindStmt = db.prepare(
+    `SELECT id, kind FROM history_entries
+     WHERE namespace = ? AND session_id = ?
+       AND (kind = ? OR kind LIKE ?)
+     ORDER BY id DESC
+     LIMIT 1`,
+  );
+  const updateKindByIdStmt = db.prepare(
+    `UPDATE history_entries SET kind = ? WHERE id = ?`,
+  );
   const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
   const statements = {
     insertStmt,
@@ -373,6 +449,8 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
     deleteOlderStmt,
     getMigrationMarkerStmt,
     setMigrationMarkerStmt,
+    selectByClientMessageKindStmt,
+    updateKindByIdStmt,
   };
   historyStoreStatementsCache.set(db, statements);
   return statements;

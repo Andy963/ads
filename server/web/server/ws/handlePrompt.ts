@@ -287,6 +287,23 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
       }
       const effectiveState = deps.sessions.sessionManager.getEffectiveState(deps.context.userId);
+      if (deps.request.clientMessageId && typeof deps.history.historyStore.updatePromptExecutionMetadata === "function") {
+        try {
+          deps.history.historyStore.updatePromptExecutionMetadata(
+            deps.context.historyKey,
+            deps.request.clientMessageId,
+            {
+              effectiveAgentId: effectiveState.activeAgentId,
+              effectiveModel: effectiveState.model,
+              effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
+            },
+          );
+        } catch (error) {
+          deps.observability.logger.warn(
+            `[Prompt] Failed to persist effective execution metadata: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       sendToChat({
         type: "result",
         ok: true,

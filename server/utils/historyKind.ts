@@ -2,6 +2,9 @@ export type PromptExecutionMetadata = {
   agentId?: string;
   model?: string;
   modelReasoningEffort?: string;
+  effectiveAgentId?: string;
+  effectiveModel?: string;
+  effectiveModelReasoningEffort?: string;
 };
 
 const CLIENT_MESSAGE_ID_PREFIX = "client_message_id:";
@@ -28,9 +31,15 @@ function serializePromptMetadata(metadata: PromptExecutionMetadata): string {
   const agentId = trimString(metadata.agentId);
   const model = trimString(metadata.model);
   const effort = trimString(metadata.modelReasoningEffort).toLowerCase();
+  const effectiveAgentId = trimString(metadata.effectiveAgentId);
+  const effectiveModel = trimString(metadata.effectiveModel);
+  const effectiveEffort = trimString(metadata.effectiveModelReasoningEffort).toLowerCase();
   if (agentId) parts.push(`agent=${encodeMetaValue(agentId)}`);
   if (model) parts.push(`model=${encodeMetaValue(model)}`);
   if (effort) parts.push(`effort=${encodeMetaValue(effort)}`);
+  if (effectiveAgentId) parts.push(`eff_agent=${encodeMetaValue(effectiveAgentId)}`);
+  if (effectiveModel) parts.push(`eff_model=${encodeMetaValue(effectiveModel)}`);
+  if (effectiveEffort) parts.push(`eff_effort=${encodeMetaValue(effectiveEffort)}`);
   return parts.join(",");
 }
 
@@ -72,6 +81,31 @@ export function parsePromptExecutionMetadataFromHistoryKind(kind: unknown): Prom
     if (key === "agent") metadata.agentId = value;
     else if (key === "model") metadata.model = value;
     else if (key === "effort") metadata.modelReasoningEffort = value;
+    else if (key === "eff_agent") metadata.effectiveAgentId = value;
+    else if (key === "eff_model") metadata.effectiveModel = value;
+    else if (key === "eff_effort") metadata.effectiveModelReasoningEffort = value;
   }
   return metadata;
+}
+
+export function mergePromptExecutionMetadataIntoKind(args: {
+  kind: string;
+  metadata: PromptExecutionMetadata;
+}): string {
+  const clientMessageId = getHistoryClientMessageId(args.kind);
+  if (!clientMessageId) return args.kind;
+  const existing = parsePromptExecutionMetadataFromHistoryKind(args.kind);
+  const merged: PromptExecutionMetadata = {
+    agentId: trimString(args.metadata.agentId) || existing.agentId,
+    model: trimString(args.metadata.model) || existing.model,
+    modelReasoningEffort:
+      trimString(args.metadata.modelReasoningEffort) || existing.modelReasoningEffort,
+    effectiveAgentId:
+      trimString(args.metadata.effectiveAgentId) || existing.effectiveAgentId,
+    effectiveModel: trimString(args.metadata.effectiveModel) || existing.effectiveModel,
+    effectiveModelReasoningEffort:
+      trimString(args.metadata.effectiveModelReasoningEffort) ||
+      existing.effectiveModelReasoningEffort,
+  };
+  return buildClientMessageHistoryKind({ clientMessageId, metadata: merged });
 }

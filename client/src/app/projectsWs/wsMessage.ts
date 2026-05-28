@@ -40,6 +40,9 @@ function parseExecutionFromHistoryKind(kind: string): ChatItem["execution"] | un
     if (key === "agent") execution.agentId = value;
     else if (key === "model") execution.model = value;
     else if (key === "effort") execution.modelReasoningEffort = value;
+    else if (key === "eff_agent") execution.effectiveAgentId = value;
+    else if (key === "eff_model") execution.effectiveModel = value;
+    else if (key === "eff_effort") execution.effectiveModelReasoningEffort = value;
   }
   return Object.keys(execution).length > 0 ? execution : undefined;
 }

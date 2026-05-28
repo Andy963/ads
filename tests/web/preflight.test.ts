@@ -146,4 +146,45 @@ describe("web/ws/preflight", () => {
       historyStore.clear("history-1");
     }
   });
+
+  it("merges effective execution metadata into existing prompt history entries", () => {
+    const historyStore = new HistoryStore({
+      namespace: "test-preflight-effective-meta",
+      maxEntriesPerSession: 20,
+    });
+
+    try {
+      historyStore.add("history-eff", {
+        role: "user",
+        text: "hi",
+        ts: 1,
+        kind: "client_message_id:p2;prompt_meta:agent=codex,model=gpt-4.1,effort=high",
+      });
+
+      const updated = historyStore.updatePromptExecutionMetadata("history-eff", "p2", {
+        effectiveAgentId: "claude",
+        effectiveModel: "claude-sonnet",
+        effectiveModelReasoningEffort: "low",
+      });
+      assert.equal(updated, true);
+
+      const entries = historyStore.get("history-eff");
+      assert.equal(entries.length, 1);
+      const kind = String(entries[0]?.kind ?? "");
+      assert.match(kind, /^client_message_id:p2;prompt_meta:/);
+      assert.match(kind, /agent=codex/);
+      assert.match(kind, /model=gpt-4\.1/);
+      assert.match(kind, /effort=high/);
+      assert.match(kind, /eff_agent=claude/);
+      assert.match(kind, /eff_model=claude-sonnet/);
+      assert.match(kind, /eff_effort=low/);
+
+      const noop = historyStore.updatePromptExecutionMetadata("history-eff", "missing", {
+        effectiveAgentId: "claude",
+      });
+      assert.equal(noop, false);
+    } finally {
+      historyStore.clear("history-eff");
+    }
+  });
 });
