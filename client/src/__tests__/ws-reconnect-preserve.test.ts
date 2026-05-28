@@ -3,7 +3,10 @@ import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import { createAppController } from "../app/controller";
-import { RECONNECT_BUSY_MESSAGE } from "../app/projectsWs/reconnectNotice";
+import {
+  RECONNECT_BUSY_MESSAGE,
+  RECONNECT_PENDING_RESEND_NOTICE,
+} from "../app/projectsWs/reconnectNotice";
 import { EXECUTE_DISCONNECT_NOTICE } from "../lib/chat_sync";
 
 const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
@@ -379,6 +382,49 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["Hello", "World"]);
+    wrapper.unmount();
+  });
+
+  it("uses the pending-resend reconnect notice when an ack is still outstanding", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.pendingAckClientMessageId = "pending-x";
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "Hello" }];
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    const notices = rt.messages.value.map((m: any) => String(m.content ?? ""));
+    expect(notices).toContain(RECONNECT_PENDING_RESEND_NOTICE);
+    expect(notices).not.toContain(RECONNECT_BUSY_MESSAGE);
+    wrapper.unmount();
+  });
+
+  it("drops the pending-resend reconnect notice when bootstrap history arrives", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.pendingAckClientMessageId = "pending-y";
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "Hello" }];
+    await settleUi(wrapper);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_PENDING_RESEND_NOTICE);
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "fresh" });
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [{ role: "user", text: "Hello", ts: 1 }],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_PENDING_RESEND_NOTICE);
     wrapper.unmount();
   });
 

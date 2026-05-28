@@ -10,7 +10,7 @@ import {
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
-import { RECONNECT_BUSY_MESSAGE } from "./reconnectNotice";
+import { isReconnectNotice } from "./reconnectNotice";
 
 type Ref<T> = { value: T };
 
@@ -190,7 +190,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   const dropReconnectBusyMessage = (): void => {
     const existing = Array.isArray(rt.messages.value) ? rt.messages.value : [];
     const next = existing.filter(
-      (item) => !(item.role === "system" && item.kind === "text" && item.content === RECONNECT_BUSY_MESSAGE),
+      (item) => !(item.role === "system" && item.kind === "text" && isReconnectNotice(String(item.content ?? ""))),
     );
     if (next.length !== existing.length) {
       rt.messages.value = next;
@@ -781,7 +781,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const resumeReplacePending = rt.resumeReplacePending;
       const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       const hasReconnectBusyMessage = rt.messages.value.some(
-        (item) => item.role === "system" && item.kind === "text" && item.content === RECONNECT_BUSY_MESSAGE,
+        (item) => item.role === "system" && item.kind === "text" && isReconnectNotice(String(item.content ?? "")),
       );
       const shouldAcceptReconnectHistory = hasReconnectBusyMessage && items.length > 0;
       if (

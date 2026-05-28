@@ -10,7 +10,7 @@ import type { AppContext, PathValidateResponse, ProjectRuntime, ProjectTab } fro
 import type { ChatActions } from "../chat";
 
 import type { WsDeps } from "./types";
-import { RECONNECT_BUSY_MESSAGE } from "./reconnectNotice";
+import { isReconnectNotice, pickReconnectNotice } from "./reconnectNotice";
 import { createWsMessageHandler } from "./wsMessage";
 
 export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDeps) {
@@ -313,7 +313,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       const items = rt.messages.value;
       for (let i = items.length - 1; i >= 0; i--) {
         const item = items[i]!;
-        if (item.role === "system" && item.kind === "text" && item.content === RECONNECT_BUSY_MESSAGE) {
+        if (item.role === "system" && item.kind === "text" && isReconnectNotice(String(item.content ?? ""))) {
           rt.messages.value = [...items.slice(0, i), ...items.slice(i + 1)];
           return;
         }
@@ -341,11 +341,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       applyStreamingDisconnectCleanup(rt);
       finalizeCommandBlock(rt);
       if (disconnectWasBusy && showReconnectMessage) {
+        const reconnectContent = pickReconnectNotice({
+          hasPendingAck: Boolean(String(rt.pendingAckClientMessageId ?? "").trim()),
+        });
         pushMessageBeforeLive(
           {
             role: "system",
             kind: "text",
-            content: RECONNECT_BUSY_MESSAGE,
+            content: reconnectContent,
           },
           rt,
         );
