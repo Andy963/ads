@@ -80,9 +80,8 @@ describe("MainChat model selector", () => {
     });
 
     const text = wrapper.find(".msgExecutionMeta").text();
-    expect(text).toContain("Agent: claude");
-    expect(text).toContain("Model: claude-sonnet");
-    expect(text).not.toContain("gpt-4.1");
+    expect(text).toContain("Agent: claude (requested: codex)");
+    expect(text).toContain("Model: claude-sonnet (requested: gpt-4.1)");
     wrapper.unmount();
   });
 

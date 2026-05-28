@@ -324,6 +324,13 @@ function formatReasoningEffort(effort: unknown): string {
   return "";
 }
 
+function formatExecutionBadge(label: string, effective: string, requested: string): string {
+  if (!effective && !requested) return "";
+  if (!effective || effective === requested) return `${label}: ${requested || effective}`;
+  if (!requested) return `${label}: ${effective}`;
+  return `${label}: ${effective} (requested: ${requested})`;
+}
+
 function userExecutionBadges(m: RenderMessage): string[] {
   if (m.role !== "user") return [];
   const execution = m.execution;
@@ -337,12 +344,13 @@ function userExecutionBadges(m: RenderMessage): string[] {
   const effectiveEffort = formatReasoningEffort(execution.effectiveModelReasoningEffort);
 
   const agent = effectiveAgent || requestedAgent;
-  const model = effectiveModel || requestedModel;
-  const effort = effectiveEffort || requestedEffort;
+  const agentBadge = formatExecutionBadge("Agent", effectiveAgent, requestedAgent);
+  const modelBadge = formatExecutionBadge("Model", effectiveModel, requestedModel);
+  const effortBadge = formatExecutionBadge("Reasoning", effectiveEffort, requestedEffort);
   const badges: string[] = [];
-  if (agent) badges.push(`Agent: ${agent}`);
-  if (model) badges.push(`Model: ${model}`);
-  if (effort && agent === "codex") badges.push(`Reasoning: ${effort}`);
+  if (agentBadge) badges.push(agentBadge);
+  if (modelBadge) badges.push(modelBadge);
+  if (effortBadge && agent === "codex") badges.push(effortBadge);
   return badges;
 }
 </script>
