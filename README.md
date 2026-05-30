@@ -1,309 +1,308 @@
 # ADS - AI Driven Specification
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node Version](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![Node Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-AI-driven specification-based development with planner drafts, task execution, and Telegram support. Built with Node.js/TypeScript.
+ADS 是一个面向 AI 编程工作流的本地控制台：通过 Web UI 和 Telegram Bot 管理项目、Planner/Worker 对话、任务队列、规格草稿、定时任务和多 Agent 执行。
 
-## ✨ Features
+## 功能概览
 
-- 📱 **Telegram Bot**: Remote access to planner and task execution flows from anywhere
-- 🌐 **Web Console**: Browser-based console with streaming responses and directory safeguards
-- 🧾 **Spec-First Planning**: `docs/spec/*` as the canonical planning artifact
-- 💾 **SQLite Workspace**: Persistent task, review, and scheduler state tracking
-- 🎯 **Context Management**: Intelligent context injection and reinjection
-- 🔍 **Review Workflow**: Automated code review before delivery with AI agents
-- 🔧 **Extensible**: Plugin-friendly architecture for custom tools and skills
+- **Web Console**：登录保护的浏览器控制台，支持项目切换、Planner/Worker 双通道聊天、流式输出、图片附件、文件预览和模型选择。
+- **任务看板与队列**：创建、排序、运行、重试、取消任务；支持单任务执行和队列运行/暂停。
+- **规格草稿**：Planner 可生成 task bundle draft，并维护 `requirement`、`design`、`implementation` 等规格文件后再审批落地为任务。
+- **多 Agent**：Codex 为默认执行 Agent；可选启用 Claude Code / Gemini CLI；Goal Mode 使用 Codex app-server 适配器。
+- **模型管理**：在 Web UI 中维护全局模型配置（Codex / Claude 分组、启用状态、provider 和 JSON 配置）。
+- **定时任务**：内置 scheduler，可编译自然语言计划并按运行时调度任务。
+- **记忆与偏好**：支持偏好指令、workspace soul、系统提示和 rules 再注入。
+- **Telegram Bot**：单用户远程控制，支持文本、图片、文件、语音转写、目录切换、偏好管理和中断当前任务。
+- **集中状态存储**：全局状态、会话、历史、模型配置、Web 用户等存入 SQLite；workspace 任务数据按项目隔离。
 
-## 🚀 Quick Start
+## 环境要求
 
-### Installation
+- Node.js 20 或更新版本。
+- 已安装并登录所需 Agent CLI：至少需要 `codex`；可选 `claude`、`gemini`。
+- `better-sqlite3` native 依赖需能在当前平台构建（通常 `npm install` 会自动处理）。
+
+## 快速开始
 
 ```bash
-# Clone the repository (replace YOUR_USERNAME if you forked it)
-git clone https://github.com/YOUR_USERNAME/ads.git
+git clone https://github.com/Andy963/ads.git
 cd ads
-
-# Install dependencies and build once
 npm install
 npm run build
 ```
-### Basic Usage
 
-1. **Start the Web Console**:
-   ```bash
-   npm run web
-   # Or (after build)
-   node dist/server/cli.js web
-   ```
+### 初始化 Web 管理员
 
-2. **Describe your goal in chat** (slash commands are not supported).
+首次打开 Web Console 前需要创建管理员账号；系统不会内置默认账号。
 
-3. **Review outputs**:
-   - Specs live under `docs/spec/`.
-   - Planner drafts and queued tasks are visible in the Web UI.
-
-## 📚 Documentation
-
-Comprehensive documentation is being migrated into this repository. Until those guides land, use the following sources:
-
-- `docs/spec/**` — canonical specifications describing features (requirements, design, implementation).
-- `docs/pm2.md` — recommended pm2 deployment (web + telegram as separate apps).
-- `templates/` — ADS-owned templates used for prompt injection and spec scaffolding (copied into `dist/templates` at build time).
-- Inline comments in `server/telegram/**` for Telegram bot behavior, including workspace initialization prompts.
-
-Missing guides referenced elsewhere will be restored once the documentation migration completes.
-
----
-
-## Local Development
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Run in watch mode (rebuilds on change):
-   ```bash
-   npm run dev
-   ```
-3. Build once:
-   ```bash
-   npm run build
-   ```
-4. Start the compiled server:
-   ```bash
-   npm start
-   ```
-
-### Deployment bundle (optional)
-
-- `npm run bundle` 会生成更“自包含”的 `dist/`（包含 `better-sqlite3` 的 native addon）。
-- 该产物与构建机平台绑定（OS/arch；Linux 还可能受 glibc/musl 影响），需要在目标平台构建。
-
-### Environment loading
-
-- Web Console、Telegram Bot 会自动读取工作区根目录的 `.env`，并在存在时加载 `.env.local` 作为覆盖，无需手动 `source`。
-- 建议将共享变量（如 `TELEGRAM_*`、`ADS_WEB_HOST`/`ADS_WEB_PORT`、`ALLOWED_DIRS`）写在 `.env`，机器专属配置放 `.env.local`。
-
-### Runtime requirements
-
-- Node.js 18 or newer (ESM + top-level await support).
-- A writable ADS state directory (default `./.ads/`; workspace state lives under `.ads/workspaces/<workspaceId>/`).
-- SQLite build headers for `better-sqlite3` (handled via `npm install`).
-
-### Template Layout
-
-ADS 依赖单一的 `templates/` 目录来初始化工作区（同时在构建时复制到 `dist/templates`）。目录内包含以下扁平文件：
-
-- `instructions.md` – 系统提示与工作流指引
-- `rules.md` – 默认工作区规则
-- `requirement.md` – 需求文档模板
-- `design.md` – 设计文档模板
-- `implementation.md` – 实施/验证模板
-- `task.md` – 单任务模板
-
-ADS 会在构建时把该目录复制到 `dist/templates`。运行时的系统提示注入会直接读取 ADS 的 `templates/`（而不是依赖每个 workspace 下的模板副本），从而保证在任意项目目录中行为一致。
-
-### System Prompt Reinjection
-
-- 所有会话会自动注入 ADS 的 `templates/instructions.md` 与 `templates/rules.md`。
-- 通过以下环境变量调节再注入：
-  - `ADS_REINJECTION_ENABLED`（默认 `true`，设置为 `0`/`false` 禁用）
-  - `ADS_REINJECTION_TURNS`（默认 `10`）
-  - `ADS_RULES_REINJECTION_TURNS`（默认 `1`，即每轮重新注入 rules，可调大以降低频率）
-
-### Codex 配置
-
-- 优先级：环境变量 `CODEX_BASE_URL`/`OPENAI_BASE_URL`、`CODEX_API_KEY`/`OPENAI_API_KEY` > `${CODEX_HOME:-~/.codex}/config.toml` 的 provider 配置 > `${CODEX_HOME:-~/.codex}/auth.json` 中的 API Key 或 `codex login` 生成的 `tokens`（access/refresh token）。
-- 若只提供 API Key 而未指定 baseUrl，默认使用 `https://api.openai.com/v1`；仅使用 `codex login` 的设备令牌时可不填 baseUrl。
-- 建议：使用 `codex login` 或设置 `CODEX_API_KEY`，避免在仓库中保存明文密钥。
-
-### Claude Agent（实验性）
-
-Claude 集成通过 `claude` CLI（Claude Code）落地，可通过以下环境变量启用实验特性：
-
-- `ADS_CLAUDE_ENABLED=0`：禁用 Claude CLI 适配器（默认启用）
-- `ADS_CLAUDE_BIN`：Claude CLI binary（默认 `claude`）
-- `ADS_CLAUDE_MODEL`：Claude 模型名称（透传给 CLI）
-
-鉴权/配置由 Claude CLI 自身负责（例如 `claude login` / 主目录配置），ADS 不再通过 SDK 直接读取/管理密钥。
-
-`~/.claude/config.json` 示例（具体字段以 CLI 为准）：
-```json
-{
-  "enabled": true,
-  "model": "claude-sonnet-4.5",
-  "workdir": "/tmp/ads-claude-agent",
-  "tool_allowlist": ["bash", "file.edit"]
-}
-```
-
-### Gemini Agent（实验性）
-
-Gemini 集成通过 `gemini` CLI 落地（JSONL stream），不依赖 Google SDK；工具调用由 CLI 自身处理。
-
-环境变量（优先级最高）：
-
-- `ADS_GEMINI_ENABLED=0`：禁用 Gemini CLI 适配器（默认启用）
-- `ADS_GEMINI_BIN`：Gemini CLI binary（默认 `gemini`）
-- `ADS_GEMINI_MODEL`：Gemini 模型名称（透传给 CLI）
-
-鉴权/配置由 Gemini CLI 自身负责（例如 `gemini auth` / 主目录配置），ADS 不再通过 SDK 直接读取/管理密钥。
-
-适配器启用/禁用开关由 `server/telegram/utils/sessionManager.ts` 读取环境变量（例如 `ADS_CLAUDE_ENABLED`/`ADS_GEMINI_ENABLED`）；Web Console 通过 UI 选择激活的 Agent（不再提供 `/agent` 命令）。
-
-### 协作代理（主代理自动调度/委派）
-
-- 默认主代理为 Codex（主管/执行者）。当 Codex 判断需要前端/UI/文案/第二意见等协作时，会自动触发 Claude/Gemini 协作回合，并在下一轮整合、落地与验收后再给你最终答复。
-- 你无需手写 `<<<agent.*>>>` 指令块；直接用自然语言描述需求即可。若想强制让 Codex 调用某个协作代理，可在需求里明确写“请让 Claude/Gemini 帮我做 X，并给出补丁/差异说明”。
-- 当前主代理为任意 Agent 时，只要输出包含 `<<<agent.<id>>>` 指令块，就会触发协作调度；系统会执行并把协作结果回注给主代理继续整合。
-- ADS 不再解析/执行 `<<<tool.*>>>` 文本工具块；工具能力由各 CLI 自身提供（例如 `codex exec`、`claude --permission-mode ...`、`gemini --approval-mode ...`）。
-  npm test
-  >>>
-  ```
-- （高级）如需显式触发协作代理，可要求 Codex 在输出中生成指令块（系统会执行，但最终回复会自动剔除指令块，避免泄露中间过程）：
-  ```
-  <<<agent.claude
-  需要 Claude 协助的任务说明（提供上下文、约束、期望输出）
-  >>>
-  ```
-  ```
-  <<<agent.gemini
-  需要 Gemini 协助的任务说明（提供上下文、约束、期望输出）
-  >>>
-  ```
-
-### 🌐 Web Console（实验性）
-
-- 构建后启动：`npm run web`（等价于 `node dist/server/cli.js web`）
-- 默认监听 `0.0.0.0:8787`（可用 `ADS_WEB_HOST`、`ADS_WEB_PORT` 调整），目录白名单由 `ALLOWED_DIRS` 控制（Web/Telegram 共用）。
-- Web UI 里的 synthetic `default` project 会固定绑定到 `ALLOWED_DIRS` 的第一个目录，而不是最近一次打开的具体项目路径。
-- Web 会话空闲回收默认 24 小时：可用 `ADS_WEB_SESSION_TIMEOUT_HOURS`（或 `ADS_WEB_SESSION_TIMEOUT_MS`）覆盖；清理轮询间隔可用 `ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES`（或 `ADS_WEB_SESSION_CLEANUP_INTERVAL_MS`）覆盖。Task Queue 默认继承 Web 配置，亦可用 `ADS_TASK_QUEUE_SESSION_TIMEOUT_HOURS` / `ADS_TASK_QUEUE_SESSION_CLEANUP_INTERVAL_MINUTES` 单独覆盖。
-- 浏览器访问对应地址即可与 Telegram 相同的代理交互，环境变量来自根目录 `.env`（自动加载 `.env` + `.env.local`）。
-- （可选）任务完成 Telegram 通知：复用 `TELEGRAM_BOT_TOKEN`，并使用 `TELEGRAM_ALLOWED_USER_ID` 作为通知 `chat_id`（单用户约束；`TELEGRAM_ALLOWED_USERS` 为 legacy alias）；可用 `ADS_TELEGRAM_NOTIFY_TIMEZONE` 设置通知时间戳时区（默认 `Asia/Shanghai`）。
-- 聊天日志支持本地缓存（按 token 隔离，约 100 条/200KB，TTL 1 天），顶部“清空历史”按钮可同时清理日志与缓存；会话标签支持重命名并按 token 记住工作目录，重连/切换时自动恢复；流式回复的“正在输入”占位符按会话隔离。
-- Plan 以侧边栏面板呈现，不再作为聊天消息写入历史（避免刷屏）；同时会过滤掉类似 `Idiomatic English:` 的翻译前缀，保持历史与工具输出更干净。
-
-### 📱 Telegram Bot 远程编程
-
-通过 Telegram Bot，你可以在任意地点、任意设备上远程控制开发工作流：
-
-**启动 Bot**：
 ```bash
-# 设置环境变量
-export TELEGRAM_BOT_TOKEN="your-bot-token"
-export TELEGRAM_ALLOWED_USER_ID="your-telegram-user-id"
-
-# 启动 Bot（构建后，复用根目录 .env）
-node dist/server/cli.js telegram
-# Legacy alias (after build)
-ads-telegram start
+npm run web:init-admin -- --username admin --password-stdin
+# 或显式传入密码（不推荐写入 shell 历史）
+npm run web:init-admin -- --username admin --password 'your-password'
 ```
 
-> 推荐：把上述配置写入根目录的 `.env`，Telegram 与 Web Console 会共用这一份环境变量。目录白名单使用统一的 `ALLOWED_DIRS`。
-> 如需后台常驻/自动重启，推荐用 pm2/systemd 等外部进程管理器托管 `node dist/server/cli.js telegram`。
+如需重置第一个管理员账号：
 
-**常用命令**：
+```bash
+npm run web:reset-admin -- --username admin --password-stdin
+```
+
+### 启动 Web Console
+
+```bash
+npm run web
+# 等价于构建后的 CLI
+node dist/server/cli.js web
+# 或
+npm start
+```
+
+默认监听 `127.0.0.1:8787`，浏览器访问 `http://127.0.0.1:8787`。
+
+## 常用脚本
+
+```bash
+npm run build          # TypeScript 构建 + 复制 runtime assets + Vite 构建
+npm run build:web      # 仅构建前端
+npm run dev            # tsx watch server/web/server.ts
+npm run dev:web        # Vite 前端开发服务器
+npm run web            # 启动编译后的 Web Console
+npm start              # 启动编译后的 Web Console
+npm test               # Node test runner 跑 tests/**/*.test.ts
+npm run test:web       # Vitest 跑 client 组件测试
+npm run coverage       # c8 覆盖率（server，排除 telegram）
+npm run lint           # ESLint
+npm run bundle         # 构建并生成更自包含的 dist/
+npm run web:init-admin # 初始化 Web 管理员
+npm run web:reset-admin# 创建/重置第一个 Web 管理员
+```
+
+## CLI
+
+构建后可使用：
+
+```bash
+node dist/server/cli.js help
+node dist/server/cli.js version
+node dist/server/cli.js web
+node dist/server/cli.js telegram
+```
+
+安装为 bin 后：
+
+```bash
+ads web
+ads telegram
+ads-telegram
+```
+
+## 核心配置
+
+ADS 会向上查找 `.env`，并在存在时加载同路径 `.env.local` 覆盖；也可用 `ADS_ENV_PATH` 指向指定 env 文件。未设置 `CODEX_HOME` 时会自动解析默认目录。
+
+### 通用
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ADS_STATE_DIR` | `<repo>/.ads` | 全局状态目录 |
+| `ADS_STATE_DB_PATH` | `$ADS_STATE_DIR/state.db` | 全局 SQLite 路径 |
+| `ALLOWED_DIRS` | 当前工作目录 | 允许访问/切换的目录，逗号分隔 |
+| `SANDBOX_MODE` | `workspace-write` | `read-only`、`workspace-write`、`danger-full-access` |
+| `ADS_SQLITE_BUSY_TIMEOUT_MS` | `5000` | workspace SQLite busy timeout |
+| `ADS_LOG_FILE` / `ADS_LOG_DIR` | 未设置 | 日志输出位置 |
+| `ADS_DEBUG` | 未设置 | 设为 `1` 启用 debug 日志 |
+
+### Web
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ADS_WEB_HOST` | `127.0.0.1` | Web 监听地址 |
+| `ADS_WEB_PORT` | `8787` | Web 端口 |
+| `ADS_WEB_MAX_CLIENTS` | `32` | WebSocket 最大连接数 |
+| `ADS_WEB_ALLOWED_ORIGINS` | 同源/本机逻辑 | 允许的 Origin |
+| `ADS_WEB_SESSION_TTL_SECONDS` | `604800` | 登录 cookie TTL |
+| `ADS_WEB_SESSION_PEPPER` | 空 | session token hash pepper |
+| `ADS_WEB_COOKIE_SECURE` | `auto` | Cookie Secure 策略 |
+| `ADS_WEB_SESSION_SLIDING` | `false` | 是否滑动刷新 session |
+| `ADS_WEB_SESSION_TIMEOUT_HOURS` | `24` | Web Agent 会话空闲超时 |
+| `ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES` | `5` | 会话清理间隔 |
+| `TASK_QUEUE_ENABLED` | `true` | 是否启用任务队列 |
+| `TASK_QUEUE_AUTO_START` | `false` | Web 启动后是否自动运行队列 |
+| `TASK_QUEUE_DEFAULT_MODEL` | 未设置 | 队列任务默认模型覆盖 |
+
+### Agent
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ADS_CODEX_BIN` | `codex` | Codex CLI 路径 |
+| `ADS_CLAUDE_ENABLED` | 启用 | 设为 `0` 禁用 Claude |
+| `ADS_CLAUDE_BIN` | `claude` | Claude CLI 路径 |
+| `ADS_CLAUDE_MODEL` | 未设置 | Claude 模型 |
+| `ADS_GEMINI_ENABLED` | 启用 | 设为 `0` 禁用 Gemini |
+| `ADS_GEMINI_BIN` | `gemini` | Gemini CLI 路径 |
+| `ADS_GEMINI_MODEL` | 未设置 | Gemini 模型 |
+| `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | CLI 可用性探测超时 |
+| `ADS_TASK_MAX_PARALLEL` | `3` | 协调器并行委派数 |
+| `ADS_TASK_TIMEOUT_MS` | `120000` | 委派任务超时 |
+| `ADS_TASK_MAX_ATTEMPTS` | `2` | 委派任务尝试次数 |
+| `ADS_COORDINATOR_ENABLED` | 未设置 | 启用任务协调器 |
+
+### 系统提示、记忆与技能
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ADS_REINJECTION_ENABLED` | `true` | 是否再注入系统提示 |
+| `ADS_REINJECTION_TURNS` | `10` | instructions 再注入轮次 |
+| `ADS_RULES_REINJECTION_TURNS` | `1` | rules 再注入轮次 |
+| `ADS_MEMORY_INJECTION_ENABLED` | `true` | 是否注入记忆 |
+| `ADS_MEMORY_MAX_TOKENS` | `1024` | memory token 上限 |
+| `ADS_SOUL_MAX_TOKENS` | `512` | soul token 上限 |
+| `ADS_SKILLS_AUTOLOAD` | `true` | 自动加载匹配技能 |
+| `ADS_SKILLS_AUTOSAVE` | `true` | 自动保存技能草稿 |
+| `ADS_ENABLE_WORKSPACE_SKILLS` | 未设置 | 是否启用 workspace skills |
+
+### Scheduler
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ADS_SCHEDULER_ENABLED` | `true` | 是否启用调度器 |
+| `ADS_SCHEDULER_TICK_MS` | `5000` | 调度轮询间隔 |
+| `ADS_SCHEDULER_RUNNER_CONCURRENCY` | `1` | 定时任务并发数 |
+| `ADS_SCHEDULER_RUNNER_TIMEOUT_SECS` | `1800` | 单次运行超时 |
+| `ADS_SCHEDULER_MODEL` | `TASK_QUEUE_DEFAULT_MODEL` | 定时任务默认模型 |
+| `ADS_SCHEDULER_COMPILE_MODEL` | 未设置 | 计划编译模型 |
+
+## Telegram Bot
+
+### 启动
+
+```bash
+export TELEGRAM_BOT_TOKEN='your-bot-token'
+export TELEGRAM_ALLOWED_USER_ID='your-telegram-user-id'
+node dist/server/cli.js telegram
+# 或
+ads telegram
+# 或 legacy alias
+ads-telegram
+```
+
+`TELEGRAM_ALLOWED_USERS` 仍作为 legacy alias 存在，但当前只支持单个用户 ID。Web 的任务完成通知也会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_ID`。
+
+### Telegram 配置
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | 必填 | Bot token |
+| `TELEGRAM_ALLOWED_USER_ID` | 必填 | 单个允许用户 ID |
+| `TELEGRAM_MAX_RPM` | `10` | 每分钟请求限制 |
+| `TELEGRAM_SESSION_TIMEOUT` | `24h` | Telegram Agent 会话超时（毫秒） |
+| `TELEGRAM_STREAM_UPDATE_INTERVAL` | `1500` | 流式消息更新间隔 |
+| `TELEGRAM_MODEL` | 未设置 | Telegram 默认模型 |
+| `TELEGRAM_PROXY_URL` | 未设置 | Telegram HTTP/HTTPS 代理 |
+| `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默通知 |
+| `ADS_TG_ALLOW_SUICIDE_RESTART` | `false` | 非 pm2 场景允许自重启 |
+| `ADS_PM2_APP_WEB` | 未设置 | pm2 Web app 名称，用于 `restart web` |
+| `ADS_TELEGRAM_NOTIFY_TIMEZONE` | `Asia/Shanghai` | Web 任务通知时区 |
+
+### Telegram 命令
+
 | 命令 | 说明 |
-| ---- | ---- |
+| --- | --- |
 | `/start` | 欢迎信息 |
 | `/help` | 命令帮助 |
 | `/status` | 系统状态 |
-| `/esc` | 中断当前任务（Agent 保持运行） |
 | `/reset` | 重置会话，开始新对话 |
-| `/mark [on\|off]` | 记录对话到 `YYYY-MM-DD-note.md`（可省略参数切换状态） |
-| `/pref [list|add|del]` | 管理偏好设置（长期记忆） |
-| `/rebuild_restart` | 构建并重启 Telegram 服务 |
-| `/pwd` | 当前工作目录 |
-| `/cd <path>` | 切换工作目录 |
+| `/resume` | 当前精简版不支持恢复，会提示使用 `/reset` |
+| `/esc` | 中断当前任务，Agent 进程保留 |
+| `/mark [on\|off]` | 将后续对话记录到当天 note |
+| `/pref [list\|add\|del]` | 管理长期偏好 |
+| `/pwd` | 查看当前工作目录 |
+| `/cd <path>` | 在 `ALLOWED_DIRS` 约束内切换工作目录 |
 
-**自然语言控制（pm2）**：
-- 发送 `restart` / `reboot` / `重启`：重启 Telegram 服务（仅 pm2 下可用，或设置 `ADS_TG_ALLOW_SUICIDE_RESTART=true`）。
-- 发送 `restart web` / `restart all` / `重启 web` / `重启全部`：需要配置 `ADS_PM2_APP_WEB=ads-web`，否则不会执行。
+## Web 使用要点
 
-**特性**：
-- 💬 直接发送消息与 AI 对话，支持多轮交互
-- 🖼️ 发送图片让 AI 分析（截图、设计稿等）
-- 📎 发送文件让 AI 处理
-- 📝 `/mark` 可将后续对话记录到当天 note，便于整理灵感
-- ⚡ `/esc` 可随时中断当前任务，立即执行新指令；Web 端提供停止按钮（执行中可用）
+- 首次登录前必须先运行 `web:init-admin`。
+- Web 支持项目列表；内置 `default` project 绑定到 `ALLOWED_DIRS` 的第一个目录。
+- Planner lane 默认只读，Worker lane 默认 `danger-full-access`；实际可访问目录仍受 `ALLOWED_DIRS` 和沙箱策略约束。
+- Web 聊天支持 `/pwd`、`/cd <path>` 和 Agent 切换；旧的用户可见 `/ads.*` 规划命令已停用，规格草稿/任务审批由 UI 和 Planner 流程驱动。
+- Goal Mode 需要 Codex app-server 能正常启动；普通任务默认走 Codex CLI。
 
-### 🔍 Tavily Research (Skill)
+## 模板与运行时资产
 
-ADS 不再内置 Tavily 的 runtime 集成（已移除 `server/tools/search/**`）。联网搜索与 URL 抓取仅通过 skill 脚本提供：
+构建时 `scripts/copy-runtime-assets.js` 会把 `templates/` 复制到 `dist/templates`，并把 `.agent/skills` 复制到 `dist/.agent/skills`（如果存在）。当前必需模板：
 
-默认 `ADS_STATE_DIR` 为项目根目录下的 `.ads`。
+- `instructions.md`
+- `rules.md`
+- `supervisor.md`
+- `requirement.md`
+- `design.md`
+- `implementation.md`
+- `task.md`
+
+`templates/skills/` 是允许的模板子目录；`templates/compaction.md` 也会作为普通文件复制。
+
+## 数据与目录布局
+
+默认状态目录为项目根目录下 `.ads/`：
+
+```text
+.ads/
+├── state.db                         # 全局状态：Web 用户、会话、历史、模型配置、draft 等
+├── run/web.pid                      # Web 进程 pid 文件
+└── workspaces/<workspace-id>/
+    ├── ads.db                       # workspace 任务、附件、队列、会话等数据
+    ├── workspace.json
+    └── ...
+```
+
+历史版本的 workspace `.ads/` 会被尽力迁移到集中状态目录。仓库根目录存在的 `ads.db` 是 ADS 自身工作区的 legacy/兼容数据库路径。
+
+## 项目结构
+
+```text
+ads/
+├── server/
+│   ├── agents/        # Codex / Claude / Gemini 适配器、协作调度、健康探测
+│   ├── bootstrap/     # bootstrap 执行、worktree、review gate
+│   ├── codex/         # Codex app-server 协议与 RPC 客户端
+│   ├── context/       # 上下文压缩与 token 估算
+│   ├── memory/        # soul / preference / markdown memory
+│   ├── scheduler/     # 定时任务编译与运行时
+│   ├── skills/        # skill 加载、创建和内置工具
+│   ├── state/         # 全局 SQLite schema/migrations/store
+│   ├── storage/       # workspace SQLite schema/migrations/store
+│   ├── systemPrompt/  # instructions/rules/supervisor 注入
+│   ├── tasks/         # 任务模型、队列、执行器、store
+│   ├── telegram/      # Telegram Bot、命令、附件/语音处理
+│   ├── web/           # Web server、API、WebSocket、auth、task queue
+│   └── workspace/     # workspace 检测、路径和模板同步
+├── client/            # Vue 3 + Vite Web UI
+├── tests/             # Node test runner 后端测试
+├── templates/         # runtime prompt/spec 模板
+├── scripts/           # 构建、bundle、类型生成脚本
+└── docs/              # pm2、spec、ADR 等项目文档
+```
+
+## 测试与验证
 
 ```bash
-export TAVILY_BASE_URL="https://your-tavily-gateway.example"
-export TAVILY_API_TOKEN="your_api_token"
-
-# Web search (JSON output)
-node $ADS_STATE_DIR/.agent/skills/tavily-research/scripts/tavily-cli.cjs search --query "..." --maxResults 5
-
-# URL fetch/extract (JSON output)
-node $ADS_STATE_DIR/.agent/skills/tavily-research/scripts/tavily-cli.cjs fetch --url "https://..." --extractDepth advanced --format markdown
+npx tsc --noEmit
+npm run lint
+npm test
+npm run test:web
+npm run build
 ```
 
-### 🔍 Review
+## 安全提示
 
-ADS can run an automated code review step before delivery (no user-facing slash commands). See `docs/spec/**` and `docs/adr/**` for details.
+- 不要提交 `.env` 或 `.env.local`。
+- Web 必须初始化管理员账号，建议使用强密码并配置反向代理 TLS。
+- 生产/公网部署请显式设置 `ADS_WEB_ALLOWED_ORIGINS`、`ADS_WEB_SESSION_PEPPER`、`ADS_WEB_COOKIE_SECURE=true`。
+- Telegram 必须配置 `TELEGRAM_ALLOWED_USER_ID`；不要使用多用户共享 Bot token。
+- `ALLOWED_DIRS` 应尽量收窄到可信工作区；谨慎使用 `SANDBOX_MODE=danger-full-access`。
+- 泄露的 Telegram token、Agent API key 或 CLI 凭据应立即撤销/轮换。
 
-## 🤝 Contributing
+## License
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on:
-
-- Setting up the development environment
-- Coding standards and best practices
-- Pull request process
-- Testing guidelines
-
-## 🔒 Security
-
-Security is important to us. If you discover a security vulnerability, please follow our [Security Policy](SECURITY.md) for responsible disclosure.
-
-### Key Security Practices
-
-- Never commit `.env` or `.env.*` files to version control
-- Use `.env.example` as a template
-- Set proper file permissions for sensitive files (`chmod 600 .env`)
-- Configure `TELEGRAM_ALLOWED_USER_ID` (legacy: `TELEGRAM_ALLOWED_USERS`) and `ALLOWED_DIRS` appropriately
-- If your environment requires a proxy, set `TELEGRAM_PROXY_URL` (e.g. `http://127.0.0.1:7897`) instead of hardcoding it in code
-- Revoke leaked tokens immediately via [@BotFather](https://t.me/BotFather)
-
-See [SECURITY.md](SECURITY.md) for complete security guidelines.
-
-## 📦 Project Structure
-
-```
-ads/
-├── server/           # Backend (Node.js, TypeScript)
-│   ├── workspace/    # Workspace management
-│   ├── telegram/     # Telegram bot implementation
-│   └── web/          # Web Console backend
-├── client/           # Frontend (Vue 3, Vite)
-├── tests/            # Test files
-├── templates/        # Workspace templates
-├── docs/             # Documentation
-└── scripts/          # Build and utility scripts
-```
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Built with [OpenAI Codex SDK](https://github.com/openai/codex-sdk)
-- Telegram bot powered by [grammY](https://grammy.dev)
-- Database powered by [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)
-
-## 📮 Support
-
-- 📖 [Documentation](./docs/)
-- 🐛 [Report Issues](https://github.com/Andy963/ads/issues)
-- 💬 [Discussions](https://github.com/Andy963/ads/discussions)
-
----
-
-**Note**: This is an experimental preview. Treat it as beta software while edge cases are validated.
+MIT License. See [LICENSE](LICENSE).
