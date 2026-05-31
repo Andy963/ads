@@ -14,7 +14,6 @@ type PreparedStatements = {
   selectByIdStmt: SqliteStatement;
   listStmt: SqliteStatement;
   deleteStmt: SqliteStatement;
-  cancelStmt: SqliteStatement;
   updateDraftStmt: SqliteStatement;
   approveStmt: SqliteStatement;
   setErrorStmt: SqliteStatement;
@@ -166,12 +165,6 @@ function createPreparedStatements(db: DatabaseType): PreparedStatements {
      WHERE namespace = ? AND auth_user_id = ? AND draft_id = ? AND status != 'deleted'`,
   );
 
-  const cancelStmt: SqliteStatement = db.prepare(
-    `UPDATE web_task_bundle_drafts
-     SET status = 'deleted', updated_at = ?
-     WHERE namespace = ? AND auth_user_id = ? AND draft_id = ? AND status = 'draft'`,
-  );
-
   const updateDraftStmt: SqliteStatement = db.prepare(
     `UPDATE web_task_bundle_drafts
      SET bundle_json = ?, updated_at = ?, last_error = NULL
@@ -197,7 +190,6 @@ function createPreparedStatements(db: DatabaseType): PreparedStatements {
     selectByIdStmt,
     listStmt,
     deleteStmt,
-    cancelStmt,
     updateDraftStmt,
     approveStmt,
     setErrorStmt,
@@ -374,25 +366,6 @@ export function deleteTaskBundleDraft(args: {
 
   const stmts = prepareStatements(db);
   const res = stmts.deleteStmt.run(now, namespace, authUserId, draftId) as { changes?: number };
-  return { ok: Boolean(res && res.changes && res.changes > 0) };
-}
-
-export function cancelTaskBundleDraft(args: {
-  db?: DatabaseType;
-  namespace?: string;
-  authUserId: string;
-  draftId: string;
-  now?: number;
-}): { ok: boolean } {
-  const db = args.db ?? getStateDatabase();
-  const namespace = normalizeNamespace(args.namespace);
-  const authUserId = normalizeText(args.authUserId);
-  const draftId = normalizeText(args.draftId);
-  const now = normalizeNow(args.now);
-  if (!authUserId || !draftId) return { ok: false };
-
-  const stmts = prepareStatements(db);
-  const res = stmts.cancelStmt.run(now, namespace, authUserId, draftId) as { changes?: number };
   return { ok: Boolean(res && res.changes && res.changes > 0) };
 }
 

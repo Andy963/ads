@@ -51,13 +51,20 @@ export type WsConfigDeps = {
   maxClients: number;
   pingIntervalMs: number;
   maxMissedPongs: number;
+  /** 单个 WebSocket 帧的最大字节数（内存型 DoS 防护）。未设置时回退到内置默认值。 */
+  maxPayloadBytes?: number;
   traceWsDuplication: boolean;
 };
 
 export type WsAuthDeps = {
   allowedOrigins: Set<string>;
-  isOriginAllowed: (originHeader: unknown, allowedOrigins: Set<string>) => boolean;
-  authenticateRequest: (req: IncomingMessage) => { ok: false } | { ok: true; userId: string };
+  isOriginAllowed: (req: IncomingMessage, allowedOrigins: Set<string>) => boolean;
+  authenticateRequest: (req: IncomingMessage) => { ok: false } | { ok: true; userId: string; tokenHash?: string };
+  /**
+   * 周期性复核已建立连接的 session 是否仍然有效（未登出/吊销/过期）。
+   * 返回 false 时连接会被关闭。未提供则跳过复核（用于测试桩）。
+   */
+  revalidateSession?: (tokenHash: string) => boolean;
 };
 
 export type WsAgentDeps = {

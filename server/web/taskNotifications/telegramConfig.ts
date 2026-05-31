@@ -1,7 +1,3 @@
-export type TelegramNotifyConfig =
-  | { ok: true; botToken: string; chatId: string }
-  | { ok: false; botToken: string; chatId: string };
-
 function normalizeEnvValue(value: unknown): string {
   return String(value ?? "").trim();
 }
@@ -51,14 +47,4 @@ export function resolveTaskNotificationDefaultTelegramChatIdFromEnv(): string {
 
 export function resolveTaskNotificationTelegramBotTokenFromEnv(): string {
   return normalizeEnvValue(process.env.TELEGRAM_BOT_TOKEN);
-}
-
-export function resolveTaskNotificationTelegramConfigFromEnv(): TelegramNotifyConfig {
-  const botToken = resolveTaskNotificationTelegramBotTokenFromEnv();
-  const chatId = resolveTaskNotificationDefaultTelegramChatIdFromEnv();
-
-  if (botToken && chatId) {
-    return { ok: true, botToken, chatId };
-  }
-  return { ok: false, botToken, chatId };
 }

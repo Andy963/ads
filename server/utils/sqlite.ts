@@ -1,9 +1,3 @@
-import { safeParseJson } from "./json.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
 export function parseSqliteBoolean(value: unknown): boolean {
   if (typeof value === "number") {
     return value !== 0;
@@ -24,13 +18,5 @@ export function parseOptionalSqliteInt(value: unknown): number | null {
   if (!raw) return null;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-export function parseSqliteJsonObject(value: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
-  if (typeof value === "string") {
-    const parsed = safeParseJson<unknown>(value);
-    return isRecord(parsed) ? parsed : fallback;
-  }
-  return isRecord(value) ? value : fallback;
 }
 

@@ -22,11 +22,17 @@ import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnectio
 import { resolveWsLaneResources } from "./laneResources.js";
 import { preflightPersistAndAck } from "./preflight.js";
 
-type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number };
+type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number; sessionTokenHash?: string };
+
+/** WebSocket 单帧默认上限：16MB（足够容纳带 base64 图片的 prompt，又能挡住内存型 DoS）。 */
+const DEFAULT_WS_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocketServer {
   const { auth, agents, commands, config, history, logger, scheduler, sessions, state, tasks } = deps;
-  const wss = new WebSocketServer({ server: deps.server });
+  const wss = new WebSocketServer({
+    server: deps.server,
+    maxPayload: config.maxPayloadBytes ?? DEFAULT_WS_MAX_PAYLOAD_BYTES,
+  });
   const safeJsonSend = createSafeJsonSend(logger);
   const seenChatSessionIdsBySharedSession = new Map<string, Set<string>>();
 
@@ -73,6 +79,25 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             if (candidate.readyState !== 1) {
               continue;
             }
+            // 复核 session 是否仍然有效：握手时一次性鉴权，之后登出/吊销/过期的连接
+            // 仍可执行命令，故每个 ping tick 重新校验，失效则关闭（4401）。
+            if (auth.revalidateSession && candidate.sessionTokenHash) {
+              let stillValid = true;
+              try {
+                stillValid = auth.revalidateSession(candidate.sessionTokenHash);
+              } catch {
+                stillValid = true; // 复核出错时不误杀活跃连接
+              }
+              if (!stillValid) {
+                logger.warn("[WebSocket] terminating connection with revoked/expired session");
+                try {
+                  candidate.close(4401, "session expired");
+                } catch {
+                  // ignore
+                }
+                continue;
+              }
+            }
             if (candidate.isAlive === false) {
               candidate.missedPongs = (candidate.missedPongs ?? 0) + 1;
               if (config.maxMissedPongs > 0 && candidate.missedPongs >= config.maxMissedPongs) {
@@ -114,7 +139,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         ? protocolHeader.split(",").map((p) => p.trim()).filter(Boolean)
         : [];
 
-    if (!auth.isOriginAllowed(req.headers["origin"], auth.allowedOrigins)) {
+    if (!auth.isOriginAllowed(req, auth.allowedOrigins)) {
       ws.close(4403, "forbidden");
       return;
     }
@@ -141,6 +166,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     const aliveWs = ws as AliveWebSocket;
     aliveWs.isAlive = true;
     aliveWs.missedPongs = 0;
+    aliveWs.sessionTokenHash = authResult.tokenHash;
     ws.on("pong", () => {
       aliveWs.isAlive = true;
       aliveWs.missedPongs = 0;
@@ -407,63 +433,70 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
 
       const msg: IncomingWsMessage = { parsed, requestId, clientMessageId, receivedAt };
-      messageChain = messageChain.then(async () => {
-        const result = await dispatchWsMessage({
-          msg,
-          ws,
-          authUserId,
-          sessionId,
-          chatSessionId,
-          userId,
-          historyKey,
-          currentCwd,
-          cacheKey,
-          sessionManager,
-          orchestrator,
-          getWorkspaceLock,
-          interruptControllers: state.interruptControllers,
-          promptRunEpochs: state.promptRunEpochs,
-          historyStore,
-          tasks: {
-            ensureTaskContext: tasks.ensureTaskContext,
-            promoteQueuedTasksToPending: tasks.promoteQueuedTasksToPending,
-            broadcastToSession: tasks.broadcastToSession,
-          },
-          scheduler,
-          commands,
-          agents: {
-            agentAvailability: agents.agentAvailability,
-          },
-          state: {
-            directoryManager: state.directoryManager,
-            workspaceCache: state.workspaceCache,
-            cwdStore: state.cwdStore,
-            cwdStorePath: state.cwdStorePath,
-            persistCwdStore: state.persistCwdStore,
-            broadcastSessionReset,
-            resetSharedSessionState,
-          },
-          registerSessionCacheBinding,
-          broadcastJson,
-          safeJsonSend,
-          sendWorkspaceState,
-          broadcastWorkspaceState,
-          traceWsDuplication: config.traceWsDuplication,
-          logger,
-          updateWorkspaceRootMeta: (cwd) => {
-            try {
-              const meta = state.clientMetaByWs.get(ws);
-              if (meta) {
-                meta.workspaceRoot = normalizeWorkspaceRootForMeta(cwd);
+      messageChain = messageChain
+        .then(async () => {
+          const result = await dispatchWsMessage({
+            msg,
+            ws,
+            authUserId,
+            sessionId,
+            chatSessionId,
+            userId,
+            historyKey,
+            currentCwd,
+            cacheKey,
+            sessionManager,
+            orchestrator,
+            getWorkspaceLock,
+            interruptControllers: state.interruptControllers,
+            promptRunEpochs: state.promptRunEpochs,
+            historyStore,
+            tasks: {
+              ensureTaskContext: tasks.ensureTaskContext,
+              promoteQueuedTasksToPending: tasks.promoteQueuedTasksToPending,
+              broadcastToSession: tasks.broadcastToSession,
+            },
+            scheduler,
+            commands,
+            agents: {
+              agentAvailability: agents.agentAvailability,
+            },
+            state: {
+              directoryManager: state.directoryManager,
+              workspaceCache: state.workspaceCache,
+              cwdStore: state.cwdStore,
+              cwdStorePath: state.cwdStorePath,
+              persistCwdStore: state.persistCwdStore,
+              broadcastSessionReset,
+              resetSharedSessionState,
+            },
+            registerSessionCacheBinding,
+            broadcastJson,
+            safeJsonSend,
+            sendWorkspaceState,
+            broadcastWorkspaceState,
+            traceWsDuplication: config.traceWsDuplication,
+            logger,
+            updateWorkspaceRootMeta: (cwd) => {
+              try {
+                const meta = state.clientMetaByWs.get(ws);
+                if (meta) {
+                  meta.workspaceRoot = normalizeWorkspaceRootForMeta(cwd);
+                }
+              } catch {
+                // ignore
               }
-            } catch {
-              // ignore
-            }
-          },
+            },
+          });
+          orchestrator = result.orchestrator;
+          currentCwd = result.currentCwd;
+        })
+        .catch((error) => {
+          // A single message handler failing must not poison the chain and freeze
+          // all subsequent messages on this connection.
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(`[WebSocket] message handler failed conn=${connectionId} user=${userId}: ${message}`);
         });
-        orchestrator = result.orchestrator;
-        currentCwd = result.currentCwd;
-      });
     });
 
     ws.on("close", (code, reason) => {

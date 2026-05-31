@@ -11,6 +11,7 @@ import {
   findUserCredentialByUsername,
   revokeSessionByTokenHash,
 } from "../../../auth/sessions.js";
+import { buildLoginRateLimitKeys, getLoginRateLimiter } from "../../../auth/loginRateLimiter.js";
 import { authenticateRequest, buildClearSessionCookie, buildSessionCookie } from "../../auth.js";
 import { getUserAgent, readJsonBody, resolveClientIp, sendJson } from "../../http.js";
 
@@ -35,21 +36,28 @@ export async function handleAuthRoutes(
     }
     const username = parsed.data.username.trim();
     const password = parsed.data.password;
+    const ip = resolveClientIp(req);
+
+    const limiter = getLoginRateLimiter();
+    const limiterKeys = buildLoginRateLimitKeys(username, ip);
+    const lockState = limiter.check(limiterKeys);
+    if (lockState.locked) {
+      res.setHeader("Retry-After", String(Math.ceil(lockState.retryAfterMs / 1000)));
+      sendJson(res, 429, { error: "Too many login attempts. Please try again later." });
+      return true;
+    }
 
     const db = getStateDatabase();
     ensureWebAuthTables(db);
     const cred = findUserCredentialByUsername(db, username);
-    if (!cred || cred.disabled_at) {
+    if (!cred || cred.disabled_at || !verifyPasswordScrypt(password, cred.password_hash)) {
+      limiter.recordFailure(limiterKeys);
       sendJson(res, 401, { error: "Unauthorized" });
       return true;
     }
-    if (!verifyPasswordScrypt(password, cred.password_hash)) {
-      sendJson(res, 401, { error: "Unauthorized" });
-      return true;
-    }
+    limiter.recordSuccess(limiterKeys);
 
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const ip = resolveClientIp(req);
     const agent = getUserAgent(req);
     const created = createWebSession({
       userId: cred.id,

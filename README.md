@@ -120,10 +120,13 @@ ADS 会向上查找 `.env`，并在存在时加载同路径 `.env.local` 覆盖�
 | `ADS_WEB_HOST` | `127.0.0.1` | Web 监听地址 |
 | `ADS_WEB_PORT` | `8787` | Web 端口 |
 | `ADS_WEB_MAX_CLIENTS` | `32` | WebSocket 最大连接数 |
+| `ADS_WEB_WS_MAX_PAYLOAD_BYTES` | `16777216` | 单个 WebSocket 帧最大字节数（内存型 DoS 防护） |
 | `ADS_WEB_ALLOWED_ORIGINS` | 同源/本机逻辑 | 允许的 Origin |
 | `ADS_WEB_SESSION_TTL_SECONDS` | `604800` | 登录 cookie TTL |
 | `ADS_WEB_SESSION_PEPPER` | 空 | session token hash pepper |
 | `ADS_WEB_COOKIE_SECURE` | `auto` | Cookie Secure 策略 |
+| `ADS_WEB_LOGIN_MAX_ATTEMPTS` | `5` | 登录失败锁定阈值（按用户名+IP 计数） |
+| `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` | 登录锁定基础时长（重复触发指数退避） |
 | `ADS_WEB_SESSION_SLIDING` | `false` | 是否滑动刷新 session |
 | `ADS_WEB_SESSION_TIMEOUT_HOURS` | `24` | Web Agent 会话空闲超时 |
 | `ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES` | `5` | 会话清理间隔 |
@@ -143,6 +146,7 @@ ADS 会向上查找 `.env`，并在存在时加载同路径 `.env.local` 覆盖�
 | `ADS_GEMINI_BIN` | `gemini` | Gemini CLI 路径 |
 | `ADS_GEMINI_MODEL` | 未设置 | Gemini 模型 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | CLI 可用性探测超时 |
+| `ADS_AGENT_RUN_TIMEOUT_MS` | `1800000` | Agent 单次运行硬超时（0 关闭；到期 SIGTERM→SIGKILL） |
 | `ADS_TASK_MAX_PARALLEL` | `3` | 协调器并行委派数 |
 | `ADS_TASK_TIMEOUT_MS` | `120000` | 委派任务超时 |
 | `ADS_TASK_MAX_ATTEMPTS` | `2` | 委派任务尝试次数 |

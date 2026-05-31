@@ -19,6 +19,7 @@ export interface WebConfig {
   maxClients: number;
   wsPingIntervalMs: number;
   wsMaxMissedPongs: number;
+  wsMaxPayloadBytes: number;
   sessionTimeoutMs: number;
   sessionCleanupIntervalMs: number;
   allowedOriginsRaw?: string;
@@ -78,6 +79,7 @@ const webConfigSchema = z.object({
   maxClients: z.number().int().min(1),
   wsPingIntervalMs: z.number().min(0),
   wsMaxMissedPongs: z.number().int().min(0),
+  wsMaxPayloadBytes: z.number().int().min(1024),
   sessionTimeoutMs: z.number().int().min(0),
   sessionCleanupIntervalMs: z.number().int().min(0),
   allowedOriginsRaw: z.string().optional(),
@@ -275,6 +277,8 @@ export function resolveWebConfig(options: DomainConfigOptions = {}): WebConfig {
     maxClients: normalizeWebInteger(env.ADS_WEB_MAX_CLIENTS, 32, 1),
     wsPingIntervalMs: normalizeWebNumber(env.ADS_WEB_WS_PING_INTERVAL_MS, 15_000, 0),
     wsMaxMissedPongs: normalizeWebInteger(env.ADS_WEB_WS_MAX_MISSED_PONGS, 3, 0),
+    // 单帧上限：默认 16MB，足以容纳带 base64 图片的 prompt，又能挡住内存型 DoS。
+    wsMaxPayloadBytes: normalizeWebInteger(env.ADS_WEB_WS_MAX_PAYLOAD_BYTES, 16 * 1024 * 1024, 1024),
     sessionTimeoutMs: resolveWebSessionTimeoutMs(env),
     sessionCleanupIntervalMs: resolveWebSessionCleanupIntervalMs(env),
     allowedOriginsRaw: env.ADS_WEB_ALLOWED_ORIGINS,

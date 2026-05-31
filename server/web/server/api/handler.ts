@@ -1,6 +1,6 @@
 import type http from "node:http";
 
-import { isOriginAllowed } from "../../auth/origin.js";
+import { isOriginAllowedForRequest } from "../../auth/origin.js";
 import { authenticateRequest } from "../auth.js";
 import { isStateChangingMethod, sendJson } from "../http.js";
 import type { Logger } from "../../../utils/logger.js";
@@ -64,7 +64,7 @@ export function createApiRequestHandler(deps: {
     const url = new URL(req.url ?? "", "http://localhost");
     const pathname = url.pathname;
 
-    if (isStateChangingMethod(req.method) && !isOriginAllowed(req.headers["origin"], deps.allowedOrigins)) {
+    if (isStateChangingMethod(req.method) && !isOriginAllowedForRequest(req, deps.allowedOrigins)) {
       sendJson(res, 403, { error: "Forbidden" });
       return true;
     }

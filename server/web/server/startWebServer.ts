@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { parseAllowedOrigins, isOriginAllowed } from "../auth/origin.js";
+import { parseAllowedOrigins, isOriginAllowedForRequest } from "../auth/origin.js";
 import { createHttpServer } from "./httpServer.js";
 import { listenServer } from "./listenServer.js";
 import { createApiRequestHandler } from "./api/handler.js";
@@ -21,7 +21,7 @@ import { createTaskQueueManager } from "./taskQueue/manager.js";
 import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
-import { resolveSessionPepper, resolveSessionTtlSeconds } from "../auth/sessions.js";
+import { resolveSessionPepper, resolveSessionTtlSeconds, isSessionActiveByTokenHash } from "../auth/sessions.js";
 import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegramNotifier.js";
 import { AgentScheduleCompiler } from "../../scheduler/compiler.js";
 import { SchedulerRuntime } from "../../scheduler/runtime.js";
@@ -158,7 +158,7 @@ migrateLegacyWebLaneNamespaces();
 const cwdStorePath = stateDbPath;
 const cwdStore = loadCwdStore(cwdStorePath);
 
-async function ensureWebPidFile(): Promise<string> {
+async function ensureWebPidFile(): Promise<{ pidFile: string; cleanupPidFile: () => void }> {
   const runDir = path.join(adsStateDir, "run");
   fs.mkdirSync(runDir, { recursive: true });
   const pidFile = path.join(runDir, "web.pid");
@@ -192,7 +192,7 @@ async function ensureWebPidFile(): Promise<string> {
   }
 
   fs.writeFileSync(pidFile, String(process.pid));
-  const cleanup = (): void => {
+  const cleanupPidFile = (): void => {
     try {
       const recorded = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8").trim() : "";
       if (recorded === String(process.pid)) {
@@ -202,37 +202,81 @@ async function ensureWebPidFile(): Promise<string> {
       // ignore
     }
   };
+
+  return { pidFile, cleanupPidFile };
+}
+
+interface WebShutdownDeps {
+  cleanupPidFile: () => void;
+  scheduler: { stop: () => void };
+  sessionManagers: Array<{ destroy: () => void }>;
+}
+
+/**
+ * Wire SIGINT/SIGTERM/exit to a graceful shutdown that stops the scheduler, destroys
+ * session managers (clearing their cleanup timers), waits (capped) for shared Codex
+ * app-server daemons to stop so they are not orphaned, then closes databases and
+ * removes the pid file. Mirrors the Telegram bot's cleanup so both entrypoints are
+ * symmetric.
+ */
+function registerWebShutdown(deps: WebShutdownDeps): void {
   let shutdownHandled = false;
-  const shutdown = (): void => {
+
+  const stopSyncResources = (): void => {
+    try {
+      deps.scheduler.stop();
+    } catch (err) {
+      logger.warn(`[shutdown] scheduler.stop failed: ${err instanceof Error ? err.message : err}`);
+    }
+    for (const sessionManager of deps.sessionManagers) {
+      try {
+        sessionManager.destroy();
+      } catch (err) {
+        logger.warn(`[shutdown] sessionManager.destroy failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  };
+
+  const shutdown = async (): Promise<void> => {
     if (shutdownHandled) {
       return;
     }
     shutdownHandled = true;
-    // Best-effort stop of any shared Codex app-server daemons.
-    void (async () => {
-      try {
-        const mod = await import("../../codex/appServer/daemonRegistry.js");
-        await mod.getSharedDaemonRegistry().stopAll();
-      } catch (err) {
-        logger.warn(`[shutdown] stopAll daemons failed: ${err instanceof Error ? err.message : err}`);
-      }
-    })();
+    stopSyncResources();
+    try {
+      const mod = await import("../../codex/appServer/daemonRegistry.js");
+      await Promise.race([
+        mod.getSharedDaemonRegistry().stopAll(),
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 2000);
+          timer.unref?.();
+        }),
+      ]);
+    } catch (err) {
+      logger.warn(`[shutdown] stopAll daemons failed: ${err instanceof Error ? err.message : err}`);
+    }
     closeSharedDatabases(logger);
-    cleanup();
+    deps.cleanupPidFile();
   };
-  process.once("exit", shutdown);
+
+  // process.exit() fires "exit" synchronously — only sync best-effort cleanup is possible there.
+  process.once("exit", () => {
+    if (shutdownHandled) {
+      return;
+    }
+    shutdownHandled = true;
+    stopSyncResources();
+    closeSharedDatabases(logger);
+    deps.cleanupPidFile();
+  });
   process.once("SIGINT", () => {
     logger.warn("Received SIGINT, shutting down");
-    shutdown();
-    process.exit(0);
+    void shutdown().finally(() => process.exit(0));
   });
   process.once("SIGTERM", () => {
     logger.warn("Received SIGTERM, shutting down");
-    shutdown();
-    process.exit(0);
+    void shutdown().finally(() => process.exit(0));
   });
-
-  return pidFile;
 }
 
 export async function startWebServer(): Promise<void> {
@@ -246,6 +290,13 @@ export async function startWebServer(): Promise<void> {
   const allowedDirs = sharedConfig.allowedDirs;
   const directoryManager = new DirectoryManager(allowedDirs);
   const allowedOrigins = parseAllowedOrigins(webConfig.allowedOriginsRaw);
+  if (allowedOrigins.size === 0) {
+    logger.warn(
+      "[Web] ADS_WEB_ALLOWED_ORIGINS 未设置：跨站请求仅放行同源/localhost。" +
+        "公网部署（如经 frps 反代）请显式设置 ADS_WEB_ALLOWED_ORIGINS=https://你的域名" +
+        "（frps 若不保留 Host 头则必须设置）。",
+    );
+  }
   const sessionTtlSeconds = resolveSessionTtlSeconds();
   const sessionPepper = resolveSessionPepper();
   const webSessionTimeoutMs = webConfig.sessionTimeoutMs;
@@ -379,21 +430,19 @@ export async function startWebServer(): Promise<void> {
       maxClients: webConfig.maxClients,
       pingIntervalMs: webConfig.wsPingIntervalMs,
       maxMissedPongs: webConfig.wsMaxMissedPongs,
+      maxPayloadBytes: webConfig.wsMaxPayloadBytes,
       traceWsDuplication: webConfig.traceWsDuplication,
     },
     auth: {
       allowedOrigins,
-      isOriginAllowed: (originHeader, allowed) => {
-        const normalized =
-          typeof originHeader === "string" || Array.isArray(originHeader)
-            ? (originHeader as string | string[])
-            : undefined;
-        return isOriginAllowed(normalized, allowed);
-      },
+      isOriginAllowed: (req, allowed) => isOriginAllowedForRequest(req, allowed),
       authenticateRequest: (req) => {
         const auth = authenticateWebRequest(req, { sessionTtlSeconds, sessionPepper });
-        return auth.ok ? { ok: true as const, userId: auth.userId } : { ok: false as const };
+        return auth.ok
+          ? { ok: true as const, userId: auth.userId, tokenHash: auth.tokenHash }
+          : { ok: false as const };
       },
+      revalidateSession: (tokenHash) => isSessionActiveByTokenHash({ tokenHash }),
     },
     agents: {
       agentAvailability,
@@ -441,7 +490,12 @@ export async function startWebServer(): Promise<void> {
   } catch (error) {
     logger.warn(`[Web] Failed to sync templates: ${(error as Error).message}`);
   }
-  await ensureWebPidFile();
+  const { cleanupPidFile } = await ensureWebPidFile();
+  registerWebShutdown({
+    cleanupPidFile,
+    scheduler,
+    sessionManagers: [sessionManager, plannerSessionManager],
+  });
   await listenServer(server, webConfig.port, webConfig.host);
   logger.info(`WebSocket server listening on ws://${webConfig.host}:${webConfig.port}`);
   logger.info(`Workspace: ${workspaceRoot}`);

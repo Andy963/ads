@@ -45,4 +45,37 @@ describe("cliRunner", () => {
     assert.equal(result.cancelled, true);
     assert.ok(lines.length >= 0);
   });
+
+  it("terminates a hung child via timeoutMs and reports the timeout", async () => {
+    const node = process.execPath;
+    // Stays alive, emits no stdout, exits on SIGTERM — the classic "hung agent" shape.
+    const script = [
+      "const timer = setInterval(() => {}, 1000);",
+      "process.on('SIGTERM', () => { clearInterval(timer); process.exit(0); });",
+    ].join("");
+
+    const result = await Promise.race([
+      runCli({ binary: node, args: ["-e", script], timeoutMs: 50 }, () => {}),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("did not time out")), 3000)),
+    ]);
+
+    // Timeout is not a user cancellation; it surfaces as a terminated run with a notice.
+    assert.equal(result.cancelled, false);
+    assert.match(result.stderr, /超时/);
+  });
+
+  it("does not hang or leak when onLine throws", async () => {
+    const node = process.execPath;
+    const script = ["console.log('{\"a\":1}');", "setInterval(() => {}, 1000);"].join("");
+
+    await assert.rejects(
+      Promise.race([
+        runCli({ binary: node, args: ["-e", script], timeoutMs: 0 }, () => {
+          throw new Error("boom");
+        }),
+        new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("hung")), 3000)),
+      ]),
+      /boom/,
+    );
+  });
 });

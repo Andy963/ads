@@ -1,9 +1,8 @@
 import type { Api } from 'grammy';
-import { createWriteStream, createReadStream, existsSync, mkdirSync, statSync, unlinkSync, readdirSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { createWriteStream, existsSync, mkdirSync, statSync, unlinkSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import https from 'node:https';
 import { pipeline } from 'node:stream/promises';
-import { createGzip } from 'node:zlib';
 
 import { createAbortError, isAbortError } from '../../utils/abort.js';
 import { createLogger } from '../../utils/logger.js';
@@ -12,7 +11,6 @@ import { createTimeoutSignal, formatFileSize, sanitizeFileName } from './downloa
 import { resolveTelegramProxyAgent } from './proxyAgent.js';
 
 const DOWNLOAD_DIR = join(resolveAdsStateDir(), 'temp', 'telegram-files');
-const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB Telegram 限制
 const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20MB Bot API 限制
 const logger = createLogger('TelegramFileHandler');
 
@@ -107,69 +105,6 @@ export async function downloadTelegramFile(
 }
 
 /**
- * 上传文件给用户
- */
-export async function uploadFileToTelegram(
-  api: Api,
-  chatId: number,
-  filePath: string,
-  caption?: string
-): Promise<void> {
-  if (!existsSync(filePath)) {
-    throw new Error(`文件不存在: ${filePath}`);
-  }
-  
-  const stats = statSync(filePath);
-  
-  // 检查文件大小
-  if (stats.size > MAX_UPLOAD_SIZE) {
-    throw new Error(`文件过大 (${formatFileSize(stats.size)})，限制 50MB`);
-  }
-  
-  // 文件太大建议压缩
-  if (stats.size > 10 * 1024 * 1024 && !filePath.endsWith('.gz')) {
-    const compressed = await compressFile(filePath);
-    const compressedStats = statSync(compressed);
-    
-    if (compressedStats.size < stats.size * 0.8) {
-      logger.info(`Compressed ${formatFileSize(stats.size)} -> ${formatFileSize(compressedStats.size)}`);
-      filePath = compressed;
-    }
-  }
-  
-  try {
-    // 使用 InputFile 发送
-    const fileName = basename(filePath);
-    const { InputFile } = await import('grammy');
-    
-    await api.sendDocument(chatId, new InputFile(filePath), {
-      caption: caption || `📁 ${fileName} (${formatFileSize(stats.size)})`,
-      disable_notification: true,
-    });
-    
-    logger.info(`Uploaded file: ${fileName}`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`文件上传失败: ${redactTelegramToken(message, api.token)}`);
-  }
-}
-
-/**
- * 压缩文件
- */
-async function compressFile(filePath: string): Promise<string> {
-  const compressedPath = `${filePath}.gz`;
-  
-  await pipeline(
-    createReadStream(filePath),
-    createGzip({ level: 9 }),
-    createWriteStream(compressedPath)
-  );
-  
-  return compressedPath;
-}
-
-/**
  * 清理下载的文件
  */
 export function cleanupFile(filePath: string): void {
@@ -224,23 +159,3 @@ export function cleanupAllTempFiles(): void {
   }
 }
 
-/**
- * 获取文件信息
- */
-export interface FileInfo {
-  name: string;
-  size: number;
-  path: string;
-  mimeType?: string;
-}
-
-export async function getFileInfo(api: Api, fileId: string): Promise<FileInfo> {
-  const file = await api.getFile(fileId);
-  
-  return {
-    name: basename(file.file_path || 'unknown'),
-    size: file.file_size || 0,
-    path: file.file_path || '',
-    mimeType: file.file_path?.split('.').pop(),
-  };
-}

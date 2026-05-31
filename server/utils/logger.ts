@@ -95,9 +95,6 @@ export class Logger {
   }
 }
 
-// Default logger instance
-export const defaultLogger = new Logger();
-
 // Factory function for creating module-specific loggers
 export function createLogger(module: string, options?: Omit<LoggerOptions, 'prefix'>): Logger {
   return new Logger({

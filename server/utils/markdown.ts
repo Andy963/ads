@@ -16,13 +16,6 @@ type CodeFenceBlock = {
  * Convert Markdown into Telegram-safe MarkdownV2 using telegramify-markdown.
  * Defaults to escaping unsupported tags to avoid parse errors.
  */
-export function escapeTelegramMarkdown(text: string): string {
-  return toTelegramMarkdown(text);
-}
-
-/**
- * Alias for Telegram MarkdownV2 escaping.
- */
 export function escapeTelegramMarkdownV2(text: string): string {
   return toTelegramMarkdown(text);
 }
@@ -222,24 +215,4 @@ function renderCodeFenceBlock(block: CodeFenceBlock): string {
     .join("\n");
 
   return `${fenceStart}\n${indentedCode}\n${fenceEnd}`;
-}
-
-/**
- * Escape inline code content (used inside single backticks).
- */
-export function escapeTelegramInlineCode(text: string): string {
-  if (!text) {
-    return "";
-  }
-  return text.replace(/([`\\])/g, "\\$1");
-}
-
-/**
- * Escape italic content (used inside underscores).
- */
-export function escapeTelegramItalic(text: string): string {
-  if (!text) {
-    return "";
-  }
-  return text.replace(/([_\\])/g, "\\$1");
 }

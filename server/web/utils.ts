@@ -208,13 +208,6 @@ export function deriveWebUserId(token: string, sessionId: string): number {
   return WEB_USER_ID_PREFIX + value;
 }
 
-export function resolveAllowedDirs(workspaceRoot: string): string[] {
-  const raw = process.env.ALLOWED_DIRS;
-  const list = (raw ? raw.split(",") : [workspaceRoot]).map((dir) => dir.trim()).filter(Boolean);
-  const resolved = list.map((dir) => path.resolve(dir));
-  return resolved.length > 0 ? resolved : [workspaceRoot];
-}
-
 export function sanitizeInput(input: unknown): string | null {
   if (typeof input === "string") {
     return input;

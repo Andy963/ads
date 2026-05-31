@@ -74,17 +74,6 @@ export function hashSessionToken(token: string, pepper?: string): string {
   return crypto.createHash("sha256").update(material).digest("hex");
 }
 
-export function findUserByUsername(db: DatabaseType, username: string): WebUser | null {
-  const row = db
-    .prepare(
-      `SELECT id, username, created_at, updated_at, last_login_at, disabled_at
-       FROM web_users
-       WHERE username = ?`,
-    )
-    .get(username) as WebUser | undefined;
-  return row ?? null;
-}
-
 export function findUserCredentialByUsername(db: DatabaseType, username: string): WebUserCredential | null {
   const row = db
     .prepare(
@@ -249,4 +238,27 @@ export function revokeSessionByTokenHash(options: { dbPath?: string; tokenHash: 
     )
     .run(nowSeconds, options.tokenHash);
   return (res.changes ?? 0) > 0;
+}
+
+/**
+ * 轻量复核：仅按 token_hash 判断 session 是否仍然有效（存在、未吊销、未过期）。
+ * 用于 WebSocket 长连接的周期性复核——握手时只保存 hash，避免在内存中长期持有原始 token。
+ */
+export function isSessionActiveByTokenHash(options: { dbPath?: string; tokenHash: string; nowSeconds?: number }): boolean {
+  const tokenHash = String(options.tokenHash ?? "").trim();
+  if (!tokenHash) {
+    return false;
+  }
+  const db = getDb(options.dbPath);
+  const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const row = db
+    .prepare(`SELECT revoked_at, expires_at FROM web_sessions WHERE token_hash = ?`)
+    .get(tokenHash) as { revoked_at: number | null; expires_at: number } | undefined;
+  if (!row) {
+    return false;
+  }
+  if (row.revoked_at) {
+    return false;
+  }
+  return row.expires_at > nowSeconds;
 }

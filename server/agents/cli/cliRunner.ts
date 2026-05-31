@@ -16,6 +16,11 @@ export interface CliRunOptions {
   unsetEnv?: string[];
   stdinData?: string;
   signal?: AbortSignal;
+  /**
+   * 单次运行的硬超时（毫秒）。未提供时回退到 ADS_AGENT_RUN_TIMEOUT_MS（默认 30 分钟，0 表示禁用）。
+   * 到期会向子进程发送 SIGTERM，2 秒后仍存活则 SIGKILL，以防挂死的子进程永久持有工作区锁。
+   */
+  timeoutMs?: number;
 }
 
 export type LineHandler = (parsed: unknown) => void;
@@ -151,6 +156,68 @@ function attachAbortHandler(
   return { isCancelled: () => cancelled, dispose };
 }
 
+const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * 解析单次 CLI 运行的默认超时。0（或负数视为无效→默认）表示禁用超时。
+ */
+function resolveDefaultRunTimeoutMs(): number {
+  const raw = process.env.ADS_AGENT_RUN_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_RUN_TIMEOUT_MS;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_RUN_TIMEOUT_MS;
+  }
+  return Math.floor(value);
+}
+
+/**
+ * 为子进程挂上超时定时器：到期 SIGTERM，2s 后仍存活则 SIGKILL。
+ * timeoutMs <= 0 时不启用（返回的 timedOut 恒为 false）。
+ */
+function setupRunTimeout(
+  child: ReturnType<typeof spawn>,
+  timeoutMs: number,
+): { timedOut: () => boolean; dispose: () => void } {
+  let timedOut = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  if (timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already dead */
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }, 2000);
+      killTimer.unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+  }
+
+  const dispose = () => {
+    if (timer) clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
+  };
+
+  return { timedOut: () => timedOut, dispose };
+}
+
+function appendTimeoutNotice(stderr: string, timeoutMs: number): string {
+  const notice = `[ads] CLI 运行超过 ${timeoutMs}ms 超时，子进程已被终止。`;
+  return stderr.trim() ? `${stderr}\n${notice}` : notice;
+}
+
 function emitJsonLines(rawStdout: string, onLine: LineHandler): void {
   const lines = String(rawStdout ?? "").split("\n");
   for (const rawLine of lines) {
@@ -174,7 +241,8 @@ export async function runCli(
     return await runCliViaFiles(options, onLine);
   }
 
-  const { binary, args, cwd, env, unsetEnv, stdinData, signal } = options;
+  const { binary, args, cwd, env, unsetEnv, stdinData, signal, timeoutMs } = options;
+  const effectiveTimeoutMs = timeoutMs ?? resolveDefaultRunTimeoutMs();
 
   const child = spawn(binary, args, {
     cwd,
@@ -184,10 +252,12 @@ export async function runCli(
   });
 
   const abortHandler = attachAbortHandler(child, signal);
+  const timeoutHandler = setupRunTimeout(child, effectiveTimeoutMs);
   const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
     abortHandler.dispose();
+    timeoutHandler.dispose();
     throw new Error(formatSpawnErrorHint(binary, spawnError));
   }
 
@@ -202,16 +272,34 @@ export async function runCli(
   child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 
   const rl = createInterface({ input: child.stdout! });
-  for await (const rawLine of rl) {
-    if (abortHandler.isCancelled()) {
-      rl.close();
-      child.stdout?.resume();
-      break;
+  let loopError: unknown = null;
+  try {
+    for await (const rawLine of rl) {
+      if (abortHandler.isCancelled()) {
+        child.stdout?.resume();
+        break;
+      }
+      const parsed = tryParseJsonLine(rawLine);
+      if (parsed !== null) {
+        onLine(parsed);
+      }
     }
-    const parsed = tryParseJsonLine(rawLine);
-    if (parsed !== null) {
-      onLine(parsed);
+  } catch (error) {
+    // onLine 回调或 readline 抛错：终止子进程以避免孤儿进程。
+    loopError = error;
+    try {
+      if (child.exitCode === null) child.kill("SIGTERM");
+    } catch {
+      /* already dead */
     }
+  } finally {
+    rl.close();
+  }
+
+  if (loopError) {
+    abortHandler.dispose();
+    timeoutHandler.dispose();
+    throw loopError instanceof Error ? loopError : new Error(String(loopError));
   }
 
   const exitCode = await new Promise<number | null>((resolve) => {
@@ -223,11 +311,18 @@ export async function runCli(
   });
 
   const cancelled = abortHandler.isCancelled();
+  const timedOut = timeoutHandler.timedOut();
   abortHandler.dispose();
+  timeoutHandler.dispose();
+
+  let stderr = Buffer.concat(stderrChunks).toString("utf-8");
+  if (timedOut) {
+    stderr = appendTimeoutNotice(stderr, effectiveTimeoutMs);
+  }
 
   return {
     exitCode,
-    stderr: Buffer.concat(stderrChunks).toString("utf-8"),
+    stderr,
     cancelled,
   };
 }
@@ -236,7 +331,8 @@ async function runCliViaFiles(
   options: CliRunOptions,
   onLine: LineHandler,
 ): Promise<CliRunResult> {
-  const { binary, args, cwd, env, unsetEnv, stdinData, signal } = options;
+  const { binary, args, cwd, env, unsetEnv, stdinData, signal, timeoutMs } = options;
+  const effectiveTimeoutMs = timeoutMs ?? resolveDefaultRunTimeoutMs();
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-cli-runner-"));
   const stdoutPath = path.join(tmpDir, "stdout.txt");
@@ -278,10 +374,12 @@ async function runCliViaFiles(
   }
 
   const abortHandler = attachAbortHandler(child, signal);
+  const timeoutHandler = setupRunTimeout(child, effectiveTimeoutMs);
   const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
     abortHandler.dispose();
+    timeoutHandler.dispose();
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -299,16 +397,24 @@ async function runCliViaFiles(
   });
 
   const cancelled = abortHandler.isCancelled();
+  const timedOut = timeoutHandler.timedOut();
   abortHandler.dispose();
+  timeoutHandler.dispose();
 
   const stdout = readFileLimited(stdoutPath, 32 * 1024 * 1024).text;
-  const stderr = readFileLimited(stderrPath, 32 * 1024 * 1024).text;
-  emitJsonLines(stdout, onLine);
+  let stderr = readFileLimited(stderrPath, 32 * 1024 * 1024).text;
+  if (timedOut) {
+    stderr = appendTimeoutNotice(stderr, effectiveTimeoutMs);
+  }
 
   try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    // ignore
+    emitJsonLines(stdout, onLine);
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   }
 
   return { exitCode, stderr, cancelled };

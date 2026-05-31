@@ -1,6 +1,6 @@
 import type { Input } from "./protocol/types.js";
 
-import type { AgentIdentifier, AgentRunResult, AgentSendOptions } from "./types.js";
+import type { AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { resolveAgentConfig } from "../config.js";
 import { createAbortError } from "../utils/abort.js";
@@ -192,8 +192,4 @@ export async function runCollaborativeTurn(
   } finally {
     unsubscribeExplored();
   }
-}
-
-export function isExecutorAgent(agentId: AgentIdentifier): boolean {
-  return agentId === "codex";
 }

@@ -57,6 +57,7 @@ describe("server config resolvers", () => {
     assert.strictEqual(config.maxClients, 2);
     assert.strictEqual(config.wsPingIntervalMs, 0);
     assert.strictEqual(config.wsMaxMissedPongs, 3);
+    assert.strictEqual(config.wsMaxPayloadBytes, 16 * 1024 * 1024);
     assert.strictEqual(config.sessionTimeoutMs, 24 * 60 * 60 * 1000);
     assert.strictEqual(config.sessionCleanupIntervalMs, 5 * 60 * 1000);
     assert.strictEqual(config.plannerCodexModel, "gpt-5.4");
@@ -85,6 +86,22 @@ describe("server config resolvers", () => {
     });
     assert.strictEqual(configMs.sessionTimeoutMs, 60000);
     assert.strictEqual(configMs.sessionCleanupIntervalMs, 12345);
+  });
+
+  it("reads and floors the websocket max payload override", () => {
+    const config = resolveWebConfig({
+      env: {
+        ADS_WEB_WS_MAX_PAYLOAD_BYTES: "1048576.7",
+      },
+    });
+    assert.strictEqual(config.wsMaxPayloadBytes, 1048576);
+
+    const tooSmall = resolveWebConfig({
+      env: {
+        ADS_WEB_WS_MAX_PAYLOAD_BYTES: "10",
+      },
+    });
+    assert.strictEqual(tooSmall.wsMaxPayloadBytes, 1024);
   });
 
   it("applies agent defaults when flags are missing or invalid", () => {

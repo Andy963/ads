@@ -6,7 +6,7 @@ import type { Input } from '../../agents/protocol/types.js';
 import type { SessionManager } from '../utils/sessionManager.js';
 import type { AgentEvent } from '../../codex/events.js';
 import { downloadTelegramImage, cleanupImages } from '../utils/imageHandler.js';
-import { downloadTelegramFile, cleanupFiles, uploadFileToTelegram } from '../utils/fileHandler.js';
+import { downloadTelegramFile, cleanupFiles } from '../utils/fileHandler.js';
 import { processUrls } from '../utils/urlHandler.js';
 import { InterruptManager } from '../utils/interruptManager.js';
 import { escapeTelegramMarkdownV2 } from '../../utils/markdown.js';
@@ -483,25 +483,6 @@ export async function handleCodexMessage(
       });
     });
     await statusUpdater.cleanup();
-  }
-}
-
-/**
- * 发送文件给用户
- */
-export async function sendFileToUser(
-  ctx: Context,
-  filePath: string,
-  caption?: string
-): Promise<void> {
-  const chatId = ctx.chat?.id;
-  if (typeof chatId !== 'number') {
-    throw new Error('发送文件失败: 无法识别 chat.id');
-  }
-  try {
-    await uploadFileToTelegram(ctx.api, chatId, filePath, caption);
-  } catch (error) {
-    throw new Error(`发送文件失败: ${(error as Error).message}`);
   }
 }
 

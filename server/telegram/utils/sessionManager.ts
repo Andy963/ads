@@ -1,12 +1,10 @@
 import type { SandboxMode } from '../config.js';
 import { createLogger } from '../../utils/logger.js';
-import type { AgentEvent } from '../../codex/events.js';
-import type { Input } from '../../agents/protocol/types.js';
 import { CodexCliAdapter } from '../../agents/adapters/codexCliAdapter.js';
 import { CodexAppServerAdapter } from '../../agents/adapters/codexAppServerAdapter.js';
 import { ClaudeCliAdapter } from '../../agents/adapters/claudeCliAdapter.js';
 import { GeminiCliAdapter } from '../../agents/adapters/geminiCliAdapter.js';
-import type { AgentAdapter, AgentIdentifier, AgentRunResult, AgentSendOptions } from '../../agents/types.js';
+import type { AgentAdapter, AgentIdentifier } from '../../agents/types.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
 import { ThreadStorage } from './threadStorage.js';
@@ -96,21 +94,6 @@ export function resolveSessionAgentAllowlist(
     }
     return true;
   });
-}
-
-export interface SessionWrapper {
-  send(prompt: Input, options?: AgentSendOptions): Promise<AgentRunResult>;
-  onEvent(handler: (event: AgentEvent) => void): () => void;
-  getThreadId(): string | null;
-  reset(): void;
-  setModel(model?: string): void;
-  setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
-  status(): { ready: boolean; error?: string; streaming: boolean };
-  getActiveAgentId(): string;
-  listAgents(): Array<{
-    metadata: { id: string; name: string };
-    status: { ready: boolean; error?: string };
-  }>;
 }
 
 function resolveResumeTtlMs(): number {

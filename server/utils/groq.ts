@@ -18,8 +18,3 @@ export function resolveGroqBaseUrl(env: NodeJS.ProcessEnv = process.env): string
   );
 }
 
-export function resolveGroqWhisperModel(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = String(env.ADS_GROQ_WHISPER_MODEL ?? env.GROQ_WHISPER_MODEL ?? "whisper-large-v3").trim();
-  return raw || "whisper-large-v3";
-}
-

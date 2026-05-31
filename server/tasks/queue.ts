@@ -2,11 +2,14 @@ import { EventEmitter } from "node:events";
 
 import { createAbortError, isAbortError } from "../utils/abort.js";
 import { getErrorMessage } from "../utils/error.js";
+import { createLogger } from "../utils/logger.js";
 
 import type { TaskStore } from "./store.js";
 import type { Task } from "./types.js";
 import type { TaskExecutor } from "./executor.js";
 import type { TaskQueueEventMap, TaskQueueEventName } from "./events.js";
+
+const logger = createLogger("TaskQueue");
 
 export class TaskQueue extends EventEmitter {
   private readonly store: TaskStore;
@@ -30,7 +33,15 @@ export class TaskQueue extends EventEmitter {
   }
 
   override emit<E extends TaskQueueEventName>(event: E, payload: TaskQueueEventMap[E]): boolean {
-    return super.emit(event, payload);
+    try {
+      return super.emit(event, payload);
+    } catch (error) {
+      // A throwing listener must never break the queue's control flow — e.g. a failing
+      // broadcast on the terminal "task:completed" event must not be caught by runLoop's
+      // try/catch and mistaken for a task failure (which would retry/cancel a done task).
+      logger.warn(`[TaskQueue] listener for "${String(event)}" threw: ${getErrorMessage(error)}`);
+      return false;
+    }
   }
 
   start(): Promise<void> {

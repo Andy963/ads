@@ -23,14 +23,6 @@ export interface WorkspaceState {
   branch?: string;
 }
 
-export interface CommandPayload {
-  id?: string;
-  command?: string;
-  status?: string;
-  exit_code?: number;
-  outputDelta?: string;
-}
-
 export interface ImagePersistResult {
   ok: true;
   path: string;

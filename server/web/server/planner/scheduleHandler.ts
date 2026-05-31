@@ -176,22 +176,3 @@ export async function processScheduleOutput(args: {
   const scheduleSummary = scheduleSummaries.join("\n");
   return base ? `${base}\n\n${scheduleSummary}` : scheduleSummary;
 }
-
-export async function processPlannerScheduleOutput(args: {
-  outputForChat: string;
-  isPlannerDraftCommand: boolean;
-  workspaceRoot: string;
-  scheduleCompiler?: ScheduleCompiler;
-  scheduler?: SchedulerRuntime;
-  logger: Logger;
-}): Promise<string> {
-  return await processScheduleOutput({
-    outputForChat: args.outputForChat,
-    isDraftCommand: args.isPlannerDraftCommand,
-    workspaceRoot: args.workspaceRoot,
-    scheduleCompiler: args.scheduleCompiler,
-    scheduler: args.scheduler,
-    logger: args.logger,
-    source: "planner",
-  });
-}
