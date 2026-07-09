@@ -52,6 +52,130 @@ describe("CodexCliAdapter", () => {
     }, /boom/);
   });
 
+  it("retries high-demand upstream errors with the same prompt", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      'prompts_file="$dir/prompts.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      'prompt="$(cat || true)"',
+      'printf "%s\\n---\\n" "$prompt" >>"$prompts_file"',
+      'if [[ "$count" -eq 1 ]]; then',
+      '  echo \'{"type":"thread.started","thread_id":"t-retry"}\'',
+      '  echo \'{"type":"turn.started"}\'',
+      '  echo \'{"type":"error","message":"reconnecting... 5/5"}\'',
+      '  echo \'{"type":"turn.failed","error":{"message":"5 reconnect attempts failed: We\\u0027re currently experiencing high demand, which may cause temporary errors"}}\'',
+      "  exit 0",
+      "fi",
+      'echo \'{"type":"thread.started","thread_id":"t-retry"}\'',
+      'echo \'{"type":"turn.started"}\'',
+      'echo \'{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}\'',
+      'echo \'{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary });
+    const result = await adapter.send("hello");
+    assert.equal(result.response, "OK");
+
+    const dir = path.dirname(binary);
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+    const prompts = await fs.readFile(path.join(dir, "prompts.txt"), "utf-8");
+    assert.equal(prompts, "hello\n---\nhello\n---\n");
+  });
+
+  it("retries HTTP 429 from stdout with the same prompt", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      'prompts_file="$dir/prompts.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      'prompt="$(cat || true)"',
+      'printf "%s\\n---\\n" "$prompt" >>"$prompts_file"',
+      'if [[ "$count" -eq 1 ]]; then',
+      '  echo "HTTP 429 Too Many Requests"',
+      "  exit 1",
+      "fi",
+      'echo \'{"type":"thread.started","thread_id":"t-retry-429"}\'',
+      'echo \'{"type":"turn.started"}\'',
+      'echo \'{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK 429"}}\'',
+      'echo \'{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary });
+    const result = await adapter.send("hello 429");
+    assert.equal(result.response, "OK 429");
+
+    const dir = path.dirname(binary);
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+    const prompts = await fs.readFile(path.join(dir, "prompts.txt"), "utf-8");
+    assert.equal(prompts, "hello 429\n---\nhello 429\n---\n");
+  });
+
+  it("does not retry BYOK 500 capacity errors", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"thread.started","thread_id":"t-byok"}\'',
+      'echo \'{"type":"turn.started"}\'',
+      'echo \'{"type":"turn.failed","error":{"message":"BYOK Error: 500 当前模型 gpt-5.5 负载已经达到上限，请稍后重试\\n\\nUpstream error: 当前模型 gpt-5.5 负载已经达到上限，请稍后重试"}}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary });
+    await assert.rejects(adapter.send("hello"), /BYOK Error: 500/);
+    const countRaw = await fs.readFile(path.join(path.dirname(binary), "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 1);
+  });
+
+  it("does not retry upstream errors after command execution starts", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"thread.started","thread_id":"t-no-retry"}\'',
+      'echo \'{"type":"turn.started"}\'',
+      'echo \'{"type":"item.started","item":{"id":"cmd_0","type":"command_execution","command":"date","status":"in_progress"}}\'',
+      'echo \'{"type":"turn.failed","error":{"message":"We\\u0027re currently experiencing high demand, which may cause temporary errors"}}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary });
+    await assert.rejects(adapter.send("hello"), /high demand/);
+    const countRaw = await fs.readFile(path.join(path.dirname(binary), "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 1);
+  });
+
   it("forces --sandbox read-only for exec resume", async () => {
     const binary = await createExecutableScript([
       "#!/usr/bin/env bash",

@@ -117,8 +117,39 @@ describe("web/ws/promptErrorHandling", () => {
       const errorInfo = result.errorInfo as Record<string, unknown>;
       assert.equal(errorInfo.code, "rate_limit");
       assert.equal(errorInfo.retryable, true);
+      assert.equal(errorInfo.originalError, undefined);
     } finally {
       historyStore.clear("h4");
+    }
+  });
+
+  it("does not broadcast raw Claude JSONL details to chat", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-error-jsonl", maxEntriesPerSession: 20 });
+    const rawClaudeOutput = [
+      '{"type":"system","subtype":"init","session_id":"sid"}',
+      '{"type":"system","subtype":"api_retry","attempt":10,"max_retries":10,"error_status":429,"error":"rate_limit"}',
+      '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"API Error: Request rejected (429) · Service Unavailable"}',
+    ].join("\n");
+
+    try {
+      handlePromptError({
+        error: new Error(rawClaudeOutput),
+        aborted: false,
+        sessionLogger: null,
+        logger: { info: () => {}, warn: () => {}, debug: () => {} },
+        historyStore,
+        historyKey: "h-jsonl",
+        sendToChat: (payload) => sent.push(payload),
+      });
+
+      const result = sent[0] as Record<string, unknown>;
+      assert.equal(result.message, "API 请求频率过高，请稍后重试");
+      const errorInfo = result.errorInfo as Record<string, unknown>;
+      assert.equal(errorInfo.code, "rate_limit");
+      assert.equal(errorInfo.originalError, undefined);
+    } finally {
+      historyStore.clear("h-jsonl");
     }
   });
 

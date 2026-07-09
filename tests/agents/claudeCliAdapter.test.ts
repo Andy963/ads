@@ -178,6 +178,249 @@ describe("ClaudeCliAdapter", () => {
     assert.ok(captured.warn.some((line) => line.includes("hasFinalMessage=false")));
   });
 
+  it("returns Claude final message when the CLI exits non-zero without stderr", async () => {
+    const { binary } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"assistant","message":{"content":[{"type":"text","text":"Claude reported a recoverable final message"}]}}\'',
+      "exit 1",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    const error = captured.error;
+
+    assert.equal(captured.result, undefined);
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, "Claude reported a recoverable final message");
+    assert.ok(captured.warn.some((line) => line.includes("[Claude CLI] request failed")));
+    assert.ok(captured.warn.some((line) => line.includes("exitCode=1")));
+    assert.ok(captured.warn.some((line) => line.includes("stderr=\"(empty)\"")));
+    assert.ok(captured.warn.some((line) => line.includes("hasFinalMessage=true")));
+  });
+
+  it("retries Claude 429 service unavailable errors with the same prompt", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      'prompts_file="$dir/prompts.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      'args=("$@")',
+      'prompt="${args[$(( ${#args[@]} - 1 ))]}"',
+      'printf "%s\\n---\\n" "$prompt" >>"$prompts_file"',
+      "cat >/dev/null || true",
+      'if [[ "$count" -eq 1 ]]; then',
+      '  echo "API Error: Request rejected (429) · Service Unavailable" >&2',
+      "  exit 1",
+      "fi",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    assert.equal(captured.result?.response, "OK");
+
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+    const prompts = await fs.readFile(path.join(dir, "prompts.txt"), "utf-8");
+    assert.equal(prompts, "hello\n---\nhello\n---\n");
+  });
+
+  it("retries Claude 429 service unavailable errors emitted on stdout", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      "cat >/dev/null || true",
+      'if [[ "$count" -eq 1 ]]; then',
+      '  echo "API Error: Request rejected (429) · Service Unavailable"',
+      "  exit 1",
+      "fi",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    assert.equal(captured.result?.response, "OK");
+
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+  });
+
+  it("retries Claude JSON stream upstream errors with no final message", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      'prompts_file="$dir/prompts.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      'args=("$@")',
+      'prompt="${args[$(( ${#args[@]} - 1 ))]}"',
+      'printf "%s\\n---\\n" "$prompt" >>"$prompts_file"',
+      "cat >/dev/null || true",
+      'if [[ "$count" -eq 1 ]]; then',
+      '  echo \'{"type":"error","message":"API Error: Request rejected (429): Service unavailable"}\'',
+      "  exit 0",
+      "fi",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    assert.equal(captured.result?.response, "OK");
+
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+    const prompts = await fs.readFile(path.join(dir, "prompts.txt"), "utf-8");
+    assert.equal(prompts, "hello\n---\nhello\n---\n");
+  });
+
+  it("retries Claude CLI synthetic 429 success results with the same prompt", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      'prompts_file="$dir/prompts.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      'args=("$@")',
+      'prompt="${args[$(( ${#args[@]} - 1 ))]}"',
+      'printf "%s\\n---\\n" "$prompt" >>"$prompts_file"',
+      "cat >/dev/null || true",
+      'if [[ "$count" -eq 1 ]]; then',
+      '  echo \'{"type":"system","subtype":"init","session_id":"sid-rate-limit"}\'',
+      '  echo \'{"type":"system","subtype":"api_retry","attempt":10,"max_retries":10,"error_status":429,"error":"rate_limit","session_id":"sid-rate-limit"}\'',
+      '  echo \'{"type":"assistant","message":{"content":[{"type":"text","text":"API Error: Request rejected (429) · Service Unavailable"}]},"session_id":"sid-rate-limit","error":"rate_limit"}\'',
+      '  echo \'{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"API Error: Request rejected (429) · Service Unavailable","session_id":"sid-rate-limit"}\'',
+      "  exit 0",
+      "fi",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid-ok"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    assert.equal(captured.result?.response, "OK");
+
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+    const prompts = await fs.readFile(path.join(dir, "prompts.txt"), "utf-8");
+    assert.equal(prompts, "hello\n---\nhello\n---\n");
+  });
+
+  it("does not retry resumed Claude sessions after the prompt reaches the session", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid-resume"}\'',
+      'echo \'{"type":"error","message":"API Error: Request rejected (429): Service unavailable"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary, sessionId: "sid-resume" });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    assert.ok(captured.error instanceof Error);
+    assert.match(captured.error.message, /Request rejected \(429\)/);
+
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 1);
+  });
+
+  it("retries resumed Claude preflight upstream errors before any session event", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      "cat >/dev/null || true",
+      'if [[ "$count" -eq 1 ]]; then',
+      '  echo "API Error: Request rejected (429): Service unavailable" >&2',
+      "  exit 1",
+      "fi",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid-resume"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary, sessionId: "sid-resume" });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    assert.equal(captured.result?.response, "OK");
+
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+  });
+
+  it("does not retry Claude transient errors after command execution starts", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'count_file="$dir/count.txt"',
+      "count=0",
+      'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+      "count=$((count+1))",
+      'echo "$count" >"$count_file"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"date"}}]}}\'',
+      'echo "API Error: Request rejected (429) · Service Unavailable" >&2',
+      "exit 1",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    const captured = await captureConsole(async () => adapter.send("hello"));
+    assert.ok(captured.error instanceof Error);
+    assert.match(captured.error.message, /Request rejected \(429\)/);
+
+    const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+    assert.equal(Number.parseInt(countRaw.trim(), 10), 1);
+  });
+
   it("unsets CLAUDECODE env var when spawning Claude CLI", async () => {
     const previous = process.env.CLAUDECODE;
     process.env.CLAUDECODE = "1";
@@ -209,7 +452,7 @@ describe("ClaudeCliAdapter", () => {
     }
   });
 
-  it("enables 1m context for Claude 4.6 and 4.7 models", async () => {
+  it("does not enable 1m context by default for Claude 4.6 and 4.7 models", async () => {
     const { binary, dir } = await createExecutableScript([
       "#!/usr/bin/env bash",
       "set -euo pipefail",
@@ -229,10 +472,10 @@ describe("ClaudeCliAdapter", () => {
     const args = (await fs.readFile(path.join(dir, "args.txt"), "utf-8")).split(/\r?\n/).filter(Boolean);
     const modelIndex = args.indexOf("--model");
     assert.notEqual(modelIndex, -1);
-    assert.equal(args[modelIndex + 1], "claude-sonnet-4-6[1m]");
+    assert.equal(args[modelIndex + 1], "claude-sonnet-4-6");
   });
 
-  it("can disable the automatic 1m model suffix through model config", async () => {
+  it("enables 1m context when explicitly requested through model config", async () => {
     const { binary, dir } = await createExecutableScript([
       "#!/usr/bin/env bash",
       "set -euo pipefail",
@@ -246,7 +489,31 @@ describe("ClaudeCliAdapter", () => {
     ].join("\n"));
 
     const adapter = new ClaudeCliAdapter({ binary, model: "claude-sonnet-4-6" });
-    adapter.setModelConfig({ disable1mContext: true });
+    adapter.setModelConfig({ enable1mContext: true });
+    const result = await adapter.send("hello");
+    assert.equal(result.response, "OK");
+
+    const args = (await fs.readFile(path.join(dir, "args.txt"), "utf-8")).split(/\r?\n/).filter(Boolean);
+    const modelIndex = args.indexOf("--model");
+    assert.notEqual(modelIndex, -1);
+    assert.equal(args[modelIndex + 1], "claude-sonnet-4-6[1m]");
+  });
+
+  it("lets disable1mContext override explicit 1m context enablement", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'printf "%s\\n" "$@" >"$dir/args.txt"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary, model: "claude-sonnet-4-6" });
+    adapter.setModelConfig({ enable1mContext: true, disable1mContext: true });
     const result = await adapter.send("hello");
     assert.equal(result.response, "OK");
 

@@ -1209,7 +1209,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       finalizeAssistant("", rt);
 
       const errorInfo = msg.errorInfo && typeof msg.errorInfo === "object"
-        ? (msg.errorInfo as { code?: string; retryable?: boolean; needsReset?: boolean; originalError?: string })
+        ? (msg.errorInfo as { code?: string; retryable?: boolean; needsReset?: boolean })
         : undefined;
 
       const userMessage = String(msg.message ?? "error");
@@ -1217,10 +1217,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         ? `⚠️ ${userMessage}\n\n` +
           `错误类型: ${errorInfo.code ?? "unknown"}\n` +
           (errorInfo.retryable ? "💡 可以重试\n" : "") +
-          (errorInfo.needsReset ? "⚠️ 建议使用 /reset 重置会话\n" : "") +
-          (errorInfo.originalError && errorInfo.originalError !== userMessage
-            ? `\n详细信息: ${errorInfo.originalError}`
-            : "")
+          (errorInfo.needsReset ? "⚠️ 建议使用 /reset 重置会话\n" : "")
         : userMessage;
 
       pushMessageBeforeLive({ role: "system", kind: "error", content: errorContent }, rt);

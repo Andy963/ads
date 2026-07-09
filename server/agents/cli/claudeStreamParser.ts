@@ -32,6 +32,18 @@ function extractNestedMessage(obj: Record<string, unknown>, keys: string[]): str
   return undefined;
 }
 
+function extractTextContent(items: unknown[]): string {
+  return items
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return "";
+      if (String(rec.type ?? "").toLowerCase() !== "text") return "";
+      return typeof rec.text === "string" ? rec.text : "";
+    })
+    .filter(Boolean)
+    .join("");
+}
+
 export class ClaudeStreamParser {
   private agentMessage = "";
   private reasoning = "";
@@ -90,6 +102,14 @@ export class ClaudeStreamParser {
   private parseAssistant(obj: Record<string, unknown>, payload: unknown): AgentEvent[] {
     const content = this.extractContent(obj);
     if (!content) return [];
+
+    const explicitError = extractStringField(obj, ["error", "reason"]);
+    if (explicitError) {
+      const text = extractTextContent(content).trim();
+      const message = text || explicitError;
+      this.lastError = message;
+      return mapEvent(attachCliPayload({ type: "error", message } as unknown as ThreadEvent, payload));
+    }
 
     const events: AgentEvent[] = [];
     for (const item of content) {
@@ -375,13 +395,16 @@ export class ClaudeStreamParser {
 
     if (subtype === "success") {
       const errorVal = obj.error;
+      const hasApiErrorStatus = obj.api_error_status !== undefined || obj.error_status !== undefined;
       const hasError =
+        obj.is_error === true ||
+        hasApiErrorStatus ||
         (typeof errorVal === "string" && errorVal.trim()) ||
         (errorVal !== undefined && errorVal !== null && typeof errorVal === "object") ||
         (typeof obj.reason === "string" && obj.reason.trim()) ||
         (typeof obj.message === "string" && obj.message.trim());
       if (hasError) {
-        const message = extractNestedMessage(obj, ["error", "reason", "message"]) ?? "claude result error";
+        const message = extractNestedMessage(obj, ["error", "reason", "message", "result"]) ?? "claude result error";
         this.lastError = message;
         const failed = attachCliPayload(
           { type: "turn.failed", error: { message } } as unknown as ThreadEvent,

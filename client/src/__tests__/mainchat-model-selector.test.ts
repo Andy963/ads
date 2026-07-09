@@ -52,7 +52,7 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
-  it("shows the execution context on user messages", () => {
+  it("does not show execution context under user messages", () => {
     const wrapper = mount(MainChat, {
       props: {
         ...baseProps,
@@ -79,9 +79,10 @@ describe("MainChat model selector", () => {
       global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
-    const text = wrapper.find(".msgExecutionMeta").text();
-    expect(text).toContain("Agent: claude (requested: codex)");
-    expect(text).toContain("Model: claude-sonnet (requested: gpt-4.1)");
+    expect(wrapper.find(".msgExecutionMeta").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Agent:");
+    expect(wrapper.text()).not.toContain("Model:");
+    expect(wrapper.text()).not.toContain("Reasoning:");
     wrapper.unmount();
   });
 

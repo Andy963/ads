@@ -16,6 +16,12 @@ import { ClaudeStreamParser } from "../cli/claudeStreamParser.js";
 import { createLogger } from "../../utils/logger.js";
 import { extractTextFromInput } from "../../utils/inputText.js";
 import { createAbortError } from "../../utils/abort.js";
+import {
+  isTransientUpstreamModelError,
+  TransientModelRetryAttemptError,
+  runWithTransientModelRetry,
+  type RetryAttemptState,
+} from "./transientModelRetry.js";
 
 const logger = createLogger("ClaudeCliAdapter");
 const CLAUDE_UNSET_ENV = ["CLAUDECODE"];
@@ -52,9 +58,13 @@ function appendImageReferencesToPrompt(args: { prompt: string; imagePaths: strin
   return `${basePrompt}\n\nAttached images (local paths):\n${lines.join("\n")}\n`;
 }
 
-function resolveClaudeModelForCli(model: string, options?: { disable1mContext?: boolean }): string {
+function resolveClaudeModelForCli(
+  model: string,
+  options?: { enable1mContext?: boolean; disable1mContext?: boolean },
+): string {
   const normalized = String(model ?? "").trim();
   if (!normalized || options?.disable1mContext) return normalized;
+  if (options?.enable1mContext !== true) return normalized;
   const lower = normalized.toLowerCase();
   if (lower.includes("[1m]")) return normalized;
   if (/^claude-(sonnet|opus)-4-[67](?:\b|$)/.test(lower)) {
@@ -68,6 +78,24 @@ function summarizeStderr(stderr: string, maxLength = 200): string {
   if (!normalized) return "(empty)";
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function buildFailureMessage(args: {
+  parserError: string | null;
+  finalMessage: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}): string {
+  const parserError = String(args.parserError ?? "").trim();
+  if (parserError) return parserError;
+  const stderr = String(args.stderr ?? "").trim();
+  if (stderr) return stderr;
+  const finalMessage = String(args.finalMessage ?? "").trim();
+  if (finalMessage) return finalMessage;
+  const stdout = String(args.stdout ?? "").trim();
+  if (stdout) return stdout;
+  return `claude exited with code ${args.exitCode}`;
 }
 
 export interface ClaudeCliAdapterOptions {
@@ -95,6 +123,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
   private workingDirectory?: string;
   private model?: string;
   private betas: string[] = [];
+  private enable1mContext = false;
   private disable1mContext = false;
   private sessionId: string | null;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
@@ -167,8 +196,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
     const betas = Array.isArray(rawBetas)
       ? rawBetas.map((entry) => String(entry ?? "").trim()).filter(Boolean)
       : [];
+    const enable1mContext = cfg.enable1mContext === true;
     const disable1mContext = cfg.disable1mContext === true;
     if (
+      this.enable1mContext === enable1mContext &&
       this.disable1mContext === disable1mContext &&
       this.betas.length === betas.length &&
       this.betas.every((entry, index) => entry === betas[index])
@@ -176,6 +207,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       return;
     }
     this.betas = betas;
+    this.enable1mContext = enable1mContext;
     this.disable1mContext = disable1mContext;
     this.reset();
   }
@@ -230,7 +262,13 @@ export class ClaudeCliAdapter implements AgentAdapter {
       args.push("--resume", sessionId);
     }
     if (this.model) {
-      args.push("--model", resolveClaudeModelForCli(this.model, { disable1mContext: this.disable1mContext }));
+      args.push(
+        "--model",
+        resolveClaudeModelForCli(this.model, {
+          enable1mContext: this.enable1mContext,
+          disable1mContext: this.disable1mContext,
+        }),
+      );
     }
     if (this.betas.length > 0) {
       args.push("--betas", ...this.betas);
@@ -243,70 +281,111 @@ export class ClaudeCliAdapter implements AgentAdapter {
     }
     args.push(promptWithImages);
 
-    const parser = new ClaudeStreamParser();
-    let sawTurnFailed = false;
-    logger.info(`sending Claude request session=${sessionId ?? "(new)"} mode=${permissionMode}`);
+    const runAttempt = async (retryState: RetryAttemptState): Promise<AgentRunResult> => {
+      const parser = new ClaudeStreamParser();
+      let sawTurnFailed = false;
+      let resumedPromptAccepted = false;
+      logger.info(
+        `sending Claude request session=${sessionId ?? "(new)"} mode=${permissionMode} attempt=${retryState.attempt}`,
+      );
 
-    const result = await runCli(
-      {
-        binary: this.binary,
-        args,
-        cwd: this.workingDirectory,
-        env: options?.env,
-        unsetEnv: CLAUDE_UNSET_ENV,
-        stdinData: "\n",
-        signal: options?.signal,
-      },
-      (parsed) => {
-        for (const event of parser.parseLine(parsed)) {
-          const rawType = (event.raw as { type?: unknown } | undefined)?.type;
-          if (rawType === "turn.failed") {
-            sawTurnFailed = true;
-          }
-          this.emitEvent(event);
+      const buildAttemptError = (message: string): Error => {
+        if (sessionId && resumedPromptAccepted && isTransientUpstreamModelError(message)) {
+          return new TransientModelRetryAttemptError(message, {
+            retryable: true,
+            sideEffectObserved: true,
+          });
         }
-      },
-    );
+        return new Error(message);
+      };
 
-    if (result.cancelled) {
-      throw createAbortError("用户中断了请求");
-    }
-
-    const finalMessage = parser.getFinalMessage();
-    const hasFinalMessage = finalMessage.length > 0;
-    const stderrSummary = summarizeStderr(result.stderr);
-
-    if (result.exitCode !== 0 || sawTurnFailed) {
-      logger.warn(
-        `[Claude CLI] request failed session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+      const result = await runCli(
+        {
+          binary: this.binary,
+          args,
+          cwd: this.workingDirectory,
+          env: options?.env,
+          unsetEnv: CLAUDE_UNSET_ENV,
+          stdinData: "\n",
+          signal: options?.signal,
+        },
+        (parsed) => {
+          for (const event of parser.parseLine(parsed)) {
+            if (sessionId && (event.phase === "boot" || event.phase === "analysis" || event.phase === "responding")) {
+              resumedPromptAccepted = true;
+            }
+            retryState.markSideEffect(event);
+            const rawType = (event.raw as { type?: unknown } | undefined)?.type;
+            if (rawType === "turn.failed") {
+              sawTurnFailed = true;
+            }
+            this.emitEvent(event);
+          }
+        },
       );
-      const message = parser.getLastError() ?? (result.stderr.trim() || `claude exited with code ${result.exitCode}`);
-      throw new Error(message);
-    }
 
-    const nextSessionId = parser.getSessionId();
-    if (nextSessionId && nextSessionId.trim()) {
-      this.sessionId = nextSessionId.trim();
-    } else if (!this.sessionId) {
-      logger.warn("Claude CLI did not provide a session id; multi-turn resume will be unavailable");
-    }
+      if (result.cancelled) {
+        throw createAbortError("用户中断了请求");
+      }
 
-    if (!hasFinalMessage) {
-      logger.warn(
-        `[Claude CLI] request completed without final message session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+      const finalMessage = parser.getFinalMessage();
+      const hasFinalMessage = finalMessage.length > 0;
+      const stderrSummary = summarizeStderr(result.stderr);
+
+      if (result.exitCode !== 0 || sawTurnFailed) {
+        logger.warn(
+          `[Claude CLI] request failed session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+        );
+        const message = buildFailureMessage({
+          parserError: parser.getLastError(),
+          finalMessage,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+        });
+        throw buildAttemptError(message);
+      }
+
+      const nextSessionId = parser.getSessionId();
+      if (nextSessionId && nextSessionId.trim()) {
+        this.sessionId = nextSessionId.trim();
+      } else if (!this.sessionId) {
+        logger.warn("Claude CLI did not provide a session id; multi-turn resume will be unavailable");
+      }
+
+      if (!hasFinalMessage) {
+        const parserError = parser.getLastError();
+        if (parserError) {
+          logger.warn(
+            `[Claude CLI] request completed with stream error session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+          );
+          throw buildAttemptError(parserError);
+        }
+        logger.warn(
+          `[Claude CLI] request completed without final message session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
+        );
+        throw new Error(stderrSummary === "(empty)" ? EMPTY_RESPONSE_ERROR : `${EMPTY_RESPONSE_ERROR}（stderr: ${stderrSummary}）`);
+      }
+
+      logger.info(
+        `[Claude CLI] request completed session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
       );
-      throw new Error(stderrSummary === "(empty)" ? EMPTY_RESPONSE_ERROR : `${EMPTY_RESPONSE_ERROR}（stderr: ${stderrSummary}）`);
-    }
 
-    logger.info(
-      `[Claude CLI] request completed session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
-    );
-
-    return {
-      response: finalMessage,
-      usage: null,
-      agentId: this.id,
+      return {
+        response: finalMessage,
+        usage: null,
+        agentId: this.id,
+      };
     };
+
+    return await runWithTransientModelRetry(
+      {
+        agentName: "Claude CLI",
+        signal: options?.signal,
+        log: (message) => logger.warn(message),
+      },
+      runAttempt,
+    );
   }
 
   private emitEvent(event: AgentEvent): void {

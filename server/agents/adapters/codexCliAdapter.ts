@@ -13,6 +13,10 @@ import type { SandboxMode } from "../../telegram/config.js";
 import { runCli } from "../cli/cliRunner.js";
 import { createLogger } from "../../utils/logger.js";
 import { createAbortError, isAbortError } from "../../utils/abort.js";
+import {
+  runWithTransientModelRetry,
+  type RetryAttemptState,
+} from "./transientModelRetry.js";
 
 const logger = createLogger("CodexCliAdapter");
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -265,7 +269,7 @@ export class CodexCliAdapter implements AgentAdapter {
     })();
     const spawnEnv = normalizeSpawnEnv(mergedEnv);
 
-    const runAttempt = async (useResume: boolean): Promise<AgentRunResult> => {
+    const runAttempt = async (useResume: boolean, retryState: RetryAttemptState): Promise<AgentRunResult> => {
       const args = this.buildArgs({ images, useResume });
 
       let nextThreadId: string | null = null;
@@ -288,6 +292,7 @@ export class CodexCliAdapter implements AgentAdapter {
             return;
           }
           const event = parsed;
+          retryState.markSideEffect(event);
 
           if (event.type === "thread.started") {
             const id = (event as { thread_id?: unknown }).thread_id;
@@ -342,9 +347,10 @@ export class CodexCliAdapter implements AgentAdapter {
       }
 
       if (result.exitCode !== 0 || sawTurnFailed) {
+        const fallbackOutput = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n");
         const message =
           streamError ??
-          (result.stderr.trim() ||
+          (fallbackOutput ||
             (sawTurnFailed ? "codex reported failure" : `codex exited with code ${result.exitCode}`));
         throw new Error(message);
       }
@@ -361,7 +367,14 @@ export class CodexCliAdapter implements AgentAdapter {
     };
 
     try {
-      return await runAttempt(shouldResume);
+      return await runWithTransientModelRetry(
+        {
+          agentName: "Codex CLI",
+          signal: options?.signal,
+          log: (message) => logger.warn(message),
+        },
+        (retryState) => runAttempt(shouldResume, retryState),
+      );
     } catch (error) {
       if (!shouldResume) {
         throw error;

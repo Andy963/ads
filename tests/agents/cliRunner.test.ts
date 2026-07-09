@@ -18,6 +18,21 @@ describe("cliRunner", () => {
     assert.deepEqual(lines, [{ type: "a" }, { type: "b", value: 1 }]);
   });
 
+  it("returns raw stdout from streamed runs", async () => {
+    const node = process.execPath;
+    const script = [
+      "console.log('API Error: Request rejected (429) · Service Unavailable')",
+      "console.log('{\"type\":\"ok\"}')",
+    ].join(";");
+    const lines: unknown[] = [];
+
+    const result = await runCli({ binary: node, args: ["-e", script] }, (parsed) => lines.push(parsed));
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'API Error: Request rejected (429) · Service Unavailable\n{"type":"ok"}');
+    assert.deepEqual(lines, [{ type: "ok" }]);
+  });
+
   it("captures raw stdout for non-JSON commands", async () => {
     const node = process.execPath;
     const script = "process.stdout.write('hello\\nworld\\n'); process.stderr.write('err')";

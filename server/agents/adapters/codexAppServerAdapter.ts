@@ -24,6 +24,10 @@ import type { ThreadGoalSetResponse } from "../../codex/appServer/protocol/v2/Th
 import type { ThreadGoalGetResponse } from "../../codex/appServer/protocol/v2/ThreadGoalGetResponse.js";
 import type { ThreadGoalClearResponse } from "../../codex/appServer/protocol/v2/ThreadGoalClearResponse.js";
 import type { ThreadGoalUpdatedNotification } from "../../codex/appServer/protocol/v2/ThreadGoalUpdatedNotification.js";
+import {
+  runWithTransientModelRetry,
+  type RetryAttemptState,
+} from "./transientModelRetry.js";
 
 const logger = createLogger("CodexAppServerAdapter");
 
@@ -441,6 +445,21 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    return await runWithTransientModelRetry(
+      {
+        agentName: "Codex app-server",
+        signal: options?.signal,
+        log: (message) => logger.warn(message),
+      },
+      (retryState) => this.sendOnce(input, options, retryState),
+    );
+  }
+
+  private async sendOnce(
+    input: Input,
+    options: AgentSendOptions | undefined,
+    retryState: RetryAttemptState,
+  ): Promise<AgentRunResult> {
     const userInput = inputToUserInput(input);
     const promptCharCount = userInput
       .filter((p) => p.type === "text")
@@ -524,6 +543,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const item = (params as { item?: unknown }).item;
         const translated = translateItem(item);
         if (translated) {
+          retryState.markSideEffect(translated);
           emit({ type: "item.started", item: translated });
         }
       }),
@@ -533,6 +553,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const item = (params as { item?: unknown }).item;
         const translated = translateItem(item);
         if (!translated) return;
+        retryState.markSideEffect(translated);
         if (translated.type === "agent_message" && typeof translated.text === "string") {
           // The completed agent_message carries the canonical final text.
           state.responseText = translated.text;

@@ -335,44 +335,6 @@ function closeFilePreview(): void {
   filePreviewTarget.value = null;
 }
 
-function formatReasoningEffort(effort: unknown): string {
-  const normalized = String(effort ?? "").trim().toLowerCase();
-  if (normalized === "xhigh") return "xhigh";
-  if (normalized === "high") return "high";
-  if (normalized === "medium") return "medium";
-  if (normalized === "low") return "low";
-  return "";
-}
-
-function formatExecutionBadge(label: string, effective: string, requested: string): string {
-  if (!effective && !requested) return "";
-  if (!effective || effective === requested) return `${label}: ${requested || effective}`;
-  if (!requested) return `${label}: ${effective}`;
-  return `${label}: ${effective} (requested: ${requested})`;
-}
-
-function userExecutionBadges(m: RenderMessage): string[] {
-  if (m.role !== "user") return [];
-  const execution = m.execution;
-  if (!execution) return [];
-
-  const requestedAgent = String(execution.agentId ?? "").trim();
-  const effectiveAgent = String(execution.effectiveAgentId ?? "").trim();
-  const requestedModel = String(execution.model ?? "").trim();
-  const effectiveModel = String(execution.effectiveModel ?? "").trim();
-  const requestedEffort = formatReasoningEffort(execution.modelReasoningEffort);
-  const effectiveEffort = formatReasoningEffort(execution.effectiveModelReasoningEffort);
-
-  const agent = effectiveAgent || requestedAgent;
-  const agentBadge = formatExecutionBadge("Agent", effectiveAgent, requestedAgent);
-  const modelBadge = formatExecutionBadge("Model", effectiveModel, requestedModel);
-  const effortBadge = formatExecutionBadge("Reasoning", effectiveEffort, requestedEffort);
-  const badges: string[] = [];
-  if (agentBadge) badges.push(agentBadge);
-  if (modelBadge) badges.push(modelBadge);
-  if (effortBadge && agent === "codex") badges.push(effortBadge);
-  return badges;
-}
 </script>
 
 <template>
@@ -548,9 +510,6 @@ function userExecutionBadges(m: RenderMessage): string[] {
           </div>
         </div>
         <MarkdownContent v-else :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
-        <div v-if="userExecutionBadges(m).length > 0" class="msgExecutionMeta" aria-label="Execution context">
-          <span v-for="badge in userExecutionBadges(m)" :key="badge" class="msgExecutionBadge">{{ badge }}</span>
-        </div>
         <div v-if="shouldShowMsgActions(m)" class="msgActions">
           <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="emit('copyMessage', m)">
             <svg
@@ -1047,29 +1006,6 @@ function userExecutionBadges(m: RenderMessage): string[] {
   color: #94a3b8;
   white-space: nowrap;
   user-select: none;
-}
-
-.msgExecutionMeta {
-  margin-top: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.msgExecutionBadge {
-  max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border: 1px solid rgba(9, 105, 218, 0.16);
-  border-radius: 999px;
-  padding: 2px 7px;
-  background: rgba(255, 255, 255, 0.64);
-  color: #475569;
-  font-size: 11px;
-  line-height: 1.35;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .msg[data-role="user"] .bubble {

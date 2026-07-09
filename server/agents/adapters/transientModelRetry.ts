@@ -1,0 +1,190 @@
+import type { AgentEvent } from "../../codex/events.js";
+import type { ThreadEvent, ThreadItem } from "../protocol/types.js";
+import { isAbortError } from "../../utils/abort.js";
+
+export const TRANSIENT_MODEL_RETRY_COUNT_ENV = "ADS_UPSTREAM_RETRY_COUNT";
+const DEFAULT_RETRY_COUNT = 1;
+const DEFAULT_BACKOFF_MIN_MS = 500;
+const DEFAULT_BACKOFF_MAX_MS = 1200;
+
+function randomBackoffMs(min: number, max: number): number {
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+export interface TransientModelRetryOptions {
+  agentName: string;
+  maxAttempts?: number;
+  backoffMs?: readonly number[];
+  signal?: AbortSignal;
+  log?: (message: string) => void;
+}
+
+export interface RetryAttemptState {
+  readonly attempt: number;
+  markSideEffect(event: AgentEvent | ThreadEvent | ThreadItem | null | undefined): void;
+}
+
+export class TransientModelRetryAttemptError extends Error {
+  readonly retryable: boolean;
+  readonly sideEffectObserved: boolean;
+
+  constructor(message: string, options: { retryable: boolean; sideEffectObserved: boolean; cause?: unknown }) {
+    super(message);
+    this.name = "TransientModelRetryAttemptError";
+    this.retryable = options.retryable;
+    this.sideEffectObserved = options.sideEffectObserved;
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+}
+
+export function isTransientByokCapacityError(message: string): boolean {
+  void message;
+  return false;
+}
+
+export function isClaudeServiceUnavailable429(message: string): boolean {
+  return isHttp429UpstreamError(message);
+}
+
+export function isHighDemandUpstreamError(message: string): boolean {
+  const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("we're currently experiencing high demand") ||
+    normalized.includes("we are currently experiencing high demand") ||
+    (normalized.includes("high demand") && normalized.includes("temporary errors"))
+  );
+}
+
+export function isHttp429UpstreamError(message: string): boolean {
+  const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  return /(?:^|[^0-9])429(?:[^0-9]|$)/.test(normalized);
+}
+
+export function isTransientUpstreamModelError(message: string): boolean {
+  return isHighDemandUpstreamError(message) || isHttp429UpstreamError(message);
+}
+
+function parseNonNegativeInteger(value: string | undefined): number | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.floor(parsed);
+}
+
+export function resolveTransientModelRetryMaxAttempts(maxAttempts?: number): number {
+  if (maxAttempts !== undefined) {
+    return Math.max(1, Math.floor(maxAttempts));
+  }
+  const retryCount = parseNonNegativeInteger(process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV]) ?? DEFAULT_RETRY_COUNT;
+  return retryCount + 1;
+}
+
+export function isSideEffectItem(item: ThreadItem | null | undefined): boolean {
+  if (!item) return false;
+  return item.type === "command_execution" || item.type === "file_change" || item.type === "tool_call" || item.type === "subagent_dispatch";
+}
+
+export function eventHasSideEffect(event: AgentEvent | ThreadEvent | ThreadItem | null | undefined): boolean {
+  if (!event) return false;
+  if (isThreadItem(event)) {
+    return isSideEffectItem(event);
+  }
+  const raw = (event as AgentEvent).raw;
+  if (raw && typeof raw === "object") {
+    return eventHasSideEffect(raw as ThreadEvent);
+  }
+  const type = (event as { type?: unknown }).type;
+  if (type === "item.started" || type === "item.updated" || type === "item.completed") {
+    return isSideEffectItem((event as { item?: ThreadItem }).item);
+  }
+  return false;
+}
+
+export async function runWithTransientModelRetry<T>(
+  options: TransientModelRetryOptions,
+  runAttempt: (state: RetryAttemptState) => Promise<T>,
+): Promise<T> {
+  const maxAttempts = resolveTransientModelRetryMaxAttempts(options.maxAttempts);
+  const backoffMs = options.backoffMs;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let sideEffectObserved = false;
+    const state: RetryAttemptState = {
+      attempt,
+      markSideEffect(event) {
+        if (eventHasSideEffect(event)) {
+          sideEffectObserved = true;
+        }
+      },
+    };
+
+    try {
+      return await runAttempt(state);
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const retryable =
+        error instanceof TransientModelRetryAttemptError
+          ? error.retryable
+          : isTransientUpstreamModelError(message);
+      const unsafe =
+        sideEffectObserved ||
+        (error instanceof TransientModelRetryAttemptError && error.sideEffectObserved);
+
+      lastError = error;
+      if (!retryable || unsafe || attempt >= maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = backoffMs
+        ? Math.max(0, backoffMs[Math.min(attempt - 1, backoffMs.length - 1)] ?? 0)
+        : randomBackoffMs(DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_MAX_MS);
+      options.log?.(
+        `[${options.agentName}] transient upstream model error; retrying attempt ${attempt + 1}/${maxAttempts} after ${delayMs}ms`,
+      );
+      await delay(delayMs, options.signal);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function isThreadItem(value: unknown): value is ThreadItem {
+  if (!value || typeof value !== "object") return false;
+  const type = (value as { type?: unknown }).type;
+  return (
+    type === "command_execution" ||
+    type === "file_change" ||
+    type === "tool_call" ||
+    type === "web_search" ||
+    type === "todo_list" ||
+    type === "agent_message" ||
+    type === "reasoning" ||
+    type === "error" ||
+    type === "subagent_dispatch"
+  );
+}
+
+async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (!signal) return;
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}

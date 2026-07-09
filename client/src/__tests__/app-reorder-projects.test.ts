@@ -85,9 +85,10 @@ vi.mock("../components/LoginGate.vue", () => {
 });
 
 async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
-  await wrapper.vm.$nextTick();
-  await Promise.resolve();
-  await wrapper.vm.$nextTick();
+  for (let i = 0; i < 5; i += 1) {
+    await wrapper.vm.$nextTick();
+    await Promise.resolve();
+  }
 }
 
 function defer<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {

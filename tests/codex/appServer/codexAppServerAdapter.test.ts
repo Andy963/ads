@@ -197,6 +197,163 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("retries high-demand upstream errors with the same input", async () => {
+    let turnStarts = 0;
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-retry" } }),
+        "turn/start": () => {
+          turnStarts += 1;
+          return {};
+        },
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "retry", registry });
+
+    const sendPromise = adapter.send("retry me");
+    await new Promise((r) => setTimeout(r, 20));
+    fake.notify("error", {
+      error: {
+        message:
+          "5 reconnect attempts failed: We're currently experiencing high demand, which may cause temporary errors",
+      },
+      threadId: "t-retry",
+      turnId: "turn-1",
+    });
+
+    while (turnStarts < 2) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m1", text: "OK" },
+      threadId: "t-retry",
+      turnId: "turn-2",
+      completedAtMs: Date.now(),
+    });
+    fake.notify("turn/completed", {
+      threadId: "t-retry",
+      turn: { id: "turn-2" },
+    });
+
+    const result = await sendPromise;
+    assert.equal(result.response, "OK");
+    assert.equal(turnStarts, 2);
+    const turnStartRequests = fake.requests.filter((r) => r.method === "turn/start");
+    assert.equal(turnStartRequests.length, 2);
+    assert.deepEqual((turnStartRequests[0]!.params as any).input, (turnStartRequests[1]!.params as any).input);
+    await registry.stopAll();
+  });
+
+  it("retries HTTP 429 errors with the same input", async () => {
+    let turnStarts = 0;
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-retry-429" } }),
+        "turn/start": () => {
+          turnStarts += 1;
+          return {};
+        },
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "retry-429", registry });
+
+    const sendPromise = adapter.send("retry 429");
+    await new Promise((r) => setTimeout(r, 20));
+    fake.notify("error", {
+      error: { message: "API Error: Request rejected (429): Service unavailable" },
+      threadId: "t-retry-429",
+      turnId: "turn-1",
+    });
+
+    while (turnStarts < 2) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m1", text: "OK 429" },
+      threadId: "t-retry-429",
+      turnId: "turn-2",
+      completedAtMs: Date.now(),
+    });
+    fake.notify("turn/completed", {
+      threadId: "t-retry-429",
+      turn: { id: "turn-2" },
+    });
+
+    const result = await sendPromise;
+    assert.equal(result.response, "OK 429");
+    assert.equal(turnStarts, 2);
+    const turnStartRequests = fake.requests.filter((r) => r.method === "turn/start");
+    assert.equal(turnStartRequests.length, 2);
+    assert.deepEqual((turnStartRequests[0]!.params as any).input, (turnStartRequests[1]!.params as any).input);
+    await registry.stopAll();
+  });
+
+  it("does not retry BYOK 500 capacity errors", async () => {
+    let turnStarts = 0;
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-byok" } }),
+        "turn/start": () => {
+          turnStarts += 1;
+          return {};
+        },
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "byok", registry });
+
+    const sendPromise = adapter.send("no retry");
+    await new Promise((r) => setTimeout(r, 20));
+    fake.notify("error", {
+      error: {
+        message:
+          "BYOK Error: 500 当前模型 gpt-5.5 负载已经达到上限，请稍后重试\n\nUpstream error: 当前模型 gpt-5.5 负载已经达到上限，请稍后重试",
+      },
+      threadId: "t-byok",
+      turnId: "turn-1",
+    });
+
+    await assert.rejects(sendPromise, /BYOK Error: 500/);
+    assert.equal(turnStarts, 1);
+    await registry.stopAll();
+  });
+
+  it("does not retry transient errors after side-effect items start", async () => {
+    let turnStarts = 0;
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-side-effect" } }),
+        "turn/start": () => {
+          turnStarts += 1;
+          return {};
+        },
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "retry-side-effect", registry });
+
+    const sendPromise = adapter.send("retry me");
+    await new Promise((r) => setTimeout(r, 20));
+    fake.notify("item/started", {
+      item: { type: "commandExecution", id: "cmd-1", command: "date", status: "in_progress" },
+      threadId: "t-side-effect",
+      turnId: "turn-1",
+    });
+    fake.notify("error", {
+      error: {
+        message: "We're currently experiencing high demand, which may cause temporary errors",
+      },
+      threadId: "t-side-effect",
+      turnId: "turn-1",
+    });
+
+    await assert.rejects(sendPromise, /high demand/);
+    assert.equal(turnStarts, 1);
+    await registry.stopAll();
+  });
+
   it("rejects empty prompts", async () => {
     const registry = new CodexAppServerDaemonRegistry({
       factory: () => buildFakeServer().client,

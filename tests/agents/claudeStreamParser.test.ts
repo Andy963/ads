@@ -96,6 +96,41 @@ describe("ClaudeStreamParser", () => {
     assert.equal(parser.getLastError(), "x");
   });
 
+  it("treats Claude CLI success results with is_error as failures", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+
+    const events = parser.parseLine({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 429,
+      result: "API Error: Request rejected (429) · Service Unavailable",
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.phase, "error");
+    assert.equal(events[0]?.detail, "API Error: Request rejected (429) · Service Unavailable");
+    assert.equal(parser.getLastError(), "API Error: Request rejected (429) · Service Unavailable");
+  });
+
+  it("treats synthetic assistant rate limit messages as errors", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+
+    const events = parser.parseLine({
+      type: "assistant",
+      error: "rate_limit",
+      message: {
+        content: [{ type: "text", text: "API Error: Request rejected (429) · Service Unavailable" }],
+      },
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.phase, "error");
+    assert.equal(events[0]?.detail, "API Error: Request rejected (429) · Service Unavailable");
+    assert.equal(parser.getFinalMessage(), "");
+    assert.equal(parser.getLastError(), "API Error: Request rejected (429) · Service Unavailable");
+  });
+
   it("maps Task tool_use into subagent_dispatch (not generic tool_call)", () => {
     const parser = new ClaudeStreamParser();
     parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });

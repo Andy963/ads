@@ -27,6 +27,7 @@ export type LineHandler = (parsed: unknown) => void;
 
 export interface CliRunResult {
   exitCode: number | null;
+  stdout: string;
   stderr: string;
   cancelled: boolean;
 }
@@ -272,9 +273,11 @@ export async function runCli(
   child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 
   const rl = createInterface({ input: child.stdout! });
+  const stdoutLines: string[] = [];
   let loopError: unknown = null;
   try {
     for await (const rawLine of rl) {
+      stdoutLines.push(String(rawLine));
       if (abortHandler.isCancelled()) {
         child.stdout?.resume();
         break;
@@ -322,6 +325,7 @@ export async function runCli(
 
   return {
     exitCode,
+    stdout: stdoutLines.join("\n"),
     stderr,
     cancelled,
   };
@@ -417,7 +421,7 @@ async function runCliViaFiles(
     }
   }
 
-  return { exitCode, stderr, cancelled };
+  return { exitCode, stdout, stderr, cancelled };
 }
 
 /**

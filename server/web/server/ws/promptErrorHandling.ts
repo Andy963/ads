@@ -52,7 +52,6 @@ export function handlePromptError(args: {
       code: errorInfo.code,
       retryable: errorInfo.retryable,
       needsReset: errorInfo.needsReset,
-      originalError: errorInfo.originalError,
     },
   });
 }
