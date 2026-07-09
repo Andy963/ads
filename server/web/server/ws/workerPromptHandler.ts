@@ -88,14 +88,6 @@ function isTerminalCommandStatus(status: unknown): boolean {
   );
 }
 
-function formatCommandHistoryText(command: string, output: string, exitCode?: number): string {
-  const commandText = String(command ?? "").trim();
-  const outputText = String(output ?? "").trimEnd();
-  const exitText = typeof exitCode === "number" && exitCode !== 0 ? `[exit code ${exitCode}]` : "";
-  const body = [outputText, exitText].filter(Boolean).join("\n");
-  return body ? `$ ${commandText}\n${body}` : `$ ${commandText}`;
-}
-
 export function attachWorkerPromptHandler(args: {
   orchestrator: EventSource;
   turnCwd: string;
@@ -112,7 +104,7 @@ export function attachWorkerPromptHandler(args: {
   let lastReasoningText = "";
   const lastCommandOutputsByKey = new Map<string, string>();
   const announcedCommandKeys = new Set<string>();
-  const persistedCommandKeys = new Set<string>();
+  const terminalCommandKeys = new Set<string>();
   let hasCommandOutput = false;
   let exploredHeaderSent = false;
 
@@ -279,9 +271,12 @@ export function attachWorkerPromptHandler(args: {
       }
 
       const isTerminalCommand = isTerminalCommandStatus(commandPayload.status);
-      const shouldPersistTerminalCommand = isTerminalCommand && !persistedCommandKeys.has(commandKey);
-      if (!isNewCommand && !outputDelta && !shouldPersistTerminalCommand) {
+      const shouldSendTerminalCommand = isTerminalCommand && !terminalCommandKeys.has(commandKey);
+      if (!isNewCommand && !outputDelta && !shouldSendTerminalCommand) {
         return;
+      }
+      if (shouldSendTerminalCommand) {
+        terminalCommandKeys.add(commandKey);
       }
 
       args.sendToChat({
@@ -295,24 +290,6 @@ export function attachWorkerPromptHandler(args: {
           outputDelta,
         },
       });
-
-      if (isNewCommand) {
-        args.historyStore.add(args.historyKey, {
-          role: "status",
-          text: `$ ${commandLine}`,
-          ts: Date.now(),
-          kind: "command",
-        });
-      }
-      if (shouldPersistTerminalCommand) {
-        persistedCommandKeys.add(commandKey);
-        args.historyStore.add(args.historyKey, {
-          role: "status",
-          text: formatCommandHistoryText(commandLine, nextOutput, commandPayload.exit_code),
-          ts: Date.now(),
-          kind: "execute",
-        });
-      }
       return;
     }
     if (rawItemType === "subagent_dispatch" && (raw.type === "item.started" || raw.type === "item.completed")) {

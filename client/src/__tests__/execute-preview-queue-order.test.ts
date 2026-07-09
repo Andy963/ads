@@ -103,7 +103,7 @@ describe("execute preview queue ordering", () => {
     expect(executeMessage?.content).toBe("out-1");
   });
 
-  it("finalizes live execute previews without letting the next turn overwrite them", () => {
+  it("clears live execute previews before the next turn reuses command keys", () => {
     const rt = {
       messages: ref([] as Array<any>),
       executePreviewByKey: new Map<string, any>(),
@@ -113,15 +113,13 @@ describe("execute preview queue ordering", () => {
       turnCommandCount: 0,
       seenCommandIds: new Set<string>(),
     } as any;
-    let nextId = 0;
-
     const { upsertExecuteBlock, finalizeCommandBlock } = createExecuteActions({
       runtimeOrActive: () => rt,
       setMessages: (items) => {
         rt.messages.value = items;
       },
       pushRecentCommand: () => {},
-      randomId: (prefix) => `${prefix}-${++nextId}`,
+      randomId: () => "id",
       maxExecutePreviewLines: 8,
       maxTurnCommands: 64,
       isLiveMessageId: () => false,
@@ -134,14 +132,8 @@ describe("execute preview queue ordering", () => {
     upsertExecuteBlock("k1", "cmd-1", "$ cmd-1\nout-2\n", rt);
 
     const executeMessages = rt.messages.value.filter((m: any) => m.kind === "execute");
-    expect(executeMessages).toHaveLength(2);
+    expect(executeMessages).toHaveLength(1);
     expect(executeMessages[0]).toMatchObject({
-      id: "exec-final-1",
-      command: "cmd-1",
-      content: "out-1",
-      streaming: false,
-    });
-    expect(executeMessages[1]).toMatchObject({
       id: "exec:k1",
       command: "cmd-1",
       content: "out-2",

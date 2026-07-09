@@ -66,8 +66,8 @@ function commandEvent(args: {
 }
 
 describe("web/server/ws/workerPromptHandler", () => {
-  it("persists terminal agent command output as replayable execute history", () => {
-    const { emit, history } = createHarness();
+  it("forwards live agent command output without persisting replayable history", () => {
+    const { emit, history, sent } = createHarness();
 
     emit(commandEvent({ type: "item.started", id: "cmd-1", command: "npm test", status: "inProgress" }));
     emit(
@@ -90,14 +90,12 @@ describe("web/server/ws/workerPromptHandler", () => {
       }),
     );
 
-    assert.deepEqual(history, [
-      { role: "status", text: "$ npm test", kind: "command" },
-      { role: "status", text: "$ npm test\nline 1\nline 2", kind: "execute" },
-    ]);
+    assert.deepEqual(history, []);
+    assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
   });
 
-  it("keeps non-zero exit codes in replayable execute history", () => {
-    const { emit, history } = createHarness();
+  it("forwards failed agent command completion without persisting replayable history", () => {
+    const { emit, history, sent } = createHarness();
 
     emit(
       commandEvent({
@@ -110,13 +108,16 @@ describe("web/server/ws/workerPromptHandler", () => {
       }),
     );
 
-    assert.deepEqual(history, [
-      { role: "status", text: "$ npm test", kind: "command" },
-      { role: "status", text: "$ npm test\ntest failed\n[exit code 1]", kind: "execute" },
-    ]);
+    assert.deepEqual(history, []);
+    const commandMessages = sent.filter((payload) => (payload as { type?: unknown }).type === "command") as Array<{
+      command?: { status?: string; exit_code?: number };
+    }>;
+    assert.equal(commandMessages.length, 1);
+    assert.equal(commandMessages[0]?.command?.status, "failed");
+    assert.equal(commandMessages[0]?.command?.exit_code, 1);
   });
 
-  it("persists a terminal command even when the completion has no new output delta", () => {
+  it("forwards terminal command even when the completion has no new output delta", () => {
     const { emit, history, sent } = createHarness();
 
     emit(
@@ -146,10 +147,7 @@ describe("web/server/ws/workerPromptHandler", () => {
       }),
     );
 
-    assert.deepEqual(history, [
-      { role: "status", text: "$ git status --short", kind: "command" },
-      { role: "status", text: "$ git status --short\nM file.ts", kind: "execute" },
-    ]);
+    assert.deepEqual(history, []);
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
   });
 
