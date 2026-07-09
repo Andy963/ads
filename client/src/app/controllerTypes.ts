@@ -96,6 +96,8 @@ export type ChatItem = {
   commandsTotal?: number;
   commandsShown?: number;
   commandsLimit?: number;
+  retryCount?: number;
+  transient?: boolean;
   ts?: number;
   streaming?: boolean;
   execution?: ChatExecutionContext;

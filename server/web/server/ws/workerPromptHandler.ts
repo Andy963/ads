@@ -1,5 +1,6 @@
 import type { ThreadEvent } from "../../../agents/protocol/types.js";
 
+import { isTransientUpstreamModelError } from "../../../agents/adapters/transientModelRetry.js";
 import type { AgentEvent } from "../../../codex/events.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
@@ -22,6 +23,13 @@ type Logger = {
   info: (msg: string) => void;
   debug: (msg: string) => void;
 };
+
+function isTransientRetryEvent(event: AgentEvent): boolean {
+  const raw = event.raw as ThreadEvent | null | undefined;
+  if (raw?.type !== "turn.failed") return false;
+  const message = String(raw.error?.message ?? event.detail ?? event.title ?? "").trim();
+  return isTransientUpstreamModelError(message);
+}
 
 function formatStepTraceLine(event: AgentEvent): string | null {
   const title = String(event.title ?? "").trim();
@@ -343,7 +351,12 @@ export function attachWorkerPromptHandler(args: {
       return;
     }
     if (event.phase === "error") {
-      args.sendToChat({ type: "error", message: event.detail ?? event.title });
+      const message = event.detail ?? event.title;
+      if (isTransientRetryEvent(event)) {
+        args.sendToChat({ type: "error", message, transient: true, retryable: true });
+        return;
+      }
+      args.sendToChat({ type: "error", message });
     }
   });
 

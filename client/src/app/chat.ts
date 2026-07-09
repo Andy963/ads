@@ -411,8 +411,6 @@ export function createChatActions(ctx: AppContext) {
     maxExecutePreviewLines,
     maxTurnCommands,
     isLiveMessageId,
-    findFirstLiveIndex,
-    findLastLiveIndex,
   });
 
   const { shouldIgnoreStepDelta, upsertStreamingDelta, upsertStepLiveDelta, upsertLiveActivity, clearStepLive } = createStreamingActions({

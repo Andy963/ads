@@ -27,6 +27,7 @@ type Ref<T> = { value: T };
 const HISTORY_EXECUTE_PREVIEW_LINES = 3;
 const THREAD_RESUMED_NOTICE = "已恢复后端上下文线程。";
 const HISTORY_INJECTION_NOTICE = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
+const TRANSIENT_RETRY_NOTICE_ID = "transient-retry-notice";
 
 function decodeHistoryKindValue(value: string): string {
   try {
@@ -137,6 +138,49 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (text.includes("\n--- ") || text.startsWith("--- ")) return true;
     if (text.includes("\n@@ ") || text.startsWith("@@ ")) return true;
     return false;
+  };
+
+  const clearTransientRetryNotice = (): void => {
+    const existing = rt.messages.value.slice();
+    const next = existing.filter((m) => !(m.transient === true && String(m.id ?? "") === TRANSIENT_RETRY_NOTICE_ID));
+    if (next.length !== existing.length) {
+      rt.messages.value = next;
+    }
+  };
+
+  const upsertTransientRetryNotice = (message: string): void => {
+    const content = String(message ?? "").trim() || "Upstream model request failed temporarily; retrying.";
+    const existing = rt.messages.value.slice();
+    const idx = existing.findIndex((m) => String(m.id ?? "") === TRANSIENT_RETRY_NOTICE_ID);
+    const nextCount = idx >= 0 ? Math.max(1, Math.floor(Number(existing[idx]!.retryCount ?? 1))) + 1 : 1;
+    const nextItem: ChatItem = {
+      id: TRANSIENT_RETRY_NOTICE_ID,
+      role: "system",
+      kind: "error",
+      content,
+      retryCount: nextCount,
+      transient: true,
+      ts: idx >= 0 ? existing[idx]!.ts : Date.now(),
+    };
+    if (idx >= 0) {
+      existing[idx] = nextItem;
+      rt.messages.value = existing;
+      return;
+    }
+
+    let insertAt = existing.length;
+    for (let i = existing.length - 1; i >= 0; i--) {
+      const m = existing[i]!;
+      if (m.role === "assistant" && m.streaming) {
+        insertAt = i;
+        continue;
+      }
+      if (m.role === "user") {
+        insertAt = Math.max(insertAt, i + 1);
+        break;
+      }
+    }
+    rt.messages.value = [...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)];
   };
 
   const dropExecuteBlockForKey = (key: string): void => {
@@ -1105,6 +1149,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "result") {
       annotatePendingUserMessageExecution(msg as Record<string, unknown>);
+      clearTransientRetryNotice();
       cancelPendingResume(rt);
       rt.busy.value = false;
       rt.turnInFlight = false;
@@ -1193,6 +1238,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "error") {
+      const isTransientRetry = Boolean(msg.transient) && Boolean(msg.retryable);
+      if (isTransientRetry) {
+        upsertTransientRetryNotice(String(msg.message ?? ""));
+        return;
+      }
+
+      clearTransientRetryNotice();
       cancelPendingResume(rt);
       rt.busy.value = false;
       rt.turnInFlight = false;

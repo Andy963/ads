@@ -148,4 +148,37 @@ describe("error placeholder cleanup", () => {
 
     wrapper.unmount();
   });
+
+  it("coalesces transient retry errors into one notice and clears it on success", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    (wrapper.vm as any).sendMainPrompt("retry please");
+    await settleUi(wrapper);
+
+    const message = "We're currently experiencing high demand, which may cause temporary errors.";
+    lastWs!.onMessage?.({ type: "error", message, transient: true, retryable: true });
+    lastWs!.onMessage?.({ type: "error", message, transient: true, retryable: true });
+    await settleUi(wrapper);
+
+    const duringRetry = (wrapper.vm as any).messages as Array<any>;
+    const retryNotices = duringRetry.filter((m) => m.kind === "error" && m.transient === true);
+    expect(retryNotices).toHaveLength(1);
+    expect(retryNotices[0]).toMatchObject({
+      content: message,
+      retryCount: 2,
+    });
+    expect(duringRetry.some((m) => m.role === "assistant" && m.streaming)).toBe(true);
+
+    lastWs!.onMessage?.({ type: "result", ok: true, output: "done" });
+    await settleUi(wrapper);
+
+    const afterResult = (wrapper.vm as any).messages as Array<any>;
+    expect(afterResult.some((m) => m.kind === "error" && m.transient === true)).toBe(false);
+    expect(afterResult.some((m) => m.role === "assistant" && String(m.content ?? "").includes("done"))).toBe(true);
+
+    wrapper.unmount();
+  });
 });

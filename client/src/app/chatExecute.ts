@@ -33,8 +33,6 @@ export function createExecuteActions(params: {
   maxExecutePreviewLines: number;
   maxTurnCommands: number;
   isLiveMessageId: (id: string) => boolean;
-  findFirstLiveIndex: (items: ChatItem[]) => number;
-  findLastLiveIndex: (items: ChatItem[]) => number;
 }) {
   const {
     runtimeOrActive,
@@ -44,7 +42,6 @@ export function createExecuteActions(params: {
     maxExecutePreviewLines,
     maxTurnCommands,
     isLiveMessageId,
-    findLastLiveIndex,
   } = params;
 
   const commandKeyForWsEvent = (command: string, id: string | null): string | null => {
@@ -146,24 +143,26 @@ export function createExecuteActions(params: {
       return;
     }
 
-    const lastLiveIndex = findLastLiveIndex(existing);
-    let insertAt = lastLiveIndex < 0 ? existing.length : lastLiveIndex + 1;
+    let insertAt = existing.length;
     for (let i = existing.length - 1; i >= 0; i--) {
       const m = existing[i]!;
       if (isLiveMessageId(m.id)) continue;
       if (m.role === "assistant" && m.streaming) {
-        insertAt = Math.min(insertAt, i);
+        insertAt = i;
+        continue;
+      }
+      if (m.role === "user") {
+        insertAt = Math.max(insertAt, i + 1);
         break;
       }
     }
-    if (lastLiveIndex >= 0) {
-      insertAt = Math.max(insertAt, lastLiveIndex + 1);
-    }
 
     let lastExecuteIdx = -1;
-    for (let i = 0; i < insertAt; i++) {
+    for (let i = insertAt - 1; i >= 0; i--) {
+      if (existing[i]!.role === "user") break;
       if (existing[i]!.kind === "execute") {
         lastExecuteIdx = i;
+        break;
       }
     }
     if (lastExecuteIdx >= 0) insertAt = lastExecuteIdx + 1;

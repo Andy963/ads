@@ -32,8 +32,6 @@ describe("execute preview queue ordering", () => {
       maxExecutePreviewLines: 1,
       maxTurnCommands: 64,
       isLiveMessageId: () => false,
-      findFirstLiveIndex: () => -1,
-      findLastLiveIndex: () => -1,
     });
 
     upsertExecuteBlock("k1", "cmd-1", "$ cmd-1\nout-1\n", rt);
@@ -93,8 +91,6 @@ describe("execute preview queue ordering", () => {
       maxExecutePreviewLines: 8,
       maxTurnCommands: 64,
       isLiveMessageId: () => false,
-      findFirstLiveIndex: () => -1,
-      findLastLiveIndex: () => -1,
     });
 
     upsertExecuteBlock("k1", "cmd-1", "\n\n$ cmd-1\nout-1\n", rt);
@@ -123,8 +119,6 @@ describe("execute preview queue ordering", () => {
       maxExecutePreviewLines: 8,
       maxTurnCommands: 64,
       isLiveMessageId: () => false,
-      findFirstLiveIndex: () => -1,
-      findLastLiveIndex: () => -1,
     });
 
     upsertExecuteBlock("k1", "cmd-1", "$ cmd-1\nout-1\n", rt);
@@ -139,5 +133,45 @@ describe("execute preview queue ordering", () => {
       content: "out-2",
       streaming: true,
     });
+  });
+
+  it("inserts the current execute preview below the latest user message", () => {
+    const rt = {
+      messages: ref([
+        { id: "u-1", role: "user", kind: "text", content: "old prompt" },
+        { id: "exec:old", role: "system", kind: "execute", command: "old-cmd", content: "old", streaming: false },
+        { id: "u-2", role: "user", kind: "text", content: "new prompt" },
+        { id: "a-2", role: "assistant", kind: "text", content: "", streaming: true },
+      ] as Array<any>),
+      executePreviewByKey: new Map<string, any>(),
+      executeOrder: [] as string[],
+      recentCommands: ref([] as string[]),
+      turnCommands: [] as string[],
+      turnCommandCount: 0,
+      seenCommandIds: new Set<string>(),
+    } as any;
+
+    const { upsertExecuteBlock } = createExecuteActions({
+      runtimeOrActive: () => rt,
+      setMessages: (items) => {
+        rt.messages.value = items;
+      },
+      pushRecentCommand: () => {},
+      dropEmptyAssistantPlaceholder: () => {},
+      randomId: () => "id",
+      maxExecutePreviewLines: 8,
+      maxTurnCommands: 64,
+      isLiveMessageId: () => false,
+    });
+
+    upsertExecuteBlock("new", "new-cmd", "$ new-cmd\nrunning\n", rt);
+
+    const messages = rt.messages.value;
+    const newUserIndex = messages.findIndex((m: any) => m.id === "u-2");
+    const newExecuteIndex = messages.findIndex((m: any) => m.id === "exec:new");
+    const assistantIndex = messages.findIndex((m: any) => m.id === "a-2");
+
+    expect(newExecuteIndex).toBeGreaterThan(newUserIndex);
+    expect(newExecuteIndex).toBeLessThan(assistantIndex);
   });
 });

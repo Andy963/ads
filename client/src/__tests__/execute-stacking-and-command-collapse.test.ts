@@ -46,6 +46,44 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
+  it("renders retry count badge on coalesced transient errors", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          {
+            id: "transient-retry-notice",
+            role: "system",
+            kind: "error",
+            content: "We're currently experiencing high demand, which may cause temporary errors.",
+            retryCount: 3,
+            transient: true,
+          },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    expect(wrapper.find(".retryBadge").text()).toBe("x3");
+
+    wrapper.unmount();
+  });
+
   it("expands replayed execute blocks with retained full output", async () => {
     const wrapper = mount(MainChatMessageList, {
       props: {

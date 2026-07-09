@@ -151,6 +151,48 @@ describe("web/server/ws/workerPromptHandler", () => {
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
   });
 
+  it("marks retryable upstream turn failures as transient chat errors", () => {
+    const { emit, sent } = createHarness();
+
+    emit({
+      phase: "error",
+      title: "执行失败",
+      detail: "We're currently experiencing high demand, which may cause temporary errors.",
+      timestamp: Date.now(),
+      raw: {
+        type: "turn.failed",
+        error: { message: "We're currently experiencing high demand, which may cause temporary errors." },
+      },
+    });
+
+    assert.deepEqual(sent.at(-1), {
+      type: "error",
+      message: "We're currently experiencing high demand, which may cause temporary errors.",
+      transient: true,
+      retryable: true,
+    });
+  });
+
+  it("keeps non-retryable turn failures as terminal chat errors", () => {
+    const { emit, sent } = createHarness();
+
+    emit({
+      phase: "error",
+      title: "执行失败",
+      detail: "fatal model error",
+      timestamp: Date.now(),
+      raw: {
+        type: "turn.failed",
+        error: { message: "fatal model error" },
+      },
+    });
+
+    assert.deepEqual(sent.at(-1), {
+      type: "error",
+      message: "fatal model error",
+    });
+  });
+
   it("forwards todo_list events as plan messages and persists snapshots by kind", () => {
     const { emit, sent, upserts } = createHarness();
 

@@ -3,7 +3,7 @@ import type { ChatPatch, ChatPlan } from "../../app/controllerTypes";
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute" | "patch" | "plan";
+  kind: "text" | "command" | "execute" | "patch" | "error" | "plan";
   content: string;
   fullContent?: string;
   patch?: ChatPatch;
@@ -13,6 +13,8 @@ export type ChatMessage = {
   commandsTotal?: number;
   commandsShown?: number;
   commandsLimit?: number;
+  retryCount?: number;
+  transient?: boolean;
   ts?: number;
   streaming?: boolean;
   execution?: {
