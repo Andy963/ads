@@ -12,9 +12,8 @@ export function applySessionOverrides(args: {
   sessionManager: SessionManager;
   userId: number;
   payload: unknown;
-}): { notice?: string; agentNotice?: string } {
+}): { agentNotice?: string } {
   const { sessionManager, userId, payload } = args;
-  let notice: string | undefined;
   let agentNotice: string | undefined;
 
   const agentOverride = parseAgentIdFromPayload(payload);
@@ -41,10 +40,6 @@ export function applySessionOverrides(args: {
     const orchestrator = typeof sessionManager.getOrCreate === "function" ? sessionManager.getOrCreate(userId) : null;
     if (previousModel !== modelOverride.model) {
       sessionManager.setUserModel(userId, modelOverride.model);
-      notice =
-        previousModel && previousModel.trim()
-          ? `模型已从 ${previousModel} 切换到 ${modelOverride.model}，已启动新会话线程。`
-          : `模型已切换到 ${modelOverride.model}，已启动新会话线程。`;
     }
     orchestrator?.setModelConfig?.(modelConfig?.configJson ?? null);
   }
@@ -54,5 +49,5 @@ export function applySessionOverrides(args: {
     sessionManager.setUserModelReasoningEffort(userId, reasoningEffort.effort);
   }
 
-  return { notice, agentNotice };
+  return { agentNotice };
 }

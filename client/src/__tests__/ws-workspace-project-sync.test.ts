@@ -135,19 +135,21 @@ describe("ws workspace project sync", () => {
       updateProject,
     });
 
+    const notice = "已切换到代理: claude";
+
     handler({
       type: "result",
       ok: true,
       output: "done",
-      notice: "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。",
+      notice,
     });
 
-    expect(rt.apiNotice.value).toBe("模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。");
+    expect(rt.apiNotice.value).toBe(notice);
     expect(pushMessageBeforeLive).toHaveBeenCalledWith(
       {
         role: "system",
         kind: "text",
-        content: "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。",
+        content: notice,
       },
       rt,
     );
@@ -157,7 +159,7 @@ describe("ws workspace project sync", () => {
     const rt = createRuntime();
     rt.apiNotice = { value: null } satisfies Ref<string | null>;
     rt.noticeTimer = null;
-    const notice = "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。";
+    const notice = "已切换到代理: claude";
     rt.messages.value = [
       { id: "u-1", role: "user", kind: "text", content: "hello" },
       { id: "n-1", role: "system", kind: "text", content: notice },

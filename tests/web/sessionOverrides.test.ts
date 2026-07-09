@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { applySessionOverrides } from "../../server/web/server/ws/sessionOverrides.js";
 
 describe("web/sessionOverrides", () => {
-  it("rotates the session model and returns a user notice when model changes", () => {
+  it("rotates the session model without returning a chat notice", () => {
     const calls: Array<{ type: string; value?: string }> = [];
     const sessionManager = {
       switchAgent: (_userId: number, value: string) => {
@@ -30,7 +30,7 @@ describe("web/sessionOverrides", () => {
       },
     });
 
-    assert.equal(result.notice, "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。");
+    assert.equal(result.agentNotice, undefined);
     assert.deepEqual(calls, [
       { type: "model", value: "gpt-4o" },
       { type: "effort", value: "high" },
@@ -63,7 +63,7 @@ describe("web/sessionOverrides", () => {
       },
     });
 
-    assert.equal(result.notice, undefined);
+    assert.equal(result.agentNotice, undefined);
     assert.deepEqual(calls, [{ type: "effort", value: undefined }]);
   });
 
@@ -90,7 +90,7 @@ describe("web/sessionOverrides", () => {
       payload: { text: "hello" },
     });
 
-    assert.equal(result.notice, undefined);
+    assert.equal(result.agentNotice, undefined);
     assert.deepEqual(calls, []);
   });
 
@@ -121,7 +121,6 @@ describe("web/sessionOverrides", () => {
       },
     });
 
-    assert.equal(result.notice, undefined);
     assert.equal(result.agentNotice, "已切换到代理: claude");
     assert.deepEqual(calls, [
       { type: "agent", value: "claude" },

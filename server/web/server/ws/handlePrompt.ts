@@ -92,7 +92,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
     );
     orchestrator.setWorkingDirectory(turnCwd);
-    let rotationNotice: string | undefined;
     let agentNotice: string | undefined;
     try {
       const overrideResult = applySessionOverrides({
@@ -100,7 +99,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         userId: deps.context.userId,
         payload: deps.request.parsed.payload,
       });
-      rotationNotice = overrideResult.notice;
       agentNotice = overrideResult.agentNotice;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -117,8 +115,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       cleanupAfter();
       return;
     }
-    const overrideNotice =
-      [agentNotice, rotationNotice].filter((notice): notice is string => Boolean(notice)).join("\n") || undefined;
+    const overrideNotice = agentNotice;
     const status = orchestrator.status();
     if (!status.ready) {
       const message = status.error ?? "代理未启用，请配置凭证";

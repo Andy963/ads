@@ -415,12 +415,13 @@ describe("web slash commands", () => {
     });
   });
 
-  it("records model rotation notices so reconnect replay explains the context change", async () => {
+  it("does not record model rotation notices because the UI already shows the model", async () => {
     await withTempWorkspace("ads-web-prompt-model-notice-", async (workspaceRoot) => {
       const chatMessages: unknown[] = [];
       const clientMessages: unknown[] = [];
       const orchestrator = new FakeOrchestrator();
       const historyStore = new MemoryHistoryStore();
+      let currentModel = "gpt-4.1";
 
       await handlePromptMessage(
         createPromptDeps({
@@ -431,19 +432,29 @@ describe("web slash commands", () => {
           historyStore,
           orchestrator,
           sessionManager: {
-            getUserModel: () => "gpt-4.1",
+            getUserModel: () => currentModel,
+            setUserModel: (_userId: number, model?: string) => {
+              currentModel = model ?? "";
+            },
+            getEffectiveState: () => ({
+              model: currentModel,
+              modelReasoningEffort: "high",
+              activeAgentId: "codex",
+            }),
           },
         }),
       );
 
-      const notice = "模型已从 gpt-4.1 切换到 gpt-4o，已启动新会话线程。";
-      const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as { notice?: string } | undefined;
-      assert.equal(result?.notice, notice);
+      const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as
+        | { notice?: string; effectiveModel?: string }
+        | undefined;
+      assert.equal(currentModel, "gpt-4o");
+      assert.equal(result?.effectiveModel, "gpt-4o");
+      assert.equal(result?.notice, undefined);
       assert.deepEqual(
         historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
         [
           { role: "user", text: "continue working", kind: undefined },
-          { role: "status", text: notice, kind: "status" },
           { role: "ai", text: "stub response", kind: undefined },
         ],
       );
