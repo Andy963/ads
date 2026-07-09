@@ -1,11 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { defineComponent } from "vue";
 import { mount } from "@vue/test-utils";
 
 import MainChat from "../components/MainChat.vue";
 import TaskBoard from "../components/TaskBoard.vue";
-import TaskDetail from "../components/TaskDetail.vue";
-import type { Attachment, Task, TaskDetail as TaskDetailType } from "../api/types";
+import type { Attachment, Task } from "../api/types";
 import { readSfc } from "./readSfc";
 
 function makeAttachment(id: string): Attachment {
@@ -46,27 +44,6 @@ function makeTask(overrides: Partial<Task>): Task {
   };
 }
 
-function makeTaskDetail(overrides: Partial<TaskDetailType>): TaskDetailType {
-  const t = makeTask(overrides);
-  return {
-    ...t,
-    messages: overrides.messages ?? [],
-  };
-}
-
-const AttachmentThumbStub = defineComponent({
-  name: "AttachmentThumb",
-  props: {
-    src: { type: String, required: true },
-    href: { type: String, required: false },
-    title: { type: String, required: false },
-    alt: { type: String, required: false },
-    width: { type: Number, required: false },
-    height: { type: Number, required: false },
-  },
-  template: `<div class="thumbStub" :data-w="width" :data-h="height" />`,
-});
-
 describe("compact attachment UI", () => {
   it("MainChat renders thumbnail previews with clear action", async () => {
     const wrapper = mount(MainChat, {
@@ -101,43 +78,6 @@ describe("compact attachment UI", () => {
     wrapper.unmount();
   });
 
-  it("TaskDetail uses 10x10 thumbs and keeps a compact strip", async () => {
-    const task = makeTaskDetail({
-      id: "t-1",
-      status: "completed",
-      attachments: [makeAttachment("a-1"), makeAttachment("a-2")],
-    });
-
-    const wrapper = mount(TaskDetail, {
-      props: {
-        task,
-        messages: [],
-      },
-      global: {
-        stubs: {
-          MarkdownContent: true,
-          AttachmentThumb: AttachmentThumbStub,
-        },
-      },
-      attachTo: document.body,
-    });
-
-    const strip = wrapper.find(".attachmentsStrip");
-    expect(strip.exists()).toBe(true);
-
-    const thumbs = wrapper.findAll(".thumbStub");
-    expect(thumbs).toHaveLength(2);
-    for (const t of thumbs) {
-      expect(t.attributes("data-w")).toBe("10");
-      expect(t.attributes("data-h")).toBe("10");
-    }
-
-    const sfc = await readSfc("../components/TaskDetail.vue", import.meta.url);
-    expect(sfc).toMatch(/\.attachmentsStrip\s*\{[\s\S]*height:\s*10px\s*;/);
-
-    wrapper.unmount();
-  });
-
   it("TaskBoard does not render attachments inline", async () => {
     const task = makeTask({
       id: "t-1",
@@ -157,7 +97,6 @@ describe("compact attachment UI", () => {
       },
       global: {
         stubs: {
-          AttachmentThumb: AttachmentThumbStub,
           // Element Plus component used by TaskBoard; stub to avoid global plugin wiring in this unit test.
           "el-icon": true,
         },

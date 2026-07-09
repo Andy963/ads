@@ -45,7 +45,6 @@ describe("TaskBoard plan removal", () => {
       },
       global: {
         stubs: {
-          AttachmentThumb: true,
           // Element Plus component used by TaskBoard; stub to avoid global plugin wiring in this unit test.
           "el-icon": true,
         },
