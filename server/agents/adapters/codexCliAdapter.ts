@@ -14,6 +14,7 @@ import { runCli } from "../cli/cliRunner.js";
 import { createLogger } from "../../utils/logger.js";
 import { createAbortError, isAbortError } from "../../utils/abort.js";
 import {
+  createTransientModelRetryEvent,
   runWithTransientModelRetry,
   type RetryAttemptState,
 } from "./transientModelRetry.js";
@@ -372,6 +373,7 @@ export class CodexCliAdapter implements AgentAdapter {
           agentName: "Codex CLI",
           signal: options?.signal,
           log: (message) => logger.warn(message),
+          onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
         },
         (retryState) => runAttempt(shouldResume, retryState),
       );

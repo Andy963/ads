@@ -159,8 +159,8 @@ describe("error placeholder cleanup", () => {
     await settleUi(wrapper);
 
     const message = "We're currently experiencing high demand, which may cause temporary errors.";
-    lastWs!.onMessage?.({ type: "error", message, transient: true, retryable: true });
-    lastWs!.onMessage?.({ type: "error", message, transient: true, retryable: true });
+    lastWs!.onMessage?.({ type: "error", message, transient: true, retryable: true, retryCount: 1 });
+    lastWs!.onMessage?.({ type: "error", message, transient: true, retryable: true, retryCount: 2 });
     await settleUi(wrapper);
 
     const duringRetry = (wrapper.vm as any).messages as Array<any>;

@@ -52,6 +52,64 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
+  it("reads Codex reasoning efforts from the selected model config", () => {
+    const model = makeModel("gpt-5.6-sol", "GPT-5.6", "openai");
+    model.configJson = {
+      reasoningEfforts: ["medium", "high", "xhigh", "max", "ultra"],
+    };
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect(effortSelect.attributes("value")).toBe("ultra");
+    expect(effortSelect.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
+    wrapper.unmount();
+  });
+
+  it("shows Claude CLI effort levels from the selected model config", () => {
+    const model = makeModel("claude-opus-4-8", "Claude Opus 4.8", "anthropic");
+    model.configJson = {
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    };
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        agents: [{ id: "claude", name: "Claude", ready: true }],
+        activeAgentId: "claude",
+        models: [model],
+        modelId: "claude-opus-4-8",
+        modelReasoningEffort: "max",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("max");
+    expect(effortSelect.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    wrapper.unmount();
+  });
+
   it("does not show execution context under user messages", () => {
     const wrapper = mount(MainChat, {
       props: {

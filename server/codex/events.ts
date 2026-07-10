@@ -34,6 +34,14 @@ export type AgentPhase =
   | "subagent"
   | "error";
 
+export interface AgentRetryInfo {
+  source: "external";
+  retryCount: number;
+  nextAttempt: number;
+  maxAttempts: number;
+  delayMs: number;
+}
+
 export interface AgentEvent {
   phase: AgentPhase;
   title: string;
@@ -41,6 +49,7 @@ export interface AgentEvent {
   delta?: string;
   timestamp: number;
   raw: ThreadEvent;
+  retry?: AgentRetryInfo;
 }
 
 type ItemEvent = ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent;

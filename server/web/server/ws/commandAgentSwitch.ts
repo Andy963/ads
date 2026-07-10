@@ -55,8 +55,6 @@ export function handleSetAgentCommand(args: {
       error: merged.error,
     };
   });
-  const activeAgentName = agents.find((entry) => entry.id === activeAgentId)?.name ?? activeAgentId;
-  const statusText = `已切换到代理: ${activeAgentName}`;
   args.sendToSession({
     type: "agents",
     activeAgentId,
@@ -66,8 +64,6 @@ export function handleSetAgentCommand(args: {
       savedThreadId: args.sessionManager.getSavedThreadId(args.userId, activeAgentId),
     }),
   });
-  args.sendToSession({ type: "status", message: statusText, kind: "status" });
-  args.historyStore.add(args.historyKey, { role: "status", text: statusText, ts: Date.now(), kind: "status" });
 
   return orchestrator;
 }

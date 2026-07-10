@@ -475,6 +475,50 @@ describe("ClaudeCliAdapter", () => {
     assert.equal(args[modelIndex + 1], "claude-sonnet-4-6");
   });
 
+  it("passes the configured reasoning effort to Claude CLI", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'printf "%s\\n" "$@" >"$dir/args.txt"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary, modelReasoningEffort: "max" });
+    const result = await adapter.send("hello");
+    assert.equal(result.response, "OK");
+
+    const args = (await fs.readFile(path.join(dir, "args.txt"), "utf-8")).split(/\r?\n/).filter(Boolean);
+    const effortIndex = args.indexOf("--effort");
+    assert.notEqual(effortIndex, -1);
+    assert.equal(args[effortIndex + 1], "max");
+  });
+
+  it("does not pass unsupported reasoning efforts to Claude CLI", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'printf "%s\\n" "$@" >"$dir/args.txt"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary, modelReasoningEffort: "ultra" });
+    const result = await adapter.send("hello");
+    assert.equal(result.response, "OK");
+
+    const args = (await fs.readFile(path.join(dir, "args.txt"), "utf-8")).split(/\r?\n/).filter(Boolean);
+    assert.equal(args.includes("--effort"), false);
+  });
+
   it("enables 1m context when explicitly requested through model config", async () => {
     const { binary, dir } = await createExecutableScript([
       "#!/usr/bin/env bash",

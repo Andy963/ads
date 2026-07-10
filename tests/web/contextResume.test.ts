@@ -5,9 +5,23 @@ import {
   buildHistoryInjectionContext,
   prependContextToInput,
 } from "../../server/web/server/ws/handlePrompt.js";
-import { buildHistoryInjectionDetails } from "../../server/web/server/ws/promptModelConfig.js";
+import {
+  buildHistoryInjectionDetails,
+  parseModelReasoningEffortFromPayload,
+} from "../../server/web/server/ws/promptModelConfig.js";
 
 describe("context resume — history injection", () => {
+  it("accepts extended Codex reasoning efforts", () => {
+    assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "max" }), {
+      present: true,
+      effort: "max",
+    });
+    assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "ultra" }), {
+      present: true,
+      effort: "ultra",
+    });
+  });
+
   it("builds transcript from conversation and context-bearing status entries", () => {
     const entries = [
       { role: "user", text: "hello" },

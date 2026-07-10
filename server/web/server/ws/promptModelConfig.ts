@@ -26,7 +26,7 @@ export function parseModelReasoningEffortFromPayload(payload: unknown): { presen
   if (!normalized || normalized === "default") {
     return { present: true, effort: undefined };
   }
-  const allow = new Set(["low", "medium", "high", "xhigh"]);
+  const allow = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
   if (!allow.has(normalized)) {
     return { present: true, effort: undefined };
   }

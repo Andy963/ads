@@ -12,22 +12,14 @@ export function applySessionOverrides(args: {
   sessionManager: SessionManager;
   userId: number;
   payload: unknown;
-}): { agentNotice?: string } {
+}): void {
   const { sessionManager, userId, payload } = args;
-  let agentNotice: string | undefined;
 
   const agentOverride = parseAgentIdFromPayload(payload);
   if (agentOverride.present && agentOverride.agentId) {
-    const previousAgent =
-      typeof sessionManager.getEffectiveState === "function"
-        ? String(sessionManager.getEffectiveState(userId)?.activeAgentId ?? "").trim()
-        : "";
     const switchResult = sessionManager.switchAgent(userId, agentOverride.agentId);
     if (!switchResult.success) {
       throw new Error(switchResult.message);
-    }
-    if (previousAgent && previousAgent !== agentOverride.agentId) {
-      agentNotice = `已切换到代理: ${agentOverride.agentId}`;
     }
   }
 
@@ -49,5 +41,4 @@ export function applySessionOverrides(args: {
     sessionManager.setUserModelReasoningEffort(userId, reasoningEffort.effort);
   }
 
-  return { agentNotice };
 }

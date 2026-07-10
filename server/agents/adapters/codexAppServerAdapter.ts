@@ -25,6 +25,7 @@ import type { ThreadGoalGetResponse } from "../../codex/appServer/protocol/v2/Th
 import type { ThreadGoalClearResponse } from "../../codex/appServer/protocol/v2/ThreadGoalClearResponse.js";
 import type { ThreadGoalUpdatedNotification } from "../../codex/appServer/protocol/v2/ThreadGoalUpdatedNotification.js";
 import {
+  createTransientModelRetryEvent,
   runWithTransientModelRetry,
   type RetryAttemptState,
 } from "./transientModelRetry.js";
@@ -450,6 +451,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         agentName: "Codex app-server",
         signal: options?.signal,
         log: (message) => logger.warn(message),
+        onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
       },
       (retryState) => this.sendOnce(input, options, retryState),
     );

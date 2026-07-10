@@ -26,8 +26,9 @@ type Logger = {
 
 function isTransientRetryEvent(event: AgentEvent): boolean {
   const raw = event.raw as ThreadEvent | null | undefined;
-  if (raw?.type !== "turn.failed") return false;
-  const message = String(raw.error?.message ?? event.detail ?? event.title ?? "").trim();
+  if (raw?.type !== "turn.failed" && raw?.type !== "error") return false;
+  const rawMessage = raw.type === "turn.failed" ? raw.error?.message : raw.message;
+  const message = String(rawMessage ?? event.detail ?? event.title ?? "").trim();
   return isTransientUpstreamModelError(message);
 }
 
@@ -120,6 +121,18 @@ export function attachWorkerPromptHandler(args: {
     args.sessionLogger?.logEvent(event);
     args.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
     const raw = event.raw as ThreadEvent;
+    if (event.retry?.source === "external") {
+      args.sendToChat({
+        type: "error",
+        message: event.detail ?? event.title,
+        transient: true,
+        retryable: true,
+        retryCount: event.retry.retryCount,
+        nextAttempt: event.retry.nextAttempt,
+        maxAttempts: event.retry.maxAttempts,
+      });
+      return;
+    }
     if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
       const next = event.delta;
       let delta = next;
@@ -353,7 +366,6 @@ export function attachWorkerPromptHandler(args: {
     if (event.phase === "error") {
       const message = event.detail ?? event.title;
       if (isTransientRetryEvent(event)) {
-        args.sendToChat({ type: "error", message, transient: true, retryable: true });
         return;
       }
       args.sendToChat({ type: "error", message });

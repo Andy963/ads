@@ -461,7 +461,7 @@ describe("web slash commands", () => {
     });
   });
 
-  it("records prompt agent switch notices and invokes the selected agent", async () => {
+  it("switches the prompt agent without recording a redundant chat notice", async () => {
     await withTempWorkspace("ads-web-prompt-agent-notice-", async (workspaceRoot) => {
       const chatMessages: unknown[] = [];
       const clientMessages: unknown[] = [];
@@ -490,18 +490,16 @@ describe("web slash commands", () => {
         }),
       );
 
-      const notice = "已切换到代理: claude";
       const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as
         | { notice?: string; activeAgentId?: string }
         | undefined;
       assert.equal(orchestrator.lastInvokeAgentId, "claude");
       assert.equal(result?.activeAgentId, "claude");
-      assert.equal(result?.notice, notice);
+      assert.equal(result?.notice, undefined);
       assert.deepEqual(
         historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
         [
           { role: "user", text: "continue working", kind: undefined },
-          { role: "status", text: notice, kind: "status" },
           { role: "ai", text: "stub response", kind: undefined },
         ],
       );
@@ -807,9 +805,8 @@ describe("web slash commands", () => {
       assert.deepEqual(switched, { userId: 1, agentId: "codex" });
       assert.equal(recreatedWithResumeThread, true);
       assert.equal(clientMessages.length, 0);
-      assert.equal(chatMessages.length, 2);
+      assert.equal(chatMessages.length, 1);
       assert.equal((chatMessages[0] as { type?: unknown }).type, "agents");
-      assert.deepEqual(chatMessages[1], { type: "status", message: "已切换到代理: Codex", kind: "status" });
     });
   });
 

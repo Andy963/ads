@@ -108,22 +108,19 @@ describe("ws workspace project sync", () => {
     });
 
     handler({ type: "status", message: "已切换到代理: Codex", kind: "status" });
+    handler({ type: "status", message: "模型已从 gpt-5.6-sol 切换到 gpt-5.5，已启动新会话线程。", kind: "status" });
     handler({ type: "status", message: "switch failed", kind: "error" });
     rt.messages.value = [{ id: "s-1", role: "system", kind: "text", content: "已切换到代理: Codex" }];
     handler({ type: "status", message: "已切换到代理: Codex", kind: "status" });
 
     expect(pushMessageBeforeLive).toHaveBeenCalledWith(
-      { role: "system", kind: "text", content: "已切换到代理: Codex" },
-      rt,
-    );
-    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
       { role: "system", kind: "error", content: "switch failed" },
       rt,
     );
-    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(2);
+    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(1);
   });
 
-  it("renders result notices as system chat entries while keeping the toast notice", () => {
+  it("keeps agent result notices out of chat while preserving the toast notice", () => {
     const rt = createRuntime();
     rt.apiNotice = { value: null } satisfies Ref<string | null>;
     rt.noticeTimer = null;
@@ -145,7 +142,32 @@ describe("ws workspace project sync", () => {
     });
 
     expect(rt.apiNotice.value).toBe(notice);
-    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+  });
+
+  it("keeps model change result notices out of system chat entries", () => {
+    const rt = createRuntime();
+    rt.apiNotice = { value: null } satisfies Ref<string | null>;
+    rt.noticeTimer = null;
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    const notice = "模型已从 gpt-5.6-sol 切换到 gpt-5.5，已启动新会话线程。";
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      notice,
+    });
+
+    expect(rt.apiNotice.value).toBe(notice);
+    expect(pushMessageBeforeLive).not.toHaveBeenCalledWith(
       {
         role: "system",
         kind: "text",
@@ -153,6 +175,32 @@ describe("ws workspace project sync", () => {
       },
       rt,
     );
+  });
+
+  it("drops legacy agent and model notices from result chat entries", () => {
+    const rt = createRuntime();
+    rt.apiNotice = { value: null } satisfies Ref<string | null>;
+    rt.noticeTimer = null;
+    const updateProject = vi.fn();
+    const { handler, pushMessageBeforeLive } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    const agentNotice = "已切换到代理: claude";
+    const modelNotice = "模型已从 gpt-5.6-sol 切换到 gpt-5.5，已启动新会话线程。";
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      notice: `${agentNotice}\n${modelNotice}`,
+    });
+
+    expect(rt.apiNotice.value).toBe(`${agentNotice}\n${modelNotice}`);
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
   });
 
   it("does not duplicate a result notice already shown in the current turn", () => {
@@ -243,6 +291,40 @@ describe("ws workspace project sync", () => {
           command: "git status --short",
           ts: 15,
         },
+      ],
+      rt,
+    );
+  });
+
+  it("drops agent and model change notices from replayed status history", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler, applyResumeHistory } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "user", text: "hello", ts: 10 },
+        { role: "status", kind: "status", text: "模型已从 gpt-5.6-sol 切换到 gpt-5.5，已启动新会话线程。", ts: 11 },
+        {
+          role: "status",
+          kind: "status",
+          text: "已切换到代理: claude\n模型已切换到 gpt-5.5，已启动新会话线程。",
+          ts: 12,
+        },
+        { role: "ai", text: "done", ts: 13 },
+      ],
+    });
+
+    expect(applyResumeHistory).toHaveBeenCalledWith(
+      [
+        { id: "h-u-0", role: "user", kind: "text", content: "hello", ts: 10 },
+        { id: "h-a-3", role: "assistant", kind: "text", content: "done", ts: 13 },
       ],
       rt,
     );

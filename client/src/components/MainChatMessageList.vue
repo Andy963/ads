@@ -480,11 +480,11 @@ function closeFilePreview(): void {
           'bubble',
           {
             'bubble--compact': shouldUseCompactBubble(m),
-            'bubble--retryNotice': m.kind === 'error' && (m.retryCount ?? 0) > 1,
+            'bubble--retryNotice': m.kind === 'error' && (m.retryCount ?? 0) > 0,
           },
         ]"
       >
-        <span v-if="m.kind === 'error' && (m.retryCount ?? 0) > 1" class="retryBadge">x{{ m.retryCount }}</span>
+        <span v-if="m.kind === 'error' && (m.retryCount ?? 0) > 0" class="retryBadge">x{{ m.retryCount }}</span>
         <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0" class="typing" aria-label="AI is thinking">
           <span class="thinkingText">thinking</span>
         </div>

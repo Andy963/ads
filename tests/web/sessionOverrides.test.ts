@@ -21,7 +21,7 @@ describe("web/sessionOverrides", () => {
       },
     };
 
-    const result = applySessionOverrides({
+    applySessionOverrides({
       sessionManager: sessionManager as any,
       userId: 7,
       payload: {
@@ -30,7 +30,6 @@ describe("web/sessionOverrides", () => {
       },
     });
 
-    assert.equal(result.agentNotice, undefined);
     assert.deepEqual(calls, [
       { type: "model", value: "gpt-4o" },
       { type: "effort", value: "high" },
@@ -54,7 +53,7 @@ describe("web/sessionOverrides", () => {
       },
     };
 
-    const result = applySessionOverrides({
+    applySessionOverrides({
       sessionManager: sessionManager as any,
       userId: 7,
       payload: {
@@ -63,7 +62,6 @@ describe("web/sessionOverrides", () => {
       },
     });
 
-    assert.equal(result.agentNotice, undefined);
     assert.deepEqual(calls, [{ type: "effort", value: undefined }]);
   });
 
@@ -84,13 +82,12 @@ describe("web/sessionOverrides", () => {
       },
     };
 
-    const result = applySessionOverrides({
+    applySessionOverrides({
       sessionManager: sessionManager as any,
       userId: 7,
       payload: { text: "hello" },
     });
 
-    assert.equal(result.agentNotice, undefined);
     assert.deepEqual(calls, []);
   });
 
@@ -112,7 +109,7 @@ describe("web/sessionOverrides", () => {
       },
     };
 
-    const result = applySessionOverrides({
+    applySessionOverrides({
       sessionManager: sessionManager as any,
       userId: 7,
       payload: {
@@ -121,7 +118,6 @@ describe("web/sessionOverrides", () => {
       },
     });
 
-    assert.equal(result.agentNotice, "已切换到代理: claude");
     assert.deepEqual(calls, [
       { type: "agent", value: "claude" },
       { type: "effort", value: "high" },

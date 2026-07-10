@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 
 import type { ModelConfig } from "../api/types";
+import { normalizeReasoningEffort } from "../lib/chatPreferences";
 import { supportsAgentModel } from "../lib/model_agent";
 import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
@@ -21,6 +22,16 @@ type PendingImagePreview = {
   key: string;
   src: string;
   href: string;
+};
+
+const DEFAULT_REASONING_EFFORTS = ["medium", "high", "xhigh"] as const;
+const REASONING_EFFORT_LABELS: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
 };
 
 const props = defineProps<{
@@ -181,12 +192,49 @@ function onModelChange(ev: Event): void {
   emit("setModel", next);
 }
 
-const reasoningEffortValue = computed(() => {
-  const raw = String(props.modelReasoningEffort ?? "").trim().toLowerCase();
-  if (raw === "medium" || raw === "high" || raw === "xhigh") return raw;
-  if (raw === "low") return "medium";
-  return "high";
+const selectedModel = computed(() => {
+  const modelId = effectiveModelId.value;
+  return filteredModelOptions.value.find((model) => String(model.modelId ?? model.id ?? "").trim() === modelId) ?? null;
 });
+
+const reasoningEffortOptions = computed(() => {
+  const config = selectedModel.value?.configJson;
+  const raw = config && typeof config === "object" && !Array.isArray(config)
+    ? (config as Record<string, unknown>).reasoningEfforts
+    : null;
+  if (!Array.isArray(raw)) return [...DEFAULT_REASONING_EFFORTS];
+
+  const values = raw
+    .map((entry) => String(entry ?? "").trim().toLowerCase())
+    .filter((entry) => Boolean(REASONING_EFFORT_LABELS[entry]));
+  return values.length > 0 ? [...new Set(values)] : [...DEFAULT_REASONING_EFFORTS];
+});
+
+const reasoningEffortValue = computed(() => {
+  const normalized = normalizeReasoningEffort(props.modelReasoningEffort);
+  if (reasoningEffortOptions.value.includes(normalized)) return normalized;
+  if (reasoningEffortOptions.value.includes("high")) return "high";
+  return reasoningEffortOptions.value[0] ?? "high";
+});
+
+watch(
+  () => [
+    selectedAgentId.value,
+    effectiveModelId.value,
+    String(props.modelReasoningEffort ?? "").trim().toLowerCase(),
+    reasoningEffortOptions.value.join("\n"),
+  ],
+  () => {
+    const current = String(props.modelReasoningEffort ?? "").trim().toLowerCase();
+    if (!current || current === reasoningEffortValue.value) return;
+    emit("setReasoningEffort", reasoningEffortValue.value);
+  },
+  { immediate: true },
+);
+
+function formatReasoningEffortLabel(effort: string): string {
+  return REASONING_EFFORT_LABELS[effort] ?? effort;
+}
 
 function onReasoningEffortChange(ev: Event): void {
   const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
@@ -396,7 +444,7 @@ const {
               </option>
             </select>
           </div>
-          <div v-if="selectedAgentId === 'codex'" class="agentSelect">
+          <div v-if="selectedAgentId === 'codex' || selectedAgentId === 'claude'" class="agentSelect">
             <select
               class="agentSelectInput"
               :value="reasoningEffortValue"
@@ -405,9 +453,9 @@ const {
               data-testid="chat-reasoning-effort"
               @change="onReasoningEffortChange"
             >
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="xhigh">Extra High</option>
+              <option v-for="effort in reasoningEffortOptions" :key="effort" :value="effort">
+                {{ formatReasoningEffortLabel(effort) }}
+              </option>
             </select>
           </div>
         </div>

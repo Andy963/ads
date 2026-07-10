@@ -118,13 +118,12 @@ describe("web/ws/commandAgentSwitch", () => {
           agents: [{ id: "codex", name: "Codex", ready: true, error: undefined }],
           threadId: "thread-live",
         },
-        { type: "status", message: "已切换到代理: Codex", kind: "status" },
       ]);
       assert.deepEqual(
         historyStore
           .get("history-agent-ok")
           .map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
-        [{ role: "status", text: "已切换到代理: Codex", kind: "status" }],
+        [],
       );
     } finally {
       historyStore.clear("history-agent-ok");

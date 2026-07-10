@@ -151,7 +151,7 @@ describe("web/server/ws/workerPromptHandler", () => {
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
   });
 
-  it("marks retryable upstream turn failures as transient chat errors", () => {
+  it("suppresses retryable upstream turn failures until the outer retry decision", () => {
     const { emit, sent } = createHarness();
 
     emit({
@@ -165,11 +165,55 @@ describe("web/server/ws/workerPromptHandler", () => {
       },
     });
 
+    assert.deepEqual(sent, []);
+  });
+
+  it("suppresses retryable upstream error events until the outer retry decision", () => {
+    const { emit, sent } = createHarness();
+
+    emit({
+      phase: "error",
+      title: "请求失败",
+      detail: "upstream request failed with status 429",
+      timestamp: Date.now(),
+      raw: {
+        type: "error",
+        message: "upstream request failed with status 429",
+      },
+    });
+
+    assert.deepEqual(sent, []);
+  });
+
+  it("forwards explicit external retry decisions with the runner count", () => {
+    const { emit, sent } = createHarness();
+
+    emit({
+      phase: "connection",
+      title: "模型请求重试",
+      detail: "upstream request failed with status 429",
+      timestamp: Date.now(),
+      raw: {
+        type: "error",
+        message: "upstream request failed with status 429",
+      },
+      retry: {
+        source: "external",
+        retryCount: 3,
+        nextAttempt: 4,
+        maxAttempts: 101,
+        delayMs: 800,
+      },
+    });
+
     assert.deepEqual(sent.at(-1), {
       type: "error",
-      message: "We're currently experiencing high demand, which may cause temporary errors.",
+      message: "upstream request failed with status 429",
       transient: true,
       retryable: true,
+      retryCount: 3,
+      nextAttempt: 4,
+      maxAttempts: 101,
     });
   });
 

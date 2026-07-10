@@ -17,6 +17,7 @@ import { createLogger } from "../../utils/logger.js";
 import { extractTextFromInput } from "../../utils/inputText.js";
 import { createAbortError } from "../../utils/abort.js";
 import {
+  createTransientModelRetryEvent,
   isTransientUpstreamModelError,
   TransientModelRetryAttemptError,
   runWithTransientModelRetry,
@@ -27,6 +28,12 @@ const logger = createLogger("ClaudeCliAdapter");
 const CLAUDE_UNSET_ENV = ["CLAUDECODE"];
 const DEFAULT_IMAGE_ONLY_PROMPT = "Please respond based on the attached image(s).";
 const EMPTY_RESPONSE_ERROR = "Claude CLI 成功退出但未返回最终消息";
+const CLAUDE_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+function normalizeClaudeReasoningEffort(value: unknown): string | undefined {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return CLAUDE_REASONING_EFFORTS.has(normalized) ? normalized : undefined;
+}
 
 function extractLocalImagePaths(input: Input): string[] {
   if (!Array.isArray(input)) return [];
@@ -103,6 +110,7 @@ export interface ClaudeCliAdapterOptions {
   sandboxMode?: SandboxMode;
   workingDirectory?: string;
   model?: string;
+  modelReasoningEffort?: string;
   sessionId?: string;
   metadata?: Partial<AgentMetadata>;
 }
@@ -122,6 +130,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
   private readonly sandboxMode: SandboxMode;
   private workingDirectory?: string;
   private model?: string;
+  private modelReasoningEffort?: string;
   private betas: string[] = [];
   private enable1mContext = false;
   private disable1mContext = false;
@@ -136,6 +145,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     this.sandboxMode = options.sandboxMode ?? "workspace-write";
     this.workingDirectory = options.workingDirectory;
     this.model = options.model ?? process.env.ADS_CLAUDE_MODEL;
+    this.modelReasoningEffort = normalizeClaudeReasoningEffort(options.modelReasoningEffort);
     this.sessionId = options.sessionId?.trim() || null;
     this.metadata = {
       ...DEFAULT_METADATA,
@@ -188,6 +198,12 @@ export class ClaudeCliAdapter implements AgentAdapter {
     if (this.model === normalized) return;
     this.model = normalized;
     this.reset();
+  }
+
+  setModelReasoningEffort(effort?: string): void {
+    const next = normalizeClaudeReasoningEffort(effort);
+    if (this.modelReasoningEffort === next) return;
+    this.modelReasoningEffort = next;
   }
 
   setModelConfig(config?: Record<string, unknown> | null): void {
@@ -269,6 +285,9 @@ export class ClaudeCliAdapter implements AgentAdapter {
           disable1mContext: this.disable1mContext,
         }),
       );
+    }
+    if (this.modelReasoningEffort) {
+      args.push("--effort", this.modelReasoningEffort);
     }
     if (this.betas.length > 0) {
       args.push("--betas", ...this.betas);
@@ -383,6 +402,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
         agentName: "Claude CLI",
         signal: options?.signal,
         log: (message) => logger.warn(message),
+        onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
       },
       runAttempt,
     );

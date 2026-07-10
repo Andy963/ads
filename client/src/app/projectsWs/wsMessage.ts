@@ -28,6 +28,19 @@ const HISTORY_EXECUTE_PREVIEW_LINES = 3;
 const THREAD_RESUMED_NOTICE = "已恢复后端上下文线程。";
 const HISTORY_INJECTION_NOTICE = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
 const TRANSIENT_RETRY_NOTICE_ID = "transient-retry-notice";
+const SELECTION_NOTICE_PATTERNS = [
+  /^已切换到代理:\s*.+$/,
+  /^模型已从.+切换到.+，已启动新会话线程。?$/,
+  /^模型已切换到.+，已启动新会话线程。?$/,
+];
+
+function stripSelectionChangeNotices(content: string): string {
+  return String(content ?? "")
+    .split("\n")
+    .filter((line) => !SELECTION_NOTICE_PATTERNS.some((pattern) => pattern.test(line.trim())))
+    .join("\n")
+    .trim();
+}
 
 function decodeHistoryKindValue(value: string): string {
   try {
@@ -148,11 +161,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
-  const upsertTransientRetryNotice = (message: string): void => {
+  const upsertTransientRetryNotice = (message: string, retryCount?: unknown): void => {
     const content = String(message ?? "").trim() || "Upstream model request failed temporarily; retrying.";
     const existing = rt.messages.value.slice();
     const idx = existing.findIndex((m) => String(m.id ?? "") === TRANSIENT_RETRY_NOTICE_ID);
-    const nextCount = idx >= 0 ? Math.max(1, Math.floor(Number(existing[idx]!.retryCount ?? 1))) + 1 : 1;
+    const explicitCount = Number(retryCount);
+    const nextCount = Number.isFinite(explicitCount) && explicitCount > 0
+      ? Math.floor(explicitCount)
+      : idx >= 0
+        ? Math.max(1, Math.floor(Number(existing[idx]!.retryCount ?? 1))) + 1
+        : 1;
     const nextItem: ChatItem = {
       id: TRANSIENT_RETRY_NOTICE_ID,
       role: "system",
@@ -380,20 +398,23 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const notice = String(payload.notice ?? "").trim();
     if (notice) {
       rt.apiNotice.value = notice;
-      let alreadyShownInCurrentTail = false;
-      for (let i = rt.messages.value.length - 1; i >= 0; i--) {
-        const item = rt.messages.value[i];
-        if (!item) continue;
-        if (item.role === "user") {
-          break;
+      const chatNotice = stripSelectionChangeNotices(notice);
+      if (chatNotice) {
+        let alreadyShownInCurrentTail = false;
+        for (let i = rt.messages.value.length - 1; i >= 0; i--) {
+          const item = rt.messages.value[i];
+          if (!item) continue;
+          if (item.role === "user") {
+            break;
+          }
+          if (item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === chatNotice) {
+            alreadyShownInCurrentTail = true;
+            break;
+          }
         }
-        if (item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === notice) {
-          alreadyShownInCurrentTail = true;
-          break;
+        if (!alreadyShownInCurrentTail) {
+          pushMessageBeforeLive({ role: "system", kind: "text", content: chatNotice }, rt);
         }
-      }
-      if (!alreadyShownInCurrentTail) {
-        pushMessageBeforeLive({ role: "system", kind: "text", content: notice }, rt);
       }
       if (rt.noticeTimer !== null) {
         try {
@@ -816,18 +837,22 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const content = String(msg.message ?? msg.output ?? msg.text ?? "").trim();
       if (!content) return;
       const kind = String(msg.kind ?? "").trim() === "error" ? "error" : "text";
+      const chatContent = kind === "text" ? stripSelectionChangeNotices(content) : content;
+      if (!chatContent) return;
       if (
         kind === "text" &&
-        (content === THREAD_RESUMED_NOTICE || content === HISTORY_INJECTION_NOTICE) &&
-        rt.messages.value.some((item) => item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === content)
+        (chatContent === THREAD_RESUMED_NOTICE || chatContent === HISTORY_INJECTION_NOTICE) &&
+        rt.messages.value.some(
+          (item) => item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === chatContent,
+        )
       ) {
         return;
       }
       const last = rt.messages.value.at(-1);
-      if (last?.role === "system" && last.kind === kind && String(last.content ?? "").trim() === content) {
+      if (last?.role === "system" && last.kind === kind && String(last.content ?? "").trim() === chatContent) {
         return;
       }
-      pushMessageBeforeLive({ role: "system", kind, content }, rt);
+      pushMessageBeforeLive({ role: "system", kind, content: chatContent }, rt);
       return;
     }
 
@@ -883,8 +908,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const ts = typeof rawTs === "number" && Number.isFinite(rawTs) && rawTs > 0 ? Math.floor(rawTs) : null;
         const trimmed = text.trim();
         if (!trimmed) continue;
+        const historyText = role === "status" && kind !== "error" ? stripSelectionChangeNotices(trimmed) : trimmed;
+        if (!historyText) continue;
         if (kind === "execute") {
-          const lines = trimmed.split("\n");
+          const lines = historyText.split("\n");
           const commandLine = String(lines[0] ?? "").trim();
           const command = commandLine.startsWith("$ ") ? commandLine.slice(2).trim() : commandLine;
           next.push(
@@ -897,7 +924,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           );
           continue;
         }
-        const isCommand = kind === "command" || (role === "status" && trimmed.startsWith("$ "));
+        const isCommand = kind === "command" || (role === "status" && historyText.startsWith("$ "));
         if (isCommand) {
           continue;
         }
@@ -905,7 +932,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           const planId = kind.startsWith("plan:") ? kind.slice("plan:".length).trim() || `plan-${idx}` : `plan-${idx}`;
           let parsed: { planId?: unknown; status?: unknown; items?: unknown } | null = null;
           try {
-            parsed = JSON.parse(trimmed) as { planId?: unknown; status?: unknown; items?: unknown };
+            parsed = JSON.parse(historyText) as { planId?: unknown; status?: unknown; items?: unknown };
           } catch {
             parsed = null;
           }
@@ -953,13 +980,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             id: `h-u-${idx}`,
             role: "user",
             kind: "text",
-            content: trimmed,
+            content: historyText,
             ts: ts ?? undefined,
             ...(execution ? { execution } : {}),
           });
-        } else if (role === "ai") next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: trimmed, ts: ts ?? undefined });
-        else if (kind === "error") next.push({ id: `h-e-${idx}`, role: "system", kind: "error", content: trimmed, ts: ts ?? undefined });
-        else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: trimmed, ts: ts ?? undefined });
+        } else if (role === "ai")
+          next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: historyText, ts: ts ?? undefined });
+        else if (kind === "error")
+          next.push({ id: `h-e-${idx}`, role: "system", kind: "error", content: historyText, ts: ts ?? undefined });
+        else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: historyText, ts: ts ?? undefined });
       }
       if (rt.awaitingBootstrapHistory) {
         const serverUserClientMessageIds = new Set<string>();
@@ -1240,7 +1269,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "error") {
       const isTransientRetry = Boolean(msg.transient) && Boolean(msg.retryable);
       if (isTransientRetry) {
-        upsertTransientRetryNotice(String(msg.message ?? ""));
+        upsertTransientRetryNotice(String(msg.message ?? ""), msg.retryCount);
         return;
       }
 

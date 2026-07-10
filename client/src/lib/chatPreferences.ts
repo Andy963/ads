@@ -5,11 +5,15 @@ function normalizeStorageKeySegment(value: unknown, fallback: string): string {
 
 export function normalizeReasoningEffort(value: unknown): string {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "medium" || normalized === "high" || normalized === "xhigh") {
+  if (
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh" ||
+    normalized === "max" ||
+    normalized === "ultra"
+  ) {
     return normalized;
-  }
-  if (normalized === "low") {
-    return "medium";
   }
   return "high";
 }

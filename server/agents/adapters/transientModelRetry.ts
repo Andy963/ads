@@ -17,6 +17,15 @@ export interface TransientModelRetryOptions {
   backoffMs?: readonly number[];
   signal?: AbortSignal;
   log?: (message: string) => void;
+  onRetry?: (notice: TransientModelRetryNotice) => void;
+}
+
+export interface TransientModelRetryNotice {
+  message: string;
+  retryCount: number;
+  nextAttempt: number;
+  maxAttempts: number;
+  delayMs: number;
 }
 
 export interface RetryAttemptState {
@@ -37,6 +46,23 @@ export class TransientModelRetryAttemptError extends Error {
       this.cause = options.cause;
     }
   }
+}
+
+export function createTransientModelRetryEvent(notice: TransientModelRetryNotice): AgentEvent {
+  return {
+    phase: "connection",
+    title: "模型请求重试",
+    detail: notice.message,
+    timestamp: Date.now(),
+    raw: { type: "error", message: notice.message } as ThreadEvent,
+    retry: {
+      source: "external",
+      retryCount: notice.retryCount,
+      nextAttempt: notice.nextAttempt,
+      maxAttempts: notice.maxAttempts,
+      delayMs: notice.delayMs,
+    },
+  };
 }
 
 export function isTransientByokCapacityError(message: string): boolean {
@@ -147,6 +173,20 @@ export async function runWithTransientModelRetry<T>(
       const delayMs = backoffMs
         ? Math.max(0, backoffMs[Math.min(attempt - 1, backoffMs.length - 1)] ?? 0)
         : randomBackoffMs(DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_MAX_MS);
+      const notice: TransientModelRetryNotice = {
+        message,
+        retryCount: attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts,
+        delayMs,
+      };
+      try {
+        options.onRetry?.(notice);
+      } catch (callbackError) {
+        options.log?.(
+          `[${options.agentName}] failed to publish retry notice: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+        );
+      }
       options.log?.(
         `[${options.agentName}] transient upstream model error; retrying attempt ${attempt + 1}/${maxAttempts} after ${delayMs}ms`,
       );
@@ -178,13 +218,18 @@ async function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     throw new DOMException("Aborted", "AbortError");
   }
+  let abort: (() => void) | undefined;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(resolve, ms);
     if (!signal) return;
-    const abort = () => {
+    abort = () => {
       clearTimeout(timer);
       reject(new DOMException("Aborted", "AbortError"));
     };
     signal.addEventListener("abort", abort, { once: true });
+  }).finally(() => {
+    if (signal && abort) {
+      signal.removeEventListener("abort", abort);
+    }
   });
 }

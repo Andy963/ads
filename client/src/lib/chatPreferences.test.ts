@@ -11,7 +11,9 @@ describe("chatPreferences", () => {
   it("normalizes reasoning effort values for persistence and restore", () => {
     expect(normalizeReasoningEffort(" medium ")).toBe("medium");
     expect(normalizeReasoningEffort("xhigh")).toBe("xhigh");
-    expect(normalizeReasoningEffort("low")).toBe("medium");
+    expect(normalizeReasoningEffort("max")).toBe("max");
+    expect(normalizeReasoningEffort("ultra")).toBe("ultra");
+    expect(normalizeReasoningEffort("low")).toBe("low");
     expect(normalizeReasoningEffort("")).toBe("high");
     expect(normalizeReasoningEffort("unknown")).toBe("high");
   });
