@@ -1,9 +1,9 @@
-# ADS - AI Driven Specification
+# ADS
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、Planner/Worker 对话、任务队列、规格草稿、定时任务、技能和长期记忆组织工作，并可选通过 Telegram Bot 远程访问。
+ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、Planner/Worker 对话、任务草稿与队列、定时任务、技能和长期记忆组织工作，并可选通过 Telegram Bot 远程访问。
 
 当前不支持把 ADS 当作独立的用户命令行产品使用。仓库里仍有 `server/cli.ts` 和 `package.json` 的 `bin` 配置，但它们只是构建后的服务启动入口和兼容包装；日常交互入口是 Web Console，Telegram Bot 是可选远程入口。
 
@@ -11,7 +11,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、
 
 - **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Planner/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断。
 - **任务看板与队列**：支持创建、编辑、排序、运行、暂停、取消、重试、删除任务，并在任务终态记录结果与 workspace patch artifact。
-- **规格草稿**：Planner 可生成 task bundle draft，Web UI 支持查看、编辑、审批，并维护 `requirement`、`design`、`implementation` 等规格文件。
+- **任务草稿**：Planner 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
 - **多 Agent 适配**：Codex 是主要执行 Agent；Claude 和 Gemini 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。
 - **模型配置**：Web UI 可维护全局模型配置，配置存储在 ADS 全局 SQLite 状态库中。
 - **定时任务**：Planner/Worker 输出 `ads-schedule` block 后，Web 服务会编译为 schedule spec，并由内置 scheduler 调度执行。
@@ -167,6 +167,11 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | Agent 可用性探测超时 |
 | `ADS_AGENT_RUN_TIMEOUT_MS` | `1800000` | 单次 Agent 运行硬超时，`0` 表示禁用 |
 | `ADS_UPSTREAM_RETRY_COUNT` | `1` | 临时上游模型错误的重试次数 |
+| `ADS_TASK_UPSTREAM_RETRY_BASE_DELAY_MS` | `60000` | 外层上游重试耗尽后，任务级重试的初始持久化冷却时间；`0` 表示禁用冷却 |
+| `ADS_TASK_UPSTREAM_RETRY_MAX_DELAY_MS` | `900000` | 外层上游重试耗尽后，任务级指数冷却的最大时间；`0` 表示禁用冷却 |
+| `ADS_CLI_MAX_CONCURRENCY` | `4` | 单个 ADS 进程允许同时运行的 CLI 数量 |
+| `ADS_CLI_MAX_PENDING` | `32` | CLI 并发已满时允许驻留内存的等待请求数，超出后立即失败 |
+| `ADS_CLI_OUTPUT_MAX_BYTES` | `8388608` | 单次 CLI 分别保留的 stdout/stderr 最大字节数，超出时只保留尾部 |
 | `ADS_COORDINATOR_ENABLED` | 未设置 | 是否启用多 Agent coordinator |
 | `ADS_TASK_MAX_PARALLEL` | `3` | coordinator 最大并行委派数 |
 | `ADS_TASK_TIMEOUT_MS` | `120000` | coordinator 单个委派任务超时 |
@@ -233,8 +238,8 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 
 - 首次登录前必须运行 `npm run web:init-admin`。
 - 默认 `default` project 绑定到 `ALLOWED_DIRS` 的第一个目录；也可以在 Web UI 添加、移除、排序项目。
-- Web Worker lane 默认用于实际执行，Planner lane 用于规划、草稿和规格流程。
-- Web 内置 `/pwd` 和 `/cd <path>`；旧的用户可见 `/ads.*` slash 规划命令已停用，规格草稿和任务审批由 UI 与 Planner 流程驱动。
+- Web Worker lane 默认用于实际执行，Planner lane 用于规划和任务草稿。
+- Web 内置 `/pwd` 和 `/cd <path>`；旧的用户可见 `/ads.*` slash 规划命令已停用，任务草稿和审批由 UI 与 Planner 流程驱动。
 - Goal Mode 依赖 Codex app-server 正常启动；普通 Worker/任务执行依赖 Codex CLI。
 - Web 服务启动时会同步 runtime templates，并启动 scheduler、任务队列管理器、Agent 可用性探测和 Telegram 任务通知重试循环。
 
@@ -280,7 +285,6 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 ads/
 ├── server/
 │   ├── agents/        # Codex / Claude / Gemini adapters, coordination, probes
-│   ├── bootstrap/     # bootstrap execution, worktree, review gate
 │   ├── codex/         # Codex app-server protocol and RPC client
 │   ├── context/       # context compaction and token estimation
 │   ├── memory/        # soul, preference directives, markdown memory
@@ -295,9 +299,9 @@ ads/
 │   └── workspace/     # workspace detection, paths, template sync
 ├── client/            # Vue 3 + Vite Web UI
 ├── tests/             # backend Node test runner tests
-├── templates/         # runtime prompt/spec templates
+├── templates/         # runtime prompt and workspace templates
 ├── scripts/           # build, bundle, type generation helpers
-└── docs/              # project docs and specs
+└── docs/              # project documentation
 ```
 
 ## 验证

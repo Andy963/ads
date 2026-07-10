@@ -28,10 +28,6 @@ const agentId = ref("");
 const priority = ref(0);
 const maxRetries = ref(3);
 
-const bootstrapEnabled = ref(false);
-const bootstrapProject = ref("");
-const bootstrapMaxIterations = ref(10);
-
 const goalModeEnabled = ref(false);
 const goalObjective = ref("");
 const goalTokenBudget = ref<number | null>(null);
@@ -172,7 +168,6 @@ const canSubmit = computed(() => {
   if (recording.value || transcribing.value) return false;
   if (uploadingCount.value > 0) return false;
   if (failedCount.value > 0) return false;
-  if (bootstrapEnabled.value && !bootstrapProject.value.trim()) return false;
   return true;
 });
 
@@ -194,16 +189,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
   const mergedPrompt = prompt.value.trim();
 
-  const bootstrapConfig = bootstrapEnabled.value && bootstrapProject.value.trim()
-    ? {
-        enabled: true as const,
-        projectRef: bootstrapProject.value.trim(),
-        maxIterations: Number.isFinite(bootstrapMaxIterations.value)
-          ? Math.max(1, Math.min(10, bootstrapMaxIterations.value))
-          : 10,
-      }
-    : undefined;
-
   emit(event, {
     title: titleTrimmed.length ? titleTrimmed : undefined,
     prompt: mergedPrompt,
@@ -211,7 +196,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,
     attachments: uploadedIds.length ? uploadedIds : undefined,
-    bootstrap: bootstrapConfig,
     ...(goalModeEnabled.value
       ? {
           goalMode: true,
@@ -226,9 +210,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
   title.value = "";
   prompt.value = "";
-  bootstrapEnabled.value = false;
-  bootstrapProject.value = "";
-  bootstrapMaxIterations.value = 10;
   goalModeEnabled.value = false;
   goalObjective.value = "";
   goalTokenBudget.value = null;
@@ -244,13 +225,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
 
       <TaskCreateFormConfigFields
         :title="title"
-        :bootstrap-enabled="bootstrapEnabled"
-        :bootstrap-project="bootstrapProject"
-        :bootstrap-max-iterations="bootstrapMaxIterations"
         @update:title="title = $event"
-        @update:bootstrap-enabled="bootstrapEnabled = $event"
-        @update:bootstrap-project="bootstrapProject = $event"
-        @update:bootstrap-max-iterations="bootstrapMaxIterations = $event"
       />
 
       <label class="field promptField">
@@ -387,10 +362,6 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
       <div class="actions">
         <div class="actionsLeft">
           <label class="inlineToggle">
-            <input type="checkbox" :checked="bootstrapEnabled" @change="bootstrapEnabled = ($event.target as HTMLInputElement).checked" data-testid="task-create-bootstrap-toggle" />
-            <span class="toggleLabel">自举模式</span>
-          </label>
-          <label class="inlineToggle">
             <input type="checkbox" :checked="goalModeEnabled" @change="goalModeEnabled = ($event.target as HTMLInputElement).checked" data-testid="task-create-goal-toggle" />
             <span class="toggleLabel">目标模式</span>
           </label>
@@ -404,31 +375,8 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
         </div>
       </div>
 
-      <div v-if="bootstrapEnabled" class="bootstrapConfig">
-        <label class="field bootstrapProjectField">
-          <span class="label">项目路径 / Git URL</span>
-          <input
-            :value="bootstrapProject"
-            placeholder="/path/to/project 或 https://..."
-            data-testid="task-create-bootstrap-project"
-            @input="bootstrapProject = ($event.target as HTMLInputElement).value"
-          />
-        </label>
-        <label class="field bootstrapIterationsField">
-          <span class="label">最大迭代</span>
-          <input
-            :value="bootstrapMaxIterations"
-            type="number"
-            min="1"
-            max="10"
-            data-testid="task-create-bootstrap-max-iterations"
-            @input="bootstrapMaxIterations = Number(($event.target as HTMLInputElement).value)"
-          />
-        </label>
-      </div>
-
-      <div v-if="goalModeEnabled" class="bootstrapConfig goalConfig">
-        <label class="field bootstrapProjectField">
+      <div v-if="goalModeEnabled" class="goalConfig">
+        <label class="field goalObjectiveField">
           <span class="label">目标 (Objective)</span>
           <textarea
             class="goalObjectiveInput"
@@ -439,7 +387,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
             @input="goalObjective = ($event.target as HTMLTextAreaElement).value"
           />
         </label>
-        <label class="field bootstrapIterationsField">
+        <label class="field goalBudgetField">
           <span class="label">Token 预算</span>
           <input
             :value="goalTokenBudget ?? ''"
@@ -950,22 +898,22 @@ textarea {
   color: #475569;
 }
 
-.bootstrapConfig {
+.goalConfig {
   display: grid;
   grid-template-columns: 1fr 100px;
   gap: 12px;
   align-items: end;
 }
 
-.bootstrapProjectField {
+.goalObjectiveField {
   min-width: 0;
 }
 
-.bootstrapIterationsField {
+.goalBudgetField {
   min-width: 0;
 }
 
-.bootstrapConfig .label {
+.goalConfig .label {
   display: block;
   font-size: 13px;
   font-weight: 700;
@@ -973,7 +921,7 @@ textarea {
   margin-bottom: 4px;
 }
 
-.bootstrapConfig input {
+.goalConfig input {
   width: 100%;
   padding: 6px 8px;
   border-radius: 10px;
@@ -984,7 +932,7 @@ textarea {
   box-sizing: border-box;
 }
 
-.bootstrapConfig input:focus {
+.goalConfig input:focus {
   outline: none;
   border-color: rgba(37, 99, 235, 0.8);
   background: white;
@@ -1080,7 +1028,7 @@ textarea {
     width: 100%;
   }
 
-  .bootstrapConfig {
+  .goalConfig {
     grid-template-columns: 1fr;
   }
 }

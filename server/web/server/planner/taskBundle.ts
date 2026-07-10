@@ -1,13 +1,5 @@
 import { z } from "zod";
 
-const executionIsolationSchema = z.enum(["default", "required"]);
-
-const taskBundleExecutionSchema = z
-  .object({
-    isolation: executionIsolationSchema.optional(),
-  })
-  .passthrough();
-
 export const taskBundleTaskSchema = z
   .object({
     externalId: z.string().min(1).optional(),
@@ -18,7 +10,6 @@ export const taskBundleTaskSchema = z
     inheritContext: z.boolean().optional(),
     maxRetries: z.number().int().min(0).optional(),
     attachments: z.array(z.string().min(1)).optional(),
-    execution: taskBundleExecutionSchema.optional(),
   })
   .passthrough();
 
@@ -30,19 +21,13 @@ export const taskBundleSchema = z
     insertPosition: z.enum(["front", "back"]).optional(),
     autoApprove: z.boolean().optional(),
     specRef: z.string().optional(),
-    defaults: z
-      .object({
-        execution: taskBundleExecutionSchema.optional(),
-      })
-      .passthrough()
-      .optional(),
+    defaults: z.object({}).passthrough().optional(),
     tasks: z.array(taskBundleTaskSchema).min(1),
   })
   .passthrough();
 
 export type TaskBundle = z.infer<typeof taskBundleSchema>;
 export type TaskBundleTask = z.infer<typeof taskBundleTaskSchema>;
-export type TaskBundleExecutionIsolation = z.infer<typeof executionIsolationSchema>;
 
 function normalizeEscapedNewlines(text: string): string {
   const raw = String(text ?? "");
@@ -139,21 +124,6 @@ export function ensureTaskBundleIdempotency(
     requestId: requestId ?? undefined,
     tasks,
   };
-}
-
-export function resolveTaskBundleExecutionIsolation(
-  bundle: Pick<TaskBundle, "defaults"> | null | undefined,
-  task: Pick<TaskBundleTask, "execution"> | null | undefined,
-): TaskBundleExecutionIsolation {
-  const taskValue = String(task?.execution?.isolation ?? "").trim().toLowerCase();
-  if (taskValue === "required") {
-    return "required";
-  }
-  if (taskValue === "default") {
-    return "default";
-  }
-  const bundleValue = String(bundle?.defaults?.execution?.isolation ?? "").trim().toLowerCase();
-  return bundleValue === "required" ? "required" : "default";
 }
 
 const TASK_BUNDLE_FENCE_REGEX = /```(?:ads-tasks|ads-task-bundle)\s*\n([\s\S]*?)\n```/g;

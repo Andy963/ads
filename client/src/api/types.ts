@@ -8,7 +8,6 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-export type TaskExecutionIsolation = "default" | "required";
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
 export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | "skipped";
@@ -16,12 +15,7 @@ export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | 
 export interface TaskRun {
   id: string;
   taskId: string;
-  executionIsolation?: TaskExecutionIsolation;
   workspaceRoot: string;
-  worktreeDir: string | null;
-  branchName: string | null;
-  baseHead: string | null;
-  endHead: string | null;
   status: TaskRunStatus;
   captureStatus: TaskRunCaptureStatus;
   applyStatus: TaskRunApplyStatus;
@@ -58,7 +52,6 @@ export interface Task {
   error?: string | null;
   retryCount: number;
   maxRetries: number;
-  executionIsolation: TaskExecutionIsolation;
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
@@ -101,12 +94,6 @@ export interface Attachment {
   filename?: string | null;
 }
 
-export interface BootstrapConfig {
-  enabled: boolean;
-  projectRef: string;
-  maxIterations?: number;
-}
-
 export interface CreateTaskInput {
   title?: string;
   prompt: string;
@@ -114,11 +101,7 @@ export interface CreateTaskInput {
   model?: string;
   priority?: number;
   maxRetries?: number;
-  execution?: {
-    isolation?: TaskExecutionIsolation;
-  };
   attachments?: string[];
-  bootstrap?: BootstrapConfig;
   goalMode?: boolean;
   goalObjective?: string | null;
   goalTokenBudget?: number | null;
@@ -175,9 +158,6 @@ export type TaskBundleTask = {
   inheritContext?: boolean;
   maxRetries?: number;
   attachments?: string[];
-  execution?: {
-    isolation?: TaskExecutionIsolation;
-  };
 };
 
 export type TaskBundle = {
@@ -187,37 +167,7 @@ export type TaskBundle = {
   autoApprove?: boolean;
   specRef?: string;
   insertPosition?: "front" | "back";
-  defaults?: {
-    execution?: {
-      isolation?: TaskExecutionIsolation;
-    };
-  };
   tasks: TaskBundleTask[];
-};
-
-export type TaskBundleDraftSpecFileKey = "requirements" | "design" | "implementation";
-
-export type TaskBundleDraftSpecFileMeta = {
-  key: TaskBundleDraftSpecFileKey;
-  fileName: string;
-  missing: boolean;
-};
-
-export type TaskBundleDraftSpecSummary = {
-  specRef: string;
-  files: TaskBundleDraftSpecFileMeta[];
-};
-
-export type TaskBundleDraftSpecDocument = {
-  specRef: string;
-  key: TaskBundleDraftSpecFileKey;
-  fileName: string;
-  content: string;
-  missing: boolean;
-};
-
-export type TaskBundleDraftSpecFileUpdate = {
-  content: string;
 };
 
 export type TaskBundleDraftStatus = "draft" | "approved" | "deleted";

@@ -77,7 +77,6 @@ function makeTask(id: string, overrides: Record<string, unknown> = {}): any {
     retryCount: 0,
     maxRetries: 0,
     createdAt: 0,
-    executionIsolation: "default",
     goalMode: true,
     ...overrides,
   };

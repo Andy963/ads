@@ -48,29 +48,13 @@ function recordTaskWorkspacePatchArtifact(
 
   let patch: WorkspacePatchPayload | null = null;
   let reason = "";
-  const latestRun = (() => {
-    try {
-      return ctx.taskStore.getLatestTaskRun(id);
-    } catch {
-      return null;
-    }
-  })();
-  const patchRoot =
-    latestRun?.executionIsolation === "required" && latestRun.worktreeDir
-      ? latestRun.worktreeDir
-      : ctx.workspaceRoot;
-  const patchBaseRef =
-    latestRun?.executionIsolation === "required" && latestRun.worktreeDir
-      ? (latestRun.baseHead ?? undefined)
-      : undefined;
   if (paths.length === 0) {
     reason = "no_changed_paths_recorded";
   } else {
     try {
       patch = buildWorkspacePatch(
-        patchRoot,
+        ctx.workspaceRoot,
         paths,
-        patchBaseRef ? { baseRef: patchBaseRef } : undefined,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

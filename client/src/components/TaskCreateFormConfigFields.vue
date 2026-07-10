@@ -1,16 +1,10 @@
 <script setup lang="ts">
 const props = defineProps<{
   title: string;
-  bootstrapEnabled: boolean;
-  bootstrapProject: string;
-  bootstrapMaxIterations: number;
 }>();
 
 const emit = defineEmits<{
   (e: "update:title", value: string): void;
-  (e: "update:bootstrapEnabled", value: boolean): void;
-  (e: "update:bootstrapProject", value: string): void;
-  (e: "update:bootstrapMaxIterations", value: number): void;
 }>();
 </script>
 

@@ -289,80 +289,6 @@
   flex-shrink: 0;
 }
 
-.editorTabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-  flex-shrink: 0;
-}
-
-.editorTab {
-  min-width: 120px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(248, 250, 252, 0.88);
-  color: #334155;
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 13px;
-  font-weight: 800;
-  cursor: pointer;
-  transition: border-color 0.15s, background-color 0.15s, transform 0.15s;
-}
-
-.editorTab:hover {
-  border-color: rgba(37, 99, 235, 0.28);
-  background: rgba(239, 246, 255, 0.92);
-  transform: translateY(-1px);
-}
-
-.editorTab--active {
-  border-color: rgba(37, 99, 235, 0.38);
-  background: rgba(219, 234, 254, 0.86);
-  color: #1d4ed8;
-}
-
-.editorTab--dirty {
-  border-color: rgba(245, 158, 11, 0.34);
-}
-
-.editorTabBadge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.editorToolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-  flex-shrink: 0;
-}
-
-.editorToolbarHint {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.editorToolbarActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .editorViewport {
   flex: 1 1 auto;
   min-height: 0;
@@ -378,8 +304,7 @@
   min-height: 0;
 }
 
-.editorPanel--task,
-.editorPanel--spec {
+.editorPanel--task {
   display: flex;
   flex-direction: column;
 }
@@ -391,8 +316,7 @@
   flex-direction: column;
 }
 
-.editorPanel--task .field:last-of-type .fieldTextarea,
-.editorPanel--spec .fieldTextarea {
+.editorPanel--task .field:last-of-type .fieldTextarea {
   flex: 1 1 auto;
 }
 
@@ -411,24 +335,6 @@
   font-weight: 700;
   color: #1f2937;
   margin-bottom: 6px;
-}
-
-.fieldInput {
-  width: 100%;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  font-size: 14px;
-  background: var(--surface);
-  color: #1e293b;
-  box-sizing: border-box;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-.fieldInput:focus {
-  outline: none;
-  border-color: rgba(37, 99, 235, 0.6);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .fieldTextarea {
@@ -451,28 +357,6 @@
   outline: none;
   border-color: rgba(37, 99, 235, 0.6);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
-
-.fieldTextarea--spec {
-  flex: 1 1 auto;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.specEmpty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  min-height: 0;
-  border: 1px dashed rgba(148, 163, 184, 0.35);
-  border-radius: 14px;
-  padding: 16px;
-  font-size: 12px;
-  color: #64748b;
-  background: rgba(248, 250, 252, 0.7);
-  text-align: center;
 }
 
 .modalActions {
@@ -535,55 +419,8 @@
   cursor: not-allowed;
 }
 
-.btnGhost {
-  border-radius: 12px;
-  padding: 8px 14px;
-  min-height: 36px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.72);
-  color: #475569;
-  white-space: nowrap;
-  transition: border-color 0.15s, background-color 0.15s, transform 0.15s;
-}
-
-.btnGhost:hover:not(:disabled) {
-  border-color: rgba(37, 99, 235, 0.24);
-  background: rgba(239, 246, 255, 0.96);
-  transform: translateY(-1px);
-}
-
-.btnGhost:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
 @media (max-width: 720px) {
-  .editorTabs {
-    flex-direction: column;
-  }
-
-  .editorTab {
-    width: 100%;
-  }
-
-  .editorToolbar {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .editorToolbarActions {
-    width: 100%;
-  }
-
-  .editorViewport,
-  .specEmpty {
-    min-height: 0;
-  }
-
-  .fieldTextarea--spec {
+  .editorViewport {
     min-height: 0;
   }
 }

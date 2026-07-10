@@ -6,10 +6,6 @@ import path from "node:path";
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
 const targets = [
-  ".agent/skills/spec-wizard/SKILL.md",
-  ".ads/.agent/skills/spec-wizard/SKILL.md",
-  ".agent/skills/spec-to-task/SKILL.md",
-  ".ads/.agent/skills/spec-to-task/SKILL.md",
   ".agent/skills/planner-slash-draft/SKILL.md",
   ".ads/.agent/skills/planner-slash-draft/SKILL.md",
 ];

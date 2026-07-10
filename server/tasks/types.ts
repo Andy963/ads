@@ -76,6 +76,7 @@ export interface Task {
   error?: string | null;
   retryCount: number;
   maxRetries: number;
+  nextAttemptAt?: number | null;
   executionIsolation?: TaskExecutionIsolation;
   createdAt: number;
   startedAt?: number | null;

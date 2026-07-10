@@ -39,6 +39,29 @@ describe("tasks/taskStore", () => {
     assert.equal(fetched.status, "pending");
   });
 
+  it("should discard deprecated bootstrap and isolation settings", () => {
+    const store = new TaskStore();
+    const task = store.createTask({
+      title: "Legacy",
+      prompt: "Hello",
+      executionIsolation: "required",
+      modelParams: {
+        bootstrap: { enabled: true, projectRef: "/tmp/project" },
+        effort: "high",
+      },
+    });
+
+    assert.equal(task.executionIsolation, "default");
+    assert.deepEqual(task.modelParams, { effort: "high" });
+
+    const updated = store.updateTask(task.id, {
+      executionIsolation: "required",
+      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project" } },
+    });
+    assert.equal(updated.executionIsolation, "default");
+    assert.equal(updated.modelParams, null);
+  });
+
   it("should claim next pending task and mark running", () => {
     const store = new TaskStore();
     const t1 = store.createTask({ title: "A", prompt: "P1", priority: 1 });
@@ -52,6 +75,20 @@ describe("tasks/taskStore", () => {
     const none = store.claimNextPendingTask(Date.now());
     // second claim should not return the already-claimed task
     assert.ok(!none || none.id !== t1.id);
+  });
+
+  it("should not claim a pending task before its persisted next attempt time", () => {
+    const store = new TaskStore();
+    const task = store.createTask({ title: "Delayed", prompt: "P" }, 1_000);
+    store.updateTask(task.id, { nextAttemptAt: 5_000 }, 1_000);
+
+    assert.equal(store.claimNextPendingTask(4_999), null);
+
+    const claimed = store.claimNextPendingTask(5_000);
+    assert.ok(claimed);
+    assert.equal(claimed.id, task.id);
+    assert.equal(claimed.status, "running");
+    assert.equal(claimed.nextAttemptAt, null);
   });
 
   it("should derive a title from prompt when updating an empty title", () => {

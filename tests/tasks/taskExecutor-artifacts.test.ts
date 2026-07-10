@@ -5,28 +5,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { resetDatabaseForTests } from "../../server/storage/database.js";
-import { OrchestratorTaskExecutor, persistTaskWorktreeReference } from "../../server/tasks/executor.js";
+import { OrchestratorTaskExecutor } from "../../server/tasks/executor.js";
 import { TaskStore } from "../../server/tasks/store.js";
 import type { Task } from "../../server/tasks/types.js";
-import { createAbortError } from "../../server/utils/abort.js";
-import { runCommand } from "../../server/utils/commandRunner.js";
-
-async function git(cwd: string, args: string[]) {
-  const res = await runCommand({ cmd: "git", args, cwd, timeoutMs: 60_000, maxOutputBytes: 1024 * 1024 });
-  if (res.exitCode !== 0) {
-    throw new Error(res.stderr.trim() || res.stdout.trim() || `git exited with code ${res.exitCode}`);
-  }
-  return res.stdout;
-}
-
-async function initRepo(workspaceRoot: string): Promise<void> {
-  await git(workspaceRoot, ["init"]);
-  await git(workspaceRoot, ["config", "user.name", "t"]);
-  await git(workspaceRoot, ["config", "user.email", "t@t"]);
-  fs.writeFileSync(path.join(workspaceRoot, "note.txt"), "hello\n", "utf8");
-  await git(workspaceRoot, ["add", "-A"]);
-  await git(workspaceRoot, ["commit", "-m", "init"]);
-}
 
 describe("tasks/executor artifacts", () => {
   let tmpDir: string;
@@ -152,33 +133,23 @@ describe("tasks/executor artifacts", () => {
     assert.match(prompts[0] ?? "", new RegExp(tailMarker));
   });
 
-  it("persists explicit worktree references", () => {
+  it("runs legacy isolation and bootstrap tasks directly in the workspace", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "workspace-"));
     const store = new TaskStore();
-    const task = store.createTask({ title: "T", prompt: "P", model: "auto" }) as Task;
-
-    persistTaskWorktreeReference(store, task.id, { worktreeDir: "/tmp/bootstrap-worktree", source: "bootstrap" }, 123);
-
-    const contexts = store.getContext(task.id);
-    const worktreeRef = contexts.find((context) => context.contextType === "artifact:worktree_reference");
-    assert.ok(worktreeRef);
-    assert.deepEqual(JSON.parse(worktreeRef!.content), {
-      worktreeDir: "/tmp/bootstrap-worktree",
-      source: "bootstrap",
-      createdAt: 123,
-    });
-  });
-
-  it("runs required-isolation tasks inside a worktree and applies changes back", async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "repo-"));
-    await initRepo(workspaceRoot);
-
-    const store = new TaskStore();
-    const task = store.createTask({
-      title: "isolated",
+    const created = store.createTask({
+      title: "legacy task",
       prompt: "update note",
       model: "auto",
       executionIsolation: "required",
+      modelParams: {
+        bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 },
+      },
     }) as Task;
+    const task = {
+      ...created,
+      executionIsolation: "required" as const,
+      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project" } },
+    };
 
     let workingDirectory = "";
     const orchestrator = {
@@ -204,221 +175,14 @@ describe("tasks/executor artifacts", () => {
 
     await executor.execute(task, {});
 
-    assert.notEqual(workingDirectory, workspaceRoot);
+    assert.equal(workingDirectory, workspaceRoot);
     assert.equal(fs.readFileSync(path.join(workspaceRoot, "note.txt"), "utf8"), "changed\n");
-
     const latestRun = store.getLatestTaskRun(task.id);
-    assert.ok(latestRun);
-    assert.equal(latestRun?.executionIsolation, "required");
-    assert.equal(latestRun?.applyStatus, "applied");
+    assert.equal(latestRun?.executionIsolation, "default");
+    assert.equal(latestRun?.worktreeDir, null);
     assert.equal(latestRun?.status, "completed");
-    assert.ok(latestRun?.worktreeDir);
-  });
-
-  it("applies committed isolated changes back to the workspace", async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "repo-"));
-    await initRepo(workspaceRoot);
-
-    const store = new TaskStore();
-    const task = store.createTask({
-      title: "isolated committed",
-      prompt: "commit note update",
-      model: "auto",
-      executionIsolation: "required",
-    }) as Task;
-
-    let workingDirectory = "";
-    const orchestrator = {
-      setModel() {},
-      setWorkingDirectory(dir?: string) {
-        workingDirectory = String(dir ?? "");
-      },
-      onEvent() {
-        return () => {};
-      },
-      async invokeAgent() {
-        fs.writeFileSync(path.join(workingDirectory, "note.txt"), "committed\n", "utf8");
-        await git(workingDirectory, ["add", "note.txt"]);
-        await git(workingDirectory, ["commit", "-m", "change"]);
-        return { response: "done" };
-      },
-    };
-
-    const executor = new OrchestratorTaskExecutor({
-      getOrchestrator: () => orchestrator as any,
-      store,
-      workspaceRoot,
-      autoModelOverride: "mock",
-    });
-
-    await executor.execute(task, {});
-
-    assert.notEqual(workingDirectory, workspaceRoot);
-    assert.equal(fs.readFileSync(path.join(workspaceRoot, "note.txt"), "utf8"), "committed\n");
-
-    const latestRun = store.getLatestTaskRun(task.id);
-    assert.equal(latestRun?.applyStatus, "applied");
-    assert.equal(latestRun?.status, "completed");
-  });
-
-  it("records committed isolated changes for required-isolation runs", async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "repo-"));
-    await initRepo(workspaceRoot);
-
-    const store = new TaskStore();
-    const task = store.createTask({
-      title: "isolated changes",
-      prompt: "commit note update",
-      model: "auto",
-      executionIsolation: "required",
-    }) as Task;
-
-    let workingDirectory = "";
-    const orchestrator = {
-      setModel() {},
-      setWorkingDirectory(dir?: string) {
-        workingDirectory = String(dir ?? "");
-      },
-      onEvent() {
-        return () => {};
-      },
-      async invokeAgent() {
-        fs.writeFileSync(path.join(workingDirectory, "note.txt"), "changed\n", "utf8");
-        await git(workingDirectory, ["add", "note.txt"]);
-        await git(workingDirectory, ["commit", "-m", "change"]);
-        return { response: "done" };
-      },
-    };
-
-    const executor = new OrchestratorTaskExecutor({
-      getOrchestrator: () => orchestrator as any,
-      store,
-      workspaceRoot,
-      autoModelOverride: "mock",
-    });
-
-    await executor.execute(task, {});
-
-    const contexts = store.getContext(task.id);
-    const changed = contexts.filter((c) => c.contextType === "artifact:changed_paths");
-    assert.equal(changed.length, 1);
-    const payload = JSON.parse(changed[0]!.content) as { paths?: string[] };
-    assert.deepEqual(payload.paths, ["note.txt"]);
-
-    const latestRun = store.getLatestTaskRun(task.id);
-    assert.equal(latestRun?.captureStatus, "skipped");
-    assert.equal(latestRun?.applyStatus, "applied");
-  });
-
-  it("closes pending sub-statuses when isolated execution fails", async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "repo-"));
-    await initRepo(workspaceRoot);
-
-    const store = new TaskStore();
-    const task = store.createTask({
-      title: "isolated fail",
-      prompt: "fail",
-      model: "auto",
-      executionIsolation: "required",
-    }) as Task;
-
-    const orchestrator = {
-      setModel() {},
-      setWorkingDirectory() {},
-      onEvent() {
-        return () => {};
-      },
-      async invokeAgent() {
-        throw new Error("boom");
-      },
-    };
-
-    const executor = new OrchestratorTaskExecutor({
-      getOrchestrator: () => orchestrator as any,
-      store,
-      workspaceRoot,
-      autoModelOverride: "mock",
-    });
-
-    await assert.rejects(() => executor.execute(task, {}), /boom/);
-
-    const latestRun = store.getLatestTaskRun(task.id);
-    assert.equal(latestRun?.status, "failed");
-    assert.equal(latestRun?.captureStatus, "skipped");
-    assert.equal(latestRun?.applyStatus, "failed");
-  });
-
-  it("closes pending sub-statuses when isolated execution is cancelled", async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "repo-"));
-    await initRepo(workspaceRoot);
-
-    const store = new TaskStore();
-    const task = store.createTask({
-      title: "isolated cancel",
-      prompt: "cancel",
-      model: "auto",
-      executionIsolation: "required",
-    }) as Task;
-
-    const orchestrator = {
-      setModel() {},
-      setWorkingDirectory() {},
-      onEvent() {
-        return () => {};
-      },
-      async invokeAgent() {
-        throw createAbortError();
-      },
-    };
-
-    const executor = new OrchestratorTaskExecutor({
-      getOrchestrator: () => orchestrator as any,
-      store,
-      workspaceRoot,
-      autoModelOverride: "mock",
-    });
-
-    await assert.rejects(() => executor.execute(task, {}), /AbortError/);
-
-    const latestRun = store.getLatestTaskRun(task.id);
-    assert.equal(latestRun?.status, "cancelled");
+    assert.equal(typeof latestRun?.startedAt, "number");
     assert.equal(latestRun?.captureStatus, "skipped");
     assert.equal(latestRun?.applyStatus, "skipped");
-  });
-
-  it("fails the run when required-isolation worktree setup fails", async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "not-a-repo-"));
-    const store = new TaskStore();
-    const task = store.createTask({
-      title: "isolated setup fail",
-      prompt: "setup",
-      model: "auto",
-      executionIsolation: "required",
-    }) as Task;
-
-    const orchestrator = {
-      setModel() {},
-      setWorkingDirectory() {},
-      onEvent() {
-        return () => {};
-      },
-      async invokeAgent() {
-        return { response: "unreachable" };
-      },
-    };
-
-    const executor = new OrchestratorTaskExecutor({
-      getOrchestrator: () => orchestrator as any,
-      store,
-      workspaceRoot,
-      autoModelOverride: "mock",
-    });
-
-    await assert.rejects(() => executor.execute(task, {}), /git/i);
-
-    const latestRun = store.getLatestTaskRun(task.id);
-    assert.equal(latestRun?.status, "failed");
-    assert.equal(latestRun?.captureStatus, "skipped");
-    assert.equal(latestRun?.applyStatus, "failed");
   });
 });

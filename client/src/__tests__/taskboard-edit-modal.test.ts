@@ -42,7 +42,13 @@ describe("TaskBoard edit modal", () => {
 
   it("opens a modal editor and emits updates on save", async () => {
     const longPrompt = `Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6`;
-    const task = makeTask({ id: "t-1", title: "My title", prompt: longPrompt, status: "pending" });
+    const task = makeTask({
+      id: "t-1",
+      title: "My title",
+      prompt: longPrompt,
+      status: "pending",
+      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 } },
+    });
 
     const wrapper = mount(TaskBoard, {
       props: {
@@ -62,6 +68,7 @@ describe("TaskBoard edit modal", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="task-edit-bootstrap-toggle"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("继承上下文");
 
     const promptEl = wrapper.find('[data-testid="task-edit-prompt"]');
@@ -305,110 +312,6 @@ describe("TaskBoard edit modal", () => {
     await expandStage(wrapper, "done");
     expect(wrapper.findAll(".item")).toHaveLength(1);
     expect(wrapper.find('[data-testid="task-stage-done"]').text()).toContain("已完成");
-
-    wrapper.unmount();
-  });
-
-  it("backfills bootstrap config in the editor and emits it on save", async () => {
-    const task = makeTask({
-      id: "t-1",
-      title: "My title",
-      prompt: "Hello",
-      status: "pending",
-      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 } },
-    });
-
-    const wrapper = mount(TaskBoard, {
-      props: {
-        tasks: [task],
-        agents,
-        activeAgentId: "codex",
-        selectedId: null,
-        queueStatus: null,
-        canRunSingle: true,
-        runBusyIds: new Set<string>(),
-      },
-      attachTo: document.body,
-    });
-
-    await expandStage(wrapper, "backlog");
-    await wrapper.find('[data-testid="task-edit"]').trigger("click");
-    await wrapper.vm.$nextTick();
-
-    const toggle = wrapper.find('[data-testid="task-edit-bootstrap-toggle"]');
-    expect((toggle.element as HTMLInputElement).checked).toBe(true);
-
-    const project = wrapper.find('[data-testid="task-edit-bootstrap-project"]');
-    expect((project.element as HTMLInputElement).value).toBe("/tmp/project");
-
-    const iterations = wrapper.find('[data-testid="task-edit-bootstrap-max-iterations"]');
-    expect((iterations.element as HTMLInputElement).value).toBe("7");
-
-    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
-    await wrapper.vm.$nextTick();
-
-    const updates = wrapper.emitted("update");
-    expect(updates).toBeTruthy();
-    expect(updates?.[0]?.[0]).toEqual({
-      id: "t-1",
-      updates: {
-        title: "My title",
-        prompt: "Hello",
-        agentId: "codex",
-        priority: 0,
-        maxRetries: 3,
-        bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 },
-      },
-    });
-
-    wrapper.unmount();
-  });
-
-  it("allows clearing bootstrap config via the editor toggle", async () => {
-    const task = makeTask({
-      id: "t-1",
-      title: "My title",
-      prompt: "Hello",
-      status: "pending",
-      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 } },
-    });
-
-    const wrapper = mount(TaskBoard, {
-      props: {
-        tasks: [task],
-        agents,
-        activeAgentId: "codex",
-        selectedId: null,
-        queueStatus: null,
-        canRunSingle: true,
-        runBusyIds: new Set<string>(),
-      },
-      attachTo: document.body,
-    });
-
-    await expandStage(wrapper, "backlog");
-    await wrapper.find('[data-testid="task-edit"]').trigger("click");
-    await wrapper.vm.$nextTick();
-
-    const toggle = wrapper.find('[data-testid="task-edit-bootstrap-toggle"]');
-    await toggle.setValue(false);
-
-    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
-    await wrapper.vm.$nextTick();
-
-    const updates = wrapper.emitted("update");
-    expect(updates).toBeTruthy();
-    expect(updates?.[0]?.[0]).toEqual({
-      id: "t-1",
-      updates: {
-        title: "My title",
-        prompt: "Hello",
-        agentId: "codex",
-        priority: 0,
-        maxRetries: 3,
-        bootstrap: null,
-      },
-    });
 
     wrapper.unmount();
   });

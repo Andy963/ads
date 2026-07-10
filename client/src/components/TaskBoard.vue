@@ -127,9 +127,6 @@ const {
   editAgentId,
   editPriority,
   editMaxRetries,
-  editBootstrapEnabled,
-  editBootstrapProject,
-  editBootstrapMaxIterations,
   error,
   editAgentOptions,
   editPrimaryLabel,
@@ -346,9 +343,6 @@ function toggleQueue(): void {
       :agent-id="editAgentId"
       :priority="editPriority"
       :max-retries="editMaxRetries"
-      :bootstrap-enabled="editBootstrapEnabled"
-      :bootstrap-project="editBootstrapProject"
-      :bootstrap-max-iterations="editBootstrapMaxIterations"
       :agent-options="editAgentOptions"
       :show-save-button="showEditSaveButton"
       :primary-label="editPrimaryLabel"
@@ -360,9 +354,6 @@ function toggleQueue(): void {
       @update:agent-id="editAgentId = $event"
       @update:priority="editPriority = $event"
       @update:max-retries="editMaxRetries = $event"
-      @update:bootstrap-enabled="editBootstrapEnabled = $event"
-      @update:bootstrap-project="editBootstrapProject = $event"
-      @update:bootstrap-max-iterations="editBootstrapMaxIterations = $event"
     />
   </div>
 </template>

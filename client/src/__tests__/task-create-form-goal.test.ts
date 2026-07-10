@@ -23,6 +23,8 @@ describe("TaskCreateForm goal mode", () => {
     expect(payload).not.toHaveProperty("goalMode");
     expect(payload).not.toHaveProperty("goalObjective");
     expect(payload).not.toHaveProperty("goalTokenBudget");
+    expect(payload).not.toHaveProperty("bootstrap");
+    expect(wrapper.find('[data-testid="task-create-bootstrap-toggle"]').exists()).toBe(false);
     wrapper.unmount();
   });
 

@@ -8,8 +8,8 @@ describe("markdown file preview links", () => {
       path: "/opt/codebase/ads/src/app.ts",
       line: 46,
     });
-    expect(parseMarkdownFilePreviewHref("docs/spec/example.md")).toEqual({
-      path: "docs/spec/example.md",
+    expect(parseMarkdownFilePreviewHref("docs/example.md")).toEqual({
+      path: "docs/example.md",
       line: null,
     });
     expect(parseMarkdownFilePreviewHref("https://example.com")).toBeNull();
@@ -23,10 +23,10 @@ describe("markdown file preview links", () => {
   });
 
   it("marks previewable inline code file references in rendered html", () => {
-    const html = renderMarkdownToHtml("`docs/spec/example.md`");
+    const html = renderMarkdownToHtml("`docs/example.md`");
     expect(html).toContain('data-md-link-kind="file-preview"');
-    expect(html).toContain('data-md-file-path="docs/spec/example.md"');
-    expect(html).toContain("<code>docs/spec/example.md</code>");
+    expect(html).toContain('data-md-file-path="docs/example.md"');
+    expect(html).toContain("<code>docs/example.md</code>");
   });
 
   it("keeps non-file inline code as plain code", () => {

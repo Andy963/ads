@@ -742,6 +742,20 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 23,
+    description: "Task queue - persist delayed retries after exhausted upstream failures",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("next_attempt_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN next_attempt_at INTEGER`);
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_next_attempt_at
+          ON tasks(status, next_attempt_at, queue_order, created_at)
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

@@ -76,8 +76,8 @@ describe("agents/orchestrator skill autoload (CJK)", () => {
   it("infers requested skills from CJK keywords", async () => {
     const workspaceRoot = makeTempWorkspace();
     enableWorkspaceSkills(workspaceRoot);
-    writeSkill(workspaceRoot, "spec-wizard", "猫咪需求生成spec");
-    writeSkill(workspaceRoot, "spec-to-task", "猫咪转换成任务");
+    writeSkill(workspaceRoot, "cat-requirements", "猫咪需求分析");
+    writeSkill(workspaceRoot, "cat-task", "猫咪转换成任务");
 
     const manager = new FakeSystemPromptManager();
     const orchestrator = new HybridOrchestrator({
@@ -88,9 +88,9 @@ describe("agents/orchestrator skill autoload (CJK)", () => {
     });
     orchestrator.setWorkingDirectory(workspaceRoot);
 
-    await orchestrator.invokeAgent("codex", "我想要猫咪需求生成spec然后猫咪转换成任务");
+    await orchestrator.invokeAgent("codex", "我想要猫咪需求分析然后猫咪转换成任务");
 
     const requested = manager.requestedSkills.map((s) => s.toLowerCase()).sort();
-    assert.deepEqual(requested, ["spec-to-task", "spec-wizard"].sort());
+    assert.deepEqual(requested, ["cat-requirements", "cat-task"].sort());
   });
 });

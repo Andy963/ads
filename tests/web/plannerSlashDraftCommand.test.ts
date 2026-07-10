@@ -80,31 +80,11 @@ class FakeOrchestrator {
   }
 }
 
-function makeSpecBlock(): string {
-  return [
-    "<<<spec",
-    [
-      'title: "My Spec"',
-      'template_id: "unified"',
-      "files:",
-      "  requirements.md: |",
-      "    # Requirements",
-      "    - Goal: do it",
-      "  design.md: |",
-      "    # Design",
-      "    - Approach: simple",
-      "  implementation.md: |",
-      "    # Implementation",
-      "    - Steps: 1) do it",
-    ].join("\n"),
-    ">>>",
-  ].join("\n");
-}
-
 function createPlannerPromptDeps(args: {
   payload: unknown;
   requestId: string;
   workspaceRoot: string;
+  chatSessionId?: "planner" | "main";
   chatMessages: unknown[];
   clientMessages: unknown[];
   historyStore: MemoryHistoryStore;
@@ -141,7 +121,7 @@ function createPlannerPromptDeps(args: {
     context: {
       authUserId: "test-user",
       sessionId: "s",
-      chatSessionId: "planner" as const,
+      chatSessionId: args.chatSessionId ?? "planner",
       userId: 1,
       historyKey: "h",
       currentCwd: args.workspaceRoot,
@@ -206,7 +186,6 @@ describe("web/ws/planner-slash-draft-command", () => {
     const orchestrator = new FakeOrchestrator(
       [
         "Draft summary.",
-        makeSpecBlock(),
         "```ads-tasks",
         '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
         "```",
@@ -243,26 +222,19 @@ describe("web/ws/planner-slash-draft-command", () => {
     assert.equal(drafts[0]!.bundle!.autoApprove, undefined);
   });
 
-  it("retries once on spec guard failure for /draft", async () => {
+  it("persists a draft without a spec or recovery pass", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
 
-    const orchestrator = new FakeOrchestrator([
+    const orchestrator = new FakeOrchestrator(
       [
-        "First pass missing spec.",
+        "Draft without spec.",
         "```ads-tasks",
         '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
         "```",
       ].join("\n"),
-      [
-        "Recovery pass.",
-        makeSpecBlock(),
-        "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
-        "```",
-      ].join("\n"),
-    ]);
+    );
 
     await handlePromptMessage(
       createPlannerPromptDeps({
@@ -276,13 +248,46 @@ describe("web/ws/planner-slash-draft-command", () => {
       }),
     );
 
-    assert.equal(orchestrator.invokeCount, 2);
+    assert.equal(orchestrator.invokeCount, 1);
 
     const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
     assert.equal(drafts.length, 1);
     assert.equal(drafts[0]!.requestId, "req:req-draft-2");
     assert.ok(drafts[0]!.bundle);
     assert.equal(drafts[0]!.bundle!.tasks.length, 1);
+  });
+
+  it("persists task bundles emitted from the worker lane without a spec", async () => {
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+    const orchestrator = new FakeOrchestrator(
+      [
+        "Worker draft.",
+        "```ads-tasks",
+        '{"version":1,"tasks":[{"title":"Worker Task","prompt":"Do it"}]}',
+        "```",
+      ].join("\n"),
+    );
+
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "create a task draft",
+        requestId: "req-worker-draft",
+        workspaceRoot,
+        chatSessionId: "main",
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
+
+    assert.equal(orchestrator.invokeCount, 1);
+    const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]!.bundle?.tasks[0]?.title, "Worker Task");
+    assert.equal(drafts[0]!.bundle?.specRef, undefined);
   });
 
   it("rejects /draft output when tasks.length is not 1", async () => {
@@ -293,7 +298,6 @@ describe("web/ws/planner-slash-draft-command", () => {
     const orchestrator = new FakeOrchestrator(
       [
         "Draft summary.",
-        makeSpecBlock(),
         "```ads-tasks",
         '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"},{"title":"Task 2","prompt":"Do it too"}]}',
         "```",
@@ -331,7 +335,6 @@ describe("web/ws/planner-slash-draft-command", () => {
     const orchestrator = new FakeOrchestrator(
       [
         "Draft summary.",
-        makeSpecBlock(),
         "```ads-tasks",
         '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
         "```",
@@ -382,7 +385,6 @@ describe("web/ws/planner-slash-draft-command", () => {
     const orchestrator = new FakeOrchestrator(
       [
         "Draft summary.",
-        makeSpecBlock(),
         "```ads-tasks",
         '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
         "```",

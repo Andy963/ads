@@ -231,7 +231,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       promptRun.ensureActive();
 
       const workspaceRootForAdr = detectWorkspaceFrom(turnCwd);
-      const { finalOutput, outputToSend, createdSpecRefs } = await processPromptOutputBlocks({
+      const { outputToSend } = await processPromptOutputBlocks({
         rawResponse: result.response,
         workspaceRoot: workspaceRootForAdr,
       });
@@ -243,8 +243,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       if (shouldHandleTaskBundleDrafts) {
         const plannerHandled = await handlePlannerPromptOutput({
           outputToSend,
-          finalOutput,
-          createdSpecRefs,
           userLogEntry,
           requestId: deps.request.requestId,
           clientMessageId: deps.request.clientMessageId,
@@ -252,13 +250,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           chatSessionId: deps.context.chatSessionId,
           historyKey: deps.context.historyKey,
           workspaceRoot: workspaceRootForAdr,
-          turnCwd,
-          controller,
           orchestrator,
           expectedThreadId,
           logger: deps.observability.logger,
           sendToChat,
-          handleExploredEntry,
           ensureTaskContext: deps.tasks.ensureTaskContext,
           promoteQueuedTasksToPending: deps.tasks.promoteQueuedTasksToPending,
           broadcastToSession: deps.tasks.broadcastToSession,

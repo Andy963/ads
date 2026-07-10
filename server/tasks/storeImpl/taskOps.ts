@@ -3,14 +3,14 @@ import crypto from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import type { TaskStoreStatements } from "../storeStatements.js";
-import type { CreateTaskInput, CreateTaskRunInput, Task, TaskExecutionIsolation, TaskFilter, TaskGoalStatus, TaskRun, TaskStatus } from "../types.js";
+import type { CreateTaskInput, CreateTaskRunInput, Task, TaskFilter, TaskGoalStatus, TaskRun, TaskStatus } from "../types.js";
 
 import { toTask, toTaskRun } from "./mappers.js";
 import {
   normalizeNullableString,
-  normalizeTaskApplyStatus,
   normalizeTaskCaptureStatus,
   normalizeTaskExecutionIsolation,
+  normalizeTaskModelParams,
   normalizeTaskModel,
   normalizeTaskRunStatus,
   normalizeTaskStatus,
@@ -85,12 +85,17 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     task.status = normalizeTaskStatus(task.status);
     task.inheritContext = Boolean(task.inheritContext);
     task.executionIsolation = normalizeTaskExecutionIsolation(task.executionIsolation);
+    task.modelParams = normalizeTaskModelParams(task.modelParams);
     normalizeTaskIdentityFields(task);
     task.priority = normalizeFiniteNumberOr(task.priority, existing?.priority ?? 0);
     task.queueOrder = normalizeFiniteNumberOr(task.queueOrder, existing?.queueOrder ?? task.createdAt);
     task.queuedAt = normalizeNullableFiniteNumber(task.queuedAt) ?? (existing?.queuedAt ?? null);
     task.retryCount = normalizeFiniteNumberOr(task.retryCount, existing?.retryCount ?? 0);
     task.maxRetries = normalizeFiniteNumberOr(task.maxRetries, existing?.maxRetries ?? 3);
+    task.nextAttemptAt =
+      task.nextAttemptAt === null
+        ? null
+        : normalizeNullableFiniteNumber(task.nextAttemptAt) ?? (existing?.nextAttemptAt ?? null);
     normalizeTaskGoalFields(task, existing);
 
     if (!String(task.title ?? "").trim()) {
@@ -175,7 +180,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       title,
       prompt,
       model: normalizeTaskModel(input.model),
-      modelParams: input.modelParams ?? null,
+      modelParams: normalizeTaskModelParams(input.modelParams),
       status,
       priority: typeof input.priority === "number" ? input.priority : 0,
       queueOrder: nextQueueOrder,
@@ -189,6 +194,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       error: null,
       retryCount: 0,
       maxRetries: typeof input.maxRetries === "number" ? Math.max(0, Math.floor(input.maxRetries)) : 3,
+      nextAttemptAt: null,
       executionIsolation,
       createdAt: now,
       startedAt: null,
@@ -223,6 +229,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.error ?? null,
       task.retryCount,
       task.maxRetries,
+      task.nextAttemptAt ?? null,
       task.executionIsolation,
       task.createdAt,
       task.startedAt ?? null,
@@ -307,6 +314,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.error ?? null,
       merged.retryCount,
       merged.maxRetries,
+      merged.nextAttemptAt ?? null,
       merged.executionIsolation,
       merged.createdAt,
       merged.startedAt ?? null,
@@ -392,7 +400,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
 
   const claimNextPendingTask = (now = Date.now()): Task | null => {
     const tx = db.transaction((): Task | null => {
-      const next = stmts.selectNextPendingStmt.get() as { id?: string } | undefined;
+      const next = stmts.selectNextPendingStmt.get(now) as { id?: string } | undefined;
       const id = String(next?.id ?? "").trim();
       if (!id) {
         return null;
@@ -567,21 +575,22 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     if (!workspaceRoot) {
       throw new Error("workspaceRoot is required");
     }
+    const status = normalizeTaskRunStatus(input.status ?? "preparing");
     const run: TaskRun = {
       id,
       taskId,
       executionIsolation: normalizeTaskExecutionIsolation(input.executionIsolation),
       workspaceRoot,
-      worktreeDir: normalizeNullableString(input.worktreeDir),
-      branchName: normalizeNullableString(input.branchName),
-      baseHead: normalizeNullableString(input.baseHead),
-      endHead: normalizeNullableString(input.endHead),
-      status: normalizeTaskRunStatus(input.status ?? "preparing"),
+      worktreeDir: null,
+      branchName: null,
+      baseHead: null,
+      endHead: null,
+      status,
       captureStatus: normalizeTaskCaptureStatus(input.captureStatus ?? "pending"),
-      applyStatus: normalizeTaskApplyStatus(input.applyStatus ?? "pending"),
+      applyStatus: "skipped",
       error: normalizeNullableString(input.error),
       createdAt: now,
-      startedAt: null,
+      startedAt: status === "running" ? now : null,
       completedAt: null,
     };
     stmts.insertTaskRunStmt.run(
@@ -614,17 +623,15 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       ...updates,
       id: existing.id,
       taskId: existing.taskId,
-      executionIsolation: normalizeTaskExecutionIsolation(
-        (updates.executionIsolation ?? existing.executionIsolation) as TaskExecutionIsolation,
-      ),
+      executionIsolation: normalizeTaskExecutionIsolation(updates.executionIsolation ?? existing.executionIsolation),
       workspaceRoot: String(updates.workspaceRoot ?? existing.workspaceRoot).trim(),
-      worktreeDir: updates.worktreeDir === undefined ? existing.worktreeDir : normalizeNullableString(updates.worktreeDir),
-      branchName: updates.branchName === undefined ? existing.branchName : normalizeNullableString(updates.branchName),
-      baseHead: updates.baseHead === undefined ? existing.baseHead : normalizeNullableString(updates.baseHead),
-      endHead: updates.endHead === undefined ? existing.endHead : normalizeNullableString(updates.endHead),
+      worktreeDir: null,
+      branchName: null,
+      baseHead: null,
+      endHead: null,
       status: normalizeTaskRunStatus(updates.status ?? existing.status),
       captureStatus: normalizeTaskCaptureStatus(updates.captureStatus ?? existing.captureStatus),
-      applyStatus: normalizeTaskApplyStatus(updates.applyStatus ?? existing.applyStatus),
+      applyStatus: "skipped",
       error: updates.error === undefined ? existing.error : normalizeNullableString(updates.error),
       createdAt: existing.createdAt,
       startedAt: updates.startedAt === undefined ? existing.startedAt : normalizeNullableFiniteNumber(updates.startedAt),

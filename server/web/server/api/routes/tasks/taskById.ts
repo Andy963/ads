@@ -99,14 +99,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       return true;
     }
 
-    const bootstrapSchema = z
-      .object({
-        enabled: z.literal(true),
-        projectRef: z.string().trim().min(1),
-        maxIterations: z.number().int().min(1).max(10).optional(),
-      })
-      .nullable()
-      .optional();
     const updateSchema = z
       .object({
         title: z.string().min(1).optional(),
@@ -115,13 +107,6 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
         model: z.string().min(1).optional(),
         priority: z.number().finite().optional(),
         maxRetries: z.number().int().min(0).optional(),
-        execution: z
-          .object({
-            isolation: z.enum(["default", "required"]).optional(),
-          })
-          .passthrough()
-          .optional(),
-        bootstrap: bootstrapSchema,
       })
       .passthrough();
     const updateResult = updateSchema.safeParse(body ?? {});
@@ -131,7 +116,7 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     }
     const parsed = updateResult.data;
     const keys = Object.keys(parsed).filter((k) =>
-      ["title", "prompt", "agentId", "model", "priority", "maxRetries", "execution", "bootstrap"].includes(k),
+      ["title", "prompt", "agentId", "model", "priority", "maxRetries"].includes(k),
     );
     if (keys.length === 0) {
       sendJson(res, 400, { error: "No updates provided" });
@@ -155,22 +140,8 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
     if (parsed.model !== undefined) updates.model = parsed.model;
     if (parsed.priority !== undefined) updates.priority = parsed.priority;
     if (parsed.maxRetries !== undefined) updates.maxRetries = parsed.maxRetries;
-    if (parsed.execution?.isolation !== undefined) updates.executionIsolation = parsed.execution.isolation;
-    if (parsed.bootstrap !== undefined) {
-      const base = (() => {
-        const raw = existing.modelParams;
-        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-          return {};
-        }
-        return { ...(raw as Record<string, unknown>) };
-      })();
-      if (parsed.bootstrap === null) {
-        delete base.bootstrap;
-        updates.modelParams = Object.keys(base).length > 0 ? base : null;
-      } else {
-        updates.modelParams = { ...base, bootstrap: parsed.bootstrap };
-      }
-    }
+    updates.executionIsolation = "default";
+    updates.modelParams = existing.modelParams ?? null;
 
     const updated = taskCtx.taskStore.updateTask(taskId, updates, Date.now());
     if (taskCtx.queueRunning) {

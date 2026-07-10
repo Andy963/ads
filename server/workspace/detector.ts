@@ -10,15 +10,7 @@ import { PROJECT_ROOT } from "../utils/projectRoot.js";
 const GIT_MARKER = ".git";
 const WORKSPACE_CONFIG_FILE = "workspace.json";
 const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
-const REQUIRED_TEMPLATE_FILES = [
-  "instructions.md",
-  "rules.md",
-  "supervisor.md",
-  "requirement.md",
-  "design.md",
-  "implementation.md",
-  "task.md",
-];
+const REQUIRED_TEMPLATE_FILES = ["instructions.md", "rules.md", "supervisor.md", "task.md"];
 const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];
 const logger = createLogger("WorkspaceDetector");
 
@@ -230,31 +222,6 @@ export function getWorkspaceRulesDir(workspace?: string): string {
   return rulesDir;
 }
 
-export function getWorkspaceSpecsDir(workspace?: string): string {
-  const root = resolveRequestedWorkspaceRoot(workspace);
-  const specDir = path.join(root, "docs", "spec");
-  if (existsSync(specDir)) {
-    return specDir;
-  }
-
-  const legacyDir = path.join(root, "docs", "specs");
-  if (existsSync(legacyDir)) {
-    try {
-      fs.mkdirSync(specDir, { recursive: true });
-    } catch (error) {
-      throw new Error(`无法创建新的 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
-    }
-    return specDir;
-  }
-
-  try {
-    fs.mkdirSync(specDir, { recursive: true });
-  } catch (error) {
-    throw new Error(`无法创建 specs 目录: ${specDir}，原因: ${(error as Error).message}`);
-  }
-  return specDir;
-}
-
 export function isWorkspaceInitialized(workspace?: string): boolean {
   const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
@@ -270,9 +237,6 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
 
   const stateConfigPath = resolveWorkspaceStatePath(root, WORKSPACE_CONFIG_FILE);
   fs.mkdirSync(path.dirname(stateConfigPath), { recursive: true });
-
-  const specsDir = path.join(root, "docs", "spec");
-  fs.mkdirSync(specsDir, { recursive: true });
 
   const config = {
     name: workspaceName,
@@ -317,12 +281,6 @@ export function getWorkspaceInfo(workspace?: string): Record<string, unknown> {
     info.rules_dir = getWorkspaceRulesDir(root);
   } catch {
     info.rules_dir = null;
-  }
-
-  try {
-    info.specs_dir = getWorkspaceSpecsDir(root);
-  } catch {
-    info.specs_dir = null;
   }
 
   if (existsSync(resolvedConfigFile)) {

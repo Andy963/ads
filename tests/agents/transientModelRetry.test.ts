@@ -5,6 +5,7 @@ import {
   isTransientByokCapacityError,
   isTransientUpstreamModelError,
   runWithTransientModelRetry,
+  TransientModelRetryExhaustedError,
   TRANSIENT_MODEL_RETRY_COUNT_ENV,
 } from "../../server/agents/adapters/transientModelRetry.js";
 
@@ -64,7 +65,62 @@ describe("transient model retry classification", () => {
     }
   });
 
+  it("does not cap the env-configured retry count", async () => {
+    const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+    process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "101";
+    let attempts = 0;
+
+    try {
+      const result = await runWithTransientModelRetry(
+        { agentName: "test", backoffMs: [0] },
+        async () => {
+          attempts += 1;
+          if (attempts <= 101) {
+            throw new Error("HTTP 429 Too Many Requests");
+          }
+          return "ok";
+        },
+      );
+
+      assert.equal(result, "ok");
+      assert.equal(attempts, 102);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+      } else {
+        process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
+      }
+    }
+  });
+
+  it("marks a retryable upstream error when external retries are exhausted", async () => {
+    const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+    process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "0";
+
+    try {
+      await assert.rejects(
+        runWithTransientModelRetry({ agentName: "test", backoffMs: [0] }, async () => {
+          throw new Error("HTTP 429 Too Many Requests");
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof TransientModelRetryExhaustedError);
+          assert.equal(error.attempts, 1);
+          assert.match(error.message, /429/);
+          return true;
+        },
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+      } else {
+        process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
+      }
+    }
+  });
+
   it("removes abort listeners after backoff completes normally", async () => {
+    const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+    process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "1";
     const controller = new AbortController();
     const signal = controller.signal;
     const originalAdd = signal.addEventListener.bind(signal);
@@ -85,20 +141,28 @@ describe("transient model retry classification", () => {
       return originalRemove(type, listener, options);
     }) as AbortSignal["removeEventListener"];
 
-    let attempts = 0;
-    const result = await runWithTransientModelRetry(
-      { agentName: "test", maxAttempts: 2, backoffMs: [1], signal },
-      async () => {
-        attempts += 1;
-        if (attempts === 1) {
-          throw new Error("We're currently experiencing high demand, which may cause temporary errors.");
-        }
-        return "ok";
-      },
-    );
+    try {
+      let attempts = 0;
+      const result = await runWithTransientModelRetry(
+        { agentName: "test", backoffMs: [1], signal },
+        async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("We're currently experiencing high demand, which may cause temporary errors.");
+          }
+          return "ok";
+        },
+      );
 
-    assert.equal(result, "ok");
-    assert.equal(added, 1);
-    assert.equal(removed, 1);
+      assert.equal(result, "ok");
+      assert.equal(added, 1);
+      assert.equal(removed, 1);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+      } else {
+        process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
+      }
+    }
   });
 });

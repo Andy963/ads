@@ -149,7 +149,7 @@ describe("planner/taskBundleApprover", () => {
     assert.equal(deleteCalls, 0);
   });
 
-  it("resolves execution isolation from bundle defaults and task overrides", () => {
+  it("ignores deprecated execution isolation from bundle inputs", () => {
     const seenInputs: Array<Record<string, unknown>> = [];
 
     materializeTaskBundleTasks({
@@ -198,7 +198,7 @@ describe("planner/taskBundleApprover", () => {
     });
 
     assert.equal(seenInputs.length, 2);
-    assert.equal(seenInputs[0]?.executionIsolation, "required");
+    assert.equal(seenInputs[0]?.executionIsolation, "default");
     assert.equal(seenInputs[1]?.executionIsolation, "default");
   });
 });

@@ -96,21 +96,9 @@ function confirmClear(): void {
           <span class="detailMetaKey">ID</span>
           <span class="detailMetaValue detailMono">{{ props.task.id }}</span>
         </div>
-        <div class="detailMetaRow">
-          <span class="detailMetaKey">隔离执行</span>
-          <span class="detailMetaValue">{{ props.task.executionIsolation === "required" ? "required" : "default" }}</span>
-        </div>
         <div v-if="props.task.latestRun" class="detailMetaRow">
           <span class="detailMetaKey">最近 Run</span>
           <span class="detailMetaValue detailMono">{{ props.task.latestRun.id }}</span>
-        </div>
-        <div v-if="props.task.latestRun" class="detailMetaRow">
-          <span class="detailMetaKey">Apply</span>
-          <span class="detailMetaValue">{{ props.task.latestRun.applyStatus }}</span>
-        </div>
-        <div v-if="props.task.latestRun?.worktreeDir" class="detailMetaRow">
-          <span class="detailMetaKey">Worktree</span>
-          <span class="detailMetaValue detailMono">{{ props.task.latestRun.worktreeDir }}</span>
         </div>
       </div>
 

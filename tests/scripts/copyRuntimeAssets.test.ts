@@ -14,9 +14,6 @@ const requiredTemplateFiles = [
   "instructions.md",
   "rules.md",
   "supervisor.md",
-  "requirement.md",
-  "design.md",
-  "implementation.md",
   "task.md",
 ];
 

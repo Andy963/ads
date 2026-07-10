@@ -4,8 +4,8 @@ import { isAbortError } from "../../utils/abort.js";
 
 export const TRANSIENT_MODEL_RETRY_COUNT_ENV = "ADS_UPSTREAM_RETRY_COUNT";
 const DEFAULT_RETRY_COUNT = 1;
-const DEFAULT_BACKOFF_MIN_MS = 500;
-const DEFAULT_BACKOFF_MAX_MS = 1200;
+const DEFAULT_BACKOFF_BASE_MS = 2_000;
+const DEFAULT_BACKOFF_CAP_MS = 30_000;
 
 function randomBackoffMs(min: number, max: number): number {
   return Math.floor(min + Math.random() * (max - min + 1));
@@ -13,7 +13,6 @@ function randomBackoffMs(min: number, max: number): number {
 
 export interface TransientModelRetryOptions {
   agentName: string;
-  maxAttempts?: number;
   backoffMs?: readonly number[];
   signal?: AbortSignal;
   log?: (message: string) => void;
@@ -42,6 +41,19 @@ export class TransientModelRetryAttemptError extends Error {
     this.name = "TransientModelRetryAttemptError";
     this.retryable = options.retryable;
     this.sideEffectObserved = options.sideEffectObserved;
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+}
+
+export class TransientModelRetryExhaustedError extends Error {
+  readonly attempts: number;
+
+  constructor(message: string, options: { attempts: number; cause?: unknown }) {
+    super(message);
+    this.name = "TransientModelRetryExhaustedError";
+    this.attempts = options.attempts;
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -102,12 +114,14 @@ function parseNonNegativeInteger(value: string | undefined): number | null {
   return Math.floor(parsed);
 }
 
-export function resolveTransientModelRetryMaxAttempts(maxAttempts?: number): number {
-  if (maxAttempts !== undefined) {
-    return Math.max(1, Math.floor(maxAttempts));
-  }
+export function resolveTransientModelRetryMaxAttempts(): number {
   const retryCount = parseNonNegativeInteger(process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV]) ?? DEFAULT_RETRY_COUNT;
   return retryCount + 1;
+}
+
+function exponentialBackoffMs(attempt: number): number {
+  const cap = Math.min(DEFAULT_BACKOFF_CAP_MS, DEFAULT_BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1));
+  return randomBackoffMs(Math.floor(cap / 2), cap);
 }
 
 export function isSideEffectItem(item: ThreadItem | null | undefined): boolean {
@@ -135,7 +149,7 @@ export async function runWithTransientModelRetry<T>(
   options: TransientModelRetryOptions,
   runAttempt: (state: RetryAttemptState) => Promise<T>,
 ): Promise<T> {
-  const maxAttempts = resolveTransientModelRetryMaxAttempts(options.maxAttempts);
+  const maxAttempts = resolveTransientModelRetryMaxAttempts();
   const backoffMs = options.backoffMs;
   let lastError: unknown;
 
@@ -166,13 +180,16 @@ export async function runWithTransientModelRetry<T>(
         (error instanceof TransientModelRetryAttemptError && error.sideEffectObserved);
 
       lastError = error;
-      if (!retryable || unsafe || attempt >= maxAttempts) {
+      if (!retryable || unsafe) {
         throw error;
+      }
+      if (attempt >= maxAttempts) {
+        throw new TransientModelRetryExhaustedError(message, { attempts: attempt, cause: error });
       }
 
       const delayMs = backoffMs
         ? Math.max(0, backoffMs[Math.min(attempt - 1, backoffMs.length - 1)] ?? 0)
-        : randomBackoffMs(DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_MAX_MS);
+        : exponentialBackoffMs(attempt);
       const notice: TransientModelRetryNotice = {
         message,
         retryCount: attempt,

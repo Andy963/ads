@@ -10,7 +10,6 @@ import {
   detectWorkspaceFrom,
   getWorkspaceDbPath,
   getWorkspaceRulesDir,
-  getWorkspaceSpecsDir,
   isWorkspaceInitialized,
   ensureDefaultTemplates,
 } from "../../server/workspace/detector.js";
@@ -58,8 +57,7 @@ describe("workspace/detector", () => {
     const dbPath = getWorkspaceDbPath(workspace);
     assert.equal(fs.existsSync(dbPath), true, "ads.db should be created");
 
-    const specsDir = getWorkspaceSpecsDir(workspace);
-    assert.equal(fs.existsSync(specsDir), true, "docs/spec should be created");
+    assert.equal(fs.existsSync(path.join(workspace, "docs", "spec")), false, "docs/spec should not be created during initialization");
   });
 
   it("ensures default templates are copied", () => {
@@ -115,12 +113,11 @@ describe("workspace/detector", () => {
 
       const dbPath = getWorkspaceDbPath(nested);
       const rulesDir = getWorkspaceRulesDir(nested);
-      const specsDir = getWorkspaceSpecsDir(nested);
       ensureDefaultTemplates(nested);
 
       assert.equal(dbPath, resolveWorkspaceStatePath(workspace, "ads.db"));
       assert.equal(rulesDir, resolveWorkspaceStatePath(workspace, "rules"));
-      assert.equal(specsDir, path.join(workspace, "docs", "spec"));
+      assert.equal(fs.existsSync(path.join(workspace, "docs", "spec")), false);
       assert.equal(
         fs.existsSync(resolveWorkspaceStatePath(workspace, "templates", "instructions.md")),
         true,

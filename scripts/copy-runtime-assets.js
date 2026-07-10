@@ -22,9 +22,6 @@ const requiredFiles = new Set([
   "instructions.md",
   "rules.md",
   "supervisor.md",
-  "requirement.md",
-  "design.md",
-  "implementation.md",
   "task.md",
 ]);
 const allowedDirs = new Set(["skills"]);

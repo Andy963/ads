@@ -74,6 +74,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         error,
         retry_count,
         max_retries,
+        next_attempt_at,
         execution_isolation,
         created_at,
         started_at,
@@ -86,7 +87,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         goal_status,
         goal_tokens_used,
         goal_time_used_seconds
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
 
     getTaskStmt: db.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`),
@@ -144,6 +145,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
         error = ?,
         retry_count = ?,
         max_retries = ?,
+        next_attempt_at = ?,
         execution_isolation = ?,
         created_at = ?,
         started_at = ?,
@@ -168,7 +170,11 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
     ),
 
     selectNextPendingStmt: db.prepare(
-      `SELECT id FROM tasks WHERE status = 'pending' ORDER BY queue_order ASC, created_at ASC LIMIT 1`,
+      `SELECT id
+       FROM tasks
+       WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+       ORDER BY queue_order ASC, created_at ASC
+       LIMIT 1`,
     ),
 
     selectMinPendingQueueOrderStmt: db.prepare(
@@ -176,7 +182,7 @@ export function prepareTaskStoreStatements(db: DatabaseType): TaskStoreStatement
     ),
 
     claimTaskStmt: db.prepare(
-      `UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?)
+      `UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?), next_attempt_at = NULL
        WHERE id = ? AND status = 'pending'`,
     ),
 

@@ -11,7 +11,7 @@ import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 import ModelManager from "./components/ModelManager.vue";
 
 import { createAppController } from "./app/controller";
-import type { TaskBundle, TaskBundleDraftSpecFileKey, TaskBundleDraftSpecFileUpdate } from "./api/types";
+import type { TaskBundle } from "./api/types";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { CirclePlus, Refresh, ChatDotRound, Setting } from "@element-plus/icons-vue";
@@ -70,9 +70,6 @@ const {
   updateTaskBundleDraft,
   deleteTaskBundleDraft,
   approveTaskBundleDraft,
-  loadTaskBundleDraftSpecSummary,
-  loadTaskBundleDraftSpecFile,
-  saveTaskBundleDraftSpecFile,
   agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
@@ -214,18 +211,6 @@ function onUpdateDraft(payload: { id: string; bundle: TaskBundle }): void {
 
 function onDeleteDraft(id: string): void {
   void deleteTaskBundleDraft(id, activeProjectId.value);
-}
-
-async function onLoadDraftSpecSummary(id: string) {
-  return await loadTaskBundleDraftSpecSummary(id, activeProjectId.value);
-}
-
-async function onLoadDraftSpecFile(payload: { id: string; file: TaskBundleDraftSpecFileKey }) {
-  return await loadTaskBundleDraftSpecFile(payload.id, payload.file, activeProjectId.value);
-}
-
-async function onSaveDraftSpecFile(payload: { id: string; file: TaskBundleDraftSpecFileKey; update: TaskBundleDraftSpecFileUpdate }) {
-  return await saveTaskBundleDraftSpecFile(payload.id, payload.file, payload.update, activeProjectId.value);
 }
 
 function openTaskCreateDialogHandler(): void {
@@ -384,9 +369,6 @@ const plannerConnectionStatus = computed(() => {
                 :drafts="plannerDrafts"
                 :busy="plannerDraftsBusy"
                 :error="plannerDraftsError"
-                :load-spec-summary="onLoadDraftSpecSummary"
-                :load-spec-file="onLoadDraftSpecFile"
-                :save-spec-file="onSaveDraftSpecFile"
                 @refresh="refreshPlannerDrafts"
                 @approve="onApproveDraft"
                 @update="onUpdateDraft"

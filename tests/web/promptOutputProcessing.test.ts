@@ -12,7 +12,6 @@ describe("web/ws/promptOutputProcessing", () => {
 
     assert.equal(result.finalOutput, "Hello, world!");
     assert.equal(result.outputToSend, "Hello, world!");
-    assert.deepEqual(result.createdSpecRefs, []);
   });
 
   it("converts non-string responses to strings", async () => {
@@ -39,7 +38,7 @@ describe("web/ws/promptOutputProcessing", () => {
     assert.equal(resultUndefined.finalOutput, "");
   });
 
-  it("returns consistent structure with all required fields", async () => {
+  it("returns consistent output fields", async () => {
     const result = await processPromptOutputBlocks({
       rawResponse: "some output",
       workspaceRoot: "/tmp/fake-workspace",
@@ -47,11 +46,9 @@ describe("web/ws/promptOutputProcessing", () => {
 
     assert.ok("finalOutput" in result, "missing finalOutput");
     assert.ok("outputToSend" in result, "missing outputToSend");
-    assert.ok("createdSpecRefs" in result, "missing createdSpecRefs");
-    assert.ok(Array.isArray(result.createdSpecRefs), "createdSpecRefs should be an array");
   });
 
-  it("preserves markdown content without ADR/spec blocks", async () => {
+  it("preserves markdown content without ADR blocks", async () => {
     const markdown = "# Title\n\n- item 1\n- item 2\n\n```js\nconsole.log('hi');\n```";
     const result = await processPromptOutputBlocks({
       rawResponse: markdown,
@@ -60,5 +57,22 @@ describe("web/ws/promptOutputProcessing", () => {
 
     assert.equal(result.finalOutput, markdown);
     assert.equal(result.outputToSend, markdown);
+  });
+
+  it("does not interpret legacy spec control blocks", async () => {
+    const output = [
+      "Before",
+      "<<<spec",
+      'title: "Legacy"',
+      ">>>",
+      "After",
+    ].join("\n");
+    const result = await processPromptOutputBlocks({
+      rawResponse: output,
+      workspaceRoot: "/tmp/fake-workspace",
+    });
+
+    assert.equal(result.finalOutput, output);
+    assert.equal(result.outputToSend, output);
   });
 });

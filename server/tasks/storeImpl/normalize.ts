@@ -44,13 +44,17 @@ export function normalizeTaskStatus(value: unknown): TaskStatus {
 }
 
 export function normalizeTaskExecutionIsolation(value: unknown): TaskExecutionIsolation {
-  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
-  switch (raw) {
-    case "required":
-      return "required";
-    default:
-      return "default";
+  void value;
+  return "default";
+}
+
+export function normalizeTaskModelParams(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
   }
+  const normalized = { ...(value as Record<string, unknown>) };
+  delete normalized.bootstrap;
+  return Object.keys(normalized).length > 0 ? normalized : null;
 }
 
 export function normalizeTaskRunStatus(value: unknown): TaskRunStatus {

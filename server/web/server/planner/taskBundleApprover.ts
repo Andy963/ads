@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 
 import type { TaskBundle, TaskBundleTask } from "./taskBundle.js";
-import { resolveTaskBundleExecutionIsolation } from "./taskBundle.js";
 import type { Attachment } from "../../../attachments/types.js";
 import type { CreateTaskInput, Task } from "../../../tasks/types.js";
 import { recordTaskQueueMetric, type TaskQueueMetrics } from "../taskQueue/manager.js";
@@ -97,7 +96,7 @@ export function normalizeCreateTaskInput(
   task: TaskBundleTask,
   index: number,
   createdBy?: string,
-  bundle?: Pick<TaskBundle, "defaults"> | null,
+  _bundle?: Pick<TaskBundle, "defaults"> | null,
 ): {
   id: string;
   title?: string;
@@ -118,7 +117,6 @@ export function normalizeCreateTaskInput(
   const maxRetries =
     typeof task.maxRetries === "number" && Number.isFinite(task.maxRetries) ? Math.max(0, Math.floor(task.maxRetries)) : undefined;
   const attachments = (task.attachments ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
-  const executionIsolation = resolveTaskBundleExecutionIsolation(bundle, task);
   return {
     id,
     title,
@@ -127,7 +125,7 @@ export function normalizeCreateTaskInput(
     priority,
     inheritContext,
     maxRetries,
-    executionIsolation,
+    executionIsolation: "default",
     createdBy: createdBy ?? "planner_draft",
     attachments: attachments.length ? attachments : undefined,
   };

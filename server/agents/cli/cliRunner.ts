@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createLogger } from "../../utils/logger.js";
+import { cliExecutionGovernor } from "./executionGovernor.js";
 import { stripAnsi } from "./stripAnsi.js";
 
 const logger = createLogger("CliRunner");
@@ -21,6 +22,8 @@ export interface CliRunOptions {
    * 到期会向子进程发送 SIGTERM，2 秒后仍存活则 SIGKILL，以防挂死的子进程永久持有工作区锁。
    */
   timeoutMs?: number;
+  /** Maximum retained bytes for each of stdout and stderr. Streaming callbacks still receive every parsed line. */
+  maxOutputBytes?: number;
 }
 
 export type LineHandler = (parsed: unknown) => void;
@@ -30,9 +33,56 @@ export interface CliRunResult {
   stdout: string;
   stderr: string;
   cancelled: boolean;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
 }
 
 let PIPE_STDIOS_SUPPORTED: boolean | null = null;
+const DEFAULT_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
+const MIN_OUTPUT_MAX_BYTES = 64 * 1024;
+const MAX_OUTPUT_MAX_BYTES = 64 * 1024 * 1024;
+
+class TailByteBuffer {
+  private chunks: Buffer[] = [];
+  private size = 0;
+  private didTruncate = false;
+
+  constructor(private readonly maxBytes: number) {}
+
+  append(value: Buffer | string): void {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8");
+    if (chunk.length === 0) return;
+    if (chunk.length >= this.maxBytes) {
+      this.chunks = [chunk.subarray(chunk.length - this.maxBytes)];
+      this.size = this.maxBytes;
+      this.didTruncate = true;
+      return;
+    }
+
+    this.chunks.push(chunk);
+    this.size += chunk.length;
+    while (this.size > this.maxBytes && this.chunks.length > 0) {
+      const overflow = this.size - this.maxBytes;
+      const first = this.chunks[0]!;
+      if (first.length <= overflow) {
+        this.chunks.shift();
+        this.size -= first.length;
+      } else {
+        this.chunks[0] = first.subarray(overflow);
+        this.size -= overflow;
+      }
+      this.didTruncate = true;
+    }
+  }
+
+  toString(): string {
+    return Buffer.concat(this.chunks, this.size).toString("utf8");
+  }
+
+  get truncated(): boolean {
+    return this.didTruncate;
+  }
+}
 
 function buildSpawnEnv(options: { env?: Record<string, string>; unsetEnv?: string[] }): NodeJS.ProcessEnv | undefined {
   const hasOverrides = Boolean(options.env && Object.keys(options.env).length > 0);
@@ -66,7 +116,7 @@ function supportsPipedStdios(): boolean {
   return PIPE_STDIOS_SUPPORTED;
 }
 
-function readFileLimited(filePath: string, maxBytes = 8 * 1024 * 1024): { text: string; truncated: boolean } {
+function readFileLimited(filePath: string, maxBytes = DEFAULT_OUTPUT_MAX_BYTES): { text: string; truncated: boolean } {
   try {
     const stat = fs.statSync(filePath);
     const size = typeof stat.size === "number" && Number.isFinite(stat.size) ? stat.size : 0;
@@ -75,7 +125,8 @@ function readFileLimited(filePath: string, maxBytes = 8 * 1024 * 1024): { text: 
     const fd = fs.openSync(filePath, "r");
     try {
       const buf = Buffer.alloc(toRead);
-      const bytesRead = fs.readSync(fd, buf, 0, toRead, 0);
+      const offset = Math.max(0, size - toRead);
+      const bytesRead = fs.readSync(fd, buf, 0, toRead, offset);
       return { text: buf.subarray(0, bytesRead).toString("utf-8"), truncated };
     } finally {
       fs.closeSync(fd);
@@ -83,6 +134,12 @@ function readFileLimited(filePath: string, maxBytes = 8 * 1024 * 1024): { text: 
   } catch {
     return { text: "", truncated: false };
   }
+}
+
+function resolveOutputMaxBytes(value?: number): number {
+  const configured = value ?? Number(process.env.ADS_CLI_OUTPUT_MAX_BYTES ?? DEFAULT_OUTPUT_MAX_BYTES);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_OUTPUT_MAX_BYTES;
+  return Math.max(MIN_OUTPUT_MAX_BYTES, Math.min(MAX_OUTPUT_MAX_BYTES, Math.floor(configured)));
 }
 
 function formatSpawnErrorHint(binary: string, error: Error): string {
@@ -112,6 +169,54 @@ function waitForSpawn(child: ReturnType<typeof spawn>): Promise<Error | null> {
   });
 }
 
+function signalChildProcessGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  if (process.platform !== "win32" && typeof child.pid === "number" && child.pid > 0) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to the direct child when the process group has already exited.
+    }
+  }
+  child.kill(signal);
+}
+
+function waitForClose(child: ReturnType<typeof spawn>): Promise<number | null> {
+  return new Promise<number | null>((resolve) => {
+    if (child.exitCode !== null) {
+      resolve(child.exitCode);
+      return;
+    }
+    child.once("close", (code) => resolve(code));
+  });
+}
+
+async function terminateAndWaitForClose(child: ReturnType<typeof spawn>, graceMs = 2000): Promise<void> {
+  if (child.exitCode !== null) return;
+  try {
+    signalChildProcessGroup(child, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    waitForClose(child).then(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        try {
+          if (child.exitCode === null) signalChildProcessGroup(child, "SIGKILL");
+        } catch {
+          // already dead
+        }
+        void waitForClose(child).then(() => resolve());
+      }, graceMs);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function tryParseJsonLine(rawLine: string): unknown | null {
   const stripped = stripAnsi(rawLine).trim();
   if (!stripped || !stripped.startsWith("{")) {
@@ -134,15 +239,15 @@ function attachAbortHandler(
 
   const onAbort = () => {
     cancelled = true;
-    child.kill("SIGTERM");
+    signalChildProcessGroup(child, "SIGTERM");
     killTimer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      try { signalChildProcessGroup(child, "SIGKILL"); } catch { /* already dead */ }
     }, 2000);
   };
 
   if (signal) {
     if (signal.aborted) {
-      child.kill("SIGTERM");
+      signalChildProcessGroup(child, "SIGTERM");
       cancelled = true;
     } else {
       signal.addEventListener("abort", onAbort, { once: true });
@@ -190,13 +295,13 @@ function setupRunTimeout(
     timer = setTimeout(() => {
       timedOut = true;
       try {
-        child.kill("SIGTERM");
+        signalChildProcessGroup(child, "SIGTERM");
       } catch {
         /* already dead */
       }
       killTimer = setTimeout(() => {
         try {
-          child.kill("SIGKILL");
+          signalChildProcessGroup(child, "SIGKILL");
         } catch {
           /* already dead */
         }
@@ -238,18 +343,32 @@ export async function runCli(
   options: CliRunOptions,
   onLine: LineHandler,
 ): Promise<CliRunResult> {
+  const release = await cliExecutionGovernor.acquire(options.signal);
+  try {
+    return await runCliWithoutGovernor(options, onLine);
+  } finally {
+    release();
+  }
+}
+
+async function runCliWithoutGovernor(
+  options: CliRunOptions,
+  onLine: LineHandler,
+): Promise<CliRunResult> {
   if (!supportsPipedStdios()) {
     return await runCliViaFiles(options, onLine);
   }
 
   const { binary, args, cwd, env, unsetEnv, stdinData, signal, timeoutMs } = options;
   const effectiveTimeoutMs = timeoutMs ?? resolveDefaultRunTimeoutMs();
+  const outputMaxBytes = resolveOutputMaxBytes(options.maxOutputBytes);
 
   const child = spawn(binary, args, {
     cwd,
     env: buildSpawnEnv({ env, unsetEnv }),
     stdio: ["pipe", "pipe", "pipe"],
     shell: false,
+    detached: process.platform !== "win32",
   });
 
   const abortHandler = attachAbortHandler(child, signal);
@@ -269,15 +388,17 @@ export async function runCli(
     child.stdin.end();
   }
 
-  const stderrChunks: Buffer[] = [];
-  child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  const stderrBuffer = new TailByteBuffer(outputMaxBytes);
+  child.stderr?.on("data", (chunk: Buffer) => stderrBuffer.append(chunk));
 
   const rl = createInterface({ input: child.stdout! });
-  const stdoutLines: string[] = [];
+  const stdoutBuffer = new TailByteBuffer(outputMaxBytes);
+  let hasStdoutLine = false;
   let loopError: unknown = null;
   try {
     for await (const rawLine of rl) {
-      stdoutLines.push(String(rawLine));
+      stdoutBuffer.append(`${hasStdoutLine ? "\n" : ""}${String(rawLine)}`);
+      hasStdoutLine = true;
       if (abortHandler.isCancelled()) {
         child.stdout?.resume();
         break;
@@ -291,7 +412,7 @@ export async function runCli(
     // onLine 回调或 readline 抛错：终止子进程以避免孤儿进程。
     loopError = error;
     try {
-      if (child.exitCode === null) child.kill("SIGTERM");
+      if (child.exitCode === null) signalChildProcessGroup(child, "SIGTERM");
     } catch {
       /* already dead */
     }
@@ -300,34 +421,31 @@ export async function runCli(
   }
 
   if (loopError) {
+    await terminateAndWaitForClose(child);
     abortHandler.dispose();
     timeoutHandler.dispose();
     throw loopError instanceof Error ? loopError : new Error(String(loopError));
   }
 
-  const exitCode = await new Promise<number | null>((resolve) => {
-    if (child.exitCode !== null) {
-      resolve(child.exitCode);
-    } else {
-      child.on("close", (code) => resolve(code));
-    }
-  });
+  const exitCode = await waitForClose(child);
 
   const cancelled = abortHandler.isCancelled();
   const timedOut = timeoutHandler.timedOut();
   abortHandler.dispose();
   timeoutHandler.dispose();
 
-  let stderr = Buffer.concat(stderrChunks).toString("utf-8");
+  let stderr = stderrBuffer.toString();
   if (timedOut) {
     stderr = appendTimeoutNotice(stderr, effectiveTimeoutMs);
   }
 
   return {
     exitCode,
-    stdout: stdoutLines.join("\n"),
+    stdout: stdoutBuffer.toString(),
     stderr,
     cancelled,
+    stdoutTruncated: stdoutBuffer.truncated,
+    stderrTruncated: stderrBuffer.truncated,
   };
 }
 
@@ -337,6 +455,7 @@ async function runCliViaFiles(
 ): Promise<CliRunResult> {
   const { binary, args, cwd, env, unsetEnv, stdinData, signal, timeoutMs } = options;
   const effectiveTimeoutMs = timeoutMs ?? resolveDefaultRunTimeoutMs();
+  const outputMaxBytes = resolveOutputMaxBytes(options.maxOutputBytes);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-cli-runner-"));
   const stdoutPath = path.join(tmpDir, "stdout.txt");
@@ -358,6 +477,7 @@ async function runCliViaFiles(
       env: buildSpawnEnv({ env, unsetEnv }),
       stdio: [stdinFd, stdoutFd, stderrFd],
       shell: false,
+      detached: process.platform !== "win32",
     });
   } finally {
     try {
@@ -405,8 +525,10 @@ async function runCliViaFiles(
   abortHandler.dispose();
   timeoutHandler.dispose();
 
-  const stdout = readFileLimited(stdoutPath, 32 * 1024 * 1024).text;
-  let stderr = readFileLimited(stderrPath, 32 * 1024 * 1024).text;
+  const stdoutResult = readFileLimited(stdoutPath, outputMaxBytes);
+  const stderrResult = readFileLimited(stderrPath, outputMaxBytes);
+  const stdout = stdoutResult.text;
+  let stderr = stderrResult.text;
   if (timedOut) {
     stderr = appendTimeoutNotice(stderr, effectiveTimeoutMs);
   }
@@ -421,7 +543,14 @@ async function runCliViaFiles(
     }
   }
 
-  return { exitCode, stdout, stderr, cancelled };
+  return {
+    exitCode,
+    stdout,
+    stderr,
+    cancelled,
+    stdoutTruncated: stdoutResult.truncated,
+    stderrTruncated: stderrResult.truncated,
+  };
 }
 
 /**
@@ -431,17 +560,30 @@ async function runCliViaFiles(
 export async function runCliRaw(
   options: Omit<CliRunOptions, "signal">,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  const release = await cliExecutionGovernor.acquire();
+  try {
+    return await runCliRawWithoutGovernor(options);
+  } finally {
+    release();
+  }
+}
+
+async function runCliRawWithoutGovernor(
+  options: Omit<CliRunOptions, "signal">,
+): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   if (!supportsPipedStdios()) {
     return await runCliRawViaFiles(options);
   }
 
   const { binary, args, cwd, env, unsetEnv } = options;
+  const outputMaxBytes = resolveOutputMaxBytes(options.maxOutputBytes);
 
   const child = spawn(binary, args, {
     cwd,
     env: buildSpawnEnv({ env, unsetEnv }),
     stdio: ["pipe", "pipe", "pipe"],
     shell: false,
+    detached: process.platform !== "win32",
   });
 
   const spawnError = await waitForSpawn(child);
@@ -454,18 +596,18 @@ export async function runCliRaw(
     child.stdin.end();
   }
 
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  child.stdout?.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-  child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  const stdoutBuffer = new TailByteBuffer(outputMaxBytes);
+  const stderrBuffer = new TailByteBuffer(outputMaxBytes);
+  child.stdout?.on("data", (chunk: Buffer) => stdoutBuffer.append(chunk));
+  child.stderr?.on("data", (chunk: Buffer) => stderrBuffer.append(chunk));
 
   const exitCode = await new Promise<number | null>((resolve) => {
     child.on("close", (code) => resolve(code));
   });
 
   return {
-    stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
-    stderr: Buffer.concat(stderrChunks).toString("utf-8"),
+    stdout: stdoutBuffer.toString(),
+    stderr: stderrBuffer.toString(),
     exitCode,
   };
 }
@@ -495,6 +637,7 @@ async function runCliRawViaFiles(
       env: buildSpawnEnv({ env, unsetEnv }),
       stdio: [stdinFd, stdoutFd, stderrFd],
       shell: false,
+      detached: process.platform !== "win32",
     });
   } finally {
     try {
@@ -529,8 +672,9 @@ async function runCliRawViaFiles(
     child.on("close", (code) => resolve(code));
   });
 
-  const stdout = readFileLimited(stdoutPath, 32 * 1024 * 1024).text;
-  const stderr = readFileLimited(stderrPath, 32 * 1024 * 1024).text;
+  const outputMaxBytes = resolveOutputMaxBytes(options.maxOutputBytes);
+  const stdout = readFileLimited(stdoutPath, outputMaxBytes).text;
+  const stderr = readFileLimited(stderrPath, outputMaxBytes).text;
 
   try {
     fs.rmSync(tmpDir, { recursive: true, force: true });

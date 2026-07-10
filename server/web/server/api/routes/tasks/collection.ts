@@ -18,13 +18,6 @@ import {
 
 type TaskRouteTaskContext = ReturnType<ApiSharedDeps["resolveTaskContext"]>;
 
-const executionSchema = z
-  .object({
-    isolation: z.enum(["default", "required"]).optional(),
-  })
-  .passthrough()
-  .optional();
-
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -141,11 +134,6 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
     const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
     if (!bodyResult.ok) return true;
     const body = bodyResult.body;
-    const bootstrapSchema = z.object({
-      enabled: z.boolean(),
-      projectRef: z.string().min(1),
-      maxIterations: z.number().min(1).max(10).optional(),
-    }).optional();
     const schema = z
       .object({
         title: z.string().min(1).optional(),
@@ -154,9 +142,7 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
         model: z.string().optional(),
         priority: z.number().optional(),
         maxRetries: z.number().optional(),
-        execution: executionSchema,
         attachments: z.array(z.string().min(1)).optional(),
-        bootstrap: bootstrapSchema,
         goalMode: z.boolean().optional(),
         goalObjective: z.string().nullable().optional(),
         goalTokenBudget: z.number().nullable().optional(),
@@ -172,9 +158,6 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
     const attachmentIds = (parsed.attachments ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
     const taskId = crypto.randomUUID();
 
-    const modelParams: Record<string, unknown> | null =
-      parsed.bootstrap?.enabled ? { bootstrap: parsed.bootstrap } : null;
-
     let task: ReturnType<QueueTaskStore["createTask"]>;
     try {
       task = taskCtx.taskStore.createTask(
@@ -184,10 +167,10 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
           prompt: parsed.prompt,
           agentId: parsed.agentId == null ? null : parsed.agentId.trim(),
           model: parsed.model,
-          modelParams,
+          modelParams: null,
           priority: parsed.priority,
           maxRetries: parsed.maxRetries,
-          executionIsolation: parsed.execution?.isolation,
+          executionIsolation: "default",
           createdBy: "web",
           goalMode: Boolean(parsed.goalMode),
           goalObjective: parsed.goalObjective ?? null,
@@ -250,14 +233,6 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
     const bodyResult = await readJsonBodyOrSendBadRequest(req, res);
     if (!bodyResult.ok) return true;
     const body = bodyResult.body;
-    const bootstrapSchema = z
-      .object({
-        enabled: z.literal(true),
-        projectRef: z.string().trim().min(1),
-        maxIterations: z.number().int().min(1).max(10).optional(),
-      })
-      .nullable()
-      .optional();
     const schema = z
       .object({
         title: z.string().min(1).optional(),
@@ -266,8 +241,6 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
         priority: z.number().finite().optional(),
         inheritContext: z.boolean().optional(),
         maxRetries: z.number().int().min(0).optional(),
-        execution: executionSchema,
-        bootstrap: bootstrapSchema,
       })
       .passthrough();
     const result = schema.safeParse(body ?? {});
@@ -280,25 +253,6 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
     const now = Date.now();
     const newId = crypto.randomUUID();
 
-    const modelParams = (() => {
-      const base = (() => {
-        const raw = source.modelParams;
-        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-          return null;
-        }
-        return { ...(raw as Record<string, unknown>) };
-      })();
-      if (parsed.bootstrap === undefined) {
-        return base;
-      }
-      const next = { ...(base ?? {}) };
-      if (parsed.bootstrap === null) {
-        delete next.bootstrap;
-        return Object.keys(next).length > 0 ? next : null;
-      }
-      return { ...next, bootstrap: parsed.bootstrap };
-    })();
-
     let created: ReturnType<QueueTaskStore["createTask"]>;
     try {
       created = taskCtx.taskStore.createTask(
@@ -307,12 +261,12 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
           title: parsed.title ?? source.title,
           prompt: parsed.prompt ?? source.prompt,
           model: parsed.model ?? source.model,
-          modelParams,
+          modelParams: source.modelParams ?? null,
           priority: parsed.priority ?? source.priority,
           inheritContext: parsed.inheritContext ?? source.inheritContext,
           parentTaskId: source.id,
           maxRetries: parsed.maxRetries ?? source.maxRetries,
-          executionIsolation: parsed.execution?.isolation ?? source.executionIsolation ?? "default",
+          executionIsolation: "default",
           createdBy: "web",
         },
         now,

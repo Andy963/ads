@@ -4,19 +4,7 @@ import type { Task } from "../../api/types";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
-type BootstrapConfig = {
-  enabled: true;
-  projectRef: string;
-  maxIterations?: number;
-};
-
-export type TaskUpdates = Partial<
-  Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries">
-> & {
-  bootstrap?: BootstrapConfig | null;
-};
-
-type BootstrapTaskConfig = { projectRef: string; maxIterations: number };
+export type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries">>;
 
 function formatAgentLabel(agent: AgentOption): string {
   const id = String(agent.id ?? "").trim();
@@ -26,34 +14,6 @@ function formatAgentLabel(agent: AgentOption): string {
   if (agent.ready) return base;
   const suffix = String(agent.error ?? "").trim() || "不可用";
   return `${base}（不可用：${suffix}）`;
-}
-
-function clampBootstrapIterations(raw: unknown): number {
-  const parsed = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : 10;
-  return Math.max(1, Math.min(10, parsed));
-}
-
-function readBootstrapConfig(task: Task): BootstrapTaskConfig | null {
-  const params = task.modelParams;
-  if (!params || typeof params !== "object" || Array.isArray(params)) {
-    return null;
-  }
-  const bootstrap = (params as { bootstrap?: unknown }).bootstrap;
-  if (!bootstrap || typeof bootstrap !== "object" || Array.isArray(bootstrap)) {
-    return null;
-  }
-  const enabled = (bootstrap as { enabled?: unknown }).enabled;
-  if (enabled !== true) {
-    return null;
-  }
-  const projectRef = String((bootstrap as { projectRef?: unknown }).projectRef ?? "").trim();
-  if (!projectRef) {
-    return null;
-  }
-  const maxIterations = clampBootstrapIterations(
-    (bootstrap as { maxIterations?: unknown }).maxIterations,
-  );
-  return { projectRef, maxIterations };
 }
 
 function deriveTaskTitleFromPrompt(prompt: string): string {
@@ -95,9 +55,6 @@ export function useTaskBoardEditing(params: {
   const editAgentId = ref("");
   const editPriority = ref(0);
   const editMaxRetries = ref(3);
-  const editBootstrapEnabled = ref(false);
-  const editBootstrapProject = ref("");
-  const editBootstrapMaxIterations = ref(10);
   const error = ref<string | null>(null);
 
   const editAgentOptions = computed(() =>
@@ -151,10 +108,6 @@ export function useTaskBoardEditing(params: {
     editAgentId.value = pickDefaultAgentId(task.agentId);
     editPriority.value = task.priority ?? 0;
     editMaxRetries.value = task.maxRetries ?? 3;
-    const bootstrap = readBootstrapConfig(task);
-    editBootstrapEnabled.value = Boolean(bootstrap);
-    editBootstrapProject.value = bootstrap?.projectRef ?? "";
-    editBootstrapMaxIterations.value = bootstrap?.maxIterations ?? 10;
     error.value = null;
   }
 
@@ -184,14 +137,6 @@ export function useTaskBoardEditing(params: {
     if (!editTitle.value.trim()) {
       editTitle.value = title;
     }
-    const projectRef = editBootstrapProject.value.trim();
-    if (editBootstrapEnabled.value && !projectRef) {
-      error.value = "项目路径不能为空";
-      return;
-    }
-    const maxIterations = clampBootstrapIterations(editBootstrapMaxIterations.value);
-    const priorBootstrap = readBootstrapConfig(task);
-
     emitEvent({
       id: task.id,
       updates: {
@@ -200,11 +145,6 @@ export function useTaskBoardEditing(params: {
         agentId: editAgentId.value.trim() ? editAgentId.value.trim() : null,
         priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
         maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
-        ...(editBootstrapEnabled.value
-          ? { bootstrap: { enabled: true, projectRef, maxIterations } }
-          : priorBootstrap
-            ? { bootstrap: null }
-            : {}),
       },
     });
     stopEdit();
@@ -218,9 +158,6 @@ export function useTaskBoardEditing(params: {
     editAgentId,
     editPriority,
     editMaxRetries,
-    editBootstrapEnabled,
-    editBootstrapProject,
-    editBootstrapMaxIterations,
     error,
     editAgentOptions,
     editPrimaryLabel,

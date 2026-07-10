@@ -1,8 +1,6 @@
-import type { BootstrapProjectRef } from "../bootstrap/types.js";
 import { safeParseJson } from "../utils/json.js";
 
-import type { TaskStore } from "./store.js";
-import type { Task, TaskContext } from "./types.js";
+import type { TaskContext } from "./types.js";
 
 export function truncate(text: string, limit = 4000): string {
   const normalized = String(text ?? "");
@@ -15,16 +13,6 @@ export function truncate(text: string, limit = 4000): string {
 type WorkspacePatchFileStat = { path: string; added: number | null; removed: number | null };
 type WorkspacePatchPayload = { files: WorkspacePatchFileStat[]; diff: string; truncated: boolean };
 type TaskWorkspacePatchArtifact = { paths: string[]; patch: WorkspacePatchPayload | null; reason?: string; createdAt: number };
-type TaskWorktreeReferenceContext = { worktreeDir: string; source?: string; createdAt: number };
-
-export type BootstrapModelParams = {
-  bootstrap?: {
-    enabled?: boolean;
-    projectRef?: string;
-    maxIterations?: number;
-  };
-};
-
 export function getLatestContextOfType(contexts: TaskContext[], contextType: string): TaskContext | null {
   const type = String(contextType ?? "").trim();
   if (!type) return null;
@@ -60,49 +48,4 @@ export function formatWorkspacePatchArtifactForPrompt(context: TaskContext | nul
   lines.push(String(patch.diff ?? "").trimEnd());
   lines.push("```");
   return lines.join("\n");
-}
-
-export function persistTaskWorktreeReference(
-  store: Pick<TaskStore, "saveContext">,
-  taskId: string,
-  input: { worktreeDir?: string | null; source?: string | null },
-  now = Date.now(),
-): void {
-  const id = String(taskId ?? "").trim();
-  const worktreeDir = String(input.worktreeDir ?? "").trim();
-  if (!id || !worktreeDir) {
-    return;
-  }
-  const payload: TaskWorktreeReferenceContext = {
-    worktreeDir,
-    source: String(input.source ?? "").trim() || undefined,
-    createdAt: now,
-  };
-  store.saveContext(
-    id,
-    { contextType: "artifact:worktree_reference", content: JSON.stringify(payload), createdAt: now },
-    now,
-  );
-}
-
-export function extractBootstrapConfig(task: Task): BootstrapModelParams["bootstrap"] | null {
-  const params = task.modelParams as BootstrapModelParams | null | undefined;
-  if (!params?.bootstrap?.enabled) return null;
-  const ref = String(params.bootstrap.projectRef ?? "").trim();
-  if (!ref) return null;
-  return params.bootstrap;
-}
-
-export function looksLikeGitUrl(value: string): boolean {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed) return false;
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return true;
-  if (trimmed.startsWith("git@") || trimmed.startsWith("ssh://")) return true;
-  return false;
-}
-
-export function resolveBootstrapProjectRef(ref: string): BootstrapProjectRef {
-  return looksLikeGitUrl(ref)
-    ? { kind: "git_url", value: ref }
-    : { kind: "local_path", value: ref };
 }

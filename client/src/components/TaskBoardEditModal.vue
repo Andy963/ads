@@ -16,9 +16,6 @@ const props = defineProps<{
   agentId: string;
   priority: number;
   maxRetries: number;
-  bootstrapEnabled: boolean;
-  bootstrapProject: string;
-  bootstrapMaxIterations: number;
   agentOptions: EditAgentOption[];
   showSaveButton: boolean;
   primaryLabel: string;
@@ -33,10 +30,7 @@ const emit = defineEmits<{
   (e: "update:agentId", value: string): void;
   (e: "update:priority", value: number): void;
   (e: "update:maxRetries", value: number): void;
-  (e: "update:bootstrapEnabled", value: boolean): void;
-  (e: "update:bootstrapProject", value: string): void;
-  (e: "update:bootstrapMaxIterations", value: number): void;
-}>(); 
+}>();
 
 const editTitleEl = ref<HTMLInputElement | null>(null);
 
@@ -63,21 +57,6 @@ const priorityModel = computed({
 const maxRetriesModel = computed({
   get: () => props.maxRetries,
   set: (value: number) => emit("update:maxRetries", value),
-});
-
-const bootstrapEnabledModel = computed({
-  get: () => props.bootstrapEnabled,
-  set: (value: boolean) => emit("update:bootstrapEnabled", value),
-});
-
-const bootstrapProjectModel = computed({
-  get: () => props.bootstrapProject,
-  set: (value: string) => emit("update:bootstrapProject", value),
-});
-
-const bootstrapMaxIterationsModel = computed({
-  get: () => props.bootstrapMaxIterations,
-  set: (value: number) => emit("update:bootstrapMaxIterations", value),
 });
 
 onMounted(() => {
@@ -123,12 +102,6 @@ onMounted(() => {
         </label>
 
         <div class="actions">
-          <div class="actionsLeft">
-            <label class="inlineToggle">
-              <input v-model="bootstrapEnabledModel" type="checkbox" data-testid="task-edit-bootstrap-toggle" />
-              <span class="toggleLabel">自举模式</span>
-            </label>
-          </div>
           <div class="actionsRight">
             <button class="btnSecondary" type="button" data-testid="task-edit-modal-cancel" @click="emit('close')">
               取消
@@ -155,26 +128,6 @@ onMounted(() => {
           </div>
         </div>
 
-        <div v-if="bootstrapEnabledModel" class="bootstrapConfig">
-          <label class="field projectField">
-            <span class="label">项目路径 / Git URL</span>
-            <input
-              v-model="bootstrapProjectModel"
-              placeholder="/path/to/project 或 https://..."
-              data-testid="task-edit-bootstrap-project"
-            />
-          </label>
-          <label class="field iterationsField">
-            <span class="label">最大迭代</span>
-            <input
-              v-model.number="bootstrapMaxIterationsModel"
-              type="number"
-              min="1"
-              max="10"
-              data-testid="task-edit-bootstrap-max-iterations"
-            />
-          </label>
-        </div>
       </div>
     </div>
   </DraggableModal>
@@ -335,71 +288,18 @@ textarea {
   color: #dc2626;
 }
 
-.bootstrapConfig {
-  display: grid;
-  grid-template-columns: 1fr 100px;
-  gap: 12px;
-  align-items: end;
-}
-
-.projectField {
-  min-width: 0;
-}
-
-.iterationsField {
-  min-width: 0;
-}
-
-.bootstrapConfig .label {
-  font-size: 13px;
-  margin-bottom: 4px;
-}
-
-.bootstrapConfig input {
-  padding: 6px 8px;
-  font-size: 13px;
-}
-
 .actions {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: 16px;
   margin-top: 12px;
-}
-
-.actionsLeft {
-  display: flex;
-  align-items: center;
-  gap: 16px;
 }
 
 .actionsRight {
   display: flex;
   align-items: center;
   gap: 32px;
-}
-
-.inlineToggle {
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-  user-select: none;
-}
-
-.inlineToggle input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  margin: 0;
-  cursor: pointer;
-  accent-color: #2563eb;
-}
-
-.toggleLabel {
-  margin-left: 5px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #475569;
 }
 
 .btnPrimary {
