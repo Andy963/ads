@@ -24,6 +24,18 @@ export interface CliRunOptions {
   timeoutMs?: number;
   /** Maximum retained bytes for each of stdout and stderr. Streaming callbacks still receive every parsed line. */
   maxOutputBytes?: number;
+  /**
+   * 由调用方（adapter）判断"这轮逻辑上已经结束"（例如已解析到终态 result 行）。
+   * 一旦返回 true，runner 只再等 postCompletionGraceMs 让进程自然退出；
+   * 超过宽限仍未退出则终止进程组并正常返回，避免子进程（或其孙进程持有
+   * stdout 管道）拖到 30 分钟硬超时才收尾。仅对管道模式生效。
+   */
+  isRunComplete?: () => boolean;
+  /**
+   * isRunComplete 变为 true 后等待进程自然退出的宽限（毫秒）。
+   * 默认 ADS_CLI_POST_COMPLETION_GRACE_MS（未设置时 10 秒），<=0 表示禁用宽限终止。
+   */
+  postCompletionGraceMs?: number;
 }
 
 export type LineHandler = (parsed: unknown) => void;
@@ -35,6 +47,11 @@ export interface CliRunResult {
   cancelled: boolean;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
+  /**
+   * true 表示进程是在 isRunComplete 已判定完成后、由宽限定时器终止的。
+   * 此时 exitCode 反映的是终止信号而非真实失败，调用方不应据此判定失败。
+   */
+  terminatedAfterCompletion: boolean;
 }
 
 let PIPE_STDIOS_SUPPORTED: boolean | null = null;
@@ -324,6 +341,74 @@ function appendTimeoutNotice(stderr: string, timeoutMs: number): string {
   return stderr.trim() ? `${stderr}\n${notice}` : notice;
 }
 
+const DEFAULT_POST_COMPLETION_GRACE_MS = 10_000;
+
+/**
+ * 解析完成宽限时长：显式传入优先，否则读 ADS_CLI_POST_COMPLETION_GRACE_MS，
+ * 无效/未设置回退默认 10 秒。<=0 表示禁用。
+ */
+function resolvePostCompletionGraceMs(explicit?: number): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit)) {
+    return Math.floor(explicit);
+  }
+  const raw = process.env.ADS_CLI_POST_COMPLETION_GRACE_MS;
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_POST_COMPLETION_GRACE_MS;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return DEFAULT_POST_COMPLETION_GRACE_MS;
+  }
+  return Math.floor(value);
+}
+
+/**
+ * 完成宽限监视器：adapter 判定本轮已完成后启动一次性定时器，宽限内进程仍未
+ * 退出则 SIGTERM 进程组（2 秒后升级 SIGKILL），并把这次终止标记为
+ * "完成后终止"，让调用方不要把退出码当作失败。
+ */
+function createPostCompletionWatcher(
+  child: ReturnType<typeof spawn>,
+  graceMs: number,
+): { onMaybeComplete: (isComplete: boolean) => void; terminated: () => boolean; dispose: () => void } {
+  let armed = false;
+  let terminated = false;
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const onMaybeComplete = (isComplete: boolean) => {
+    if (!isComplete || armed || graceMs <= 0) return;
+    armed = true;
+    graceTimer = setTimeout(() => {
+      if (child.exitCode !== null) return;
+      terminated = true;
+      logger.warn(`[CliRunner] 子进程在本轮完成 ${graceMs}ms 后仍未退出，终止进程组以结束本轮`);
+      try {
+        signalChildProcessGroup(child, "SIGTERM");
+      } catch {
+        /* already dead */
+      }
+      killTimer = setTimeout(() => {
+        try {
+          signalChildProcessGroup(child, "SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }, 2000);
+      killTimer.unref?.();
+    }, graceMs);
+    graceTimer.unref?.();
+  };
+
+  const dispose = () => {
+    if (graceTimer) clearTimeout(graceTimer);
+    if (killTimer) clearTimeout(killTimer);
+  };
+
+  return { onMaybeComplete, terminated: () => terminated, dispose };
+}
+
+
 function emitJsonLines(rawStdout: string, onLine: LineHandler): void {
   const lines = String(rawStdout ?? "").split("\n");
   for (const rawLine of lines) {
@@ -373,11 +458,16 @@ async function runCliWithoutGovernor(
 
   const abortHandler = attachAbortHandler(child, signal);
   const timeoutHandler = setupRunTimeout(child, effectiveTimeoutMs);
+  const completionWatcher = createPostCompletionWatcher(
+    child,
+    options.isRunComplete ? resolvePostCompletionGraceMs(options.postCompletionGraceMs) : 0,
+  );
   const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
     abortHandler.dispose();
     timeoutHandler.dispose();
+    completionWatcher.dispose();
     throw new Error(formatSpawnErrorHint(binary, spawnError));
   }
 
@@ -406,6 +496,7 @@ async function runCliWithoutGovernor(
       const parsed = tryParseJsonLine(rawLine);
       if (parsed !== null) {
         onLine(parsed);
+        completionWatcher.onMaybeComplete(options.isRunComplete?.() === true);
       }
     }
   } catch (error) {
@@ -424,6 +515,7 @@ async function runCliWithoutGovernor(
     await terminateAndWaitForClose(child);
     abortHandler.dispose();
     timeoutHandler.dispose();
+    completionWatcher.dispose();
     throw loopError instanceof Error ? loopError : new Error(String(loopError));
   }
 
@@ -431,8 +523,10 @@ async function runCliWithoutGovernor(
 
   const cancelled = abortHandler.isCancelled();
   const timedOut = timeoutHandler.timedOut();
+  const terminatedAfterCompletion = completionWatcher.terminated();
   abortHandler.dispose();
   timeoutHandler.dispose();
+  completionWatcher.dispose();
 
   let stderr = stderrBuffer.toString();
   if (timedOut) {
@@ -446,6 +540,7 @@ async function runCliWithoutGovernor(
     cancelled,
     stdoutTruncated: stdoutBuffer.truncated,
     stderrTruncated: stderrBuffer.truncated,
+    terminatedAfterCompletion,
   };
 }
 
@@ -550,6 +645,7 @@ async function runCliViaFiles(
     cancelled,
     stdoutTruncated: stdoutResult.truncated,
     stderrTruncated: stderrResult.truncated,
+    terminatedAfterCompletion: false,
   };
 }
 

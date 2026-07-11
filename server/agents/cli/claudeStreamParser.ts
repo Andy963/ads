@@ -395,14 +395,23 @@ export class ClaudeStreamParser {
 
     if (subtype === "success") {
       const errorVal = obj.error;
-      const hasApiErrorStatus = obj.api_error_status !== undefined || obj.error_status !== undefined;
+      // The CLI reports `"api_error_status": null` on a successful turn, so a
+      // bare `!== undefined` check treats every success as an error. Only a
+      // non-null status (a real HTTP code) signals a failure.
+      const apiErrorStatus = obj.api_error_status ?? obj.error_status;
+      const hasApiErrorStatus =
+        typeof apiErrorStatus === "number" ? apiErrorStatus !== 0 : Boolean(apiErrorStatus);
+      // `is_error` is the CLI's authoritative success/failure flag. When it is
+      // explicitly false, trust it and never let an ancillary null field
+      // reclassify the successful final message as an error.
       const hasError =
         obj.is_error === true ||
-        hasApiErrorStatus ||
-        (typeof errorVal === "string" && errorVal.trim()) ||
-        (errorVal !== undefined && errorVal !== null && typeof errorVal === "object") ||
-        (typeof obj.reason === "string" && obj.reason.trim()) ||
-        (typeof obj.message === "string" && obj.message.trim());
+        (obj.is_error !== false &&
+          (hasApiErrorStatus ||
+            (typeof errorVal === "string" && errorVal.trim().length > 0) ||
+            (errorVal !== undefined && errorVal !== null && typeof errorVal === "object") ||
+            (typeof obj.reason === "string" && obj.reason.trim().length > 0) ||
+            (typeof obj.message === "string" && obj.message.trim().length > 0)));
       if (hasError) {
         const message = extractNestedMessage(obj, ["error", "reason", "message", "result"]) ?? "claude result error";
         this.lastError = message;

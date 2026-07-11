@@ -22,6 +22,22 @@ import {
 import { SessionRuntimeRegistry } from './sessionRuntimeRegistry.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../../systemPrompt/manager.js';
 import { detectWorkspaceFrom } from '../../workspace/detector.js';
+import { deriveProjectSessionId } from '../../web/server/projectSessionId.js';
+
+type CodexAdapterMode = 'auto' | 'app-server' | 'cli';
+
+/**
+ * Operator override for the codex adapter path (`ADS_CODEX_ADAPTER`).
+ * `app-server` forces the daemon path for every session, `cli` forces the
+ * one-shot CLI path (including Goal Mode), anything else keeps the default
+ * gate: app-server only when Goal Mode requests it with a projectId.
+ */
+function resolveCodexAdapterMode(): CodexAdapterMode {
+  const raw = String(process.env.ADS_CODEX_ADAPTER ?? '').trim().toLowerCase();
+  if (raw === 'app-server' || raw === 'appserver') return 'app-server';
+  if (raw === 'cli') return 'cli';
+  return 'auto';
+}
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -560,8 +576,25 @@ export class SessionManager {
   }): AgentAdapter[] {
     const allowlist = this.getConfiguredAgentIds();
     const adapters: AgentAdapter[] = [];
-    const projectId = String(args.projectId ?? "").trim();
-    const useGoalAdapter = Boolean(args.useGoalAdapter) && projectId.length > 0;
+    const adapterMode = resolveCodexAdapterMode();
+    const requestedProjectId = String(args.projectId ?? "").trim();
+    // Resolve the codex adapter path. `auto` keeps the historical gate
+    // (app-server only when Goal Mode supplies a projectId). `app-server`
+    // forces the daemon path for every codex turn, deriving a stable projectId
+    // from the workspace when Goal Mode did not supply one. `cli` forces the
+    // one-shot CLI path even in Goal Mode.
+    let projectId = requestedProjectId;
+    let useGoalAdapter: boolean;
+    if (adapterMode === "cli") {
+      useGoalAdapter = false;
+    } else if (adapterMode === "app-server") {
+      if (!projectId) {
+        projectId = deriveProjectSessionId(args.effectiveCwd);
+      }
+      useGoalAdapter = projectId.length > 0;
+    } else {
+      useGoalAdapter = Boolean(args.useGoalAdapter) && projectId.length > 0;
+    }
 
     for (const agentId of allowlist) {
       if (agentId === "codex") {

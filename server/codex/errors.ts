@@ -4,13 +4,21 @@ export const CODEX_THREAD_RESET_HINT =
 export type CodexErrorCode =
   | "thread_corrupted"
   | "model_mismatch"
+  | "model_not_supported"
   | "session_in_use"
   | "rate_limit"
+  | "usage_limit"
+  | "server_overloaded"
+  | "server_error"
+  | "bad_request"
   | "token_limit"
   | "network_timeout"
+  | "run_timeout"
   | "stream_disconnected"
   | "auth_failed"
   | "context_overflow"
+  | "cli_version_mismatch"
+  | "nested_session"
   | "aborted"
   | "unknown";
 
@@ -31,9 +39,18 @@ const ERROR_PATTERNS: Array<{
   needsReset: boolean;
 }> = [
   {
-    pattern: /cannot resume thread with a different model|different model/i,
+    // 注意不要用宽松的 "different model"：容量类错误（"try a different
+    // model"）曾被误判成模型不匹配并给出错误提示。
+    pattern: /cannot resume thread with a different model/i,
     code: "model_mismatch",
     userHint: "模型已变更，旧线程不能继续复用。请重试；系统应为这次模型切换创建新线程",
+    retryable: false,
+    needsReset: false,
+  },
+  {
+    pattern: /不支持所选模型|model not (?:found|supported)|unsupported model|unknown model/i,
+    code: "model_not_supported",
+    userHint: "当前 API 不支持所选模型，请使用 /model 切换到可用模型",
     retryable: false,
     needsReset: false,
   },
@@ -45,9 +62,23 @@ const ERROR_PATTERNS: Array<{
     needsReset: false,
   },
   {
+    pattern: /usage limit|quota exceeded|insufficient credit|credit balance/i,
+    code: "usage_limit",
+    userHint: "账号用量已达上限，请等待配额恢复后重试，或检查账号计费状态",
+    retryable: true,
+    needsReset: false,
+  },
+  {
     pattern: /rate.?limit|too many requests|429/i,
     code: "rate_limit",
     userHint: "API 请求频率过高，请稍后重试",
+    retryable: true,
+    needsReset: false,
+  },
+  {
+    pattern: /high demand|overloaded|at capacity|529/i,
+    code: "server_overloaded",
+    userHint: "上游服务当前负载过高，请稍后重试或切换模型",
     retryable: true,
     needsReset: false,
   },
@@ -64,6 +95,15 @@ const ERROR_PATTERNS: Array<{
     userHint: "上下文溢出，请使用 /reset 重置会话",
     retryable: false,
     needsReset: true,
+  },
+  {
+    // cliRunner 的硬超时通知（见 appendTimeoutNotice），要先于通用 timeout 匹配。
+    pattern: /cli 运行超过.*超时|子进程已被终止/i,
+    code: "run_timeout",
+    userHint:
+      "任务运行时长超过上限（默认 30 分钟）被终止。长任务可拆分后重试，或调大 ADS_AGENT_RUN_TIMEOUT_MS",
+    retryable: true,
+    needsReset: false,
   },
   {
     pattern: /timeout|timed.?out|deadline.?exceeded/i,
@@ -87,6 +127,35 @@ const ERROR_PATTERNS: Array<{
     needsReset: false,
   },
   {
+    pattern: /internal server error|internal_error|unexpected status 5\d\d|<unknown status code>/i,
+    code: "server_error",
+    userHint: "上游服务内部错误，请稍后重试；如持续发生可切换模型",
+    retryable: true,
+    needsReset: false,
+  },
+  {
+    pattern: /invalid_responses_request|invalid codex request|new_api_error|bad request|api error: 400/i,
+    code: "bad_request",
+    userHint: "上游拒绝了本次请求（invalid request）。请重试；若持续出现，请使用 /reset 或切换模型",
+    retryable: true,
+    needsReset: false,
+  },
+  {
+    pattern: /cannot be launched inside another claude code session/i,
+    code: "nested_session",
+    userHint:
+      "Claude CLI 拒绝在另一个 Claude Code 会话内启动。请从独立终端启动 ADS，或确认服务端已清除 CLAUDECODE 环境变量",
+    retryable: false,
+    needsReset: false,
+  },
+  {
+    pattern: /unexpected argument '?--|unrecognized option|unknown option '?--/i,
+    code: "cli_version_mismatch",
+    userHint: "CLI 参数不被当前版本支持，请升级对应的 CLI（claude/codex/gemini）到最新版本",
+    retryable: false,
+    needsReset: false,
+  },
+  {
     pattern: (msg) =>
       msg.includes("encrypted content") && msg.includes("could not be verified"),
     code: "thread_corrupted",
@@ -95,6 +164,13 @@ const ERROR_PATTERNS: Array<{
     needsReset: true,
   },
 ];
+
+/** 未知错误提示里附带的原始错误摘要长度上限。 */
+const UNKNOWN_DETAIL_MAX_LENGTH = 180;
+
+function summarizeUnknownDetail(message: string): string {
+  return message.replace(/\s+/g, " ").trim().slice(0, UNKNOWN_DETAIL_MAX_LENGTH);
+}
 
 export function classifyError(error: unknown): CodexErrorInfo {
   const message = error instanceof Error ? error.message : String(error ?? "");
@@ -117,10 +193,13 @@ export function classifyError(error: unknown): CodexErrorInfo {
     }
   }
 
+  const detail = summarizeUnknownDetail(message);
   return {
     code: "unknown",
     message,
-    userHint: "发生未知错误，请重试或使用 /reset 重置会话",
+    userHint: detail
+      ? `发生未知错误，请重试或使用 /reset 重置会话\n详情：${detail}`
+      : "发生未知错误，请重试或使用 /reset 重置会话",
     retryable: true,
     needsReset: false,
     originalError: message,

@@ -32,7 +32,7 @@
     "bundle": "npm run build && node scripts/bundle.js",
     "start": "node dist/server/cli.js web",
     "dev": "tsx watch server/web/server.ts",
-    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "coverage": "c8 --all --include server --exclude 'server/telegram/**' --reporter=text --reporter=lcov npm test",
     "web": "node dist/server/cli.js web",
     "web:init-admin": "tsx server/web/auth/initAdminCli.ts",

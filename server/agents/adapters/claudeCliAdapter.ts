@@ -303,6 +303,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     const runAttempt = async (retryState: RetryAttemptState): Promise<AgentRunResult> => {
       const parser = new ClaudeStreamParser();
       let sawTurnFailed = false;
+      let sawTerminalResult = false;
       let resumedPromptAccepted = false;
       logger.info(
         `sending Claude request session=${sessionId ?? "(new)"} mode=${permissionMode} attempt=${retryState.attempt}`,
@@ -327,8 +328,16 @@ export class ClaudeCliAdapter implements AgentAdapter {
           unsetEnv: CLAUDE_UNSET_ENV,
           stdinData: "\n",
           signal: options?.signal,
+          // The CLI prints its terminal `result` line and then may keep the
+          // stdout pipe open via a lingering MCP/tool grandchild, which would
+          // otherwise stall runCli until the 30-minute hard timeout. Signal
+          // completion on the result line so the runner ends the turn promptly.
+          isRunComplete: () => sawTerminalResult,
         },
         (parsed) => {
+          if ((parsed as { type?: unknown } | null)?.type === "result") {
+            sawTerminalResult = true;
+          }
           for (const event of parser.parseLine(parsed)) {
             if (sessionId && (event.phase === "boot" || event.phase === "analysis" || event.phase === "responding")) {
               resumedPromptAccepted = true;
@@ -351,7 +360,15 @@ export class ClaudeCliAdapter implements AgentAdapter {
       const hasFinalMessage = finalMessage.length > 0;
       const stderrSummary = summarizeStderr(result.stderr);
 
-      if (result.exitCode !== 0 || sawTurnFailed) {
+      // A non-zero exit code is only meaningful when the CLI never reached its
+      // terminal result: once the result line arrived (and wasn't a failure),
+      // the exit code merely reflects how the lingering process was reaped
+      // (post-completion grace kill, hard timeout, cleanup crash).
+      const turnDeliveredResult = sawTerminalResult && !sawTurnFailed;
+      const exitIndicatesFailure =
+        result.exitCode !== 0 && !result.terminatedAfterCompletion && !turnDeliveredResult;
+
+      if (exitIndicatesFailure || sawTurnFailed) {
         logger.warn(
           `[Claude CLI] request failed session=${sessionId ?? "(new)"} exitCode=${result.exitCode ?? "null"} stderr=${JSON.stringify(stderrSummary)} hasFinalMessage=${hasFinalMessage}`,
         );

@@ -166,6 +166,9 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `ADS_GEMINI_MODEL` | 未设置 | Gemini 模型覆盖 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | Agent 可用性探测超时 |
 | `ADS_AGENT_RUN_TIMEOUT_MS` | `1800000` | 单次 Agent 运行硬超时，`0` 表示禁用 |
+| `ADS_CLI_POST_COMPLETION_GRACE_MS` | `10000` | CLI 输出终态结果后等待进程自然退出的宽限；超时则终止进程组并按成功收尾，`0` 表示禁用 |
+| `ADS_CODEX_ADAPTER` | `auto` | Codex 适配器路径：`auto` 仅 Goal Mode 走 app-server；`app-server` 强制所有 codex 会话走 daemon（无 projectId 时按工作区派生）；`cli` 强制走一次性 CLI |
+| `ADS_CODEX_DAEMON_ARGS` | 未设置 | 追加给 codex daemon 的全局参数（按空白拆分），用于按版本开启 collab 等实验特性，例如 `-c features.collab=true` |
 | `ADS_UPSTREAM_RETRY_COUNT` | `1` | 临时上游模型错误的重试次数 |
 | `ADS_TASK_UPSTREAM_RETRY_BASE_DELAY_MS` | `60000` | 外层上游重试耗尽后，任务级重试的初始持久化冷却时间；`0` 表示禁用冷却 |
 | `ADS_TASK_UPSTREAM_RETRY_MAX_DELAY_MS` | `900000` | 外层上游重试耗尽后，任务级指数冷却的最大时间；`0` 表示禁用冷却 |

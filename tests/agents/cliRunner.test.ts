@@ -97,6 +97,56 @@ describe("cliRunner", () => {
     );
   });
 
+  it("reaps a child that lingers after its terminal result line (post-completion grace)", async () => {
+    const node = process.execPath;
+    // Prints the terminal result, then never exits — the "CLI lingers after
+    // the final result" shape that used to stall runs until the hard timeout.
+    const script = [
+      "console.log('{\"type\":\"result\"}');",
+      "setInterval(() => {}, 1000);",
+    ].join("");
+
+    let sawResult = false;
+    const result = await Promise.race([
+      runCli(
+        {
+          binary: node,
+          args: ["-e", script],
+          timeoutMs: 10_000,
+          isRunComplete: () => sawResult,
+          postCompletionGraceMs: 100,
+        },
+        (parsed) => {
+          if ((parsed as { type?: string }).type === "result") sawResult = true;
+        },
+      ),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("lingered past grace")), 5000)),
+    ]);
+
+    assert.equal(result.cancelled, false);
+    assert.equal(result.terminatedAfterCompletion, true);
+    // The terminal line was still captured before the grace kill.
+    assert.match(result.stdout, /"type":"result"/);
+  });
+
+  it("does not fire the grace kill when the run never signals completion", async () => {
+    const node = process.execPath;
+    const script = "console.log('{\"type\":\"partial\"}');";
+
+    const result = await runCli(
+      {
+        binary: node,
+        args: ["-e", script],
+        isRunComplete: () => false,
+        postCompletionGraceMs: 50,
+      },
+      () => {},
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.terminatedAfterCompletion, false);
+  });
+
   it("caps retained stdout and stderr while preserving their tails", async () => {
     const node = process.execPath;
     const script = [

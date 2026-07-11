@@ -113,6 +113,45 @@ describe("ClaudeStreamParser", () => {
     assert.equal(parser.getLastError(), "API Error: Request rejected (429) · Service Unavailable");
   });
 
+  it("does not treat api_error_status:null on a success result as failure (CLI 2.1.x)", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+
+    // Real payload shape from claude CLI 2.1.207: success results always carry
+    // api_error_status:null, which previously flipped every success into a
+    // turn.failed whose "error" text was the successful final message.
+    const events = parser.parseLine({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      api_error_status: null,
+      result: "两个问题都已处理完成，全部校验通过。",
+      stop_reason: "end_turn",
+      terminal_reason: "completed",
+    });
+    assert.equal(parser.getLastError(), null);
+    assert.equal(parser.getFinalMessage(), "两个问题都已处理完成，全部校验通过。");
+    assert.equal(events.some((e) => e.phase === "error"), false);
+    assert.equal(
+      events.some((e) => (e.raw as { type?: string } | undefined)?.type === "turn.completed"),
+      true,
+    );
+  });
+
+  it("still fails success results with a real api_error_status even without is_error", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+
+    const events = parser.parseLine({
+      type: "result",
+      subtype: "success",
+      api_error_status: 500,
+      result: "API Error: Internal server error",
+    });
+    assert.equal(events.some((e) => e.phase === "error"), true);
+    assert.equal(parser.getLastError(), "API Error: Internal server error");
+  });
+
   it("treats synthetic assistant rate limit messages as errors", () => {
     const parser = new ClaudeStreamParser();
     parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });

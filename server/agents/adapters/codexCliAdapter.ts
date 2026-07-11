@@ -278,6 +278,7 @@ export class CodexCliAdapter implements AgentAdapter {
       let usage: Usage | null = null;
       let streamError: string | null = null;
       let sawTurnFailed = false;
+      let sawTerminalTurn = false;
 
       const result = await runCli(
         {
@@ -287,6 +288,9 @@ export class CodexCliAdapter implements AgentAdapter {
           env: spawnEnv,
           stdinData: `${prompt}\n`,
           signal: options?.signal,
+          // End the run promptly once the turn reaches a terminal event; a
+          // lingering child otherwise holds stdout open until the hard timeout.
+          isRunComplete: () => sawTerminalTurn,
         },
         (parsed) => {
           if (!isThreadEvent(parsed)) {
@@ -311,6 +315,7 @@ export class CodexCliAdapter implements AgentAdapter {
 
           if (event.type === "turn.failed") {
             sawTurnFailed = true;
+            sawTerminalTurn = true;
             const msg = (event as { error?: { message?: unknown } }).error?.message;
             if (typeof msg === "string" && msg.trim()) {
               streamError = msg.trim();
@@ -318,6 +323,7 @@ export class CodexCliAdapter implements AgentAdapter {
           }
 
           if (event.type === "turn.completed") {
+            sawTerminalTurn = true;
             const maybeUsage = (event as { usage?: unknown }).usage;
             if (maybeUsage && typeof maybeUsage === "object") {
               usage = maybeUsage as Usage;
@@ -347,7 +353,13 @@ export class CodexCliAdapter implements AgentAdapter {
         throw createAbortError("用户中断了请求");
       }
 
-      if (result.exitCode !== 0 || sawTurnFailed) {
+      // A non-zero exit code only matters when the turn never reached a
+      // terminal event: after turn.completed, the exit code just reflects how
+      // the lingering process was reaped (grace kill, hard timeout, cleanup).
+      const turnDeliveredResult = sawTerminalTurn && !sawTurnFailed;
+      const exitIndicatesFailure =
+        result.exitCode !== 0 && !result.terminatedAfterCompletion && !turnDeliveredResult;
+      if (exitIndicatesFailure || sawTurnFailed) {
         const fallbackOutput = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n");
         const message =
           streamError ??

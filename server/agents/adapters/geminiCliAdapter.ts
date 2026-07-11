@@ -138,6 +138,7 @@ export class GeminiCliAdapter implements AgentAdapter {
 
     const parser = new GeminiStreamParser();
     let sawTurnFailed = false;
+    let sawTerminalTurn = false;
     logger.info(`sending Gemini request session=${this.sessionId ?? "(new)"} approval=${approvalMode} resume=${resumeIndex ?? "(none)"}`);
 
     const result = await runCli(
@@ -148,12 +149,18 @@ export class GeminiCliAdapter implements AgentAdapter {
         env: options?.env,
         stdinData: "\n",
         signal: options?.signal,
+        // End the run promptly after the terminal turn event instead of
+        // waiting on a lingering child until the hard timeout.
+        isRunComplete: () => sawTerminalTurn,
       },
       (parsed) => {
         for (const event of parser.parseLine(parsed)) {
           const rawType = (event.raw as { type?: unknown } | undefined)?.type;
           if (rawType === "turn.failed") {
             sawTurnFailed = true;
+          }
+          if (rawType === "turn.failed" || rawType === "turn.completed") {
+            sawTerminalTurn = true;
           }
           this.emitEvent(event);
         }
@@ -164,7 +171,12 @@ export class GeminiCliAdapter implements AgentAdapter {
       throw createAbortError("用户中断了请求");
     }
 
-    if (result.exitCode !== 0 || sawTurnFailed) {
+    // A non-zero exit code only matters when the turn never reached a terminal
+    // event; afterwards it just reflects how the lingering process was reaped.
+    const turnDeliveredResult = sawTerminalTurn && !sawTurnFailed;
+    const exitIndicatesFailure =
+      result.exitCode !== 0 && !result.terminatedAfterCompletion && !turnDeliveredResult;
+    if (exitIndicatesFailure || sawTurnFailed) {
       const message = parser.getLastError() ?? (result.stderr.trim() || `gemini exited with code ${result.exitCode}`);
       throw new Error(message);
     }
