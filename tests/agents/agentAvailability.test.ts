@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { CliAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 
@@ -89,5 +92,37 @@ describe("CliAgentAvailability", () => {
     assert.equal(seen[0]?.timeoutMs, 5000);
     assert.equal(seen[1]?.timeoutMs, 10000);
     assert.deepEqual(seen[0]?.args, seen[1]?.args);
+  });
+
+  it("finds Claude installed in the user's local bin without ADS_CLAUDE_BIN", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "ads-agent-home-"));
+    const localBin = path.join(home, ".local", "bin");
+    const claudeBin = path.join(localBin, "claude");
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousClaudeBin = process.env.ADS_CLAUDE_BIN;
+
+    await fs.mkdir(localBin, { recursive: true });
+    await fs.writeFile(claudeBin, "#!/usr/bin/env sh\nexit 0\n", "utf-8");
+    await fs.chmod(claudeBin, 0o755);
+
+    try {
+      process.env.HOME = home;
+      process.env.PATH = "/usr/bin:/bin";
+      delete process.env.ADS_CLAUDE_BIN;
+
+      const availability = new CliAgentAvailability({ timeoutMs: 5000 });
+      await availability.probeAll(["claude"]);
+
+      assert.equal(availability.get("claude")?.ready, true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousClaudeBin === undefined) delete process.env.ADS_CLAUDE_BIN;
+      else process.env.ADS_CLAUDE_BIN = previousClaudeBin;
+      await fs.rm(home, { recursive: true, force: true });
+    }
   });
 });

@@ -372,9 +372,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     if (!sessionId) return;
     try {
-      localStorage.setItem(buildModelIdStorageKey(sessionId, chatSessionId), normalizeModelId(rt.modelId.value));
+      const agentId = String(rt.activeAgentId.value ?? "").trim();
+      localStorage.setItem(buildModelIdStorageKey(sessionId, chatSessionId, agentId), normalizeModelId(rt.modelId.value));
       localStorage.setItem(
-        buildReasoningEffortStorageKey(sessionId, chatSessionId),
+        buildReasoningEffortStorageKey(sessionId, chatSessionId, agentId),
         normalizeReasoningEffort(rt.modelReasoningEffort.value),
       );
     } catch {

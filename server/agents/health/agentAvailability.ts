@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 
+import { withAgentCliPath } from "../cli/pathEnv.js";
 import type { AgentIdentifier, AgentStatus } from "../types.js";
 
 export type AvailabilityRecord = {
@@ -76,7 +77,7 @@ async function runProbeCommandWithTimeout(options: {
 }): Promise<ProbeRunResult> {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.floor(options.timeoutMs)) : DEFAULT_PROBE_TIMEOUT_MS;
 
-  const probeEnv = { ...process.env };
+  const probeEnv = withAgentCliPath(process.env);
   delete probeEnv.CLAUDECODE;
 
   const child = spawn(options.binary, options.args, {

@@ -23,10 +23,12 @@ export function normalizeModelId(value: unknown): string {
   return normalized || "auto";
 }
 
-export function buildReasoningEffortStorageKey(sessionId: string, chatSessionId: string): string {
-  return `ads.reasoningEffort.${normalizeStorageKeySegment(sessionId, "unknown")}.${normalizeStorageKeySegment(chatSessionId, "main")}`;
+export function buildReasoningEffortStorageKey(sessionId: string, chatSessionId: string, agentId?: string): string {
+  const base = `ads.reasoningEffort.${normalizeStorageKeySegment(sessionId, "unknown")}.${normalizeStorageKeySegment(chatSessionId, "main")}`;
+  return agentId ? `${base}.${normalizeStorageKeySegment(agentId, "unknown")}` : base;
 }
 
-export function buildModelIdStorageKey(sessionId: string, chatSessionId: string): string {
-  return `ads.modelId.${normalizeStorageKeySegment(sessionId, "unknown")}.${normalizeStorageKeySegment(chatSessionId, "main")}`;
+export function buildModelIdStorageKey(sessionId: string, chatSessionId: string, agentId?: string): string {
+  const base = `ads.modelId.${normalizeStorageKeySegment(sessionId, "unknown")}.${normalizeStorageKeySegment(chatSessionId, "main")}`;
+  return agentId ? `${base}.${normalizeStorageKeySegment(agentId, "unknown")}` : base;
 }

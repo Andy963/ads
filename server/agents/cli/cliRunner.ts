@@ -5,6 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createLogger } from "../../utils/logger.js";
 import { cliExecutionGovernor } from "./executionGovernor.js";
+import { withAgentCliPath } from "./pathEnv.js";
 import { stripAnsi } from "./stripAnsi.js";
 
 const logger = createLogger("CliRunner");
@@ -102,13 +103,7 @@ class TailByteBuffer {
 }
 
 function buildSpawnEnv(options: { env?: Record<string, string>; unsetEnv?: string[] }): NodeJS.ProcessEnv | undefined {
-  const hasOverrides = Boolean(options.env && Object.keys(options.env).length > 0);
-  const hasUnsets = Boolean(options.unsetEnv && options.unsetEnv.length > 0);
-  if (!hasOverrides && !hasUnsets) {
-    return undefined;
-  }
-
-  const merged: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}) };
+  const merged = withAgentCliPath({ ...process.env, ...(options.env ?? {}) });
   for (const key of options.unsetEnv ?? []) {
     delete merged[key];
   }

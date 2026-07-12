@@ -1,0 +1,19 @@
+[Unit]
+Description=ADS Web Console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/andy/repos
+Environment=HOME=/home/andy
+Environment=ADS_ENV_PATH=/home/andy/repos/ads/.env
+Environment=ADS_STATE_DIR=/home/andy/.local/state/ads
+Environment=ALLOWED_DIRS=/home/andy/repos
+Environment=PATH=/home/andy/.local/bin:/home/andy/.local/nodejs/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/andy/.local/nodejs/bin/node /home/andy/.local/share/ads-runtime/current/dist/server/cli.js web
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

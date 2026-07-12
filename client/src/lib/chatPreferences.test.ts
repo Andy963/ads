@@ -29,5 +29,9 @@ describe("chatPreferences", () => {
     expect(buildReasoningEffortStorageKey("", "")).toBe("ads.reasoningEffort.unknown.main");
     expect(buildModelIdStorageKey(" session-1 ", " planner ")).toBe("ads.modelId.session-1.planner");
     expect(buildModelIdStorageKey("", "")).toBe("ads.modelId.unknown.main");
+    expect(buildModelIdStorageKey("default", "main", "codex")).toBe("ads.modelId.default.main.codex");
+    expect(buildReasoningEffortStorageKey("default", "main", "claude")).toBe(
+      "ads.reasoningEffort.default.main.claude",
+    );
   });
 });

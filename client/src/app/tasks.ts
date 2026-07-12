@@ -104,7 +104,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const ensureRuntimeModelId = (rt: ProjectRuntime): void => {
       const sessionId = resolveStorageSessionId(rt);
       if (!sessionId) return;
-      const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
+      const agentId = String(rt.activeAgentId.value ?? "").trim();
+      const key = buildModelIdStorageKey(sessionId, rt.chatSessionId, agentId);
       let stored: string | null = null;
       try {
         stored = localStorage.getItem(key);
@@ -450,7 +451,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const persistReasoningEffort = (rt: ProjectRuntime): void => {
     const sessionId = resolveStorageSessionId(rt);
     if (!sessionId) return;
-    const key = buildReasoningEffortStorageKey(sessionId, rt.chatSessionId);
+    const key = buildReasoningEffortStorageKey(sessionId, rt.chatSessionId, rt.activeAgentId.value);
     const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
     try {
       localStorage.setItem(key, effort);
@@ -462,7 +463,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const persistModelId = (rt: ProjectRuntime): void => {
     const sessionId = resolveStorageSessionId(rt);
     if (!sessionId) return;
-    const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
+    const key = buildModelIdStorageKey(sessionId, rt.chatSessionId, rt.activeAgentId.value);
     const modelId = normalizeModelId(rt.modelId.value);
     try {
       localStorage.setItem(key, modelId);
@@ -502,6 +503,23 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const alignRuntimeModelForAgent = (rt: ProjectRuntime, agentId: string): void => {
     const nextAgentId = String(agentId ?? "").trim();
     if (!nextAgentId) return;
+    const sessionId = resolveStorageSessionId(rt);
+    if (sessionId) {
+      try {
+        const storedModel = localStorage.getItem(buildModelIdStorageKey(sessionId, rt.chatSessionId, nextAgentId));
+        if (storedModel !== null) {
+          rt.modelId.value = normalizeModelId(storedModel);
+        }
+        const storedEffort = localStorage.getItem(
+          buildReasoningEffortStorageKey(sessionId, rt.chatSessionId, nextAgentId),
+        );
+        if (storedEffort !== null) {
+          rt.modelReasoningEffort.value = normalizeReasoningEffort(storedEffort);
+        }
+      } catch {
+        // ignore
+      }
+    }
     const current = normalizeModelId(rt.modelId.value);
     if (current === "auto") return;
     const enabledModels = models.value.filter((model) => model.isEnabled);
@@ -513,7 +531,13 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const fallbackId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
     if (!fallbackId || fallbackId === current) return;
     rt.modelId.value = normalizeModelId(fallbackId);
-    persistModelId(rt);
+    if (sessionId) {
+      try {
+        localStorage.setItem(buildModelIdStorageKey(sessionId, rt.chatSessionId, nextAgentId), rt.modelId.value);
+      } catch {
+        // ignore
+      }
+    }
   };
 
   const switchMainAgent = (agentId: string): void => {

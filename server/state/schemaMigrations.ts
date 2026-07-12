@@ -197,4 +197,34 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       `);
     },
   },
+  {
+    version: 5,
+    description: "Seed Codex and Claude model configs",
+    up: (db) => {
+      const insert = db.prepare(`
+        INSERT INTO model_configs
+          (id, model_id, display_name, provider, is_enabled, is_default, config_json, updated_at)
+        SELECT ?, ?, ?, ?, 1, 0, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM model_configs WHERE model_id = ?)
+      `);
+      const now = Date.now();
+      const models = [
+        ["model-seed-codex-gpt-5-5", "gpt-5.5", "GPT-5.5", "openai", ["codex"]],
+        ["model-seed-codex-gpt-5-6", "gpt-5.6", "GPT-5.6", "openai", ["codex"]],
+        ["model-seed-claude-opus-4-8", "claude-opus-4.8", "Claude Opus 4.8", "anthropic", ["claude"]],
+        ["model-seed-claude-fable-5", "claude-fable-5", "Claude Fable 5", "anthropic", ["claude"]],
+      ] as const;
+      for (const [id, modelId, displayName, provider, allowedAgents] of models) {
+        insert.run(
+          id,
+          modelId,
+          displayName,
+          provider,
+          JSON.stringify({ allowedAgents, reasoningEfforts: ["high", "xhigh", "max"], defaultReasoningEffort: "high" }),
+          now,
+          modelId,
+        );
+      }
+    },
+  },
 ];

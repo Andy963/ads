@@ -224,7 +224,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       cwdStore: state.cwdStore,
       cwdStorePath: state.cwdStorePath,
       persistCwdStore: state.persistCwdStore,
-      warn: logger.warn,
+      warn: (message) => logger.warn(message),
     });
 
     try {
@@ -424,7 +424,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         broadcastPersistedHistory: broadcastHistoryToSiblingConnections,
         broadcastInFlight: broadcastInFlightToSiblingConnections,
         traceWsDuplication: config.traceWsDuplication,
-        warn: logger.warn,
+        warn: (message) => logger.warn(message),
         sessionId,
         userId,
       });

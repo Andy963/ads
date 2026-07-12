@@ -45,6 +45,34 @@ describe("cliRunner", () => {
     assert.equal(result.stderr, "err");
   });
 
+  it("runs CLIs installed in the user's local bin without a custom binary path", async () => {
+    const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ads-cli-home-"));
+    const localBin = path.join(home, ".local", "bin");
+    const binary = path.join(localBin, "ads-local-cli");
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+
+    await fs.promises.mkdir(localBin, { recursive: true });
+    await fs.promises.writeFile(binary, "#!/usr/bin/env sh\nprintf local-cli\n", "utf-8");
+    await fs.promises.chmod(binary, 0o755);
+
+    try {
+      process.env.HOME = home;
+      process.env.PATH = "/usr/bin:/bin";
+
+      const result = await runCliRaw({ binary: "ads-local-cli", args: [] });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout, "local-cli");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.promises.rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("cancels without hanging when stdout is noisy", async () => {
     const node = process.execPath;
     const controller = new AbortController();
