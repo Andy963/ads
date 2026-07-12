@@ -7,7 +7,7 @@ import type {
   AgentStatus,
 } from "../types.js";
 import type { AgentEvent } from "../../codex/events.js";
-import { mapThreadEventToAgentEvent } from "../../codex/events.js";
+import { mapThreadEventToAgentEvent, parseReconnectingMessage } from "../../codex/events.js";
 import type { SandboxMode } from "../../telegram/config.js";
 import { createLogger } from "../../utils/logger.js";
 import { createAbortError } from "../../utils/abort.js";
@@ -743,6 +743,21 @@ export class CodexAppServerAdapter implements AgentAdapter {
       client.onNotification("error", (params) => {
         if (!belongsToThisTurn(params)) return;
         const message = extractErrorMessage(params);
+        const willRetry = (params as { willRetry?: unknown }).willRetry === true;
+        if (willRetry) {
+          if (parseReconnectingMessage(message)) {
+            emit({ type: "error", message });
+          } else {
+            this.emitEvent({
+              phase: "connection",
+              title: "尝试重连",
+              detail: message,
+              timestamp: Date.now(),
+              raw: { type: "error", message },
+            });
+          }
+          return;
+        }
         state.failed = true;
         state.failureMessage = message;
         emit({ type: "turn.failed", error: { message } });

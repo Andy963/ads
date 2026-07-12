@@ -369,6 +369,94 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("keeps the turn alive while the app-server reconnects its response stream", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-reconnect" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "reconnect", registry });
+    const events: Array<{ phase: string; title: string; detail?: string }> = [];
+    adapter.onEvent((event) => {
+      events.push({ phase: event.phase, title: event.title, detail: event.detail });
+    });
+
+    const sendPromise = adapter.send("wait for reconnect");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fake.notify("error", {
+      error: {
+        message:
+          "Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)",
+      },
+      willRetry: true,
+      threadId: "t-reconnect",
+      turnId: "turn-reconnect",
+    });
+    fake.notify("error", {
+      error: { message: "Temporary upstream transport failure" },
+      willRetry: true,
+      threadId: "t-reconnect",
+      turnId: "turn-reconnect",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m1", text: "Recovered" },
+      threadId: "t-reconnect",
+      turnId: "turn-reconnect",
+    });
+    fake.notify("turn/completed", {
+      threadId: "t-reconnect",
+      turn: { id: "turn-reconnect" },
+    });
+
+    const result = await sendPromise;
+    assert.equal(result.response, "Recovered");
+    assert(
+      events.some(
+        (event) =>
+          event.phase === "connection" &&
+          event.title === "尝试重连" &&
+          event.detail === "1/5",
+      ),
+    );
+    assert(
+      events.some(
+        (event) =>
+          event.phase === "connection" &&
+          event.title === "尝试重连" &&
+          event.detail === "Temporary upstream transport failure",
+      ),
+    );
+    assert(!events.some((event) => event.phase === "error"));
+    await registry.stopAll();
+  });
+
+  it("fails a terminal error even when its message resembles a reconnect notice", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-terminal-reconnect" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "terminal-reconnect", registry });
+
+    const sendPromise = adapter.send("fail without retry");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fake.notify("error", {
+      error: { message: "Reconnecting... 5/5 failed permanently" },
+      willRetry: false,
+      threadId: "t-terminal-reconnect",
+      turnId: "turn-terminal-reconnect",
+    });
+
+    await assert.rejects(sendPromise, /failed permanently/);
+    await registry.stopAll();
+  });
+
   it("retries high-demand upstream errors with the same input", async () => {
     let turnStarts = 0;
     const fake = buildFakeServer({

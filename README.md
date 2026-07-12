@@ -182,6 +182,8 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `ADS_TASK_RETRY_BACKOFF_MS` | `1200` | coordinator 重试退避 |
 | `ADS_TASK_VERIFICATION_ENABLED` | `true` | 是否执行 TaskSpec verification commands |
 
+Codex app-server 将 `willRetry=true` 的错误通知作为中间连接状态发送。ADS 会继续等待当前 turn；只有 `willRetry=false`、重连耗尽或收到其他终止错误后，才将请求标记为失败。
+
 ### 技能、记忆与系统提示
 
 | 变量 | 默认值 | 说明 |
