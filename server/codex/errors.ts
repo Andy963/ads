@@ -8,6 +8,7 @@ export type CodexErrorCode =
   | "session_in_use"
   | "rate_limit"
   | "usage_limit"
+  | "safeguard_rejected"
   | "server_overloaded"
   | "server_error"
   | "bad_request"
@@ -76,7 +77,17 @@ const ERROR_PATTERNS: Array<{
     needsReset: false,
   },
   {
-    pattern: /high demand|overloaded|at capacity|529/i,
+    pattern: (msg) =>
+      /\bfable(?:\s+\d+)?\b/.test(msg) &&
+      (msg.includes("safeguards flagged this message") ||
+        /claude code can['’]t respond to this request with fable(?:\s+\d+)?/.test(msg)),
+    code: "safeguard_rejected",
+    userHint: "上游安全防护拦截了本次请求。系统可安全时会自动重试；如持续发生，请切换模型或新会话",
+    retryable: true,
+    needsReset: false,
+  },
+  {
+    pattern: /high demand|overloaded|at capacity|529|(?:\b503\b.*service unavailable|service unavailable.*\b503\b)/i,
     code: "server_overloaded",
     userHint: "上游服务当前负载过高，请稍后重试或切换模型",
     retryable: true,

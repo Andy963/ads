@@ -184,6 +184,8 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 
 Codex app-server 将 `willRetry=true` 的错误通知作为中间连接状态发送。ADS 会继续等待当前 turn；只有 `willRetry=false`、重连耗尽或收到其他终止错误后，才将请求标记为失败。
 
+Agent 上游重试会识别限流/高负载、HTTP 503 Service Unavailable，以及 Claude Fable safeguard 的已知误拦截文案。仅在尚未产生命令、文件写入、工具调用等副作用时自动重放请求。
+
 ### 技能、记忆与系统提示
 
 | 变量 | 默认值 | 说明 |

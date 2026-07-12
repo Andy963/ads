@@ -237,6 +237,54 @@ describe("ClaudeCliAdapter", () => {
     assert.equal(prompts, "hello\n---\nhello\n---\n");
   });
 
+  for (const retryCase of [
+    {
+      name: "Fable safeguard rejections",
+      message:
+        "API Error: Fable 5's safeguards flagged this message. This sometimes happens with safe, normal conversations. Claude Code can't respond to this request with Fable 5.",
+    },
+    {
+      name: "HTTP 503 service unavailable errors",
+      message:
+        "API Error: 503 Service Unavailable. This is a server-side issue, usually temporary — try again in a moment.",
+    },
+  ]) {
+    it(`retries Claude ${retryCase.name} with the same prompt`, async () => {
+      const { binary, dir } = await createExecutableScript([
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        'count_file="$dir/count.txt"',
+        'prompts_file="$dir/prompts.txt"',
+        "count=0",
+        'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+        "count=$((count+1))",
+        'echo "$count" >"$count_file"',
+        'args=("$@")',
+        'prompt="${args[$(( ${#args[@]} - 1 ))]}"',
+        'printf "%s\\n---\\n" "$prompt" >>"$prompts_file"',
+        "cat >/dev/null || true",
+        'if [[ "$count" -eq 1 ]]; then',
+        `  printf '%s\\n' ${JSON.stringify(retryCase.message)} >&2`,
+        "  exit 1",
+        "fi",
+        'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+        'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+        "exit 0",
+        "",
+      ].join("\n"));
+
+      const adapter = new ClaudeCliAdapter({ binary });
+      const captured = await captureConsole(async () => adapter.send("hello"));
+      assert.equal(captured.result?.response, "OK");
+
+      const countRaw = await fs.readFile(path.join(dir, "count.txt"), "utf-8");
+      assert.equal(Number.parseInt(countRaw.trim(), 10), 2);
+      const prompts = await fs.readFile(path.join(dir, "prompts.txt"), "utf-8");
+      assert.equal(prompts, "hello\n---\nhello\n---\n");
+    });
+  }
+
   it("retries Claude 429 service unavailable errors emitted on stdout", async () => {
     const { binary, dir } = await createExecutableScript([
       "#!/usr/bin/env bash",

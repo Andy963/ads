@@ -100,6 +100,21 @@ describe("classifyError", () => {
       retryable: true,
       needsReset: false,
     },
+    {
+      name: "Fable safeguard rejection",
+      input:
+        "API Error: Fable 5's safeguards flagged this message. Claude Code can't respond to this request with Fable 5.",
+      code: "safeguard_rejected",
+      retryable: true,
+      needsReset: false,
+    },
+    {
+      name: "HTTP 503 service unavailable",
+      input: "API Error: 503 Service Unavailable. This is a server-side issue, usually temporary.",
+      code: "server_overloaded",
+      retryable: true,
+      needsReset: false,
+    },
   ];
 
   for (const c of cases) {
@@ -117,6 +132,13 @@ describe("classifyError", () => {
     );
     assert.equal(info.code, "thread_corrupted");
     assert.equal(info.needsReset, true);
+  });
+
+  it("does not classify generic safeguard policy rejections as the Fable retry case", () => {
+    const info = classifyError(
+      new Error("The provider safeguards flagged this message as violating its acceptable use policy."),
+    );
+    assert.equal(info.code, "unknown");
   });
 
   it("includes a truncated original detail in the unknown hint", () => {

@@ -102,8 +102,32 @@ export function isHttp429UpstreamError(message: string): boolean {
   return /(?:^|[^0-9])429(?:[^0-9]|$)/.test(normalized);
 }
 
+export function isHttp503UpstreamError(message: string): boolean {
+  const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    /(?:^|[^0-9])503(?:[^0-9]|$)/.test(normalized) &&
+    normalized.includes("service unavailable")
+  );
+}
+
+export function isClaudeSafeguardError(message: string): boolean {
+  const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  if (!/\bfable(?:\s+\d+)?\b/.test(normalized)) return false;
+  return (
+    normalized.includes("safeguards flagged this message") ||
+    /claude code can['’]t respond to this request with fable(?:\s+\d+)?/.test(normalized)
+  );
+}
+
 export function isTransientUpstreamModelError(message: string): boolean {
-  return isHighDemandUpstreamError(message) || isHttp429UpstreamError(message);
+  return (
+    isHighDemandUpstreamError(message) ||
+    isHttp429UpstreamError(message) ||
+    isHttp503UpstreamError(message) ||
+    isClaudeSafeguardError(message)
+  );
 }
 
 function parseNonNegativeInteger(value: string | undefined): number | null {

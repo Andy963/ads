@@ -24,6 +24,36 @@ describe("transient model retry classification", () => {
     assert.equal(isTransientUpstreamModelError("API Error: Request rejected (429): Service unavailable"), true);
   });
 
+  it("treats HTTP 503 service unavailable messages as retryable", () => {
+    assert.equal(
+      isTransientUpstreamModelError(
+        "API Error: 503 Service Unavailable. This is a server-side issue, usually temporary.",
+      ),
+      true,
+    );
+  });
+
+  it("treats Fable safeguard rejection variants as retryable", () => {
+    assert.equal(
+      isTransientUpstreamModelError(
+        "API Error: Fable 5's safeguards flagged this message. This sometimes happens with safe, normal conversations.",
+      ),
+      true,
+    );
+    assert.equal(
+      isTransientUpstreamModelError(
+        "Claude Code can't respond to this request with Fable 5.",
+      ),
+      true,
+    );
+    assert.equal(
+      isTransientUpstreamModelError(
+        "The provider safeguards flagged this message as violating its acceptable use policy.",
+      ),
+      false,
+    );
+  });
+
   it("does not retry BYOK 500 capacity messages", () => {
     const message =
       "BYOK Error: 500 当前模型 gpt-5.5 负载已经达到上限，请稍后重试\n\nUpstream error: 当前模型 gpt-5.5 负载已经达到上限，请稍后重试";
