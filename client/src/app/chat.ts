@@ -351,7 +351,16 @@ export function createChatActions(ctx: AppContext) {
 
   const applyStreamingDisconnectCleanup = (rt: ProjectRuntime): void => {
     const existing = rt.messages.value.slice();
-    const next = finalizeStreamingOnDisconnect(existing, LIVE_STEP_ID);
+    const interruptedExecuteIds = new Set(
+      existing
+        .filter((message) => message.kind === "execute" && message.streaming === true)
+        .map((message) => String(message.id ?? "")),
+    );
+    const next = finalizeStreamingOnDisconnect(existing, LIVE_STEP_ID).map((message) =>
+      interruptedExecuteIds.has(String(message.id ?? ""))
+        ? { ...message, id: randomId("exec-final") }
+        : message,
+    );
     if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;
     setMessages(next, rt);
   };

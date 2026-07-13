@@ -66,6 +66,21 @@ function buildFakeServer(opts?: { autoReplies?: Record<string, (msg: RpcLine) =>
   return { client, stdin, stdout, notify, requests };
 }
 
+async function waitForRequestCount(
+  fake: FakeServer,
+  method: string,
+  count: number,
+  timeoutMs = 1_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (fake.requests.filter((request) => request.method === method).length < count) {
+    if (Date.now() >= deadline) {
+      assert.fail(`timed out waiting for ${count} ${method} request(s)`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe("CodexAppServerAdapter", () => {
   it("uses the distinct adapter id 'codex-appserver'", () => {
     const adapter = new CodexAppServerAdapter({ projectId: "p" });
@@ -342,6 +357,182 @@ describe("CodexAppServerAdapter", () => {
 
     const startsAfter = fake.requests.filter((r) => r.method === "thread/start").length;
     assert.equal(startsAfter, startsBefore, "thread/start must not be issued again");
+
+    await registry.stopAll();
+  });
+
+  it("compacts at 80 percent before starting the next turn", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-compact" } }),
+        "thread/compact/start": () => ({}),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "auto-compact", registry });
+
+    const firstSend = adapter.send("first");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("thread/tokenUsage/updated", {
+      threadId: "thread-compact",
+      turnId: "turn-1",
+      tokenUsage: {
+        total: { totalTokens: 800, inputTokens: 700, cachedInputTokens: 0, outputTokens: 100, reasoningOutputTokens: 0 },
+        last: { totalTokens: 800, inputTokens: 700, cachedInputTokens: 0, outputTokens: 100, reasoningOutputTokens: 0 },
+        modelContextWindow: 1_000,
+      },
+    });
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m1", text: "first done" },
+      threadId: "thread-compact",
+      turnId: "turn-1",
+    });
+    fake.notify("turn/completed", {
+      threadId: "thread-compact",
+      turn: { id: "turn-1", status: "completed" },
+    });
+
+    const firstResult = await firstSend;
+    assert.deepEqual(firstResult.usage, {
+      input_tokens: 700,
+      output_tokens: 100,
+      total_tokens: 800,
+    });
+
+    const secondSend = adapter.send("second");
+    await waitForRequestCount(fake, "thread/compact/start", 1);
+    assert.equal(
+      fake.requests.filter((request) => request.method === "turn/start").length,
+      1,
+      "the next user turn must wait for compaction",
+    );
+
+    fake.notify("turn/started", {
+      threadId: "thread-compact",
+      turn: { id: "compact-1", status: "inProgress" },
+    });
+    fake.notify("item/started", {
+      item: { type: "contextCompaction", id: "compact-item-1" },
+      threadId: "thread-compact",
+      turnId: "compact-1",
+    });
+    fake.notify("item/completed", {
+      item: { type: "contextCompaction", id: "compact-item-1" },
+      threadId: "thread-compact",
+      turnId: "compact-1",
+    });
+    fake.notify("turn/completed", {
+      threadId: "thread-compact",
+      turn: { id: "compact-1", status: "completed" },
+    });
+
+    await waitForRequestCount(fake, "turn/start", 2);
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m2", text: "second done" },
+      threadId: "thread-compact",
+      turnId: "turn-2",
+    });
+    fake.notify("turn/completed", {
+      threadId: "thread-compact",
+      turn: { id: "turn-2", status: "completed" },
+    });
+
+    const secondResult = await secondSend;
+    assert.equal(secondResult.response, "second done");
+    assert.equal(fake.requests.filter((request) => request.method === "thread/compact/start").length, 1);
+
+    await registry.stopAll();
+  });
+
+  it("respects a model-specific auto compact threshold override", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-threshold" } }),
+        "thread/compact/start": () => ({}),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "compact-threshold", registry });
+    adapter.setModelConfig({ autoCompact: { thresholdPercent: 90 } });
+
+    const firstSend = adapter.send("first");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("thread/tokenUsage/updated", {
+      threadId: "thread-threshold",
+      turnId: "turn-1",
+      tokenUsage: {
+        total: { totalTokens: 850 },
+        last: { totalTokens: 850 },
+        modelContextWindow: 1_000,
+      },
+    });
+    fake.notify("turn/completed", {
+      threadId: "thread-threshold",
+      turn: { id: "turn-1", status: "completed" },
+    });
+    await firstSend;
+
+    const secondSend = adapter.send("second");
+    await waitForRequestCount(fake, "turn/start", 2);
+    assert.equal(fake.requests.some((request) => request.method === "thread/compact/start"), false);
+    fake.notify("turn/completed", {
+      threadId: "thread-threshold",
+      turn: { id: "turn-2", status: "completed" },
+    });
+    await secondSend;
+
+    await registry.stopAll();
+  });
+
+  it("interrupts a timed-out compact turn before rejecting the next send", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-compact-timeout" } }),
+        "thread/compact/start": () => ({}),
+        "turn/interrupt": () => ({}),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "compact-timeout", registry });
+    adapter.setModelConfig({ autoCompact: { timeoutMs: 20 } });
+
+    const firstSend = adapter.send("first");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("thread/tokenUsage/updated", {
+      threadId: "thread-compact-timeout",
+      turnId: "turn-1",
+      tokenUsage: {
+        total: { totalTokens: 800 },
+        last: { totalTokens: 800 },
+        modelContextWindow: 1_000,
+      },
+    });
+    fake.notify("turn/completed", {
+      threadId: "thread-compact-timeout",
+      turn: { id: "turn-1", status: "completed" },
+    });
+    await firstSend;
+
+    const secondSend = adapter.send("second");
+    await waitForRequestCount(fake, "thread/compact/start", 1);
+    fake.notify("turn/started", {
+      threadId: "thread-compact-timeout",
+      turn: { id: "compact-timeout-1", status: "inProgress" },
+    });
+    await waitForRequestCount(fake, "turn/interrupt", 1);
+    fake.notify("turn/completed", {
+      threadId: "thread-compact-timeout",
+      turn: { id: "compact-timeout-1", status: "interrupted" },
+    });
+
+    await assert.rejects(secondSend, /compact turn timed out/);
+    assert.equal(
+      fake.requests.filter((request) => request.method === "turn/start").length,
+      1,
+    );
 
     await registry.stopAll();
   });

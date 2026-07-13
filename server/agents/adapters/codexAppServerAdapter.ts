@@ -17,6 +17,7 @@ import {
   type DaemonOptions,
 } from "../../codex/appServer/daemonRegistry.js";
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
+import { AsyncLock } from "../../utils/asyncLock.js";
 import type { ThreadGoal } from "../../codex/appServer/protocol/v2/ThreadGoal.js";
 import type { ThreadGoalStatus } from "../../codex/appServer/protocol/v2/ThreadGoalStatus.js";
 import type { ThreadGoalSetParams } from "../../codex/appServer/protocol/v2/ThreadGoalSetParams.js";
@@ -27,12 +28,20 @@ import type { ThreadGoalUpdatedNotification } from "../../codex/appServer/protoc
 import {
   createTransientModelRetryEvent,
   runWithTransientModelRetry,
+  TransientModelRetryAttemptError,
   type RetryAttemptState,
 } from "./transientModelRetry.js";
+import {
+  DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT,
+  readAutoCompactConfig,
+  resolveAutoCompactThresholdPercent,
+} from "./autoCompactConfig.js";
 
 const logger = createLogger("CodexAppServerAdapter");
 
 export const CODEX_APP_SERVER_ADAPTER_ID = "codex-appserver";
+const DEFAULT_AUTO_COMPACT_TIMEOUT_MS = 120_000;
+const COMPACT_INTERRUPT_GRACE_MS = 5_000;
 
 const DEFAULT_METADATA: AgentMetadata = {
   id: CODEX_APP_SERVER_ADAPTER_ID,
@@ -263,6 +272,12 @@ interface TurnState {
   collabAgentStatuses: Map<string, string>;
 }
 
+interface ContextUsage {
+  threadId: string;
+  totalTokens: number;
+  modelContextWindow: number;
+}
+
 /**
  * Record the latest known status for every thread touched by a collab tool
  * call, so `turn/completed` can report subagents still running in the daemon.
@@ -330,6 +345,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private developerInstructions?: string;
   private spawnEnv?: NodeJS.ProcessEnv;
   private readonly turnTimeoutMs: number;
+  private autoCompactEnabled = true;
+  private autoCompactThresholdPercent = DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT;
+  private autoCompactTimeoutMs = DEFAULT_AUTO_COMPACT_TIMEOUT_MS;
+  private latestContextUsage: ContextUsage | null = null;
+  private readonly sendLock = new AsyncLock();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly goalUpdateHandlers = new Set<(goal: ThreadGoal) => void>();
   private readonly goalClearedHandlers = new Set<() => void>();
@@ -373,6 +393,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   reset(): void {
     this.threadId = null;
+    this.latestContextUsage = null;
     this.detachGoalSubscriptions();
   }
 
@@ -419,6 +440,21 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const next = normalized || undefined;
     if (this.modelReasoningEffort === next) return;
     this.modelReasoningEffort = next;
+  }
+
+  setModelConfig(config?: Record<string, unknown> | null): void {
+    const autoCompact = readAutoCompactConfig(config);
+
+    this.autoCompactEnabled = autoCompact.enabled !== false;
+    this.autoCompactThresholdPercent = resolveAutoCompactThresholdPercent(
+      autoCompact.thresholdPercent,
+    );
+
+    const timeoutMs = Number(autoCompact.timeoutMs);
+    this.autoCompactTimeoutMs =
+      Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? Math.floor(timeoutMs)
+        : DEFAULT_AUTO_COMPACT_TIMEOUT_MS;
   }
 
   setDeveloperInstructions(instructions: string): void {
@@ -569,15 +605,20 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
-    return await runWithTransientModelRetry(
-      {
-        agentName: "Codex app-server",
-        signal: options?.signal,
-        log: (message) => logger.warn(message),
-        onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
-      },
-      (retryState) => this.sendOnce(input, options, retryState),
-    );
+    return await this.sendLock.runExclusive(async () => {
+      if (options?.signal?.aborted) {
+        throw createAbortError("用户中断了请求");
+      }
+      return await runWithTransientModelRetry(
+        {
+          agentName: "Codex app-server",
+          signal: options?.signal,
+          log: (message) => logger.warn(message),
+          onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
+        },
+        (retryState) => this.sendOnce(input, options, retryState),
+      );
+    }, options?.signal);
   }
 
   private async sendOnce(
@@ -602,6 +643,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
       globalArgs: resolveDaemonGlobalArgs(),
     };
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+
+    if (this.threadId) {
+      await this.maybeCompactThread(client, this.threadId, options?.signal);
+    }
 
     const state: TurnState = {
       responseText: "",
@@ -691,6 +736,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const usage = extractUsageFromTokenUsage(params);
         if (usage) {
           state.usage = usage;
+        }
+        const contextUsage = extractContextUsage(params);
+        if (contextUsage) {
+          this.latestContextUsage = contextUsage;
         }
       }),
     );
@@ -853,6 +902,220 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
   }
 
+  private async maybeCompactThread(
+    client: CodexAppServerClient,
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const usage = this.latestContextUsage;
+    if (
+      !this.autoCompactEnabled ||
+      !usage ||
+      usage.threadId !== threadId ||
+      usage.modelContextWindow <= 0 ||
+      usage.totalTokens / usage.modelContextWindow < this.autoCompactThresholdPercent / 100
+    ) {
+      return;
+    }
+
+    const percent = Math.round((usage.totalTokens / usage.modelContextWindow) * 100);
+    this.emitEvent({
+      phase: "analysis",
+      title: "自动压缩上下文",
+      detail: `上下文已使用 ${percent}%，正在压缩后继续`,
+      timestamp: Date.now(),
+      raw: { type: "turn.started" } as ThreadEvent,
+    });
+
+    try {
+      await this.compactThread(client, threadId, signal);
+      this.latestContextUsage = null;
+      this.emitEvent({
+        phase: "analysis",
+        title: "上下文压缩完成",
+        detail: "将继续处理当前请求",
+        timestamp: Date.now(),
+        raw: { type: "turn.completed" } as ThreadEvent,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new TransientModelRetryAttemptError(
+        `automatic context compaction failed: ${message}`,
+        { retryable: false, sideEffectObserved: true, cause: error },
+      );
+    }
+  }
+
+  private async compactThread(
+    client: CodexAppServerClient,
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (signal?.aborted) {
+      throw createAbortError("用户中断了请求");
+    }
+
+    let compactTurnId: string | null = null;
+    let settled = false;
+    let stopError: Error | null = null;
+    let interruptRequested = false;
+    let forceStopTimer: ReturnType<typeof setTimeout> | null = null;
+    let resolveCompletion: () => void = () => {};
+    let rejectCompletion: (error: Error) => void = () => {};
+    const completion = new Promise<void>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    // Prevent unhandled rejection if finish() fires before we await completion.
+    completion.catch(() => {});
+    const cleanupFns: Array<() => void> = [];
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        rejectCompletion(error);
+      } else {
+        resolveCompletion();
+      }
+    };
+
+    const issueInterrupt = () => {
+      if (!stopError || !compactTurnId || interruptRequested || settled) return;
+      interruptRequested = true;
+      client
+        .request(
+          "turn/interrupt",
+          { threadId, turnId: compactTurnId },
+          { timeoutMs: COMPACT_INTERRUPT_GRACE_MS },
+        )
+        .catch((error) =>
+          logger.debug(
+            `compact turn/interrupt failed: ${error instanceof Error ? error.message : error}`,
+          ),
+        );
+    };
+
+    const requestStop = (error: Error) => {
+      if (settled) return;
+      stopError ??= error;
+      issueInterrupt();
+      if (forceStopTimer) return;
+      forceStopTimer = setTimeout(() => {
+        if (settled) return;
+        this.threadId = null;
+        this.latestContextUsage = null;
+        void this.registry
+          .stop(this.projectId)
+          .catch((stopFailure) =>
+            logger.debug(
+              `failed to stop daemon after compact interruption: ${stopFailure instanceof Error ? stopFailure.message : stopFailure}`,
+            ),
+          )
+          .finally(() => finish(stopError ?? error));
+      }, COMPACT_INTERRUPT_GRACE_MS);
+    };
+
+    cleanupFns.push(
+      client.onNotification("turn/started", (params) => {
+        if (extractThreadId(params) !== threadId) return;
+        compactTurnId = extractTurnId(params);
+        issueInterrupt();
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("item/started", (params) => {
+        if (extractThreadId(params) !== threadId) return;
+        const item = (params as { item?: { type?: unknown } }).item;
+        if (item?.type !== "contextCompaction") return;
+        const turnId = extractTurnId(params);
+        if (turnId) compactTurnId = turnId;
+        issueInterrupt();
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("turn/completed", (params) => {
+        if (extractThreadId(params) !== threadId) return;
+        const turnId = extractTurnId(params);
+        if (!compactTurnId || turnId !== compactTurnId) return;
+        const status = (params as { turn?: { status?: unknown } }).turn?.status;
+        if (stopError) {
+          finish(stopError);
+        } else if (status === "completed" || status === undefined) {
+          finish();
+        } else {
+          finish(new Error(`compact turn ended with status ${String(status)}`));
+        }
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("error", (params) => {
+        if (extractThreadId(params) !== threadId) return;
+        if ((params as { willRetry?: unknown }).willRetry === true) return;
+        finish(stopError ?? new Error(extractErrorMessage(params)));
+      }),
+    );
+    cleanupFns.push(
+      client.onClose((code) => {
+        finish(
+          stopError ??
+            new Error(`codex app-server closed during compact (exit=${code ?? "null"})`),
+        );
+      }),
+    );
+
+    const timeout = setTimeout(() => {
+      requestStop(new Error(`compact turn timed out after ${this.autoCompactTimeoutMs}ms`));
+    }, this.autoCompactTimeoutMs);
+
+    let abortListener: (() => void) | null = null;
+    if (signal) {
+      abortListener = () => {
+        requestStop(createAbortError("用户中断了请求"));
+      };
+      if (!signal.aborted) {
+        signal.addEventListener("abort", abortListener, { once: true });
+      } else {
+        abortListener();
+      }
+    }
+
+    try {
+      if (stopError) {
+        await completion;
+      }
+      const requestOutcome = client
+        .request(
+          "thread/compact/start",
+          { threadId },
+          { timeoutMs: this.autoCompactTimeoutMs },
+        )
+        .then(
+          () => null,
+          (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
+        );
+      const completionOutcome = completion.then(
+        () => null,
+        (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
+      );
+      const firstError = await Promise.race([requestOutcome, completionOutcome]);
+      if (firstError && !settled) {
+        requestStop(firstError);
+      }
+      await completion;
+    } finally {
+      clearTimeout(timeout);
+      if (forceStopTimer) clearTimeout(forceStopTimer);
+      if (signal && abortListener) {
+        signal.removeEventListener("abort", abortListener);
+      }
+      for (const cleanup of cleanupFns) cleanup();
+    }
+  }
+
   private buildThreadStartParams(): Record<string, unknown> {
     const params: Record<string, unknown> = {
       experimentalRawEvents: false,
@@ -932,6 +1195,11 @@ function extractUsageFromTurnPayload(params: unknown): Usage | null {
 function extractUsageFromTokenUsage(params: unknown): Usage | null {
   if (!params || typeof params !== "object") return null;
   const obj = params as Record<string, unknown>;
+  const tokenUsage = obj.tokenUsage;
+  if (!tokenUsage || typeof tokenUsage !== "object") return null;
+  const last = (tokenUsage as Record<string, unknown>).last;
+  if (!last || typeof last !== "object") return null;
+  const breakdown = last as Record<string, unknown>;
   const usage: Usage = {};
   let any = false;
   for (const [src, dst] of [
@@ -939,13 +1207,36 @@ function extractUsageFromTokenUsage(params: unknown): Usage | null {
     ["outputTokens", "output_tokens"],
     ["totalTokens", "total_tokens"],
   ] as const) {
-    const value = obj[src];
+    const value = breakdown[src];
     if (typeof value === "number") {
       usage[dst] = value;
       any = true;
     }
   }
   return any ? usage : null;
+}
+
+function extractContextUsage(params: unknown): ContextUsage | null {
+  const threadId = extractThreadId(params);
+  if (!threadId || !params || typeof params !== "object") return null;
+  const tokenUsage = (params as Record<string, unknown>).tokenUsage;
+  if (!tokenUsage || typeof tokenUsage !== "object") return null;
+  const usage = tokenUsage as Record<string, unknown>;
+  const last = usage.last;
+  if (!last || typeof last !== "object") return null;
+  const totalTokens = (last as Record<string, unknown>).totalTokens;
+  const modelContextWindow = usage.modelContextWindow;
+  if (
+    typeof totalTokens !== "number" ||
+    !Number.isFinite(totalTokens) ||
+    totalTokens < 0 ||
+    typeof modelContextWindow !== "number" ||
+    !Number.isFinite(modelContextWindow) ||
+    modelContextWindow <= 0
+  ) {
+    return null;
+  }
+  return { threadId, totalTokens, modelContextWindow };
 }
 
 function extractErrorMessage(params: unknown): string {

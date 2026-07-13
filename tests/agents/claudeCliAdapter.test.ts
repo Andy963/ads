@@ -615,6 +615,55 @@ describe("ClaudeCliAdapter", () => {
     assert.equal(args[modelIndex + 1], "claude-sonnet-4-6");
   });
 
+  it("configures native Claude auto-compaction without resetting the session", async () => {
+    const sessionId = "11111111-1111-1111-1111-111111111111";
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'printf "%s|%s\\n" "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}" "$*" >>"$dir/calls.txt"',
+      "cat >/dev/null || true",
+      `echo '{"type":"system","subtype":"init","session_id":"${sessionId}"}'`,
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    await adapter.send("first");
+    adapter.setModelConfig({ autoCompact: { thresholdPercent: 70 } });
+    await adapter.send("second");
+
+    const calls = (await fs.readFile(path.join(dir, "calls.txt"), "utf-8"))
+      .split(/\r?\n/)
+      .filter(Boolean);
+    assert.equal(calls.length, 2);
+    assert.match(calls[0] ?? "", /^80\|/);
+    assert.match(calls[1] ?? "", /^70\|/);
+    assert.match(calls[1] ?? "", new RegExp(`--resume ${sessionId}`));
+  });
+
+  it("lets per-send environment override the Claude auto-compaction threshold", async () => {
+    const { binary, dir } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'printf "%s" "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}" >"$dir/threshold.txt"',
+      "cat >/dev/null || true",
+      'echo \'{"type":"system","subtype":"init","session_id":"sid"}\'',
+      'echo \'{"type":"result","subtype":"success","result":"OK"}\'',
+      "exit 0",
+      "",
+    ].join("\n"));
+
+    const adapter = new ClaudeCliAdapter({ binary });
+    await adapter.send("hello", {
+      env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "65" },
+    });
+
+    assert.equal(await fs.readFile(path.join(dir, "threshold.txt"), "utf-8"), "65");
+  });
+
   it("captures session id and resumes it across sends", async () => {
     const sessionA = "11111111-1111-1111-1111-111111111111";
     const { binary, dir } = await createExecutableScript([

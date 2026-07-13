@@ -125,7 +125,7 @@ const {
 const modelManagerOpen = ref(false);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
-  { id: "planner", label: "Planner" },
+  { id: "planner", label: "Advisor" },
   { id: "worker", label: "Worker" },
 ];
 

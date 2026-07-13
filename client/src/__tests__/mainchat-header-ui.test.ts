@@ -137,7 +137,7 @@ describe("MainChat header UI", () => {
   it("disables the header action button while busy", () => {
     const wrapper = mount(MainChat, {
       props: {
-        title: "Planner",
+        title: "Advisor",
         messages: [],
         queuedPrompts: [],
         pendingImages: [],
@@ -166,7 +166,7 @@ describe("MainChat header UI", () => {
   it("disables the resume button when action-disabled is true", () => {
     const wrapper = mount(MainChat, {
       props: {
-        title: "Planner",
+        title: "Advisor",
         messages: [],
         queuedPrompts: [],
         pendingImages: [],
@@ -209,7 +209,7 @@ describe("MainChat header UI", () => {
   it("shows only the lane title without repeating a project prefix in the chat header", () => {
     const wrapper = mount(MainChat, {
       props: {
-        title: "Planner",
+        title: "Advisor",
         messages: [],
         queuedPrompts: [],
         pendingImages: [],
@@ -221,7 +221,7 @@ describe("MainChat header UI", () => {
 
     const title = wrapper.find(".paneTitle");
     expect(title.exists()).toBe(true);
-    expect(title.text()).toBe("Planner");
+    expect(title.text()).toBe("Advisor");
     expect(wrapper.text()).not.toContain("Project:");
     wrapper.unmount();
   });

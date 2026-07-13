@@ -23,9 +23,14 @@ import {
   runWithTransientModelRetry,
   type RetryAttemptState,
 } from "./transientModelRetry.js";
+import {
+  readAutoCompactConfig,
+  resolveAutoCompactThresholdPercent,
+} from "./autoCompactConfig.js";
 
 const logger = createLogger("ClaudeCliAdapter");
 const CLAUDE_UNSET_ENV = ["CLAUDECODE"];
+const CLAUDE_AUTOCOMPACT_PCT_OVERRIDE_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 const DEFAULT_IMAGE_ONLY_PROMPT = "Please respond based on the attached image(s).";
 const EMPTY_RESPONSE_ERROR = "Claude CLI 成功退出但未返回最终消息";
 const CLAUDE_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -134,6 +139,9 @@ export class ClaudeCliAdapter implements AgentAdapter {
   private betas: string[] = [];
   private enable1mContext = false;
   private disable1mContext = false;
+  private autoCompactThresholdPercent = resolveAutoCompactThresholdPercent(
+    process.env[CLAUDE_AUTOCOMPACT_PCT_OVERRIDE_ENV],
+  );
   private sessionId: string | null;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private sendChain: Promise<void> = Promise.resolve();
@@ -214,18 +222,28 @@ export class ClaudeCliAdapter implements AgentAdapter {
       : [];
     const enable1mContext = cfg.enable1mContext === true;
     const disable1mContext = cfg.disable1mContext === true;
+    const autoCompact = readAutoCompactConfig(cfg);
+    const autoCompactThresholdPercent = resolveAutoCompactThresholdPercent(
+      autoCompact.thresholdPercent ?? process.env[CLAUDE_AUTOCOMPACT_PCT_OVERRIDE_ENV],
+    );
+    const requiresReset =
+      this.enable1mContext !== enable1mContext ||
+      this.disable1mContext !== disable1mContext ||
+      this.betas.length !== betas.length ||
+      !this.betas.every((entry, index) => entry === betas[index]);
     if (
-      this.enable1mContext === enable1mContext &&
-      this.disable1mContext === disable1mContext &&
-      this.betas.length === betas.length &&
-      this.betas.every((entry, index) => entry === betas[index])
+      !requiresReset &&
+      this.autoCompactThresholdPercent === autoCompactThresholdPercent
     ) {
       return;
     }
     this.betas = betas;
     this.enable1mContext = enable1mContext;
     this.disable1mContext = disable1mContext;
-    this.reset();
+    this.autoCompactThresholdPercent = autoCompactThresholdPercent;
+    if (requiresReset) {
+      this.reset();
+    }
   }
 
   getThreadId(): string | null {
@@ -324,7 +342,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
           binary: this.binary,
           args,
           cwd: this.workingDirectory,
-          env: options?.env,
+          env: {
+            [CLAUDE_AUTOCOMPACT_PCT_OVERRIDE_ENV]: String(this.autoCompactThresholdPercent),
+            ...options?.env,
+          },
           unsetEnv: CLAUDE_UNSET_ENV,
           stdinData: "\n",
           signal: options?.signal,

@@ -9,10 +9,10 @@ describe("mobile pane tabs", () => {
     expect(ctx.mobilePane.value).toBe("tasks");
   });
 
-  it("renders Planner and Worker in one shared lane tab shell", async () => {
+  it("renders Advisor and Worker in one shared lane tab shell", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('const chatLanes: Array<{ id: ChatLane; label: string }> = [');
-    expect(sfc).toContain('{ id: "planner", label: "Planner" }');
+    expect(sfc).toContain('{ id: "planner", label: "Advisor" }');
     expect(sfc).toContain('{ id: "worker", label: "Worker" }');
     expect(sfc).not.toContain('{ id: "reviewer", label: "Reviewer" }');
     expect(sfc).toMatch(/<div class="laneTabs"[^>]*role="tablist"[^>]*>/);

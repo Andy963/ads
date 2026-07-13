@@ -83,13 +83,13 @@ TaskSpec 约束：
 - `accept=false` 时，`note` 必须包含：不符合点 + 期望如何修改 + 如何验证。
 - 被打回的任务会自动 `revision++` 并再次派发，直到通过或失败。
 
-## 4) 任务草稿（Planner → TaskBundleDraft）
+## 4) 任务草稿（Advisor → TaskBundleDraft）
 当你需要把需求拆解成可执行的任务列表，并交由人类审核后再加入任务队列时：
 
 - 输出 **一个且仅一个** `ads-tasks` fenced code block（TaskBundle JSON，`version=1`，包含 `tasks[]`，每个 task 至少有 `prompt`）。
 - 为避免重复草稿，优先在 bundle 顶层填写稳定的 `requestId`（例如 request/client message id）。
 
-## 5) 定时任务（Planner → Schedule）
+## 5) 定时任务（Advisor → Schedule）
 当用户的请求是**周期性/定时**任务（包含"每小时"、"每天"、"每周"、"定时"、"定期"、"提醒我"等时间触发语义），**不要**生成 `ads-tasks` TaskBundle，而是输出一个 `ads-schedule` fenced code block，内容为纯自然语言指令，系统会自动编译成 cron 定时任务并通过 Telegram 推送结果。
 
 示例：
