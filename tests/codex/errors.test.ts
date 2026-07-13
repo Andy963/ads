@@ -36,6 +36,20 @@ describe("classifyError", () => {
       needsReset: false,
     },
     {
+      name: "ADS CLI idle timeout notice",
+      input: "[ads] CLI 连续 3600000ms 无输出，已按空闲超时终止子进程。",
+      code: "run_idle_timeout",
+      retryable: true,
+      needsReset: false,
+    },
+    {
+      name: "ADS CLI maximum runtime notice",
+      input: "[ads] CLI 运行超过最大时长 43200000ms，子进程已被终止。",
+      code: "run_max_timeout",
+      retryable: true,
+      needsReset: false,
+    },
+    {
       name: "invalid codex request",
       input:
         '{"error":{"message":"invalid codex request (request id: 20260710150815216978944MuuDm9hE)","type":"new_api_error","param":"","code":"invalid_responses_request"}}',

@@ -165,7 +165,9 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `ADS_GEMINI_BIN` | `gemini` | Gemini 二进制路径 |
 | `ADS_GEMINI_MODEL` | 未设置 | Gemini 模型覆盖 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | Agent 可用性探测超时 |
-| `ADS_AGENT_RUN_TIMEOUT_MS` | `1800000` | 单次 Agent 运行硬超时，`0` 表示禁用 |
+| `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` | Agent CLI 连续无 stdout/stderr 活动的空闲超时；有输出会续期，`0` 表示禁用 |
+| `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` | 单次 Agent CLI 的最大墙钟运行时长，默认 12 小时，`0` 表示禁用 |
+| `ADS_AGENT_RUN_TIMEOUT_MS` | 未设置 | 兼容旧配置；单独设置时保留旧版硬超时语义并禁用 idle watchdog，建议迁移到上面两个变量 |
 | `ADS_CLI_POST_COMPLETION_GRACE_MS` | `10000` | CLI 输出终态结果后等待进程自然退出的宽限；超时则终止进程组并按成功收尾，`0` 表示禁用 |
 | `ADS_CODEX_ADAPTER` | `auto` | Codex 适配器路径：`auto` 仅 Goal Mode 走 app-server；`app-server` 强制所有 codex 会话走 daemon（无 projectId 时按工作区派生）；`cli` 强制走一次性 CLI |
 | `ADS_CODEX_DAEMON_ARGS` | 未设置 | 追加给 codex daemon 的全局参数（按空白拆分），用于按版本开启 collab 等实验特性，例如 `-c features.collab=true` |

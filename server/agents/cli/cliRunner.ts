@@ -19,10 +19,16 @@ export interface CliRunOptions {
   stdinData?: string;
   signal?: AbortSignal;
   /**
-   * 单次运行的硬超时（毫秒）。未提供时回退到 ADS_AGENT_RUN_TIMEOUT_MS（默认 30 分钟，0 表示禁用）。
-   * 到期会向子进程发送 SIGTERM，2 秒后仍存活则 SIGKILL，以防挂死的子进程永久持有工作区锁。
+   * Legacy maximum runtime override in milliseconds. Prefer maxRunTimeoutMs for new callers.
    */
   timeoutMs?: number;
+  /** Maximum wall-clock runtime in milliseconds. 0 disables the maximum runtime limit. */
+  maxRunTimeoutMs?: number;
+  /**
+   * Maximum time without stdout or stderr activity in milliseconds.
+   * Activity resets the idle watchdog. 0 disables the idle limit.
+   */
+  idleTimeoutMs?: number;
   /** Maximum retained bytes for each of stdout and stderr. Streaming callbacks still receive every parsed line. */
   maxOutputBytes?: number;
   /**
@@ -274,66 +280,186 @@ function attachAbortHandler(
   return { isCancelled: () => cancelled, dispose };
 }
 
-const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+const DEFAULT_MAX_RUN_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 
-/**
- * 解析单次 CLI 运行的默认超时。0（或负数视为无效→默认）表示禁用超时。
- */
-function resolveDefaultRunTimeoutMs(): number {
-  const raw = process.env.ADS_AGENT_RUN_TIMEOUT_MS;
-  if (raw === undefined || raw.trim() === "") {
-    return DEFAULT_RUN_TIMEOUT_MS;
-  }
+/** Parse a non-negative timeout. Zero disables the corresponding watchdog. */
+function parseTimeoutMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
   const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0) {
-    return DEFAULT_RUN_TIMEOUT_MS;
-  }
+  if (!Number.isFinite(value) || value < 0) return fallback;
   return Math.floor(value);
 }
 
-/**
- * 为子进程挂上超时定时器：到期 SIGTERM，2s 后仍存活则 SIGKILL。
- * timeoutMs <= 0 时不启用（返回的 timedOut 恒为 false）。
- */
-function setupRunTimeout(
-  child: ReturnType<typeof spawn>,
-  timeoutMs: number,
-): { timedOut: () => boolean; dispose: () => void } {
-  let timedOut = false;
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+function readNonBlankEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
 
-  if (timeoutMs > 0) {
-    timer = setTimeout(() => {
-      timedOut = true;
+/**
+ * ADS_AGENT_RUN_TIMEOUT_MS remains a compatibility alias for the maximum
+ * runtime. The new variable takes precedence when both are present.
+ */
+function resolveRunTimeouts(options: Pick<CliRunOptions, "idleTimeoutMs" | "maxRunTimeoutMs" | "timeoutMs">): {
+  idleTimeoutMs: number;
+  maxRunTimeoutMs: number;
+} {
+  const legacyOptionOnly =
+    options.timeoutMs !== undefined && options.idleTimeoutMs === undefined && options.maxRunTimeoutMs === undefined;
+  const configuredIdle = readNonBlankEnv("ADS_AGENT_IDLE_TIMEOUT_MS");
+  const configuredNewMax = readNonBlankEnv("ADS_AGENT_MAX_RUN_TIMEOUT_MS");
+  const configuredLegacyMax = readNonBlankEnv("ADS_AGENT_RUN_TIMEOUT_MS");
+  const legacyEnvOnly =
+    configuredLegacyMax !== undefined && configuredNewMax === undefined && configuredIdle === undefined;
+  const idleTimeoutMs =
+    options.idleTimeoutMs ??
+    (legacyOptionOnly || legacyEnvOnly
+      ? 0
+      : parseTimeoutMs(configuredIdle, DEFAULT_IDLE_TIMEOUT_MS));
+  const configuredMax = configuredNewMax ?? configuredLegacyMax;
+  const maxRunTimeoutMs =
+    options.maxRunTimeoutMs ?? options.timeoutMs ?? parseTimeoutMs(configuredMax, DEFAULT_MAX_RUN_TIMEOUT_MS);
+  return {
+    idleTimeoutMs: Number.isFinite(idleTimeoutMs) && idleTimeoutMs >= 0 ? Math.floor(idleTimeoutMs) : DEFAULT_IDLE_TIMEOUT_MS,
+    maxRunTimeoutMs:
+      Number.isFinite(maxRunTimeoutMs) && maxRunTimeoutMs >= 0
+        ? Math.floor(maxRunTimeoutMs)
+        : DEFAULT_MAX_RUN_TIMEOUT_MS,
+  };
+}
+
+type RunTimeoutReason = "idle" | "max_runtime";
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function scheduleLongTimeout(callback: () => void, delayMs: number): () => void {
+  const deadline = Date.now() + Math.min(delayMs, Number.MAX_SAFE_INTEGER - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+
+  const arm = () => {
+    if (cancelled) return;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      callback();
+      return;
+    }
+    timer = setTimeout(arm, Math.min(remainingMs, MAX_TIMER_DELAY_MS));
+    timer.unref?.();
+  };
+
+  arm();
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
+/**
+ * Terminate a CLI only after it has been idle for too long or reaches the
+ * independent maximum wall-clock runtime. Any stdout/stderr data resets idle.
+ */
+function setupRunWatchdog(
+  child: ReturnType<typeof spawn>,
+  timeouts: { idleTimeoutMs: number; maxRunTimeoutMs: number },
+  checkPendingActivity?: () => boolean,
+): { touch: () => void; timeoutReason: () => RunTimeoutReason | null; dispose: () => void } {
+  let timeoutReason: RunTimeoutReason | null = null;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelIdleTimer: (() => void) | undefined;
+  let cancelMaxRunTimer: (() => void) | undefined;
+
+  const terminate = (reason: RunTimeoutReason) => {
+    if (timeoutReason || child.exitCode !== null) return;
+    timeoutReason = reason;
+    try {
+      signalChildProcessGroup(child, "SIGTERM");
+    } catch {
+      /* already dead */
+    }
+    killTimer = setTimeout(() => {
       try {
-        signalChildProcessGroup(child, "SIGTERM");
+        signalChildProcessGroup(child, "SIGKILL");
       } catch {
         /* already dead */
       }
-      killTimer = setTimeout(() => {
-        try {
-          signalChildProcessGroup(child, "SIGKILL");
-        } catch {
-          /* already dead */
-        }
-      }, 2000);
-      killTimer.unref?.();
-    }, timeoutMs);
-    timer.unref?.();
+    }, 2000);
+    killTimer.unref?.();
+  };
+
+  const armIdleTimer = () => {
+    cancelIdleTimer?.();
+    if (timeouts.idleTimeoutMs <= 0 || timeoutReason) return;
+    cancelIdleTimer = scheduleLongTimeout(() => {
+      if (checkPendingActivity?.()) {
+        armIdleTimer();
+        return;
+      }
+      terminate("idle");
+    }, timeouts.idleTimeoutMs);
+  };
+
+  armIdleTimer();
+  if (timeouts.maxRunTimeoutMs > 0) {
+    cancelMaxRunTimer = scheduleLongTimeout(() => terminate("max_runtime"), timeouts.maxRunTimeoutMs);
   }
 
   const dispose = () => {
-    if (timer) clearTimeout(timer);
+    cancelIdleTimer?.();
+    cancelMaxRunTimer?.();
     if (killTimer) clearTimeout(killTimer);
   };
 
-  return { timedOut: () => timedOut, dispose };
+  return { touch: armIdleTimer, timeoutReason: () => timeoutReason, dispose };
 }
 
-function appendTimeoutNotice(stderr: string, timeoutMs: number): string {
-  const notice = `[ads] CLI 运行超过 ${timeoutMs}ms 超时，子进程已被终止。`;
+function appendTimeoutNotice(
+  stderr: string,
+  reason: RunTimeoutReason,
+  timeouts: { idleTimeoutMs: number; maxRunTimeoutMs: number },
+): string {
+  const notice =
+    reason === "idle"
+      ? `[ads] CLI 连续 ${timeouts.idleTimeoutMs}ms 无输出，已按空闲超时终止子进程。`
+      : `[ads] CLI 运行超过最大时长 ${timeouts.maxRunTimeoutMs}ms，子进程已被终止。`;
   return stderr.trim() ? `${stderr}\n${notice}` : notice;
+}
+
+function createFileActivityTracker(paths: string[]): { check: () => boolean } {
+  let previousSizes = paths.map((filePath) => {
+    try {
+      return fs.statSync(filePath).size;
+    } catch {
+      return 0;
+    }
+  });
+  return {
+    check: () => {
+      const nextSizes = paths.map((filePath) => {
+        try {
+          return fs.statSync(filePath).size;
+        } catch {
+          return 0;
+        }
+      });
+      const changed = nextSizes.some((size, index) => size !== previousSizes[index]);
+      previousSizes = nextSizes;
+      return changed;
+    },
+  };
+}
+
+function createFileActivityPoller(
+  checkActivity: () => boolean,
+  idleTimeoutMs: number,
+  onActivity: () => void,
+): { dispose: () => void } {
+  if (idleTimeoutMs <= 0) return { dispose: () => {} };
+  const pollIntervalMs = Math.max(25, Math.min(1000, Math.floor(idleTimeoutMs / 4)));
+  const timer = setInterval(() => {
+    if (checkActivity()) onActivity();
+  }, pollIntervalMs);
+  timer.unref?.();
+  return { dispose: () => clearInterval(timer) };
 }
 
 const DEFAULT_POST_COMPLETION_GRACE_MS = 10_000;
@@ -439,8 +565,8 @@ async function runCliWithoutGovernor(
     return await runCliViaFiles(options, onLine);
   }
 
-  const { binary, args, cwd, env, unsetEnv, stdinData, signal, timeoutMs } = options;
-  const effectiveTimeoutMs = timeoutMs ?? resolveDefaultRunTimeoutMs();
+  const { binary, args, cwd, env, unsetEnv, stdinData, signal } = options;
+  const runTimeouts = resolveRunTimeouts(options);
   const outputMaxBytes = resolveOutputMaxBytes(options.maxOutputBytes);
 
   const child = spawn(binary, args, {
@@ -452,7 +578,7 @@ async function runCliWithoutGovernor(
   });
 
   const abortHandler = attachAbortHandler(child, signal);
-  const timeoutHandler = setupRunTimeout(child, effectiveTimeoutMs);
+  const timeoutHandler = setupRunWatchdog(child, runTimeouts);
   const completionWatcher = createPostCompletionWatcher(
     child,
     options.isRunComplete ? resolvePostCompletionGraceMs(options.postCompletionGraceMs) : 0,
@@ -474,9 +600,13 @@ async function runCliWithoutGovernor(
   }
 
   const stderrBuffer = new TailByteBuffer(outputMaxBytes);
-  child.stderr?.on("data", (chunk: Buffer) => stderrBuffer.append(chunk));
+  child.stderr?.on("data", (chunk: Buffer) => {
+    timeoutHandler.touch();
+    stderrBuffer.append(chunk);
+  });
 
   const rl = createInterface({ input: child.stdout! });
+  child.stdout?.on("data", timeoutHandler.touch);
   const stdoutBuffer = new TailByteBuffer(outputMaxBytes);
   let hasStdoutLine = false;
   let loopError: unknown = null;
@@ -517,15 +647,15 @@ async function runCliWithoutGovernor(
   const exitCode = await waitForClose(child);
 
   const cancelled = abortHandler.isCancelled();
-  const timedOut = timeoutHandler.timedOut();
+  const timeoutReason = timeoutHandler.timeoutReason();
   const terminatedAfterCompletion = completionWatcher.terminated();
   abortHandler.dispose();
   timeoutHandler.dispose();
   completionWatcher.dispose();
 
   let stderr = stderrBuffer.toString();
-  if (timedOut) {
-    stderr = appendTimeoutNotice(stderr, effectiveTimeoutMs);
+  if (timeoutReason) {
+    stderr = appendTimeoutNotice(stderr, timeoutReason, runTimeouts);
   }
 
   return {
@@ -543,8 +673,8 @@ async function runCliViaFiles(
   options: CliRunOptions,
   onLine: LineHandler,
 ): Promise<CliRunResult> {
-  const { binary, args, cwd, env, unsetEnv, stdinData, signal, timeoutMs } = options;
-  const effectiveTimeoutMs = timeoutMs ?? resolveDefaultRunTimeoutMs();
+  const { binary, args, cwd, env, unsetEnv, stdinData, signal } = options;
+  const runTimeouts = resolveRunTimeouts(options);
   const outputMaxBytes = resolveOutputMaxBytes(options.maxOutputBytes);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-cli-runner-"));
@@ -588,12 +718,19 @@ async function runCliViaFiles(
   }
 
   const abortHandler = attachAbortHandler(child, signal);
-  const timeoutHandler = setupRunTimeout(child, effectiveTimeoutMs);
+  const activityTracker = createFileActivityTracker([stdoutPath, stderrPath]);
+  const timeoutHandler = setupRunWatchdog(child, runTimeouts, activityTracker.check);
+  const activityPoller = createFileActivityPoller(
+    activityTracker.check,
+    runTimeouts.idleTimeoutMs,
+    timeoutHandler.touch,
+  );
   const spawnError = await waitForSpawn(child);
 
   if (spawnError) {
     abortHandler.dispose();
     timeoutHandler.dispose();
+    activityPoller.dispose();
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -611,16 +748,17 @@ async function runCliViaFiles(
   });
 
   const cancelled = abortHandler.isCancelled();
-  const timedOut = timeoutHandler.timedOut();
+  const timeoutReason = timeoutHandler.timeoutReason();
   abortHandler.dispose();
   timeoutHandler.dispose();
+  activityPoller.dispose();
 
   const stdoutResult = readFileLimited(stdoutPath, outputMaxBytes);
   const stderrResult = readFileLimited(stderrPath, outputMaxBytes);
   const stdout = stdoutResult.text;
   let stderr = stderrResult.text;
-  if (timedOut) {
-    stderr = appendTimeoutNotice(stderr, effectiveTimeoutMs);
+  if (timeoutReason) {
+    stderr = appendTimeoutNotice(stderr, timeoutReason, runTimeouts);
   }
 
   try {

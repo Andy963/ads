@@ -15,6 +15,8 @@ export type CodexErrorCode =
   | "token_limit"
   | "network_timeout"
   | "run_timeout"
+  | "run_idle_timeout"
+  | "run_max_timeout"
   | "stream_disconnected"
   | "auth_failed"
   | "context_overflow"
@@ -108,11 +110,27 @@ const ERROR_PATTERNS: Array<{
     needsReset: true,
   },
   {
-    // cliRunner 的硬超时通知（见 appendTimeoutNotice），要先于通用 timeout 匹配。
+    pattern: /cli 连续.*无输出.*空闲超时/i,
+    code: "run_idle_timeout",
+    userHint:
+      "Agent 长时间没有产生输出，已按空闲超时终止。可以重试，或调大 ADS_AGENT_IDLE_TIMEOUT_MS",
+    retryable: true,
+    needsReset: false,
+  },
+  {
+    pattern: /cli 运行超过最大时长/i,
+    code: "run_max_timeout",
+    userHint:
+      "Agent 达到单次运行最大时长后被终止。可以重试，或调大 ADS_AGENT_MAX_RUN_TIMEOUT_MS",
+    retryable: true,
+    needsReset: false,
+  },
+  {
+    // Preserve classification for timeout notices emitted by older ADS releases.
     pattern: /cli 运行超过.*超时|子进程已被终止/i,
     code: "run_timeout",
     userHint:
-      "任务运行时长超过上限（默认 30 分钟）被终止。长任务可拆分后重试，或调大 ADS_AGENT_RUN_TIMEOUT_MS",
+      "Agent 被旧版运行超时限制终止。可以重试，或检查 ADS_AGENT_RUN_TIMEOUT_MS",
     retryable: true,
     needsReset: false,
   },

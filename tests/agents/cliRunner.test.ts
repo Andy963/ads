@@ -92,7 +92,7 @@ describe("cliRunner", () => {
     assert.ok(lines.length >= 0);
   });
 
-  it("terminates a hung child via timeoutMs and reports the timeout", async () => {
+  it("terminates a child at the explicit legacy maximum runtime", async () => {
     const node = process.execPath;
     // Stays alive, emits no stdout, exits on SIGTERM — the classic "hung agent" shape.
     const script = [
@@ -107,7 +107,112 @@ describe("cliRunner", () => {
 
     // Timeout is not a user cancellation; it surfaces as a terminated run with a notice.
     assert.equal(result.cancelled, false);
-    assert.match(result.stderr, /超时/);
+    assert.match(result.stderr, /最大时长 50ms/);
+  });
+
+  it("preserves timeoutMs zero as disabling the legacy watchdog", async () => {
+    const node = process.execPath;
+    const script = "setTimeout(() => process.exit(0), 100);";
+
+    const result = await runCli({ binary: node, args: ["-e", script], timeoutMs: 0 }, () => {});
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+  });
+
+  it("treats blank new timeout env values as unset for legacy compatibility", async () => {
+    const previousIdle = process.env.ADS_AGENT_IDLE_TIMEOUT_MS;
+    const previousMax = process.env.ADS_AGENT_MAX_RUN_TIMEOUT_MS;
+    const previousLegacy = process.env.ADS_AGENT_RUN_TIMEOUT_MS;
+    process.env.ADS_AGENT_IDLE_TIMEOUT_MS = " ";
+    process.env.ADS_AGENT_MAX_RUN_TIMEOUT_MS = " ";
+    process.env.ADS_AGENT_RUN_TIMEOUT_MS = "60";
+
+    try {
+      const node = process.execPath;
+      const script = "setInterval(() => {}, 1000);";
+      const result = await runCli({ binary: node, args: ["-e", script] }, () => {});
+
+      assert.match(result.stderr, /最大时长 60ms/);
+    } finally {
+      if (previousIdle === undefined) delete process.env.ADS_AGENT_IDLE_TIMEOUT_MS;
+      else process.env.ADS_AGENT_IDLE_TIMEOUT_MS = previousIdle;
+      if (previousMax === undefined) delete process.env.ADS_AGENT_MAX_RUN_TIMEOUT_MS;
+      else process.env.ADS_AGENT_MAX_RUN_TIMEOUT_MS = previousMax;
+      if (previousLegacy === undefined) delete process.env.ADS_AGENT_RUN_TIMEOUT_MS;
+      else process.env.ADS_AGENT_RUN_TIMEOUT_MS = previousLegacy;
+    }
+  });
+
+  it("terminates a child after the idle timeout", async () => {
+    const node = process.execPath;
+    const script = [
+      "const timer = setInterval(() => {}, 1000);",
+      "process.on('SIGTERM', () => { clearInterval(timer); process.exit(0); });",
+    ].join("");
+
+    const result = await runCli(
+      { binary: node, args: ["-e", script], idleTimeoutMs: 50, maxRunTimeoutMs: 0 },
+      () => {},
+    );
+
+    assert.equal(result.cancelled, false);
+    assert.match(result.stderr, /连续 50ms 无输出/);
+  });
+
+  it("resets the idle timeout when stdout remains active", async () => {
+    const node = process.execPath;
+    const script = [
+      "let count = 0;",
+      "const timer = setInterval(() => {",
+      "  console.log(JSON.stringify({ type: 'tick', count: ++count }));",
+      "  if (count === 5) { clearInterval(timer); process.exit(0); }",
+      "}, 50);",
+    ].join("");
+    const lines: unknown[] = [];
+
+    const result = await runCli(
+      { binary: node, args: ["-e", script], idleTimeoutMs: 150, maxRunTimeoutMs: 2000 },
+      (line) => lines.push(line),
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(lines.length, 5);
+    assert.doesNotMatch(result.stderr, /空闲超时/);
+  });
+
+  it("enforces maximum runtime even while stdout remains active", async () => {
+    const node = process.execPath;
+    const script = [
+      "const timer = setInterval(() => console.log('{\"type\":\"tick\"}'), 10);",
+      "process.on('SIGTERM', () => { clearInterval(timer); process.exit(0); });",
+    ].join("");
+
+    const result = await runCli(
+      { binary: node, args: ["-e", script], idleTimeoutMs: 250, maxRunTimeoutMs: 150 },
+      () => {},
+    );
+
+    assert.equal(result.cancelled, false);
+    assert.match(result.stderr, /最大时长 150ms/);
+  });
+
+  it("does not collapse oversized timeout values to one millisecond", async () => {
+    const node = process.execPath;
+    const script = "setTimeout(() => process.exit(0), 100);";
+
+    const result = await runCli(
+      {
+        binary: node,
+        args: ["-e", script],
+        idleTimeoutMs: 2_147_483_648,
+        maxRunTimeoutMs: 0,
+      },
+      () => {},
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
   });
 
   it("does not hang or leak when onLine throws", async () => {
