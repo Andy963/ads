@@ -12,6 +12,7 @@ import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
 import { syncWorkspaceTemplates } from "../../workspace/service.js";
 import { resolveStateDbPath, getStateDatabase } from "../../state/database.js";
+import { HistoryMaintenanceScheduler } from "../../state/historyMaintenance.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
 import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
@@ -63,7 +64,7 @@ function migrateLegacyWebLaneNamespaces(): void {
       namespace: LEGACY_WEB_NAMESPACE,
       migrateFromPaths: [path.join(adsStateDir, "web-history.json")],
       maxEntriesPerSession: 200,
-      maxTextLength: 4000,
+      maxTextLength: 64 * 1024,
     });
   } catch {
     // ignore
@@ -209,6 +210,7 @@ async function ensureWebPidFile(): Promise<{ pidFile: string; cleanupPidFile: ()
 interface WebShutdownDeps {
   cleanupPidFile: () => void;
   scheduler: { stop: () => void };
+  historyMaintenance: { stop: () => void };
   sessionManagers: Array<{ destroy: () => void }>;
 }
 
@@ -227,6 +229,11 @@ function registerWebShutdown(deps: WebShutdownDeps): void {
       deps.scheduler.stop();
     } catch (err) {
       logger.warn(`[shutdown] scheduler.stop failed: ${err instanceof Error ? err.message : err}`);
+    }
+    try {
+      deps.historyMaintenance.stop();
+    } catch (err) {
+      logger.warn(`[shutdown] historyMaintenance.stop failed: ${err instanceof Error ? err.message : err}`);
     }
     for (const sessionManager of deps.sessionManagers) {
       try {
@@ -306,6 +313,8 @@ export async function startWebServer(): Promise<void> {
     stateDbPath,
     sessionTimeoutMs: webSessionTimeoutMs,
     sessionCleanupIntervalMs: webSessionCleanupIntervalMs,
+    historyMaxEntriesPerSession: webConfig.historyMaxEntriesPerSession,
+    historyMaxTextLength: webConfig.historyMaxTextLength,
     plannerCodexModel: webConfig.plannerCodexModel,
     workerSessionManagerOptions: {
       onDispose: ({ userId }) => {
@@ -357,6 +366,15 @@ export async function startWebServer(): Promise<void> {
   const scheduler = new SchedulerRuntime();
   scheduler.registerWorkspace(workspaceRoot);
   scheduler.start();
+  const historyMaintenance = new HistoryMaintenanceScheduler(
+    getStateDatabase(stateDbPath),
+    {
+      retentionDays: webConfig.historyRetentionDays,
+      maxStoredBytes: webConfig.historyMaxStoredBytes,
+    },
+    webConfig.historyMaintenanceIntervalMs,
+  );
+  historyMaintenance.start();
 
   const agentAvailability = new CliAgentAvailability();
   const webAgentIds = Array.from(
@@ -494,6 +512,7 @@ export async function startWebServer(): Promise<void> {
   registerWebShutdown({
     cleanupPidFile,
     scheduler,
+    historyMaintenance,
     sessionManagers: [sessionManager, plannerSessionManager],
   });
   await listenServer(server, webConfig.port, webConfig.host);

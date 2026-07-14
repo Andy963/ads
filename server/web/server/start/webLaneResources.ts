@@ -127,6 +127,8 @@ function createLaneRuntime(args: {
   sessionTimeoutMs: number;
   sessionCleanupIntervalMs: number;
   stateDbPath: string;
+  historyMaxEntriesPerSession: number;
+  historyMaxTextLength: number;
   lazy: boolean;
   sessionManagerOptions?: SessionManagerOptions;
 }): WebLaneRuntime {
@@ -143,8 +145,8 @@ function createLaneRuntime(args: {
       new HistoryStore({
         storagePath: args.stateDbPath,
         namespace: args.namespace,
-        maxEntriesPerSession: 200,
-        maxTextLength: 4000,
+        maxEntriesPerSession: args.historyMaxEntriesPerSession,
+        maxTextLength: args.historyMaxTextLength,
       }),
     args.lazy,
   );
@@ -184,6 +186,8 @@ export function createWebLaneResources(args: {
   stateDbPath: string;
   sessionTimeoutMs: number;
   sessionCleanupIntervalMs: number;
+  historyMaxEntriesPerSession?: number;
+  historyMaxTextLength?: number;
   plannerCodexModel?: string;
   workerSessionManagerOptions?: SessionManagerOptions;
   plannerSessionManagerOptions?: SessionManagerOptions;
@@ -195,6 +199,8 @@ export function createWebLaneResources(args: {
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
       stateDbPath: args.stateDbPath,
+      historyMaxEntriesPerSession: args.historyMaxEntriesPerSession ?? 200,
+      historyMaxTextLength: args.historyMaxTextLength ?? 64 * 1024,
       lazy: false,
       sessionManagerOptions: args.workerSessionManagerOptions,
     }),
@@ -205,6 +211,8 @@ export function createWebLaneResources(args: {
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
       stateDbPath: args.stateDbPath,
+      historyMaxEntriesPerSession: args.historyMaxEntriesPerSession ?? 200,
+      historyMaxTextLength: args.historyMaxTextLength ?? 64 * 1024,
       lazy: true,
       sessionManagerOptions: args.plannerSessionManagerOptions,
     }),

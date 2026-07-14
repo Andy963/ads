@@ -69,6 +69,18 @@ describe("state/database", () => {
     assert.ok(msgColumns.includes("payload"));
   });
 
+  it("should create agent session history links", () => {
+    const db = getStateDatabase();
+    const info = db.prepare("PRAGMA table_info(history_session_links)").all() as Array<{ name: string }>;
+    const columns = info.map((column) => column.name);
+
+    assert.ok(columns.includes("namespace"));
+    assert.ok(columns.includes("session_id"));
+    assert.ok(columns.includes("agent_id"));
+    assert.ok(columns.includes("provider_session_id"));
+    assert.ok(columns.includes("locator_json"));
+  });
+
   it("should record schema version metadata for a fresh database", () => {
     getStateDatabase();
 

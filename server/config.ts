@@ -20,6 +20,11 @@ export interface WebConfig {
   wsPingIntervalMs: number;
   wsMaxMissedPongs: number;
   wsMaxPayloadBytes: number;
+  historyMaxEntriesPerSession: number;
+  historyMaxTextLength: number;
+  historyRetentionDays: number;
+  historyMaxStoredBytes: number;
+  historyMaintenanceIntervalMs: number;
   sessionTimeoutMs: number;
   sessionCleanupIntervalMs: number;
   allowedOriginsRaw?: string;
@@ -80,6 +85,11 @@ const webConfigSchema = z.object({
   wsPingIntervalMs: z.number().min(0),
   wsMaxMissedPongs: z.number().int().min(0),
   wsMaxPayloadBytes: z.number().int().min(1024),
+  historyMaxEntriesPerSession: z.number().int().min(1),
+  historyMaxTextLength: z.number().int().min(1),
+  historyRetentionDays: z.number().int().min(0),
+  historyMaxStoredBytes: z.number().int().min(0),
+  historyMaintenanceIntervalMs: z.number().int().min(0),
   sessionTimeoutMs: z.number().int().min(0),
   sessionCleanupIntervalMs: z.number().int().min(0),
   allowedOriginsRaw: z.string().optional(),
@@ -279,6 +289,12 @@ export function resolveWebConfig(options: DomainConfigOptions = {}): WebConfig {
     wsMaxMissedPongs: normalizeWebInteger(env.ADS_WEB_WS_MAX_MISSED_PONGS, 3, 0),
     // 单帧上限：默认 16MB，足以容纳带 base64 图片的 prompt，又能挡住内存型 DoS。
     wsMaxPayloadBytes: normalizeWebInteger(env.ADS_WEB_WS_MAX_PAYLOAD_BYTES, 16 * 1024 * 1024, 1024),
+    historyMaxEntriesPerSession: normalizeWebInteger(env.ADS_HISTORY_MAX_ENTRIES_PER_SESSION, 200, 1),
+    historyMaxTextLength: normalizeWebInteger(env.ADS_HISTORY_MAX_TEXT_LENGTH, 64 * 1024, 1),
+    historyRetentionDays: normalizeWebInteger(env.ADS_HISTORY_RETENTION_DAYS, 90, 0),
+    historyMaxStoredBytes: normalizeWebInteger(env.ADS_HISTORY_MAX_STORED_BYTES, 256 * 1024 * 1024, 0),
+    historyMaintenanceIntervalMs:
+      normalizeWebInteger(env.ADS_HISTORY_MAINTENANCE_INTERVAL_MINUTES, 60, 0) * MINUTE_MS,
     sessionTimeoutMs: resolveWebSessionTimeoutMs(env),
     sessionCleanupIntervalMs: resolveWebSessionCleanupIntervalMs(env),
     allowedOriginsRaw: env.ADS_WEB_ALLOWED_ORIGINS,

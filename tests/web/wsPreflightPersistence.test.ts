@@ -219,7 +219,7 @@ describe("web/server/ws/preflight-persistence", () => {
     try {
       await waitForWsOpen(client);
 
-      client.send(JSON.stringify({ type: "command", payload: "echo slow" }));
+      client.send(JSON.stringify({ type: "command", payload: "echo slow", client_message_id: "slow-blocker" }));
       client.send(JSON.stringify({ type: "command", payload: "echo queued", client_message_id: "m2" }));
 
       const ack = await waitForWsMessage(
@@ -247,6 +247,37 @@ describe("web/server/ws/preflight-persistence", () => {
       } catch {
         // ignore
       }
+    }
+  });
+
+  it("assigns an id and persists a prompt before queued execution when the client omits an id", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await waitForWsOpen(client);
+      client.send(JSON.stringify({ type: "command", payload: "echo slow", client_message_id: "slow-blocker" }));
+      client.send(JSON.stringify({ type: "prompt", payload: "queued prompt" }));
+
+      const ack = await waitForWsMessage(
+        client,
+        (msg) =>
+          msg.type === "ack" &&
+          typeof msg.client_message_id === "string" &&
+          msg.client_message_id.startsWith("server-"),
+        2000,
+      );
+      const clientMessageId = String(ack.client_message_id);
+      const entries = historyStore.get("test::test::main");
+      const matched = entries.filter((entry) => entry.kind === `client_message_id:${clientMessageId}`);
+
+      assert.equal(ack.duplicate, false);
+      assert.equal(matched.length, 1);
+      assert.equal(matched[0]?.role, "user");
+      assert.equal(matched[0]?.text, "queued prompt");
+    } finally {
+      client.terminate();
     }
   });
 

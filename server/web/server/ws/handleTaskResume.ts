@@ -292,7 +292,15 @@ export async function handleTaskResumeMessage(
       await orchestrator.send(prompt, { streaming: false });
       const threadId = orchestrator.getThreadId();
       if (threadId) {
-        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
+        const activeAgentId = orchestrator.getActiveAgentId();
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
+        if (typeof deps.history.historyStore.linkAgentSession === "function") {
+          deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
+            agentId: activeAgentId,
+            providerSessionId: threadId,
+            cwd: deps.context.currentCwd,
+          });
+        }
       }
       deps.observability.logger.info(
         `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} savedThread=${threadId ?? "none"}`,

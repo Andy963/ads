@@ -65,14 +65,21 @@ export function preflightPersistAndAck(args: {
               : undefined,
       },
     });
-    const inserted = args.historyStore.add(args.historyKey, {
+    const persistence = args.historyStore.addWithResult(args.historyKey, {
       role: "user",
       text: textResult.text,
       ts: args.receivedAt,
       kind: entryKind,
     });
-    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
-    if (!inserted) {
+    if (persistence === "failed") {
+      args.warn(
+        `[WebSocket][Persist] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} failed to persist prompt`,
+      );
+      args.sendJson({ type: "error", message: "消息保存失败，请重试" });
+      return { enqueue: false };
+    }
+    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: persistence === "duplicate" });
+    if (persistence === "duplicate") {
       if (args.traceWsDuplication) {
         args.warn(
           `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId}`,
@@ -94,14 +101,21 @@ export function preflightPersistAndAck(args: {
     if (!cmd.ok || !cmd.shouldPersist) {
       return { enqueue: true };
     }
-    const inserted = args.historyStore.add(args.historyKey, {
+    const persistence = args.historyStore.addWithResult(args.historyKey, {
       role: "user",
       text: cmd.command,
       ts: args.receivedAt,
       kind: entryKind,
     });
-    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: !inserted });
-    if (!inserted) {
+    if (persistence === "failed") {
+      args.warn(
+        `[WebSocket][Persist] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} failed to persist command`,
+      );
+      args.sendJson({ type: "error", message: "消息保存失败，请重试" });
+      return { enqueue: false };
+    }
+    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: persistence === "duplicate" });
+    if (persistence === "duplicate") {
       if (args.traceWsDuplication) {
         args.warn(
           `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId}`,

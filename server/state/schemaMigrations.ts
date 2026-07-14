@@ -227,4 +227,27 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       }
     },
   },
+  {
+    version: 6,
+    description: "Associate ADS history sessions with provider-local agent sessions",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS history_session_links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          namespace TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          provider_session_id TEXT NOT NULL,
+          cwd TEXT,
+          locator_json TEXT,
+          first_seen_at INTEGER NOT NULL,
+          last_seen_at INTEGER NOT NULL,
+          UNIQUE(namespace, session_id, agent_id, provider_session_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_history_session_links_lookup
+          ON history_session_links(namespace, session_id, agent_id, last_seen_at DESC);
+      `);
+    },
+  },
 ];

@@ -58,12 +58,35 @@ describe("server config resolvers", () => {
     assert.strictEqual(config.wsPingIntervalMs, 0);
     assert.strictEqual(config.wsMaxMissedPongs, 3);
     assert.strictEqual(config.wsMaxPayloadBytes, 16 * 1024 * 1024);
+    assert.strictEqual(config.historyMaxEntriesPerSession, 200);
+    assert.strictEqual(config.historyMaxTextLength, 64 * 1024);
+    assert.strictEqual(config.historyRetentionDays, 90);
+    assert.strictEqual(config.historyMaxStoredBytes, 256 * 1024 * 1024);
+    assert.strictEqual(config.historyMaintenanceIntervalMs, 60 * 60 * 1000);
     assert.strictEqual(config.sessionTimeoutMs, 24 * 60 * 60 * 1000);
     assert.strictEqual(config.sessionCleanupIntervalMs, 5 * 60 * 1000);
     assert.strictEqual(config.plannerCodexModel, "gpt-5.4");
     assert.strictEqual(config.taskQueueEnabled, false);
     assert.strictEqual(config.taskQueueAutoStart, true);
     assert.strictEqual(config.traceWsDuplication, true);
+  });
+
+  it("supports history persistence and cleanup overrides", () => {
+    const config = resolveWebConfig({
+      env: {
+        ADS_HISTORY_MAX_ENTRIES_PER_SESSION: "500",
+        ADS_HISTORY_MAX_TEXT_LENGTH: "131072",
+        ADS_HISTORY_RETENTION_DAYS: "30",
+        ADS_HISTORY_MAX_STORED_BYTES: "1048576",
+        ADS_HISTORY_MAINTENANCE_INTERVAL_MINUTES: "15",
+      },
+    });
+
+    assert.strictEqual(config.historyMaxEntriesPerSession, 500);
+    assert.strictEqual(config.historyMaxTextLength, 131072);
+    assert.strictEqual(config.historyRetentionDays, 30);
+    assert.strictEqual(config.historyMaxStoredBytes, 1048576);
+    assert.strictEqual(config.historyMaintenanceIntervalMs, 15 * 60 * 1000);
   });
 
   it("supports env overrides for web session idle reclaim config", () => {

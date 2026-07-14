@@ -105,6 +105,7 @@ export function attachWorkerPromptHandler(args: {
   sendToChat: (payload: unknown) => void;
   logger: Logger;
   sessionLogger: SessionLogger;
+  onThreadStarted?: (threadId: string) => void;
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
@@ -121,6 +122,9 @@ export function attachWorkerPromptHandler(args: {
     args.sessionLogger?.logEvent(event);
     args.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
     const raw = event.raw as ThreadEvent;
+    if (raw.type === "thread.started" && raw.thread_id) {
+      args.onThreadStarted?.(raw.thread_id);
+    }
     if (event.retry?.source === "external") {
       args.sendToChat({
         type: "error",

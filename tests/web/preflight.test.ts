@@ -147,6 +147,32 @@ describe("web/ws/preflight", () => {
     }
   });
 
+  it("does not execute or acknowledge a prompt when durable persistence fails", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-failure", maxEntriesPerSession: 20 });
+    historyStore.addWithResult = () => "failed";
+    const sent: unknown[] = [];
+    const warnings: string[] = [];
+
+    const result = preflightPersistAndAck({
+      parsed: { type: "prompt", payload: "do not lose this", client_message_id: "p-failed" },
+      requestId: "req-failed",
+      clientMessageId: "p-failed",
+      receivedAt: 1,
+      historyStore,
+      historyKey: "history-failed",
+      sanitizeInput: (payload) => String(payload ?? ""),
+      sendJson: (payload) => sent.push(payload),
+      traceWsDuplication: false,
+      warn: (message) => warnings.push(message),
+      sessionId: "session-1",
+      userId: 7,
+    });
+
+    assert.deepEqual(result, { enqueue: false });
+    assert.deepEqual(sent, [{ type: "error", message: "消息保存失败，请重试" }]);
+    assert.equal(warnings.length, 1);
+  });
+
   it("merges effective execution metadata into existing prompt history entries", () => {
     const historyStore = new HistoryStore({
       namespace: "test-preflight-effective-meta",

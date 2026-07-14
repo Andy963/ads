@@ -136,6 +136,17 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       sendToChat,
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
+      onThreadStarted: (threadId) => {
+        const activeAgentId = orchestrator.getActiveAgentId();
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
+        if (typeof deps.history.historyStore.linkAgentSession === "function") {
+          deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
+            agentId: activeAgentId,
+            providerSessionId: threadId,
+            cwd: turnCwd,
+          });
+        }
+      },
     });
     let collaborativeTurnPromise: Promise<Awaited<ReturnType<typeof runCollaborativeTurn>>> | undefined;
 
@@ -146,6 +157,13 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       // value directly can produce false positives if another connection/process updated storage.
       const expectedThreadId =
         preferInMemoryThreadId({ inMemoryThreadId: orchestrator.getThreadId(), savedThreadId }) ?? undefined;
+      if (expectedThreadId && typeof deps.history.historyStore.linkAgentSession === "function") {
+        deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
+          agentId: activeAgentId,
+          providerSessionId: expectedThreadId,
+          cwd: turnCwd,
+        });
+      }
 
       const delegationTracker = createDelegationTracker();
 
@@ -281,7 +299,15 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
 
       promptRun.ensureActive();
       if (threadId) {
-        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
+        const activeAgentId = orchestrator.getActiveAgentId();
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
+        if (typeof deps.history.historyStore.linkAgentSession === "function") {
+          deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
+            agentId: activeAgentId,
+            providerSessionId: threadId,
+            cwd: turnCwd,
+          });
+        }
       }
       const effectiveState = deps.sessions.sessionManager.getEffectiveState(deps.context.userId);
       if (deps.request.clientMessageId && typeof deps.history.historyStore.updatePromptExecutionMetadata === "function") {

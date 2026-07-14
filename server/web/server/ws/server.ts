@@ -383,7 +383,12 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         return;
       }
 
-      const { parsed, receivedAt, clientMessageId } = envelope;
+      const { parsed, receivedAt } = envelope;
+      const clientMessageId =
+        envelope.clientMessageId ??
+        (parsed.type === "prompt" || parsed.type === "command"
+          ? `server-${crypto.randomUUID()}`
+          : null);
       if (
         handleImmediateWsMessage({
           parsed,

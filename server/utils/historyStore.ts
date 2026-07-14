@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
@@ -31,6 +32,9 @@ type HistoryStoreStatements = {
   updateKindByIdStmt: SqliteStatement;
   selectIdByExactKindStmt: SqliteStatement;
   updateTextAndTsByIdStmt: SqliteStatement;
+  deleteSessionLinksStmt: SqliteStatement;
+  upsertSessionLinkStmt: SqliteStatement;
+  selectSessionLinksStmt: SqliteStatement;
 };
 
 const historyStoreStatementsCache = new WeakMap<DatabaseType, HistoryStoreStatements>();
@@ -42,6 +46,19 @@ export interface HistoryEntry {
   kind?: string;
 }
 
+export interface AgentSessionLink {
+  agentId: string;
+  providerSessionId: string;
+  cwd?: string;
+  locator?: {
+    kind: string;
+    root?: string;
+    pattern?: string;
+  };
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
+
 interface HistoryStoreOptions {
   namespace?: string;
   storagePath?: string;
@@ -51,6 +68,24 @@ interface HistoryStoreOptions {
 }
 
 const logger = createLogger("HistoryStore");
+
+function resolveAgentSessionLocator(agentId: string): AgentSessionLink["locator"] {
+  if (agentId === "codex") {
+    return {
+      kind: "codex_sessions",
+      root: process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"),
+      pattern: "sessions/**/rollout-*.jsonl",
+    };
+  }
+  if (agentId === "claude") {
+    return {
+      kind: "claude_projects",
+      root: process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), ".claude"),
+      pattern: "projects/**/*.jsonl",
+    };
+  }
+  return { kind: "provider_session_id" };
+}
 
 function isHistoryInsertTraceEnabled(): boolean {
   return parseBooleanFlag(process.env.ADS_TRACE_HISTORY_INSERT, false);
@@ -76,12 +111,15 @@ export class HistoryStore {
   private updateKindByIdStmt?: SqliteStatement;
   private selectIdByExactKindStmt?: SqliteStatement;
   private updateTextAndTsByIdStmt?: SqliteStatement;
+  private deleteSessionLinksStmt?: SqliteStatement;
+  private upsertSessionLinkStmt?: SqliteStatement;
+  private selectSessionLinksStmt?: SqliteStatement;
 
   constructor(options: HistoryStoreOptions = {}) {
     this.storagePath = options.storagePath ?? path.join(resolveAdsStateDir(), "state.db");
     this.namespace = options.namespace?.trim() || "default";
     this.maxEntriesPerSession = Math.max(1, options.maxEntriesPerSession ?? 200);
-    this.maxTextLength = options.maxTextLength ?? 4000;
+    this.maxTextLength = options.maxTextLength ?? 64 * 1024;
     this.useSqlite = isSqliteDbPath(this.storagePath);
     if (this.useSqlite) {
       this.db = getStateDatabase(this.storagePath);
@@ -115,11 +153,15 @@ export class HistoryStore {
   }
 
   add(sessionId: string, entry: HistoryEntry): boolean {
+    return this.addWithResult(sessionId, entry) === "inserted";
+  }
+
+  addWithResult(sessionId: string, entry: HistoryEntry): "inserted" | "duplicate" | "failed" {
     const normalized = this.normalize(entry);
-    if (!normalized) return false;
+    if (!normalized) return "failed";
     const normalizedKey = String(sessionId ?? "").trim();
     if (!normalizedKey) {
-      return false;
+      return "failed";
     }
 
     if (!this.useSqlite || !this.db || !this.insertStmt) {
@@ -127,17 +169,17 @@ export class HistoryStore {
       if (sameHistoryClientMessageKind(normalized.kind, normalized.kind)) {
         const already = existing.some((e) => sameHistoryClientMessageKind(e.kind, normalized.kind));
         if (already) {
-          return false;
+          return "duplicate";
         }
       }
       existing.push(normalized);
       const trimmed = this.trim(existing);
       this.store.set(normalizedKey, trimmed);
       this.persist();
-      return true;
+      return "inserted";
     }
 
-    const tx = this.db.transaction((): boolean => {
+    const tx = this.db.transaction((): "inserted" | "duplicate" => {
       const info = this.insertStmt!.run(
         this.namespace,
         normalizedKey,
@@ -167,14 +209,13 @@ export class HistoryStore {
       if (inserted) {
         this.trimSqlite(normalizedKey);
       }
-      return inserted;
+      return inserted ? "inserted" : "duplicate";
     });
     try {
       return tx();
     } catch (error) {
       logger.warn(`[HistoryStore] Failed to insert history entry (sqlite)`, error);
-      // Fallback to best-effort: do not throw in callers
-      return false;
+      return "failed";
     }
   }
 
@@ -191,10 +232,76 @@ export class HistoryStore {
     }
 
     try {
-      this.deleteSessionStmt.run(this.namespace, normalizedKey);
+      const tx = this.db.transaction(() => {
+        this.deleteSessionStmt!.run(this.namespace, normalizedKey);
+        this.deleteSessionLinksStmt?.run(this.namespace, normalizedKey);
+      });
+      tx();
     } catch (error) {
       logger.warn(`[HistoryStore] Failed to clear history session (sqlite)`, error);
     }
+  }
+
+  linkAgentSession(
+    sessionId: string,
+    link: Pick<AgentSessionLink, "agentId" | "providerSessionId" | "cwd">,
+  ): boolean {
+    const normalizedSessionId = String(sessionId ?? "").trim();
+    const agentId = String(link.agentId ?? "").trim();
+    const providerSessionId = String(link.providerSessionId ?? "").trim();
+    if (!normalizedSessionId || !agentId || !providerSessionId || !this.db || !this.upsertSessionLinkStmt) {
+      return false;
+    }
+    const cwd = String(link.cwd ?? "").trim() || null;
+    const locator = resolveAgentSessionLocator(agentId);
+    const now = Date.now();
+    try {
+      this.upsertSessionLinkStmt.run(
+        this.namespace,
+        normalizedSessionId,
+        agentId,
+        providerSessionId,
+        cwd,
+        JSON.stringify(locator),
+        now,
+        now,
+      );
+      return true;
+    } catch (error) {
+      logger.warn("[HistoryStore] Failed to link agent session", error);
+      return false;
+    }
+  }
+
+  getAgentSessionLinks(sessionId: string): AgentSessionLink[] {
+    const normalizedSessionId = String(sessionId ?? "").trim();
+    if (!normalizedSessionId || !this.db || !this.selectSessionLinksStmt) {
+      return [];
+    }
+    const rows = this.selectSessionLinksStmt.all(this.namespace, normalizedSessionId) as Array<{
+      agentId: string;
+      providerSessionId: string;
+      cwd: string | null;
+      locatorJson: string | null;
+      firstSeenAt: number;
+      lastSeenAt: number;
+    }>;
+    return rows.map((row) => {
+      let locator: AgentSessionLink["locator"];
+      try {
+        locator = row.locatorJson ? JSON.parse(row.locatorJson) as AgentSessionLink["locator"] : undefined;
+      } catch {
+        locator = undefined;
+      }
+      return {
+        agentId: row.agentId,
+        providerSessionId: row.providerSessionId,
+        cwd: row.cwd ?? undefined,
+        locator,
+        firstSeenAt: row.firstSeenAt,
+        lastSeenAt: row.lastSeenAt,
+      };
+    });
   }
 
   updatePromptExecutionMetadata(
@@ -347,6 +454,9 @@ export class HistoryStore {
     this.updateKindByIdStmt = statements.updateKindByIdStmt;
     this.selectIdByExactKindStmt = statements.selectIdByExactKindStmt;
     this.updateTextAndTsByIdStmt = statements.updateTextAndTsByIdStmt;
+    this.deleteSessionLinksStmt = statements.deleteSessionLinksStmt;
+    this.upsertSessionLinkStmt = statements.upsertSessionLinkStmt;
+    this.selectSessionLinksStmt = statements.selectSessionLinksStmt;
   }
 
   private trimSqlite(sessionId: string): void {
@@ -511,6 +621,31 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
   const updateTextAndTsByIdStmt = db.prepare(
     `UPDATE history_entries SET text = ?, ts = ? WHERE id = ?`,
   );
+  const deleteSessionLinksStmt = db.prepare(
+    `DELETE FROM history_session_links WHERE namespace = ? AND session_id = ?`,
+  );
+  const upsertSessionLinkStmt = db.prepare(
+    `INSERT INTO history_session_links
+       (namespace, session_id, agent_id, provider_session_id, cwd, locator_json, first_seen_at, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(namespace, session_id, agent_id, provider_session_id)
+     DO UPDATE SET
+       cwd = COALESCE(excluded.cwd, history_session_links.cwd),
+       locator_json = excluded.locator_json,
+       last_seen_at = excluded.last_seen_at`,
+  );
+  const selectSessionLinksStmt = db.prepare(
+    `SELECT
+       agent_id AS agentId,
+       provider_session_id AS providerSessionId,
+       cwd,
+       locator_json AS locatorJson,
+       first_seen_at AS firstSeenAt,
+       last_seen_at AS lastSeenAt
+     FROM history_session_links
+     WHERE namespace = ? AND session_id = ?
+     ORDER BY last_seen_at DESC`,
+  );
   const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
   const statements = {
     insertStmt,
@@ -524,6 +659,9 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
     updateKindByIdStmt,
     selectIdByExactKindStmt,
     updateTextAndTsByIdStmt,
+    deleteSessionLinksStmt,
+    upsertSessionLinkStmt,
+    selectSessionLinksStmt,
   };
   historyStoreStatementsCache.set(db, statements);
   return statements;
