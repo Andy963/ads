@@ -6,7 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const scriptPath = fileURLToPath(import.meta.url);
+const sourceRoot = path.resolve(path.dirname(scriptPath), "..");
 const home = os.homedir();
 const runtimeRoot = path.join(home, ".local", "share", "ads-runtime");
 const releasesDir = path.join(runtimeRoot, "releases");
@@ -31,6 +32,7 @@ const toolEnv = {
 const releaseName = `${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${process.pid}`;
 const stagingDir = path.join(releasesDir, `.staging-${releaseName}`);
 const releaseDir = path.join(releasesDir, releaseName);
+const detachedDeployFlag = "ADS_DEPLOY_DETACHED";
 
 function formatCommand(command, args) {
   return [command, ...args].map((part) => JSON.stringify(part)).join(" ");
@@ -52,6 +54,33 @@ function run(command, args, options = {}) {
     throw new Error(`Command failed (${result.status}): ${formatCommand(command, args)}${details}`);
   }
   return String(result.stdout ?? "").trim();
+}
+
+function isRunningInsideService(serviceName) {
+  try {
+    const cgroup = fs.readFileSync("/proc/self/cgroup", "utf8");
+    return cgroup.split("\n").some((line) => line.includes(`/${serviceName}.service`));
+  } catch {
+    return false;
+  }
+}
+
+function delegateDeployment() {
+  const unitName = `ads-deploy-${releaseName}`;
+  run("systemd-run", [
+    "--user",
+    `--unit=${unitName}`,
+    "--collect",
+    "--property=Type=exec",
+    `--working-directory=${sourceRoot}`,
+    `--setenv=${detachedDeployFlag}=1`,
+    `--setenv=HOME=${home}`,
+    `--setenv=PATH=${toolEnv.PATH}`,
+    nodeBin,
+    scriptPath,
+  ]);
+  console.log(`Deployment delegated to ${unitName}.service`);
+  console.log(`Follow progress: journalctl --user -fu ${unitName}.service`);
 }
 
 function serviceIsActive(serviceName) {
@@ -218,6 +247,12 @@ function assembleRelease() {
   });
 
   fs.renameSync(stagingDir, releaseDir);
+}
+
+const hostedByAdsService = [webServiceName, telegramServiceName].some(isRunningInsideService);
+if (process.env[detachedDeployFlag] !== "1" && hostedByAdsService) {
+  delegateDeployment();
+  process.exit(0);
 }
 
 const previousCurrent = readCurrentTarget();

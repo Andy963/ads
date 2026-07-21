@@ -26,6 +26,8 @@ temp/
 .agent/skills/*
 .agent/skills/**/SKILL.md.bak.*
 !.agent/skills/metadata.yaml
+!.agent/skills/build-to-deploy/
+!.agent/skills/build-to-deploy/SKILL.md
 
 # Soul (long-term memory)
 soul.md
