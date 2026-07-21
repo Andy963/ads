@@ -55,6 +55,7 @@ worktrees/
 .gemini
 .claude
 .codex
+.jules
 AGENTS.md
 .idea/
 *.swp
