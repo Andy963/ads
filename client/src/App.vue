@@ -153,6 +153,7 @@ const {
   workerActiveAgentId,
   workerComposerDraft,
   workerThreadWarning,
+  workerLatestPromptKey,
   workerChatKey,
   workerQueuedPrompts,
   resumeThreadBlocked,
@@ -472,6 +473,7 @@ const plannerConnectionStatus = computed(() => {
               class="chatHost chatHost--planner"
               :messages="plannerMessages"
               :draft="plannerComposerDraft"
+              :latest-prompt-key="plannerChatKey"
               :queued-prompts="plannerQueuedPrompts"
               :pending-images="plannerPendingImages"
               :connected="plannerConnected"
@@ -511,6 +513,7 @@ const plannerConnectionStatus = computed(() => {
               class="chatHost"
               :messages="messages"
               :draft="workerComposerDraft"
+              :latest-prompt-key="workerLatestPromptKey"
               :queued-prompts="workerQueuedPrompts"
               :pending-images="pendingImages"
               :connected="connected"

@@ -9,7 +9,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、
 
 ## 当前能力
 
-- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Planner/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断。
+- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Planner/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
 - **任务看板与队列**：支持创建、编辑、排序、运行、暂停、取消、重试、删除任务，并在任务终态记录结果与 workspace patch artifact。
 - **任务草稿**：Planner 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
 - **多 Agent 适配**：Codex 是主要执行 Agent；Claude 和 Gemini 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。

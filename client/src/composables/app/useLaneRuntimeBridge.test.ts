@@ -46,6 +46,40 @@ describe("useLaneRuntimeBridge", () => {
     expect(bridge.activeChatLane.value).toBe("worker");
   });
 
+  it("keeps the worker latest-prompt key stable across chat sessions", () => {
+    const plannerRuntime = {
+      ...createRuntime(),
+      taskBundleDrafts: ref([]),
+      taskBundleDraftsBusy: ref(false),
+      taskBundleDraftsError: ref<string | null>(null),
+    };
+    const activeProject = ref({ chatSessionId: "session-1" });
+
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId: ref("p1"),
+      activeProject,
+      activeRuntime: shallowRef(createRuntime()),
+      activePlannerRuntime: shallowRef(plannerRuntime),
+      queueStatus: ref(null),
+      tasks: ref([]),
+      queuedPrompts: ref([]),
+      pendingImages: ref([]),
+      agentBusy: ref(false),
+      clearPlannerChat: () => {},
+      startNewChatSession: () => {},
+      resumePlannerThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    expect(bridge.workerChatKey.value).toBe("p1:session-1");
+    expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
+
+    activeProject.value = { chatSessionId: "session-2" };
+
+    expect(bridge.workerChatKey.value).toBe("p1:session-2");
+    expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
+  });
+
   it("returns planner lane to worker when the active project changes", async () => {
     const plannerRuntime = {
       ...createRuntime(),

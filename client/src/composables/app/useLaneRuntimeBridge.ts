@@ -106,6 +106,7 @@ export function useLaneRuntimeBridge(params: {
     },
   });
   const workerThreadWarning = computed(() => workerRuntime.value.threadWarning.value);
+  const workerLatestPromptKey = computed(() => `${params.activeProjectId.value}:worker`);
   const workerChatKey = computed(
     () => `${params.activeProjectId.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
   );
@@ -168,6 +169,7 @@ export function useLaneRuntimeBridge(params: {
     workerActiveAgentId,
     workerComposerDraft,
     workerThreadWarning,
+    workerLatestPromptKey,
     workerChatKey,
     workerQueuedPrompts,
     resumeThreadBlocked,

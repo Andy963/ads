@@ -15,6 +15,7 @@ const props = defineProps<{
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
   draft?: string;
+  latestPromptKey?: string;
   connected: boolean;
   busy: boolean;
   inputLocked?: boolean;
@@ -378,6 +379,7 @@ onBeforeUnmount(() => {
     <MainChatComposerPanel
       v-if="!readOnly"
       :draft="draft"
+      :latest-prompt-key="latestPromptKey"
       :queued-prompts="queuedPrompts"
       :pending-images="pendingImages"
       :connected="connected"

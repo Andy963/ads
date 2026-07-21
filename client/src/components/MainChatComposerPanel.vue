@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 
 import type { ModelConfig } from "../api/types";
 import { normalizeReasoningEffort } from "../lib/chatPreferences";
@@ -36,6 +36,7 @@ const REASONING_EFFORT_LABELS: Record<string, string> = {
 
 const props = defineProps<{
   draft?: string;
+  latestPromptKey?: string;
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
   connected: boolean;
@@ -271,6 +272,39 @@ const agentDelegationLabel = computed(() => {
 });
 
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
+const latestPrompt = ref("");
+const latestPromptStorageKey = computed(() => {
+  const scope = String(props.latestPromptKey ?? "").trim();
+  return scope ? `ADS_WEB_LATEST_PROMPT:${scope}` : "";
+});
+
+function loadLatestPrompt(): void {
+  const key = latestPromptStorageKey.value;
+  if (!key) {
+    latestPrompt.value = "";
+    return;
+  }
+  try {
+    latestPrompt.value = String(localStorage.getItem(key) ?? "").trim();
+  } catch {
+    latestPrompt.value = "";
+  }
+}
+
+function persistLatestPrompt(content: string): void {
+  const prompt = String(content ?? "").trim();
+  if (!prompt) return;
+  latestPrompt.value = prompt;
+  const key = latestPromptStorageKey.value;
+  if (!key) return;
+  try {
+    localStorage.setItem(key, prompt);
+  } catch {
+    // Keep the in-memory fallback when browser storage is unavailable.
+  }
+}
+
+watch(latestPromptStorageKey, loadLatestPrompt, { immediate: true });
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
@@ -338,9 +372,57 @@ const {
   isBusy: () => props.busy,
   isInputLocked: () => Boolean(props.inputLocked),
   getApiToken: () => String(props.apiToken ?? ""),
-  onSend: (content) => emit("send", content),
+  onSend: (content) => {
+    persistLatestPrompt(content);
+    emit("send", content);
+  },
   onAddImages: (images) => emit("addImages", images),
 });
+
+const hasTextSelection = ref(false);
+const canRestoreLatestPrompt = computed(
+  () => !props.inputLocked && !input.value.trim() && Boolean(latestPrompt.value.trim()),
+);
+
+function updateTextSelection(): void {
+  const el = inputEl.value;
+  if (!el || props.inputLocked) {
+    hasTextSelection.value = false;
+    return;
+  }
+  hasTextSelection.value = el.selectionEnd > el.selectionStart;
+}
+
+function clearTextSelectionState(): void {
+  hasTextSelection.value = false;
+}
+
+async function restoreLatestPrompt(): Promise<void> {
+  if (!canRestoreLatestPrompt.value) return;
+  const prompt = latestPrompt.value;
+  input.value = prompt;
+  await nextTick();
+  const el = inputEl.value;
+  if (!el) return;
+  el.focus();
+  el.setSelectionRange(prompt.length, prompt.length);
+  updateTextSelection();
+}
+
+async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
+  const el = inputEl.value;
+  if (!el || props.inputLocked) return;
+  const current = input.value;
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  if (end <= start) return;
+  const selected = current.slice(start, end);
+  input.value = `${current.slice(0, start)}\"\"\"${selected}\"\"\"${current.slice(end)}`;
+  await nextTick();
+  el.focus();
+  el.setSelectionRange(start + 3, end + 3);
+  updateTextSelection();
+}
 </script>
 
 <template>
@@ -425,6 +507,11 @@ const {
         placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）"
         @keydown="onInputKeydown"
         @paste="onPaste"
+        @select="updateTextSelection"
+        @keyup="updateTextSelection"
+        @mouseup="updateTextSelection"
+        @focus="updateTextSelection"
+        @blur="clearTextSelectionState"
       />
       <div class="inputToolbar">
         <div class="inputToolbarLeft">
@@ -481,6 +568,32 @@ const {
           </div>
         </div>
         <div class="inputToolbarRight">
+          <button
+            class="composerToolIcon"
+            type="button"
+            title="恢复最新 Prompt"
+            aria-label="恢复最新 Prompt"
+            data-testid="restore-latest-prompt"
+            :disabled="!canRestoreLatestPrompt"
+            @mousedown.prevent
+            @click="restoreLatestPrompt"
+          >
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M5 3.75A1.75 1.75 0 0 1 6.75 2h6.5A1.75 1.75 0 0 1 15 3.75v13.1a.65.65 0 0 1-1.02.54L10 14.74l-3.98 2.65A.65.65 0 0 1 5 16.85V3.75Z" />
+            </svg>
+          </button>
+          <button
+            class="composerToolIcon composerToolIcon--quote"
+            type="button"
+            title="用三引号包裹选中文本"
+            aria-label="用三引号包裹选中文本"
+            data-testid="wrap-triple-quotes"
+            :disabled="inputLocked || !hasTextSelection"
+            @mousedown.prevent
+            @click="wrapSelectedTextWithTripleQuotes"
+          >
+            <span aria-hidden="true">&quot;&quot;&quot;</span>
+          </button>
           <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
             <div class="voiceBars">
               <span class="bar" />
@@ -727,6 +840,46 @@ const {
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
+}
+
+.composerToolIcon {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #64748b;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s, opacity 0.15s;
+}
+
+.composerToolIcon--quote {
+  margin-right: 2px;
+}
+
+.composerToolIcon:hover:not(:disabled) {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.composerToolIcon:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.composerToolIcon:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+.composerToolIcon--quote span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -1px;
 }
 
 .inputToolbar {
