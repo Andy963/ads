@@ -3,20 +3,20 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、Planner/Worker 对话、任务草稿与队列、定时任务、技能和长期记忆组织工作，并可选通过 Telegram Bot 远程访问。
+ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、Advisor/Worker 对话、任务草稿与队列、定时任务、技能和长期记忆组织工作，支持通过 Web Console 与 Telegram Bot 远程对话与控制 Agent 及任务（不止于任务通知）。
 
-当前不支持把 ADS 当作独立的用户命令行产品使用。仓库里仍有 `server/cli.ts` 和 `package.json` 的 `bin` 配置，但它们只是构建后的服务启动入口和兼容包装；日常交互入口是 Web Console，Telegram Bot 是可选远程入口。
+当前不支持把 ADS 当作独立的用户命令行产品使用。仓库里仍有 `server/cli.ts` 和 `package.json` 的 `bin` 配置，但它们只是构建后的服务启动入口和兼容包装；日常交互入口是 Web Console，Web Console 与 Telegram Bot 均支持远程对话与控制，Telegram Bot 为可选入口。
 
 ## 当前能力
 
-- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Planner/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
+- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
 - **任务看板与队列**：支持创建、编辑、排序、运行、暂停、取消、重试、删除任务，并在任务终态记录结果与 workspace patch artifact。
-- **任务草稿**：Planner 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
-- **多 Agent 适配**：Codex 是主要执行 Agent；Claude 和 Gemini 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。
+- **任务草稿**：Advisor 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
+- **多 Agent 适配**：Codex 是主要执行 Agent；Claude 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。
 - **模型配置**：Web UI 可维护全局模型配置，配置存储在 ADS 全局 SQLite 状态库中。
-- **定时任务**：Planner/Worker 输出 `ads-schedule` block 后，Web 服务会编译为 schedule spec，并由内置 scheduler 调度执行。
+- **定时任务**：Advisor/Worker 输出 `ads-schedule` block 后，Web 服务会编译为 schedule spec，并由内置 scheduler 调度执行。
 - **技能与记忆**：支持内置、状态目录、仓库级、全局和可选 workspace skills；支持 workspace soul、偏好指令和系统提示再注入。
-- **Telegram Bot**：可选单用户 Bot，支持文本、图片、文件、语音转写、目录切换、偏好管理、笔记标记和中断当前任务。
+- **Telegram Bot**：可选单用户 Bot，支持文本、图片、文件、语音转写、目录切换、偏好管理、笔记标记和中断当前任务；与 Web Console 同样支持远程对话与控制 Agent 及任务执行，不止于任务通知。
 - **集中状态存储**：Web 用户、会话、历史、模型配置等存储在全局 SQLite；任务、附件、队列、schedule 等按 workspace 隔离。
 
 ## 环境要求
@@ -24,7 +24,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、
 - Node.js 20 或更新版本。
 - npm 可用，并能构建 `better-sqlite3` native 依赖。
 - Codex CLI 可用，默认从 `codex` 或 `ADS_CODEX_BIN` 解析。
-- Claude/Gemini 为可选能力，默认从 `claude`、`gemini` 或对应 `ADS_*_BIN` 解析。
+- Claude 为可选能力，默认从 `claude` 或对应 `ADS_CLAUDE_BIN` 解析。
 - Telegram Bot 仅在需要远程入口或任务通知时配置。
 
 ## 快速开始
@@ -148,7 +148,7 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES` | `5` | 会话清理间隔 |
 | `ADS_WEB_SESSION_CLEANUP_INTERVAL_MS` | 未设置 | 会话清理间隔毫秒覆盖 |
 | `ADS_WEB_BASE_PATH` / `VITE_BASE_PATH` | `/` | 前端构建 base path |
-| `ADS_PLANNER_CODEX_MODEL` | 未设置 | Planner lane Codex 模型覆盖 |
+| `ADS_PLANNER_CODEX_MODEL` | 未设置 | Advisor lane Codex 模型覆盖 |
 | `TASK_QUEUE_ENABLED` | `true` | 是否启用任务队列 |
 | `TASK_QUEUE_AUTO_START` | `false` | Web 启动后是否自动运行队列 |
 | `TASK_QUEUE_DEFAULT_MODEL` | 未设置 | 任务队列默认模型覆盖 |
@@ -161,9 +161,6 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `ADS_CLAUDE_ENABLED` | 启用 | 设为 `0` 禁用 Claude |
 | `ADS_CLAUDE_BIN` | `claude` | Claude 二进制路径 |
 | `ADS_CLAUDE_MODEL` | 未设置 | Claude 模型覆盖 |
-| `ADS_GEMINI_ENABLED` | 启用 | 设为 `0` 禁用 Gemini |
-| `ADS_GEMINI_BIN` | `gemini` | Gemini 二进制路径 |
-| `ADS_GEMINI_MODEL` | 未设置 | Gemini 模型覆盖 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | Agent 可用性探测超时 |
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` | Agent CLI 连续无 stdout/stderr 活动的空闲超时；有输出会续期，`0` 表示禁用 |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` | 单次 Agent CLI 的最大墙钟运行时长，默认 12 小时，`0` 表示禁用 |
@@ -247,9 +244,9 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 
 - 首次登录前必须运行 `npm run web:init-admin`。
 - 默认 `default` project 绑定到 `ALLOWED_DIRS` 的第一个目录；也可以在 Web UI 添加、移除、排序项目。
-- Web Worker lane 默认用于实际执行，Planner lane 用于规划和任务草稿。
+- Web Worker lane 默认用于实际执行，Advisor lane 用于规划和任务草稿。
 - Worker 执行过程中只展示最新一条命令预览；连接恢复后，一旦收到新的命令、流式活动或同步到命令结果，重连/等待状态提示会立即消失，但当前 turn 仍保持忙碌直到收到最终结果。服务端会在 welcome 中声明是否紧随 bootstrap history，客户端据此先对账未确认请求再决定是否重发，避免重复执行或永久锁定输入；恢复历史继续到命令活动时会丢弃断线前未完成的 assistant 片段。恢复上下文期间完成的语音转写仍会保留到当前输入草稿。
-- Web 内置 `/pwd` 和 `/cd <path>`；旧的用户可见 `/ads.*` slash 规划命令已停用，任务草稿和审批由 UI 与 Planner 流程驱动。
+- Web 内置 `/pwd` 和 `/cd <path>`；旧的用户可见 `/ads.*` slash 规划命令已停用，任务草稿和审批由 UI 与 Advisor 流程驱动。
 - Goal Mode 依赖 Codex app-server 正常启动；普通 Worker/任务执行依赖 Codex CLI。
 - Web 服务启动时会同步 runtime templates，并启动 scheduler、任务队列管理器、Agent 可用性探测和 Telegram 任务通知重试循环。
 
@@ -294,7 +291,7 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 ```text
 ads/
 ├── server/
-│   ├── agents/        # Codex / Claude / Gemini adapters, coordination, probes
+│   ├── agents/        # Codex / Claude adapters, coordination, probes
 │   ├── codex/         # Codex app-server protocol and RPC client
 │   ├── context/       # context compaction and token estimation
 │   ├── memory/        # soul, preference directives, markdown memory
