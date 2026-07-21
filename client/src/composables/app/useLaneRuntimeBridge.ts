@@ -4,12 +4,15 @@ export type ChatLane = "planner" | "worker";
 
 type RuntimePrompt = { id: string; text: string; images: unknown[] };
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
+type LaneStatus = { kind: "info" | "progress" | "disconnected" | "error"; message: string };
 type RuntimeShape = {
   messages: Ref<unknown[]>;
   queuedPrompts: Ref<RuntimePrompt[]>;
   pendingImages: Ref<unknown[]>;
   connected: Ref<boolean>;
   busy: Ref<boolean>;
+  inputLocked: Ref<boolean>;
+  laneStatus: Ref<LaneStatus | null>;
   delegationsInFlight: Ref<unknown[]>;
   composerDraft: Ref<string>;
   availableAgents: Ref<AgentOption[]>;
@@ -75,6 +78,8 @@ export function useLaneRuntimeBridge(params: {
   const plannerPendingImages = computed(() => plannerRuntime.value.pendingImages.value);
   const plannerConnected = computed(() => plannerRuntime.value.connected.value);
   const plannerBusy = computed(() => plannerRuntime.value.busy.value);
+  const plannerInputLocked = computed(() => plannerRuntime.value.inputLocked.value);
+  const plannerLaneStatus = computed(() => plannerRuntime.value.laneStatus.value);
   const plannerAgentDelegations = computed(() => plannerRuntime.value.delegationsInFlight.value);
   const plannerDrafts = computed(() => plannerRuntime.value.taskBundleDrafts.value);
   const plannerDraftsBusy = computed(() => plannerRuntime.value.taskBundleDraftsBusy.value);
@@ -91,6 +96,8 @@ export function useLaneRuntimeBridge(params: {
   const plannerChatKey = computed(() => `${params.activeProjectId.value}:planner`);
 
   const workerAgents = computed(() => workerRuntime.value.availableAgents.value);
+  const workerInputLocked = computed(() => workerRuntime.value.inputLocked.value);
+  const workerLaneStatus = computed(() => workerRuntime.value.laneStatus.value);
   const workerActiveAgentId = computed(() => workerRuntime.value.activeAgentId.value);
   const workerComposerDraft = computed({
     get: () => workerRuntime.value.composerDraft.value,
@@ -144,6 +151,8 @@ export function useLaneRuntimeBridge(params: {
     plannerPendingImages,
     plannerConnected,
     plannerBusy,
+    plannerInputLocked,
+    plannerLaneStatus,
     plannerAgentDelegations,
     plannerDrafts,
     plannerDraftsBusy,
@@ -154,6 +163,8 @@ export function useLaneRuntimeBridge(params: {
     plannerThreadWarning,
     plannerChatKey,
     workerAgents,
+    workerInputLocked,
+    workerLaneStatus,
     workerActiveAgentId,
     workerComposerDraft,
     workerThreadWarning,

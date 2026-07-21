@@ -233,8 +233,8 @@ describe("Lane websocket sessions", () => {
     workerWs.onMessage?.({ type: "error", message: "worker resume failed" });
     await settleUi(wrapper as any);
 
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history", "worker resume failed"]);
-    expect(workerRt.messages.value.at(-1)?.kind).toBe("error");
+    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(workerRt.laneStatus.value).toEqual({ kind: "error", message: "worker resume failed" });
 
     await controller.resumePlannerThread();
     expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history"]);
@@ -242,8 +242,8 @@ describe("Lane websocket sessions", () => {
     plannerWs.onMessage?.({ type: "error", message: "planner resume failed" });
     await settleUi(wrapper as any);
 
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history", "planner resume failed"]);
-    expect(plannerRt.messages.value.at(-1)?.kind).toBe("error");
+    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history"]);
+    expect(plannerRt.laneStatus.value).toEqual({ kind: "error", message: "planner resume failed" });
     wrapper.unmount();
   });
 
@@ -263,15 +263,32 @@ describe("Lane websocket sessions", () => {
 
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
     expect(plannerWs.send).not.toHaveBeenCalledWith("task_resume");
-    expect(workerRt.messages.value.at(-1)).toMatchObject({
-      role: "system",
+    expect(workerRt.laneStatus.value).toEqual({
       kind: "error",
-      content: "任务执行中，无法恢复",
+      message: "任务执行中，无法恢复",
     });
-    expect(plannerRt.messages.value.at(-1)).toMatchObject({
-      role: "system",
+    expect(plannerRt.laneStatus.value).toEqual({
       kind: "error",
-      content: "任务执行中，无法恢复",
+      message: "任务执行中，无法恢复",
+    });
+    wrapper.unmount();
+  });
+
+  it("unlocks the target lane when a resume request is not accepted by the websocket", async () => {
+    const { wrapper, controller } = await mountController();
+
+    const workerRt = controller.getRuntime("default");
+    const workerWs = wsByChatSessionId.get("main");
+    workerWs.send.mockReturnValueOnce(false);
+
+    await controller.resumeTaskThread();
+    await settleUi(wrapper as any);
+
+    expect(workerRt.inputLocked.value).toBe(false);
+    expect(workerRt.resumeReplacePending).toBe(false);
+    expect(workerRt.laneStatus.value).toEqual({
+      kind: "error",
+      message: "恢复上下文失败：WebSocket 尚未连接，请稍后重试",
     });
     wrapper.unmount();
   });

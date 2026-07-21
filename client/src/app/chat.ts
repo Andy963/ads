@@ -9,8 +9,6 @@ import { createStreamingActions } from "./chatStreaming";
 
 export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
-const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
-
 type PersistedPrompt = {
   clientMessageId: string;
   text: string;
@@ -286,10 +284,13 @@ export function createChatActions(ctx: AppContext) {
     rt.turnHasPatch = false;
     clearStepLive(rt);
 
-    const next: ChatItem[] = notice.trim()
-      ? [{ id: randomId("sys"), role: "system", kind: "text", content: notice.trim() }, ...tail]
-      : [...tail];
-    setMessages(next, rt);
+    const normalizedNotice = notice.trim();
+    if (normalizedNotice) {
+      rt.laneStatus.value = { kind: "info", message: normalizedNotice };
+    } else {
+      rt.laneStatus.value = null;
+    }
+    setMessages([...tail], rt);
   };
 
   const recordChatClear = (reason: "thread_reset", source: string): void => {
@@ -315,6 +316,7 @@ export function createChatActions(ctx: AppContext) {
     rt.threadWarning.value = params.warning ?? null;
     rt.ignoreNextHistory = true;
     rt.resumeReplacePending = false;
+    rt.inputLocked.value = false;
     resetConversation(rt, params.notice, params.keepLatestTurn ?? false);
     if (params.resetThreadId) {
       rt.activeThreadId.value = null;
@@ -330,6 +332,8 @@ export function createChatActions(ctx: AppContext) {
     rt.threadWarning.value = null;
     rt.ignoreNextHistory = false;
     rt.resumeReplacePending = true;
+    rt.inputLocked.value = true;
+    rt.laneStatus.value = { kind: "progress", message: "正在恢复上下文…" };
     finalizeCommandBlock(rt);
   };
 
@@ -339,6 +343,8 @@ export function createChatActions(ctx: AppContext) {
       return;
     }
     rt.resumeReplacePending = false;
+    rt.inputLocked.value = false;
+    rt.laneStatus.value = null;
     resetConversation(rt, "", false);
     rt.activeThreadId.value = null;
     finalizeCommandBlock(rt);
@@ -347,20 +353,12 @@ export function createChatActions(ctx: AppContext) {
 
   const cancelPendingResume = (rt: ProjectRuntime): void => {
     rt.resumeReplacePending = false;
+    rt.inputLocked.value = false;
   };
 
   const applyStreamingDisconnectCleanup = (rt: ProjectRuntime): void => {
     const existing = rt.messages.value.slice();
-    const interruptedExecuteIds = new Set(
-      existing
-        .filter((message) => message.kind === "execute" && message.streaming === true)
-        .map((message) => String(message.id ?? "")),
-    );
-    const next = finalizeStreamingOnDisconnect(existing, LIVE_STEP_ID).map((message) =>
-      interruptedExecuteIds.has(String(message.id ?? ""))
-        ? { ...message, id: randomId("exec-final") }
-        : message,
-    );
+    const next = finalizeStreamingOnDisconnect(existing, LIVE_STEP_ID);
     if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;
     setMessages(next, rt);
   };
@@ -442,6 +440,7 @@ export function createChatActions(ctx: AppContext) {
 
   const enqueuePrompt = (text: string, images: IncomingImage[], rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
+    if (state.inputLocked.value) return;
     const content = String(text ?? "").trim();
     const imgs = Array.isArray(images) ? images : [];
     if (!content && imgs.length === 0) return;
@@ -462,8 +461,12 @@ export function createChatActions(ctx: AppContext) {
 
   const enqueueMainPrompt = (text: string, images: IncomingImage[]): void => enqueuePrompt(text, images);
 
-  const flushQueuedPrompts = async (rt?: ProjectRuntime): Promise<void> => {
+  const flushQueuedPrompts = async (
+    rt?: ProjectRuntime,
+    options?: { preserveErrorStatus?: boolean },
+  ): Promise<void> => {
     const state = runtimeOrActive(rt);
+    if (state.inputLocked.value && !state.queuedPrompts.value[0]?.restoredFromStorage) return;
     if (runtimeAgentBusy(state)) return;
     if (!state.connected.value) return;
     if (!state.ws) return;
@@ -521,9 +524,6 @@ export function createChatActions(ctx: AppContext) {
         ...(effort ? { modelReasoningEffort: effort } : {}),
       };
       pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution }, state);
-      if (next.restoredFromStorage) {
-        pushMessageBeforeLive({ role: "system", kind: "text", content: PENDING_PROMPT_REPLAY_NOTICE }, state);
-      }
       pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
       state.delegationsInFlight.value = [];
       state.busy.value = true;
@@ -536,6 +536,13 @@ export function createChatActions(ctx: AppContext) {
       sendAccepted = state.ws.sendPrompt(payload, next.clientMessageId) !== false;
       if (!sendAccepted) {
         throw new Error("WebSocket prompt send was not accepted");
+      }
+      if (!options?.preserveErrorStatus || state.laneStatus.value?.kind !== "error") {
+        state.laneStatus.value = null;
+      }
+      if (next.restoredFromStorage) {
+        state.inputLocked.value = true;
+        state.laneStatus.value = { kind: "progress", message: "请求已重新发送，正在等待后端结果…" };
       }
     } catch {
       state.messages.value = messagesBeforeFlush;

@@ -107,8 +107,8 @@ export function createTaskEventActions(
     finalizeCommandBlock(state);
   };
 
-  const finishTaskTerminalCleanup = (state: ProjectRuntime): void => {
-    void flushQueuedPrompts(state);
+  const finishTaskTerminalCleanup = (state: ProjectRuntime, options?: { preserveErrorStatus?: boolean }): void => {
+    void flushQueuedPrompts(state, options);
     void loadQueueStatus();
   };
 
@@ -142,12 +142,13 @@ export function createTaskEventActions(
       return;
     }
     if (role === "system") {
-      pushMessageBeforeLive({ role: "system", kind: "text", content }, state);
+      state.laneStatus.value = { kind: "info", message: content };
     }
   };
 
   const onTaskEvent = (payload: { event: TaskEventPayload["event"]; data: unknown }, rt?: ProjectRuntime): void => {
     const state = ctx.runtimeOrActive(rt);
+    state.laneStatus ??= { value: null };
     pruneTaskChatBuffer(state);
 
     switch (payload.event) {
@@ -218,6 +219,7 @@ export function createTaskEventActions(
         if (task.result && task.result.trim() && !hasAssistantAfterLastUser(state)) {
           finalizeAssistant(task.result, state);
         }
+        state.laneStatus.value = null;
         finishTaskTerminalCleanup(state);
         return;
       }
@@ -226,8 +228,8 @@ export function createTaskEventActions(
         if (!data) return;
         startTaskTerminalCleanup(data.task.id, state);
         upsertTask(data.task, state);
-        pushMessageBeforeLive({ role: "system", kind: "error", content: `[任务失败] ${data.error}` }, state);
-        finishTaskTerminalCleanup(state);
+        state.laneStatus.value = { kind: "error", message: `[任务失败] ${data.error}` };
+        finishTaskTerminalCleanup(state, { preserveErrorStatus: true });
         return;
       }
       case "task:cancelled": {
@@ -235,8 +237,8 @@ export function createTaskEventActions(
         if (!task) return;
         startTaskTerminalCleanup(task.id, state);
         upsertTask(task, state);
-        pushMessageBeforeLive({ role: "system", kind: "error", content: "[已终止]" }, state);
-        finishTaskTerminalCleanup(state);
+        state.laneStatus.value = { kind: "error", message: "[已终止]" };
+        finishTaskTerminalCleanup(state, { preserveErrorStatus: true });
         return;
       }
     }

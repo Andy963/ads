@@ -35,6 +35,56 @@ describe("web/ws/bootstrapDelivery", () => {
       });
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, false);
+      assert.equal((sent[1] as { type?: unknown }).type, "agents");
+      assert.equal(sent.length, 2);
+    } finally {
+      historyStore.clear("history-1");
+    }
+  });
+
+  it("reports completed fresh-mode prompts without replaying stale history", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({
+      namespace: "test-bootstrap-delivery-fresh-completed",
+      maxEntriesPerSession: 20,
+    });
+    historyStore.add("history-1", {
+      role: "user",
+      text: "apply the change",
+      ts: 1,
+      kind: "client_message_id:prompt-1",
+    });
+    historyStore.add("history-1", { role: "ai", text: "Done.", ts: 2 });
+    historyStore.add("history-1", { role: "status", text: "已恢复后端上下文线程。", ts: 3, kind: "status" });
+
+    try {
+      sendInitialBootstrapMessages({
+        ws: {} as any,
+        safeJsonSend: (_ws, payload) => sent.push(payload),
+        sessionManager: {
+          getSavedThreadId: () => undefined,
+          getContextRestoreMode: () => "fresh",
+          getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => null,
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+        sessionId: "session-1",
+        chatSessionId: "custom-worker",
+        workspace: { path: "/tmp/project" },
+        inFlight: false,
+        historyStore,
+        historyKey: "history-1",
+      });
+
+      assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, false);
+      assert.deepEqual((sent[0] as { completedClientMessageIds?: unknown }).completedClientMessageIds, ["prompt-1"]);
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
       assert.equal(sent.length, 2);
     } finally {
@@ -73,6 +123,7 @@ describe("web/ws/bootstrapDelivery", () => {
       });
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, true);
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
       assert.deepEqual(sent[2], {
         type: "history",
@@ -117,6 +168,7 @@ describe("web/ws/bootstrapDelivery", () => {
       });
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, true);
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
       assert.deepEqual(sent[2], {
         type: "history",

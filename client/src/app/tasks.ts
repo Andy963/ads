@@ -62,10 +62,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
   const {
     threadReset,
     clearConversationForResume,
+    cancelPendingResume,
     enqueueMainPrompt,
     enqueuePrompt,
     removeQueuedPrompt,
-    pushMessageBeforeLive,
     clearPendingPromptReplayState,
   } = ctx;
 
@@ -433,6 +433,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const sendMainPrompt = (content: string): void => {
     apiError.value = null;
+    if (activeRuntime.value.inputLocked.value) return;
     const text = String(content ?? "");
     const images = pendingImages.value.slice();
     pendingImages.value = [];
@@ -443,6 +444,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     apiError.value = null;
     const text = String(content ?? "");
     const planner = activePlannerRuntime.value;
+    if (planner.inputLocked.value) return;
     const images = planner.pendingImages.value.slice();
     planner.pendingImages.value = [];
     enqueuePrompt(text, images, planner);
@@ -611,7 +613,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     if (runtimeTasksBusy(rt) || Boolean(rt.queueStatus.value?.running)) {
       const msg = "任务执行中，无法恢复";
       rt.apiError.value = msg;
-      pushMessageBeforeLive({ role: "system", kind: "error", content: msg }, rt);
+      rt.laneStatus.value = { kind: "error", message: msg };
+      return;
+    }
+    if (rt.inputLocked.value) {
       return;
     }
 
@@ -622,11 +627,15 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       if (!rt.ws || !rt.connected.value) {
         await deps.connectWs(pid);
       }
-      rt.ws?.send("task_resume");
+      const sent = rt.ws?.send("task_resume");
+      if (sent === false) {
+        throw new Error("WebSocket 尚未连接，请稍后重试");
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       rt.apiError.value = msg;
-      pushMessageBeforeLive({ role: "system", kind: "error", content: `恢复上下文失败：${msg}` }, rt);
+      cancelPendingResume(rt);
+      rt.laneStatus.value = { kind: "error", message: `恢复上下文失败：${msg}` };
     }
   };
 
@@ -639,7 +648,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     if (rt.busy.value || runtimeTasksBusy(workerRt) || Boolean(workerRt.queueStatus.value?.running)) {
       const msg = "任务执行中，无法恢复";
       rt.apiError.value = msg;
-      pushMessageBeforeLive({ role: "system", kind: "error", content: msg }, rt);
+      rt.laneStatus.value = { kind: "error", message: msg };
+      return;
+    }
+    if (rt.inputLocked.value) {
       return;
     }
 
@@ -649,29 +661,37 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       if (!rt.ws || !rt.connected.value) {
         await deps.connectPlannerWs(pid);
       }
-      rt.ws?.send("task_resume");
+      const sent = rt.ws?.send("task_resume");
+      if (sent === false) {
+        throw new Error("WebSocket 尚未连接，请稍后重试");
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       rt.apiError.value = msg;
-      pushMessageBeforeLive({ role: "system", kind: "error", content: `恢复上下文失败：${msg}` }, rt);
+      cancelPendingResume(rt);
+      rt.laneStatus.value = { kind: "error", message: `恢复上下文失败：${msg}` };
     }
   };
 
   const addPendingImages = (imgs: IncomingImage[]): void => {
     const rt = activeRuntime.value;
+    if (rt.inputLocked.value) return;
     rt.pendingImages.value = [...rt.pendingImages.value, ...(Array.isArray(imgs) ? imgs : [])];
   };
 
   const clearPendingImages = (): void => {
+    if (activeRuntime.value.inputLocked.value) return;
     activeRuntime.value.pendingImages.value = [];
   };
 
   const addPlannerPendingImages = (imgs: IncomingImage[]): void => {
     const rt = activePlannerRuntime.value;
+    if (rt.inputLocked.value) return;
     rt.pendingImages.value = [...rt.pendingImages.value, ...(Array.isArray(imgs) ? imgs : [])];
   };
 
   const clearPlannerPendingImages = (): void => {
+    if (activePlannerRuntime.value.inputLocked.value) return;
     activePlannerRuntime.value.pendingImages.value = [];
   };
 

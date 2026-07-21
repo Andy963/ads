@@ -236,6 +236,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const chatSessionId = resolveChatSessionId(project, mode);
     const initialRt = getRuntimeForMode(mode, pid);
     let rt = initialRt;
+    rt.inputLocked ??= { value: false };
+    rt.laneStatus ??= { value: null };
     rt.projectSessionId = String(project.sessionId ?? "").trim();
     rt.chatSessionId = chatSessionId;
     restoreReasoningEffort(rt);
@@ -326,6 +328,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
       rt.delegationsInFlight.value = [];
+      rt.inputLocked.value = false;
+      rt.laneStatus.value = null;
       clearPendingPromptReplayState(rt);
       dropReconnectBusyMessage();
     };
@@ -344,14 +348,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         const reconnectContent = pickReconnectNotice({
           hasPendingAck: Boolean(String(rt.pendingAckClientMessageId ?? "").trim()),
         });
-        pushMessageBeforeLive(
-          {
-            role: "system",
-            kind: "text",
-            content: reconnectContent,
-          },
-          rt,
-        );
+        rt.inputLocked.value = true;
+        rt.laneStatus.value = { kind: "progress", message: reconnectContent };
       }
     };
 

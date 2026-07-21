@@ -17,6 +17,7 @@ const props = defineProps<{
   draft?: string;
   connected: boolean;
   busy: boolean;
+  inputLocked?: boolean;
   readOnly?: boolean;
   agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
   activeAgentId?: string;
@@ -36,7 +37,7 @@ const props = defineProps<{
   headerAction?: { title: string; ariaLabel?: string; testId?: string };
   headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
   threadWarning?: string | null;
-  connectionStatusKind?: "disconnected" | "error" | null;
+  connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
 }>();
 
@@ -381,6 +382,7 @@ onBeforeUnmount(() => {
       :pending-images="pendingImages"
       :connected="connected"
       :busy="busy"
+      :input-locked="inputLocked"
       :agents="agents"
       :active-agent-id="activeAgentId"
       :models="models"

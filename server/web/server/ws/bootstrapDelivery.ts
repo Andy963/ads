@@ -3,6 +3,7 @@ import type { WebSocket } from "ws";
 import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryEntry, HistoryStore } from "../../../utils/historyStore.js";
+import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 
@@ -40,6 +41,23 @@ function shouldReplayFreshHistory(entries: HistoryEntry[]): boolean {
     return entry.role === "status" && (entry.kind === "error" || entry.kind === "execute" || isReplayableBuiltinStatus(entry));
   }
   return false;
+}
+
+function collectCompletedClientMessageIds(entries: HistoryEntry[]): string[] {
+  const completed = new Set<string>();
+  let currentClientMessageId = "";
+  for (const entry of entries) {
+    if (entry.role === "user") {
+      currentClientMessageId = getHistoryClientMessageId(entry.kind);
+      continue;
+    }
+    if (!currentClientMessageId) continue;
+    if (entry.role === "ai" || (entry.role === "status" && entry.kind === "error")) {
+      completed.add(currentClientMessageId);
+      currentClientMessageId = "";
+    }
+  }
+  return [...completed];
 }
 
 function trimTrailingFreshStatusNotices(entries: HistoryEntry[]): HistoryEntry[] {
@@ -80,6 +98,17 @@ export function sendInitialBootstrapMessages(args: {
     agentAvailability: args.agentAvailability,
     allowSavedThreadFallback: true,
   });
+  const historyEntries = args.historyStore.get(args.historyKey);
+  const shouldReplayHistory =
+    args.inFlight ||
+    bootstrapState.contextMode !== "fresh" ||
+    Boolean(bootstrapState.threadId) ||
+    shouldReplayFreshHistory(historyEntries);
+  const replayHistoryEntries =
+    bootstrapState.contextMode === "fresh" ? trimTrailingFreshStatusNotices(historyEntries) : historyEntries;
+  const historyPayload = shouldReplayHistory
+    ? buildHistoryBootstrapPayload(replayHistoryEntries) ?? { type: "history", items: [] }
+    : null;
 
   args.safeJsonSend(
     args.ws,
@@ -88,6 +117,8 @@ export function sendInitialBootstrapMessages(args: {
       chatSessionId: args.chatSessionId,
       workspace: args.workspace,
       inFlight: args.inFlight,
+      bootstrapHistory: historyPayload !== null,
+      completedClientMessageIds: collectCompletedClientMessageIds(historyEntries),
       state: bootstrapState,
     }),
   );
@@ -99,15 +130,6 @@ export function sendInitialBootstrapMessages(args: {
     }),
   );
 
-  const historyEntries = args.historyStore.get(args.historyKey);
-  const shouldReplayHistory =
-    args.inFlight ||
-    bootstrapState.contextMode !== "fresh" ||
-    Boolean(bootstrapState.threadId) ||
-    shouldReplayFreshHistory(historyEntries);
-  const replayHistoryEntries =
-    bootstrapState.contextMode === "fresh" ? trimTrailingFreshStatusNotices(historyEntries) : historyEntries;
-  const historyPayload = shouldReplayHistory ? buildHistoryBootstrapPayload(replayHistoryEntries) ?? { type: "history", items: [] } : null;
   if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
   }

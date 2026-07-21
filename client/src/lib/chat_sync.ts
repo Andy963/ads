@@ -155,7 +155,7 @@ export function mergeHistoryFromServer(
 
   const tailStart = Math.min(server.length, Math.max(0, lastMatchedServerIdx + 1));
   const tail = server.slice(tailStart);
-  const hydratedLocal = hydrateOverlappingExecuteMetadata(local, lastMatchedLocalIdx, server[lastMatchedServerIdx]!);
+  let hydratedLocal = hydrateOverlappingExecuteMetadata(local, lastMatchedLocalIdx, server[lastMatchedServerIdx]!);
   if (tail.length === 0) {
     const localTail = hydratedLocal.slice(lastMatchedLocalIdx + 1);
     if (localTail.length > 0 && localTail.every(isDisconnectMarkedTail)) {
@@ -164,10 +164,19 @@ export function mergeHistoryFromServer(
     return hydratedLocal;
   }
 
+  const firstNew = tail[0]!;
+  const localPrefix = hydratedLocal.slice(0, lastMatchedLocalIdx + 1);
+  const localTail = hydratedLocal.slice(lastMatchedLocalIdx + 1);
+  const reconciledTail = localTail.filter(
+    (item) => !isDisconnectMarkedTail(item) || canReplaceLocalTailWithServer(item, firstNew),
+  );
+  if (reconciledTail.length !== localTail.length) {
+    hydratedLocal = [...localPrefix, ...reconciledTail];
+  }
+
   // If the local tail is a truncated version of the server's next message (common after disconnect),
   // replace it instead of duplicating it.
   const lastLocal = hydratedLocal[hydratedLocal.length - 1]!;
-  const firstNew = tail[0]!;
   if (canReplaceLocalTailWithServer(lastLocal, firstNew)) {
     const localText = normalizeContentForMerge(lastLocal.content);
     const serverText = normalizeContentForMerge(firstNew.content);

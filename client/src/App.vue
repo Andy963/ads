@@ -136,6 +136,8 @@ const {
   plannerPendingImages,
   plannerConnected,
   plannerBusy,
+  plannerInputLocked,
+  plannerLaneStatus,
   plannerAgentDelegations,
   plannerDrafts,
   plannerDraftsBusy,
@@ -146,6 +148,8 @@ const {
   plannerThreadWarning,
   plannerChatKey,
   workerAgents,
+  workerInputLocked,
+  workerLaneStatus,
   workerActiveAgentId,
   workerComposerDraft,
   workerThreadWarning,
@@ -236,17 +240,21 @@ const runningTaskCount = computed(() =>
 const disconnectedStatusMessage = "连接已断开，正在重连…";
 
 const workerConnectionStatus = computed(() => {
+  const laneStatus = workerLaneStatus.value;
+  if (!connected.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
   if (!connected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
-  return null;
+  return laneStatus;
 });
 
 const plannerConnectionStatus = computed(() => {
+  const laneStatus = plannerLaneStatus.value;
+  if (!plannerConnected.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(activePlannerRuntime.value.wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
   if (!plannerConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
-  return null;
+  return laneStatus;
 });
 
 </script>
@@ -468,6 +476,7 @@ const plannerConnectionStatus = computed(() => {
               :pending-images="plannerPendingImages"
               :connected="plannerConnected"
               :busy="plannerBusy"
+              :input-locked="plannerInputLocked"
               :agents="plannerAgents"
               :active-agent-id="plannerActiveAgentId"
               :models="models"
@@ -506,6 +515,7 @@ const plannerConnectionStatus = computed(() => {
               :pending-images="pendingImages"
               :connected="connected"
               :busy="agentBusy"
+              :input-locked="workerInputLocked"
               :agents="workerAgents"
               :active-agent-id="workerActiveAgentId"
               :models="models"

@@ -6,6 +6,7 @@ import type {
   ChatPlan,
   ChatPlanItem,
   ChatPlanItemStatus,
+  LaneStatus,
   ProjectRuntime,
   ProjectTab,
   WorkspaceState,
@@ -28,6 +29,10 @@ const HISTORY_EXECUTE_PREVIEW_LINES = 3;
 const THREAD_RESUMED_NOTICE = "已恢复后端上下文线程。";
 const HISTORY_INJECTION_NOTICE = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
 const TRANSIENT_RETRY_NOTICE_ID = "transient-retry-notice";
+const BACKEND_WAITING_STATUS_MESSAGES = new Set([
+  "上一轮仍在执行，正在等待后端结果。",
+  "上一轮仍在执行，正在等待后端结果…",
+]);
 const SELECTION_NOTICE_PATTERNS = [
   /^已切换到代理:\s*.+$/,
   /^模型已从.+切换到.+，已启动新会话线程。?$/,
@@ -71,10 +76,48 @@ function parseExecutionFromHistoryKind(kind: string): ChatItem["execution"] | un
   return Object.keys(execution).length > 0 ? execution : undefined;
 }
 
+function parseClientMessageIdFromHistoryKind(kind: string): string {
+  const prefix = "client_message_id:";
+  if (!kind.startsWith(prefix)) return "";
+  const tail = kind.slice(prefix.length);
+  const separator = tail.indexOf(";");
+  return (separator >= 0 ? tail.slice(0, separator) : tail).trim();
+}
+
 function contextModeNotice(contextMode: string): string {
   if (contextMode === "thread_resumed") return THREAD_RESUMED_NOTICE;
   if (contextMode === "history_injection") return HISTORY_INJECTION_NOTICE;
   return "";
+}
+
+function replayedLaneStatus(kind: string, content: string): LaneStatus | null {
+  if (kind === "error") {
+    return { kind: "error", message: content };
+  }
+  if (kind !== "status") {
+    return null;
+  }
+  if (content.startsWith("当前工作目录:") || content.startsWith("已切换到:")) {
+    return { kind: "info", message: content };
+  }
+  return null;
+}
+
+function hasTerminalHistoryTail(items: unknown[]): boolean {
+  for (let idx = items.length - 1; idx >= 0; idx--) {
+    const entry = items[idx];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const rec = entry as Record<string, unknown>;
+    const role = String(rec.role ?? "");
+    const kind = String(rec.kind ?? "");
+    const text = String(rec.text ?? "").trim();
+    if (!text) continue;
+    if (role === "status" && kind === "status" && !replayedLaneStatus(kind, text)) {
+      continue;
+    }
+    return role === "ai" || (role === "status" && (kind === "execute" || kind === "error" || Boolean(replayedLaneStatus(kind, text))));
+  }
+  return false;
 }
 
 export type WsMessageHandlerArgs = {
@@ -134,6 +177,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     upsertStepLiveDelta,
     upsertStreamingDelta,
   } = args;
+  rt.inputLocked ??= { value: false };
+  rt.laneStatus ??= { value: null };
+  let recoveredBackendActivitySeen = false;
 
   const isGitDiffCommand = (raw: string): boolean => {
     const cmd = String(raw ?? "").trim().toLowerCase();
@@ -159,46 +205,87 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (next.length !== existing.length) {
       rt.messages.value = next;
     }
+    if (rt.laneStatus.value?.kind === "progress" && rt.laneStatus.value.message.includes("retry")) {
+      rt.laneStatus.value = null;
+    }
+  };
+
+  const clearRecoveredBackendStatus = (): void => {
+    recoveredBackendActivitySeen = true;
+    if (
+      rt.laneStatus.value?.kind === "progress" ||
+      (rt.laneStatus.value?.kind === "info" && BACKEND_WAITING_STATUS_MESSAGES.has(rt.laneStatus.value.message))
+    ) {
+      rt.laneStatus.value = null;
+    }
+  };
+
+  const reconcilePendingPromptsByClientMessageIds = (clientMessageIds: Set<string>): boolean => {
+    if (clientMessageIds.size === 0) return false;
+    const before = rt.queuedPrompts.value;
+    const after = before.filter(
+      (prompt) => !clientMessageIds.has(String(prompt.clientMessageId ?? "").trim()),
+    );
+    const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
+    const matchedPendingAck = Boolean(pendingAckClientMessageId && clientMessageIds.has(pendingAckClientMessageId));
+    if (after.length === before.length && !matchedPendingAck) return false;
+    rt.queuedPrompts.value = after;
+    if (!pendingAckClientMessageId || matchedPendingAck) {
+      rt.pendingAckClientMessageId = null;
+      clearPendingPrompt(rt);
+    }
+    return true;
+  };
+
+  const reconcilePendingPromptsFromBootstrapHistory = (items: unknown[]): void => {
+    if (!rt.awaitingBootstrapHistory) return;
+    const serverUserClientMessageIds = new Set<string>();
+    let newestServerUser = "";
+    for (const item of [...items].reverse()) {
+      const entry = item as { role?: unknown; text?: unknown; kind?: unknown };
+      if (String(entry.role ?? "") !== "user") {
+        continue;
+      }
+      const kind = String(entry.kind ?? "").trim();
+      const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
+      if (clientMessageId) {
+        serverUserClientMessageIds.add(clientMessageId);
+      }
+      if (!newestServerUser) {
+        newestServerUser = String(entry.text ?? "").trim();
+      }
+    }
+    if (serverUserClientMessageIds.size > 0) {
+      reconcilePendingPromptsByClientMessageIds(serverUserClientMessageIds);
+    } else if (newestServerUser) {
+      const before = rt.queuedPrompts.value;
+      const after = before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
+      if (after.length !== before.length) {
+        const afterIds = new Set(after.map((prompt) => String(prompt.clientMessageId ?? "").trim()).filter(Boolean));
+        const removedIds = before
+          .map((prompt) => String(prompt.clientMessageId ?? "").trim())
+          .filter((clientMessageId) => clientMessageId && !afterIds.has(clientMessageId));
+        rt.queuedPrompts.value = after;
+        const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
+        if (!pendingAckClientMessageId || removedIds.includes(pendingAckClientMessageId)) {
+          rt.pendingAckClientMessageId = null;
+          clearPendingPrompt(rt);
+        }
+      }
+    }
+    rt.awaitingBootstrapHistory = false;
   };
 
   const upsertTransientRetryNotice = (message: string, retryCount?: unknown): void => {
     const content = String(message ?? "").trim() || "Upstream model request failed temporarily; retrying.";
-    const existing = rt.messages.value.slice();
-    const idx = existing.findIndex((m) => String(m.id ?? "") === TRANSIENT_RETRY_NOTICE_ID);
     const explicitCount = Number(retryCount);
     const nextCount = Number.isFinite(explicitCount) && explicitCount > 0
       ? Math.floor(explicitCount)
-      : idx >= 0
-        ? Math.max(1, Math.floor(Number(existing[idx]!.retryCount ?? 1))) + 1
-        : 1;
-    const nextItem: ChatItem = {
-      id: TRANSIENT_RETRY_NOTICE_ID,
-      role: "system",
-      kind: "error",
-      content,
-      retryCount: nextCount,
-      transient: true,
-      ts: idx >= 0 ? existing[idx]!.ts : Date.now(),
+      : 1;
+    rt.laneStatus.value = {
+      kind: "progress",
+      message: nextCount > 1 ? `${content}（第 ${nextCount} 次重试）` : content,
     };
-    if (idx >= 0) {
-      existing[idx] = nextItem;
-      rt.messages.value = existing;
-      return;
-    }
-
-    let insertAt = existing.length;
-    for (let i = existing.length - 1; i >= 0; i--) {
-      const m = existing[i]!;
-      if (m.role === "assistant" && m.streaming) {
-        insertAt = i;
-        continue;
-      }
-      if (m.role === "user") {
-        insertAt = Math.max(insertAt, i + 1);
-        break;
-      }
-    }
-    rt.messages.value = [...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)];
   };
 
   const dropExecuteBlockForKey = (key: string): void => {
@@ -401,21 +488,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.apiNotice.value = notice;
       const chatNotice = stripSelectionChangeNotices(notice);
       if (chatNotice) {
-        let alreadyShownInCurrentTail = false;
-        for (let i = rt.messages.value.length - 1; i >= 0; i--) {
-          const item = rt.messages.value[i];
-          if (!item) continue;
-          if (item.role === "user") {
-            break;
-          }
-          if (item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === chatNotice) {
-            alreadyShownInCurrentTail = true;
-            break;
-          }
-        }
-        if (!alreadyShownInCurrentTail) {
-          pushMessageBeforeLive({ role: "system", kind: "text", content: chatNotice }, rt);
-        }
+        rt.laneStatus.value = { kind: "info", message: chatNotice };
       }
       if (rt.noticeTimer !== null) {
         try {
@@ -703,7 +776,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (typeof inFlight === "boolean") {
         rt.busy.value = inFlight;
         rt.turnInFlight = inFlight;
-        if (!inFlight) {
+        if (inFlight) {
+          rt.inputLocked.value = true;
+          rt.laneStatus.value = { kind: "progress", message: "上一轮仍在执行，正在等待后端结果…" };
+        } else {
+          if (!rt.resumeReplacePending) {
+            rt.inputLocked.value = false;
+            if (rt.laneStatus.value?.kind === "progress") {
+              rt.laneStatus.value = null;
+            }
+          }
           rt.turnHasPatch = false;
           rt.delegationsInFlight.value = [];
         }
@@ -717,10 +799,35 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       applyEffectiveState(msg as Record<string, unknown>);
       const handshakeReset = Boolean(msg.reset);
       const contextMode = String(msg.contextMode ?? "").trim();
+      const bootstrapHistory = (msg as { bootstrapHistory?: unknown }).bootstrapHistory === true;
+      const completedClientMessageIds = new Set(
+        (Array.isArray((msg as { completedClientMessageIds?: unknown }).completedClientMessageIds)
+          ? (msg as { completedClientMessageIds: unknown[] }).completedClientMessageIds
+          : [])
+          .map((value) => String(value ?? "").trim())
+          .filter(Boolean),
+      );
+      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
+      const resumeRequestWasLost =
+        rt.resumeReplacePending &&
+        inFlight === false &&
+        contextMode === "fresh" &&
+        !rawServerThreadId;
+      if (resumeRequestWasLost) {
+        cancelPendingResume(rt);
+        rt.laneStatus.value = { kind: "error", message: "恢复请求未确认，请重试。" };
+      }
       rt.awaitingBootstrapHistory =
         !handshakeReset &&
-        (contextMode === "thread_resumed" || contextMode === "history_injection" || Boolean(rawServerThreadId)) &&
+        (contextMode === "thread_resumed" ||
+          contextMode === "history_injection" ||
+          Boolean(rawServerThreadId) ||
+          inFlight === true ||
+          bootstrapHistory) &&
         rt.queuedPrompts.value.length > 0;
+      if (rt.awaitingBootstrapHistory) {
+        rt.inputLocked.value = true;
+      }
       const serverThreadId = contextMode === "fresh" ? "" : rawServerThreadId;
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       const hasStaleLocalContinuity = Boolean(prevThreadId) || rt.messages.value.length > 0;
@@ -735,7 +842,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           resetThreadId: true,
           source: "welcome_reset",
         });
-      } else if (contextMode === "fresh" && hasStaleLocalContinuity && !welcomeInFlight) {
+      } else if (contextMode === "fresh" && hasStaleLocalContinuity && !welcomeInFlight && !bootstrapHistory) {
         resetTurnPatchSummary();
         threadReset(rt, {
           notice: "后端已是全新上下文。为避免误导，旧的本地聊天历史已清空。",
@@ -826,44 +933,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const earliestTs = Number.isFinite(earliestRaw) && earliestRaw > 0 ? earliestRaw : null;
       const sinceLabel = earliestTs ? ` (起自 ${new Date(earliestTs).toLocaleString()})` : "";
       const content = `已注入最近 ${Math.floor(entryCount)} 条聊天历史作为本轮上下文${sinceLabel}。`;
-      const last = rt.messages.value.at(-1);
-      if (last?.role === "system" && last.kind === "text" && String(last.content ?? "").trim() === content) {
-        return;
-      }
-      pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+      rt.laneStatus.value = { kind: "info", message: content };
       return;
     }
 
     if (type === "status") {
       const content = String(msg.message ?? msg.output ?? msg.text ?? "").trim();
       if (!content) return;
-      const kind = String(msg.kind ?? "").trim() === "error" ? "error" : "text";
-      const chatContent = kind === "text" ? stripSelectionChangeNotices(content) : content;
+      if (recoveredBackendActivitySeen && BACKEND_WAITING_STATUS_MESSAGES.has(content)) return;
+      const kind = String(msg.kind ?? "").trim() === "error"
+        ? "error"
+        : BACKEND_WAITING_STATUS_MESSAGES.has(content)
+          ? "progress"
+          : "info";
+      const chatContent = kind === "info" ? stripSelectionChangeNotices(content) : content;
       if (!chatContent) return;
-      if (
-        kind === "text" &&
-        (chatContent === THREAD_RESUMED_NOTICE || chatContent === HISTORY_INJECTION_NOTICE) &&
-        rt.messages.value.some(
-          (item) => item.role === "system" && item.kind === "text" && String(item.content ?? "").trim() === chatContent,
-        )
-      ) {
-        return;
-      }
-      const last = rt.messages.value.at(-1);
-      if (last?.role === "system" && last.kind === kind && String(last.content ?? "").trim() === chatContent) {
-        return;
-      }
-      pushMessageBeforeLive({ role: "system", kind, content: chatContent }, rt);
+      rt.laneStatus.value = { kind, message: chatContent };
       return;
     }
 
     if (type === "history") {
       const resumeReplacePending = rt.resumeReplacePending;
       const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
-      const hasReconnectBusyMessage = rt.messages.value.some(
-        (item) => item.role === "system" && item.kind === "text" && isReconnectNotice(String(item.content ?? "")),
-      );
-      const shouldAcceptReconnectHistory = hasReconnectBusyMessage && items.length > 0;
+      const terminalHistoryTail = hasTerminalHistoryTail(items);
+      const shouldAcceptReconnectHistory = rt.inputLocked.value;
       if (
         !rt.awaitingBootstrapHistory &&
         !resumeReplacePending &&
@@ -873,13 +966,27 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       ) {
         return;
       }
+      reconcilePendingPromptsFromBootstrapHistory(items);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
+        dropReconnectBusyMessage();
+        if (!rt.busy.value && !rt.turnInFlight) {
+          rt.inputLocked.value = false;
+          if (rt.laneStatus.value?.kind === "progress") {
+            rt.laneStatus.value = null;
+          }
+          void flushQueuedPrompts(rt);
+        }
         return;
       }
       const historyThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
       const historyContextMode = String((msg as { contextMode?: unknown }).contextMode ?? "").trim();
       const restoreNotice = contextModeNotice(historyContextMode);
+      const restoredContextStatus: LaneStatus | null = restoreNotice && !resumeReplacePending
+        ? { kind: "info", message: restoreNotice }
+        : null;
+      let restoredHistoryStatus: LaneStatus | null = null;
+      let replayedExecuteActivity = false;
       if (historyThreadId) {
         rt.activeThreadId.value = historyThreadId;
         if (historyContextMode === "thread_resumed" || historyContextMode === "history_injection") {
@@ -891,15 +998,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.recentCommands.value = [];
       rt.seenCommandIds.clear();
       const next: ChatItem[] = [];
-      if (restoreNotice) {
-        next.push({
-          id: `h-restore-${historyContextMode}`,
-          role: "system",
-          kind: "text",
-          content: restoreNotice,
-          ts: undefined,
-        });
-      }
       for (let idx = 0; idx < items.length; idx++) {
         const entry = items[idx] as { role?: unknown; text?: unknown; kind?: unknown; ts?: unknown };
         const role = String(entry.role ?? "");
@@ -912,6 +1010,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const historyText = role === "status" && kind !== "error" ? stripSelectionChangeNotices(trimmed) : trimmed;
         if (!historyText) continue;
         if (kind === "execute") {
+          restoredHistoryStatus = null;
+          replayedExecuteActivity = true;
           const lines = historyText.split("\n");
           const commandLine = String(lines[0] ?? "").trim();
           const command = commandLine.startsWith("$ ") ? commandLine.slice(2).trim() : commandLine;
@@ -925,11 +1025,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           );
           continue;
         }
-        const isCommand = kind === "command" || (role === "status" && historyText.startsWith("$ "));
-        if (isCommand) {
-          continue;
-        }
         if (kind.startsWith("plan:") || kind === "plan") {
+          restoredHistoryStatus = null;
           const planId = kind.startsWith("plan:") ? kind.slice("plan:".length).trim() || `plan-${idx}` : `plan-${idx}`;
           let parsed: { planId?: unknown; status?: unknown; items?: unknown } | null = null;
           try {
@@ -975,7 +1072,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
           continue;
         }
+        if (role === "status") {
+          restoredHistoryStatus = replayedLaneStatus(kind, historyText);
+          continue;
+        }
         if (role === "user") {
+          restoredHistoryStatus = null;
           const execution = parseExecutionFromHistoryKind(kind);
           next.push({
             id: `h-u-${idx}`,
@@ -985,54 +1087,32 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             ts: ts ?? undefined,
             ...(execution ? { execution } : {}),
           });
-        } else if (role === "ai")
+        } else if (role === "ai") {
+          restoredHistoryStatus = null;
           next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: historyText, ts: ts ?? undefined });
-        else if (kind === "error")
-          next.push({ id: `h-e-${idx}`, role: "system", kind: "error", content: historyText, ts: ts ?? undefined });
-        else next.push({ id: `h-s-${idx}`, role: "system", kind: "text", content: historyText, ts: ts ?? undefined });
-      }
-      if (rt.awaitingBootstrapHistory) {
-        const serverUserClientMessageIds = new Set<string>();
-        let newestServerUser = "";
-        for (const item of [...items].reverse()) {
-          const entry = item as { role?: unknown; text?: unknown; kind?: unknown };
-          if (String(entry.role ?? "") !== "user") {
-            continue;
-          }
-          const kind = String(entry.kind ?? "").trim();
-          if (kind.startsWith("client_message_id:")) {
-            const clientMessageId = kind.slice("client_message_id:".length).trim();
-            if (clientMessageId) {
-              serverUserClientMessageIds.add(clientMessageId);
-            }
-          }
-          if (!newestServerUser) {
-            newestServerUser = String(entry.text ?? "").trim();
-          }
         }
-        if (serverUserClientMessageIds.size > 0 || newestServerUser) {
-          const before = rt.queuedPrompts.value;
-          const after =
-            serverUserClientMessageIds.size > 0
-              ? before.filter((prompt) => !serverUserClientMessageIds.has(String(prompt.clientMessageId ?? "").trim()))
-              : before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
-          if (after.length !== before.length) {
-            const afterIds = new Set(after.map((prompt) => String(prompt.clientMessageId ?? "").trim()).filter(Boolean));
-            const removedIds = before
-              .map((prompt) => String(prompt.clientMessageId ?? "").trim())
-              .filter((clientMessageId) => clientMessageId && !afterIds.has(clientMessageId));
-            rt.queuedPrompts.value = after;
-            const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
-            if (!pendingAckClientMessageId || removedIds.includes(pendingAckClientMessageId)) {
-              rt.pendingAckClientMessageId = null;
-              clearPendingPrompt(rt);
-            }
-          }
-        }
-        rt.awaitingBootstrapHistory = false;
       }
       dropReconnectBusyMessage();
       applyResumeHistory(next, rt);
+      const canTreatHistoryAsTerminal = terminalHistoryTail && !rt.busy.value && !rt.turnInFlight;
+      if (canTreatHistoryAsTerminal) {
+        clearRecoveredBackendStatus();
+        rt.busy.value = false;
+        rt.turnInFlight = false;
+        rt.inputLocked.value = false;
+      } else if (replayedExecuteActivity) {
+        clearRecoveredBackendStatus();
+      }
+      const restoredLaneStatus = restoredHistoryStatus ?? restoredContextStatus;
+      if (!rt.busy.value && !rt.turnInFlight && restoredLaneStatus) {
+        rt.laneStatus.value = restoredLaneStatus;
+      }
+      if (!rt.busy.value && !rt.turnInFlight) {
+        rt.inputLocked.value = false;
+        if (rt.laneStatus.value?.kind === "progress") {
+          rt.laneStatus.value = null;
+        }
+      }
       if (!rt.busy.value && !rt.turnInFlight) {
         void flushQueuedPrompts(rt);
       }
@@ -1044,6 +1124,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (typeof inFlight !== "boolean") return;
       rt.busy.value = inFlight;
       rt.turnInFlight = inFlight;
+      if (inFlight) {
+        rt.inputLocked.value = true;
+        rt.laneStatus.value = { kind: "progress", message: "上一轮仍在执行，正在等待后端结果…" };
+      } else if (!rt.resumeReplacePending) {
+        rt.inputLocked.value = false;
+        if (rt.laneStatus.value?.kind === "progress") {
+          rt.laneStatus.value = null;
+        }
+      }
       if (!inFlight && !rt.awaitingBootstrapHistory) {
         void flushQueuedPrompts(rt);
       }
@@ -1053,6 +1142,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "delta") {
       rt.busy.value = true;
       rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
       const source = String(msg.source ?? "").trim();
       if (source === "step") {
         const delta = String(msg.delta ?? "");
@@ -1067,6 +1157,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "explored") {
       rt.busy.value = true;
       rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
       const entry = msg.entry;
       if (entry && typeof entry === "object") {
         const typed = entry as { category?: unknown; summary?: unknown };
@@ -1092,6 +1183,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "plan") {
+      clearRecoveredBackendStatus();
       const rec = msg as Record<string, unknown>;
       const planId = String(rec.planId ?? rec.plan_id ?? "").trim();
       if (!planId) return;
@@ -1133,6 +1225,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "patch") {
       rt.busy.value = true;
       rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
       const patch = msg.patch;
       if (!patch || typeof patch !== "object") return;
 
@@ -1179,8 +1272,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "result") {
       annotatePendingUserMessageExecution(msg as Record<string, unknown>);
+      recoveredBackendActivitySeen = false;
       clearTransientRetryNotice();
       cancelPendingResume(rt);
+      rt.inputLocked.value = false;
+      rt.laneStatus.value = null;
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
@@ -1248,16 +1344,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         finalizeAssistant("", rt);
         const content = output.trim();
         if (content) {
-          pushMessageBeforeLive({ role: "system", kind: "error", content }, rt);
+          rt.laneStatus.value = { kind: "error", message: content };
         }
-        void flushQueuedPrompts(rt);
+        void flushQueuedPrompts(rt, { preserveErrorStatus: true });
         return;
       }
       if (resultKind === "status") {
         finalizeAssistant("", rt);
         const content = output.trim();
         if (content) {
-          pushMessageBeforeLive({ role: "system", kind: "text", content }, rt);
+          rt.laneStatus.value = { kind: "info", message: content };
         }
         void flushQueuedPrompts(rt);
         return;
@@ -1275,7 +1371,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
 
       clearTransientRetryNotice();
+      recoveredBackendActivitySeen = false;
       cancelPendingResume(rt);
+      rt.inputLocked.value = false;
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
@@ -1302,8 +1400,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           (errorInfo.needsReset ? "⚠️ 建议使用 /reset 重置会话\n" : "")
         : userMessage;
 
-      pushMessageBeforeLive({ role: "system", kind: "error", content: errorContent }, rt);
-      void flushQueuedPrompts(rt);
+      rt.laneStatus.value = { kind: "error", message: errorContent };
+      void flushQueuedPrompts(rt, { preserveErrorStatus: true });
       return;
     }
 
@@ -1326,6 +1424,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       rt.busy.value = true;
       rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
       ingestCommand(cmd, rt, id || null);
       if (rt.turnHasPatch && isGitDiffCommand(cmd) && looksLikeUnifiedDiff(outputDelta)) {
         dropExecuteBlockForKey(key);

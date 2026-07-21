@@ -7,7 +7,6 @@ import {
   RECONNECT_BUSY_MESSAGE,
   RECONNECT_PENDING_RESEND_NOTICE,
 } from "../app/projectsWs/reconnectNotice";
-import { EXECUTE_DISCONNECT_NOTICE } from "../lib/chat_sync";
 
 const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
 
@@ -155,10 +154,12 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.busy.value).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value).toBeNull();
     wrapper.unmount();
   });
 
-  it("marks streaming execute output as incomplete before reconnect sync", async () => {
+  it("drops transient execute previews while reconnecting", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.busy.value = true;
@@ -179,15 +180,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     lastWs!.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper);
 
-    const execute = rt.messages.value.find((m: any) => m.kind === "execute");
-    expect(execute).toMatchObject({
-      role: "system",
-      kind: "execute",
-      command: "npm test",
-      streaming: false,
-      content: `line 1\n${EXECUTE_DISCONNECT_NOTICE}`,
-    });
-    expect(String(execute?.id ?? "")).not.toMatch(/^exec:/);
+    expect(rt.messages.value.some((m: any) => m.kind === "execute")).toBe(false);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: RECONNECT_BUSY_MESSAGE });
     wrapper.unmount();
   });
 
@@ -295,6 +289,144 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("reconciles an unacked prompt before preserving a fresh in-flight run", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.pendingAckClientMessageId = "pending-fresh";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({ clientMessageId: "pending-fresh", text: "keep running", createdAt: Date.now(), agentId: "claude" }),
+    );
+    lastSentPromptPayload = null;
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: true, contextMode: "fresh" });
+    await settleUi(wrapper);
+
+    expect(rt.awaitingBootstrapHistory).toBe(true);
+    expect(lastSentPromptPayload).toBeNull();
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        {
+          role: "user",
+          text: "keep running",
+          ts: 1,
+          kind: "client_message_id:pending-fresh;prompt_meta:agent=claude,model=claude-opus-4-8,effort=max",
+        },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.awaitingBootstrapHistory).toBe(false);
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.busy.value).toBe(true);
+    expect(rt.inputLocked.value).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("reconciles completed fresh prompts from welcome metadata before resending", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.pendingAckClientMessageId = "pending-completed";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({
+        clientMessageId: "pending-completed",
+        text: "run tests",
+        createdAt: Date.now(),
+        agentId: "claude",
+      }),
+    );
+    lastSentPromptPayload = null;
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "fresh",
+      bootstrapHistory: false,
+      completedClientMessageIds: ["pending-completed"],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.awaitingBootstrapHistory).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.messages.value).toEqual([]);
+    wrapper.unmount();
+  });
+
+  it("reconciles ignored bootstrap history before clearing the pending wait", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.ignoreNextHistory = true;
+    rt.pendingAckClientMessageId = "pending-ignored";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({
+        clientMessageId: "pending-ignored",
+        text: "run ignored",
+        createdAt: Date.now(),
+        agentId: "claude",
+      }),
+    );
+    lastSentPromptPayload = null;
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "fresh",
+      bootstrapHistory: true,
+    });
+    await settleUi(wrapper);
+
+    expect(rt.awaitingBootstrapHistory).toBe(true);
+    expect(rt.inputLocked.value).toBe(true);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        {
+          role: "user",
+          text: "run ignored",
+          ts: 1,
+          kind: "client_message_id:pending-ignored;prompt_meta:agent=claude",
+        },
+        { role: "status", text: "request failed", ts: 2, kind: "error" },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.ignoreNextHistory).toBe(false);
+    expect(rt.awaitingBootstrapHistory).toBe(false);
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.inputLocked.value).toBe(false);
+    wrapper.unmount();
+  });
+
   it("does not drop a pending replay when only older history has the same text", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
@@ -328,7 +460,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     });
     expect(rt.pendingAckClientMessageId).toBe("pending-new");
     expect(rt.queuedPrompts.value).toEqual([]);
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(PENDING_PROMPT_REPLAY_NOTICE);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(PENDING_PROMPT_REPLAY_NOTICE);
+    expect(rt.inputLocked.value).toBe(true);
     wrapper.unmount();
   });
 
@@ -358,7 +491,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("removes the reconnect busy notice when bootstrap history arrives", async () => {
+  it("shows reconnect state outside history and clears it when bootstrap history arrives", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.busy.value = true;
@@ -368,7 +501,9 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     lastWs!.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper);
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: RECONNECT_BUSY_MESSAGE });
+    expect(rt.inputLocked.value).toBe(true);
 
     lastWs!.onOpen?.();
     lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "thread_resumed", threadId: "thread-1" });
@@ -382,6 +517,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["Hello", "World"]);
+    expect(rt.laneStatus.value).toBeNull();
+    expect(rt.inputLocked.value).toBe(false);
     wrapper.unmount();
   });
 
@@ -398,8 +535,10 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     const notices = rt.messages.value.map((m: any) => String(m.content ?? ""));
-    expect(notices).toContain(RECONNECT_PENDING_RESEND_NOTICE);
+    expect(notices).not.toContain(RECONNECT_PENDING_RESEND_NOTICE);
     expect(notices).not.toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: RECONNECT_PENDING_RESEND_NOTICE });
+    expect(rt.inputLocked.value).toBe(true);
     wrapper.unmount();
   });
 
@@ -414,7 +553,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     lastWs!.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper);
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_PENDING_RESEND_NOTICE);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_PENDING_RESEND_NOTICE);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: RECONNECT_PENDING_RESEND_NOTICE });
 
     lastWs!.onOpen?.();
     lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "fresh" });
@@ -425,6 +565,11 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_PENDING_RESEND_NOTICE);
+    expect(rt.laneStatus.value).toEqual({
+      kind: "info",
+      message: "后端已是全新上下文。为避免误导，旧的本地聊天历史已清空。",
+    });
+    expect(rt.inputLocked.value).toBe(false);
     wrapper.unmount();
   });
 
@@ -441,7 +586,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     lastWs!.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper);
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.inputLocked.value).toBe(true);
 
     lastWs!.onMessage?.({ type: "welcome", inFlight: true, contextMode: "fresh" });
     lastWs!.onMessage?.({
@@ -453,6 +599,112 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.busy.value).toBe(true);
     expect(rt.turnInFlight).toBe(true);
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["Run tests"]);
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.laneStatus.value?.message).toBe("上一轮仍在执行，正在等待后端结果…");
+
+    lastWs!.onMessage?.({
+      type: "command",
+      command: {
+        id: "cmd-1",
+        command: "npm test",
+        outputDelta: "Tests are running\n",
+      },
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.laneStatus.value).toBeNull();
+
+    lastWs!.onMessage?.({ type: "result", ok: true, output: "All tests passed", threadId: "thread-1" });
+    await settleUi(wrapper);
+
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("keeps server-reported in-flight state when history already contains an assistant result", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.inputLocked.value = true;
+    rt.laneStatus.value = { kind: "progress", message: RECONNECT_BUSY_MESSAGE };
+
+    lastWs!.onMessage?.({ type: "welcome", inFlight: true, contextMode: "fresh" });
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Run tests", ts: 1 },
+        { role: "ai", text: "All tests passed", ts: 2 },
+      ],
+    });
+    lastWs!.onMessage?.({ type: "status", kind: "status", message: "上一轮仍在执行，正在等待后端结果。" });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: "上一轮仍在执行，正在等待后端结果。" });
+    expect(rt.messages.value.map((item: any) => item.content)).toEqual(["Run tests", "All tests passed"]);
+    wrapper.unmount();
+  });
+
+  it("unlocks when a pending resume request is lost before an idle fresh reconnect", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    await controller.resumeTaskThread();
+    await settleUi(wrapper);
+
+    expect(rt.resumeReplacePending).toBe(true);
+    expect(rt.inputLocked.value).toBe(true);
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "fresh" });
+    await settleUi(wrapper);
+
+    expect(rt.resumeReplacePending).toBe(false);
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value).toEqual({ kind: "error", message: "恢复请求未确认，请重试。" });
+    wrapper.unmount();
+  });
+
+  it("locks the composer while restoring context and unlocks after history arrives", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    await controller.resumeTaskThread();
+    await settleUi(wrapper);
+
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: "正在恢复上下文…" });
+
+    controller.sendMainPrompt("must not be queued");
+    expect(rt.queuedPrompts.value).toEqual([]);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      contextMode: "thread_resumed",
+      threadId: "thread-restored",
+      items: [
+        { role: "user", text: "previous question", ts: 1 },
+        { role: "ai", text: "previous answer", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value).toBeNull();
+    expect(rt.messages.value.map((item: any) => item.content)).toEqual(["previous question", "previous answer"]);
     wrapper.unmount();
   });
 
@@ -474,6 +726,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.turnInFlight).toBe(false);
     expect(rt.wsError.value).toBe(expectedError);
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value).toBeNull();
     wrapper.unmount();
   });
 
@@ -489,7 +743,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.reconnectTimer).not.toBeNull();
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: RECONNECT_BUSY_MESSAGE });
 
     lastWs!.onClose?.({ code: 4401, reason: "unauthorized" });
     await settleUi(wrapper);
@@ -499,6 +754,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.reconnectTimer).toBeNull();
     expect(rt.wsError.value).toBe("Unauthorized");
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value).toBeNull();
     wrapper.unmount();
   });
 
@@ -593,6 +850,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, controller, rt } = await mountReconnectHarness();
 
     seedPendingReplayState(rt, "main", "main-ack");
+    rt.laneStatus.value = { kind: "error", message: "stale error" };
     await settleUi(wrapper);
 
     controller.clearActiveChat();
@@ -600,6 +858,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(rt.pendingAckClientMessageId).toBeNull();
     expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.laneStatus.value).toBeNull();
     expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
     expect(lastWs).toBeTruthy();
     expect(lastWs!.clearHistory).toHaveBeenCalledTimes(1);

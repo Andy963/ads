@@ -71,6 +71,8 @@ describe("web/ws/bootstrapState", () => {
         chatSessionId: "main",
         workspace: { path: "/tmp/project" },
         inFlight: true,
+        bootstrapHistory: true,
+        completedClientMessageIds: ["prompt-1"],
         state,
       }),
       {
@@ -80,6 +82,8 @@ describe("web/ws/bootstrapState", () => {
         sessionId: "session-1",
         chatSessionId: "main",
         inFlight: true,
+        bootstrapHistory: true,
+        completedClientMessageIds: ["prompt-1"],
         threadId: "thread-live",
         effectiveModel: "gpt-4.1",
         effectiveModelReasoningEffort: "medium",

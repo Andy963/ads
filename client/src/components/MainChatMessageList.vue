@@ -224,21 +224,16 @@ watch(
 );
 
 const renderMessages = computed<RenderMessage[]>(() => {
-  const isTransientExecute = (m: RenderMessage): boolean =>
-    m.kind === "execute" && (m.streaming === true || String(m.id ?? "").startsWith("exec:"));
-
-  let latestTransientExecuteId: string | null = null;
+  let latestExecuteId: string | null = null;
   for (let i = props.messages.length - 1; i >= 0; i--) {
     const m = props.messages[i]!;
-    if (isTransientExecute(m)) {
-      latestTransientExecuteId = m.id;
+    if (m.kind === "execute") {
+      latestExecuteId = m.id;
       break;
     }
   }
 
-  return props.messages.filter(
-    (m) => m.kind !== "command" && (m.kind !== "execute" || !isTransientExecute(m) || m.id === latestTransientExecuteId),
-  );
+  return props.messages.filter((m) => m.kind !== "command" && (m.kind !== "execute" || m.id === latestExecuteId));
 });
 
 function getCommands(content: string): string[] {

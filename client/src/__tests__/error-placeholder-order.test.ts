@@ -14,6 +14,7 @@ let lastWs: {
   onTaskEvent?: (payload: unknown) => void;
   onMessage?: (msg: unknown) => void;
   clearHistory: () => void;
+  sendPrompt: ReturnType<typeof vi.fn>;
 } | null = null;
 
 vi.mock("../api/client", () => {
@@ -61,7 +62,7 @@ vi.mock("../api/ws", () => {
     close(): void {}
 
     send(): void {}
-    sendPrompt(): void {}
+    sendPrompt = vi.fn();
     interrupt(): void {}
   }
 
@@ -133,7 +134,8 @@ describe("error placeholder cleanup", () => {
 
     const afterError = (wrapper.vm as any).messages as Array<any>;
     expect(afterError.some((m) => m.role === "assistant" && m.streaming)).toBe(false);
-    expect(afterError.some((m) => m.role === "system" && m.kind === "error" && String(m.content ?? "").includes("boom"))).toBe(true);
+    expect(afterError.some((m) => m.role === "system" && m.kind === "error")).toBe(false);
+    expect((wrapper.vm as any).workerConnectionStatus).toEqual({ kind: "error", message: "boom" });
 
     (wrapper.vm as any).sendMainPrompt("second");
     await settleUi(wrapper);
@@ -165,10 +167,10 @@ describe("error placeholder cleanup", () => {
 
     const duringRetry = (wrapper.vm as any).messages as Array<any>;
     const retryNotices = duringRetry.filter((m) => m.kind === "error" && m.transient === true);
-    expect(retryNotices).toHaveLength(1);
-    expect(retryNotices[0]).toMatchObject({
-      content: message,
-      retryCount: 2,
+    expect(retryNotices).toHaveLength(0);
+    expect((wrapper.vm as any).workerConnectionStatus).toEqual({
+      kind: "progress",
+      message: `${message}（第 2 次重试）`,
     });
     expect(duringRetry.some((m) => m.role === "assistant" && m.streaming)).toBe(true);
 
@@ -178,7 +180,34 @@ describe("error placeholder cleanup", () => {
     const afterResult = (wrapper.vm as any).messages as Array<any>;
     expect(afterResult.some((m) => m.kind === "error" && m.transient === true)).toBe(false);
     expect(afterResult.some((m) => m.role === "assistant" && String(m.content ?? "").includes("done"))).toBe(true);
+    expect((wrapper.vm as any).workerConnectionStatus).toBeNull();
 
+    wrapper.unmount();
+  });
+
+  it("preserves a failed-turn error while automatically advancing a queued prompt", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    (wrapper.vm as any).sendMainPrompt("first");
+    (wrapper.vm as any).sendMainPrompt("second");
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).queuedPrompts).toHaveLength(1);
+
+    lastWs!.onMessage?.({ type: "error", message: "first failed" });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).queuedPrompts).toHaveLength(0);
+    expect((wrapper.vm as any).workerConnectionStatus).toEqual({ kind: "error", message: "first failed" });
+    expect(lastWs!.sendPrompt).toHaveBeenCalledTimes(2);
+
+    lastWs!.onMessage?.({ type: "result", ok: true, output: "second done" });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).workerConnectionStatus).toBeNull();
     wrapper.unmount();
   });
 });

@@ -248,6 +248,7 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 - 首次登录前必须运行 `npm run web:init-admin`。
 - 默认 `default` project 绑定到 `ALLOWED_DIRS` 的第一个目录；也可以在 Web UI 添加、移除、排序项目。
 - Web Worker lane 默认用于实际执行，Planner lane 用于规划和任务草稿。
+- Worker 执行过程中只展示最新一条命令预览；连接恢复后，一旦收到新的命令、流式活动或同步到命令结果，重连/等待状态提示会立即消失，但当前 turn 仍保持忙碌直到收到最终结果。服务端会在 welcome 中声明是否紧随 bootstrap history，客户端据此先对账未确认请求再决定是否重发，避免重复执行或永久锁定输入；恢复历史继续到命令活动时会丢弃断线前未完成的 assistant 片段。恢复上下文期间完成的语音转写仍会保留到当前输入草稿。
 - Web 内置 `/pwd` 和 `/cd <path>`；旧的用户可见 `/ads.*` slash 规划命令已停用，任务草稿和审批由 UI 与 Planner 流程驱动。
 - Goal Mode 依赖 Codex app-server 正常启动；普通 Worker/任务执行依赖 Codex CLI。
 - Web 服务启动时会同步 runtime templates，并启动 scheduler、任务队列管理器、Agent 可用性探测和 Telegram 任务通知重试循环。

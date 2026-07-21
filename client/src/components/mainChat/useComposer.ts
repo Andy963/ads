@@ -79,6 +79,7 @@ export function useMainChatComposer(params: {
   onDraftChange: (draft: string) => void;
   pendingImages: ReadonlyArray<IncomingImage>;
   isBusy: () => boolean;
+  isInputLocked?: () => boolean;
   getApiToken: () => string;
   onSend: (content: string) => void;
   onAddImages: (images: IncomingImage[]) => void;
@@ -266,7 +267,7 @@ export function useMainChatComposer(params: {
       setVoiceStatus("error", "当前浏览器不支持录音", 3500);
       return;
     }
-    if (params.isBusy() || transcribing.value || recording.value) {
+    if (params.isBusy() || params.isInputLocked?.() || transcribing.value || recording.value) {
       return;
     }
     try {
@@ -328,6 +329,7 @@ export function useMainChatComposer(params: {
   };
 
   const send = (): void => {
+    if (params.isInputLocked?.()) return;
     if (recording.value || transcribing.value) return;
     const text = input.value.trim();
     if (!text && params.pendingImages.length === 0) return;
@@ -345,6 +347,7 @@ export function useMainChatComposer(params: {
   };
 
   const onPaste = async (ev: ClipboardEvent): Promise<void> => {
+    if (params.isInputLocked?.()) return;
     const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
     const data = ev.clipboardData;
     const target = ev.target instanceof HTMLTextAreaElement ? ev.target : null;
@@ -507,10 +510,12 @@ export function useMainChatComposer(params: {
   const fileInputEl = ref<HTMLInputElement | null>(null);
 
   const triggerFileInput = (): void => {
+    if (params.isInputLocked?.()) return;
     fileInputEl.value?.click();
   };
 
   const onFileInputChange = async (ev: Event): Promise<void> => {
+    if (params.isInputLocked?.()) return;
     const target = ev.target as HTMLInputElement | null;
     if (!target?.files) return;
     const MAX_IMAGE_BYTES = 25 * 1024 * 1024;

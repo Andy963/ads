@@ -384,6 +384,8 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
   const clearChatState = (): void => {
     busy.value = false;
+    activeRuntime.value.inputLocked.value = false;
+    activeRuntime.value.laneStatus.value = null;
     activeRuntime.value.composerDraft.value = "";
     activeRuntime.value.pendingCdRequestedPath = null;
     queuedPrompts.value = [];

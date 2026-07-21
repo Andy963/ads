@@ -57,17 +57,6 @@ function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean
   });
 }
 
-async function waitForCondition(predicate: () => boolean, timeoutMs = 1500): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Timed out waiting for condition");
-}
-
 describe("web/server/ws/interrupt", () => {
   let tmpDir: string;
   let workspaceRoot: string;
@@ -304,15 +293,18 @@ describe("web/server/ws/interrupt", () => {
     }
   });
 
-  it("disconnect aborts in-flight work and clears interruptControllers", async () => {
+  it("keeps in-flight work running across disconnect and delivers completion after reconnect", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
 
+    let resolveRun: ((value: { ok: boolean; output: string }) => void) | null = null;
     let runStarted: (() => void) | null = null;
     const runStartedPromise = new Promise<void>((resolve) => {
       runStarted = resolve;
     });
-    const runPromise = new Promise<{ ok: boolean; output: string }>(() => {});
+    const runPromise = new Promise<{ ok: boolean; output: string }>((resolve) => {
+      resolveRun = resolve;
+    });
 
     runAdsCommandLineImpl = async () => {
       runStarted?.();
@@ -326,9 +318,32 @@ describe("web/server/ws/interrupt", () => {
     await runStartedPromise;
     assert.equal(interruptControllers.size, 1);
 
+    const closed = new Promise<void>((resolve) => {
+      client.once("close", () => resolve());
+    });
     client.terminate();
+    await closed;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(interruptControllers.size, 1);
 
-    await waitForCondition(() => interruptControllers.size === 0);
+    const reconnected = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const welcomePromise = waitForWsMessage(reconnected, (msg) => msg.type === "welcome");
+    await waitForWsOpen(reconnected);
+    const welcome = await welcomePromise;
+    assert.equal(welcome.inFlight, true);
+
+    const resultPromise = waitForWsMessage(
+      reconnected,
+      (msg) => msg.type === "result" && msg.ok === true && msg.output === "done",
+      1500,
+    );
+    resolveRun?.({ ok: true, output: "done" });
+
+    const result = await resultPromise;
+    assert.equal(result.output, "done");
+    assert.equal(interruptControllers.size, 0);
+
+    reconnected.terminate();
   });
 
   it("keeps in-flight work running when a sibling connection disconnects", async () => {

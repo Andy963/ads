@@ -139,11 +139,11 @@ describe("ws agent delegation status", () => {
       },
     });
 
-    const pushed = pushMessageBeforeLive.mock.calls[0]?.[0] as { content?: string } | undefined;
-    expect(pushed?.content).toContain("API 请求频率过高，请稍后重试");
-    expect(pushed?.content).toContain("错误类型: rate_limit");
-    expect(pushed?.content).not.toContain("详细信息");
-    expect(pushed?.content).not.toContain("api_retry");
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+    expect(rt.laneStatus.value?.message).toContain("API 请求频率过高，请稍后重试");
+    expect(rt.laneStatus.value?.message).toContain("错误类型: rate_limit");
+    expect(rt.laneStatus.value?.message).not.toContain("详细信息");
+    expect(rt.laneStatus.value?.message).not.toContain("api_retry");
   });
 });
 

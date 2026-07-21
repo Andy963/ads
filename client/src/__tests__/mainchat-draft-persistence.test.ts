@@ -71,4 +71,28 @@ describe("MainChat draft persistence", () => {
 
     wrapper.unmount();
   });
+
+  it("disables composer input while the lane is locked and renders fixed progress status", () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        title: "Worker",
+        messages: [],
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        inputLocked: true,
+        draft: "wait",
+        connectionStatusKind: "progress",
+        connectionStatusMessage: "上一轮仍在执行，正在等待后端结果…",
+      },
+      global: { stubs: { MarkdownContent: true } },
+    });
+
+    expect(wrapper.get("textarea.composer-input").attributes("disabled")).toBeDefined();
+    expect(wrapper.get("button.sendIcon").attributes("disabled")).toBeDefined();
+    expect(wrapper.get("[data-testid='lane-connection-status']").text()).toContain("正在等待后端结果");
+
+    wrapper.unmount();
+  });
 });

@@ -7,6 +7,8 @@ type Ref<T> = { value: T };
 function createRuntime(): any {
   return {
     busy: { value: false } satisfies Ref<boolean>,
+    inputLocked: { value: false } satisfies Ref<boolean>,
+    laneStatus: { value: null } satisfies Ref<any>,
     turnInFlight: false,
     turnHasPatch: false,
     delegationsInFlight: { value: [] } satisfies Ref<any[]>,
@@ -97,7 +99,7 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
 }
 
 describe("ws workspace project sync", () => {
-  it("renders status websocket messages as system chat entries", () => {
+  it("renders status websocket messages in the fixed lane status", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();
     const { handler, pushMessageBeforeLive } = createHandler({
@@ -113,11 +115,8 @@ describe("ws workspace project sync", () => {
     rt.messages.value = [{ id: "s-1", role: "system", kind: "text", content: "已切换到代理: Codex" }];
     handler({ type: "status", message: "已切换到代理: Codex", kind: "status" });
 
-    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
-      { role: "system", kind: "error", content: "switch failed" },
-      rt,
-    );
-    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(1);
+    expect(rt.laneStatus.value).toEqual({ kind: "error", message: "switch failed" });
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
   });
 
   it("keeps agent result notices out of chat while preserving the toast notice", () => {
@@ -232,7 +231,7 @@ describe("ws workspace project sync", () => {
     expect(pushMessageBeforeLive).not.toHaveBeenCalled();
   });
 
-  it("renders failed result payloads as system errors instead of assistant replies", () => {
+  it("renders failed result payloads in fixed status instead of assistant replies", () => {
     const rt = createRuntime();
     const { handler, finalizeAssistant, pushMessageBeforeLive } = createHandler({
       projects: [],
@@ -249,13 +248,11 @@ describe("ws workspace project sync", () => {
 
     expect(finalizeAssistant).toHaveBeenCalledWith("", rt);
     expect(finalizeAssistant).not.toHaveBeenCalledWith("错误: No such directory", rt);
-    expect(pushMessageBeforeLive).toHaveBeenCalledWith(
-      { role: "system", kind: "error", content: "错误: No such directory" },
-      rt,
-    );
+    expect(rt.laneStatus.value).toEqual({ kind: "error", message: "错误: No such directory" });
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
   });
 
-  it("preserves error history kind when replaying server history", () => {
+  it("replays only conversational and agent activity history", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();
     const { handler, applyResumeHistory } = createHandler({
@@ -280,9 +277,6 @@ describe("ws workspace project sync", () => {
     expect(applyResumeHistory).toHaveBeenCalledWith(
       [
         { id: "h-u-0", role: "user", kind: "text", content: "hello", ts: 10 },
-        { id: "h-e-1", role: "system", kind: "error", content: "Claude credentials are missing", ts: 11 },
-        { id: "h-s-2", role: "system", kind: "text", content: "已恢复上下文", ts: 12 },
-        { id: "h-e-4", role: "system", kind: "error", content: "command failed", ts: 14 },
         {
           id: "h-x-5",
           role: "system",
@@ -294,6 +288,107 @@ describe("ws workspace project sync", () => {
       ],
       rt,
     );
+    expect(rt.laneStatus.value).toBeNull();
+  });
+
+  it("unlocks the composer when an in-flight update reports idle", () => {
+    const rt = createRuntime();
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.inputLocked.value = true;
+    rt.laneStatus.value = { kind: "progress", message: "上一轮仍在执行，正在等待后端结果…" };
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "in_flight", inFlight: false });
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value).toBeNull();
+  });
+
+  it("restores builtin command results in the fixed lane status", () => {
+    const rt = createRuntime();
+    const { handler, applyResumeHistory } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "user", text: "/pwd", ts: 10 },
+        { role: "status", kind: "status", text: "当前工作目录: /tmp/project", ts: 11 },
+      ],
+    });
+
+    expect(applyResumeHistory).toHaveBeenCalledWith(
+      [{ id: "h-u-0", role: "user", kind: "text", content: "/pwd", ts: 10 }],
+      rt,
+    );
+    expect(rt.laneStatus.value).toEqual({ kind: "info", message: "当前工作目录: /tmp/project" });
+  });
+
+  it("clears and suppresses backend waiting status after replayed command activity", () => {
+    const rt = createRuntime();
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.inputLocked.value = true;
+    rt.laneStatus.value = { kind: "progress", message: "上一轮仍在执行，正在等待后端结果…" };
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", kind: "execute", text: "$ npm test\nTests are running", ts: 10 },
+        { role: "user", text: "continue working", ts: 11 },
+      ],
+    });
+
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.laneStatus.value).toBeNull();
+
+    handler({ type: "status", kind: "status", message: "上一轮仍在执行，正在等待后端结果。" });
+
+    expect(rt.laneStatus.value).toBeNull();
+  });
+
+  it("keeps server-reported in-flight state when history ends with an older command result", () => {
+    const rt = createRuntime();
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.inputLocked.value = true;
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "user", text: "npm test", ts: 1 },
+        { role: "status", kind: "execute", text: "$ npm test\nTests passed", ts: 2 },
+      ],
+    });
+
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.laneStatus.value).toBeNull();
   });
 
   it("drops agent and model change notices from replayed status history", () => {
@@ -330,7 +425,7 @@ describe("ws workspace project sync", () => {
     );
   });
 
-  it("renders context_injection broadcast as a system notice", () => {
+  it("renders context_injection broadcast in fixed status", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();
     const { handler, pushMessageBeforeLive } = createHandler({
@@ -347,13 +442,9 @@ describe("ws workspace project sync", () => {
       latestTs: 5000,
     });
 
-    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(1);
-    const firstCall = pushMessageBeforeLive.mock.calls[0]?.[0] as
-      | { role: string; kind: string; content: string }
-      | undefined;
-    expect(firstCall?.role).toBe("system");
-    expect(firstCall?.kind).toBe("text");
-    expect(firstCall?.content).toMatch(/^已注入最近 4 条聊天历史作为本轮上下文/);
+    expect(rt.laneStatus.value?.kind).toBe("info");
+    expect(rt.laneStatus.value?.message).toMatch(/^已注入最近 4 条聊天历史作为本轮上下文/);
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
   });
 
   it("ignores empty context_injection broadcasts", () => {
@@ -480,18 +571,13 @@ describe("ws workspace project sync", () => {
     expect(rt.activeThreadId.value).toBe("thread-restored");
     expect(rt.threadWarning.value).toBeNull();
     expect(applyResumeHistory).toHaveBeenCalledWith(
-      [
-        {
-          id: "h-restore-history_injection",
-          role: "system",
-          kind: "text",
-          content: "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。",
-          ts: undefined,
-        },
-        { id: "h-s-0", role: "system", kind: "text", content: "已从当前对话恢复上下文", ts: 12 },
-      ],
+      [],
       rt,
     );
+    expect(rt.laneStatus.value).toEqual({
+      kind: "info",
+      message: "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。",
+    });
   });
 
   it("prepends restored thread mode to replayed history and suppresses duplicate restore status", () => {
@@ -513,17 +599,11 @@ describe("ws workspace project sync", () => {
 
     expect(applyResumeHistory).toHaveBeenCalledWith(
       [
-        {
-          id: "h-restore-thread_resumed",
-          role: "system",
-          kind: "text",
-          content: "已恢复后端上下文线程。",
-          ts: undefined,
-        },
         { id: "h-u-0", role: "user", kind: "text", content: "hello", ts: 10 },
       ],
       rt,
     );
+    expect(rt.laneStatus.value).toEqual({ kind: "info", message: "已恢复后端上下文线程。" });
 
     rt.messages.value = [
       { id: "h-restore-thread_resumed", role: "system", kind: "text", content: "已恢复后端上下文线程。" },

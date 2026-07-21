@@ -17,8 +17,13 @@ describe("projectActions.loadProjectsFromServer", () => {
 
     ctx.loggedIn.value = true;
     projects.initializeProjects();
+    ctx.activeRuntime.value.inputLocked.value = true;
+    ctx.activeRuntime.value.laneStatus.value = { kind: "error", message: "stale error" };
 
     await projects.startNewChatSession();
+
+    expect(ctx.activeRuntime.value.inputLocked.value).toBe(false);
+    expect(ctx.activeRuntime.value.laneStatus.value).toBeNull();
 
     const before = ctx.projects.value.find((p) => p.id === "default")?.chatSessionId ?? null;
     expect(before).not.toBeNull();

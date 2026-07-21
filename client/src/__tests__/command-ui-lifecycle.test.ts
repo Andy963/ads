@@ -3,6 +3,7 @@ import { shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import { RECONNECT_PENDING_RESEND_NOTICE } from "../app/projectsWs/reconnectNotice";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -247,7 +248,7 @@ describe("command UI lifecycle", () => {
     wrapper.unmount();
   });
 
-  it("renders successful status command results as system messages", async () => {
+  it("renders successful status command results in the fixed lane status", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -262,8 +263,20 @@ describe("command UI lifecycle", () => {
     await settleUi(wrapper);
 
     const messages = (wrapper.vm as any).messages as Array<any>;
-    expect(messages.some((m) => m.role === "system" && m.kind === "text" && m.content === "当前工作目录: /tmp/project")).toBe(true);
+    expect(messages.some((m) => m.role === "system" && m.kind === "text" && m.content === "当前工作目录: /tmp/project")).toBe(false);
     expect(messages.some((m) => m.role === "assistant" && String(m.content ?? "").includes("当前工作目录"))).toBe(false);
+    expect((wrapper.vm as any).workerConnectionStatus).toEqual({
+      kind: "info",
+      message: "当前工作目录: /tmp/project",
+    });
+
+    (wrapper.vm as any).sendMainPrompt("continue");
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).workerConnectionStatus).toBeNull();
+
+    lastWs!.onMessage?.({ type: "result", ok: true, output: "done" });
+    await settleUi(wrapper);
 
     wrapper.unmount();
   });
@@ -314,6 +327,24 @@ describe("command UI lifecycle", () => {
     expect(afterProgress.some((m) => m.role === "assistant" && m.streaming && String(m.content).trim() === "")).toBe(false);
     expect(afterProgress.map((m) => String(m.content ?? "")).join("\n")).toContain("Tool: shell");
 
+    wrapper.unmount();
+  });
+
+  it("shows reconnect progress instead of the retryable websocket close error", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    (wrapper.vm as any).sendMainPrompt("hello");
+    await settleUi(wrapper);
+    lastWs!.onClose?.({ code: 1006, reason: "network changed" });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).workerConnectionStatus).toEqual({
+      kind: "progress",
+      message: RECONNECT_PENDING_RESEND_NOTICE,
+    });
     wrapper.unmount();
   });
 });

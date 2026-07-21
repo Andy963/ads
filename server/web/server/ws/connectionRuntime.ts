@@ -48,12 +48,15 @@ export function cleanupClosedConnection(args: {
 }): void {
   args.clients.delete(args.ws);
   const meta = args.clientMetaByWs.get(args.ws);
-  const hasSiblingForHistory =
-    typeof meta?.historyKey === "string" &&
-    Array.from(args.clientMetaByWs.entries()).some(
-      ([candidate, candidateMeta]) => candidate !== args.ws && candidateMeta?.historyKey === meta.historyKey,
-    );
-  if (meta?.historyKey && !hasSiblingForHistory) {
+  const inFlight = Boolean(meta?.historyKey && args.interruptControllers.has(meta.historyKey));
+  const hasSiblingConnection = Boolean(
+    meta?.historyKey &&
+    [...args.clientMetaByWs.entries()].some(
+      ([candidate, candidateMeta]) =>
+        candidate !== args.ws && args.clients.has(candidate) && candidateMeta.historyKey === meta.historyKey,
+    ),
+  );
+  if (args.code === 4401 && inFlight && !hasSiblingConnection && meta?.historyKey) {
     invalidateWsPromptRun({
       historyKey: meta.historyKey,
       interruptControllers: args.interruptControllers,
@@ -64,6 +67,6 @@ export function cleanupClosedConnection(args: {
   const reasonText = formatCloseReason(args.reason);
   const suffix = reasonText ? ` reason=${reasonText}` : "";
   args.logger.info(
-    `client disconnected conn=${meta?.connectionId ?? "unknown"} session=${args.sessionId} user=${args.userId} history=${meta?.historyKey ?? ""} code=${args.code}${suffix}`,
+    `client disconnected conn=${meta?.connectionId ?? "unknown"} session=${args.sessionId} user=${args.userId} history=${meta?.historyKey ?? ""} code=${args.code}${suffix} inFlight=${inFlight}`,
   );
 }

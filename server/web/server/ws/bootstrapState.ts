@@ -52,6 +52,8 @@ export function buildWelcomePayload(args: {
   chatSessionId: string;
   workspace: unknown;
   inFlight: boolean;
+  bootstrapHistory: boolean;
+  completedClientMessageIds: string[];
   state: WsBootstrapState;
 }): Record<string, unknown> {
   return {
@@ -61,6 +63,8 @@ export function buildWelcomePayload(args: {
     sessionId: args.sessionId,
     chatSessionId: args.chatSessionId,
     inFlight: args.inFlight,
+    bootstrapHistory: args.bootstrapHistory,
+    completedClientMessageIds: args.completedClientMessageIds,
     threadId: args.state.threadId,
     effectiveModel: args.state.effectiveState.model,
     effectiveModelReasoningEffort: args.state.effectiveState.modelReasoningEffort,

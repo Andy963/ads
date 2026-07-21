@@ -24,6 +24,8 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     selectedId: ref<string | null>(null),
     runBusyIds: ref(new Set()),
     busy: ref(false),
+    inputLocked: ref(false),
+    laneStatus: ref(null),
     turnInFlight: false,
     turnHasPatch: false,
     pendingAckClientMessageId: null,

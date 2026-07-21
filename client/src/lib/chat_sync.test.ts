@@ -442,6 +442,34 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out.map((m) => m.id)).toEqual(["u1"]);
   });
 
+  it("drops an interrupted assistant fragment when resumed history continues with command activity", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run tests" }),
+      msg({
+        id: "a1",
+        role: "assistant",
+        kind: "text",
+        content: `I will run the tests.\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "h-u-0", role: "user", content: "Run tests" }),
+      msg({
+        id: "h-x-1",
+        role: "system",
+        kind: "execute",
+        command: "npm test",
+        content: "Tests are running",
+      }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(out.map((m) => m.id)).toEqual(["u1", "h-x-1"]);
+    expect(out.map((m) => m.content)).toEqual(["Run tests", "Tests are running"]);
+  });
+
   it("replaces a truncated execute tail when server history has the completed command output", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Run tests" }),

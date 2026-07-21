@@ -40,6 +40,7 @@ const props = defineProps<{
   pendingImages: IncomingImage[];
   connected: boolean;
   busy: boolean;
+  inputLocked?: boolean;
   agents?: AgentOption[];
   activeAgentId?: string;
   models?: ModelConfig[];
@@ -48,7 +49,7 @@ const props = defineProps<{
   agentDelegations?: AgentDelegation[];
   apiToken?: string;
   runningTaskCount?: number;
-  connectionStatusKind?: "disconnected" | "error" | null;
+  connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
 }>();
 
@@ -95,11 +96,12 @@ watch(
   () => [
     Boolean(props.connected),
     Boolean(props.busy),
+    Boolean(props.inputLocked),
     String(props.activeAgentId ?? "").trim(),
     readyAgentOptions.value.map((a) => String(a.id ?? "").trim()).join("\n"),
   ],
   () => {
-    if (!props.connected || props.busy) {
+    if (!props.connected || props.busy || props.inputLocked) {
       lastAutoSwitchedAgentId.value = null;
       return;
     }
@@ -127,6 +129,7 @@ watch(
 );
 
 function onAgentChange(ev: Event): void {
+  if (props.inputLocked) return;
   const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
   const next = String(value ?? "").trim();
   if (!next) return;
@@ -159,8 +162,14 @@ const effectiveModelId = computed(() => {
 });
 
 watch(
-  () => [selectedAgentId.value, props.modelId, filteredModelOptions.value.map((m) => String(m.modelId ?? m.id ?? "").trim()).join("\n")],
+  () => [
+    Boolean(props.inputLocked),
+    selectedAgentId.value,
+    props.modelId,
+    filteredModelOptions.value.map((m) => String(m.modelId ?? m.id ?? "").trim()).join("\n"),
+  ],
   () => {
+    if (props.inputLocked) return;
     const options = filteredModelOptions.value;
     if (options.length === 0) return;
     const first = options[0];
@@ -186,6 +195,7 @@ function formatModelLabel(model: ModelConfig): string {
 }
 
 function onModelChange(ev: Event): void {
+  if (props.inputLocked) return;
   const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
   const next = normalizeModelId(value);
   if (!next || isUnsetModelId(next)) return;
@@ -219,12 +229,14 @@ const reasoningEffortValue = computed(() => {
 
 watch(
   () => [
+    Boolean(props.inputLocked),
     selectedAgentId.value,
     effectiveModelId.value,
     String(props.modelReasoningEffort ?? "").trim().toLowerCase(),
     reasoningEffortOptions.value.join("\n"),
   ],
   () => {
+    if (props.inputLocked) return;
     const current = String(props.modelReasoningEffort ?? "").trim().toLowerCase();
     if (!current || current === reasoningEffortValue.value) return;
     emit("setReasoningEffort", reasoningEffortValue.value);
@@ -237,6 +249,7 @@ function formatReasoningEffortLabel(effort: string): string {
 }
 
 function onReasoningEffortChange(ev: Event): void {
+  if (props.inputLocked) return;
   const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
   emit("setReasoningEffort", String(value ?? "").trim());
 }
@@ -257,9 +270,7 @@ const agentDelegationLabel = computed(() => {
   return `正在委托: ${shown}${suffix}`;
 });
 
-const normalizedConnectionStatusKind = computed(() =>
-  props.connectionStatusKind === "error" ? "error" : "disconnected",
-);
+const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
@@ -325,6 +336,7 @@ const {
   onDraftChange: (draft) => emit("update:draft", draft),
   pendingImages: props.pendingImages,
   isBusy: () => props.busy,
+  isInputLocked: () => Boolean(props.inputLocked),
   getApiToken: () => String(props.apiToken ?? ""),
   onSend: (content) => emit("send", content),
   onAddImages: (images) => emit("addImages", images),
@@ -383,7 +395,7 @@ const {
           <span v-else class="attachmentsThumbFallback">图片</span>
         </button>
       </div>
-      <button class="attachmentsClear" type="button" title="清空图片" @click="emit('clearImages')">
+      <button class="attachmentsClear" type="button" title="清空图片" :disabled="inputLocked" @click="emit('clearImages')">
         <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <path
             fill-rule="evenodd"
@@ -395,10 +407,19 @@ const {
     </div>
 
     <div class="inputWrap">
-      <input ref="fileInputEl" type="file" accept="image/*" multiple class="hiddenFileInput" @change="onFileInputChange" />
+      <input
+        ref="fileInputEl"
+        type="file"
+        accept="image/*"
+        multiple
+        class="hiddenFileInput"
+        :disabled="inputLocked"
+        @change="onFileInputChange"
+      />
       <textarea
         ref="inputEl"
         v-model="input"
+        :disabled="inputLocked"
         rows="5"
         class="composer-input"
         placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）"
@@ -407,7 +428,7 @@ const {
       />
       <div class="inputToolbar">
         <div class="inputToolbarLeft">
-          <button class="attachIcon" type="button" title="添加图片附件" @click="triggerFileInput">
+          <button class="attachIcon" type="button" title="添加图片附件" :disabled="inputLocked" @click="triggerFileInput">
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path
                 fill-rule="evenodd"
@@ -420,7 +441,7 @@ const {
             <select
               class="agentSelectInput"
               :value="selectedAgentId"
-              :disabled="!connected || busy"
+              :disabled="!connected || busy || inputLocked"
               aria-label="Select agent"
               @change="onAgentChange"
             >
@@ -433,7 +454,7 @@ const {
             <select
               class="agentSelectInput"
               :value="effectiveModelId"
-              :disabled="!connected || busy || filteredModelOptions.length === 0"
+              :disabled="!connected || busy || inputLocked || filteredModelOptions.length === 0"
               aria-label="Select model"
               data-testid="chat-model-select"
               @change="onModelChange"
@@ -448,7 +469,7 @@ const {
             <select
               class="agentSelectInput"
               :value="reasoningEffortValue"
-              :disabled="!connected || busy"
+              :disabled="!connected || busy || inputLocked"
               aria-label="Select reasoning effort"
               data-testid="chat-reasoning-effort"
               @change="onReasoningEffortChange"
@@ -473,7 +494,7 @@ const {
           <button
             class="micIcon"
             :class="{ recording, transcribing }"
-            :disabled="canInterrupt || transcribing"
+            :disabled="canInterrupt || transcribing || (inputLocked && !recording)"
             type="button"
             :title="recording ? '停止录音' : '语音输入（追加到输入框）'"
             @click="toggleRecording"
@@ -494,7 +515,7 @@ const {
           <button
             v-else
             class="sendIcon"
-            :disabled="(!input.trim() && pendingImages.length === 0) || recording || transcribing"
+            :disabled="inputLocked || (!input.trim() && pendingImages.length === 0) || recording || transcribing"
             type="button"
             title="发送"
             @click="send"
@@ -596,6 +617,23 @@ const {
   border-color: rgba(248, 113, 113, 0.45);
   background: #fef2f2;
   color: #b91c1c;
+}
+
+.laneStatusBar--info,
+.laneStatusBar--progress {
+  border-color: rgba(96, 165, 250, 0.45);
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.laneStatusBar--progress .laneStatusDot {
+  animation: laneStatusPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes laneStatusPulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .laneStatusDot {

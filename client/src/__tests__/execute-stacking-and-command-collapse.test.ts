@@ -189,7 +189,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("renders finalized execute history blocks individually", async () => {
+  it("shows only the latest finalized execute history block", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -215,15 +215,11 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     const blocks = wrapper.findAll(".execute-block");
-    expect(blocks).toHaveLength(3);
-
-    expect(blocks[0]!.find(".execute-cmd").text()).toContain("cmd-1");
-    expect(blocks[1]!.find(".execute-cmd").text()).toContain("cmd-2");
-    expect(blocks[2]!.find(".execute-cmd").text()).toContain("cmd-3");
-
-    expect(blocks[0]!.find(".execute-output").text()).toContain("out-1");
-    expect(blocks[1]!.find(".execute-output").text()).toContain("out-2");
-    expect(blocks[2]!.find(".execute-output").text()).toContain("out-3");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.find(".execute-cmd").text()).toContain("cmd-3");
+    expect(blocks[0]!.find(".execute-output").text()).toContain("out-3");
+    expect(blocks[0]!.text()).not.toContain("cmd-1");
+    expect(blocks[0]!.text()).not.toContain("cmd-2");
 
     wrapper.unmount();
   });

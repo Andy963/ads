@@ -24,6 +24,7 @@ function createHarness() {
   const rt = {
     tasks: { value: [] } satisfies Ref<Task[]>,
     messages: { value: [] } satisfies Ref<any[]>,
+    laneStatus: { value: null } satisfies Ref<any>,
     startedTaskIds: new Set<string>(),
   };
   const pushMessageBeforeLive = vi.fn((message: any) => {
@@ -80,9 +81,7 @@ describe("task event error styling", () => {
       data: makeTask({ status: "cancelled" }),
     });
 
-    expect(rt.messages.value).toEqual([
-      { role: "system", kind: "error", content: "[任务失败] boom" },
-      { role: "system", kind: "error", content: "[已终止]" },
-    ]);
+    expect(rt.messages.value).toEqual([]);
+    expect(rt.laneStatus.value).toEqual({ kind: "error", message: "[已终止]" });
   });
 });

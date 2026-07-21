@@ -60,7 +60,7 @@ describe("web/ws/connectionRuntime", () => {
     assert.equal(promptRunEpochs.get("h1"), 2);
   });
 
-  it("cleans up closed sockets, aborts pending work, and logs disconnect details", () => {
+  it("cleans up closed sockets without aborting pending work", () => {
     const ws = {} as any;
     let aborted = 0;
     const controller = new AbortController();
@@ -90,7 +90,6 @@ describe("web/ws/connectionRuntime", () => {
       clients,
       clientMetaByWs,
       interruptControllers,
-      promptRunEpochs,
       logger: {
         info: (message) => logs.push(message),
         warn: () => {},
@@ -98,12 +97,15 @@ describe("web/ws/connectionRuntime", () => {
       },
     });
 
-    assert.equal(aborted, 1);
+    assert.equal(aborted, 0);
     assert.equal(clients.has(ws), false);
     assert.equal(clientMetaByWs.has(ws), false);
-    assert.equal(interruptControllers.has("h1"), false);
-    assert.equal(promptRunEpochs.get("h1"), 2);
-    assert.match(logs[0]!, /client disconnected conn=c1 session=session-1 user=7 history=h1 code=1000 reason=bye/);
+    assert.equal(interruptControllers.get("h1"), controller);
+    assert.equal(promptRunEpochs.get("h1"), 1);
+    assert.match(
+      logs[0]!,
+      /client disconnected conn=c1 session=session-1 user=7 history=h1 code=1000 reason=bye inFlight=true/,
+    );
   });
 
   it("keeps in-flight work when another socket for the same history key remains connected", () => {
@@ -143,7 +145,6 @@ describe("web/ws/connectionRuntime", () => {
       clients,
       clientMetaByWs,
       interruptControllers,
-      promptRunEpochs,
       logger: {
         info: () => {},
         warn: () => {},
@@ -154,6 +155,86 @@ describe("web/ws/connectionRuntime", () => {
     assert.equal(aborted, 0);
     assert.equal(clients.has(wsA), false);
     assert.equal(clientMetaByWs.has(wsA), false);
+    assert.equal(interruptControllers.get("h1"), controller);
+    assert.equal(promptRunEpochs.get("h1"), 1);
+  });
+
+  it("aborts in-flight work when authentication closes the connection", () => {
+    const ws = {} as any;
+    let aborted = 0;
+    const controller = new AbortController();
+    const promptRunEpochs = new Map<string, number>([["h1", 1]]);
+    controller.abort = () => {
+      aborted += 1;
+    };
+    const interruptControllers = new Map([["h1", controller]]);
+
+    cleanupClosedConnection({
+      ws,
+      code: 4401,
+      reason: Buffer.from("session expired"),
+      sessionId: "session-1",
+      userId: 7,
+      clients: new Set([ws]),
+      clientMetaByWs: new Map([
+        [
+          ws,
+          {
+            historyKey: "h1",
+            connectionId: "c1",
+          } as any,
+        ],
+      ]),
+      interruptControllers,
+      promptRunEpochs,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        debug: () => {},
+      },
+    });
+
+    assert.equal(aborted, 1);
+    assert.equal(interruptControllers.has("h1"), false);
+    assert.equal(promptRunEpochs.get("h1"), 2);
+  });
+
+  it("keeps in-flight work when an expired sibling connection closes", () => {
+    const expiredWs = {} as any;
+    const activeWs = {} as any;
+    let aborted = 0;
+    const controller = new AbortController();
+    const promptRunEpochs = new Map<string, number>([["h1", 1]]);
+    controller.abort = () => {
+      aborted += 1;
+    };
+    const interruptControllers = new Map([["h1", controller]]);
+    const clients = new Set([expiredWs, activeWs]);
+    const clientMetaByWs = new Map([
+      [expiredWs, { historyKey: "h1", connectionId: "expired" } as any],
+      [activeWs, { historyKey: "h1", connectionId: "active" } as any],
+    ]);
+
+    cleanupClosedConnection({
+      ws: expiredWs,
+      code: 4401,
+      reason: Buffer.from("session expired"),
+      sessionId: "session-1",
+      userId: 7,
+      clients,
+      clientMetaByWs,
+      interruptControllers,
+      promptRunEpochs,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        debug: () => {},
+      },
+    });
+
+    assert.equal(aborted, 0);
+    assert.equal(clients.has(expiredWs), false);
+    assert.equal(clients.has(activeWs), true);
     assert.equal(interruptControllers.get("h1"), controller);
     assert.equal(promptRunEpochs.get("h1"), 1);
   });

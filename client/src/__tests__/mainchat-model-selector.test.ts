@@ -206,4 +206,34 @@ describe("MainChat model selector", () => {
 
     wrapper.unmount();
   });
+
+  it("normalizes model preferences after the composer unlocks", async () => {
+    const model = makeModel("gpt-4.1", "GPT-4.1", "openai");
+    model.configJson = {
+      reasoningEfforts: ["medium", "high"],
+    };
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        inputLocked: true,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "removed-model",
+        modelReasoningEffort: "xhigh",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("setModel")).toBeUndefined();
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+
+    await wrapper.setProps({ inputLocked: false });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("setModel")?.[0]?.[0]).toBe("gpt-4.1");
+    expect(wrapper.emitted("setReasoningEffort")?.[0]?.[0]).toBe("high");
+    wrapper.unmount();
+  });
 });

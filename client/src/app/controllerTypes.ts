@@ -56,6 +56,11 @@ export type AgentDescriptor = {
   error?: string;
 };
 
+export type LaneStatus = {
+  kind: "info" | "progress" | "disconnected" | "error";
+  message: string;
+};
+
 export type ChatPatchFile = {
   path: string;
   added: number | null;
@@ -132,6 +137,8 @@ export type ProjectRuntime = {
   selectedId: Ref<string | null>;
   runBusyIds: Ref<Set<string>>;
   busy: Ref<boolean>;
+  inputLocked: Ref<boolean>;
+  laneStatus: Ref<LaneStatus | null>;
   turnInFlight: boolean;
   // Tracks whether the current WS turn already emitted a patch diff message.
   // Used to suppress redundant diff-like command outputs (e.g. `git diff`) in the same turn.

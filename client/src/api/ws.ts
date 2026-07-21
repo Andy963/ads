@@ -29,6 +29,8 @@ type WsMessage =
       threadId?: string;
       reset?: boolean;
       inFlight?: boolean;
+      bootstrapHistory?: boolean;
+      completedClientMessageIds?: string[];
     }
   | { type: "ack"; client_message_id?: string; duplicate?: boolean }
   | { type: "history"; items: Array<{ role: string; text: string; ts: number; kind?: string }> }
