@@ -196,6 +196,33 @@ describe("SessionManager", () => {
     assert.equal(manager.getUserModel(123456), "model-override");
   });
 
+  it("marks history injection when a model change clears provider threads", () => {
+    const session = manager.getOrCreate(123456, "/tmp/a") as unknown as FakeSession;
+    session.threadId = "thread-before-model-change";
+
+    manager.setUserModel(123456, "model-override");
+
+    assert.equal(session.threadId, null);
+    assert.equal(manager.needsHistoryInjection(123456), true);
+    assert.equal(manager.getContextRestoreMode(123456), "history_injection");
+  });
+
+  it("marks history injection when switching agents even if the target has its own thread", () => {
+    const session = manager.getOrCreate(123456, "/tmp/a") as unknown as FakeSession;
+    session.threadId = "codex-thread";
+    session.switchAgent = (agentId) => {
+      session.activeAgentId = agentId;
+      session.threadId = "claude-thread";
+    };
+
+    const result = manager.switchAgent(123456, "claude");
+
+    assert.equal(result.success, true);
+    assert.equal(session.threadId, "claude-thread");
+    assert.equal(manager.needsHistoryInjection(123456), true);
+    assert.equal(manager.getContextRestoreMode(123456), "history_injection");
+  });
+
   it("tracks user cwd", () => {
     manager.getOrCreate(123456, "/home/test");
     assert.equal(manager.getUserCwd(123456), "/home/test");
@@ -242,7 +269,8 @@ describe("SessionManager", () => {
 
     const resumed = manager.getOrCreate(80, nestedWorkspace, true) as unknown as FakeSession;
     assert.equal(resumed.getThreadId(), "thread-80");
-    assert.equal(manager.getContextRestoreMode(80), "thread_resumed");
+    assert.equal(manager.getContextRestoreMode(80), "history_injection");
+    assert.equal(manager.needsHistoryInjection(80), true);
   });
 
   it("clears saved threads when cwd rebinding crosses to an incompatible workspace", () => {
@@ -305,7 +333,8 @@ describe("SessionManager", () => {
     assert.equal(session.getModelReasoningEffort(), "xhigh");
     assert.equal(session.getActiveAgentId(), "claude");
     assert.equal(session.getThreadId(), "claude-thread");
-    assert.equal(manager.getContextRestoreMode(42), "thread_resumed");
+    assert.equal(manager.getContextRestoreMode(42), "history_injection");
+    assert.equal(manager.needsHistoryInjection(42), true);
   });
 
   it("keeps fresh restore mode when no saved thread exists even if resume was requested", () => {
@@ -458,6 +487,7 @@ describe("SessionManager", () => {
     const resumed = manager.getOrCreate(79, "/tmp/project-b", true) as unknown as FakeSession;
     assert.equal(storage.getRecord(79)?.cwd, "/tmp/project-b");
     assert.equal(resumed.getThreadId(), "manual-thread");
-    assert.equal(manager.getContextRestoreMode(79), "thread_resumed");
+    assert.equal(manager.getContextRestoreMode(79), "history_injection");
+    assert.equal(manager.needsHistoryInjection(79), true);
   });
 });

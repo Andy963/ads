@@ -1086,6 +1086,34 @@ describe("ws workspace project sync", () => {
     );
   });
 
+  it("preserves visible history when a result thread reset will recover through history injection", () => {
+    const rt = createRuntime();
+    rt.messages.value = [
+      { id: "u-1", role: "user", kind: "text", content: "earlier request" },
+      { id: "a-1", role: "assistant", kind: "text", content: "earlier response" },
+    ];
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({
+      type: "result",
+      ok: true,
+      output: "done",
+      threadReset: true,
+      contextMode: "history_injection",
+      threadId: "thread-new",
+      expectedThreadId: "thread-old",
+    });
+
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.messages.value.map((item) => item.content)).toContain("earlier request");
+    expect(rt.threadWarning.value).toContain("下一轮将注入聊天历史");
+  });
+
   it("renders a plan WS broadcast as a plan chat item with checklist", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();

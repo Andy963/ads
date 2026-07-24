@@ -1,6 +1,8 @@
 import type { Input } from "../../../agents/protocol/types.js";
 
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
+import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
+import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
@@ -26,6 +28,15 @@ import { shouldResumeMissingRuntimeSession } from "./resumeThreadFallback.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
+
+export function excludeCurrentClientMessage(
+  entries: HistoryEntry[],
+  clientMessageId?: string | null,
+): HistoryEntry[] {
+  const normalized = String(clientMessageId ?? "").trim();
+  if (!normalized) return entries;
+  return entries.filter((entry) => getHistoryClientMessageId(entry.kind) !== normalized);
+}
 
 export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
   handled: boolean;
@@ -169,7 +180,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
 
       let effectiveInput: Input = inputToSend;
       if (deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId)) {
-        const historyEntries = historyBeforeCurrentPrompt.filter((entry) => entry.ts <= deps.request.receivedAt);
+        const historyEntries = excludeCurrentClientMessage(
+          historyBeforeCurrentPrompt,
+          deps.request.clientMessageId,
+        );
         const injectionDetails = buildHistoryInjectionDetails(historyEntries);
         if (injectionDetails) {
           effectiveInput = prependContextToInput(injectionDetails.text, inputToSend);
@@ -334,6 +348,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         threadId,
         expectedThreadId,
         threadReset,
+        contextMode: threadReset ? "history_injection" : undefined,
         effectiveModel: effectiveState.model,
         effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
         activeAgentId: effectiveState.activeAgentId,
@@ -343,6 +358,9 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
       deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
+      if (threadReset) {
+        deps.sessions.sessionManager.markHistoryInjection(deps.context.userId);
+      }
       if (deps.transport.broadcastWorkspaceState) {
         deps.transport.broadcastWorkspaceState(turnCwd);
       } else {

@@ -243,6 +243,11 @@ export class SessionManager {
     this.runtime.clearHistoryInjection(userId);
   }
 
+  markHistoryInjection(userId: number): void {
+    this.runtime.markHistoryInjection(userId);
+    this.runtime.setContextRestoreMode(userId, "history_injection");
+  }
+
   getContextRestoreMode(userId: number): ContextRestoreMode {
     return this.runtime.getContextRestoreMode(userId);
   }
@@ -331,7 +336,11 @@ export class SessionManager {
       return { success: false, message: "❌ 没有找到活跃会话" };
     }
     try {
+      const previousAgentId = record.session.getActiveAgentId?.();
       record.session.switchAgent(agentId);
+      if (previousAgentId && previousAgentId !== agentId) {
+        this.markHistoryInjection(userId);
+      }
       record.lastActivity = Date.now();
       this.syncStoredState(userId);
       return { success: true, message: `✅ 已切换到代理: ${agentId}` };
@@ -354,8 +363,11 @@ export class SessionManager {
       record.session.setModel(normalized || undefined);
       record.lastActivity = Date.now();
     }
-    this.runtime.setContextRestoreMode(userId, "fresh");
-    this.syncStoredState(userId, { clearThreads: previousModel !== (normalized || undefined) });
+    const modelChanged = previousModel !== (normalized || undefined);
+    if (modelChanged) {
+      this.markHistoryInjection(userId);
+    }
+    this.syncStoredState(userId, { clearThreads: modelChanged });
     this.logger.info(`Switched to model: ${normalized || "(default)"}`);
   }
 

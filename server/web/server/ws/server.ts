@@ -428,6 +428,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         sendJson: (payload) => safeJsonSend(ws, payload),
         broadcastPersistedHistory: broadcastHistoryToSiblingConnections,
         broadcastInFlight: broadcastInFlightToSiblingConnections,
+        inFlight: state.interruptControllers.has(historyKey),
         traceWsDuplication: config.traceWsDuplication,
         warn: (message) => logger.warn(message),
         sessionId,

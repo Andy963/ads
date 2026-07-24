@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildHistoryInjectionContext,
+  excludeCurrentClientMessage,
   prependContextToInput,
 } from "../../server/web/server/ws/handlePrompt.js";
 import {
@@ -58,8 +59,18 @@ describe("context resume — history injection", () => {
     assert.equal(buildHistoryInjectionContext([]), null);
   });
 
+  it("excludes the current persisted prompt from restored history", () => {
+    const entries = [
+      { role: "user", text: "earlier", ts: 1, kind: "client_message_id:previous" },
+      { role: "ai", text: "earlier reply", ts: 2 },
+      { role: "user", text: "current", ts: 3, kind: "client_message_id:current;prompt_meta:model=gpt-4o" },
+    ];
+
+    assert.deepEqual(excludeCurrentClientMessage(entries, "current"), entries.slice(0, 2));
+  });
+
   it("truncates long entry text", () => {
-    const longText = "a".repeat(2000);
+    const longText = "a".repeat(3000);
     const entries = [{ role: "user", text: longText }];
     const result = buildHistoryInjectionContext(entries);
     assert.ok(result);
@@ -70,7 +81,7 @@ describe("context resume — history injection", () => {
   it("keeps the command and end of long command output entries", () => {
     const commandOutput = [
       `$ npm test`,
-      "early output ".repeat(100),
+      "early output ".repeat(250),
       "Tests: 1 failed, 20 passed",
       "Error: expected recovered context",
       "[exit code 1]",
@@ -92,11 +103,11 @@ describe("context resume — history injection", () => {
     }));
     const result = buildHistoryInjectionContext(entries);
     assert.ok(result);
-    assert.ok(result.length <= 10_000);
+    assert.ok(result.length <= 26_000);
   });
 
   it("trims long transcript on history entry boundaries", () => {
-    const entries = Array.from({ length: 20 }, (_, i) => ({
+    const entries = Array.from({ length: 50 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "ai",
       text: `entry ${i.toString().padStart(2, "0")}: ${"x".repeat(790)}`,
     }));
@@ -112,7 +123,7 @@ describe("context resume — history injection", () => {
     const firstLine = transcript.split("\n")[0] ?? "";
     assert.match(firstLine, /^(User|Assistant): entry \d{2}:/);
     assert.ok(!transcript.includes("entry 00:"));
-    assert.ok(transcript.includes("entry 19:"));
+    assert.ok(transcript.includes("entry 49:"));
   });
 
   it("prepends context to string input", () => {

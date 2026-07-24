@@ -119,10 +119,9 @@ export function resolveResumeState(args: {
     typeof record?.activeAgentId === "string" && record.activeAgentId.trim()
       ? (record.activeAgentId.trim() as AgentIdentifier)
       : undefined;
-  const candidateThreadId =
-    (savedActiveAgentId ? record?.agentThreads?.[savedActiveAgentId] : undefined) ??
-    record?.agentThreads?.codex ??
-    record?.threadId;
+  const candidateThreadId = savedActiveAgentId
+    ? record?.agentThreads?.[savedActiveAgentId]
+    : record?.agentThreads?.codex ?? record?.threadId;
   const resumeThreadIds = filterAgentThreads(record?.agentThreads);
   const updatedAt = record?.updatedAt;
   const savedCwd = normalizeCwd(record?.cwd);
@@ -158,14 +157,14 @@ export function resolveResumeState(args: {
       };
     }
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+      `[Continuity] user=${args.userId} restore=thread_resumed_with_history agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
     );
     return {
       resumeThreadId: candidateThreadId,
       resumeThreadIds,
       activeAgentId: savedActiveAgentId,
-      shouldInjectHistory: false,
-      restoreMode: "thread_resumed",
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
     };
   }
 
@@ -182,14 +181,26 @@ export function resolveResumeState(args: {
 
   if (candidateThreadId) {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+      `[Continuity] user=${args.userId} restore=thread_resumed_with_history agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
     );
     return {
       resumeThreadId: candidateThreadId,
       resumeThreadIds,
       activeAgentId: savedActiveAgentId,
-      shouldInjectHistory: false,
-      restoreMode: "thread_resumed",
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    };
+  }
+
+  if (record) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=history_injection reason=saved_state_without_thread agent=${savedActiveAgentId ?? "unknown"}`,
+    );
+    return {
+      resumeThreadIds,
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
     };
   }
 

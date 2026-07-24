@@ -122,7 +122,51 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, false);
   });
 
-  it("classifies restore mode as thread_resumed when a saved thread is still fresh", () => {
+  it("injects history when saved model state remains after provider threads were cleared", () => {
+    storage.setRecord(14, {
+      cwd: "/tmp/project",
+      agentThreads: {},
+      model: "gpt-4o",
+      activeAgentId: "codex",
+    });
+
+    const resume = resolveResumeState({
+      userId: 14,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      resumeTtlMs: 60_000,
+      currentCwd: "/tmp/project",
+    });
+
+    assert.equal(resume.restoreMode, "history_injection");
+    assert.equal(resume.resumeThreadId, undefined);
+    assert.equal(resume.shouldInjectHistory, true);
+  });
+
+  it("does not bind another agent's thread when the active agent has no thread", () => {
+    storage.setRecord(15, {
+      cwd: "/tmp/project",
+      agentThreads: { codex: "codex-thread" },
+      activeAgentId: "claude",
+    });
+
+    const resume = resolveResumeState({
+      userId: 15,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      resumeTtlMs: 60_000,
+      currentCwd: "/tmp/project",
+    });
+
+    assert.equal(resume.activeAgentId, "claude");
+    assert.equal(resume.resumeThreadId, undefined);
+    assert.equal(resume.restoreMode, "history_injection");
+    assert.equal(resume.shouldInjectHistory, true);
+  });
+
+  it("resumes a fresh saved thread with one-time history injection", () => {
     storage.setRecord(11, {
       threadId: "thread-11",
       cwd: "/tmp/project",
@@ -138,9 +182,9 @@ describe("telegram/sessionState helpers", () => {
       resumeTtlMs: 60_000,
     });
 
-    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.restoreMode, "history_injection");
     assert.equal(resume.resumeThreadId, "thread-11");
-    assert.equal(resume.shouldInjectHistory, false);
+    assert.equal(resume.shouldInjectHistory, true);
   });
 
   it("keeps auto-resume when reconnect normalizes to a compatible project cwd", () => {
@@ -160,9 +204,9 @@ describe("telegram/sessionState helpers", () => {
       currentCwd: "/tmp/project",
     });
 
-    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.restoreMode, "history_injection");
     assert.equal(resume.resumeThreadId, "thread-13");
-    assert.equal(resume.shouldInjectHistory, false);
+    assert.equal(resume.shouldInjectHistory, true);
   });
 
   it("skips auto-resume when the current cwd no longer matches the saved cwd", () => {

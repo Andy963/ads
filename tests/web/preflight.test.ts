@@ -147,6 +147,92 @@ describe("web/ws/preflight", () => {
     }
   });
 
+  it("re-enqueues only explicitly recovered duplicate prompts that have no terminal result", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-recovery", maxEntriesPerSession: 20 });
+    const base = {
+      requestId: "req-recovery",
+      clientMessageId: "p-recovery",
+      historyStore,
+      historyKey: "history-recovery",
+      sanitizeInput: (payload: unknown) =>
+        typeof payload === "object" && payload !== null
+          ? String((payload as Record<string, unknown>).text ?? "")
+          : String(payload ?? ""),
+      sendJson: () => {},
+      traceWsDuplication: false,
+      warn: () => {},
+      sessionId: "session-1",
+      userId: 7,
+    };
+
+    try {
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: { type: "prompt", payload: { text: "recover me" }, client_message_id: "p-recovery" },
+          receivedAt: 1,
+        }),
+        { enqueue: true },
+      );
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: {
+            type: "prompt",
+            payload: { text: "recover me", replay_incomplete: true },
+            client_message_id: "p-recovery",
+          },
+          receivedAt: 2,
+          inFlight: true,
+        }),
+        { enqueue: false },
+      );
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: {
+            type: "prompt",
+            payload: { text: "different text", replay_incomplete: true },
+            client_message_id: "p-recovery",
+          },
+          receivedAt: 3,
+          inFlight: false,
+        }),
+        { enqueue: false },
+      );
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: {
+            type: "prompt",
+            payload: { text: "recover me", replay_incomplete: true },
+            client_message_id: "p-recovery",
+          },
+          receivedAt: 4,
+          inFlight: false,
+        }),
+        { enqueue: true },
+      );
+
+      historyStore.add("history-recovery", { role: "ai", text: "done", ts: 5 });
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: {
+            type: "prompt",
+            payload: { text: "recover me", replay_incomplete: true },
+            client_message_id: "p-recovery",
+          },
+          receivedAt: 6,
+          inFlight: false,
+        }),
+        { enqueue: false },
+      );
+    } finally {
+      historyStore.clear("history-recovery");
+    }
+  });
+
   it("does not execute or acknowledge a prompt when durable persistence fails", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight-failure", maxEntriesPerSession: 20 });
     historyStore.addWithResult = () => "failed";

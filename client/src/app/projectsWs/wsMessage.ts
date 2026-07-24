@@ -120,6 +120,27 @@ function hasTerminalHistoryTail(items: unknown[]): boolean {
   return false;
 }
 
+function collectCompletedClientMessageIdsFromHistoryItems(items: unknown[]): Set<string> {
+  const completed = new Set<string>();
+  let currentClientMessageId = "";
+  for (const item of items) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const entry = item as { role?: unknown; kind?: unknown };
+    const role = String(entry.role ?? "");
+    const kind = String(entry.kind ?? "").trim();
+    if (role === "user") {
+      currentClientMessageId = parseClientMessageIdFromHistoryKind(kind);
+      continue;
+    }
+    if (!currentClientMessageId) continue;
+    if (role === "ai" || (role === "status" && (kind === "error" || kind === "execute"))) {
+      completed.add(currentClientMessageId);
+      currentClientMessageId = "";
+    }
+  }
+  return completed;
+}
+
 export type WsMessageHandlerArgs = {
   projects: Ref<ProjectTab[]>;
   pid: string;
@@ -237,7 +258,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     return true;
   };
 
-  const reconcilePendingPromptsFromBootstrapHistory = (items: unknown[]): void => {
+  const reconcilePendingPromptsFromBootstrapHistory = (items: unknown[], terminalHistoryTail: boolean): void => {
     if (!rt.awaitingBootstrapHistory) return;
     const serverUserClientMessageIds = new Set<string>();
     let newestServerUser = "";
@@ -255,9 +276,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         newestServerUser = String(entry.text ?? "").trim();
       }
     }
-    if (serverUserClientMessageIds.size > 0) {
+    const completedClientMessageIds = collectCompletedClientMessageIdsFromHistoryItems(items);
+    const backendStillRunning = rt.busy.value || rt.turnInFlight;
+    if (completedClientMessageIds.size > 0) {
+      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
+    } else if (backendStillRunning && serverUserClientMessageIds.size > 0) {
       reconcilePendingPromptsByClientMessageIds(serverUserClientMessageIds);
-    } else if (newestServerUser) {
+    } else if (newestServerUser && (terminalHistoryTail || backendStillRunning)) {
       const before = rt.queuedPrompts.value;
       const after = before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
       if (after.length !== before.length) {
@@ -966,7 +991,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       ) {
         return;
       }
-      reconcilePendingPromptsFromBootstrapHistory(items);
+      reconcilePendingPromptsFromBootstrapHistory(items, terminalHistoryTail);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
         dropReconnectBusyMessage();
@@ -1298,6 +1323,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const threadId = String(msg.threadId ?? "").trim();
       const expectedThreadId = String(msg.expectedThreadId ?? "").trim();
       const didThreadReset = Boolean(msg.threadReset);
+      const resultContextMode = String(msg.contextMode ?? "").trim();
       if (threadId) {
         const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
         if (!didThreadReset && prevThreadId && prevThreadId !== threadId) {
@@ -1311,15 +1337,19 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       if (didThreadReset) {
         const detail = expectedThreadId && threadId ? `（预期=${expectedThreadId}，实际=${threadId}）` : "";
-        rt.awaitingBootstrapHistory = false;
-        threadReset(rt, {
-          notice: "上下文线程已重置。聊天历史已清空，并从新的对话继续。",
-          warning: detail ? `上下文线程已重置${detail}。` : null,
-          keepLatestTurn: true,
-          clearBackendHistory: false,
-          resetThreadId: true,
-          source: "result_thread_reset",
-        });
+        if (resultContextMode === "history_injection") {
+          rt.threadWarning.value = `上下文线程已重置${detail}。下一轮将注入聊天历史继续上下文。`;
+        } else {
+          rt.awaitingBootstrapHistory = false;
+          threadReset(rt, {
+            notice: "上下文线程已重置。聊天历史已清空，并从新的对话继续。",
+            warning: detail ? `上下文线程已重置${detail}。` : null,
+            keepLatestTurn: true,
+            clearBackendHistory: false,
+            resetThreadId: true,
+            source: "result_thread_reset",
+          });
+        }
       }
       applyEffectiveState(msg as Record<string, unknown>);
       clearStepLive(rt);

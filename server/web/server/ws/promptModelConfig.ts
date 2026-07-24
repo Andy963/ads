@@ -1,8 +1,13 @@
 import type { Input, InputTextPart } from "../../../agents/protocol/types.js";
 
-const HISTORY_INJECTION_MAX_ENTRIES = 20;
-const HISTORY_INJECTION_MAX_CHARS = 8_000;
-const HISTORY_INJECTION_MAX_CHARS_PER_ENTRY = 800;
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(String(process.env[name] ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const HISTORY_INJECTION_MAX_ENTRIES = readPositiveIntegerEnv("ADS_HISTORY_INJECTION_MAX_ENTRIES", 50);
+const HISTORY_INJECTION_MAX_CHARS = readPositiveIntegerEnv("ADS_HISTORY_INJECTION_MAX_CHARS", 24_000);
+const HISTORY_INJECTION_MAX_CHARS_PER_ENTRY = readPositiveIntegerEnv("ADS_HISTORY_INJECTION_MAX_CHARS_PER_ENTRY", 2_000);
 
 type HistoryInjectionEntry = { role: string; text: string; kind?: string; ts?: number };
 

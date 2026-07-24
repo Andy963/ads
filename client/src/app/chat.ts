@@ -529,10 +529,11 @@ export function createChatActions(ctx: AppContext) {
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
+      const recovery = next.restoredFromStorage ? { replay_incomplete: true } : {};
       const payload =
         next.images.length > 0
-          ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId }
-          : { text: promptText, model_reasoning_effort: effort, model, agentId };
+          ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId, ...recovery }
+          : { text: promptText, model_reasoning_effort: effort, model, agentId, ...recovery };
       sendAccepted = state.ws.sendPrompt(payload, next.clientMessageId) !== false;
       if (!sendAccepted) {
         throw new Error("WebSocket prompt send was not accepted");

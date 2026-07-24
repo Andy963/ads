@@ -1,8 +1,26 @@
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsMessage } from "./schema.js";
 
-import { buildClientMessageHistoryKind } from "../../../utils/historyKind.js";
+import {
+  buildClientMessageHistoryKind,
+  getHistoryClientMessageId,
+} from "../../../utils/historyKind.js";
+import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
+
+export function isClientMessageCompleted(entries: HistoryEntry[], clientMessageId: string): boolean {
+  let awaitingTerminal = false;
+  for (const entry of entries) {
+    if (entry.role === "user") {
+      awaitingTerminal = getHistoryClientMessageId(entry.kind) === clientMessageId;
+      continue;
+    }
+    if (awaitingTerminal && (entry.role === "ai" || (entry.role === "status" && entry.kind === "error"))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export function shouldPersistCommandMessage(args: {
   sanitizeInput: (payload: unknown) => string;
@@ -36,6 +54,7 @@ export function preflightPersistAndAck(args: {
   sendJson: (payload: unknown) => void;
   broadcastPersistedHistory?: () => void;
   broadcastInFlight?: () => void;
+  inFlight?: boolean;
   traceWsDuplication: boolean;
   warn: (message: string) => void;
   sessionId: string;
@@ -80,12 +99,26 @@ export function preflightPersistAndAck(args: {
     }
     args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: persistence === "duplicate" });
     if (persistence === "duplicate") {
+      const historyEntries = args.historyStore.get(args.historyKey);
+      const persistedPrompt = historyEntries.find(
+        (entry) =>
+          entry.role === "user" &&
+          getHistoryClientMessageId(entry.kind) === args.clientMessageId,
+      );
+      const replayIncomplete =
+        payload.replay_incomplete === true &&
+        !args.inFlight &&
+        persistedPrompt?.text === textResult.text &&
+        !isClientMessageCompleted(historyEntries, args.clientMessageId);
       if (args.traceWsDuplication) {
         args.warn(
-          `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId}`,
+          `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId} replay_incomplete=${replayIncomplete}`,
         );
       }
-      return { enqueue: false };
+      if (replayIncomplete) {
+        args.broadcastInFlight?.();
+      }
+      return { enqueue: replayIncomplete };
     }
     args.broadcastPersistedHistory?.();
     args.broadcastInFlight?.();

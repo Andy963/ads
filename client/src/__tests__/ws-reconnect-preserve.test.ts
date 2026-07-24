@@ -332,6 +332,56 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("replays an unacked prompt when bootstrap history only has a user entry and backend is idle", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.pendingAckClientMessageId = "pending-user-only";
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({
+        clientMessageId: "pending-user-only",
+        text: "continue this work",
+        createdAt: Date.now(),
+        agentId: "claude",
+      }),
+    );
+    lastSentPromptPayload = null;
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "fresh",
+      bootstrapHistory: true,
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        {
+          role: "user",
+          text: "continue this work",
+          ts: 1,
+          kind: "client_message_id:pending-user-only;prompt_meta:agent=claude",
+        },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toMatchObject({
+      text: "continue this work",
+      agentId: "claude",
+      replay_incomplete: true,
+    });
+    expect(rt.pendingAckClientMessageId).toBe("pending-user-only");
+    expect(rt.queuedPrompts.value).toEqual([]);
+    wrapper.unmount();
+  });
+
   it("reconciles completed fresh prompts from welcome metadata before resending", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
