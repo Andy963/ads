@@ -111,6 +111,15 @@ export function isHttp503UpstreamError(message: string): boolean {
   );
 }
 
+export function isBadResponseStatusCode400UpstreamError(message: string): boolean {
+  const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("bad_response_status_code") &&
+    normalized.includes("bad response status code 400")
+  );
+}
+
 export function isClaudeSafeguardError(message: string): boolean {
   const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
   if (!normalized) return false;
@@ -126,6 +135,7 @@ export function isTransientUpstreamModelError(message: string): boolean {
     isHighDemandUpstreamError(message) ||
     isHttp429UpstreamError(message) ||
     isHttp503UpstreamError(message) ||
+    isBadResponseStatusCode400UpstreamError(message) ||
     isClaudeSafeguardError(message)
   );
 }

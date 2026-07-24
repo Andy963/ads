@@ -163,7 +163,7 @@ const ERROR_PATTERNS: Array<{
     needsReset: false,
   },
   {
-    pattern: /invalid_responses_request|invalid codex request|new_api_error|bad request|api error: 400/i,
+    pattern: /invalid_responses_request|invalid codex request|new_api_error|bad request|api error: 400|bad_response_status_code|bad response status code 400/i,
     code: "bad_request",
     userHint: "上游拒绝了本次请求（invalid request）。请重试；若持续出现，请使用 /reset 或切换模型",
     retryable: true,

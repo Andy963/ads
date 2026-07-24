@@ -58,6 +58,14 @@ describe("classifyError", () => {
       needsReset: false,
     },
     {
+      name: "bad response status code 400 wrapper",
+      input:
+        '[unknown] 发生未知错误，请重试或使用 /reset 重置会话 详情：{"error":{"message":"bad response status code 400 (request id: 20260724173223588236521hVuAx2Aj)","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}',
+      code: "bad_request",
+      retryable: true,
+      needsReset: false,
+    },
+    {
       name: "internal server error",
       input: '{"error":{"message":"Internal server error"}}',
       code: "server_error",

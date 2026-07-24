@@ -33,6 +33,15 @@ describe("transient model retry classification", () => {
     );
   });
 
+  it("treats upstream bad response status code 400 wrappers as retryable", () => {
+    assert.equal(
+      isTransientUpstreamModelError(
+        '[unknown] 发生未知错误，请重试或使用 /reset 重置会话 详情：{"error":{"message":"bad response status code 400 (request id: 20260724173223588236521hVuAx2Aj)","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}',
+      ),
+      true,
+    );
+  });
+
   it("treats Fable safeguard rejection variants as retryable", () => {
     assert.equal(
       isTransientUpstreamModelError(
