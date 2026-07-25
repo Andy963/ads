@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   isTransientByokCapacityError,
   isTransientUpstreamModelError,
+  resolveTransientRetryDelayMs,
   runWithTransientModelRetry,
   TransientModelRetryExhaustedError,
   TRANSIENT_MODEL_RETRY_COUNT_ENV,
@@ -22,6 +23,51 @@ describe("transient model retry classification", () => {
   it("treats HTTP 429 upstream messages as retryable", () => {
     assert.equal(isTransientUpstreamModelError("HTTP 429 Too Many Requests"), true);
     assert.equal(isTransientUpstreamModelError("API Error: Request rejected (429): Service unavailable"), true);
+  });
+
+  it("uses a five-attempt cyclic backoff for 429 when Retry-After is absent", () => {
+    const originalRandom = Math.random;
+    try {
+      Math.random = () => 0;
+      assert.equal(resolveTransientRetryDelayMs({ message: "HTTP 429 Too Many Requests", attempt: 1 }), 1_000);
+      assert.equal(resolveTransientRetryDelayMs({ message: "HTTP 429 Too Many Requests", attempt: 2 }), 2_000);
+      assert.equal(resolveTransientRetryDelayMs({ message: "HTTP 429 Too Many Requests", attempt: 5 }), 5_000);
+      assert.equal(resolveTransientRetryDelayMs({ message: "HTTP 429 Too Many Requests", attempt: 6 }), 1_000);
+
+      Math.random = () => 0.999999;
+      assert.equal(resolveTransientRetryDelayMs({ message: "HTTP 429 Too Many Requests", attempt: 1 }), 2_000);
+      assert.equal(resolveTransientRetryDelayMs({ message: "HTTP 429 Too Many Requests", attempt: 5 }), 6_000);
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
+  it("honors Retry-After for 429 before using cyclic backoff", () => {
+    assert.equal(
+      resolveTransientRetryDelayMs({
+        message: "HTTP 429 Too Many Requests; Retry-After: 7",
+        attempt: 3,
+      }),
+      7_000,
+    );
+    assert.equal(
+      resolveTransientRetryDelayMs({
+        message: "HTTP 429 Too Many Requests; retry_after: 2.5",
+        attempt: 4,
+      }),
+      2_500,
+    );
+  });
+
+  it("keeps explicit backoff overrides above 429-specific delays", () => {
+    assert.equal(
+      resolveTransientRetryDelayMs({
+        message: "HTTP 429 Too Many Requests; Retry-After: 7",
+        attempt: 3,
+        backoffMs: [0],
+      }),
+      0,
+    );
   });
 
   it("treats HTTP 503 service unavailable messages as retryable", () => {

@@ -6,6 +6,8 @@ export const TRANSIENT_MODEL_RETRY_COUNT_ENV = "ADS_UPSTREAM_RETRY_COUNT";
 const DEFAULT_RETRY_COUNT = 1;
 const DEFAULT_BACKOFF_BASE_MS = 2_000;
 const DEFAULT_BACKOFF_CAP_MS = 30_000;
+const RATE_LIMIT_BACKOFF_CYCLE_SIZE = 5;
+const RATE_LIMIT_BACKOFF_STEP_MS = 1_000;
 
 function randomBackoffMs(min: number, max: number): number {
   return Math.floor(min + Math.random() * (max - min + 1));
@@ -158,6 +160,53 @@ function exponentialBackoffMs(attempt: number): number {
   return randomBackoffMs(Math.floor(cap / 2), cap);
 }
 
+function parseRetryAfterMs(message: string, now: number = Date.now()): number | null {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+
+  const numericMatch =
+    normalized.match(/retry[-_ ]after["']?\s*[:=]\s*["']?(\d+(?:\.\d+)?)/i) ??
+    normalized.match(/"retry_after"\s*:\s*(\d+(?:\.\d+)?)/i) ??
+    normalized.match(/\bretry after\s+(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)?\b/i);
+  if (numericMatch) {
+    const seconds = Number(numericMatch[1]);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.ceil(seconds * 1_000);
+    }
+  }
+
+  const dateMatch = normalized.match(/retry[-_ ]after["']?\s*[:=]\s*["']([^"',}\]]+)/i);
+  if (!dateMatch) return null;
+  const timestamp = Date.parse(dateMatch[1].trim());
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, timestamp - now);
+}
+
+export function rateLimitCyclicBackoffMs(attempt: number): number {
+  const cycleAttempt = ((Math.max(1, attempt) - 1) % RATE_LIMIT_BACKOFF_CYCLE_SIZE) + 1;
+  return randomBackoffMs(
+    cycleAttempt * RATE_LIMIT_BACKOFF_STEP_MS,
+    (cycleAttempt + 1) * RATE_LIMIT_BACKOFF_STEP_MS,
+  );
+}
+
+export function resolveTransientRetryDelayMs(options: {
+  message: string;
+  attempt: number;
+  backoffMs?: readonly number[];
+  now?: number;
+}): number {
+  if (options.backoffMs) {
+    return Math.max(0, options.backoffMs[Math.min(options.attempt - 1, options.backoffMs.length - 1)] ?? 0);
+  }
+
+  if (isHttp429UpstreamError(options.message)) {
+    return parseRetryAfterMs(options.message, options.now) ?? rateLimitCyclicBackoffMs(options.attempt);
+  }
+
+  return exponentialBackoffMs(options.attempt);
+}
+
 export function isSideEffectItem(item: ThreadItem | null | undefined): boolean {
   if (!item) return false;
   return item.type === "command_execution" || item.type === "file_change" || item.type === "tool_call" || item.type === "subagent_dispatch";
@@ -221,9 +270,7 @@ export async function runWithTransientModelRetry<T>(
         throw new TransientModelRetryExhaustedError(message, { attempts: attempt, cause: error });
       }
 
-      const delayMs = backoffMs
-        ? Math.max(0, backoffMs[Math.min(attempt - 1, backoffMs.length - 1)] ?? 0)
-        : exponentialBackoffMs(attempt);
+      const delayMs = resolveTransientRetryDelayMs({ message, attempt, backoffMs });
       const notice: TransientModelRetryNotice = {
         message,
         retryCount: attempt,
