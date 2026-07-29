@@ -250,4 +250,44 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    description: "Durable web sync event log for reconnect catch-up",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_events (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          namespace TEXT NOT NULL,
+          lane_key TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          event_id TEXT,
+          revision INTEGER NOT NULL DEFAULT 1,
+          payload TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          run_id TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sync_events_lane
+          ON sync_events(namespace, lane_key, seq);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_events_dedup
+          ON sync_events(namespace, lane_key, event_type, event_id, revision)
+          WHERE event_id IS NOT NULL;
+      `);
+    },
+  },
+  {
+    version: 8,
+    description: "Track trimmed web sync cursors per lane",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_lane_state (
+          namespace TEXT NOT NULL,
+          lane_key TEXT NOT NULL,
+          trimmed_through_seq INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(namespace, lane_key)
+        );
+      `);
+    },
+  },
 ];

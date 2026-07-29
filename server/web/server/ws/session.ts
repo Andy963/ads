@@ -29,13 +29,21 @@ export function parseWsChatSessionFromProtocols(protocols: string[]): string | n
   return parseProtocolToken(protocols, "ads-chat");
 }
 
+export function normalizeRequestedSessionId(args: {
+  requestedSessionId: string;
+  workspaceRoot: string;
+}): string {
+  const requested = String(args.requestedSessionId ?? "").trim();
+  return requested === "default" ? deriveProjectSessionId(args.workspaceRoot) : requested;
+}
+
 export function resolveWebSocketSessionId(args: { protocols: string[]; workspaceRoot: string }): string {
   const requested = parseWsSessionFromProtocols(args.protocols);
-  if (requested && requested !== "default") {
-    return requested;
-  }
-  if (requested === "default") {
-    return deriveProjectSessionId(args.workspaceRoot);
+  if (requested) {
+    return normalizeRequestedSessionId({
+      requestedSessionId: requested,
+      workspaceRoot: args.workspaceRoot,
+    });
   }
   return crypto.randomBytes(4).toString("hex");
 }

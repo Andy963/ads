@@ -1,6 +1,10 @@
 import type { WebSocket } from "ws";
 
 import { matchesBroadcastSessionId } from "../ws/session.js";
+import type { SyncEventStore } from "../sync/store.js";
+import { resolveSharedWorkerSyncLaneKey } from "../sync/lane.js";
+import { isTransientSyncEvent } from "../sync/eventClass.js";
+import { WEB_WORKER_NAMESPACE } from "./webLaneResources.js";
 
 export type WebSocketClientMeta = {
   historyKey: string;
@@ -25,6 +29,7 @@ export type WebSocketHub = {
 
 export function createWebSocketHub(args: {
   workerHistoryStore: { add: (key: string, entry: WebSocketHistoryEntry) => void };
+  syncEventStore: SyncEventStore;
 }): WebSocketHub {
   const WS_READY_STATE_OPEN = 1;
   const clients: Set<WebSocket> = new Set();
@@ -68,10 +73,40 @@ export function createWebSocketHub(args: {
     });
   };
 
+  const closeBroadcastTargets = (broadcastSessionId: string): void => {
+    for (const [ws, meta] of clientMetaByWs.entries()) {
+      if (!isWorkerBroadcastTarget(broadcastSessionId, meta)) {
+        continue;
+      }
+      try {
+        ws.close(1011, "sync persistence failed");
+      } catch {
+        // Best-effort: affected clients will recover through their next reconnect.
+      }
+    }
+  };
+
   const broadcastToSession = (broadcastSessionId: string, payload: unknown): void => {
+    const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
+    const eventType = String(payloadRecord?.type ?? "").trim();
+    let payloadToSend = payload;
+    if (payloadRecord && eventType && !isTransientSyncEvent(eventType)) {
+      const seq = args.syncEventStore.append({
+        namespace: WEB_WORKER_NAMESPACE,
+        laneKey: resolveSharedWorkerSyncLaneKey(broadcastSessionId),
+        type: eventType,
+        payload: payloadRecord,
+      });
+      if (seq === null) {
+        closeBroadcastTargets(broadcastSessionId);
+        return;
+      }
+      payloadToSend = { ...payloadRecord, seq };
+    }
+
     let encoded = "";
     try {
-      encoded = JSON.stringify(payload);
+      encoded = JSON.stringify(payloadToSend);
     } catch {
       return;
     }
@@ -85,6 +120,11 @@ export function createWebSocketHub(args: {
   };
 
   const recordToSessionHistories = (broadcastSessionId: string, entry: WebSocketHistoryEntry): void => {
+    try {
+      args.workerHistoryStore.add(resolveSharedWorkerSyncLaneKey(broadcastSessionId), entry);
+    } catch {
+      // Keep per-user history delivery best-effort even if the shared snapshot write fails.
+    }
     const written = new Set<string>();
     for (const meta of clientMetaByWs.values()) {
       if (!isWorkerBroadcastTarget(broadcastSessionId, meta)) {
@@ -111,4 +151,3 @@ export function createWebSocketHub(args: {
     recordToSessionHistories,
   };
 }
-

@@ -83,16 +83,18 @@ async function mountReconnectHarness() {
   return { wrapper, controller, rt: controller.getRuntime("default") };
 }
 
+/** Seed the durable outbox the way a previous tab would have left it. */
+function seedOutboxPending(chatSessionId: string, pending: Record<string, unknown>): void {
+  localStorage.setItem(`ads.outbox.default.${chatSessionId}`, JSON.stringify({ pending, queued: [] }));
+}
+
 function seedPendingReplayState(rt: any, chatSessionId: string, clientMessageId: string): void {
   rt.projectSessionId = "default";
   rt.pendingAckClientMessageId = clientMessageId;
   rt.queuedPrompts.value = [
     { id: `${chatSessionId}-queued`, clientMessageId, text: `${chatSessionId} prompt`, images: [], createdAt: Date.now() },
   ];
-  sessionStorage.setItem(
-    `ads.pendingPrompt.default.${chatSessionId}`,
-    JSON.stringify({ clientMessageId, text: `${chatSessionId} prompt`, createdAt: Date.now() }),
-  );
+  seedOutboxPending(chatSessionId, { clientMessageId, text: `${chatSessionId} prompt`, createdAt: Date.now() });
 }
 
 describe("WS reconnect preserves UI unless thread_reset", () => {
@@ -130,6 +132,441 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.activeThreadId.value).toBe("thread-1");
     expect(info).not.toHaveBeenCalled();
     wrapper.unmount();
+  });
+
+  it("catches up missed sync history events after reconnect", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          events: [
+            {
+              seq: 1,
+              type: "history",
+              revision: 1,
+              ts: Date.now(),
+              payload: {
+                type: "history",
+                items: [
+                  { role: "user", text: "offline question", ts: 1 },
+                  { role: "ai", text: "offline answer", ts: 2 },
+                ],
+              },
+            },
+          ],
+          latestSeq: 1,
+          minAvailableSeq: 1,
+          hasMore: false,
+          truncated: false,
+        }),
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+      rt.needsChatSync = true;
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({ type: "welcome", latestSeq: 1, inFlight: false });
+
+      await vi.waitFor(() => {
+        expect(rt.messages.value.map((message) => message.content)).toContain("offline answer");
+      });
+      expect(sessionStorage.getItem("ads.syncCursor.default.main")).toContain("\"lastSeq\":1");
+      expect(localStorage.getItem("ads.syncCursor.default.main")).toBeNull();
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("orders HTTP catch-up and overlapping live events through one sequencer", async () => {
+    const originalFetch = globalThis.fetch;
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+      rt.needsChatSync = true;
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({ type: "welcome", latestSeq: 2, inFlight: false });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      lastWs!.onMessage?.({ type: "delta", delta: "B", seq: 2 });
+      await settleUi(wrapper);
+      expect(rt.messages.value).toEqual([]);
+
+      resolveFetch?.({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            events: [
+              { seq: 1, type: "delta", revision: 1, ts: 1, payload: { type: "delta", delta: "A" } },
+              { seq: 2, type: "delta", revision: 1, ts: 2, payload: { type: "delta", delta: "B" } },
+            ],
+            latestSeq: 2,
+            minAvailableSeq: 1,
+            hasMore: false,
+            truncated: false,
+          }),
+      } as Response);
+
+      await vi.waitFor(() => {
+        expect(rt.messages.value.map((message) => message.content)).toEqual(["AB"]);
+      });
+      expect(sessionStorage.getItem("ads.syncCursor.default.main")).toContain("\"lastSeq\":2");
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("resumes an in-flight stream from delta_snapshot instead of losing the missed text", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          events: [
+            // Two snapshots: the client's cursor may land between flushes, and each
+            // one carries absolute text, so applying both must not concatenate.
+            {
+              seq: 4,
+              type: "delta_snapshot",
+              revision: 1,
+              ts: 4,
+              payload: { type: "delta_snapshot", text: "Partial ans", revision: 1 },
+            },
+            {
+              seq: 5,
+              type: "delta_snapshot",
+              revision: 2,
+              ts: 5,
+              payload: { type: "delta_snapshot", text: "Partial answer so far", revision: 2 },
+            },
+          ],
+          latestSeq: 5,
+          minAvailableSeq: 4,
+          hasMore: false,
+          truncated: false,
+        }),
+    } as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    sessionStorage.setItem("ads.syncCursor.default.main", JSON.stringify({ lastSeq: 3 }));
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({ type: "welcome", latestSeq: 5, inFlight: true });
+
+      await vi.waitFor(() => {
+        expect(
+          rt.messages.value.filter((message) => message.role === "assistant").map((message) => message.content),
+        ).toEqual(["Partial answer so far"]);
+      });
+      // The turn is still running, so the block stays live and the composer stays busy.
+      expect(rt.messages.value.some((message) => message.streaming === true)).toBe(true);
+      expect(rt.busy.value).toBe(true);
+
+      // A live delta arriving after catch-up appends to the resumed text.
+      lastWs!.onMessage?.({ type: "delta", delta: " and more", seq: 6 });
+      await settleUi(wrapper);
+      expect(
+        rt.messages.value.filter((message) => message.role === "assistant").map((message) => message.content),
+      ).toEqual(["Partial answer so far and more"]);
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("defers unsequenced bootstrap history until catch-up finishes", async () => {
+    const originalFetch = globalThis.fetch;
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    sessionStorage.setItem("ads.syncCursor.default.main", JSON.stringify({ lastSeq: 1 }));
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({
+        type: "welcome",
+        latestSeq: 3,
+        inFlight: false,
+        contextMode: "thread_resumed",
+        threadId: "thread-1",
+        bootstrapHistory: true,
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      resolveFetch?.({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            events: [
+              { seq: 2, type: "delta", revision: 1, ts: 2, payload: { type: "delta", delta: "answer" } },
+              { seq: 3, type: "result", revision: 1, ts: 3, payload: { type: "result", ok: true, output: "answer" } },
+            ],
+            latestSeq: 3,
+            minAvailableSeq: 2,
+            hasMore: false,
+            truncated: false,
+          }),
+      } as Response);
+      await settleUi(wrapper);
+      expect(rt.messages.value).toEqual([]);
+
+      lastWs!.onMessage?.({
+        type: "history",
+        items: [
+          { role: "user", text: "question", ts: 1 },
+          { role: "ai", text: "answer", ts: 2 },
+        ],
+      });
+
+      await vi.waitFor(() => {
+        expect(rt.messages.value.filter((message) => message.role === "assistant").map((message) => message.content)).toEqual([
+          "answer",
+        ]);
+      });
+      expect(rt.messages.value.filter((message) => message.role === "user").map((message) => message.content)).toEqual([
+        "question",
+      ]);
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps an idle terminal bootstrap authoritative over covered turn and task events", async () => {
+    const originalFetch = globalThis.fetch;
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({
+        type: "welcome",
+        latestSeq: 10,
+        inFlight: false,
+        contextMode: "thread_resumed",
+        threadId: "thread-1",
+        bootstrapHistory: true,
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      resolveFetch?.({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            events: [
+              { seq: 1, type: "in_flight", revision: 1, ts: 1, payload: { type: "in_flight", inFlight: true } },
+              {
+                seq: 2,
+                type: "patch",
+                revision: 1,
+                ts: 2,
+                payload: {
+                  type: "patch",
+                  patch: {
+                    files: [{ path: "old.ts", added: 1, removed: 0 }],
+                    diff: "diff --git a/old.ts b/old.ts\n--- a/old.ts\n+++ b/old.ts\n@@ -1 +1 @@\n-old\n+older",
+                  },
+                },
+              },
+              { seq: 3, type: "result", revision: 1, ts: 3, payload: { type: "result", ok: true, output: "old answer" } },
+              { seq: 4, type: "in_flight", revision: 1, ts: 4, payload: { type: "in_flight", inFlight: true } },
+              {
+                seq: 5,
+                type: "command",
+                revision: 1,
+                ts: 5,
+                payload: { type: "command", command: { id: "cmd-1", command: "npm test", outputDelta: "running\n" } },
+              },
+              {
+                seq: 6,
+                type: "patch",
+                revision: 1,
+                ts: 6,
+                payload: {
+                  type: "patch",
+                  patch: {
+                    files: [{ path: "server.ts", added: 1, removed: 0 }],
+                    diff: "diff --git a/server.ts b/server.ts\n--- a/server.ts\n+++ b/server.ts\n@@ -1 +1 @@\n-old\n+new",
+                  },
+                },
+              },
+              {
+                seq: 7,
+                type: "patch",
+                revision: 1,
+                ts: 7,
+                payload: {
+                  type: "patch",
+                  patch: {
+                    files: [{ path: "client.ts", added: 2, removed: 1 }],
+                    diff: "diff --git a/client.ts b/client.ts\n--- a/client.ts\n+++ b/client.ts\n@@ -1 +1 @@\n-before\n+after",
+                  },
+                },
+              },
+              {
+                seq: 8,
+                type: "task:event",
+                revision: 1,
+                ts: 8,
+                payload: {
+                  type: "task:event",
+                  event: "message:delta",
+                  data: { taskId: "task-1", role: "assistant", delta: "stale task delta" },
+                },
+              },
+              { seq: 9, type: "result", revision: 1, ts: 9, payload: { type: "result", ok: true, output: "final answer" } },
+              { seq: 10, type: "result", revision: 1, ts: 10, payload: { type: "result", ok: false, output: "错误: bad path" } },
+            ],
+            latestSeq: 10,
+            minAvailableSeq: 1,
+            hasMore: false,
+            truncated: false,
+          }),
+      } as Response);
+      await settleUi(wrapper);
+
+      lastWs!.onMessage?.({
+        type: "history",
+        items: [
+          { role: "user", text: "old question", ts: 1 },
+          { role: "ai", text: "old answer", ts: 3 },
+          { role: "user", text: "question", ts: 4 },
+          { role: "ai", text: "final answer", ts: 9 },
+          { role: "status", text: "错误: bad path", ts: 10, kind: "error" },
+        ],
+      });
+
+      await vi.waitFor(() => {
+        expect(rt.messages.value.filter((message) => message.role === "assistant").map((message) => message.content)).toEqual([
+          "old answer",
+          "final answer",
+        ]);
+      });
+      expect(rt.messages.value.map((message) => String(message.content ?? ""))).not.toContain("stale task delta");
+      expect(rt.messages.value.some((message) => message.kind === "execute")).toBe(false);
+      const patchMessages = rt.messages.value.filter((message) => message.kind === "patch");
+      expect(patchMessages).toHaveLength(1);
+      expect(patchMessages[0]?.content).not.toContain("diff --git a/old.ts b/old.ts");
+      expect(patchMessages[0]?.content).toContain("diff --git a/server.ts b/server.ts");
+      expect(patchMessages[0]?.content).toContain("diff --git a/client.ts b/client.ts");
+      const patchIndex = rt.messages.value.findIndex((message) => message.kind === "patch");
+      let assistantIndex = -1;
+      for (let index = rt.messages.value.length - 1; index >= 0; index -= 1) {
+        if (rt.messages.value[index]?.role === "assistant") {
+          assistantIndex = index;
+          break;
+        }
+      }
+      expect(patchIndex).toBeGreaterThanOrEqual(0);
+      expect(patchIndex).toBeLessThan(assistantIndex);
+      expect(rt.busy.value).toBe(false);
+      expect(rt.turnInFlight).toBe(false);
+      expect(rt.inputLocked.value).toBe(false);
+      expect(rt.laneStatus.value).toEqual({ kind: "error", message: "错误: bad path" });
+      expect(sessionStorage.getItem("ads.syncCursor.default.main")).toContain('"lastSeq":10');
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not advance the cursor with live events when catch-up fails", async () => {
+    const originalFetch = globalThis.fetch;
+    let rejectFetch: ((error: Error) => void) | null = null;
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise<Response>((_resolve, reject) => {
+        rejectFetch = reject;
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+      rt.needsChatSync = true;
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({ type: "welcome", latestSeq: 5, inFlight: false });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      lastWs!.onMessage?.({ type: "delta", delta: "must wait", seq: 5 });
+      rejectFetch?.(new Error("temporary fetch failure"));
+      await settleUi(wrapper);
+
+      expect(rt.messages.value).toEqual([]);
+      expect(sessionStorage.getItem("ads.syncCursor.default.main")).toBeNull();
+      expect(rt.needsChatSync).toBe(true);
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rebuilds the lane from a snapshot when the retained event window is truncated", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          events: [],
+          latestSeq: 9,
+          minAvailableSeq: 7,
+          hasMore: false,
+          truncated: true,
+          snapshot: {
+            type: "history",
+            items: [
+              { role: "user", text: "snapshot question", ts: 1 },
+              { role: "ai", text: "snapshot answer", ts: 2 },
+            ],
+          },
+        }),
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+      rt.messages.value = [{ id: "stale", role: "assistant", kind: "text", content: "stale" }];
+      sessionStorage.setItem("ads.syncCursor.default.main", JSON.stringify({ lastSeq: 1 }));
+      rt.needsChatSync = true;
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({ type: "welcome", latestSeq: 9, inFlight: false });
+
+      await vi.waitFor(() => {
+        expect(rt.messages.value.map((message) => message.content)).toEqual(["snapshot question", "snapshot answer"]);
+      });
+      expect(sessionStorage.getItem("ads.syncCursor.default.main")).toContain("\"lastSeq\":9");
+      expect(rt.apiNotice.value).toBe("同步记录窗口已过期，已从后端快照恢复。");
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("keeps busy true on ws close until welcome resync clears it", async () => {
@@ -191,10 +628,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     rt.busy.value = true;
     rt.turnInFlight = true;
     rt.pendingAckClientMessageId = "pending-1";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({ clientMessageId: "pending-1", text: "resume me", createdAt: Date.now(), agentId: "claude" }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-1", text: "resume me", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
     await settleUi(wrapper);
 
@@ -240,7 +674,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.pendingAckClientMessageId).toBeNull();
     expect(rt.queuedPrompts.value.map((q: any) => q.text)).toEqual(["send later"]);
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain("send later");
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).not.toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.main")).not.toBeNull();
     wrapper.unmount();
   });
 
@@ -248,10 +682,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.pendingAckClientMessageId = "pending-1";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({ clientMessageId: "pending-1", text: "resume me", createdAt: Date.now(), agentId: "claude" }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-1", text: "resume me", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
     await settleUi(wrapper);
 
@@ -283,9 +714,68 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["resume me", "done"]);
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(PENDING_PROMPT_REPLAY_NOTICE);
+    wrapper.unmount();
+  });
+
+  it("restores queued prompts that were never sent, not just the pending one", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    // What a tab that was closed with a full outbox would have left behind.
+    localStorage.setItem(
+      "ads.outbox.default.main",
+      JSON.stringify({
+        pending: { clientMessageId: "pending-1", text: "already sent", createdAt: 1, agentId: "claude" },
+        queued: [
+          { clientMessageId: "queued-1", text: "next up", createdAt: 2 },
+          { clientMessageId: "queued-2", text: "and then this", createdAt: 3 },
+        ],
+      }),
+    );
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+
+    expect(rt.queuedPrompts.value.map((q: any) => q.text)).toEqual([
+      "already sent",
+      "next up",
+      "and then this",
+    ]);
+    // Only the prompt that actually reached the server replays as a resend.
+    expect(rt.queuedPrompts.value.map((q: any) => q.restoredFromStorage === true)).toEqual([true, false, false]);
+    wrapper.unmount();
+  });
+
+  it("adopts a pending prompt left by the previous sessionStorage layout", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    sessionStorage.setItem(
+      "ads.pendingPrompt.default.main",
+      JSON.stringify({ clientMessageId: "legacy-1", text: "written before the upgrade", createdAt: 1 }),
+    );
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+
+    expect(rt.queuedPrompts.value.map((q: any) => q.text)).toEqual(["written before the upgrade"]);
+    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("persists newly queued prompts so a reload does not drop them", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    rt.connected.value = false;
+    rt.projectSessionId = "default";
+    controller.enqueuePrompt("queued while offline", [], rt);
+    await settleUi(wrapper);
+
+    const stored = JSON.parse(String(localStorage.getItem("ads.outbox.default.main"))) as {
+      queued: Array<{ text: string }>;
+    };
+    expect(stored.queued.map((entry) => entry.text)).toEqual(["queued while offline"]);
     wrapper.unmount();
   });
 
@@ -293,10 +783,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.pendingAckClientMessageId = "pending-fresh";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({ clientMessageId: "pending-fresh", text: "keep running", createdAt: Date.now(), agentId: "claude" }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-fresh", text: "keep running", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
 
     lastWs!.onOpen?.();
@@ -325,7 +812,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.awaitingBootstrapHistory).toBe(false);
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.busy.value).toBe(true);
     expect(rt.inputLocked.value).toBe(true);
@@ -336,15 +823,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.pendingAckClientMessageId = "pending-user-only";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({
-        clientMessageId: "pending-user-only",
-        text: "continue this work",
-        createdAt: Date.now(),
-        agentId: "claude",
-      }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-user-only", text: "continue this work", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
 
     lastWs!.onOpen?.();
@@ -386,15 +865,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.pendingAckClientMessageId = "pending-completed";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({
-        clientMessageId: "pending-completed",
-        text: "run tests",
-        createdAt: Date.now(),
-        agentId: "claude",
-      }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-completed", text: "run tests", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
 
     lastWs!.onOpen?.();
@@ -415,7 +886,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.busy.value).toBe(false);
     expect(rt.turnInFlight).toBe(false);
@@ -429,15 +900,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     rt.ignoreNextHistory = true;
     rt.pendingAckClientMessageId = "pending-ignored";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({
-        clientMessageId: "pending-ignored",
-        text: "run ignored",
-        createdAt: Date.now(),
-        agentId: "claude",
-      }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-ignored", text: "run ignored", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
 
     lastWs!.onOpen?.();
@@ -471,7 +934,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.awaitingBootstrapHistory).toBe(false);
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.inputLocked.value).toBe(false);
     wrapper.unmount();
@@ -481,10 +944,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.pendingAckClientMessageId = "pending-new";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({ clientMessageId: "pending-new", text: "repeat", createdAt: Date.now(), agentId: "claude" }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-new", text: "repeat", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
     await settleUi(wrapper);
 
@@ -519,10 +979,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.pendingAckClientMessageId = "pending-reset";
-    sessionStorage.setItem(
-      "ads.pendingPrompt.default.main",
-      JSON.stringify({ clientMessageId: "pending-reset", text: "run after reset", createdAt: Date.now(), agentId: "claude" }),
-    );
+    seedOutboxPending("main", { clientMessageId: "pending-reset", text: "run after reset", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
     await settleUi(wrapper);
 
@@ -909,7 +1366,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.pendingAckClientMessageId).toBeNull();
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.laneStatus.value).toBeNull();
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     expect(lastWs).toBeTruthy();
     expect(lastWs!.clearHistory).toHaveBeenCalledTimes(1);
     wrapper.unmount();
@@ -925,7 +1382,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(plannerRt.pendingAckClientMessageId).toBeNull();
     expect(plannerRt.queuedPrompts.value).toEqual([]);
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.planner")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.planner")).toBeNull();
     wrapper.unmount();
   });
 });

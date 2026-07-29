@@ -5,10 +5,11 @@ build/
 coverage/
 .nyc_output/
 *.tsbuildinfo
+__pycache__/
+*.pyc
 # Build artifacts
 /dist
 *.js.map
-docs/
 # Runtime/state
 .ads/
 .cache/
@@ -28,6 +29,8 @@ temp/
 !.agent/skills/metadata.yaml
 !.agent/skills/build-to-deploy/
 !.agent/skills/build-to-deploy/SKILL.md
+!.agent/skills/english-subtitle-m4a/
+!.agent/skills/english-subtitle-m4a/**
 
 # Soul (long-term memory)
 soul.md

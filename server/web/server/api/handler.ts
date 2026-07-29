@@ -19,9 +19,12 @@ import { handleTaskBundleDraftRoutes } from "./routes/taskBundleDrafts.js";
 import { handlePreferenceRoutes } from "./routes/preferences.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
 import { handleFileRoutes } from "./routes/files.js";
+import { handleSyncRoutes } from "./routes/sync.js";
+import { handleRunRoutes } from "./routes/runs.js";
 
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
+import type { SyncEventStore } from "../sync/store.js";
 
 export function createApiRequestHandler(deps: {
   logger: Logger;
@@ -38,6 +41,11 @@ export function createApiRequestHandler(deps: {
   scheduleWorkspacePurge?: (ctx: TaskQueueContext) => void;
   scheduleCompiler: ScheduleCompiler;
   scheduler: SchedulerRuntime;
+  syncEventStore: SyncEventStore;
+  interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
+  workerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
+  plannerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
 }): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
   const buildAttachmentRawUrl = (url: URL, attachmentId: string): string => {
     const workspaceParam = url.searchParams.get("workspace");
@@ -88,6 +96,23 @@ export function createApiRequestHandler(deps: {
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handlePreferenceRoutes(routeCtx, { workspaceRoot: deps.workspaceRoot })) return true;
     if (await handleFileRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
+    if (
+      await handleSyncRoutes(routeCtx, {
+        syncEventStore: deps.syncEventStore,
+        defaultWorkspaceRoot: deps.workspaceRoot,
+        resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
+        workerHistoryStore: deps.workerHistoryStore ?? { get: () => [] },
+        plannerHistoryStore: deps.plannerHistoryStore ?? { get: () => [] },
+      })
+    ) return true;
+    if (
+      await handleRunRoutes(routeCtx, {
+        defaultWorkspaceRoot: deps.workspaceRoot,
+        resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
+        interruptControllers: deps.interruptControllers,
+        promptRunEpochs: deps.promptRunEpochs,
+      })
+    ) return true;
     if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;
     if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
     if (await handleModelRoutes(routeCtx)) return true;

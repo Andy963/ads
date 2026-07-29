@@ -1,3 +1,5 @@
+import { watch } from "vue";
+
 import { finalizeStreamingOnDisconnect, mergeHistoryFromServer } from "../lib/chat_sync";
 import { ingestCommandActivity, ingestExploredActivity } from "../lib/live_activity";
 
@@ -6,18 +8,16 @@ import { createExecuteActions } from "./chatExecute";
 import { findFirstLiveIndex, findLastLiveIndex, isLiveMessageId, LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
 export { LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
 import { createStreamingActions } from "./chatStreaming";
+import {
+  createOutboxStore,
+  legacyPendingPromptStorageKey,
+  outboxStorageKey,
+  type OutboxSnapshot,
+  type PersistedPrompt,
+} from "./outbox";
 
 export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
 export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
-type PersistedPrompt = {
-  clientMessageId: string;
-  text: string;
-  createdAt: number;
-  agentId?: string;
-  model?: string;
-  modelReasoningEffort?: string;
-  model_reasoning_effort?: string;
-};
 type UploadedImageAttachment = {
   id: string;
   url: string;
@@ -32,7 +32,6 @@ export function createChatActions(ctx: AppContext) {
   const {
     runtimeOrActive,
     runtimeAgentBusy,
-    safeJsonParse,
     maxChatMessages,
     maxExecutePreviewLines,
     maxRecentCommands,
@@ -116,45 +115,117 @@ export function createChatActions(ctx: AppContext) {
     return `${base}\n\n${imgs}`;
   };
 
-  const pendingPromptStorageKey = (sessionId: string, chatSessionId: string): string => {
-    const normalizedSession = String(sessionId ?? "").trim();
-    const normalizedChat = String(chatSessionId ?? "").trim() || "main";
-    return normalizedSession ? `ads.pendingPrompt.${normalizedSession}.${normalizedChat}` : `ads.pendingPrompt.unknown.${normalizedChat}`;
+  const outbox = createOutboxStore();
+  const boundOutboxRuntimes = new WeakSet<ProjectRuntime>();
+  const runtimesByOutboxKey = new Map<string, Set<ProjectRuntime>>();
+  /** Set while a sibling tab's snapshot is being applied, so we don't echo it back. */
+  let applyingRemoteOutbox = false;
+
+  const outboxKeyFor = (rt: ProjectRuntime): string => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    return sessionId ? outboxStorageKey(sessionId, rt.chatSessionId) : "";
+  };
+
+  const toPersistedPrompt = (prompt: QueuedPrompt): PersistedPrompt | null => {
+    // Images are in-memory blobs; a prompt carrying them cannot be restored later.
+    if (prompt.images.length > 0) return null;
+    const clientMessageId = String(prompt.clientMessageId ?? "").trim();
+    if (!clientMessageId) return null;
+    return {
+      clientMessageId,
+      text: prompt.text,
+      createdAt: prompt.createdAt,
+      ...(prompt.agentId ? { agentId: prompt.agentId } : {}),
+      ...(prompt.model ? { model: prompt.model } : {}),
+      ...(prompt.modelReasoningEffort ? { modelReasoningEffort: prompt.modelReasoningEffort } : {}),
+    };
+  };
+
+  const persistOutbox = (rt: ProjectRuntime, pending?: PersistedPrompt | null): void => {
+    if (applyingRemoteOutbox) return;
+    const key = outboxKeyFor(rt);
+    if (!key) return;
+    const nextPending = pending === undefined ? outbox.read(key).pending : pending;
+    outbox.write(key, {
+      pending: nextPending,
+      queued: rt.queuedPrompts.value.map(toPersistedPrompt).filter(Boolean) as PersistedPrompt[],
+    });
+  };
+
+  const applyRemoteOutbox = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
+    // Keep prompts this tab cannot persist (image prompts) and re-apply the shared
+    // order around them, so a sibling's dequeue is reflected without losing local work.
+    const localOnly = rt.queuedPrompts.value.filter((prompt) => prompt.images.length > 0);
+    const shared = snapshot.queued.map((prompt) => {
+      const existing = rt.queuedPrompts.value.find((q) => q.clientMessageId === prompt.clientMessageId);
+      return existing ?? ({
+        id: randomId("q"),
+        clientMessageId: prompt.clientMessageId,
+        text: prompt.text,
+        images: [],
+        createdAt: prompt.createdAt,
+        agentId: String(prompt.agentId ?? ""),
+        model: String(prompt.model ?? ""),
+        modelReasoningEffort: String(prompt.modelReasoningEffort ?? prompt.model_reasoning_effort ?? ""),
+      } satisfies QueuedPrompt);
+    });
+    const next = [...shared, ...localOnly];
+    const unchanged =
+      next.length === rt.queuedPrompts.value.length &&
+      next.every((prompt, index) => prompt.clientMessageId === rt.queuedPrompts.value[index]?.clientMessageId);
+    if (unchanged) return;
+    applyingRemoteOutbox = true;
+    try {
+      rt.queuedPrompts.value = next;
+    } finally {
+      applyingRemoteOutbox = false;
+    }
+  };
+
+  /**
+   * Start persisting this runtime's queue and following sibling tabs.
+   *
+   * Bound lazily because the storage key needs `projectSessionId`, which is only
+   * known once the lane has been resolved.
+   */
+  const ensureOutboxBinding = (rt: ProjectRuntime): void => {
+    const key = outboxKeyFor(rt);
+    if (!key || boundOutboxRuntimes.has(rt)) return;
+    boundOutboxRuntimes.add(rt);
+    outbox.migrateLegacyPending({
+      key,
+      legacyKey: legacyPendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId),
+    });
+    let peers = runtimesByOutboxKey.get(key);
+    if (!peers) {
+      peers = new Set();
+      runtimesByOutboxKey.set(key, peers);
+      outbox.subscribe((changedKey, snapshot) => {
+        for (const peer of runtimesByOutboxKey.get(changedKey) ?? []) {
+          applyRemoteOutbox(peer, snapshot);
+        }
+      });
+    }
+    peers.add(rt);
+    // `sync` so a queue change survives an immediate tab close.
+    watch(rt.queuedPrompts, () => persistOutbox(rt), { flush: "sync" });
   };
 
   const savePendingPrompt = (rt: ProjectRuntime, prompt: QueuedPrompt): void => {
     if (!rt.projectSessionId) return;
-    if (prompt.images.length > 0) return;
-    const key = pendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId);
-    const payload: PersistedPrompt = {
-      clientMessageId: prompt.clientMessageId,
-      text: prompt.text,
-      createdAt: prompt.createdAt,
-      agentId: prompt.agentId,
-      model: prompt.model,
-      modelReasoningEffort: prompt.modelReasoningEffort,
-    };
-    try {
-      sessionStorage.setItem(key, JSON.stringify(payload));
-    } catch {
-      // ignore
-    }
+    ensureOutboxBinding(rt);
+    persistOutbox(rt, toPersistedPrompt(prompt));
   };
 
   const clearPendingPrompt = (rt: ProjectRuntime): void => {
     if (!rt.projectSessionId) return;
-    const key = pendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId);
-    try {
-      sessionStorage.removeItem(key);
-    } catch {
-      // ignore
-    }
+    persistOutbox(rt, null);
   };
 
   const readPendingPrompt = (rt: ProjectRuntime): PersistedPrompt | null => {
     if (!rt.projectSessionId) return null;
-    const key = pendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId);
-    return safeJsonParse<PersistedPrompt>(sessionStorage.getItem(key));
+    ensureOutboxBinding(rt);
+    return outbox.read(outboxKeyFor(rt)).pending;
   };
 
   const clearPendingPromptReplayState = (rt: ProjectRuntime): void => {
@@ -175,30 +246,54 @@ export function createChatActions(ctx: AppContext) {
   };
 
   const restorePendingPrompt = (rt: ProjectRuntime): void => {
-    const stored = readPendingPrompt(rt);
-    if (!stored) return;
-    const clientMessageId = String(stored.clientMessageId ?? "").trim();
-    const text = String(stored.text ?? "");
-    const agentId = String(stored.agentId ?? "").trim();
-    const model = String(stored.model ?? "").trim();
-    const modelReasoningEffort = String(stored.modelReasoningEffort ?? stored.model_reasoning_effort ?? "").trim();
-    if (!clientMessageId) return;
-    const alreadyQueued = rt.queuedPrompts.value.some((q) => q.clientMessageId === clientMessageId);
-    if (alreadyQueued) return;
-    rt.queuedPrompts.value = [
-      {
+    if (!rt.projectSessionId) return;
+    ensureOutboxBinding(rt);
+    const snapshot = outbox.read(outboxKeyFor(rt));
+    const queuedByClientMessageId = new Set(
+      rt.queuedPrompts.value.map((q) => String(q.clientMessageId ?? "").trim()),
+    );
+
+    const restored: QueuedPrompt[] = [];
+    const stored = snapshot.pending;
+    if (stored) {
+      const clientMessageId = String(stored.clientMessageId ?? "").trim();
+      // The pending prompt was already sent, so it is replayed with the
+      // `replay_incomplete` marker rather than treated as a fresh queue entry.
+      if (clientMessageId && !queuedByClientMessageId.has(clientMessageId)) {
+        queuedByClientMessageId.add(clientMessageId);
+        restored.push({
+          id: randomId("q"),
+          clientMessageId,
+          text: String(stored.text ?? ""),
+          images: [],
+          createdAt: Number(stored.createdAt) || Date.now(),
+          agentId: String(stored.agentId ?? "").trim(),
+          model: String(stored.model ?? "").trim(),
+          modelReasoningEffort: String(stored.modelReasoningEffort ?? stored.model_reasoning_effort ?? "").trim(),
+          restoredFromStorage: true,
+        });
+      }
+    }
+
+    // Prompts still waiting their turn were never sent; they requeue as-is.
+    for (const queued of snapshot.queued) {
+      const clientMessageId = String(queued.clientMessageId ?? "").trim();
+      if (!clientMessageId || queuedByClientMessageId.has(clientMessageId)) continue;
+      queuedByClientMessageId.add(clientMessageId);
+      restored.push({
         id: randomId("q"),
         clientMessageId,
-        text,
+        text: String(queued.text ?? ""),
         images: [],
-        createdAt: Number(stored.createdAt) || Date.now(),
-        agentId,
-        model,
-        modelReasoningEffort,
-        restoredFromStorage: true,
-      },
-      ...rt.queuedPrompts.value,
-    ];
+        createdAt: Number(queued.createdAt) || Date.now(),
+        agentId: String(queued.agentId ?? "").trim(),
+        model: String(queued.model ?? "").trim(),
+        modelReasoningEffort: String(queued.modelReasoningEffort ?? queued.model_reasoning_effort ?? "").trim(),
+      });
+    }
+
+    if (restored.length === 0) return;
+    rt.queuedPrompts.value = [...restored, ...rt.queuedPrompts.value];
   };
 
   const trimChatItems = (items: ChatItem[]): ChatItem[] => {
@@ -420,7 +515,14 @@ export function createChatActions(ctx: AppContext) {
     isLiveMessageId,
   });
 
-  const { shouldIgnoreStepDelta, upsertStreamingDelta, upsertStepLiveDelta, upsertLiveActivity, clearStepLive } = createStreamingActions({
+  const {
+    shouldIgnoreStepDelta,
+    upsertStreamingDelta,
+    replaceStreamingText,
+    upsertStepLiveDelta,
+    upsertLiveActivity,
+    clearStepLive,
+  } = createStreamingActions({
     liveStepId: LIVE_STEP_ID,
     liveActivityId: LIVE_ACTIVITY_ID,
     runtimeOrActive,
@@ -445,6 +547,7 @@ export function createChatActions(ctx: AppContext) {
     const imgs = Array.isArray(images) ? images : [];
     if (!content && imgs.length === 0) return;
     const agentId = String(state.activeAgentId.value ?? "").trim();
+    ensureOutboxBinding(state);
     state.queuedPrompts.value = [
       ...state.queuedPrompts.value,
       {
@@ -705,6 +808,7 @@ export function createChatActions(ctx: AppContext) {
     enqueueMainPrompt,
     flushQueuedPrompts,
     upsertStreamingDelta,
+    replaceStreamingText,
     upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,

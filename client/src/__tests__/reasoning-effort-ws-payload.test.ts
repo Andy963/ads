@@ -198,7 +198,7 @@ describe("reasoning effort WS payload", () => {
 
     expect(lastSendPromptPayload).toBeTruthy();
     expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
-    expect(sessionStorage.getItem("ads.pendingPrompt.default.main")).toContain('"agentId":"claude"');
+    expect(localStorage.getItem("ads.outbox.default.main")).toContain('"agentId":"claude"');
   });
 
   it("uses an optimistically selected ready agent for immediate prompts", async () => {

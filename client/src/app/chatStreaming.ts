@@ -100,6 +100,45 @@ export function createStreamingActions(params: {
     setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
   };
 
+  /**
+   * Replace the in-flight assistant text with an absolute snapshot.
+   *
+   * `delta` frames are relative and live-only; a client that reconnects mid-turn
+   * never sees the ones it missed. The server persists a coalesced `delta_snapshot`
+   * carrying the full text so far, and catch-up applies it here — the streaming
+   * block is rewritten rather than appended to, so replaying a snapshot is idempotent.
+   */
+  const replaceStreamingText = (text: string, rt?: ProjectRuntime): void => {
+    const state = runtimeOrActive(rt);
+    const nextText = String(text ?? "");
+    if (!nextText) return;
+    dropEmptyAssistantPlaceholder(state);
+    const existing = state.messages.value.slice();
+    const streamIndex = findLastStreamingAssistantIndex(existing);
+    if (streamIndex >= 0) {
+      if (existing[streamIndex]!.content === nextText) return;
+      existing[streamIndex]!.content = nextText;
+      setMessages(existing.slice(), state);
+      return;
+    }
+
+    const nextItem: ChatItem = {
+      id: randomId("stream"),
+      role: "assistant",
+      kind: "text",
+      content: nextText,
+      streaming: true,
+      ts: Date.now(),
+    };
+    const lastLiveIndex = findLastLiveIndex(existing);
+    if (lastLiveIndex < 0) {
+      setMessages([...existing, nextItem], state);
+      return;
+    }
+    const insertAt = Math.min(existing.length, lastLiveIndex + 1);
+    setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
+  };
+
   const upsertStepLiveDelta = (delta: string, rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
     dropEmptyAssistantPlaceholder(state);
@@ -172,5 +211,12 @@ export function createStreamingActions(params: {
     setMessages(next, state);
   };
 
-  return { shouldIgnoreStepDelta, upsertStreamingDelta, upsertStepLiveDelta, upsertLiveActivity, clearStepLive };
+  return {
+    shouldIgnoreStepDelta,
+    upsertStreamingDelta,
+    replaceStreamingText,
+    upsertStepLiveDelta,
+    upsertLiveActivity,
+    clearStepLive,
+  };
 }

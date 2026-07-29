@@ -2,6 +2,8 @@ import { classifyError, CodexClassifiedError, type CodexErrorInfo } from "../../
 import type { WsLogger, WsPromptSessionLogger } from "./deps.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 
+export const PROMPT_ABORTED_MESSAGE = "已中断，输出可能不完整";
+
 export function handlePromptError(args: {
   error: unknown;
   aborted: boolean;
@@ -13,7 +15,7 @@ export function handlePromptError(args: {
   logPrefix?: string;
 }): void {
   if (args.aborted) {
-    const message = "已中断，输出可能不完整";
+    const message = PROMPT_ABORTED_MESSAGE;
     args.historyStore.add(args.historyKey, {
       role: "status",
       text: message,

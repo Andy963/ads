@@ -22,6 +22,47 @@ export function broadcastJsonToHistoryKey(args: {
   }
 }
 
+export function closeConnectionsForHistoryKey(args: {
+  clientMetaByWs: Map<WebSocket, WsClientMeta>;
+  historyKey: string;
+  code?: number;
+  reason?: string;
+}): void {
+  const code = args.code ?? 1011;
+  const reason = args.reason ?? "sync persistence failed";
+  for (const [candidate, meta] of args.clientMetaByWs.entries()) {
+    if (meta.historyKey !== args.historyKey) {
+      continue;
+    }
+    try {
+      candidate.close(code, reason);
+    } catch {
+      // Best-effort: reconnect recovery only needs at least one close attempt.
+    }
+  }
+}
+
+export function closeConnectionsForSession(args: {
+  clientMetaByWs: Map<WebSocket, WsClientMeta>;
+  authUserId: string;
+  sessionId: string;
+  code?: number;
+  reason?: string;
+}): void {
+  const code = args.code ?? 1011;
+  const reason = args.reason ?? "sync persistence failed";
+  for (const [candidate, meta] of args.clientMetaByWs.entries()) {
+    if (meta.authUserId !== args.authUserId || meta.sessionId !== args.sessionId) {
+      continue;
+    }
+    try {
+      candidate.close(code, reason);
+    } catch {
+      // Best-effort: every affected lane gets its own reconnect opportunity.
+    }
+  }
+}
+
 export function abortInFlightHistory(args: {
   interruptControllers: Map<string, AbortController>;
   promptRunEpochs?: Map<string, number>;

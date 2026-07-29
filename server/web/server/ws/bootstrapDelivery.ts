@@ -4,6 +4,7 @@ import type { AgentAvailability } from "../../../agents/health/agentAvailability
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryEntry, HistoryStore } from "../../../utils/historyStore.js";
 import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
+import { mergeSyncHistory } from "../sync/history.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 
@@ -90,6 +91,8 @@ export function sendInitialBootstrapMessages(args: {
   inFlight: boolean;
   historyStore: HistoryStore;
   historyKey: string;
+  additionalHistoryEntries?: HistoryEntry[];
+  latestSeq?: number;
 }): void {
   const bootstrapState = buildWsBootstrapState({
     sessionManager: args.sessionManager,
@@ -98,7 +101,11 @@ export function sendInitialBootstrapMessages(args: {
     agentAvailability: args.agentAvailability,
     allowSavedThreadFallback: true,
   });
-  const historyEntries = args.historyStore.get(args.historyKey);
+  const primaryHistoryEntries = args.historyStore.get(args.historyKey);
+  const historyEntries = mergeSyncHistory([
+    primaryHistoryEntries,
+    args.additionalHistoryEntries ?? [],
+  ]);
   const shouldReplayHistory =
     args.inFlight ||
     bootstrapState.contextMode !== "fresh" ||
@@ -119,6 +126,7 @@ export function sendInitialBootstrapMessages(args: {
       inFlight: args.inFlight,
       bootstrapHistory: historyPayload !== null,
       completedClientMessageIds: collectCompletedClientMessageIds(historyEntries),
+      latestSeq: args.latestSeq,
       state: bootstrapState,
     }),
   );

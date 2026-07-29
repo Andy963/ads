@@ -29,6 +29,7 @@ import { SchedulerRuntime } from "../../scheduler/runtime.js";
 import { resolveSharedConfig, resolveWebConfig } from "../../config.js";
 import { closeSharedDatabases } from "../../utils/shutdown.js";
 import { createWebSocketHub } from "./start/webSocketHub.js";
+import { SyncEventStore } from "./sync/store.js";
 import { DirectoryManager } from "../../telegram/utils/directoryManager.js";
 import {
   createWebLaneResources,
@@ -342,8 +343,10 @@ export async function startWebServer(): Promise<void> {
   });
   const getWorkspaceLock = laneResources.worker.getWorkspaceLock;
   const getPlannerWorkspaceLock = laneResources.planner.getWorkspaceLock;
+  const syncEventStore = new SyncEventStore({ stateDbPath });
   const wsHub = createWebSocketHub({
     workerHistoryStore: laneResources.worker.historyStore,
+    syncEventStore,
   });
 
   const taskQueueManager = createTaskQueueManager({
@@ -435,6 +438,11 @@ export async function startWebServer(): Promise<void> {
     scheduleWorkspacePurge: (ctx) => purgeScheduler.schedule(ctx),
     scheduleCompiler,
     scheduler,
+    syncEventStore,
+    interruptControllers,
+    promptRunEpochs,
+    workerHistoryStore: laneResources.worker.historyStore,
+    plannerHistoryStore: laneResources.planner.historyStore,
   });
 
   const server = createHttpServer({ handleApiRequest: apiHandler, logger });
@@ -476,6 +484,7 @@ export async function startWebServer(): Promise<void> {
       cwdStore,
       cwdStorePath,
       persistCwdStore,
+      syncEventStore,
     },
     sessions: {
       workerSessionManager: sessionManager,

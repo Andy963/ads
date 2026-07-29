@@ -13,6 +13,7 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskQueueContext } from "../taskQueue/manager.js";
 import type { WsMessage } from "./schema.js";
 import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
+import type { SyncEventStore } from "../sync/store.js";
 
 export type WsLogger = {
   info: (msg: string) => void;
@@ -82,6 +83,7 @@ export type WsStateDeps = {
   cwdStore: Map<string, string>;
   cwdStorePath: string;
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
+  syncEventStore?: SyncEventStore;
 };
 
 export type WsSessionDeps = {

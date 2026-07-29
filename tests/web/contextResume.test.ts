@@ -10,6 +10,7 @@ import {
   buildHistoryInjectionDetails,
   parseModelReasoningEffortFromPayload,
 } from "../../server/web/server/ws/promptModelConfig.js";
+import { PROMPT_ABORTED_MESSAGE } from "../../server/web/server/ws/promptErrorHandling.js";
 
 describe("context resume — history injection", () => {
   it("accepts extended Codex reasoning efforts", () => {
@@ -164,5 +165,103 @@ describe("context resume — history injection", () => {
       buildHistoryInjectionDetails([{ role: "status", text: "noise", kind: "status" }]),
       null,
     );
+  });
+
+  it("flags a user request that an error interrupted before any reply", () => {
+    // Regression: a rate-limited request used to render identically to a completed one, so the
+    // "for reference only" framing made the next turn treat it as already handled.
+    const details = buildHistoryInjectionDetails([
+      { role: "user", text: "rebuild the model settings UI", ts: 100 },
+      { role: "status", text: "[rate_limit] too many requests", kind: "error", ts: 200 },
+      { role: "user", text: "is it done", ts: 300 },
+      { role: "ai", text: "yes, all done", ts: 400 },
+    ]);
+    assert.ok(details);
+    assert.equal(details.unansweredCount, 1);
+    assert.ok(details.text.includes("User [UNANSWERED]: rebuild the model settings UI"));
+    assert.ok(details.text.includes("User: is it done"));
+    assert.ok(details.text.includes("may still be outstanding"));
+  });
+
+  it("flags a trailing user turn that never received a reply", () => {
+    const details = buildHistoryInjectionDetails([
+      { role: "user", text: "first", ts: 1 },
+      { role: "ai", text: "reply", ts: 2 },
+      { role: "user", text: "dropped on disconnect", ts: 3 },
+      { role: "status", text: "[unknown] 发生未知错误", kind: "error", ts: 4 },
+    ]);
+    assert.ok(details);
+    assert.equal(details.unansweredCount, 1);
+    assert.ok(details.text.includes("User [UNANSWERED]: dropped on disconnect"));
+    assert.ok(!details.text.includes("User [UNANSWERED]: first"));
+  });
+
+  it("does not treat command output as an assistant reply", () => {
+    const details = buildHistoryInjectionDetails([
+      { role: "user", text: "run the build", ts: 1 },
+      { role: "status", text: "$ npm run build\nok", kind: "execute", ts: 2 },
+      { role: "user", text: "next", ts: 3 },
+      { role: "ai", text: "done", ts: 4 },
+    ]);
+    assert.ok(details);
+    // A slash command answers with status entries and never writes an `ai` entry, so a missing
+    // reply alone must not be read as "outstanding" — only an error terminator counts.
+    assert.equal(details.unansweredCount, 0);
+    assert.ok(!details.text.includes("[UNANSWERED]"));
+  });
+
+  it("does not flag a turn the user deliberately interrupted", () => {
+    const details = buildHistoryInjectionDetails([
+      { role: "user", text: "delete the legacy migrations", ts: 1 },
+      { role: "status", text: PROMPT_ABORTED_MESSAGE, kind: "error", ts: 2 },
+      { role: "user", text: "never mind", ts: 3 },
+      { role: "ai", text: "ok", ts: 4 },
+    ]);
+    assert.ok(details);
+    assert.equal(details.unansweredCount, 0);
+    assert.ok(!details.text.includes("[UNANSWERED]"));
+  });
+
+  it("does not flag a trailing user turn that is merely still running", () => {
+    // No error terminator yet — the turn may simply be in flight, so it is not outstanding work.
+    const details = buildHistoryInjectionDetails([
+      { role: "user", text: "first", ts: 1 },
+      { role: "ai", text: "reply", ts: 2 },
+      { role: "user", text: "still running", ts: 3 },
+    ]);
+    assert.ok(details);
+    assert.equal(details.unansweredCount, 0);
+    assert.ok(!details.text.includes("[UNANSWERED]"));
+  });
+
+  it("leaves answered turns unmarked and omits the note entirely", () => {
+    const details = buildHistoryInjectionDetails([
+      { role: "user", text: "hi", ts: 1 },
+      { role: "ai", text: "hello", ts: 2 },
+      { role: "user", text: "thanks", ts: 3 },
+      { role: "ai", text: "welcome", ts: 4 },
+    ]);
+    assert.ok(details);
+    assert.equal(details.unansweredCount, 0);
+    assert.ok(!details.text.includes("[UNANSWERED]"));
+    assert.ok(!details.text.includes("may still be outstanding"));
+  });
+
+  it("counts only unanswered entries that survive transcript trimming", () => {
+    // The oldest unanswered request is trimmed away, so the note must not advertise it.
+    const entries = [
+      { role: "user", text: `dropped long ago: ${"x".repeat(1500)}`, ts: 1 },
+      { role: "status", text: "[rate_limit] too many requests", kind: "error", ts: 2 },
+      ...Array.from({ length: 40 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "ai",
+        text: `entry ${i}: ${"y".repeat(790)}`,
+        ts: 10 + i,
+      })),
+    ];
+    const details = buildHistoryInjectionDetails(entries);
+    assert.ok(details);
+    assert.ok(!details.text.includes("dropped long ago"));
+    assert.equal(details.unansweredCount, 0);
+    assert.ok(!details.text.includes("[UNANSWERED]"));
   });
 });

@@ -97,14 +97,19 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
     const enabledModels = models.value.filter((m) => m.isEnabled);
     if (enabledModels.length === 0) return;
-    const enabledIds = new Set(enabledModels.map((m) => String(m.modelId ?? m.id ?? "").trim()).filter(Boolean));
-    const firstModel = enabledModels[0]!;
-    const defaultModelId = String(firstModel.modelId ?? firstModel.id ?? "").trim();
 
     const ensureRuntimeModelId = (rt: ProjectRuntime): void => {
       const sessionId = resolveStorageSessionId(rt);
       if (!sessionId) return;
       const agentId = String(rt.activeAgentId.value ?? "").trim();
+      const compatibleModels = agentId
+        ? enabledModels.filter((model) => supportsAgentModel({ agentId, model }))
+        : enabledModels;
+      const compatibleIds = new Set(
+        compatibleModels.map((model) => String(model.modelId ?? model.id ?? "").trim()).filter(Boolean),
+      );
+      const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
+      const fallbackModelId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
       const key = buildModelIdStorageKey(sessionId, rt.chatSessionId, agentId);
       let stored: string | null = null;
       try {
@@ -115,8 +120,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
       const storedModelId = stored === null ? null : normalizeModelId(stored);
       let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
-      if (candidate !== "auto" && !enabledIds.has(candidate)) {
-        candidate = defaultModelId;
+      if (candidate !== "auto" && !compatibleIds.has(candidate)) {
+        candidate = fallbackModelId || "auto";
       }
 
       rt.modelId.value = candidate;
@@ -529,7 +534,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     if (currentModel && supportsAgentModel({ agentId: nextAgentId, model: currentModel })) {
       return;
     }
-    const fallback = enabledModels.find((model) => supportsAgentModel({ agentId: nextAgentId, model }));
+    const compatibleModels = enabledModels.filter((model) => supportsAgentModel({ agentId: nextAgentId, model }));
+    const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
     const fallbackId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
     if (!fallbackId || fallbackId === current) return;
     rt.modelId.value = normalizeModelId(fallbackId);
@@ -566,12 +572,33 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     rt.ws?.send?.("set_agent", { agentId: next });
   };
 
+  /**
+   * Stop an in-flight run.
+   *
+   * The WebSocket frame is the fast path but only works while the socket is open —
+   * precisely not the case when a connection dropped mid-turn and left the run
+   * going. When the frame cannot be sent, fall back to the HTTP route, which
+   * reaches the same abort registry.
+   */
+  const interruptRuntime = (rt: ProjectRuntime): void => {
+    if (rt.ws?.interrupt() === true) return;
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    if (!sessionId) return;
+    const params = new URLSearchParams({
+      sessionId,
+      chatSessionId: String(rt.chatSessionId ?? "").trim() || "main",
+    });
+    void api.post(withWorkspaceQuery(`/api/runs/interrupt?${params.toString()}`)).catch(() => {
+      // Best-effort: the user can retry, and a reconnect re-syncs the real state.
+    });
+  };
+
   const interruptActive = (): void => {
-    activeRuntime.value.ws?.interrupt();
+    interruptRuntime(activeRuntime.value);
   };
 
   const interruptPlanner = (): void => {
-    activePlannerRuntime.value.ws?.interrupt();
+    interruptRuntime(activePlannerRuntime.value);
   };
 
   const clearActiveChat = (): void => {

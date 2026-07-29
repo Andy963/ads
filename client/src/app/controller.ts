@@ -432,6 +432,23 @@ export function createAppController() {
     projects.initializeProjects();
     ctx.updateIsMobile();
     window.addEventListener("resize", ctx.updateIsMobile);
+    const handleConnectivityRestored = (): void => {
+      if (!ctx.loggedIn.value) return;
+      void activateProject(ctx.activeProjectId.value);
+    };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") {
+        handleConnectivityRestored();
+      }
+    };
+    window.addEventListener("online", handleConnectivityRestored);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    (ctx as AppContext & {
+      __connectivityCleanup?: () => void;
+    }).__connectivityCleanup = () => {
+      window.removeEventListener("online", handleConnectivityRestored);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
     if (ctx.loggedIn.value) {
       void bootstrap();
     }
@@ -439,6 +456,7 @@ export function createAppController() {
 
   onBeforeUnmount(() => {
     window.removeEventListener("resize", ctx.updateIsMobile);
+    (ctx as AppContext & { __connectivityCleanup?: () => void }).__connectivityCleanup?.();
     for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.plannerRuntimeByProjectId.values()]) {
       if (rt.liveActivityTtlTimer === null) continue;
       window.clearTimeout(rt.liveActivityTtlTimer);

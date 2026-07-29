@@ -54,6 +54,7 @@ export function buildWelcomePayload(args: {
   inFlight: boolean;
   bootstrapHistory: boolean;
   completedClientMessageIds: string[];
+  latestSeq?: number;
   state: WsBootstrapState;
 }): Record<string, unknown> {
   return {
@@ -65,6 +66,7 @@ export function buildWelcomePayload(args: {
     inFlight: args.inFlight,
     bootstrapHistory: args.bootstrapHistory,
     completedClientMessageIds: args.completedClientMessageIds,
+    ...(typeof args.latestSeq === "number" ? { latestSeq: args.latestSeq } : {}),
     threadId: args.state.threadId,
     effectiveModel: args.state.effectiveState.model,
     effectiveModelReasoningEffort: args.state.effectiveState.modelReasoningEffort,

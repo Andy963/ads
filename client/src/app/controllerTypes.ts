@@ -122,6 +122,9 @@ export type ProjectRuntime = {
   // When the WS disconnects, the UI may miss task status transitions.
   // Mark the runtime as needing a resync on the next successful connect.
   needsTaskResync: boolean;
+  needsChatSync: boolean;
+  syncInProgress: boolean;
+  syncGeneration: number;
   apiError: Ref<string | null>;
   apiNotice: Ref<string | null>;
   wsError: Ref<string | null>;

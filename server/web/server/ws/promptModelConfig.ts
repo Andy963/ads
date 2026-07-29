@@ -1,4 +1,5 @@
 import type { Input, InputTextPart } from "../../../agents/protocol/types.js";
+import { PROMPT_ABORTED_MESSAGE } from "./promptErrorHandling.js";
 
 function readPositiveIntegerEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(String(process.env[name] ?? ""), 10);
@@ -14,9 +15,14 @@ type HistoryInjectionEntry = { role: string; text: string; kind?: string; ts?: n
 export type HistoryInjectionDetails = {
   text: string;
   entryCount: number;
+  unansweredCount: number;
   earliestTs?: number;
   latestTs?: number;
 };
+
+const UNANSWERED_LABEL_SUFFIX = " [UNANSWERED]";
+const UNANSWERED_NOTE =
+  'Lines tagged "[UNANSWERED]" are earlier user requests that ended without any assistant reply — they were interrupted and may still be outstanding. Do not assume they were completed.';
 
 export function parseModelReasoningEffortFromPayload(payload: unknown): { present: boolean; effort?: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -127,7 +133,42 @@ function trimHistoryInjectionLines(lines: string[], maxChars: number): {
   return { text: kept.join("\n"), keptIndices };
 }
 
+/**
+ * A user turn that an error killed before any assistant reply is still outstanding work. The
+ * transcript otherwise renders it exactly like a completed turn, so the "for reference only, do not
+ * repeat" framing silently launders it into settled history — which is how an interrupted request
+ * ends up never being done.
+ *
+ * Deliberately conservative: a missing reply alone is NOT enough, because plenty of completed turns
+ * never write a `role: "ai"` entry (slash commands answer with `status` entries, tasks skip the ai
+ * entry when the result is empty). We require an explicit error terminator, and skip user-initiated
+ * aborts — re-advertising a request the user cancelled on purpose is worse than missing one.
+ */
+function collectUnansweredUserEntries(entries: HistoryInjectionEntry[]): Set<HistoryInjectionEntry> {
+  const unanswered = new Set<HistoryInjectionEntry>();
+  let pendingUser: HistoryInjectionEntry | null = null;
+  for (const entry of entries) {
+    const text = String(entry.text ?? "").trim();
+    if (!text) continue;
+    if (entry.role === "user") {
+      pendingUser = entry;
+      continue;
+    }
+    if (entry.role === "ai") {
+      pendingUser = null;
+      continue;
+    }
+    if (!pendingUser) continue;
+    if (entry.role === "status" && entry.kind === "error" && text !== PROMPT_ABORTED_MESSAGE) {
+      unanswered.add(pendingUser);
+      pendingUser = null;
+    }
+  }
+  return unanswered;
+}
+
 export function buildHistoryInjectionDetails(entries: HistoryInjectionEntry[]): HistoryInjectionDetails | null {
+  const unanswered = collectUnansweredUserEntries(entries);
   const relevant = entries
     .map((entry) => ({ entry, label: labelForHistoryInjectionEntry(entry) }))
     .filter((item): item is { entry: HistoryInjectionEntry; label: string } => Boolean(item.label));
@@ -141,7 +182,8 @@ export function buildHistoryInjectionDetails(entries: HistoryInjectionEntry[]): 
     const text = String(entry.text ?? "").trim();
     if (!text) continue;
     const truncated = truncateHistoryInjectionText(entry, text);
-    lines.push(`${label}: ${truncated}`);
+    const marked = unanswered.has(entry) ? `${label}${UNANSWERED_LABEL_SUFFIX}` : label;
+    lines.push(`${marked}: ${truncated}`);
     lineEntries.push(entry);
   }
   if (lines.length === 0) {
@@ -154,6 +196,7 @@ export function buildHistoryInjectionDetails(entries: HistoryInjectionEntry[]): 
   const includedEntries = keptIndices
     .map((idx) => lineEntries[idx])
     .filter((entry): entry is HistoryInjectionEntry => Boolean(entry));
+  const unansweredCount = includedEntries.filter((entry) => unanswered.has(entry)).length;
   let earliestTs: number | undefined;
   let latestTs: number | undefined;
   for (const entry of includedEntries) {
@@ -162,17 +205,19 @@ export function buildHistoryInjectionDetails(entries: HistoryInjectionEntry[]): 
     if (earliestTs === undefined || ts < earliestTs) earliestTs = ts;
     if (latestTs === undefined || ts > latestTs) latestTs = ts;
   }
-  const text = [
+  const header = [
     "[Context restore] Recent chat history (for reference only). Do not repeat it; answer the user's next request directly:",
-    "",
-    transcript,
-    "",
-    "---",
-    "",
-  ].join("\n");
+  ];
+  // A single over-long line is kept as a tail, which can chop the label off. Only promise the tag
+  // in the header when the transcript actually still carries one.
+  if (unansweredCount > 0 && transcript.includes(UNANSWERED_LABEL_SUFFIX)) {
+    header.push(UNANSWERED_NOTE);
+  }
+  const text = [...header, "", transcript, "", "---", ""].join("\n");
   return {
     text,
     entryCount: includedEntries.length,
+    unansweredCount,
     earliestTs,
     latestTs,
   };

@@ -1,7 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnection } from "../../server/web/server/ws/connectionRuntime.js";
+import {
+  abortInFlightHistory,
+  broadcastJsonToHistoryKey,
+  cleanupClosedConnection,
+  closeConnectionsForHistoryKey,
+  closeConnectionsForSession,
+} from "../../server/web/server/ws/connectionRuntime.js";
 
 describe("web/ws/connectionRuntime", () => {
   it("broadcasts payloads only to sockets bound to the target history key", () => {
@@ -39,6 +45,48 @@ describe("web/ws/connectionRuntime", () => {
     });
 
     assert.deepEqual(sent, [{ ws: wsB, payload: { type: "history", items: [] } }]);
+  });
+
+  it("closes every socket for a history key when durable sync fails", () => {
+    const closed: Array<{ socket: string; code: number; reason: string }> = [];
+    const wsA = { close: (code: number, reason: string) => closed.push({ socket: "a", code, reason }) } as any;
+    const wsB = { close: (code: number, reason: string) => closed.push({ socket: "b", code, reason }) } as any;
+    const wsOther = { close: (code: number, reason: string) => closed.push({ socket: "other", code, reason }) } as any;
+
+    closeConnectionsForHistoryKey({
+      clientMetaByWs: new Map([
+        [wsA, { historyKey: "h1" } as any],
+        [wsB, { historyKey: "h1" } as any],
+        [wsOther, { historyKey: "h2" } as any],
+      ]),
+      historyKey: "h1",
+    });
+
+    assert.deepEqual(closed, [
+      { socket: "a", code: 1011, reason: "sync persistence failed" },
+      { socket: "b", code: 1011, reason: "sync persistence failed" },
+    ]);
+  });
+
+  it("closes every lane in an affected authenticated session", () => {
+    const closed: string[] = [];
+    const worker = { close: () => closed.push("worker") } as any;
+    const planner = { close: () => closed.push("planner") } as any;
+    const otherSession = { close: () => closed.push("other-session") } as any;
+    const otherUser = { close: () => closed.push("other-user") } as any;
+
+    closeConnectionsForSession({
+      clientMetaByWs: new Map([
+        [worker, { authUserId: "u1", sessionId: "s1", chatSessionId: "main" } as any],
+        [planner, { authUserId: "u1", sessionId: "s1", chatSessionId: "planner" } as any],
+        [otherSession, { authUserId: "u1", sessionId: "s2", chatSessionId: "main" } as any],
+        [otherUser, { authUserId: "u2", sessionId: "s1", chatSessionId: "main" } as any],
+      ]),
+      authUserId: "u1",
+      sessionId: "s1",
+    });
+
+    assert.deepEqual(closed, ["worker", "planner"]);
   });
 
   it("aborts in-flight work when present", () => {

@@ -23,6 +23,7 @@ const {
   mobilePane,
   api,
   models,
+  loadModels,
   connected,
   openProjectDialog,
   projects,
@@ -230,8 +231,12 @@ function closeModelManager(): void {
   modelManagerOpen.value = false;
 }
 
-function onModelManagerChanged(): void {
-  void loadModels();
+async function onModelManagerChanged(): Promise<void> {
+  try {
+    await loadModels();
+  } catch (error) {
+    apiError.value = error instanceof Error ? error.message : String(error);
+  }
 }
 
 const runningTaskCount = computed(() =>

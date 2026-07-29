@@ -61,9 +61,9 @@ type WsMessage =
       prompt?: string;
       ts?: number;
     }
-  | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number }
+  | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number; seq?: number }
   | { type: "task_bundle_draft"; action?: "upsert" | "delete"; draft?: TaskBundleDraft | null }
-  | { type: string; [k: string]: unknown };
+  | { type: string; seq?: number; [k: string]: unknown };
 
 export class AdsWebSocket {
   private ws: WebSocket | null = null;
@@ -74,7 +74,7 @@ export class AdsWebSocket {
   onOpen?: () => void;
   onClose?: (ev: CloseEvent) => void;
   onError?: () => void;
-  onTaskEvent?: (payload: { event: TaskEventPayload["event"]; data: unknown }) => void;
+  onTaskEvent?: (payload: { event: TaskEventPayload["event"]; data: unknown; seq?: number }) => void;
   onMessage?: (msg: WsMessage) => void;
 
   constructor(options: { sessionId?: string; chatSessionId?: string }) {
@@ -104,8 +104,9 @@ export class AdsWebSocket {
     return this.send("prompt", payload, { clientMessageId: id });
   }
 
-  interrupt(): void {
-    this.send("interrupt");
+  /** Returns false when the socket is not open, so the caller can fall back to HTTP. */
+  interrupt(): boolean {
+    return this.send("interrupt");
   }
 
   clearHistory(payload?: unknown): void {
@@ -139,7 +140,7 @@ export class AdsWebSocket {
         return;
       }
       if (msg.type === "task:event") {
-        this.onTaskEvent?.({ event: msg.event, data: msg.data });
+        this.onTaskEvent?.({ event: msg.event, data: msg.data, seq: typeof msg.seq === "number" ? msg.seq : undefined });
         return;
       }
       this.onMessage?.(msg);

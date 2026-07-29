@@ -9,6 +9,7 @@ export const TELEGRAM_CONTROL_COMMANDS = new Set([
   'start',
   'help',
   'status',
+  'agent',
   'esc',
   'reset',
   'resume',
@@ -27,6 +28,7 @@ export async function registerTelegramCommandMenu(
       { command: 'start', description: '欢迎信息' },
       { command: 'help', description: '命令帮助' },
       { command: 'status', description: '系统状态' },
+      { command: 'agent', description: '查看或切换代理' },
       { command: 'esc', description: '中断当前任务' },
       { command: 'reset', description: '开始新对话' },
       { command: 'resume', description: '恢复之前的对话' },
@@ -48,6 +50,7 @@ export function registerTelegramControlCommands(bot: Bot<Context>, runtime: Tele
         '可用命令：\n' +
         '/help - 查看所有命令\n' +
         '/status - 查看系统状态\n' +
+        '/agent - 查看或切换代理\n' +
         '/reset - 重置会话\n' +
         '/mark - 切换对话标记，记录到当天 note\n' +
         '/pref - 管理偏好设置（长期记忆）\n' +
@@ -64,6 +67,7 @@ export function registerTelegramControlCommands(bot: Bot<Context>, runtime: Tele
         '/start - 欢迎信息\n' +
         '/help - 显示此帮助\n' +
         '/status - 系统状态\n' +
+        '/agent [id] - 查看可用代理或切换代理\n' +
         '/reset - 重置会话（开始新对话）\n' +
         '/resume - 恢复之前的对话\n' +
         '/mark - 切换对话标记（记录每日 note）\n' +
@@ -86,6 +90,7 @@ export function registerTelegramControlCommands(bot: Bot<Context>, runtime: Tele
     const stats = runtime.sessionManager.getStats();
     const cwd = runtime.directoryManager.getUserCwd(userId);
     const currentModel = runtime.sessionManager.getUserModel(userId);
+    const currentAgent = runtime.sessionManager.getActiveAgentLabel(userId);
 
     const sandboxEmoji = {
       'read-only': '🔒',
@@ -98,8 +103,34 @@ export function registerTelegramControlCommands(bot: Bot<Context>, runtime: Tele
         `💬 会话统计: ${stats.active} 活跃 / ${stats.total} 总数\n` +
         `${sandboxEmoji} 沙箱模式: ${stats.sandboxMode}\n` +
         `🤖 当前模型: ${currentModel}\n` +
-        `🧠 当前代理: Codex\n` +
+        `🧠 当前代理: ${currentAgent}\n` +
         `📁 当前目录: ${cwd}`,
+    );
+  });
+
+  bot.command('agent', async (ctx) => {
+    const userId = await requireUserId(ctx, runtime.logger, '/agent');
+    if (userId === null) return;
+    const args = ctx.message?.text?.split(/\s+/).slice(1) ?? [];
+    const requestedAgentId = args.join(' ').trim();
+    const cwd = runtime.directoryManager.getUserCwd(userId);
+
+    if (requestedAgentId) {
+      runtime.sessionManager.getOrCreate(userId, cwd, true);
+      const result = runtime.sessionManager.switchAgent(userId, requestedAgentId);
+      await ctx.reply(result.message);
+      return;
+    }
+
+    const orchestrator = runtime.sessionManager.getOrCreate(userId, cwd, true);
+    const activeAgentId = orchestrator.getActiveAgentId();
+    const lines = orchestrator.listAgents().map((entry) => {
+      const marker = entry.metadata.id === activeAgentId ? '*' : '-';
+      const status = entry.status.ready ? 'ready' : `not ready${entry.status.error ? `: ${entry.status.error}` : ''}`;
+      return `${marker} ${entry.metadata.id} (${entry.metadata.name}) - ${status}`;
+    });
+    await ctx.reply(
+      `当前代理: ${activeAgentId}\n\n可用代理:\n${lines.join('\n')}\n\n用法: /agent <id>`,
     );
   });
 

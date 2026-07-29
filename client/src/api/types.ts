@@ -185,3 +185,22 @@ export type TaskBundleDraft = {
   lastError: string | null;
   degradeReason?: string | null;
 };
+
+export type SyncEvent = {
+  seq: number;
+  type: string;
+  eventId?: string | null;
+  revision: number;
+  ts: number;
+  runId?: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type SyncEventsResponse = {
+  events: SyncEvent[];
+  latestSeq: number;
+  minAvailableSeq: number;
+  hasMore: boolean;
+  truncated: boolean;
+  snapshot?: Record<string, unknown> | null;
+};

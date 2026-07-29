@@ -13,3 +13,6 @@ skills:
   openai-tts:
     provides: [audio.tts]
     priority: 100
+  english-subtitle-m4a:
+    provides: [audio.subtitle]
+    priority: 300

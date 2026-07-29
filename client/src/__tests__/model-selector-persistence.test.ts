@@ -5,7 +5,16 @@ import { defineComponent } from "vue";
 import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
 
 const TEST_TIMEOUT_MS = 40_000;
-const PENDING_PROMPT_KEY = "ads.pendingPrompt.default.main";
+const OUTBOX_KEY = "ads.outbox.default.main";
+
+/** The outbox lives in localStorage so a reload in any tab still finds the prompt. */
+function seedPendingPrompt(pending: Record<string, unknown>): void {
+  localStorage.setItem(OUTBOX_KEY, JSON.stringify({ pending, queued: [] }));
+}
+
+function readOutbox(): string | null {
+  return localStorage.getItem(OUTBOX_KEY);
+}
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -109,11 +118,11 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
   await settleUi(wrapper);
 }
 
-function makeModel(id: string, displayName: string): ModelConfig {
+function makeModel(id: string, displayName: string, provider = "openai"): ModelConfig {
   return {
     id,
     displayName,
-    provider: "openai",
+    provider,
     isEnabled: true,
     isDefault: false,
   };
@@ -182,6 +191,119 @@ describe("Model selector persistence", () => {
   );
 
   it(
+    "reloads runtime model options after the model manager changes",
+    async () => {
+      let runtimeModels: ModelConfig[] = [makeModel("gpt-4.1", "GPT-4.1")];
+      let modelFetchCount = 0;
+      getImpl = async (url: string) => {
+        if (url === "/api/models") {
+          modelFetchCount += 1;
+          return runtimeModels;
+        }
+        if (url === "/api/projects") return { projects: [], activeProjectId: null };
+        if (url.includes("/api/task-queue/status"))
+          return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
+        if (url.startsWith("/api/tasks")) return [] satisfies Task[];
+        if (url.startsWith("/api/paths/validate")) return { ok: false };
+        return {};
+      };
+
+      const DraggableModalStub = defineComponent({ template: "<div><slot /></div>" });
+      const ModelManagerStub = defineComponent({
+        name: "ModelManager",
+        emits: ["changed"],
+        template: '<button data-testid="model-manager-change" @click="$emit(\'changed\')">change</button>',
+      });
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: {
+          stubs: {
+            LoginGate: false,
+            MainChatView: false,
+            MarkdownContent: true,
+            DraggableModal: DraggableModalStub,
+            ModelManager: ModelManagerStub,
+          },
+        },
+      });
+      await settleUi(wrapper);
+
+      expect(modelFetchCount).toBeGreaterThanOrEqual(1);
+      await wrapper.find('[data-testid="model-manager-open"]').trigger("click");
+      await settleUi(wrapper);
+
+      runtimeModels = [
+        makeModel("gpt-4.1", "GPT-4.1"),
+        {
+          ...makeModel("gpt-5.2", "GPT-5.2"),
+          configJson: { allowedAgents: ["codex"] },
+        },
+      ];
+      await wrapper.find('[data-testid="model-manager-change"]').trigger("click");
+
+      await vi.waitFor(() => {
+        expect(modelFetchCount).toBeGreaterThanOrEqual(2);
+        expect(wrapper.vm.models.map((model: ModelConfig) => model.id)).toContain("gpt-5.2");
+      });
+
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "sends the selected cross-agent model with its active agent",
+    async () => {
+      const models: ModelConfig[] = [
+        makeModel("gpt-4.1", "GPT-4.1"),
+        makeModel("claude-opus-5[1m]", "Claude Opus 5", "anthropic"),
+      ];
+      getImpl = async (url: string) => {
+        if (url === "/api/models") return models;
+        if (url === "/api/projects") return { projects: [], activeProjectId: null };
+        if (url.includes("/api/task-queue/status"))
+          return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
+        if (url.startsWith("/api/tasks")) return [] satisfies Task[];
+        if (url.startsWith("/api/paths/validate")) return { ok: false };
+        return {};
+      };
+
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+      lastWorkerWs!.onMessage?.({
+        type: "agents",
+        activeAgentId: "codex",
+        agents: [
+          { id: "codex", name: "Codex", ready: true },
+          { id: "claude", name: "Claude Code", ready: true },
+        ],
+      });
+      await settleUi(wrapper);
+
+      wrapper.vm.switchMainAgent?.("claude");
+      wrapper.vm.setMainModelId?.("claude-opus-5[1m]");
+      await settleUi(wrapper);
+
+      wrapper.vm.sendMainPrompt?.("hello");
+      await settleUi(wrapper);
+
+      expect(lastSendPromptPayload).toMatchObject({
+        text: "hello",
+        agentId: "claude",
+        model: "claude-opus-5[1m]",
+      });
+      expect(localStorage.getItem("ads.modelId.default.main.claude")).toBe("claude-opus-5[1m]");
+
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "falls back to the first model and persists it when the stored id is invalid",
     async () => {
       localStorage.setItem("ads.modelId.default.main", "not-a-real-model");
@@ -238,10 +360,7 @@ describe("Model selector persistence", () => {
   it(
     "waits for welcome effective model before replaying a restored pending prompt",
     async () => {
-      sessionStorage.setItem(
-        PENDING_PROMPT_KEY,
-        JSON.stringify({ clientMessageId: "c-1", text: "hello", createdAt: Date.now() }),
-      );
+      seedPendingPrompt({ clientMessageId: "c-1", text: "hello", createdAt: Date.now() });
 
       const App = (await import("../App.vue")).default;
       const wrapper = shallowMount(App, {
@@ -276,10 +395,7 @@ describe("Model selector persistence", () => {
   it(
     "preserves the stored agent id when replaying a restored pending prompt",
     async () => {
-      sessionStorage.setItem(
-        PENDING_PROMPT_KEY,
-        JSON.stringify({ clientMessageId: "c-agent", text: "hello", createdAt: Date.now(), agentId: "claude" }),
-      );
+      seedPendingPrompt({ clientMessageId: "c-agent", text: "hello", createdAt: Date.now(), agentId: "claude" });
 
       const App = (await import("../App.vue")).default;
       const wrapper = shallowMount(App, {
@@ -313,16 +429,13 @@ describe("Model selector persistence", () => {
   it(
     "preserves stored model options when replaying a restored pending prompt",
     async () => {
-      sessionStorage.setItem(
-        PENDING_PROMPT_KEY,
-        JSON.stringify({
-          clientMessageId: "c-model",
-          text: "hello",
-          createdAt: Date.now(),
-          model: "gpt-4o",
-          modelReasoningEffort: "medium",
-        }),
-      );
+      seedPendingPrompt({
+        clientMessageId: "c-model",
+        text: "hello",
+        createdAt: Date.now(),
+        model: "gpt-4o",
+        modelReasoningEffort: "medium",
+      });
 
       const App = (await import("../App.vue")).default;
       const wrapper = shallowMount(App, {
@@ -368,13 +481,13 @@ describe("Model selector persistence", () => {
       wrapper.vm.sendMainPrompt?.("hello");
       await settleUi(wrapper);
 
-      expect(sessionStorage.getItem(PENDING_PROMPT_KEY)).toContain("\"text\":\"hello\"");
+      expect(readOutbox()).toContain("\"text\":\"hello\"");
       lastSendPromptPayload = null;
 
       lastWorkerWs!.onClose?.({ code, reason: "" });
       await settleUi(wrapper);
 
-      expect(sessionStorage.getItem(PENDING_PROMPT_KEY)).toBeNull();
+      expect(readOutbox()).toBeNull();
 
       await wrapper.vm.connectWs?.();
       await settleUi(wrapper);

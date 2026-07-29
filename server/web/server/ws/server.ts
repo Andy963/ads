@@ -18,9 +18,18 @@ import { sendInitialBootstrapMessages } from "./bootstrapDelivery.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
 import { buildWsConnectionIdentity } from "./connectionIdentity.js";
-import { abortInFlightHistory, broadcastJsonToHistoryKey, cleanupClosedConnection } from "./connectionRuntime.js";
+import {
+  abortInFlightHistory,
+  broadcastJsonToHistoryKey,
+  cleanupClosedConnection,
+  closeConnectionsForHistoryKey,
+  closeConnectionsForSession,
+} from "./connectionRuntime.js";
 import { resolveWsLaneResources } from "./laneResources.js";
 import { preflightPersistAndAck } from "./preflight.js";
+import { resolveSharedWorkerSyncLaneKey, resolveSyncLaneKeys, resolveSyncNamespace } from "../sync/lane.js";
+import { isStreamTerminalEvent, isTransientSyncEvent } from "../sync/eventClass.js";
+import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number; sessionTokenHash?: string };
 
@@ -245,31 +254,94 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     );
     const inFlight = state.interruptControllers.has(historyKey);
 
-    const broadcastJson = (payload: unknown): void =>
+    const syncNamespace = resolveSyncNamespace(chatSessionId);
+    const syncLaneKeys = resolveSyncLaneKeys({
+      authUserId,
+      sessionId,
+      chatSessionId,
+    });
+    const closeHistoryConnectionsAfterSyncFailure = (): void => {
+      closeConnectionsForHistoryKey({
+        clientMetaByWs: state.clientMetaByWs,
+        historyKey,
+        code: 1011,
+        reason: "sync persistence failed",
+      });
+    };
+    const syncEventStore = state.syncEventStore;
+    const deltaCoalescer = syncEventStore
+      ? createDeltaStreamCoalescer({
+          store: syncEventStore,
+          namespace: syncNamespace,
+          laneKey: historyKey,
+        })
+      : null;
+    const appendSyncEvent = (
+      payload: unknown,
+      onFailure: () => void = closeHistoryConnectionsAfterSyncFailure,
+    ): { ok: boolean; payload: unknown } => {
+      const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
+      const eventType = String(payloadRecord?.type ?? "").trim();
+      if (!payloadRecord || !eventType || !syncEventStore) {
+        return { ok: true, payload };
+      }
+      if (isTransientSyncEvent(eventType)) {
+        // Per-token frames stay live-only. Main assistant text is folded into a
+        // single coalesced `delta_snapshot`; step/reasoning chatter is not resumable
+        // state and is dropped from the log entirely.
+        if (deltaCoalescer && !String(payloadRecord.source ?? "").trim()) {
+          deltaCoalescer.appendDelta(String(payloadRecord.delta ?? ""));
+        }
+        return { ok: true, payload };
+      }
+      if (deltaCoalescer && isStreamTerminalEvent(eventType)) {
+        deltaCoalescer.finish();
+      }
+      const seq = syncEventStore.append({
+        namespace: syncNamespace,
+        laneKey: historyKey,
+        type: eventType,
+        payload: payloadRecord,
+      });
+      if (seq === null) {
+        logger.warn(`[WebSocket][Sync] refusing unlogged event type=${eventType} history=${historyKey}`);
+        onFailure();
+        return { ok: false, payload };
+      }
+      return { ok: true, payload: { ...payloadRecord, seq } };
+    };
+    const broadcastJson = (payload: unknown): void => {
+      const appended = appendSyncEvent(payload);
+      if (!appended.ok) return;
       broadcastJsonToHistoryKey({
         clientMetaByWs: state.clientMetaByWs,
         historyKey,
-        payload,
+        payload: appended.payload,
         sendJson: safeJsonSend,
       });
+    };
     const broadcastHistoryToSiblingConnections = (): void => {
       const payload = buildHistoryBootstrapPayload(historyStore.get(historyKey));
       if (!payload) {
         return;
       }
+      const appended = appendSyncEvent(payload);
+      if (!appended.ok) return;
       broadcastJsonToHistoryKey({
         clientMetaByWs: state.clientMetaByWs,
         historyKey,
-        payload,
+        payload: appended.payload,
         sendJson: safeJsonSend,
         excludeWs: ws,
       });
     };
     const broadcastInFlightToSiblingConnections = (): void => {
+      const appended = appendSyncEvent({ type: "in_flight", inFlight: true });
+      if (!appended.ok) return;
       broadcastJsonToHistoryKey({
         clientMetaByWs: state.clientMetaByWs,
         historyKey,
-        payload: { type: "in_flight", inFlight: true },
+        payload: appended.payload,
         sendJson: safeJsonSend,
         excludeWs: ws,
       });
@@ -286,6 +358,21 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
       const resetScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
       const sourceChatSessionId = String(payloadRecord.sourceChatSessionId ?? "").trim();
+      const appended = appendSyncEvent(
+        payload,
+        resetScope === "shared"
+          ? () => {
+              closeConnectionsForSession({
+                clientMetaByWs: state.clientMetaByWs,
+                authUserId,
+                sessionId,
+                code: 1011,
+                reason: "sync persistence failed",
+              });
+            }
+          : closeHistoryConnectionsAfterSyncFailure,
+      );
+      if (!appended.ok) return;
       for (const [candidate, meta] of state.clientMetaByWs.entries()) {
         if (candidate === ws) {
           continue;
@@ -296,7 +383,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         if (resetScope !== "shared" && sourceChatSessionId && meta.chatSessionId !== sourceChatSessionId) {
           continue;
         }
-        safeJsonSend(candidate, payload);
+        safeJsonSend(candidate, appended.payload);
       }
     };
 
@@ -370,6 +457,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       inFlight,
       historyStore,
       historyKey,
+      additionalHistoryEntries:
+        chatSessionId === "planner"
+          ? undefined
+          : historyStore.get(resolveSharedWorkerSyncLaneKey(sessionId)),
+      latestSeq: state.syncEventStore?.getLatestSeqForLanes(syncNamespace, syncLaneKeys) ?? 0,
     });
 
     let messageChain = Promise.resolve();

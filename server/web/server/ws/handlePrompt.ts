@@ -188,7 +188,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         if (injectionDetails) {
           effectiveInput = prependContextToInput(injectionDetails.text, inputToSend);
           deps.observability.logger.info(
-            `[ContextRestore] Injected ${injectionDetails.entryCount} history entries for user=${deps.context.userId} session=${deps.context.sessionId}`,
+            `[ContextRestore] Injected ${injectionDetails.entryCount} history entries (unanswered=${injectionDetails.unansweredCount}) for user=${deps.context.userId} session=${deps.context.sessionId}`,
           );
           sendToChat({
             type: "context_injection",

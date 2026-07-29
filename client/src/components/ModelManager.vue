@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { Close, Delete, Plus, Refresh } from "@element-plus/icons-vue";
+import { ArrowRight, Close, Delete, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
 import type { ModelConfig } from "../api/types";
+import { resolveModelAgentId } from "../lib/model_agent";
 
 type AgentKind = "codex" | "claude";
 
@@ -29,14 +30,17 @@ const emit = defineEmits<{
 const modelConfigs = ref<ModelConfig[]>([]);
 const loading = ref(false);
 const saving = ref(false);
+const busyRowId = ref<string | null>(null);
 const error = ref<string | null>(null);
 const statusMessage = ref<string | null>(null);
 const editingId = ref<string | null>(null);
-const selectedAgent = ref<AgentKind>("codex");
+const dialogOpen = ref(false);
+const pendingDeleteId = ref<string | null>(null);
+const expanded = reactive<Record<AgentKind, boolean>>({ codex: true, claude: true });
 
 const AGENT_GROUPS: Array<{ kind: AgentKind; label: string; description: string }> = [
-  { kind: "codex", label: "Codex", description: "OpenAI Codex CLI 代理" },
-  { kind: "claude", label: "Claude", description: "Anthropic Claude Code 代理" },
+  { kind: "codex", label: "Codex CLI", description: "OpenAI Codex" },
+  { kind: "claude", label: "Claude Code", description: "Anthropic Claude" },
 ];
 
 const emptyForm = (agent: AgentKind = "codex"): ModelForm => ({
@@ -78,46 +82,21 @@ function parseConfigJson(raw: string): Record<string, unknown> | null {
   return parsed as Record<string, unknown>;
 }
 
-function normalizeModelId(value: unknown): string {
-  return String(value ?? "").trim();
-}
-
-function isClaudeModelId(modelId: string): boolean {
-  const id = modelId.trim().toLowerCase();
-  return id.startsWith("claude") || id === "sonnet" || id === "opus" || id === "haiku";
-}
-
-function isCodexModelId(modelId: string): boolean {
-  const id = modelId.trim().toLowerCase();
-  return id.startsWith("gpt-") || id.includes("codex");
-}
-
-function allowedAgents(model: ModelConfig): string[] {
-  const cfg = model.configJson;
-  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return [];
-  const raw = (cfg as Record<string, unknown>).allowedAgents;
-  if (!Array.isArray(raw)) return [];
-  return raw.map((entry) => String(entry ?? "").trim().toLowerCase()).filter(Boolean);
-}
-
 function resolveAgent(model: ModelConfig): AgentKind | null {
-  const provider = String(model.provider ?? "").trim().toLowerCase();
-  if (provider.includes("anthropic") || provider.includes("claude")) return "claude";
-  if (provider.includes("openai") || provider.includes("codex")) return "codex";
-
-  const id = normalizeModelId(model.modelId || model.id);
-  if (isClaudeModelId(id)) return "claude";
-  if (isCodexModelId(id)) return "codex";
-
-  const allowed = allowedAgents(model);
-  if (allowed.includes("claude")) return "claude";
-  if (allowed.includes("codex")) return "codex";
-
-  return null;
+  const agentId = resolveModelAgentId(model, ["codex", "claude"]);
+  return agentId === "codex" || agentId === "claude" ? agentId : null;
 }
 
 function providerForAgent(agent: AgentKind): string {
   return agent === "claude" ? "anthropic" : "openai";
+}
+
+function agentLabel(agent: AgentKind): string {
+  return agent === "claude" ? "Claude Code" : "Codex CLI";
+}
+
+function modelLabel(model: ModelConfig): string {
+  return String(model.displayName ?? "").trim() || String(model.modelId ?? model.id ?? "").trim();
 }
 
 const groupedModels = computed(() => {
@@ -130,38 +109,45 @@ const groupedModels = computed(() => {
   for (const key of Object.keys(buckets) as AgentKind[]) {
     buckets[key].sort((a, b) => {
       if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
-      return (a.displayName || a.id).localeCompare(b.displayName || b.id);
+      if (a.isEnabled !== b.isEnabled) return a.isEnabled ? -1 : 1;
+      return modelLabel(a).localeCompare(modelLabel(b));
     });
   }
   return buckets;
 });
 
+function enabledCount(agent: AgentKind): number {
+  return groupedModels.value[agent].filter((model) => model.isEnabled).length;
+}
+
+const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
 const isEditing = computed(() => Boolean(editingId.value));
+// The global default must always exist, stay enabled, and be replaced rather than cleared — the
+// server never picks a successor, so un-defaulting or disabling it silently drops every consumer
+// back to whichever model happens to sort first.
+const editingCurrentDefault = computed(
+  () => Boolean(editingId.value) && modelConfigs.value.some((model) => model.id === editingId.value && model.isDefault),
+);
+const configJsonError = computed(() => {
+  try {
+    parseConfigJson(form.configJsonText);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+});
 const canSubmit = computed(() => {
   if (saving.value) return false;
   if (!form.modelId.trim()) return false;
-  try {
-    parseConfigJson(form.configJsonText);
-    return true;
-  } catch {
-    return false;
-  }
+  return configJsonError.value === null;
 });
 
 async function loadModelConfigs(): Promise<void> {
   loading.value = true;
   error.value = null;
+  pendingDeleteId.value = null;
   try {
     modelConfigs.value = await props.api.get<ModelConfig[]>("/api/model-configs");
-    const buckets: Record<AgentKind, number> = { codex: 0, claude: 0 };
-    for (const model of modelConfigs.value) {
-      const agent = resolveAgent(model);
-      if (agent) buckets[agent] += 1;
-    }
-    if (buckets[selectedAgent.value] === 0) {
-      const fallback = (Object.keys(buckets) as AgentKind[]).find((kind) => buckets[kind] > 0);
-      if (fallback) selectedAgent.value = fallback;
-    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -169,34 +155,33 @@ async function loadModelConfigs(): Promise<void> {
   }
 }
 
-function closeForm(): void {
+function toggleGroup(agent: AgentKind): void {
+  expanded[agent] = !expanded[agent];
+  pendingDeleteId.value = null;
+}
+
+function closeDialog(): void {
   editingId.value = null;
-  assignForm(emptyForm(selectedAgent.value));
+  dialogOpen.value = false;
+  assignForm(emptyForm());
   error.value = null;
-  statusMessage.value = null;
 }
 
 function startCreate(agent: AgentKind): void {
-  selectedAgent.value = agent;
+  expanded[agent] = true;
   editingId.value = null;
+  dialogOpen.value = true;
+  pendingDeleteId.value = null;
   assignForm(emptyForm(agent));
   error.value = null;
   statusMessage.value = null;
 }
 
-function selectAgent(agent: AgentKind): void {
-  if (selectedAgent.value === agent) return;
-  selectedAgent.value = agent;
-  if (!editingId.value) {
-    assignForm(emptyForm(agent));
-  }
-  statusMessage.value = null;
-}
-
 function editModel(model: ModelConfig): void {
   const agent = resolveAgent(model) ?? "codex";
-  selectedAgent.value = agent;
   editingId.value = model.id;
+  dialogOpen.value = true;
+  pendingDeleteId.value = null;
   assignForm({
     id: model.id,
     modelId: model.modelId || model.id,
@@ -213,7 +198,10 @@ function editModel(model: ModelConfig): void {
 function buildPayload(): Omit<ModelConfig, "id"> & { id?: string } {
   const parsed = parseConfigJson(form.configJsonText) ?? {};
   const { allowedAgents: _drop, ...rest } = parsed as Record<string, unknown>;
-  const configJson = Object.keys(rest).length > 0 ? (rest as Record<string, unknown>) : null;
+  const configJson: Record<string, unknown> = {
+    ...rest,
+    allowedAgents: [form.agent],
+  };
   return {
     modelId: form.modelId.trim(),
     displayName: form.displayName.trim() || form.modelId.trim(),
@@ -225,9 +213,11 @@ function buildPayload(): Omit<ModelConfig, "id"> & { id?: string } {
 }
 
 async function saveModel(): Promise<void> {
+  if (saving.value) return;
   saving.value = true;
   error.value = null;
   const wasEditing = Boolean(editingId.value);
+  const targetAgent = form.agent;
   try {
     const payload = buildPayload();
     if (editingId.value) {
@@ -238,11 +228,10 @@ async function saveModel(): Promise<void> {
       await props.api.post<ModelConfig>("/api/model-configs", payload);
     }
     await loadModelConfigs();
-    const savedModelId = payload.modelId;
-    const saved = modelConfigs.value.find((model) => String(model.modelId ?? model.id).trim() === savedModelId);
-    if (saved) {
-      editModel(saved);
-    }
+    expanded[targetAgent] = true;
+    editingId.value = null;
+    dialogOpen.value = false;
+    assignForm(emptyForm());
     statusMessage.value = wasEditing ? "模型已保存" : "模型已添加";
     emit("changed");
   } catch (err) {
@@ -253,14 +242,62 @@ async function saveModel(): Promise<void> {
   }
 }
 
-async function deleteModel(model: ModelConfig): Promise<void> {
+async function patchModel(
+  model: ModelConfig,
+  patch: Partial<Pick<ModelConfig, "isEnabled" | "isDefault">>,
+  successMessage: string,
+): Promise<void> {
+  if (busy.value) return;
+  busyRowId.value = model.id;
+  error.value = null;
+  statusMessage.value = null;
+  try {
+    await props.api.patch<ModelConfig>(`/api/model-configs/${encodeURIComponent(model.id)}`, patch);
+    await loadModelConfigs();
+    statusMessage.value = successMessage;
+    emit("changed");
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    busyRowId.value = null;
+  }
+}
+
+function setDefaultModel(model: ModelConfig): void {
   if (model.isDefault) return;
+  void patchModel(model, { isDefault: true }, `已将 ${modelLabel(model)} 设为默认模型`);
+}
+
+function toggleEnabled(model: ModelConfig): void {
+  const next = !model.isEnabled;
+  if (!next && model.isDefault) {
+    error.value = "默认模型不能停用，请先把默认设到其他模型上。";
+    return;
+  }
+  void patchModel(model, { isEnabled: next }, next ? `已启用 ${modelLabel(model)}` : `已停用 ${modelLabel(model)}`);
+}
+
+function requestDelete(model: ModelConfig): void {
+  if (model.isDefault || busy.value) return;
+  pendingDeleteId.value = model.id;
+  statusMessage.value = null;
+  error.value = null;
+}
+
+function cancelDelete(): void {
+  pendingDeleteId.value = null;
+}
+
+async function deleteModel(model: ModelConfig): Promise<void> {
+  if (model.isDefault || saving.value) return;
   saving.value = true;
   error.value = null;
   try {
     await props.api.delete<{ success: boolean }>(`/api/model-configs/${encodeURIComponent(model.id)}`);
-    if (editingId.value === model.id) closeForm();
+    if (editingId.value === model.id) closeDialog();
     await loadModelConfigs();
+    pendingDeleteId.value = null;
+    statusMessage.value = "模型已删除";
     emit("changed");
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
@@ -279,10 +316,10 @@ onMounted(() => {
     <header class="modelHeader" data-drag-handle>
       <div class="modelHeaderTitle">
         <div class="modelTitle">模型管理</div>
-        <div class="modelSubtitle">按 Agent 分组管理 Codex / Claude 模型</div>
+        <div class="modelSubtitle">每个模型只属于一个 CLI，保存后输入框下拉会立即刷新。</div>
       </div>
       <div class="modelHeaderActions">
-        <button class="modelIconBtn" type="button" title="刷新" :disabled="loading || saving" @click="loadModelConfigs">
+        <button class="modelIconBtn" type="button" title="刷新" :disabled="busy" @click="loadModelConfigs">
           <el-icon :size="16" aria-hidden="true"><Refresh /></el-icon>
         </button>
         <button class="modelIconBtn" type="button" title="关闭" @click="emit('close')">
@@ -291,189 +328,273 @@ onMounted(() => {
       </div>
     </header>
 
-    <div class="modelBody">
-      <aside class="agentSidebar" aria-label="Agent 列表">
-        <div class="agentSidebarHeader">Agents</div>
-        <button
-          v-for="group in AGENT_GROUPS"
-          :key="group.kind"
-          type="button"
-          class="agentItem"
-          :class="[`agent-${group.kind}`, { active: selectedAgent === group.kind }]"
-          :data-testid="`model-manager-agent-tab-${group.kind}`"
-          @click="selectAgent(group.kind)"
-        >
-          <span class="agentItemIcon" :class="group.kind" aria-hidden="true">
-            {{ group.kind === 'claude' ? 'C' : 'G' }}
-          </span>
-          <span class="agentItemBody">
-            <span class="agentItemName">{{ group.label }}</span>
-            <span class="agentItemDesc">{{ group.description }}</span>
-          </span>
-          <span class="agentItemCount">{{ groupedModels[group.kind].length }}</span>
-        </button>
-      </aside>
+    <div v-if="error && !dialogOpen" class="modelBanner error" data-testid="model-manager-error">{{ error }}</div>
+    <div v-else-if="statusMessage && !dialogOpen" class="modelBanner success" data-testid="model-manager-status">
+      {{ statusMessage }}
+    </div>
 
-      <section class="agentDetail" :class="`agent-${selectedAgent}`" aria-label="模型列表">
-        <header class="agentDetailHeader">
-          <div class="agentDetailTitle">
-            <span class="agentItemIcon small" :class="selectedAgent" aria-hidden="true">
-              {{ selectedAgent === 'claude' ? 'C' : 'G' }}
-            </span>
-            <span>{{ selectedAgent === 'claude' ? 'Claude' : 'Codex' }} 模型</span>
-            <span class="agentDetailCount">{{ groupedModels[selectedAgent].length }} 个</span>
-          </div>
+    <div class="cliList">
+      <section
+        v-for="group in AGENT_GROUPS"
+        :key="group.kind"
+        class="cliGroup"
+        :class="[`agent-${group.kind}`, { open: expanded[group.kind] }]"
+      >
+        <div class="cliRow">
           <button
             type="button"
-            class="addBtn"
-            :disabled="saving"
-            :data-testid="`model-manager-add-${selectedAgent}`"
-            @click="startCreate(selectedAgent)"
+            class="cliToggle"
+            :aria-expanded="expanded[group.kind]"
+            :data-testid="`model-manager-cli-${group.kind}`"
+            @click="toggleGroup(group.kind)"
           >
-            <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
-            <span>新增模型</span>
+            <el-icon class="cliChevron" :size="13" aria-hidden="true"><ArrowRight /></el-icon>
+            <span class="cliDot" aria-hidden="true" />
+            <span class="cliText">
+              <span class="cliName">{{ group.label }}</span>
+              <span class="cliMeta">{{ group.description }}</span>
+            </span>
+          </button>
+
+          <div class="cliRowActions">
+            <span class="cliCount">
+              {{ groupedModels[group.kind].length }} 个模型 · {{ enabledCount(group.kind) }} 已启用
+            </span>
+            <button
+              type="button"
+              class="addBtn"
+              :disabled="busy"
+              :data-testid="`model-manager-add-${group.kind}`"
+              @click="startCreate(group.kind)"
+            >
+              <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
+              <span>新增模型</span>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="expanded[group.kind]" class="cliModels">
+          <p v-if="groupedModels[group.kind].length === 0" class="cliEmpty">
+            还没有模型，新增后会立即出现在 {{ group.label }} 的输入框下拉里。
+          </p>
+
+          <article
+            v-for="model in groupedModels[group.kind]"
+            :key="model.id"
+            class="modelRow"
+            :class="{ off: !model.isEnabled, busy: busyRowId === model.id }"
+            :data-testid="`model-manager-row-${model.id}`"
+          >
+            <div class="modelRowMain">
+              <span class="modelRowName">
+                <span class="modelRowText">{{ modelLabel(model) || model.id }}</span>
+                <span v-if="model.isDefault" class="modelPill default">默认</span>
+              </span>
+              <code class="modelRowId">{{ model.modelId || model.id }}</code>
+            </div>
+
+            <div class="modelRowActions">
+              <template v-if="pendingDeleteId === model.id">
+                <span class="confirmText">确定删除？</span>
+                <button
+                  type="button"
+                  class="rowAction danger solid"
+                  :disabled="busy"
+                  :data-testid="`model-manager-delete-confirm-${model.id}`"
+                  @click="deleteModel(model)"
+                >
+                  确认删除
+                </button>
+                <button type="button" class="rowAction" :disabled="busy" @click="cancelDelete">取消</button>
+              </template>
+              <template v-else>
+                <button
+                  type="button"
+                  class="rowSwitch"
+                  :class="{ on: model.isEnabled }"
+                  role="switch"
+                  :aria-checked="model.isEnabled"
+                  :title="
+                    model.isDefault
+                      ? '默认模型不能停用'
+                      : model.isEnabled
+                        ? '点击停用（从输入框下拉中移除）'
+                        : '点击启用（加入输入框下拉）'
+                  "
+                  :disabled="busy || model.isDefault"
+                  :data-testid="`model-manager-toggle-${model.id}`"
+                  @click="toggleEnabled(model)"
+                >
+                  <span class="rowSwitchTrack" aria-hidden="true"><span class="rowSwitchThumb" /></span>
+                  <span class="rowSwitchText">{{ model.isEnabled ? "已启用" : "已停用" }}</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="rowAction icon star"
+                  :class="{ active: model.isDefault }"
+                  :title="model.isDefault ? '当前默认模型' : '设为默认模型'"
+                  :disabled="busy || model.isDefault"
+                  :data-testid="`model-manager-default-${model.id}`"
+                  @click="setDefaultModel(model)"
+                >
+                  <el-icon :size="14" aria-hidden="true"><StarFilled /></el-icon>
+                </button>
+
+                <button
+                  type="button"
+                  class="rowAction icon"
+                  title="编辑"
+                  :disabled="busy"
+                  :data-testid="`model-manager-edit-${model.id}`"
+                  @click="editModel(model)"
+                >
+                  <el-icon :size="14" aria-hidden="true"><EditPen /></el-icon>
+                </button>
+
+                <button
+                  type="button"
+                  class="rowAction icon danger"
+                  :title="model.isDefault ? '默认模型不能删除' : '删除'"
+                  :disabled="busy || model.isDefault"
+                  :data-testid="`model-manager-delete-${model.id}`"
+                  @click="requestDelete(model)"
+                >
+                  <el-icon :size="14" aria-hidden="true"><Delete /></el-icon>
+                </button>
+              </template>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <p class="listFoot">默认模型全局只有一个；未持有默认的 CLI 会自动使用列表中的第一个已启用模型。</p>
+    </div>
+
+    <div v-if="dialogOpen" class="dialogMask" @click.self="closeDialog">
+      <form class="dialogCard" role="dialog" aria-modal="true" data-testid="model-manager-dialog" @submit.prevent="saveModel">
+        <header class="dialogHeader">
+          <div class="dialogHeading">
+            <div class="dialogTitle">{{ isEditing ? "编辑模型" : "新增模型" }}</div>
+            <div class="dialogSubtitle">
+              <span class="cliChip" :class="`agent-${form.agent}`">{{ agentLabel(form.agent) }}</span>
+              <span class="dialogHint">保存后立即出现在该 CLI 的输入框下拉里</span>
+            </div>
+          </div>
+          <button class="modelIconBtn" type="button" title="关闭" @click="closeDialog">
+            <el-icon :size="16" aria-hidden="true"><Close /></el-icon>
           </button>
         </header>
 
-        <div class="agentDetailBody">
-          <div v-if="groupedModels[selectedAgent].length === 0" class="agentEmpty">
-            还没有挂在 {{ selectedAgent === 'claude' ? 'Claude' : 'Codex' }} 下的模型，点右上角"新增模型"添加。
+        <div class="dialogBody">
+          <div v-if="error" class="modelBanner error dialogError" data-testid="model-manager-dialog-error">
+            {{ error }}
           </div>
-          <div
-            v-for="model in groupedModels[selectedAgent]"
-            :key="model.id"
-            class="modelRow"
-            :class="{ active: editingId === model.id, disabled: !model.isEnabled }"
-          >
-            <button class="modelRowMain" type="button" :title="model.modelId || model.id" @click="editModel(model)">
-              <span class="modelRowName">{{ model.displayName || model.id }}</span>
-              <span class="modelRowMeta">
-                <span v-if="model.isDefault" class="modelPill default">默认</span>
-                <span v-if="!model.isEnabled" class="modelPill muted">已停用</span>
-                <code>{{ model.modelId || model.id }}</code>
+
+          <label class="modelField">
+            <span class="modelLabel">Model ID<span class="required">必填</span></span>
+            <input
+              v-model="form.modelId"
+              class="modelInput"
+              :placeholder="form.agent === 'claude' ? 'claude-opus-4-8' : 'gpt-5.2'"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              data-testid="model-manager-model-id"
+            />
+            <span class="modelHelp">必须与 CLI 实际接受的 model 参数完全一致。</span>
+          </label>
+
+          <label class="modelField">
+            <span class="modelLabel">显示名</span>
+            <input
+              v-model="form.displayName"
+              class="modelInput"
+              :placeholder="form.modelId || '留空时使用 Model ID'"
+              autocomplete="off"
+              data-testid="model-manager-display-name"
+            />
+            <span class="modelHelp">只影响下拉列表里的显示文字。</span>
+          </label>
+
+          <div class="modelToggleGrid">
+            <label class="modelToggle" :class="{ locked: editingCurrentDefault }">
+              <input
+                v-model="form.isEnabled"
+                type="checkbox"
+                :disabled="editingCurrentDefault"
+                data-testid="model-manager-enabled"
+              />
+              <span>
+                <strong>启用模型</strong>
+                <small v-if="editingCurrentDefault">默认模型不能停用。</small>
+                <small v-else>停用后不会出现在输入框下拉列表。</small>
               </span>
-            </button>
-            <div class="modelRowActions">
-              <button
-                class="modelIconBtn danger"
-                type="button"
-                title="删除"
-                :disabled="saving || model.isDefault"
-                @click="deleteModel(model)"
-              >
-                <el-icon :size="14" aria-hidden="true"><Delete /></el-icon>
-              </button>
-            </div>
+            </label>
+            <label class="modelToggle" :class="{ locked: editingCurrentDefault }">
+              <input
+                v-model="form.isDefault"
+                type="checkbox"
+                :disabled="editingCurrentDefault"
+                data-testid="model-manager-default"
+              />
+              <span>
+                <strong>设为默认</strong>
+                <small v-if="editingCurrentDefault">已是默认模型；要更换请在别的模型上设为默认。</small>
+                <small v-else>全局唯一，未选择模型时优先使用它。</small>
+              </span>
+            </label>
           </div>
+
+          <label class="modelField">
+            <span class="modelLabel">Config JSON</span>
+            <textarea
+              v-model="form.configJsonText"
+              class="modelTextarea"
+              :class="{ invalid: configJsonError !== null }"
+              rows="6"
+              spellcheck="false"
+              data-testid="model-manager-config-json"
+            />
+            <span v-if="configJsonError" class="modelHelp invalid">JSON 格式有误：{{ configJsonError }}</span>
+            <span v-else class="modelHelp">传给 CLI 的额外参数，例如 {{ "{" }}"reasoningEffort":"high"{{ "}" }}。CLI 归属自动写入，不用手写 allowedAgents。</span>
+          </label>
         </div>
-      </section>
+
+        <footer class="dialogActions">
+          <button type="button" class="btnSecondary" :disabled="saving" @click="closeDialog">取消</button>
+          <button type="submit" class="btnPrimary" :disabled="!canSubmit" data-testid="model-manager-save">
+            {{ saving ? "保存中" : "保存模型" }}
+          </button>
+        </footer>
+      </form>
     </div>
-
-    <form
-      class="modelForm"
-      :class="{ editing: isEditing }"
-      @submit.prevent="saveModel"
-    >
-      <div class="modelFormHeader">
-        <div class="modelFormTitle">
-          {{ isEditing ? `编辑模型 · ${form.modelId || form.id}` : `新增 ${form.agent === 'claude' ? 'Claude' : 'Codex'} 模型` }}
-        </div>
-        <button v-if="isEditing" type="button" class="modelIconBtn" title="取消编辑" @click="closeForm">
-          <el-icon :size="14" aria-hidden="true"><Close /></el-icon>
-        </button>
-      </div>
-
-      <div class="modelFormGrid">
-        <label class="modelField">
-          <span class="modelLabel">Model ID</span>
-          <input
-            v-model="form.modelId"
-            class="modelInput"
-            placeholder="gpt-5.2 或 claude-sonnet-4-6"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            data-testid="model-manager-model-id"
-          />
-        </label>
-
-        <label class="modelField">
-          <span class="modelLabel">显示名（可选）</span>
-          <input
-            v-model="form.displayName"
-            class="modelInput"
-            :placeholder="form.modelId || '未填写时使用 Model ID'"
-            autocomplete="off"
-            data-testid="model-manager-display-name"
-          />
-        </label>
-
-        <label class="modelField">
-          <span class="modelLabel">Agent</span>
-          <select v-model="form.agent" class="modelInput" data-testid="model-manager-agent">
-            <option value="codex">Codex</option>
-            <option value="claude">Claude</option>
-          </select>
-        </label>
-
-        <div class="modelChecks">
-          <label class="modelCheck">
-            <input v-model="form.isEnabled" type="checkbox" />
-            <span>启用</span>
-          </label>
-          <label class="modelCheck">
-            <input v-model="form.isDefault" type="checkbox" />
-            <span>默认</span>
-          </label>
-        </div>
-      </div>
-
-      <label class="modelField fullRow">
-        <span class="modelLabel">Config JSON</span>
-        <textarea
-          v-model="form.configJsonText"
-          class="modelTextarea"
-          rows="3"
-          spellcheck="false"
-          data-testid="model-manager-config-json"
-        />
-      </label>
-
-      <div v-if="error" class="modelError" data-testid="model-manager-error">{{ error }}</div>
-      <div v-else-if="statusMessage" class="modelStatus" data-testid="model-manager-status">{{ statusMessage }}</div>
-
-      <div class="modelActions">
-        <button type="button" class="btnSecondary" :disabled="saving" @click="closeForm">
-          {{ isEditing ? "取消" : "重置" }}
-        </button>
-        <button type="submit" class="btnPrimary" :disabled="!canSubmit" data-testid="model-manager-save">
-          {{ saving ? "保存中" : "保存" }}
-        </button>
-      </div>
-    </form>
   </section>
 </template>
 
 <style scoped>
 .modelManager {
+  position: relative;
   width: 100%;
-  max-height: min(680px, 86vh);
+  height: min(660px, 86vh);
+  max-height: min(660px, 86vh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: white;
+  background: var(--surface);
   border-radius: 16px;
 }
 
+/* ---------- header ---------- */
 .modelHeader {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 13px 16px;
   border-bottom: 1px solid var(--border);
-  background: #f8fafc;
-  flex: 0 0 auto;
+  background: var(--surface);
 }
 
 .modelHeaderTitle {
@@ -482,41 +603,38 @@ onMounted(() => {
 
 .modelTitle {
   font-size: 15px;
-  font-weight: 900;
-  color: #0f172a;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: 0.2px;
 }
 
 .modelSubtitle {
-  margin-top: 2px;
-  font-size: 11px;
-  color: #64748b;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
 }
 
 .modelHeaderActions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 .modelIconBtn {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: none;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
-  color: #64748b;
+  color: var(--muted);
   display: grid;
   place-items: center;
   cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
 }
 
 .modelIconBtn:hover:not(:disabled) {
   background: rgba(15, 23, 42, 0.06);
-  color: #0f172a;
-}
-
-.modelIconBtn.danger:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.08);
-  color: #dc2626;
+  color: var(--text);
 }
 
 .modelIconBtn:disabled {
@@ -524,195 +642,164 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-.modelBody {
+/* ---------- banners ---------- */
+.modelBanner {
+  flex: 0 0 auto;
+  margin: 12px 16px 0;
+  border-radius: 9px;
+  padding: 8px 11px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.modelBanner.error {
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.07);
+  color: var(--danger-2);
+}
+
+.modelBanner.success {
+  border: 1px solid rgba(16, 185, 129, 0.26);
+  background: rgba(16, 185, 129, 0.07);
+  color: #047857;
+}
+
+/* ---------- CLI accordion list ---------- */
+.cliList {
   flex: 1 1 auto;
   min-height: 0;
-  display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  overflow: hidden;
-}
-
-.agentSidebar {
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 12px 10px;
-  border-right: 1px solid var(--border);
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-  overflow-y: auto;
+  gap: 10px;
+  padding: 14px 16px 18px;
 }
 
-.agentSidebarHeader {
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.5px;
-  color: #64748b;
-  text-transform: uppercase;
-  padding: 4px 8px 6px;
+.cliGroup {
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
+  overflow: hidden;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
 
-.agentItem {
+.cliGroup.open {
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.05);
+}
+
+.cliRow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface-2);
 }
 
-.agentItem:hover {
-  background: rgba(15, 23, 42, 0.04);
+.cliGroup.open .cliRow {
+  border-bottom: 1px solid var(--border);
 }
 
-.agentItem.active {
-  background: white;
-  border-color: rgba(226, 232, 240, 0.95);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
-}
-
-.agentItem.active.agent-codex {
-  box-shadow: inset 3px 0 0 #2563eb, 0 1px 2px rgba(15, 23, 42, 0.05);
-}
-
-.agentItem.active.agent-claude {
-  box-shadow: inset 3px 0 0 #7c3aed, 0 1px 2px rgba(15, 23, 42, 0.05);
-}
-
-.agentItemIcon {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  display: grid;
-  place-items: center;
-  font-size: 13px;
-  font-weight: 900;
-  color: white;
-  letter-spacing: 0.3px;
-}
-
-.agentItemIcon.small {
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  font-size: 11px;
-}
-
-.agentItemIcon.codex {
-  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
-}
-
-.agentItemIcon.claude {
-  background: linear-gradient(135deg, #c084fc, #7c3aed);
-}
-
-.agentItemBody {
+.cliToggle {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
 
-.agentItemName {
-  font-size: 13px;
-  font-weight: 900;
-  color: #0f172a;
+.cliChevron {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  transition: transform 0.16s ease;
 }
 
-.agentItemDesc {
-  font-size: 10px;
-  color: #94a3b8;
-  font-weight: 700;
+.cliGroup.open .cliChevron {
+  transform: rotate(90deg);
+}
+
+.cliDot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #cbd5e1;
+}
+
+.cliGroup.agent-codex .cliDot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.cliGroup.agent-claude .cliDot {
+  background: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.14);
+}
+
+.cliText {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cliName {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cliMeta {
   overflow: hidden;
+  color: var(--muted-2);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agentItemCount {
+.cliRowActions {
   flex: 0 0 auto;
-  min-width: 20px;
-  text-align: center;
-  font-size: 11px;
-  font-weight: 900;
-  color: #64748b;
-  background: rgba(148, 163, 184, 0.18);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-
-.agentItem.active .agentItemCount {
-  background: rgba(37, 99, 235, 0.12);
-  color: #1d4ed8;
-}
-
-.agentItem.active.agent-claude .agentItemCount {
-  background: rgba(124, 58, 237, 0.12);
-  color: #6d28d9;
-}
-
-.agentDetail {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  background: white;
-}
-
-.agentDetailHeader {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: #fafbff;
-  flex: 0 0 auto;
 }
 
-.agentDetailTitle {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 900;
-  color: #0f172a;
-}
-
-.agentDetailCount {
+.cliCount {
+  color: var(--muted);
   font-size: 11px;
   font-weight: 700;
-  color: #64748b;
-  background: rgba(148, 163, 184, 0.16);
-  border-radius: 999px;
-  padding: 1px 8px;
+  white-space: nowrap;
 }
 
 .addBtn {
-  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 28px;
   padding: 0 12px;
+  border: none;
   border-radius: 999px;
-  border: 1px solid rgba(37, 99, 235, 0.35);
-  background: white;
-  color: #2563eb;
+  background: var(--accent);
+  color: #fff;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.3);
+  transition: background 0.14s ease, transform 0.14s ease;
 }
 
 .addBtn:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: rgba(37, 99, 235, 0.6);
+  background: var(--accent-2);
+}
+
+.addBtn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .addBtn:disabled {
@@ -720,82 +807,67 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-.agentDetailBody {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 12px 16px;
+.cliModels {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
-.agentEmpty {
-  border: 1px dashed rgba(148, 163, 184, 0.6);
-  border-radius: 10px;
-  padding: 14px;
-  font-size: 12px;
-  color: #94a3b8;
-  font-style: italic;
+.cliEmpty {
+  margin: 0;
+  padding: 16px 14px;
+  color: var(--muted-2);
+  font-size: 11.5px;
   text-align: center;
-  background: #fafafa;
 }
 
+/* ---------- model rows ---------- */
 .modelRow {
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 10px;
-  background: white;
-  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  transition: background 0.14s ease, opacity 0.14s ease;
 }
 
-.modelRow.active {
-  border-color: rgba(37, 99, 235, 0.55);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+.modelRow:first-child {
+  border-top: none;
 }
 
-.modelRow.disabled {
-  opacity: 0.7;
+.modelRow:hover {
+  background: rgba(37, 99, 235, 0.03);
+}
+
+.modelRow.off .modelRowText {
+  color: var(--muted);
+}
+
+.modelRow.busy {
+  opacity: 0.6;
 }
 
 .modelRowMain {
-  flex: 1;
   min-width: 0;
-  border: none;
-  background: transparent;
-  padding: 9px 0 9px 12px;
-  text-align: left;
-  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .modelRowName {
-  display: block;
-  font-size: 13px;
-  font-weight: 800;
-  color: #0f172a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modelRowMeta {
-  margin-top: 4px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
-  color: #64748b;
-  font-size: 11px;
 }
 
-.modelRowMeta code {
-  min-width: 0;
+.modelRowText {
   overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .modelPill {
@@ -803,187 +875,445 @@ onMounted(() => {
   border-radius: 999px;
   padding: 1px 7px;
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .modelPill.default {
-  background: rgba(16, 185, 129, 0.14);
-  color: #047857;
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
 }
 
-.modelPill.muted {
-  background: rgba(100, 116, 139, 0.14);
-  color: #64748b;
+.modelRowId {
+  overflow: hidden;
+  min-width: 0;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.05);
+  color: #475569;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modelRowActions {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 4px 6px;
+  gap: 6px;
 }
 
-.modelForm {
-  flex: 0 1 auto;
+.confirmText {
+  color: var(--danger-2);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.rowSwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.rowSwitch:hover:not(:disabled) {
+  border-color: rgba(100, 116, 139, 0.5);
+}
+
+.rowSwitch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rowSwitchTrack {
+  position: relative;
+  width: 26px;
+  height: 15px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.16s ease;
+}
+
+.rowSwitchThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+  transition: transform 0.16s ease;
+}
+
+.rowSwitch.on {
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #047857;
+}
+
+.rowSwitch.on .rowSwitchTrack {
+  background: #10b981;
+}
+
+.rowSwitch.on .rowSwitchThumb {
+  transform: translateX(11px);
+}
+
+.rowAction {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.rowAction.icon {
+  width: 28px;
+  padding: 0;
+}
+
+.rowAction:hover:not(:disabled) {
+  border-color: rgba(100, 116, 139, 0.45);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.rowAction.star {
+  color: var(--muted-2);
+}
+
+.rowAction.star:hover:not(:disabled) {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.08);
+  color: #d97706;
+}
+
+.rowAction.star.active,
+.rowAction.star.active:disabled {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+  opacity: 1;
+  cursor: default;
+}
+
+.rowAction.danger {
+  color: var(--danger-2);
+}
+
+.rowAction.danger:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.07);
+  color: var(--danger-2);
+}
+
+.rowAction.danger.solid {
+  border-color: var(--danger-2);
+  background: var(--danger-2);
+  color: #fff;
+}
+
+.rowAction.danger.solid:hover:not(:disabled) {
+  background: #b91c1c;
+  color: #fff;
+}
+
+.rowAction:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.listFoot {
+  margin: 2px 2px 0;
+  color: var(--muted-2);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+/* ---------- edit dialog ---------- */
+.dialogMask {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.34);
+  backdrop-filter: blur(2px);
+}
+
+.dialogCard {
+  width: min(520px, 100%);
+  max-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px 14px;
-  border-top: 1px solid var(--border);
-  background: #f8fafc;
-  min-height: 0;
-  max-height: min(480px, 60vh);
-  overflow-y: auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
 }
 
+.dialogHeader {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
 
+.dialogHeading {
+  min-width: 0;
+}
 
-.modelFormHeader {
+.dialogTitle {
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 800;
+}
+
+.dialogSubtitle {
+  margin-top: 5px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
-.modelFormTitle {
-  font-size: 13px;
-  font-weight: 900;
-  color: #0f172a;
+.cliChip {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+.cliChip.agent-codex {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--accent-2);
+}
+
+.cliChip.agent-claude {
+  background: rgba(124, 58, 237, 0.12);
+  color: #6d28d9;
+}
+
+.dialogHint {
   overflow: hidden;
+  color: var(--muted-2);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.modelFormGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+.dialogBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  padding: 16px;
+}
+
+/* Save failures must surface inside the dialog — the page-level banner sits under the mask. */
+.dialogError {
+  margin: 0;
 }
 
 .modelField {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-}
-
-.modelField.fullRow {
-  grid-column: 1 / -1;
+  gap: 5px;
 }
 
 .modelLabel {
-  font-size: 11px;
-  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: #334155;
+  font-size: 11.5px;
+  font-weight: 800;
   letter-spacing: 0.2px;
+}
+
+.required {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(37, 99, 235, 0.1);
+  color: var(--accent-2);
+  font-size: 9.5px;
+  font-weight: 800;
 }
 
 .modelInput,
 .modelTextarea {
   width: 100%;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
-  background: white;
-  color: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
   font-size: 13px;
   box-sizing: border-box;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
 
 .modelInput {
-  height: 32px;
-  padding: 0 10px;
+  height: 36px;
+  padding: 0 11px;
 }
 
 .modelTextarea {
+  min-height: 96px;
+  padding: 9px 11px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
   resize: vertical;
-  min-height: 70px;
-  padding: 8px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  line-height: 1.45;
 }
 
 .modelInput:focus,
 .modelTextarea:focus {
   outline: none;
-  border-color: rgba(37, 99, 235, 0.65);
+  border-color: rgba(37, 99, 235, 0.6);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
-.modelInput:disabled {
-  cursor: not-allowed;
-  background: #f1f5f9;
-  color: #64748b;
+.modelTextarea.invalid {
+  border-color: rgba(239, 68, 68, 0.55);
 }
 
-.modelChecks {
+.modelTextarea.invalid:focus {
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
+}
+
+.modelHelp {
+  color: var(--muted-2);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.modelHelp.invalid {
+  color: var(--danger-2);
+  font-weight: 700;
+}
+
+.modelToggleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.modelToggle {
+  min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 14px;
-  padding-top: 18px;
-}
-
-.modelCheck {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #334155;
-  white-space: nowrap;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
   cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
 }
 
-.modelError {
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  background: rgba(239, 68, 68, 0.08);
-  color: #dc2626;
-  border-radius: 8px;
-  padding: 8px 10px;
+.modelToggle:hover {
+  border-color: rgba(100, 116, 139, 0.35);
+  background: var(--surface);
+}
+
+.modelToggle.locked {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.modelToggle.locked:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.modelToggle input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.modelToggle span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modelToggle strong {
+  color: #334155;
   font-size: 12px;
-  font-weight: 700;
 }
 
-.modelStatus {
-  border: 1px solid rgba(16, 185, 129, 0.26);
-  background: rgba(16, 185, 129, 0.08);
-  color: #047857;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
-  font-weight: 800;
+.modelToggle small {
+  color: var(--muted-2);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
-.modelActions {
+.dialogActions {
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  position: sticky;
-  bottom: -14px;
-  padding: 8px 0 0;
-  margin-top: -2px;
-  background: linear-gradient(to bottom, rgba(248, 250, 252, 0) 0%, #f8fafc 40%);
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 .btnSecondary,
 .btnPrimary {
-  border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 13px;
-  font-weight: 800;
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 700;
   cursor: pointer;
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  transition: background 0.14s ease;
 }
 
 .btnSecondary {
-  background: white;
-  color: #0f172a;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btnSecondary:hover:not(:disabled) {
+  background: var(--surface-2);
 }
 
 .btnPrimary {
-  border-color: rgba(37, 99, 235, 0.25);
-  background: #2563eb;
-  color: white;
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: var(--accent-2);
 }
 
 .btnPrimary:disabled,
@@ -992,34 +1322,36 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-@media (max-width: 640px) {
-  .modelBody {
-    grid-template-columns: 1fr;
+@media (max-width: 720px) {
+  .modelManager {
+    height: min(720px, 90vh);
+    max-height: min(720px, 90vh);
   }
 
-  .agentSidebar {
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    padding: 8px;
+  .cliRow {
+    flex-wrap: wrap;
   }
 
-  .agentSidebarHeader {
+  .cliCount {
     display: none;
   }
 
-  .agentItem {
-    flex: 0 0 auto;
+  .modelRow {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .modelFormGrid {
-    grid-template-columns: 1fr;
+  .modelRowMain {
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
-  .modelChecks {
-    padding-top: 0;
+  .modelRowActions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .modelToggleGrid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>

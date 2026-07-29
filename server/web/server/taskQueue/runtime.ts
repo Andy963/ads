@@ -221,12 +221,6 @@ export function bindTaskQueueRuntime(args: {
   ctx.taskQueue.on("task:completed", ({ task }) => {
     recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
     recordTaskWorkspacePatchArtifact(ctx, task.id);
-    args.broadcastToSession(ctx.sessionId, {
-      type: "task:event",
-      event: "task:completed",
-      data: task,
-      ts: Date.now(),
-    });
     if (task.result && task.result.trim()) {
       args.recordToSessionHistories(ctx.sessionId, {
         role: "ai",
@@ -234,6 +228,12 @@ export function bindTaskQueueRuntime(args: {
         ts: Date.now(),
       });
     }
+    args.broadcastToSession(ctx.sessionId, {
+      type: "task:event",
+      event: "task:completed",
+      data: task,
+      ts: Date.now(),
+    });
     try {
       notifyTaskTerminalViaTelegram({
         logger: args.logger,
@@ -254,17 +254,17 @@ export function bindTaskQueueRuntime(args: {
     ctx.runController.maybePauseAfterDrain(ctx);
   });
   ctx.taskQueue.on("task:failed", ({ task, error }) => {
-    args.broadcastToSession(ctx.sessionId, {
-      type: "task:event",
-      event: "task:failed",
-      data: { task, error },
-      ts: Date.now(),
-    });
     args.recordToSessionHistories(ctx.sessionId, {
       role: "status",
       text: `[Task failed] ${error}`,
       ts: Date.now(),
       kind: "error",
+    });
+    args.broadcastToSession(ctx.sessionId, {
+      type: "task:event",
+      event: "task:failed",
+      data: { task, error },
+      ts: Date.now(),
     });
     if (task.status === "failed") {
       recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
@@ -290,17 +290,17 @@ export function bindTaskQueueRuntime(args: {
     }
   });
   ctx.taskQueue.on("task:cancelled", ({ task }) => {
-    args.broadcastToSession(ctx.sessionId, {
-      type: "task:event",
-      event: "task:cancelled",
-      data: task,
-      ts: Date.now(),
-    });
     args.recordToSessionHistories(ctx.sessionId, {
       role: "status",
       text: "[Cancelled]",
       ts: Date.now(),
       kind: "status",
+    });
+    args.broadcastToSession(ctx.sessionId, {
+      type: "task:event",
+      event: "task:cancelled",
+      data: task,
+      ts: Date.now(),
     });
     recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
     recordTaskWorkspacePatchArtifact(ctx, task.id);

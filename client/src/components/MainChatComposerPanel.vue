@@ -70,7 +70,9 @@ const canInterrupt = computed(() => props.busy);
 
 const agentOptions = computed(() => (Array.isArray(props.agents) ? props.agents : []));
 const readyAgentOptions = computed(() => agentOptions.value.filter((a) => Boolean(a?.ready) && String(a?.id ?? "").trim()));
-const modelOptions = computed(() => (Array.isArray(props.models) ? props.models : []));
+const modelOptions = computed(() =>
+  (Array.isArray(props.models) ? props.models : []).filter((model) => model?.isEnabled !== false),
+);
 
 const selectedAgentId = computed(() => {
   const active = String(props.activeAgentId ?? "").trim();
@@ -146,20 +148,25 @@ function isUnsetModelId(modelId: string): boolean {
   return !id || id === "auto";
 }
 
-const filteredModelOptions = computed(() => {
+const compatibleModelOptions = computed(() => {
   const agentId = selectedAgentId.value;
+  if (!agentId) return [];
   return modelOptions.value.filter((model) => supportsAgentModel({ agentId, model }));
 });
 
+function preferredModel(options: readonly ModelConfig[]): ModelConfig | null {
+  return options.find((model) => model.isDefault) ?? options[0] ?? null;
+}
+
 const effectiveModelId = computed(() => {
-  const options = filteredModelOptions.value;
+  const options = compatibleModelOptions.value;
   if (options.length === 0) return "";
   const current = normalizeModelId(props.modelId);
   if (!isUnsetModelId(current) && options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current)) {
     return current;
   }
-  const first = options[0];
-  return String(first?.modelId ?? first?.id ?? "").trim();
+  const fallback = preferredModel(options);
+  return String(fallback?.modelId ?? fallback?.id ?? "").trim();
 });
 
 watch(
@@ -167,14 +174,16 @@ watch(
     Boolean(props.inputLocked),
     selectedAgentId.value,
     props.modelId,
-    filteredModelOptions.value.map((m) => String(m.modelId ?? m.id ?? "").trim()).join("\n"),
+    compatibleModelOptions.value
+      .map((m) => `${String(m.modelId ?? m.id ?? "").trim()}:${m.isDefault ? "default" : "standard"}`)
+      .join("\n"),
   ],
   () => {
     if (props.inputLocked) return;
-    const options = filteredModelOptions.value;
+    const options = compatibleModelOptions.value;
     if (options.length === 0) return;
-    const first = options[0];
-    const desired = String(first?.modelId ?? first?.id ?? "").trim();
+    const fallback = preferredModel(options);
+    const desired = String(fallback?.modelId ?? fallback?.id ?? "").trim();
     if (!desired) return;
 
     const current = normalizeModelId(props.modelId);
@@ -200,12 +209,16 @@ function onModelChange(ev: Event): void {
   const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
   const next = normalizeModelId(value);
   if (!next || isUnsetModelId(next)) return;
+  const model = compatibleModelOptions.value.find(
+    (option) => String(option.modelId ?? option.id ?? "").trim() === next,
+  );
+  if (!model) return;
   emit("setModel", next);
 }
 
 const selectedModel = computed(() => {
   const modelId = effectiveModelId.value;
-  return filteredModelOptions.value.find((model) => String(model.modelId ?? model.id ?? "").trim() === modelId) ?? null;
+  return compatibleModelOptions.value.find((model) => String(model.modelId ?? model.id ?? "").trim() === modelId) ?? null;
 });
 
 const reasoningEffortOptions = computed(() => {
@@ -541,13 +554,13 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
             <select
               class="agentSelectInput"
               :value="effectiveModelId"
-              :disabled="!connected || busy || inputLocked || filteredModelOptions.length === 0"
+              :disabled="!connected || busy || inputLocked || compatibleModelOptions.length === 0"
               aria-label="Select model"
               data-testid="chat-model-select"
               @change="onModelChange"
             >
-              <option v-if="filteredModelOptions.length === 0" value="" disabled>No models</option>
-              <option v-for="m in filteredModelOptions" :key="m.id" :value="m.modelId || m.id">
+              <option v-if="compatibleModelOptions.length === 0" value="" disabled>No models</option>
+              <option v-for="m in compatibleModelOptions" :key="m.id" :value="m.modelId || m.id">
                 {{ formatModelLabel(m) }}
               </option>
             </select>

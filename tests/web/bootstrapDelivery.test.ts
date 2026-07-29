@@ -502,4 +502,43 @@ describe("web/ws/bootstrapDelivery", () => {
       historyStore.clear("history-1");
     }
   });
+
+  it("merges shared worker history into the initial bootstrap snapshot", () => {
+    const sent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-shared", maxEntriesPerSession: 20 });
+    historyStore.add("history-1", { role: "user", text: "queued task", ts: 1 });
+
+    try {
+      sendInitialBootstrapMessages({
+        ws: {} as any,
+        safeJsonSend: (_ws, payload) => sent.push(payload),
+        sessionManager: {
+          getSavedThreadId: () => "thread-saved",
+          getContextRestoreMode: () => "thread_resumed",
+          getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => "thread-live",
+          listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+        } as any,
+        userId: 7,
+        agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+        sessionId: "session-1",
+        chatSessionId: "main",
+        workspace: { path: "/tmp/project" },
+        inFlight: false,
+        historyStore,
+        historyKey: "history-1",
+        additionalHistoryEntries: [{ role: "ai", text: "offline task result", ts: 2 }],
+      });
+
+      assert.deepEqual((sent[2] as { items?: unknown }).items, [
+        { role: "user", text: "queued task", ts: 1, kind: undefined },
+        { role: "ai", text: "offline task result", ts: 2, kind: undefined },
+      ]);
+    } finally {
+      historyStore.clear("history-1");
+    }
+  });
 });

@@ -9,11 +9,11 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、
 
 ## 当前能力
 
-- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
+- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；模型选择器只展示当前 Agent CLI 支持的已启用模型，切换 Agent 时会恢复该 Agent 上次选择的兼容模型；断线重连会从持久化事件日志补齐消息，每个浏览器标签独立维护同步 cursor；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
 - **任务看板与队列**：支持创建、编辑、排序、运行、暂停、取消、重试、删除任务，并在任务终态记录结果与 workspace patch artifact。
 - **任务草稿**：Advisor 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
 - **多 Agent 适配**：Codex 是主要执行 Agent；Claude 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。
-- **模型配置**：Web UI 可维护全局模型配置，配置存储在 ADS 全局 SQLite 状态库中。
+- **模型配置**：Web UI 左侧竖排列出 Codex CLI / Claude Code，右侧维护该 CLI 的全局模型配置；列表行内可直接启用/停用、设为默认、编辑与删除，新增和编辑走独立表单（CLI 归属由左侧选择决定，表单内不再重复选择）。任何变更都会立即刷新对话输入框，且每个输入框只展示当前 CLI 支持的已启用模型。配置存储在 ADS 全局 SQLite 状态库中。
 - **定时任务**：Advisor/Worker 输出 `ads-schedule` block 后，Web 服务会编译为 schedule spec，并由内置 scheduler 调度执行。
 - **技能与记忆**：支持内置、状态目录、仓库级、全局和可选 workspace skills；支持 workspace soul、偏好指令和系统提示再注入。
 - **Telegram Bot**：可选单用户 Bot，支持文本、图片、文件、语音转写、目录切换、偏好管理、笔记标记和中断当前任务；与 Web Console 同样支持远程对话与控制 Agent 及任务执行，不止于任务通知。

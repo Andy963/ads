@@ -169,6 +169,7 @@ export type WsMessageHandlerArgs = {
   upsertLiveActivity: ChatActions["upsertLiveActivity"];
   upsertStepLiveDelta: ChatActions["upsertStepLiveDelta"];
   upsertStreamingDelta: ChatActions["upsertStreamingDelta"];
+  replaceStreamingText: ChatActions["replaceStreamingText"];
 };
 
 export function createWsMessageHandler(args: WsMessageHandlerArgs) {
@@ -197,6 +198,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     upsertLiveActivity,
     upsertStepLiveDelta,
     upsertStreamingDelta,
+    replaceStreamingText,
   } = args;
   rt.inputLocked ??= { value: false };
   rt.laneStatus ??= { value: null };
@@ -397,6 +399,41 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     turnPatchOrder.length = 0;
   };
 
+  const hydrateTurnPatchSummaryFromCurrentTurn = (): void => {
+    const existing = Array.isArray(rt.messages.value) ? rt.messages.value : [];
+    let lastUserIndex = -1;
+    for (let index = existing.length - 1; index >= 0; index -= 1) {
+      if (existing[index]?.role === "user") {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    const patchMessage = existing.find(
+      (item, index) => index > lastUserIndex && item.role === "system" && item.kind === "patch" && item.patch,
+    );
+    if (!patchMessage?.patch) return;
+    turnPatchMessageId = String(patchMessage.id ?? "").trim() || null;
+    turnPatchSummaryTruncated = Boolean(patchMessage.patch.truncated);
+    for (const file of patchMessage.patch.files ?? []) {
+      const filePath = String(file.path ?? "").trim();
+      if (!filePath) continue;
+      if (!turnPatchFilesByPath.has(filePath)) {
+        turnPatchOrder.push(filePath);
+      }
+      turnPatchFilesByPath.set(filePath, {
+        added: typeof file.added === "number" && Number.isFinite(file.added) ? file.added : null,
+        removed: typeof file.removed === "number" && Number.isFinite(file.removed) ? file.removed : null,
+      });
+    }
+    for (const [filePath, section] of splitUnifiedDiffByPath(String(patchMessage.patch.diff ?? "")).entries()) {
+      if (!filePath || !section.trim()) continue;
+      if (!turnPatchDiffByPath.has(filePath) && !turnPatchOrder.includes(filePath)) {
+        turnPatchOrder.push(filePath);
+      }
+      turnPatchDiffByPath.set(filePath, section);
+    }
+  };
+
   const buildTurnPatchFiles = (): ChatPatchFile[] =>
     turnPatchOrder
       .map((path) => {
@@ -425,10 +462,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     truncated: turnPatchSummaryTruncated || undefined,
   });
 
-  const upsertTurnPatchMessage = (patch: ChatPatch): void => {
+  const upsertTurnPatchMessage = (
+    patch: ChatPatch,
+    options?: { beforeTerminalAssistant?: boolean; ts?: number },
+  ): void => {
     const id = String(turnPatchMessageId ?? "").trim();
+    const existing = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
+    let lastUserIndex = -1;
+    for (let index = existing.length - 1; index >= 0; index -= 1) {
+      if (existing[index]?.role === "user") {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    const matchingIndex = existing.findIndex(
+      (item, index) => index > lastUserIndex && item.role === "system" && item.kind === "patch",
+    );
+    if (!id && matchingIndex >= 0) {
+      const matching = existing[matchingIndex]!;
+      existing[matchingIndex] = { ...matching, content: patch.diff, patch };
+      rt.messages.value = existing;
+      turnPatchMessageId = String(matching.id ?? "") || null;
+      return;
+    }
     if (id) {
-      const existing = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
       const idx = existing.findIndex((m) => String(m?.id ?? "") === id);
       if (idx >= 0) {
         const prev = existing[idx];
@@ -440,7 +497,38 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
     }
 
-    const beforeIds = new Set((Array.isArray(rt.messages.value) ? rt.messages.value : []).map((m) => String(m?.id ?? "")));
+    if (options?.beforeTerminalAssistant) {
+      const patchId = randomId("patch");
+      pushMessageBeforeLive({
+        id: patchId,
+        role: "system",
+        kind: "patch",
+        content: patch.diff,
+        patch,
+        ts: options.ts ?? Date.now(),
+      }, rt);
+      const reordered = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
+      const insertedIndex = reordered.findIndex((item) => String(item.id ?? "") === patchId);
+      if (insertedIndex >= 0) {
+        const [patchMessage] = reordered.splice(insertedIndex, 1);
+        let insertAt = reordered.length;
+        for (let index = reordered.length - 1; index >= 0; index -= 1) {
+          const item = reordered[index]!;
+          if (item.role === "assistant" && item.kind === "text") {
+            insertAt = index;
+            break;
+          }
+        }
+        if (patchMessage) {
+          reordered.splice(insertAt, 0, patchMessage);
+          rt.messages.value = reordered;
+        }
+      }
+      turnPatchMessageId = patchId;
+      return;
+    }
+
+    const beforeIds = new Set(existing.map((m) => String(m?.id ?? "")));
     pushMessageBeforeLive({ role: "system", kind: "patch", content: patch.diff, patch }, rt);
     const inserted =
       (Array.isArray(rt.messages.value) ? rt.messages.value : []).find(
@@ -981,16 +1069,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const resumeReplacePending = rt.resumeReplacePending;
       const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       const terminalHistoryTail = hasTerminalHistoryTail(items);
-      const shouldAcceptReconnectHistory = rt.inputLocked.value;
-      if (
-        !rt.awaitingBootstrapHistory &&
-        !resumeReplacePending &&
-        !shouldAcceptReconnectHistory &&
-        (rt.busy.value || rt.queuedPrompts.value.length > 0) &&
-        rt.messages.value.length > 0
-      ) {
-        return;
-      }
       reconcilePendingPromptsFromBootstrapHistory(items, terminalHistoryTail);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
@@ -1179,6 +1257,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "delta_snapshot") {
+      // Catch-up only: the server never broadcasts this live. It carries the whole
+      // assistant text accumulated so far, so a client that reconnected mid-turn
+      // resumes the stream instead of losing everything emitted while it was gone.
+      // Replaying it is idempotent — the streaming block is rewritten, not appended to.
+      const text = String(msg.text ?? "");
+      if (!text) return;
+      rt.busy.value = true;
+      rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
+      replaceStreamingText(text, rt);
+      return;
+    }
+
     if (type === "explored") {
       rt.busy.value = true;
       rt.turnInFlight = true;
@@ -1248,20 +1340,32 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "patch") {
-      rt.busy.value = true;
-      rt.turnInFlight = true;
-      clearRecoveredBackendStatus();
+      const rec = msg as Record<string, unknown>;
+      const terminalArtifactReplay = rec.syncReplayMode === "terminal-artifact";
+      const terminalArtifactFinal = rec.syncReplayFinal === true;
+      if (!terminalArtifactReplay) {
+        rt.busy.value = true;
+        rt.turnInFlight = true;
+        clearRecoveredBackendStatus();
+      }
       const patch = msg.patch;
       if (!patch || typeof patch !== "object") return;
 
       const typed = patch as { files?: unknown; diff?: unknown; truncated?: unknown };
       const diff = String(typed.diff ?? "").trimEnd();
       if (!diff.trim()) return;
+      if (terminalArtifactReplay && turnPatchOrder.length === 0) {
+        hydrateTurnPatchSummaryFromCurrentTurn();
+      }
 
-      rt.turnHasPatch = true;
+      if (!terminalArtifactReplay) {
+        rt.turnHasPatch = true;
+      }
       // If the agent also ran `git diff`, it can show up as an execute preview line.
       // Prefer the structured patch diff message to avoid showing two diffs at once.
-      dropRedundantDiffExecuteBlocks();
+      if (!terminalArtifactReplay) {
+        dropRedundantDiffExecuteBlocks();
+      }
 
       const files = Array.isArray(typed.files) ? (typed.files as Array<{ path?: unknown; added?: unknown; removed?: unknown }>) : [];
 
@@ -1291,7 +1395,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
 
       const nextPatch = buildTurnPatchPayload();
-      upsertTurnPatchMessage(nextPatch);
+      const tsRaw = Number(rec.ts);
+      upsertTurnPatchMessage(nextPatch, {
+        beforeTerminalAssistant: terminalArtifactReplay,
+        ts: Number.isFinite(tsRaw) && tsRaw > 0 ? tsRaw : undefined,
+      });
+      if (terminalArtifactReplay && terminalArtifactFinal) {
+        rt.turnHasPatch = false;
+        resetTurnPatchSummary();
+      }
       return;
     }
 
