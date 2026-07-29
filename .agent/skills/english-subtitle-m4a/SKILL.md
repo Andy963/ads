@@ -26,7 +26,7 @@ The script:
 Do not ask the user for secrets in chat.
 
 Required:
-- `GROQ_API_KEY`, or legacy fallback `API_KEY`
+- `GROQ_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
 - `ADS_TELEGRAM_CHAT_ID`, normally injected by `ads-tg` during Telegram sessions
 
@@ -37,7 +37,7 @@ Audio conversion requires one of:
 
 ## Telegram workflow
 
-When `ads-tg` receives a document, it passes a local file path in the prompt, usually like:
+When `ads-tg` receives an audio message or document, it saves the file locally and passes a local file path in the prompt, usually like:
 
 ```text
 用户上传的文件:
@@ -62,6 +62,7 @@ python3 ${SKILL_DIR}/scripts/subtitle_m4a.py \
 ```
 
 After the command succeeds, reply briefly that the M4A has been sent. Do not paste the transcript unless the user explicitly asks.
+The generated audio output must be `.m4a` only. Do not generate or send an `.mp3`.
 
 ## Local-only workflow
 

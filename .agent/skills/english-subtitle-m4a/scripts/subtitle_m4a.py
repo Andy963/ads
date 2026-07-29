@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import mimetypes
 import os
@@ -26,7 +25,7 @@ SAFE_API_BYTES = 24 * 1024 * 1024
 
 def redact(value: str) -> str:
     out = value
-    for key in ("GROQ_API_KEY", "API_KEY", "TELEGRAM_BOT_TOKEN", "BUB_TELEGRAM_TOKEN"):
+    for key in ("GROQ_API_KEY", "TELEGRAM_BOT_TOKEN"):
         secret = os.environ.get(key)
         if secret:
             out = out.replace(secret, "<redacted>")
@@ -34,7 +33,7 @@ def redact(value: str) -> str:
 
 
 def resolve_api_key() -> str:
-    return (os.getenv("GROQ_API_KEY") or os.getenv("API_KEY") or "").strip()
+    return os.getenv("GROQ_API_KEY", "").strip()
 
 
 def resolve_groq_base_url() -> str:
@@ -235,7 +234,7 @@ def export_m4a(input_path: Path, output_path: Path, lrc_text: str) -> None:
 
 
 def send_telegram_document(path: Path, caption: str) -> None:
-    token = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BUB_TELEGRAM_TOKEN") or "").strip()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = (os.getenv("ADS_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")

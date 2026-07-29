@@ -7,6 +7,37 @@ import { parseRestartIntent, restartPm2Apps, triggerSelfRestart } from '../utils
 import { formatTranscriptionPreview, requirePrivateChat, requireUserId, type TelegramBotRuntime } from './shared.js';
 import { TELEGRAM_CONTROL_COMMANDS } from './registerControlCommands.js';
 
+const AUDIO_FILE_EXTENSIONS = new Set(['.mp3', '.m4a', '.mp4', '.mpeg', '.mpga', '.wav', '.ogg', '.opus', '.webm', '.flac']);
+const AUDIO_SUBTITLE_PROMPT = '请将这个英语音频文件转换为只输出 M4A 的逐句内嵌字幕文件，并发送回当前 Telegram 聊天。';
+
+function fileExtension(fileName: string | undefined): string {
+  const normalized = String(fileName ?? '').trim().toLowerCase();
+  const dotIndex = normalized.lastIndexOf('.');
+  return dotIndex >= 0 ? normalized.slice(dotIndex) : '';
+}
+
+function isAudioDocument(args: { fileName?: string; mimeType?: string }): boolean {
+  const mimeType = String(args.mimeType ?? '').trim().toLowerCase();
+  if (mimeType.startsWith('audio/')) return true;
+  return AUDIO_FILE_EXTENSIONS.has(fileExtension(args.fileName));
+}
+
+function resolveAudioFileExtension(mimeType: string | undefined): string {
+  const normalized = String(mimeType ?? '').trim().toLowerCase();
+  if (normalized.includes('mp4') || normalized.includes('m4a') || normalized.includes('aac')) return '.m4a';
+  if (normalized.includes('mpeg') || normalized.includes('mp3')) return '.mp3';
+  if (normalized.includes('ogg') || normalized.includes('opus')) return '.ogg';
+  if (normalized.includes('webm')) return '.webm';
+  if (normalized.includes('wav')) return '.wav';
+  if (normalized.includes('flac')) return '.flac';
+  return '.mp3';
+}
+
+function audioSubtitleText(caption: string): string {
+  const trimmed = caption.trim();
+  return trimmed || AUDIO_SUBTITLE_PROMPT;
+}
+
 async function sendToCodex(args: {
   ctx: Context;
   runtime: TelegramBotRuntime;
@@ -14,9 +45,10 @@ async function sendToCodex(args: {
   text: string;
   imageFileIds?: string[];
   documentFileId?: string;
+  documentFileName?: string;
   replyToMessageId?: number;
 }): Promise<void> {
-  const { ctx, runtime, userId, text, imageFileIds, documentFileId, replyToMessageId } = args;
+  const { ctx, runtime, userId, text, imageFileIds, documentFileId, documentFileName, replyToMessageId } = args;
   const cwd = runtime.directoryManager.getUserCwd(userId);
   await handleCodexMessage(
     ctx,
@@ -30,6 +62,7 @@ async function sendToCodex(args: {
       markNoteEnabled: runtime.markStates.get(userId) ?? false,
       silentNotifications: runtime.silentNotifications,
       replyToMessageId,
+      documentFileName,
       scheduleCompiler: runtime.scheduleCompiler,
       scheduler: runtime.scheduler,
     },
@@ -115,12 +148,36 @@ export function registerTelegramMessageHandlers(bot: Bot<Context>, runtime: Tele
       return;
     }
 
+    const shouldAutoSubtitle = isAudioDocument({ fileName: doc.file_name, mimeType: doc.mime_type });
     await sendToCodex({
       ctx,
       runtime,
       userId,
-      text: caption,
+      text: shouldAutoSubtitle ? audioSubtitleText(caption) : caption,
       documentFileId: doc.file_id,
+      documentFileName: doc.file_name,
+      replyToMessageId: ctx.message.message_id,
+    });
+  });
+
+  bot.on('message:audio', async (ctx) => {
+    const audio = ctx.message.audio;
+    const caption = ctx.message.caption || '';
+    const userId = await requireUserId(ctx, runtime.logger, 'message:audio');
+    if (userId === null) return;
+
+    if (audio.file_size && audio.file_size > 20 * 1024 * 1024) {
+      await ctx.reply('❌ 音频过大，限制 20MB');
+      return;
+    }
+
+    await sendToCodex({
+      ctx,
+      runtime,
+      userId,
+      text: audioSubtitleText(caption),
+      documentFileId: audio.file_id,
+      documentFileName: audio.file_name || `${audio.file_unique_id || 'audio'}${resolveAudioFileExtension(audio.mime_type)}`,
       replyToMessageId: ctx.message.message_id,
     });
   });

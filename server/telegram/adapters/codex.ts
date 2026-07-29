@@ -43,6 +43,7 @@ export async function handleCodexMessage(
     markNoteEnabled?: boolean;
     silentNotifications?: boolean;
     replyToMessageId?: number;
+    documentFileName?: string;
     scheduleCompiler?: ScheduleCompiler;
     scheduler?: SchedulerRuntime;
   },
@@ -311,7 +312,8 @@ export async function handleCodexMessage(
     if (documentFileId) {
       try {
         const doc = ctx.message?.document;
-        const fileName = doc?.file_name || 'file.bin';
+        const audio = ctx.message?.audio;
+        const fileName = options?.documentFileName || doc?.file_name || audio?.file_name || 'file.bin';
         const path = await downloadTelegramFile(ctx.api, documentFileId, fileName, signal);
         filePaths.push(path);
         await ctx.reply(`📥 已接收文件: ${fileName}\n正在处理...`, {
