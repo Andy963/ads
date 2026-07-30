@@ -1,5 +1,8 @@
 import type { Input } from "../protocol/types.js";
 
+import fs from "node:fs";
+import path from "node:path";
+
 import type {
   AgentAdapter,
   AgentMetadata,
@@ -11,6 +14,7 @@ import type { AgentEvent } from "../../codex/events.js";
 import type { SandboxMode } from "../../telegram/config.js";
 import { runCli, runCliRaw } from "../cli/cliRunner.js";
 import { GeminiStreamParser } from "../cli/geminiStreamParser.js";
+import { withAgentCliPath } from "../cli/pathEnv.js";
 import { createLogger } from "../../utils/logger.js";
 import { extractTextFromInput } from "../../utils/inputText.js";
 import { createAbortError } from "../../utils/abort.js";
@@ -32,6 +36,47 @@ const DEFAULT_METADATA: AgentMetadata = {
   vendor: "Google",
   capabilities: ["text", "images", "files", "commands"],
 };
+
+function pathEnvKey(env: NodeJS.ProcessEnv): string {
+  if (process.platform !== "win32") return "PATH";
+  return Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "Path";
+}
+
+function hasPathSeparator(value: string): boolean {
+  return value.includes("/") || value.includes("\\");
+}
+
+function canExecute(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutable(binary: string): string | null {
+  const normalized = String(binary ?? "").trim();
+  if (!normalized) return null;
+
+  if (hasPathSeparator(normalized)) {
+    const candidate = path.isAbsolute(normalized) ? normalized : path.resolve(normalized);
+    return canExecute(candidate) ? candidate : null;
+  }
+
+  const env = withAgentCliPath(process.env);
+  const entries = String(env[pathEnvKey(env)] ?? "")
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    const candidate = path.join(entry, normalized);
+    if (canExecute(candidate)) return candidate;
+  }
+
+  return null;
+}
 
 function parseSessionIndexList(output: string): Map<string, string> {
   const map = new Map<string, string>();
@@ -78,6 +123,9 @@ export class GeminiCliAdapter implements AgentAdapter {
   }
 
   status(): AgentStatus {
+    if (!resolveExecutable(this.binary)) {
+      return { ready: false, streaming: true, error: `Binary not found: ${this.binary}` };
+    }
     return { ready: true, streaming: true };
   }
 

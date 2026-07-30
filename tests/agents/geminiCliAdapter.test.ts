@@ -16,6 +16,28 @@ async function createExecutableScript(contents: string): Promise<{ binary: strin
 }
 
 describe("GeminiCliAdapter", () => {
+  it("reports not ready when the Gemini CLI binary is missing", () => {
+    const adapter = new GeminiCliAdapter({ binary: "/tmp/ads-missing-gemini-cli" });
+
+    assert.deepEqual(adapter.status(), {
+      ready: false,
+      streaming: true,
+      error: "Binary not found: /tmp/ads-missing-gemini-cli",
+    });
+  });
+
+  it("reports ready when the Gemini CLI binary exists", async () => {
+    const { binary } = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "echo gemini-test",
+      "",
+    ].join("\n"));
+
+    const adapter = new GeminiCliAdapter({ binary });
+
+    assert.deepEqual(adapter.status(), { ready: true, streaming: true });
+  });
+
   it("passes prompt byte-for-byte (including trailing whitespace) when input is parts[]", async () => {
     const { binary, dir } = await createExecutableScript([
       "#!/usr/bin/env bash",
