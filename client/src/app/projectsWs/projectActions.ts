@@ -202,6 +202,10 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       const desiredActive = normalizeString(result.activeProjectId);
       const currentActive = normalizeString(activeProjectId.value);
       const currentProject = projects.value.find((p) => p.id === currentActive) ?? null;
+      const currentPath = normalizeString(currentProject?.path);
+      const currentRemoteProject = currentPath
+        ? next.find((p) => normalizeString(p.path) === currentPath) ?? null
+        : null;
       const hasLocalNonDefaultProjects = projects.value.some((p) => p.id !== "default");
       const preserveCurrentActive =
         Boolean(currentActive && next.some((p) => p.id === currentActive)) &&
@@ -209,6 +213,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
           Boolean(normalizeString(currentProject?.path)) ||
           hasLocalNonDefaultProjects);
       const nextActive =
+        currentRemoteProject?.id ||
         // Preserve the currently visible project during bootstrap/sync whenever it is
         // still present and represents a real local selection so background refreshes
         // do not silently reset visible context.

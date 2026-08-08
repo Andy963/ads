@@ -9,6 +9,7 @@ import {
   getSkillFileCacheSizeForTests,
   loadSkillBody,
   renderCompactSkills,
+  renderSkillMetaInstruction,
   resetSkillFileCacheForTests,
   type SkillMetadata,
 } from "../../server/skills/loader.js";
@@ -263,6 +264,15 @@ describe("skills/loader", () => {
     assert.ok(output.includes('source="state"'));
     assert.ok(output.includes('source="global"'));
     assert.ok(output.includes("First skill"));
+  });
+
+  it("tells agents to execute auto-loaded skills without searching for them", () => {
+    const output = renderSkillMetaInstruction([
+      makeSkillMeta("alpha", "First skill", "/tmp/a", "state"),
+    ]);
+
+    assert.match(output, /自动加载匹配 skill/);
+    assert.match(output, /不得为了寻找已经注入的 skill/);
   });
 
   it("loads SKILL.md v1 frontmatter fields", () => {

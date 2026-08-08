@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { parseSlashCommand } from "../codexConfig.js";
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
-import { detectWorkspace } from "../workspace/detector.js";
+import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
 import { normalizeOutput } from "../utils/text.js";
@@ -20,9 +20,19 @@ interface CommandContext {
   rawArgs: string[];
   positional: string[];
   params: CommandParams;
+  workspaceRoot?: string;
 }
 
 type CommandHandler = (context: CommandContext) => Promise<CommandResult>;
+
+export interface RunAdsCommandOptions {
+  workspaceRoot?: string;
+}
+
+function resolveCommandWorkspaceRoot(context: CommandContext): string {
+  const workspaceRoot = context.workspaceRoot?.trim();
+  return workspaceRoot ? detectWorkspaceFrom(workspaceRoot) : detectWorkspace();
+}
 
 function formatResponse(text: string): string {
   if (!text.trim()) {
@@ -121,20 +131,21 @@ const commandRegistry = new Map<string, CommandHandler>([
   ],
   [
     "ads.skill.list",
-    async () => {
-      const workspaceRoot = detectWorkspace();
+    async (context) => {
+      const workspaceRoot = resolveCommandWorkspaceRoot(context);
       const skills = discoverSkills(workspaceRoot);
       return { ok: true, output: renderSkillList(skills) };
     },
   ],
   [
     "ads.skill.load",
-    async ({ params, positional }) => {
+    async (context) => {
+      const { params, positional } = context;
       const name = (params.name ?? positional.join(" ")).trim();
       if (!name) {
         return { ok: false, output: "❌ Missing skill name. Usage: /ads.skill.load <name>" };
       }
-      const workspaceRoot = detectWorkspace();
+      const workspaceRoot = resolveCommandWorkspaceRoot(context);
       const body = loadSkillBody(name, workspaceRoot);
       if (!body) {
         const skills = discoverSkills(workspaceRoot);
@@ -164,7 +175,7 @@ const commandRegistry = new Map<string, CommandHandler>([
   ],
 ]);
 
-export async function runAdsCommandLine(input: string): Promise<CommandResult> {
+export async function runAdsCommandLine(input: string, options: RunAdsCommandOptions = {}): Promise<CommandResult> {
   const trimmed = input.trim();
   if (!trimmed) {
     return { ok: true, output: "" };
@@ -199,5 +210,5 @@ export async function runAdsCommandLine(input: string): Promise<CommandResult> {
   if (!handler) {
     return { ok: false, output: `❓ Unknown command: ${slash.command}` };
   }
-  return handler({ rawArgs, positional, params });
+  return handler({ rawArgs, positional, params, workspaceRoot: options.workspaceRoot });
 }

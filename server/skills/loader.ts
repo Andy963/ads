@@ -282,12 +282,12 @@ export function renderSkillMetaInstruction(skills: SkillMetadata[]): string {
   return [
     "<skill_system>",
     `当前有 ${skills.length} 个可用 skill。`,
-    "当你遇到不熟悉的领域、需要专业知识、或者意识到自身能力不足时：",
-    "1. 使用 /ads.skill.list 查看所有可用 skill 的名称和描述",
-    "2. 使用 /ads.skill.load <name> 加载具体 skill 的完整内容到上下文",
-    "3. 如果没有合适的 skill，使用 /ads.skill.init <name> 创建新的 skill",
+    "ADS 会按用户请求自动加载匹配 skill 的完整内容。",
+    "当上下文中有 <requested_skills> 时，直接按其内容执行；`location` 是该 SKILL.md 的绝对路径，脚本就在同目录下。",
+    "不得为了寻找已经注入的 skill 或其脚本再次调用 /ads.skill.list、/ads.skill.load 或搜索整个文件系统。",
+    "如果没有匹配 skill，才使用 /ads.skill.list 查看能力，或使用 /ads.skill.init <name> 创建新的 skill。",
     "",
-    "不要猜测，主动查找和加载 skill 来获取专业指导。",
+    "不要猜测，优先使用已注入的专业指导。",
     "</skill_system>",
   ].join("\n");
 }

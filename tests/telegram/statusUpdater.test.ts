@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import { resolveTelegramStatusUpdatesEnabled } from "../../server/telegram/adapters/codex.js";
 import { createTelegramCodexStatusUpdater, createTelegramTypingOnlyStatusUpdater } from "../../server/telegram/adapters/codex/statusUpdater.js";
 import type { AgentEvent } from "../../server/codex/events.js";
 
@@ -35,6 +36,12 @@ async function flush(): Promise<void> {
 }
 
 describe("telegram statusUpdater", () => {
+  it("enables visible status updates by default", () => {
+    assert.equal(resolveTelegramStatusUpdatesEnabled({}), true);
+    assert.equal(resolveTelegramStatusUpdatesEnabled({ ADS_TELEGRAM_STATUS_UPDATES: "0" }), false);
+    assert.equal(resolveTelegramStatusUpdatesEnabled({ ADS_TELEGRAM_STATUS_UPDATES: "false" }), false);
+  });
+
   it("shows only the latest command in the status message", async () => {
     const edits: Array<{ messageId: number; text: string }> = [];
     const deletes: Array<{ messageId: number }> = [];

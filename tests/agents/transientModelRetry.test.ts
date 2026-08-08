@@ -79,6 +79,43 @@ describe("transient model retry classification", () => {
     );
   });
 
+  it("treats an upstream HTTP 520 with no body as retryable", () => {
+    assert.equal(
+      isTransientUpstreamModelError(
+        "API Error: 520 status code (no body). This is a server-side issue, usually temporary.",
+      ),
+      true,
+    );
+  });
+
+  it("retries an upstream HTTP 520 with no body", async () => {
+    const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+    process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "1";
+    let attempts = 0;
+
+    try {
+      const result = await runWithTransientModelRetry(
+        { agentName: "test", backoffMs: [0] },
+        async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("API Error: 520 status code (no body)");
+          }
+          return "ok";
+        },
+      );
+
+      assert.equal(result, "ok");
+      assert.equal(attempts, 2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+      } else {
+        process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
+      }
+    }
+  });
+
   it("treats upstream bad response status code 400 wrappers as retryable", () => {
     assert.equal(
       isTransientUpstreamModelError(

@@ -9,7 +9,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、
 
 ## 当前能力
 
-- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；模型选择器只展示当前 Agent CLI 支持的已启用模型，切换 Agent 时会恢复该 Agent 上次选择的兼容模型；断线重连会从持久化事件日志补齐消息，每个浏览器标签独立维护同步 cursor；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
+- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；项目切换会立即反映本地选择，后台项目列表刷新不会覆盖刚选中的项目；模型选择器只展示当前 Agent CLI 支持的已启用模型，切换 Agent 时会恢复该 Agent 上次选择的兼容模型；断线重连会从持久化事件日志补齐消息，每个浏览器标签独立维护同步 cursor；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
 - **任务看板与队列**：支持创建、编辑、排序、运行、暂停、取消、重试、删除任务，并在任务终态记录结果与 workspace patch artifact。
 - **任务草稿**：Advisor 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
 - **多 Agent 适配**：Codex 是主要执行 Agent；Claude 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。
@@ -183,7 +183,7 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 
 Codex app-server 将 `willRetry=true` 的错误通知作为中间连接状态发送。ADS 会继续等待当前 turn；只有 `willRetry=false`、重连耗尽或收到其他终止错误后，才将请求标记为失败。
 
-Agent 上游重试会识别限流/高负载、HTTP 503 Service Unavailable，以及 Claude Fable safeguard 的已知误拦截文案。仅在尚未产生命令、文件写入、工具调用等副作用时自动重放请求。
+Agent 上游重试会识别限流/高负载、HTTP 503 Service Unavailable、Cloudflare/API 网关 HTTP 520–524（包括无响应体），以及 Claude Fable safeguard 的已知误拦截文案。仅在尚未产生命令、文件写入、工具调用等副作用时自动重放请求。
 
 ### 技能、记忆与系统提示
 

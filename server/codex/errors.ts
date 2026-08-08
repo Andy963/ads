@@ -156,7 +156,7 @@ const ERROR_PATTERNS: Array<{
     needsReset: false,
   },
   {
-    pattern: /internal server error|internal_error|unexpected status 5\d\d|<unknown status code>/i,
+    pattern: /internal server error|internal_error|unexpected status 5\d\d|(?:api error|http)[: ]+52[0-4]\b|status code 52[0-4]\b|<unknown status code>/i,
     code: "server_error",
     userHint: "上游服务内部错误，请稍后重试；如持续发生可切换模型",
     retryable: true,

@@ -31,6 +31,8 @@ temp/
 !.agent/skills/build-to-deploy/SKILL.md
 !.agent/skills/english-subtitle-m4a/
 !.agent/skills/english-subtitle-m4a/**
+!.agent/skills/youtube-download/
+!.agent/skills/youtube-download/**
 
 # Soul (long-term memory)
 soul.md

@@ -16,3 +16,6 @@ skills:
   english-subtitle-m4a:
     provides: [audio.subtitle]
     priority: 300
+  youtube-download:
+    provides: [youtube.download, media.download]
+    priority: 300

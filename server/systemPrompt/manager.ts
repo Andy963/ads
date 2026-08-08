@@ -6,7 +6,7 @@ import { createLogger, type Logger } from "../utils/logger.js";
 import { parseOptionalBooleanFlag } from "../utils/flags.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
-import { discoverSkills, loadSkillBody, renderSkillMetaInstruction } from "../skills/loader.js";
+import { discoverSkills, loadSkillBody, renderCompactSkills, renderSkillMetaInstruction } from "../skills/loader.js";
 import { readSoul } from "../memory/soul.js";
 import { readMemory } from "../memory/memory.js";
 import { PROJECT_ROOT } from "../utils/projectRoot.js";
@@ -255,7 +255,10 @@ export class SystemPromptManager {
   private renderSkillsBlock(): string | null {
     try {
       const skills = discoverSkills(this.workspaceRoot);
-      return renderSkillMetaInstruction(skills);
+      const compactSkills = renderCompactSkills(skills);
+      return [renderSkillMetaInstruction(skills), compactSkills]
+        .filter((part) => part && part.trim())
+        .join("\n\n");
     } catch {
       return null;
     }
@@ -294,14 +297,20 @@ export class SystemPromptManager {
     if (this.requestedSkillNames.length === 0) {
       return null;
     }
+    const availableByName = new Map(
+      discoverSkills(this.workspaceRoot).map((skill) => [skill.name.toLowerCase(), skill]),
+    );
     const parts = ["<requested_skills>"];
     for (const name of this.requestedSkillNames) {
-      const body = loadSkillBody(name, this.workspaceRoot);
-      if (!body) {
+      const skill = availableByName.get(name.toLowerCase());
+      const body = skill ? loadSkillBody(skill.name, this.workspaceRoot) : null;
+      if (!skill || !body) {
         parts.push(`  <skill name="${name}" missing="true" />`);
         continue;
       }
-      parts.push(`  <skill name="${name}">`);
+      // Agents receive the absolute location, so they do not need to search
+      // the filesystem for a script bundled with an auto-loaded skill.
+      parts.push(`  <skill name="${skill.name}" location="${skill.location}">`);
       parts.push(body.trim());
       parts.push("  </skill>");
     }

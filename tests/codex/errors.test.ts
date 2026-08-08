@@ -137,6 +137,13 @@ describe("classifyError", () => {
       retryable: true,
       needsReset: false,
     },
+    {
+      name: "HTTP 520 with no body",
+      input: "API Error: 520 status code (no body). This is a server-side issue, usually temporary.",
+      code: "server_error",
+      retryable: true,
+      needsReset: false,
+    },
   ];
 
   for (const c of cases) {

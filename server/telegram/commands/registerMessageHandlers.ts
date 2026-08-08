@@ -6,6 +6,7 @@ import { transcribeTelegramVoiceMessage } from '../utils/voiceTranscription.js';
 import { parseRestartIntent, restartPm2Apps, triggerSelfRestart } from '../utils/restartIntent.js';
 import { formatTranscriptionPreview, requirePrivateChat, requireUserId, type TelegramBotRuntime } from './shared.js';
 import { TELEGRAM_CONTROL_COMMANDS } from './registerControlCommands.js';
+import { runAdsCommandLine } from '../../web/commandRouter.js';
 
 const AUDIO_FILE_EXTENSIONS = new Set(['.mp3', '.m4a', '.mp4', '.mpeg', '.mpga', '.wav', '.ogg', '.opus', '.webm', '.flac']);
 const AUDIO_SUBTITLE_PROMPT = '请将这个英语音频文件转换为只输出 M4A 的逐句内嵌字幕文件，并发送回当前 Telegram 聊天。';
@@ -344,6 +345,16 @@ export function registerTelegramMessageHandlers(bot: Bot<Context>, runtime: Tele
       const withoutSlash = firstToken.slice(1);
       const command = withoutSlash.split('@')[0]?.toLowerCase() ?? '';
       if (command && TELEGRAM_CONTROL_COMMANDS.has(command)) {
+        return;
+      }
+      if (command.startsWith('ads.')) {
+        const commandText = `/${command}${trimmed.slice(firstToken.length)}`;
+        const cwd = runtime.directoryManager.getUserCwd(userId);
+        const result = await runAdsCommandLine(commandText, { workspaceRoot: cwd });
+        await ctx.reply(result.output, {
+          disable_notification: runtime.silentNotifications,
+          reply_parameters: { message_id: ctx.message.message_id },
+        });
         return;
       }
       if (command) {

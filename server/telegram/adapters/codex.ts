@@ -31,6 +31,11 @@ import { processScheduleOutput } from '../../web/server/planner/scheduleHandler.
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 const adapterLogger = createLogger('TelegramCodexAdapter');
+
+export function resolveTelegramStatusUpdatesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseBooleanFlag(env.ADS_TELEGRAM_STATUS_UPDATES, true);
+}
+
 export async function handleCodexMessage(
   ctx: Context,
   text: string,
@@ -57,7 +62,7 @@ export async function handleCodexMessage(
   const fallbackLogFile = path.join(adapterLogDir, 'telegram-fallback.log');
   const markNoteEnabled = options?.markNoteEnabled ?? false;
   const silentNotifications = options?.silentNotifications ?? true;
-  const statusUpdatesEnabled = parseBooleanFlag(process.env.ADS_TELEGRAM_STATUS_UPDATES, false);
+  const statusUpdatesEnabled = resolveTelegramStatusUpdatesEnabled();
   const replyToMessageId = options?.replyToMessageId;
   const replyParameters =
     typeof replyToMessageId === 'number' ? { reply_parameters: { message_id: replyToMessageId } } : {};

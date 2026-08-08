@@ -94,6 +94,40 @@ describe("skills auto-load and auto-save", () => {
     const prompt = String(adapter.lastInput);
     assert.ok(prompt.includes("<requested_skills>"));
     assert.ok(prompt.includes("MY_SKILL_MARKER"));
+    assert.ok(prompt.includes(`location="${path.join(skillDir, "SKILL.md")}"`));
+  });
+
+  it("injects the concrete available skill list into the system prompt", async () => {
+    const skillDir = path.join(adsStateDir, ".agent", "skills", "subtitle-helper");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, "SKILL.md"),
+      [
+        "---",
+        "name: subtitle-helper",
+        "description: \"Subtitle helper visible in compact skill list\"",
+        "---",
+        "",
+        "# Subtitle Helper",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const manager = new SystemPromptManager({ workspaceRoot: workspace, reinjection: { enabled: true, turns: 999, rulesTurns: 999 } });
+    const adapter = new CaptureAgentAdapter({ id: "codex", name: "Codex" });
+    const orchestrator = new HybridOrchestrator({
+      adapters: [adapter],
+      defaultAgentId: "codex",
+      initialWorkingDirectory: workspace,
+      systemPromptManager: manager,
+    });
+
+    await orchestrator.send("Which skills are available?");
+    assert.equal(typeof adapter.lastInput, "string");
+    const prompt = String(adapter.lastInput);
+    assert.ok(prompt.includes("<available_skills>"));
+    assert.ok(prompt.includes('name="subtitle-helper"'));
+    assert.ok(prompt.includes("Subtitle helper visible in compact skill list"));
   });
 
   it("auto-saves <skill_save> blocks into ADS state .agent/skills and strips them from response", async () => {
