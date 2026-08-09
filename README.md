@@ -200,6 +200,7 @@ Agent 上游重试会识别限流/高负载、HTTP 503 Service Unavailable、Clo
 | `ADS_REINJECTION_ENABLED` | `true` | 是否再注入系统提示 |
 | `ADS_REINJECTION_TURNS` | `6` | instructions 再注入轮次 |
 | `ADS_RULES_REINJECTION_TURNS` | `1` | rules 再注入轮次 |
+| `ADS_RULE_ENFORCEMENT_MODE` | `observe` | 全局规则执行 Gate 模式；`observe` 只记录，`enforce` 让决定生效 |
 | `ADS_AUDIO_TRANSCRIPTION_TIMEOUT_MS` | `120000` | 语音转写单次 skill 超时 |
 | `ADS_AUDIO_TRANSCRIPTION_SKILLS` | 未设置 | 语音转写 skill 优先级，逗号分隔 |
 
@@ -249,6 +250,7 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 - Web 内置 `/pwd` 和 `/cd <path>`；旧的用户可见 `/ads.*` slash 规划命令已停用，任务草稿和审批由 UI 与 Advisor 流程驱动。
 - Goal Mode 依赖 Codex app-server 正常启动；普通 Worker/任务执行依赖 Codex CLI。
 - Web 服务启动时会同步 runtime templates，并启动 scheduler、任务队列管理器、Agent 可用性探测和 Telegram 任务通知重试循环。
+- 顶栏「全局规则」入口管理跨 channel 的统一规则：规则存在 `state.db` 的 `global_rules` 表，首次启动时从 `templates/rules.md` 导入种子规则，之后由数据库作为唯一事实来源；启用规则以 `<global_rules>` 区块注入 Web / Telegram / Codex / Claude 的同一份 system prompt，保存后下一轮请求即生效，不需要重启。数据库不可用时降级为 `templates/rules.md` 只读 bootstrap 规则并记录告警。界面同时提供注入预览、规则测试和最近修改记录。详见 [docs/global-rules-architecture.md](docs/global-rules-architecture.md)。
 
 ## Telegram 命令
 
@@ -296,6 +298,7 @@ ads/
 │   ├── context/       # context compaction and token estimation
 │   ├── memory/        # soul, preference directives, markdown memory
 │   ├── scheduler/     # schedule spec compiler and runtime
+│   ├── rules/         # global rule service and enforcement gate
 │   ├── skills/        # skill discovery, loading, creation, built-in tools
 │   ├── state/         # global SQLite schema, migrations, stores
 │   ├── storage/       # workspace SQLite schema, migrations, stores

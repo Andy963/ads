@@ -290,4 +290,44 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    description: "Global rules with audit log as the single source of truth for cross-channel rules",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS global_rules (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          category TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          priority INTEGER NOT NULL DEFAULT 100,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          updated_by TEXT,
+          match_json TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_global_rules_enabled
+          ON global_rules(enabled, priority, created_at);
+
+        CREATE TABLE IF NOT EXISTS global_rule_audit_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          rule_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          before_json TEXT,
+          after_json TEXT,
+          actor TEXT,
+          ts INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_global_rule_audit_rule
+          ON global_rule_audit_log(rule_id, ts DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_global_rule_audit_ts
+          ON global_rule_audit_log(ts DESC);
+      `);
+    },
+  },
 ];

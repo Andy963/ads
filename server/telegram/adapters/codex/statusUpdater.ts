@@ -2,6 +2,7 @@ import type { CommandExecutionItem, ThreadEvent } from "../../../agents/protocol
 import { GrammyError, type Context } from "grammy";
 
 import type { AgentEvent } from "../../../codex/events.js";
+import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../rules/enforcementGate.js";
 import { escapeTelegramMarkdownV2 } from "../../../utils/markdown.js";
 
 export interface TelegramCodexStatusUpdater {
@@ -147,6 +148,9 @@ export async function createTelegramCodexStatusUpdater(params: {
   isActiveRequest: () => boolean;
   logWarning: (message: string, error?: unknown) => void;
   replyToMessageId?: number;
+  agentId?: string;
+  workspaceRoot?: string;
+  ruleGate?: RuleEnforcementGate;
 }): Promise<TelegramCodexStatusUpdater> {
   const STATUS_MESSAGE_LIMIT = 3600;
   const COMMAND_HISTORY_LIMIT = 1;
@@ -330,6 +334,37 @@ export async function createTelegramCodexStatusUpdater(params: {
     }
   };
 
+  /**
+   * Observe-mode hook: report each new command to the global-rule gate so
+   * Telegram traffic is evaluated against the same rules as the web channel.
+   */
+  const evaluateCommandAgainstRules = (command: string): void => {
+    const commandLine = String(command ?? "").trim();
+    if (!commandLine) {
+      return;
+    }
+    try {
+      const gate = params.ruleGate ?? getRuleEnforcementGate();
+      const result = gate.evaluate({
+        agent: params.agentId ?? params.activeAgentLabel.toLowerCase(),
+        channel: "telegram",
+        workspace: params.workspaceRoot ?? process.cwd(),
+        tool: "shell",
+        command: commandLine,
+        userExplicitlyApproved: false,
+      });
+      if (result.decision !== "allow") {
+        params.logWarning(
+          `[RuleGate] ${result.mode}/${result.decision}: ${result.hits
+            .map((hit) => `${hit.severity}/${hit.title}`)
+            .join("; ")}`,
+        );
+      }
+    } catch (error) {
+      params.logWarning("[RuleGate] evaluation failed", error);
+    }
+  };
+
   const upsertCommandEntry = (item: CommandExecutionItem): void => {
     const key = normalizeCommandKey(item);
     const existingIndex = commandHistory.findIndex((entry) => entry.key === key);
@@ -343,6 +378,7 @@ export async function createTelegramCodexStatusUpdater(params: {
       commandHistory[existingIndex] = next;
       return;
     }
+    evaluateCommandAgainstRules(item.command);
     commandHistory.push(next);
     if (commandHistory.length > COMMAND_HISTORY_LIMIT) {
       commandHistory.splice(0, commandHistory.length - COMMAND_HISTORY_LIMIT);

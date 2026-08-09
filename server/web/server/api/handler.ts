@@ -12,6 +12,7 @@ import { handleAudioRoutes } from "./routes/audio.js";
 import { handlePathRoutes } from "./routes/paths.js";
 import { handleProjectRoutes } from "./routes/projects.js";
 import { handleModelRoutes } from "./routes/models.js";
+import { handleGlobalRuleRoutes } from "./routes/globalRules.js";
 import { handleTaskQueueRoutes } from "./routes/taskQueue.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
 import { handleTaskRoutes } from "./routes/tasks.js";
@@ -116,6 +117,7 @@ export function createApiRequestHandler(deps: {
     if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;
     if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
     if (await handleModelRoutes(routeCtx)) return true;
+    if (await handleGlobalRuleRoutes(routeCtx)) return true;
     if (
       await handleTaskQueueRoutes(routeCtx, {
         taskQueueAvailable: deps.taskQueueAvailable,

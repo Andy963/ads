@@ -6,6 +6,7 @@ import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
+import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../rules/enforcementGate.js";
 import { extractCommandPayload } from "./utils.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
@@ -106,6 +107,9 @@ export function attachWorkerPromptHandler(args: {
   logger: Logger;
   sessionLogger: SessionLogger;
   onThreadStarted?: (threadId: string) => void;
+  resolveAgentId?: () => string;
+  channel?: string;
+  ruleGate?: RuleEnforcementGate;
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
@@ -117,6 +121,42 @@ export function attachWorkerPromptHandler(args: {
   const terminalCommandKeys = new Set<string>();
   let hasCommandOutput = false;
   let exploredHeaderSent = false;
+
+  /**
+   * Report every command the agent runs to the global-rule gate. The gate ships
+   * in observe mode by default, so this records what would have been blocked
+   * without changing behaviour; flipping ADS_RULE_ENFORCEMENT_MODE=enforce makes
+   * the same decisions actionable.
+   */
+  const evaluateCommandAgainstRules = (commandLine: string): void => {
+    try {
+      const gate = args.ruleGate ?? getRuleEnforcementGate();
+      const result = gate.evaluate({
+        agent: args.resolveAgentId?.() ?? "unknown",
+        channel: args.channel ?? "web",
+        workspace: args.turnCwd,
+        tool: "shell",
+        command: commandLine,
+        userExplicitlyApproved: false,
+      });
+      if (result.decision !== "allow") {
+        args.sendToChat({
+          type: "explored",
+          header: false,
+          entry: {
+            category: "Rule",
+            summary:
+              `[${result.mode}] ${result.decision}: ` +
+              result.hits.map((hit) => `${hit.severity}/${hit.title}`).join("; "),
+          },
+        });
+      }
+    } catch (err) {
+      args.logger.debug(
+        `[RuleGate] evaluation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
 
   const unsubscribe = args.orchestrator.onEvent((event: AgentEvent) => {
     args.sessionLogger?.logEvent(event);
@@ -288,6 +328,7 @@ export function attachWorkerPromptHandler(args: {
       const isNewCommand = !announcedCommandKeys.has(commandKey);
       if (isNewCommand) {
         announcedCommandKeys.add(commandKey);
+        evaluateCommandAgainstRules(commandLine);
         const header = `${hasCommandOutput ? "\n" : ""}$ ${commandLine}\n`;
         outputDelta = header + (outputDelta ?? "");
         hasCommandOutput = true;

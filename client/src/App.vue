@@ -9,12 +9,13 @@ import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 import ModelManager from "./components/ModelManager.vue";
+import GlobalRuleManager from "./components/GlobalRuleManager.vue";
 
 import { createAppController } from "./app/controller";
 import type { TaskBundle } from "./api/types";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
-import { CirclePlus, Refresh, ChatDotRound, Setting } from "@element-plus/icons-vue";
+import { CirclePlus, Refresh, ChatDotRound, Setting, Document } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -124,6 +125,7 @@ const {
 } = createAppController();
 
 const modelManagerOpen = ref(false);
+const globalRuleManagerOpen = ref(false);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "planner", label: "Advisor" },
@@ -235,6 +237,14 @@ function closeModelManager(): void {
   modelManagerOpen.value = false;
 }
 
+function openGlobalRuleManager(): void {
+  globalRuleManagerOpen.value = true;
+}
+
+function closeGlobalRuleManager(): void {
+  globalRuleManagerOpen.value = false;
+}
+
 async function onModelManagerChanged(): Promise<void> {
   try {
     await loadModels();
@@ -309,6 +319,16 @@ const plannerConnectionStatus = computed(() => {
           @click="openModelManager"
         >
           <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
+        </button>
+        <button
+          type="button"
+          class="topbarIconBtn"
+          title="全局规则"
+          aria-label="全局规则"
+          data-testid="global-rule-manager-open"
+          @click="openGlobalRuleManager"
+        >
+          <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
         </button>
         <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
       </div>
@@ -575,6 +595,10 @@ const plannerConnectionStatus = computed(() => {
 
     <DraggableModal v-if="modelManagerOpen" card-variant="large" @close="closeModelManager">
       <ModelManager :api="api" @close="closeModelManager" @changed="onModelManagerChanged" />
+    </DraggableModal>
+
+    <DraggableModal v-if="globalRuleManagerOpen" card-variant="large" @close="closeGlobalRuleManager">
+      <GlobalRuleManager :api="api" @close="closeGlobalRuleManager" />
     </DraggableModal>
 
     <div v-if="projectDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeProjectDialog">

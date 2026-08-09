@@ -9,6 +9,7 @@ import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills, loadSkillBody, renderCompactSkills, renderSkillMetaInstruction } from "../skills/loader.js";
 import { readSoul } from "../memory/soul.js";
 import { readMemory } from "../memory/memory.js";
+import { getGlobalRuleService, createGlobalRuleService, type GlobalRuleService } from "../rules/globalRuleService.js";
 import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 export interface ReinjectionConfig {
@@ -22,6 +23,7 @@ export interface SystemPromptManagerOptions {
   reinjection?: Partial<ReinjectionConfig>;
   templateRoot?: string;
   logger?: Logger;
+  globalRuleService?: GlobalRuleService;
 }
 
 interface FileCache {
@@ -100,6 +102,9 @@ export class SystemPromptManager {
   private instructionsWarningLogged = false;
   private workspaceWarningLogged = false;
   private rulesWarningLogged = false;
+  private readonly globalRuleService: GlobalRuleService;
+  private globalRulesSeeded = false;
+  private globalRulesDegradedLogged = false;
 
   constructor(options: SystemPromptManagerOptions) {
     this.workspaceRoot = detectWorkspaceFrom(options.workspaceRoot);
@@ -120,6 +125,13 @@ export class SystemPromptManager {
       : 1;
     this.rulesReinjectionTurns = ruleTurns;
     this.logger = options.logger ?? createLogger("SystemPrompt");
+    // A custom template root means a caller-scoped bootstrap file (tests, embedded
+    // runtimes), so the rule service must read that copy rather than the shared one.
+    this.globalRuleService =
+      options.globalRuleService ??
+      (options.templateRoot
+        ? createGlobalRuleService({ templateRulesPath: this.defaultRulesPath, logger: this.logger })
+        : getGlobalRuleService());
   }
 
   setWorkspaceRoot(nextRoot: string): void {
@@ -164,7 +176,7 @@ export class SystemPromptManager {
   maybeInject(): PromptInjection | null {
     // 先刷新缓存以捕获指令/规则变更，确保 pendingReason 在本次判断前就绪
     const instructionsCache = this.readInstructions();
-    const rulesCache = this.readRules();
+    const rulesCache = this.resolveRules();
     const soulHash = this.computeSoulHash();
     const memoryHash = this.computeMemoryHash();
     const skillsHash = this.computeSkillsHash();
@@ -427,6 +439,60 @@ export class SystemPromptManager {
       "[Workspace Notice] Workspace not initialized (workspace.json missing).",
       "Using built-in templates for instructions/rules. Some workspace state features may be unavailable.",
     ].join("\n");
+  }
+
+  /**
+   * Resolve the rules block for this turn.
+   *
+   * Database rules are authoritative. `templates/rules.md` stays as the
+   * read-only bootstrap fallback for a missing/failed database or an empty
+   * rule set.
+   */
+  private resolveRules(): FileCache {
+    if (!this.globalRulesSeeded) {
+      this.globalRulesSeeded = true;
+      try {
+        this.globalRuleService.seedIfNeeded();
+      } catch (error) {
+        this.logger.warn(
+          `global rules seeding failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    let rendered: ReturnType<GlobalRuleService["render"]> | null = null;
+    try {
+      rendered = this.globalRuleService.render();
+    } catch (error) {
+      this.logger.warn(
+        `global rules render failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    if (rendered?.degraded) {
+      if (!this.globalRulesDegradedLogged) {
+        this.logger.warn("global rules database unavailable; degraded to read-only bootstrap rules");
+        this.globalRulesDegradedLogged = true;
+      }
+    } else {
+      this.globalRulesDegradedLogged = false;
+    }
+
+    const usable = rendered && rendered.text.trim() && (!rendered.degraded ? rendered.ruleCount > 0 : true);
+    if (!rendered || !usable) {
+      return this.readRules();
+    }
+
+    const cache: FileCache = {
+      path: rendered.degraded ? this.defaultRulesPath : "state.db:global_rules",
+      mtimeMs: 0,
+      content: rendered.text,
+      hash: rendered.hash,
+    };
+    if (this.lastRulesHash && cache.hash !== this.lastRulesHash) {
+      this.pendingReason = this.pendingReason ?? "global-rules-updated";
+    }
+    return cache;
   }
 
   private readRules(): FileCache {

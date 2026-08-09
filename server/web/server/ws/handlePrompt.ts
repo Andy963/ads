@@ -147,6 +147,8 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       sendToChat,
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
+      resolveAgentId: () => orchestrator.getActiveAgentId(),
+      channel: "web",
       onThreadStarted: (threadId) => {
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);

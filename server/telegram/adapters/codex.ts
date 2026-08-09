@@ -192,6 +192,8 @@ export async function handleCodexMessage(
         isActiveRequest: () => interruptManager.hasActiveRequest(userId),
         logWarning,
         replyToMessageId,
+        agentId: session.getActiveAgentId?.() ?? 'codex',
+        workspaceRoot: cwd,
       })
     : createTelegramTypingOnlyStatusUpdater({
         ctx,
