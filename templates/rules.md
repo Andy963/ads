@@ -9,4 +9,5 @@
 7. 规划约束：多步骤任务必须先写出包含至少 2 步的计划，并在每个步骤完成后更新计划，禁止跳过或省略该流程。
 8. 文档同步：任何改动导致行为、接口或流程发生变化时，必须同步更新 README 或相关文档，保持实现与文档一致。
 9. Review 流程：除非用户明确要求跳过且记录原因，实施完成后必须执行 Review（通过 review workflow/技能自动化）并等待通过；Review 进行期间禁止继续修改代码或提交。
+10. 进程自保：禁止以任何方式终止 ADS 自身进程或服务——包括 `cli.js web` / `cli.js telegram` 进程和 `ads-web` / `ads-tg` systemd 服务。清理测试或复现进程时，只允许 `kill` 启动该进程时记录的精确 PID；禁止 `pkill`、`killall` 等按模式/按名字的清理方式，也禁止把它们包进 `bash -lc`、管道或重定向的复合命令里绕过。禁止对 ads 服务执行 `systemctl --user stop/disable/mask/kill`；重启 ADS 必须走 build-to-deploy 流程。
 - 违反任一条即停止
