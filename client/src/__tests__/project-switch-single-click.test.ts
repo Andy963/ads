@@ -95,6 +95,25 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
   }
 }
 
+// vue-test-utils builds a MouseEvent whose `button` is read-only, so pointer
+// events are dispatched directly with the fields the handlers actually read.
+function dispatchPointer(
+  element: Element,
+  type: "pointerdown" | "pointerup" | "pointercancel",
+  init: { pointerId: number; pointerType?: string; clientX?: number; clientY?: number },
+): void {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    clientX: init.clientX ?? 0,
+    clientY: init.clientY ?? 0,
+  });
+  Object.defineProperty(event, "pointerId", { value: init.pointerId });
+  Object.defineProperty(event, "pointerType", { value: init.pointerType ?? "mouse" });
+  element.dispatchEvent(event);
+}
+
 describe("Project switch with server-resolved project identity", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -125,7 +144,10 @@ describe("Project switch with server-resolved project identity", () => {
       if (url === "/api/projects") {
         return projectsResponse;
       }
-      if (url.startsWith("/api/projects/subdirs")) return { dirs: [] };
+      // The real endpoint is /api/paths/subdirs; mocking the wrong path left
+      // allowedDirs undefined, so the default project's path was always empty
+      // in tests and never matched production.
+      if (url.startsWith("/api/paths/subdirs")) return { dirs: [], allowedDirs: ["/tmp"] };
       return {};
     };
   });
@@ -220,6 +242,148 @@ describe("Project switch with server-resolved project identity", () => {
       projectSessionId: "sess-b",
     });
     await settleUi(wrapper);
+    wrapper.unmount();
+  }, 30_000);
+
+  it("keeps the same row element when the server hands back canonical ids", async () => {
+    // Locally stored ids predate the server's canonical session ids, but both
+    // describe the same workspace paths. Keying rows by id tore every row down
+    // when /api/projects resolved, and a click whose press landed before that
+    // teardown never produced a click event at all.
+    localStorage.setItem(
+      "ADS_WEB_PROJECTS",
+      JSON.stringify([
+        { sessionId: "local-a", path: "/tmp/project-a", name: "A", initialized: true },
+        { sessionId: "local-b", path: "/tmp/project-b", name: "B", initialized: true },
+      ]),
+    );
+    localStorage.setItem("ADS_WEB_ACTIVE_PROJECT", "local-a");
+    projectBValidationResponse = {
+      ok: true,
+      resolvedPath: "/tmp/project-b",
+      workspaceRoot: "/tmp/project-b",
+      projectSessionId: "sess-b",
+    };
+    projectsResponse = {
+      projects: [
+        { id: "sess-a", workspaceRoot: "/tmp/project-a", name: "A", chatSessionId: "chat-a" },
+        { id: "sess-b", workspaceRoot: "/tmp/project-b", name: "B", chatSessionId: "chat-b" },
+      ],
+      activeProjectId: "sess-a",
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await wrapper.vm.$nextTick();
+    await Promise.resolve();
+
+    const rowBefore = wrapper.findAll("button.projectRow").find((row) => row.text().includes("B"));
+    expect(rowBefore).toBeTruthy();
+    const elementBefore = rowBefore!.element;
+    // The default row is a fixed slot whose path is only filled in once
+    // /api/paths/subdirs answers, so it must not be keyed by that path either.
+    const defaultRowBefore = wrapper.findAll("button.projectRow")[0]!.element;
+
+    await settleUi(wrapper);
+
+    const rowAfter = wrapper.findAll("button.projectRow").find((row) => row.text().includes("B"));
+    expect(rowAfter).toBeTruthy();
+    expect((wrapper.vm as any).activeProjectId).toBe("sess-a");
+    // Same DOM node across the id rewrite: nothing was unmounted mid-interaction.
+    expect(rowAfter!.element).toBe(elementBefore);
+    expect(wrapper.findAll("button.projectRow")[0]!.element).toBe(defaultRowBefore);
+
+    wrapper.unmount();
+  }, 30_000);
+
+  it("switches on a pointerdown/pointerup pair even when no click follows", async () => {
+    projectBValidationResponse = {
+      ok: true,
+      resolvedPath: "/tmp/project-b",
+      workspaceRoot: "/tmp/project-b",
+      projectSessionId: "sess-b",
+    };
+    projectsResponse = {
+      projects: [
+        { id: "sess-a", workspaceRoot: "/tmp/project-a", name: "A", chatSessionId: "chat-a" },
+        { id: "sess-b", workspaceRoot: "/tmp/project-b", name: "B", chatSessionId: "chat-b" },
+      ],
+      activeProjectId: "sess-a",
+    };
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    expect((wrapper.vm as any).activeProjectId).toBe("sess-a");
+
+    const rowB = wrapper.findAll("button.projectRow").find((row) => row.text().includes("B"));
+    expect(rowB).toBeTruthy();
+
+    // A row rebuilt between press and release yields no click; the pointer pair
+    // must still switch.
+    dispatchPointer(rowB!.element, "pointerdown", { pointerId: 1, clientX: 40, clientY: 40 });
+    dispatchPointer(rowB!.element, "pointerup", { pointerId: 1, clientX: 41, clientY: 42 });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
+    wrapper.unmount();
+  }, 30_000);
+
+  it("does not double-toggle when the browser also delivers the click", async () => {
+    projectBValidationResponse = {
+      ok: true,
+      resolvedPath: "/tmp/project-b",
+      workspaceRoot: "/tmp/project-b",
+      projectSessionId: "sess-b",
+    };
+    projectsResponse = {
+      projects: [
+        { id: "sess-a", workspaceRoot: "/tmp/project-a", name: "A", chatSessionId: "chat-a" },
+        { id: "sess-b", workspaceRoot: "/tmp/project-b", name: "B", chatSessionId: "chat-b" },
+      ],
+      activeProjectId: "sess-a",
+    };
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    const rowB = wrapper.findAll("button.projectRow").find((row) => row.text().includes("B"));
+    dispatchPointer(rowB!.element, "pointerdown", { pointerId: 1, clientX: 40, clientY: 40 });
+    dispatchPointer(rowB!.element, "pointerup", { pointerId: 1, clientX: 40, clientY: 40 });
+    await rowB!.trigger("click");
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
+    // The follow-up click must not collapse the row it just expanded.
+    const projects = (wrapper.vm as any).projects as Array<{ id: string; expanded: boolean }>;
+    expect(projects.find((p) => p.id === "sess-b")?.expanded).toBe(true);
+    wrapper.unmount();
+  }, 30_000);
+
+  it("ignores a pointer release that drifted away from the press", async () => {
+    projectBValidationResponse = {
+      ok: true,
+      resolvedPath: "/tmp/project-b",
+      workspaceRoot: "/tmp/project-b",
+      projectSessionId: "sess-b",
+    };
+    projectsResponse = {
+      projects: [
+        { id: "sess-a", workspaceRoot: "/tmp/project-a", name: "A", chatSessionId: "chat-a" },
+        { id: "sess-b", workspaceRoot: "/tmp/project-b", name: "B", chatSessionId: "chat-b" },
+      ],
+      activeProjectId: "sess-a",
+    };
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    const rowB = wrapper.findAll("button.projectRow").find((row) => row.text().includes("B"));
+    // A touch scroll: press and release on the row, but the finger moved far.
+    dispatchPointer(rowB!.element, "pointerdown", { pointerId: 2, pointerType: "touch", clientX: 40, clientY: 200 });
+    dispatchPointer(rowB!.element, "pointerup", { pointerId: 2, pointerType: "touch", clientX: 40, clientY: 60 });
+    await settleUi(wrapper);
+
+    expect((wrapper.vm as any).activeProjectId).toBe("sess-a");
     wrapper.unmount();
   }, 30_000);
 });

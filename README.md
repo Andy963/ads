@@ -9,7 +9,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、
 
 ## 当前能力
 
-- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；项目切换会立即反映本地选择，后台项目列表刷新不会覆盖刚选中的项目；模型选择器只展示当前 Agent CLI 支持的已启用模型，切换 Agent 时会恢复该 Agent 上次选择的兼容模型；断线重连会从持久化事件日志补齐消息，每个浏览器标签独立维护同步 cursor；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
+- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；项目切换会立即反映本地选择，后台项目列表刷新不会覆盖刚选中的项目；项目行按 workspace 路径（默认项目按固定槽位）保持身份，服务端回填 canonical project id 时不会重建行，配合 pointerdown/pointerup 配对处理，避免刷新恰好落在按下与松开之间时首次点击被浏览器丢弃；模型选择器只展示当前 Agent CLI 支持的已启用模型，切换 Agent 时会恢复该 Agent 上次选择的兼容模型；断线重连会从持久化事件日志补齐消息，每个浏览器标签独立维护同步 cursor；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
 - **任务看板与队列**：支持创建、编辑、排序、运行、暂停、取消、重试、删除任务，并在任务终态记录结果与 workspace patch artifact。
 - **任务草稿**：Advisor 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
 - **多 Agent 适配**：Codex 是主要执行 Agent；Claude 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。

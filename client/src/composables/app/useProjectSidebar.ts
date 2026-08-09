@@ -2,6 +2,7 @@ import { computed, ref, type Ref } from "vue";
 
 type ProjectLike = {
   id: string;
+  path?: string;
 };
 
 export function useProjectSidebar(params: {
@@ -26,6 +27,77 @@ export function useProjectSidebar(params: {
 
   let suppressProjectRowClick = false;
 
+  // A click only fires when mousedown and mouseup land on the same element, so
+  // any DOM teardown in between (a v-for key change, a list rebuild) silently
+  // drops the switch and the user has to click a second time. Pairing
+  // pointerdown/pointerup ourselves survives that, because pointerup still
+  // reaches whatever row now occupies the spot.
+  const POINTER_SLOP_PX = 10;
+  // A click that follows our own pointer-driven switch must not switch again
+  // (that would toggle the row back collapsed). Keyboard-driven clicks arrive
+  // without any preceding pointerdown, so they are never suppressed.
+  const POINTER_CLICK_SUPPRESS_MS = 700;
+  let pointerCandidate: { pointerId: number; projectId: string; x: number; y: number } | null = null;
+  let pointerSwitchAt = 0;
+
+  // The project id is rewritten to the server's canonical session id once the
+  // workspace is resolved, so keying rows by id rebuilds them mid-interaction.
+  // The workspace path is the row's real identity and stays put. The default
+  // row is the exception: it is a fixed slot whose path is filled in later.
+  function projectRowKey(project: ProjectLike): string {
+    if (project.id === "default") return "default";
+    return String(project.path ?? "").trim() || project.id;
+  }
+
+  function isRowActionTarget(ev: Event): boolean {
+    const target = ev.target as Element | null;
+    return Boolean(target?.closest?.(".projectRowActions"));
+  }
+
+  function clearPointerCandidate(): void {
+    pointerCandidate = null;
+  }
+
+  function onProjectRowPointerDown(ev: PointerEvent, projectId: string): void {
+    // Ignore secondary buttons; touch and pen report 0 here.
+    if (ev.button > 0 || isRowActionTarget(ev)) {
+      clearPointerCandidate();
+      return;
+    }
+    pointerCandidate = { pointerId: ev.pointerId, projectId: String(projectId ?? "").trim(), x: ev.clientX, y: ev.clientY };
+  }
+
+  function onProjectRowPointerUp(ev: PointerEvent, projectId: string): void {
+    const candidate = pointerCandidate;
+    clearPointerCandidate();
+    if (!candidate) return;
+    if (candidate.pointerId !== ev.pointerId) return;
+    if (isRowActionTarget(ev)) return;
+
+    const id = String(projectId ?? "").trim();
+    if (!id || id !== candidate.projectId) return;
+    // Treat a drag or a touch scroll as "not a tap".
+    if (Math.abs(ev.clientX - candidate.x) > POINTER_SLOP_PX) return;
+    if (Math.abs(ev.clientY - candidate.y) > POINTER_SLOP_PX) return;
+    if (suppressProjectRowClick) return;
+
+    pointerSwitchAt = Date.now();
+    params.requestProjectSwitch(id);
+  }
+
+  function onProjectRowPointerCancel(): void {
+    clearPointerCandidate();
+  }
+
+  function onProjectRowClick(projectId: string): void {
+    if (suppressProjectRowClick) return;
+    if (pointerSwitchAt && Date.now() - pointerSwitchAt < POINTER_CLICK_SUPPRESS_MS) {
+      pointerSwitchAt = 0;
+      return;
+    }
+    params.requestProjectSwitch(projectId);
+  }
+
   function canDragProject(id: string): boolean {
     const projectId = String(id ?? "").trim();
     return projectId !== "default";
@@ -33,14 +105,10 @@ export function useProjectSidebar(params: {
 
   function scheduleSuppressProjectRowClick(): void {
     suppressProjectRowClick = true;
+    clearPointerCandidate();
     setTimeout(() => {
       suppressProjectRowClick = false;
     }, 0);
-  }
-
-  function onProjectRowClick(projectId: string): void {
-    if (suppressProjectRowClick) return;
-    params.requestProjectSwitch(projectId);
   }
 
   function canRemoveProject(id: string): boolean {
@@ -148,7 +216,11 @@ export function useProjectSidebar(params: {
     pendingRemoveProjectId,
     pendingRemoveProject,
     canDragProject,
+    projectRowKey,
     onProjectRowClick,
+    onProjectRowPointerDown,
+    onProjectRowPointerUp,
+    onProjectRowPointerCancel,
     canRemoveProject,
     requestRemoveProject,
     cancelRemoveProject,

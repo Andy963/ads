@@ -186,7 +186,11 @@ const {
   dropTargetPosition,
   projectRemoveConfirmOpen,
   pendingRemoveProject,
+  projectRowKey,
   onProjectRowClick,
+  onProjectRowPointerDown,
+  onProjectRowPointerUp,
+  onProjectRowPointerCancel,
   canRemoveProject,
   requestRemoveProject,
   cancelRemoveProject,
@@ -318,7 +322,7 @@ const plannerConnectionStatus = computed(() => {
             <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog"><el-icon :size="16" aria-hidden="true" class="icon"><CirclePlus /></el-icon></button>
           </div>
 
-          <div v-for="p in projects" :key="p.id" class="projectNode" :class="{ active: p.id === activeProjectId }">
+          <div v-for="p in projects" :key="projectRowKey(p)" class="projectNode" :class="{ active: p.id === activeProjectId }">
             <button
               type="button"
               class="projectRow"
@@ -328,6 +332,9 @@ const plannerConnectionStatus = computed(() => {
                 dropAfter: dropTargetProjectId === p.id && dropTargetPosition === 'after',
               }"
               :title="p.name"
+              @pointerdown="(ev) => onProjectRowPointerDown(ev, p.id)"
+              @pointerup="(ev) => onProjectRowPointerUp(ev, p.id)"
+              @pointercancel="onProjectRowPointerCancel"
               @click="onProjectRowClick(p.id)"
               @dragover="(ev) => onProjectDragOver(ev, p.id)"
               @drop="(ev) => onProjectDrop(ev, p.id)"

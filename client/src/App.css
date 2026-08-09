@@ -526,14 +526,21 @@
   gap: 12px;
   margin-left: auto;
   flex: 0 0 auto;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  pointer-events: none;
 }
-.projectNode:hover .projectRowActions,
-.projectNode:focus-within .projectRowActions {
-  opacity: 1;
-  pointer-events: auto;
+/* Reveal-on-hover only where hovering exists. On touch devices a hover rule
+   that flips pointer-events makes the browser spend the first tap applying
+   :hover instead of firing click, so the row needs two taps to switch. */
+@media (hover: hover) and (pointer: fine) {
+  .projectRowActions {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+  }
+  .projectNode:hover .projectRowActions,
+  .projectNode:focus-within .projectRowActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .projectRemove {
   width: 18px;
