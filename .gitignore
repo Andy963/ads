@@ -23,16 +23,11 @@ temp/
 .ads/*.db-*
 .ads/telegram-bot.pid
 
-# Agent skills
-.agent/skills/*
-.agent/skills/**/SKILL.md.bak.*
-!.agent/skills/metadata.yaml
-!.agent/skills/build-to-deploy/
-!.agent/skills/build-to-deploy/SKILL.md
-!.agent/skills/english-subtitle-m4a/
-!.agent/skills/english-subtitle-m4a/**
-!.agent/skills/youtube-download/
-!.agent/skills/youtube-download/**
+# Agent-local instructions and skills
+.agent/
+
+# Local documentation
+docs/
 
 # Soul (long-term memory)
 soul.md

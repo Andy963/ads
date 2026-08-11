@@ -24,7 +24,6 @@ import { createDelegationTracker } from "./delegationTracker.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
 import { beginWsPromptRun, isWsPromptAbort, raceWsPromptAbort } from "./promptLifecycle.js";
-import { shouldResumeMissingRuntimeSession } from "./resumeThreadFallback.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -97,11 +96,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       promptRunEpochs: deps.sessions.promptRunEpochs,
     });
     const controller = promptRun.controller;
-    orchestrator = deps.sessions.sessionManager.getOrCreate(
-      deps.context.userId,
-      turnCwd,
-      shouldResumeMissingRuntimeSession(deps.sessions.sessionManager, deps.context.userId),
-    );
+    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, turnCwd, true);
     orchestrator.setWorkingDirectory(turnCwd);
     try {
       applySessionOverrides({
@@ -149,6 +144,22 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       sessionLogger: deps.observability.sessionLogger,
       resolveAgentId: () => orchestrator.getActiveAgentId(),
       channel: "web",
+      onSessionFallback: ({ previousSessionId, detail }) => {
+        // This turn already ran without the old context; re-sending it now would
+        // not put it back. Flag the *next* turn so the ADS history goes in then.
+        const agentId = orchestrator.getActiveAgentId();
+        deps.sessions.sessionManager.clearSavedThreadId?.(deps.context.userId, agentId);
+        deps.sessions.sessionManager.markHistoryInjection(deps.context.userId);
+        deps.observability.logger.warn(
+          `[ContextRestore] native resume failed user=${deps.context.userId} agent=${agentId} session=${previousSessionId}; next turn will inject history. detail=${truncateForLog(detail)}`,
+        );
+        deps.history.historyStore.add(deps.context.historyKey, {
+          role: "status",
+          text: "原生会话已不存在，已改用新会话；下一轮将带上最近聊天历史。",
+          ts: Date.now(),
+          kind: "status",
+        });
+      },
       onThreadStarted: (threadId) => {
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);

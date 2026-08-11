@@ -35,6 +35,7 @@ type HistoryStoreStatements = {
   deleteSessionLinksStmt: SqliteStatement;
   upsertSessionLinkStmt: SqliteStatement;
   selectSessionLinksStmt: SqliteStatement;
+  selectRecentSessionLinksStmt: SqliteStatement;
 };
 
 const historyStoreStatementsCache = new WeakMap<DatabaseType, HistoryStoreStatements>();
@@ -114,6 +115,7 @@ export class HistoryStore {
   private deleteSessionLinksStmt?: SqliteStatement;
   private upsertSessionLinkStmt?: SqliteStatement;
   private selectSessionLinksStmt?: SqliteStatement;
+  private selectRecentSessionLinksStmt?: SqliteStatement;
 
   constructor(options: HistoryStoreOptions = {}) {
     this.storagePath = options.storagePath ?? path.join(resolveAdsStateDir(), "state.db");
@@ -304,6 +306,49 @@ export class HistoryStore {
     });
   }
 
+  /**
+   * Recent provider sessions recorded for one agent across every ADS
+   * conversation. Backs the session picker: these ids are known to have been
+   * started by ADS, so they are the most reliable resume candidates.
+   *
+   * One row per ADS conversation, not per provider session. A CLI that forks a
+   * new session id on every resumed turn (Claude does) records dozens of ids for
+   * a single lane, and an ungrouped read spends the whole limit on one
+   * conversation. `linkCount` reports how many were folded in.
+   */
+  listAgentSessionLinks(
+    args: { agentId: string; limit?: number },
+  ): Array<AgentSessionLink & { historyKey: string; linkCount: number }> {
+    const agentId = String(args.agentId ?? "").trim();
+    if (!agentId || !this.db || !this.selectRecentSessionLinksStmt) {
+      return [];
+    }
+    const limit = Math.max(1, Math.min(500, Math.floor(args.limit ?? 100)));
+    try {
+      const rows = this.selectRecentSessionLinksStmt.all(this.namespace, agentId, limit) as Array<{
+        historyKey: string;
+        agentId: string;
+        providerSessionId: string;
+        cwd: string | null;
+        firstSeenAt: number;
+        lastSeenAt: number;
+        linkCount: number;
+      }>;
+      return rows.map((row) => ({
+        historyKey: row.historyKey,
+        agentId: row.agentId,
+        providerSessionId: row.providerSessionId,
+        cwd: row.cwd ?? undefined,
+        firstSeenAt: row.firstSeenAt,
+        lastSeenAt: row.lastSeenAt,
+        linkCount: Number.isFinite(row.linkCount) ? row.linkCount : 1,
+      }));
+    } catch (error) {
+      logger.warn("[HistoryStore] Failed to list agent session links", error);
+      return [];
+    }
+  }
+
   updatePromptExecutionMetadata(
     sessionId: string,
     clientMessageId: string,
@@ -457,6 +502,7 @@ export class HistoryStore {
     this.deleteSessionLinksStmt = statements.deleteSessionLinksStmt;
     this.upsertSessionLinkStmt = statements.upsertSessionLinkStmt;
     this.selectSessionLinksStmt = statements.selectSessionLinksStmt;
+    this.selectRecentSessionLinksStmt = statements.selectRecentSessionLinksStmt;
   }
 
   private trimSqlite(sessionId: string): void {
@@ -646,6 +692,30 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
      WHERE namespace = ? AND session_id = ?
      ORDER BY last_seen_at DESC`,
   );
+  const selectRecentSessionLinksStmt = db.prepare(
+    // One row per ADS conversation, carrying the newest provider session it
+    // produced. ROW_NUMBER rather than MAX(): links written in the same
+    // millisecond tie on last_seen_at, and a bare-column MAX() would then pick
+    // an arbitrary fork instead of the latest one. `id DESC` breaks the tie by
+    // insertion order.
+    `SELECT historyKey, agentId, providerSessionId, cwd, firstSeenAt, lastSeenAt, linkCount
+     FROM (
+       SELECT
+         session_id AS historyKey,
+         agent_id AS agentId,
+         provider_session_id AS providerSessionId,
+         cwd,
+         first_seen_at AS firstSeenAt,
+         last_seen_at AS lastSeenAt,
+         COUNT(*) OVER (PARTITION BY session_id) AS linkCount,
+         ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY last_seen_at DESC, id DESC) AS rowRank
+       FROM history_session_links
+       WHERE namespace = ? AND agent_id = ?
+     )
+     WHERE rowRank = 1
+     ORDER BY lastSeenAt DESC
+     LIMIT ?`,
+  );
   const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
   const statements = {
     insertStmt,
@@ -662,6 +732,7 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
     deleteSessionLinksStmt,
     upsertSessionLinkStmt,
     selectSessionLinksStmt,
+    selectRecentSessionLinksStmt,
   };
   historyStoreStatementsCache.set(db, statements);
   return statements;

@@ -9,7 +9,7 @@ import {
   buildHistoryStoreResumeTranscript,
   loadTaskResumeConversationContext,
 } from "./taskResumeConversation.js";
-import { assertCodexThreadResumable } from "./taskResumeCodex.js";
+import { assertSessionResumable } from "./taskResumeProbe.js";
 import { sendTaskResumeHistorySnapshot } from "./taskResumeHistory.js";
 import {
   isPermanentTaskResumeFailure,
@@ -19,6 +19,28 @@ import {
 
 function cloneHistoryEntries(entries: readonly HistoryEntry[]): HistoryEntry[] {
   return entries.map((entry) => ({ ...entry }));
+}
+
+/** Agents whose CLI can reattach to a provider-native session by id. */
+const NATIVE_RESUME_AGENTS = new Set(["codex", "claude"]);
+
+function supportsNativeResume(agentId: string | undefined): boolean {
+  return NATIVE_RESUME_AGENTS.has(String(agentId ?? "").trim());
+}
+
+/**
+ * Why an attempted native resume did not happen. Falling back to history
+ * injection reads identically to never having had a native session, which hides
+ * the one fact worth acting on: the provider-side transcript is gone.
+ */
+function describeNativeResumeFailure(agentId: string, message: string): string {
+  if (!supportsNativeResume(agentId)) {
+    return `${agentId} 不支持原生会话恢复`;
+  }
+  if (isPermanentTaskResumeFailure(message)) {
+    return "会话文件已不存在";
+  }
+  return "恢复出错";
 }
 
 function replaceHistoryEntries(args: {
@@ -156,25 +178,25 @@ export async function handleTaskResumeMessage(
       savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
       savedResumeCwd: savedState?.cwd,
       currentCwd: deps.context.currentCwd,
-      canResumeThread: activeAgentId === "codex",
+      canResumeThread: supportsNativeResume(activeAgentId),
     });
     const threadIdToResume = selection.threadId;
     let clearSavedResumeThreadAfterFallback = false;
+    let nativeResumeFailure: string | undefined;
     deps.observability.logger.info(
       `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} agent=${activeAgentId} selectedThread=${threadIdToResume ?? "none"} selectionSource=${selection.source ?? "none"}`,
     );
 
     if (threadIdToResume) {
       try {
-        if (activeAgentId !== "codex") {
-          throw new Error(`task_resume via thread id is only supported for codex (active=${activeAgentId})`);
+        if (!supportsNativeResume(activeAgentId)) {
+          throw new Error(`native session resume is not supported for agent=${activeAgentId}`);
         }
 
-        await assertCodexThreadResumable({
-          threadId: threadIdToResume,
+        await assertSessionResumable({
+          agentId: activeAgentId,
+          sessionId: threadIdToResume,
           cwd: deps.context.currentCwd,
-          sandboxMode: deps.sessions.sessionManager.getSandboxMode(),
-          env: deps.sessions.sessionManager.getCodexEnv(),
         });
 
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadIdToResume, activeAgentId);
@@ -215,8 +237,9 @@ export async function handleTaskResumeMessage(
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        nativeResumeFailure = describeNativeResumeFailure(activeAgentId, message);
         deps.observability.logger.warn(
-          `[Web][task_resume] resumeThread failed thread=${threadIdToResume} err=${truncateForLog(message)}`,
+          `[Web][task_resume] resumeThread failed thread=${threadIdToResume} reason=${nativeResumeFailure} err=${truncateForLog(message)}`,
         );
         if (selection.source === "saved" && isPermanentTaskResumeFailure(message)) {
           clearSavedResumeThreadAfterFallback = true;
@@ -228,10 +251,13 @@ export async function handleTaskResumeMessage(
     }
 
     const laneHistoryTranscript = buildHistoryStoreResumeTranscript(originalHistoryEntries);
+    // Only set when a native resume was actually attempted, so the untried case
+    // keeps its original wording.
+    const degradePrefix = nativeResumeFailure ? `未能原生恢复（${nativeResumeFailure}），` : "";
     const resumeContext = laneHistoryTranscript
       ? {
           transcript: laneHistoryTranscript,
-          statusText: "已从当前对话恢复上下文",
+          statusText: `${degradePrefix}已从当前对话恢复上下文`,
         }
       : (() => {
           const taskResumeContext = loadTaskResumeConversationContext(taskCtx.taskStore);
@@ -240,15 +266,17 @@ export async function handleTaskResumeMessage(
           }
           return {
             transcript: taskResumeContext.transcript,
-            statusText: `已从最近任务恢复上下文：${String(taskResumeContext.task.title ?? taskResumeContext.task.id ?? "").trim()}`,
+            statusText: `${degradePrefix}已从最近任务恢复上下文：${String(taskResumeContext.task.title ?? taskResumeContext.task.id ?? "").trim()}`,
           };
         })();
 
     if (!resumeContext) {
       deps.observability.logger.warn(
-        `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=unavailable reason=no_resume_context`,
+        `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=unavailable reason=${nativeResumeFailure ? "native_resume_failed" : "no_resume_context"}`,
       );
-      const message = "未找到可用于恢复的任务历史";
+      const message = nativeResumeFailure
+        ? `未能原生恢复（${nativeResumeFailure}），且未找到可用于恢复的任务历史`
+        : "未找到可用于恢复的任务历史";
       commitTaskResumeError({
         historyStore: deps.history.historyStore,
         historyKey: deps.context.historyKey,
@@ -303,7 +331,7 @@ export async function handleTaskResumeMessage(
         }
       }
       deps.observability.logger.info(
-        `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} savedThread=${threadId ?? "none"}`,
+        `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} degradedFrom=${nativeResumeFailure ? "native_resume" : "none"} savedThread=${threadId ?? "none"}`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -112,17 +112,6 @@ export function resolveSessionAgentAllowlist(
   });
 }
 
-function resolveResumeTtlMs(): number {
-  const raw = process.env.ADS_THREAD_RESUME_TTL_MS;
-  if (raw) {
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return 2 * 60 * 60 * 1000; // 2 hours
-}
-
 export class SessionManager {
   private readonly runtime = new SessionRuntimeRegistry<HybridOrchestrator, ConversationLogger>();
   private cleanupInterval?: NodeJS.Timeout;
@@ -133,7 +122,6 @@ export class SessionManager {
   private threadStorage?: ThreadStorage;
   private codexEnv?: NodeJS.ProcessEnv;
   private readonly logger = createLogger("SessionManager");
-  private readonly resumeTtlMs = resolveResumeTtlMs();
 
   constructor(
     private readonly sessionTimeoutMs: number = 30 * 60 * 1000,
@@ -155,10 +143,18 @@ export class SessionManager {
     }
   }
 
+  /**
+   * `resumeThread` defaults to true: reattaching to the saved provider session
+   * is the normal path, and every read-only caller that just needs an
+   * orchestrator handle (agent snapshots, model overrides) would otherwise
+   * silently create a *fresh* session and strand the saved thread id.
+   * Callers that genuinely want a new thread — `/new`, an explicit task reset —
+   * must opt out by passing false.
+   */
   getOrCreate(
     userId: number,
     cwd?: string,
-    resumeThread?: boolean,
+    resumeThread: boolean = true,
     options?: { projectId?: string; useGoalAdapter?: boolean },
   ): HybridOrchestrator {
     const existing = this.runtime.touch(userId);
@@ -189,7 +185,6 @@ export class SessionManager {
       resumeThread,
       storage: this.threadStorage,
       logger: this.logger,
-      resumeTtlMs: this.resumeTtlMs,
       currentCwd: effectiveCwd,
     });
     activeAgentId = resumeState.activeAgentId ?? activeAgentId;
@@ -283,6 +278,11 @@ export class SessionManager {
     return this.threadStorage?.getThreadId(userId, agentId ?? "codex");
   }
 
+  /** Forget one agent's saved session id after the provider reported it gone. */
+  clearSavedThreadId(userId: number, agentId?: string): void {
+    this.threadStorage?.clearThreadId(userId, agentId ?? "codex");
+  }
+
   getSavedState(userId: number): SavedSessionState | undefined {
     return getSavedSessionState(this.threadStorage, userId);
   }
@@ -339,7 +339,13 @@ export class SessionManager {
       const previousAgentId = record.session.getActiveAgentId?.();
       record.session.switchAgent(agentId);
       if (previousAgentId && previousAgentId !== agentId) {
-        this.markHistoryInjection(userId);
+        // Each agent keeps its own provider session. When the target already has
+        // one, the adapter resumes it natively and injecting ADS history on top
+        // would make the model read the same turns twice. Inject only when the
+        // target has nothing to reattach to.
+        if (!this.getSavedThreadId(userId, agentId)) {
+          this.markHistoryInjection(userId);
+        }
       }
       record.lastActivity = Date.now();
       this.syncStoredState(userId);

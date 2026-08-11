@@ -107,6 +107,8 @@ export function attachWorkerPromptHandler(args: {
   logger: Logger;
   sessionLogger: SessionLogger;
   onThreadStarted?: (threadId: string) => void;
+  /** A resume was abandoned because the provider no longer had that session. */
+  onSessionFallback?: (info: { previousSessionId: string; detail: string }) => void;
   resolveAgentId?: () => string;
   channel?: string;
   ruleGate?: RuleEnforcementGate;
@@ -164,6 +166,19 @@ export function attachWorkerPromptHandler(args: {
     const raw = event.raw as ThreadEvent;
     if (raw.type === "thread.started" && raw.thread_id) {
       args.onThreadStarted?.(raw.thread_id);
+    }
+    if (event.sessionFallback) {
+      args.onSessionFallback?.({
+        previousSessionId: event.sessionFallback.previousSessionId,
+        detail: event.detail ?? event.title,
+      });
+      args.sendToChat({
+        type: "session_fallback",
+        previousSessionId: event.sessionFallback.previousSessionId,
+        message: event.detail ?? event.title,
+        ts: Date.now(),
+      });
+      return;
     }
     if (event.retry?.source === "external") {
       args.sendToChat({

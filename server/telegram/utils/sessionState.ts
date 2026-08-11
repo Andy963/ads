@@ -101,12 +101,26 @@ export function shouldClearSavedThreadsForCwdChange(savedCwd?: string, nextCwd?:
   return Boolean(normalizeCwd(savedCwd) && normalizeCwd(nextCwd) && !areSessionCwdsCompatible(savedCwd, nextCwd));
 }
 
+/**
+ * Decide how a rebuilt session reattaches to its provider thread.
+ *
+ * The rule is deliberately optimistic: a saved session id is resumed whenever
+ * one exists. Nothing here tries to predict whether the provider still holds
+ * that session — that question is only answerable from disk, asynchronously,
+ * and this function is synchronous and on the hot path. A session that really
+ * did disappear surfaces as a resume error on the first turn, where the adapter
+ * falls back to a fresh thread and flags history injection for the next one.
+ *
+ * In particular there is no idle timeout. A rollout/transcript on disk does not
+ * expire, so wall-clock age is not evidence that resuming would fail; dropping
+ * the thread on a timer only guaranteed the exact context loss it was meant to
+ * avoid. History injection is the degraded path, not a scheduled one.
+ */
 export function resolveResumeState(args: {
   userId: number;
   resumeThread: boolean | undefined;
   storage?: ThreadStorage;
   logger: Pick<Logger, "info">;
-  resumeTtlMs: number;
   currentCwd?: string;
 }): ResumeState {
   if (!args.resumeThread) {
@@ -123,7 +137,6 @@ export function resolveResumeState(args: {
     ? record?.agentThreads?.[savedActiveAgentId]
     : record?.agentThreads?.codex ?? record?.threadId;
   const resumeThreadIds = filterAgentThreads(record?.agentThreads);
-  const updatedAt = record?.updatedAt;
   const savedCwd = normalizeCwd(record?.cwd);
   const currentCwd = normalizeCwd(args.currentCwd);
 
@@ -138,57 +151,19 @@ export function resolveResumeState(args: {
     };
   }
 
-  if (candidateThreadId && updatedAt && args.resumeTtlMs > 0) {
-    const age = Date.now() - updatedAt;
-    if (age > args.resumeTtlMs) {
-      args.logger.info(
-        `[Continuity] user=${args.userId} restore=history_injection reason=stale_thread agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId} ageMin=${Math.round(age / 60_000)} ttlMin=${Math.round(args.resumeTtlMs / 60_000)}`,
-      );
-      args.storage?.setRecord(args.userId, {
-        ...record,
-        threadId: undefined,
-        cwd: record?.cwd,
-        agentThreads: { resume: candidateThreadId },
-      });
-      return {
-        activeAgentId: savedActiveAgentId,
-        shouldInjectHistory: true,
-        restoreMode: "history_injection",
-      };
-    }
-    args.logger.info(
-      `[Continuity] user=${args.userId} restore=thread_resumed_with_history agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
-    );
-    return {
-      resumeThreadId: candidateThreadId,
-      resumeThreadIds,
-      activeAgentId: savedActiveAgentId,
-      shouldInjectHistory: true,
-      restoreMode: "history_injection",
-    };
-  }
-
-  if (candidateThreadId && !updatedAt) {
-    args.logger.info(
-      `[Continuity] user=${args.userId} restore=history_injection reason=missing_updated_at agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
-    );
-    return {
-      activeAgentId: savedActiveAgentId,
-      shouldInjectHistory: true,
-      restoreMode: "history_injection",
-    };
-  }
-
   if (candidateThreadId) {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=thread_resumed_with_history agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
     );
+    // The provider reloads its own transcript for this thread, so injecting the
+    // ADS history on top would make the model read the same turns twice: once as
+    // real context and once as a user-authored recap.
     return {
       resumeThreadId: candidateThreadId,
       resumeThreadIds,
       activeAgentId: savedActiveAgentId,
-      shouldInjectHistory: true,
-      restoreMode: "history_injection",
+      shouldInjectHistory: false,
+      restoreMode: "thread_resumed",
     };
   }
 

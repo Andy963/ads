@@ -50,6 +50,14 @@ export interface AgentEvent {
   timestamp: number;
   raw: ThreadEvent;
   retry?: AgentRetryInfo;
+  /**
+   * Set when a resume was abandoned because the provider no longer has the
+   * saved session, and the turn was restarted on a fresh thread.
+   */
+  sessionFallback?: {
+    reason: "missing_provider_session";
+    previousSessionId: string;
+  };
 }
 
 type ItemEvent = ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent;

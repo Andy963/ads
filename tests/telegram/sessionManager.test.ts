@@ -207,7 +207,7 @@ describe("SessionManager", () => {
     assert.equal(manager.getContextRestoreMode(123456), "history_injection");
   });
 
-  it("marks history injection when switching agents even if the target has its own thread", () => {
+  it("injects history when switching to an agent with no session of its own", () => {
     const session = manager.getOrCreate(123456, "/tmp/a") as unknown as FakeSession;
     session.threadId = "codex-thread";
     session.switchAgent = (agentId) => {
@@ -219,8 +219,45 @@ describe("SessionManager", () => {
 
     assert.equal(result.success, true);
     assert.equal(session.threadId, "claude-thread");
+    // No storage is attached here, so the target has nothing to reattach to and
+    // the ADS history is the only way to carry context across the switch.
     assert.equal(manager.needsHistoryInjection(123456), true);
     assert.equal(manager.getContextRestoreMode(123456), "history_injection");
+  });
+
+  it("does not inject history when the target agent has its own saved session", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(321, {
+      threadId: "codex-thread",
+      cwd: "/tmp/a",
+      agentThreads: { codex: "codex-thread", claude: "claude-session" },
+      activeAgentId: "codex",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    const session = manager.getOrCreate(321, "/tmp/a", true) as unknown as FakeSession;
+    session.switchAgent = (agentId) => {
+      session.activeAgentId = agentId;
+      session.threadId = "claude-session";
+    };
+
+    const result = manager.switchAgent(321, "claude");
+
+    assert.equal(result.success, true);
+    // Claude resumes its own transcript, so injecting ADS history on top would
+    // make the model read the same turns twice.
+    assert.equal(manager.needsHistoryInjection(321), false);
   });
 
   it("tracks user cwd", () => {
@@ -269,8 +306,9 @@ describe("SessionManager", () => {
 
     const resumed = manager.getOrCreate(80, nestedWorkspace, true) as unknown as FakeSession;
     assert.equal(resumed.getThreadId(), "thread-80");
-    assert.equal(manager.getContextRestoreMode(80), "history_injection");
-    assert.equal(manager.needsHistoryInjection(80), true);
+    // The provider reloads this thread natively, so ADS must not replay its own history on top.
+    assert.equal(manager.getContextRestoreMode(80), "thread_resumed");
+    assert.equal(manager.needsHistoryInjection(80), false);
   });
 
   it("clears saved threads when cwd rebinding crosses to an incompatible workspace", () => {
@@ -333,8 +371,8 @@ describe("SessionManager", () => {
     assert.equal(session.getModelReasoningEffort(), "xhigh");
     assert.equal(session.getActiveAgentId(), "claude");
     assert.equal(session.getThreadId(), "claude-thread");
-    assert.equal(manager.getContextRestoreMode(42), "history_injection");
-    assert.equal(manager.needsHistoryInjection(42), true);
+    assert.equal(manager.getContextRestoreMode(42), "thread_resumed");
+    assert.equal(manager.needsHistoryInjection(42), false);
   });
 
   it("keeps fresh restore mode when no saved thread exists even if resume was requested", () => {
@@ -384,7 +422,10 @@ describe("SessionManager", () => {
     assert.equal(manager.getContextRestoreMode(78), "fresh");
   });
 
-  it("falls back to history injection when a saved thread is stale", () => {
+  it("resumes a long-idle saved thread instead of dropping it", () => {
+    // A rollout on disk does not expire, so idle time is not evidence that
+    // resuming would fail. Dropping the thread on a timer used to guarantee the
+    // very context loss it was meant to avoid.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
     const stateDbPath = path.join(tmpDir, "state.db");
     const storage = new ThreadStorage({
@@ -396,15 +437,13 @@ describe("SessionManager", () => {
     storage.setRecord(42, {
       threadId: "codex-thread",
       cwd: "/tmp/project",
-      agentThreads: { codex: "codex-thread" },
+      agentThreads: { codex: "codex-thread", claude: "claude-session" },
       activeAgentId: "codex",
     });
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
     getStateDatabase(stateDbPath)
       .prepare("UPDATE thread_state SET updated_at = ? WHERE namespace = ?")
-      .run(Date.now() - 10_000, "test");
-
-    const previousTtl = process.env.ADS_THREAD_RESUME_TTL_MS;
-    process.env.ADS_THREAD_RESUME_TTL_MS = "1";
+      .run(thirtyDaysAgo, "test");
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
@@ -412,19 +451,44 @@ describe("SessionManager", () => {
       createSession: sessions.factory as never,
     });
 
-    try {
-      const session = manager.getOrCreate(42, "/tmp/project", true) as unknown as FakeSession;
-      assert.equal(session.getThreadId(), null);
-      assert.equal(manager.needsHistoryInjection(42), true);
-      assert.equal(manager.getContextRestoreMode(42), "history_injection");
-      assert.equal(storage.getRecord(42)?.agentThreads?.resume, "codex-thread");
-    } finally {
-      if (previousTtl === undefined) {
-        delete process.env.ADS_THREAD_RESUME_TTL_MS;
-      } else {
-        process.env.ADS_THREAD_RESUME_TTL_MS = previousTtl;
-      }
-    }
+    const session = manager.getOrCreate(42, "/tmp/project", true) as unknown as FakeSession;
+    assert.equal(session.getThreadId(), "codex-thread");
+    assert.equal(manager.needsHistoryInjection(42), false);
+    assert.equal(manager.getContextRestoreMode(42), "thread_resumed");
+    // The other agent's id must survive: the old stale branch replaced the whole
+    // map with `{ resume: <id> }`, silently discarding every other agent.
+    assert.equal(storage.getRecord(42)?.agentThreads?.claude, "claude-session");
+  });
+
+  it("resumes rather than creating a fresh session when the caller omits the flag", () => {
+    // Read-only callers (agent snapshots, model overrides) reach getOrCreate
+    // without an opinion. Defaulting to fresh stranded the saved thread id for
+    // the rest of the process, because the next connect saw a live session and
+    // skipped resuming too.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
+    const stateDbPath = path.join(tmpDir, "state.db");
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath,
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(7, {
+      threadId: "codex-thread",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "codex-thread" },
+      activeAgentId: "codex",
+    });
+
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    const session = manager.getOrCreate(7, "/tmp/project") as unknown as FakeSession;
+    assert.equal(session.getThreadId(), "codex-thread");
+    assert.equal(manager.getContextRestoreMode(7), "thread_resumed");
   });
 
   it("clears saved thread bindings but preserves authoritative model metadata on model switch", () => {
@@ -487,7 +551,7 @@ describe("SessionManager", () => {
     const resumed = manager.getOrCreate(79, "/tmp/project-b", true) as unknown as FakeSession;
     assert.equal(storage.getRecord(79)?.cwd, "/tmp/project-b");
     assert.equal(resumed.getThreadId(), "manual-thread");
-    assert.equal(manager.getContextRestoreMode(79), "history_injection");
-    assert.equal(manager.needsHistoryInjection(79), true);
+    assert.equal(manager.getContextRestoreMode(79), "thread_resumed");
+    assert.equal(manager.needsHistoryInjection(79), false);
   });
 });

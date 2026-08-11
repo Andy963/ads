@@ -251,6 +251,7 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 - Goal Mode 依赖 Codex app-server 正常启动；普通 Worker/任务执行依赖 Codex CLI。
 - Web 服务启动时会同步 runtime templates，并启动 scheduler、任务队列管理器、Agent 可用性探测和 Telegram 任务通知重试循环。
 - 顶栏「全局规则」入口管理跨 channel 的统一规则：规则存在 `state.db` 的 `global_rules` 表，首次启动时从 `templates/rules.md` 导入种子规则，之后由数据库作为唯一事实来源；启用规则以 `<global_rules>` 区块注入 Web / Telegram / Codex / Claude 的同一份 system prompt，保存后下一轮请求即生效，不需要重启。数据库不可用时降级为 `templates/rules.md` 只读 bootstrap 规则并记录告警。界面同时提供注入预览、规则测试和最近修改记录。详见 [docs/global-rules-architecture.md](docs/global-rules-architecture.md)。
+- 会话工具条的「历史会话」按钮打开会话选择器，列出当前工作目录下最近的 Codex / Claude 会话（标题、时间、轮数、来源），点击即按 provider 原生会话续接，不再向模型重复注入一份 ADS 历史文本。Codex 走 app-server `thread/list`（不可用时回退扫描 rollout 文件），Claude 合并 `history_session_links` 与 `~/.claude/projects` transcript。列表默认隐藏一次性会话（只有一轮问答）并把同标题会话折叠为最新一条，隐藏数量会显示在列表顶部并可一键「显示全部」；搜索时不做降噪。CLI 在 `--resume` 时会 fork 出新的 session id，因此同一条对话往往对应几十个 provider session，列表按对话只保留最新的那个（更早的 fork 缺少后续轮次），并标注合并了多少个。会话不设空闲超时：磁盘上的会话文件不会因为时间流逝而失效，闲置一个月的会话与一分钟前的会话恢复方式完全相同，列表也不做任何年龄标记。列表满一页后可「加载更多」。列表为只读，任务运行中也能打开，仅恢复动作被禁用并说明原因。会话可恢复性用文件系统查找判定，不消耗模型调用；只有在确认会话文件缺失时才清理已保存的 session ID 并降级为历史注入，且降级时会说明原因（「未能原生恢复（会话文件已不存在）」）而不是与「本来就没有原生会话」混为一谈。重新连接一律尝试原生恢复，不再按空闲时长丢弃线程；只有 provider 明确报告会话已不存在时才降级——此时当前这一轮会自动改用新会话跑完（不会报错），并从下一轮起注入最近聊天历史，界面会明确说明发生了什么。Telegram 侧对应 `/sessions`。详见 [docs/session-resume-architecture.md](docs/session-resume-architecture.md)。
 
 ## Telegram 命令
 
@@ -260,7 +261,8 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 | `/help` | 命令帮助 |
 | `/status` | 系统状态 |
 | `/reset` | 重置会话，开始新对话 |
-| `/resume` | 当前实现会提示使用 `/reset` |
+| `/sessions [关键词]` | 列出当前目录下最近可恢复的会话，点按钮即续接其原生上下文 |
+| `/resume` | 提示改用 `/sessions` 选择要恢复的会话 |
 | `/esc` | 中断当前任务，Agent 进程保留 |
 | `/mark [on\|off]` | 将后续对话记录到当天 note |
 | `/pref [list\|add\|del]` | 管理长期偏好 |

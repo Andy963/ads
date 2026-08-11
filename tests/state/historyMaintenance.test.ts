@@ -57,8 +57,40 @@ describe("state/history maintenance", () => {
     });
   });
 
-  it("removes expired sessions and then enforces the global history byte budget", () => {
-    const db = getStateDatabase(dbPath);
+  it("lists one row per chat, carrying that chat's newest provider session", () => {
+    const history = new HistoryStore({ storagePath: dbPath, namespace: "web-worker" });
+    // A CLI that forks a new session id on each resumed turn: one chat, three ids.
+    for (const providerSessionId of ["fork-1", "fork-2", "fork-3"]) {
+      assert.equal(
+        history.linkAgentSession("chat-forked", {
+          agentId: "claude",
+          providerSessionId,
+          cwd: "/workspace/project",
+        }),
+        true,
+      );
+    }
+    assert.equal(
+      history.linkAgentSession("chat-solo", {
+        agentId: "claude",
+        providerSessionId: "solo-1",
+        cwd: "/workspace/project",
+      }),
+      true,
+    );
+
+    const links = history.listAgentSessionLinks({ agentId: "claude" });
+    assert.deepEqual(links.map((link) => link.historyKey).sort(), ["chat-forked", "chat-solo"]);
+
+    const forked = links.find((link) => link.historyKey === "chat-forked");
+    // The bare columns must come from the MAX(last_seen_at) row, not an arbitrary one.
+    assert.equal(forked?.providerSessionId, "fork-3");
+    assert.equal(forked?.cwd, "/workspace/project");
+    assert.equal(forked?.linkCount, 3);
+    assert.equal(links.find((link) => link.historyKey === "chat-solo")?.linkCount, 1);
+  });
+
+  it("removes expired sessions and then enforces the global history byte budget", () => {    const db = getStateDatabase(dbPath);
     const history = new HistoryStore({ storagePath: dbPath, namespace: "web-worker" });
     const now = 100 * 24 * 60 * 60 * 1000;
 

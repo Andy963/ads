@@ -27,6 +27,10 @@ import {
   readAutoCompactConfig,
   resolveAutoCompactThresholdPercent,
 } from "./autoCompactConfig.js";
+import {
+  createProviderSessionFallbackEvent,
+  isMissingProviderSessionError,
+} from "./missingProviderSession.js";
 
 const logger = createLogger("ClaudeCliAdapter");
 const CLAUDE_UNSET_ENV = ["CLAUDECODE"];
@@ -282,43 +286,52 @@ export class ClaudeCliAdapter implements AgentAdapter {
     }
 
     const permissionMode = this.sandboxMode === "read-only" ? "plan" : "bypassPermissions";
-    const sessionId = this.sessionId;
-    const args: string[] = [
-      "--print",
-      "--verbose",
-      "--output-format",
-      "stream-json",
-      "--include-partial-messages",
-      "--permission-mode",
-      permissionMode,
-    ];
-    if (sessionId) {
-      args.push("--resume", sessionId);
-    }
-    if (this.model) {
-      args.push(
-        "--model",
-        resolveClaudeModelForCli(this.model, {
-          enable1mContext: this.enable1mContext,
-          disable1mContext: this.disable1mContext,
-        }),
-      );
-    }
-    if (this.modelReasoningEffort) {
-      args.push("--effort", this.modelReasoningEffort);
-    }
-    if (this.betas.length > 0) {
-      args.push("--betas", ...this.betas);
-    }
-    if (imagePaths.length > 0) {
-      const dirs = uniq(imagePaths.map((p) => path.dirname(p)));
-      if (dirs.length > 0) {
-        args.push("--add-dir", ...dirs);
+    const savedSessionId = this.sessionId;
+    // Built per attempt: a missing-session fallback reruns the same turn with
+    // `--resume` dropped, so the resume target cannot be baked in here.
+    const buildArgs = (resumeSessionId: string | null): string[] => {
+      const args: string[] = [
+        "--print",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+        "--permission-mode",
+        permissionMode,
+      ];
+      if (resumeSessionId) {
+        args.push("--resume", resumeSessionId);
       }
-    }
-    args.push(promptWithImages);
+      if (this.model) {
+        args.push(
+          "--model",
+          resolveClaudeModelForCli(this.model, {
+            enable1mContext: this.enable1mContext,
+            disable1mContext: this.disable1mContext,
+          }),
+        );
+      }
+      if (this.modelReasoningEffort) {
+        args.push("--effort", this.modelReasoningEffort);
+      }
+      if (this.betas.length > 0) {
+        args.push("--betas", ...this.betas);
+      }
+      if (imagePaths.length > 0) {
+        const dirs = uniq(imagePaths.map((p) => path.dirname(p)));
+        if (dirs.length > 0) {
+          args.push("--add-dir", ...dirs);
+        }
+      }
+      args.push(promptWithImages);
+      return args;
+    };
 
-    const runAttempt = async (retryState: RetryAttemptState): Promise<AgentRunResult> => {
+    const runAttempt = async (
+      sessionId: string | null,
+      retryState: RetryAttemptState,
+    ): Promise<AgentRunResult> => {
+      const args = buildArgs(sessionId);
       const parser = new ClaudeStreamParser();
       let sawTurnFailed = false;
       let sawTerminalResult = false;
@@ -435,15 +448,40 @@ export class ClaudeCliAdapter implements AgentAdapter {
       };
     };
 
-    return await runWithTransientModelRetry(
-      {
-        agentName: "Claude CLI",
-        signal: options?.signal,
-        log: (message) => logger.warn(message),
-        onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
-      },
-      runAttempt,
-    );
+    const driveAttempts = (sessionId: string | null): Promise<AgentRunResult> =>
+      runWithTransientModelRetry(
+        {
+          agentName: "Claude CLI",
+          signal: options?.signal,
+          log: (message) => logger.warn(message),
+          onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
+        },
+        (retryState) => runAttempt(sessionId, retryState),
+      );
+
+    try {
+      return await driveAttempts(savedSessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!savedSessionId || !isMissingProviderSessionError(message)) {
+        throw error;
+      }
+      // The transcript for this id is gone. Absorbing it is the only way the
+      // user gets an answer at all; every other resume failure keeps the id so
+      // the next turn can still reattach.
+      logger.warn(
+        `Resume target missing (session=${savedSessionId}); retrying on a fresh session. cause=${message}`,
+      );
+      this.sessionId = null;
+      this.emitEvent(
+        createProviderSessionFallbackEvent({
+          agentName: "Claude CLI",
+          previousSessionId: savedSessionId,
+          message,
+        }),
+      );
+      return await driveAttempts(null);
+    }
   }
 
   private emitEvent(event: AgentEvent): void {

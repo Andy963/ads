@@ -333,6 +333,31 @@ export class ThreadStorage {
     });
   }
 
+  /**
+   * Drop one agent's saved session id, leaving every other agent's intact.
+   * Used when a provider reports the session no longer exists, so the dead id
+   * is not retried on every subsequent turn.
+   */
+  clearThreadId(userId: number, agentId = "codex"): void {
+    const existing = this.getRecord(userId);
+    if (!existing) {
+      return;
+    }
+    const agentThreads = { ...(existing.agentThreads ?? {}) };
+    if (!(agentId in agentThreads) && !(agentId === "codex" && existing.threadId)) {
+      return;
+    }
+    delete agentThreads[agentId];
+    this.setRecord(userId, {
+      threadId: agentId === "codex" ? undefined : existing.threadId,
+      cwd: existing.cwd,
+      agentThreads,
+      model: existing.model,
+      modelReasoningEffort: existing.modelReasoningEffort,
+      activeAgentId: existing.activeAgentId,
+    });
+  }
+
   getRecord(userId: number): ThreadState | undefined {
     const userHash = this.hashUserId(userId);
     try {

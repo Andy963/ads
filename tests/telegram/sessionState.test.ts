@@ -166,7 +166,7 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, true);
   });
 
-  it("resumes a fresh saved thread with one-time history injection", () => {
+  it("resumes a fresh saved thread natively without history injection", () => {
     storage.setRecord(11, {
       threadId: "thread-11",
       cwd: "/tmp/project",
@@ -182,9 +182,9 @@ describe("telegram/sessionState helpers", () => {
       resumeTtlMs: 60_000,
     });
 
-    assert.equal(resume.restoreMode, "history_injection");
+    assert.equal(resume.restoreMode, "thread_resumed");
     assert.equal(resume.resumeThreadId, "thread-11");
-    assert.equal(resume.shouldInjectHistory, true);
+    assert.equal(resume.shouldInjectHistory, false);
   });
 
   it("keeps auto-resume when reconnect normalizes to a compatible project cwd", () => {
@@ -204,9 +204,9 @@ describe("telegram/sessionState helpers", () => {
       currentCwd: "/tmp/project",
     });
 
-    assert.equal(resume.restoreMode, "history_injection");
+    assert.equal(resume.restoreMode, "thread_resumed");
     assert.equal(resume.resumeThreadId, "thread-13");
-    assert.equal(resume.shouldInjectHistory, true);
+    assert.equal(resume.shouldInjectHistory, false);
   });
 
   it("skips auto-resume when the current cwd no longer matches the saved cwd", () => {

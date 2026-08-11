@@ -3,7 +3,6 @@ import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsOrchestrator } from "./deps.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
-import { shouldResumeMissingRuntimeSession } from "./resumeThreadFallback.js";
 
 function readAgentId(payload: unknown): string {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -40,11 +39,7 @@ export function handleSetAgentCommand(args: {
     return args.orchestrator;
   }
 
-  const orchestrator = args.sessionManager.getOrCreate(
-    args.userId,
-    args.currentCwd,
-    shouldResumeMissingRuntimeSession(args.sessionManager, args.userId),
-  );
+  const orchestrator = args.sessionManager.getOrCreate(args.userId, args.currentCwd, true);
   const activeAgentId = orchestrator.getActiveAgentId();
   const agents = orchestrator.listAgents().map((entry) => {
     const merged = args.agentAvailability.mergeStatus(entry.metadata.id, entry.status);

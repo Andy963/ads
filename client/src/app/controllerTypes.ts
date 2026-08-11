@@ -49,6 +49,37 @@ export type AgentDelegationInFlight = {
   startedAt: number;
 };
 
+/** One provider-native session the user can resume, as listed by the backend catalog. */
+export type ResumableSession = {
+  agentId: string;
+  sessionId: string;
+  cwd?: string;
+  title?: string;
+  preview?: string;
+  messageCount?: number;
+  /** Real user turns; absent when the backend could only scan part of the transcript. */
+  userTurns?: number;
+  /** A one-shot session: a single prompt answered once, with nothing to resume into. */
+  singleTurn?: boolean;
+  /** How many same-titled sessions this row stands for, when duplicates were collapsed. */
+  duplicateCount?: number;
+  /** How many provider sessions this one conversation produced; only the newest is offered. */
+  forkCount?: number;
+  createdAt?: number;
+  updatedAt: number;
+  source: "app_server" | "rollout_file" | "ads_link" | "claude_transcript";
+  isCurrent?: boolean;
+  linkedHistoryKey?: string;
+};
+
+/** Entries the backend withheld as noise, so the picker can offer to reveal them. */
+export type ResumableSessionsHidden = {
+  singleTurn: number;
+  duplicates: number;
+  /** Superseded fork-chain sessions; folded away permanently, not revealable. */
+  forks: number;
+};
+
 export type AgentDescriptor = {
   id: string;
   name: string;
@@ -164,6 +195,12 @@ export type ProjectRuntime = {
   taskBundleDraftsBusy: Ref<boolean>;
   taskBundleDraftsError: Ref<string | null>;
   delegationsInFlight: Ref<AgentDelegationInFlight[]>;
+  resumableSessions: Ref<ResumableSession[]>;
+  resumableSessionsBusy: Ref<boolean>;
+  resumableSessionsError: Ref<string | null>;
+  resumableSessionsHidden: Ref<ResumableSessionsHidden | null>;
+  /** Continuation token for the next page, or null when the list is exhausted. */
+  resumableSessionsNextCursor: Ref<string | null>;
   ignoreNextHistory: boolean;
   resumeReplacePending: boolean;
   awaitingBootstrapHistory: boolean;

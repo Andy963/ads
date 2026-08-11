@@ -1,8 +1,10 @@
 import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsLogger, WsPromptSessionLogger, WsTaskResumeHandlerDeps } from "./deps.js";
 import { invalidateWsPromptRun } from "./promptLifecycle.js";
+import { handleSessionListMessage } from "./handleSessionList.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import type { WsMessage } from "./schema.js";
 
@@ -115,6 +117,19 @@ export async function handleWsControlMessage(args: {
       },
     });
     return { handled: true, orchestrator: resume.orchestrator ?? args.orchestrator };
+  }
+
+  if (args.parsed.type === "session_list") {
+    await handleSessionListMessage({
+      payload: args.parsed.payload,
+      historyStore: args.historyStore as unknown as HistoryStore,
+      currentCwd: args.currentCwd,
+      activeAgentId: args.orchestrator.getActiveAgentId(),
+      currentSessionId: args.orchestrator.getThreadId(),
+      sendJson: args.sendJson,
+      logger: args.logger,
+    });
+    return { handled: true, orchestrator: args.orchestrator };
   }
 
   return { handled: false, orchestrator: args.orchestrator };

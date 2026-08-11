@@ -1,10 +1,24 @@
-import { afterEach, describe, it } from "node:test";
+import { afterEach, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { handleTaskResumeMessage } from "../../server/web/server/ws/handleTaskResume.js";
 
 describe("web/ws/handleTaskResume", () => {
   const originalCodexBin = process.env.ADS_CODEX_BIN;
+
+  // The disk probe reads the real provider homes otherwise: an empty but
+  // readable root is what makes "session is gone" deterministic, since a
+  // missing root probes as `unknown` and lets the resume through.
+  before(() => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-resume-probe-"));
+    fs.mkdirSync(path.join(root, "codex", "sessions"), { recursive: true });
+    fs.mkdirSync(path.join(root, "claude", "projects"), { recursive: true });
+    process.env.CODEX_HOME = path.join(root, "codex");
+    process.env.CLAUDE_CONFIG_DIR = path.join(root, "claude");
+  });
 
   afterEach(() => {
     if (originalCodexBin === undefined) {
@@ -242,7 +256,7 @@ describe("web/ws/handleTaskResume", () => {
         },
         {
           role: "status",
-          text: "已从当前对话恢复上下文",
+          text: "未能原生恢复（会话文件已不存在），已从当前对话恢复上下文",
           ts: historyEntries.at(-1)?.ts,
         },
       ],
@@ -540,7 +554,7 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(sent, [{ type: "error", message: "Claude credentials are missing" }]);
   });
 
-  it("preserves saved resume continuity when probe fails and falls back to transcript restore", async () => {
+  it("clears a saved resume thread that no longer exists on disk and falls back to transcript restore", async () => {
     process.env.ADS_CODEX_BIN = process.execPath;
 
     const sent: unknown[] = [];
@@ -661,7 +675,9 @@ describe("web/ws/handleTaskResume", () => {
 
     assert.equal(result.handled, true);
     assert.equal(result.orchestrator, fallbackOrchestrator);
-    assert.equal(clearSavedResumeCalls, 0);
+    // The rollout file for `saved-resume-thread` does not exist, so the probe is
+    // definitive and the dead id is dropped instead of being retried forever.
+    assert.equal(clearSavedResumeCalls, 1);
     assert.deepEqual(dropSessionCalls, [{}]);
     assert.deepEqual(getOrCreateCalls, [{ userId: 7, cwd: "/mnt/d/code/ADS/ads", resumeThread: false }]);
     assert.deepEqual(saveThreadCalls, [{ userId: 7, threadId: "new-thread", agentId: "codex" }]);
@@ -672,14 +688,14 @@ describe("web/ws/handleTaskResume", () => {
       items: [
         {
           role: "status",
-          text: "已从最近任务恢复上下文：Recent task",
+          text: "未能原生恢复（会话文件已不存在），已从最近任务恢复上下文：Recent task",
           ts: historyEntries[0]?.ts,
         },
       ],
     });
   });
 
-  it("skips thread resume selection for non-codex agents and restores transcript directly", async () => {
+  it("attempts native resume for claude and falls back when the transcript is gone", async () => {
     const sent: unknown[] = [];
     const historyEntries: Array<{ role: string; text: string; ts: number }> = [];
     const dropSessionCalls: Array<{ clearSavedThread?: boolean }> = [];
@@ -805,7 +821,10 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(dropSessionCalls, [{}]);
     assert.deepEqual(getOrCreateCalls, [{ userId: 8, cwd: "/mnt/d/code/ADS/ads", resumeThread: false }]);
     assert.deepEqual(saveThreadCalls, [{ userId: 8, threadId: "new-claude-session", agentId: "claude" }]);
-    assert.deepEqual(warnings, []);
+    // Claude is no longer excluded from native resume; the attempt is made and
+    // only fails because this synthetic session id has no transcript on disk.
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /resumeThread failed thread=claude-current-thread/);
     assert.deepEqual(sent.at(-1), {
       type: "history",
       threadId: "new-claude-session",
@@ -813,10 +832,72 @@ describe("web/ws/handleTaskResume", () => {
       items: [
         {
           role: "status",
-          text: "已从最近任务恢复上下文：Recent Claude task",
+          text: "未能原生恢复（会话文件已不存在），已从最近任务恢复上下文：Recent Claude task",
           ts: historyEntries[0]?.ts,
         },
       ],
     });
+  });
+
+  it("keeps the plain wording when there was no native session to try", async () => {
+    const sessionSent: unknown[] = [];
+    const historyEntries = [
+      { role: "user", text: "current question", ts: 1 },
+      { role: "ai", text: "current answer", ts: 2 },
+    ];
+
+    const orchestrator = {
+      getActiveAgentId: () => "claude",
+      getThreadId: () => null,
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true }),
+      send: async () => ({ output: "OK" }),
+    };
+
+    await handleTaskResumeMessage({
+      request: { parsed: { type: "task_resume", payload: { mode: "auto" } } as any },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: () => {},
+        broadcastJson: (payload: unknown) => sessionSent.push(payload),
+      },
+      observability: { logger: { info: () => {}, debug: () => {}, warn: () => {} } },
+      context: { userId: 11, historyKey: "history-plain", currentCwd: "/mnt/d/code/ADS/ads" },
+      sessions: {
+        sessionManager: {
+          // Nothing saved anywhere, so the native path is never entered.
+          getSavedThreadId: () => undefined,
+          getSavedResumeThreadId: () => undefined,
+          clearSavedResumeThreadId: () => {},
+          dropSession: () => {},
+          getOrCreate: () => orchestrator as any,
+          saveThreadId: () => {},
+        } as any,
+        orchestrator: orchestrator as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          clear: () => {
+            historyEntries.length = 0;
+          },
+          add: (_key: string, entry: { role: string; text: string; ts: number }) => {
+            historyEntries.push(entry);
+          },
+          get: () => historyEntries,
+        } as any,
+      },
+      tasks: {
+        ensureTaskContext: () => ({
+          queueRunning: false,
+          taskStore: { getActiveTaskId: () => null },
+        }) as any,
+      },
+    } as any);
+
+    const history = sessionSent.at(-1) as { items: Array<{ role: string; text: string }> };
+    assert.equal(history.items.at(-1)?.text, "已从当前对话恢复上下文");
   });
 });

@@ -1,8 +1,14 @@
 import type { Bot, Context } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 import { interruptExecution } from '../adapters/codex.js';
 import { getDailyNoteFilePath } from '../utils/noteLogger.js';
 import { detectWorkspaceFrom } from '../../workspace/detector.js';
 import { listPreferences, setPreference, deletePreference } from '../../memory/soul.js';
+import { listAgentSessions } from '../../agents/sessions/catalog.js';
+import {
+  formatSessionListMessage,
+  parseSessionCallbackData,
+} from '../utils/sessionListMessage.js';
 import { requireUserId, type TelegramBotRuntime } from './shared.js';
 
 export const TELEGRAM_CONTROL_COMMANDS = new Set([
@@ -13,11 +19,15 @@ export const TELEGRAM_CONTROL_COMMANDS = new Set([
   'esc',
   'reset',
   'resume',
+  'sessions',
   'mark',
   'pwd',
   'cd',
   'pref',
 ]);
+
+/** Telegram cannot scroll a keyboard, so the list stays short and searchable. */
+const SESSION_LIST_PAGE_SIZE = 8;
 
 export async function registerTelegramCommandMenu(
   bot: Bot<Context>,
@@ -32,6 +42,7 @@ export async function registerTelegramCommandMenu(
       { command: 'esc', description: '中断当前任务' },
       { command: 'reset', description: '开始新对话' },
       { command: 'resume', description: '恢复之前的对话' },
+      { command: 'sessions', description: '列出可恢复的历史会话' },
       { command: 'mark', description: '记录对话到笔记' },
       { command: 'pwd', description: '当前目录' },
       { command: 'cd', description: '切换目录' },
@@ -43,8 +54,7 @@ export async function registerTelegramCommandMenu(
   }
 }
 
-export function registerTelegramControlCommands(bot: Bot<Context>, runtime: TelegramBotRuntime): void {
-  bot.command('start', async (ctx) => {
+export function registerTelegramControlCommands(bot: Bot<Context>, runtime: TelegramBotRuntime): void {  bot.command('start', async (ctx) => {
     await ctx.reply(
       '👋 欢迎使用 Codex Telegram Bot!\n\n' +
         '可用命令：\n' +
@@ -52,6 +62,7 @@ export function registerTelegramControlCommands(bot: Bot<Context>, runtime: Tele
         '/status - 查看系统状态\n' +
         '/agent - 查看或切换代理\n' +
         '/reset - 重置会话\n' +
+        '/sessions - 列出可恢复的历史会话\n' +
         '/mark - 切换对话标记，记录到当天 note\n' +
         '/pref - 管理偏好设置（长期记忆）\n' +
         '/pwd - 查看当前目录\n' +
@@ -70,6 +81,7 @@ export function registerTelegramControlCommands(bot: Bot<Context>, runtime: Tele
         '/agent [id] - 查看可用代理或切换代理\n' +
         '/reset - 重置会话（开始新对话）\n' +
         '/resume - 恢复之前的对话\n' +
+        '/sessions [关键词] - 列出可恢复的历史会话并选择续接\n' +
         '/mark - 切换对话标记（记录每日 note）\n' +
         '/pref [list|add|del] - 管理偏好设置（长期记忆）\n' +
         '/esc - 中断当前任务（Agent 保持运行）\n\n' +
@@ -144,7 +156,58 @@ export function registerTelegramControlCommands(bot: Bot<Context>, runtime: Tele
   bot.command('resume', async (ctx) => {
     const userId = await requireUserId(ctx, runtime.logger, '/resume');
     if (userId === null) return;
-    await ctx.reply('❌ 精简版不支持恢复对话，请使用 /reset 开始新对话');
+    await ctx.reply('ℹ️ 用 /sessions 列出可恢复的历史会话，点击其中一条即可续接；/reset 开始新对话');
+  });
+
+  bot.command('sessions', async (ctx) => {
+    const userId = await requireUserId(ctx, runtime.logger, '/sessions');
+    if (userId === null) return;
+    const cwd = runtime.directoryManager.getUserCwd(userId);
+    const { activeAgentId } = runtime.sessionManager.getEffectiveState(userId);
+    const searchTerm = (ctx.message?.text ?? '').split(/\s+/).slice(1).join(' ').trim() || undefined;
+
+    try {
+      const result = await listAgentSessions(
+        { currentSessionId: runtime.sessionManager.getSavedThreadId(userId, activeAgentId) },
+        { agentId: activeAgentId, cwd, limit: SESSION_LIST_PAGE_SIZE, searchTerm },
+      );
+      const message = formatSessionListMessage({
+        items: result.items,
+        agentId: activeAgentId,
+        cwd,
+        degraded: result.degraded,
+        hidden: result.hidden,
+      });
+      const keyboard = new InlineKeyboard();
+      for (const button of message.buttons) {
+        keyboard.text(button.label, button.data).row();
+      }
+      await ctx.reply(message.text, message.buttons.length > 0 ? { reply_markup: keyboard } : undefined);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      runtime.logger.warn(`[Telegram] /sessions failed agent=${activeAgentId} err=${detail}`);
+      await ctx.reply(`❌ 无法列出历史会话：${detail}`);
+    }
+  });
+
+  bot.callbackQuery(/^sr:/, async (ctx) => {
+    const userId = await requireUserId(ctx, runtime.logger, 'callbackQuery:sr');
+    if (userId === null) return;
+    const sessionId = parseSessionCallbackData(ctx.callbackQuery.data);
+    if (!sessionId) {
+      await ctx.answerCallbackQuery({ text: '会话标识无效', show_alert: true });
+      return;
+    }
+
+    const { activeAgentId } = runtime.sessionManager.getEffectiveState(userId);
+    // Saving first and then dropping the live session is what makes the next
+    // message reattach: `getOrCreate(..., resumeThread)` reads the saved id.
+    runtime.sessionManager.saveThreadId(userId, sessionId, activeAgentId);
+    runtime.sessionManager.dropSession(userId);
+    runtime.logger.info(`[Telegram] /sessions resume user=${userId} agent=${activeAgentId} session=${sessionId}`);
+
+    await ctx.answerCallbackQuery({ text: '已选择该会话' });
+    await ctx.reply(`✅ 已切换到会话 ${sessionId.slice(0, 8)}，下一条消息将接续它的上下文`);
   });
 
   bot.command('mark', async (ctx) => {

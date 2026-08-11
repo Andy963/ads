@@ -576,7 +576,7 @@ describe("ws workspace project sync", () => {
     );
     expect(rt.laneStatus.value).toEqual({
       kind: "info",
-      message: "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。",
+      message: "没有可复用的原生会话，下一轮发送时会注入最近聊天历史来延续上下文。",
     });
   });
 

@@ -9,6 +9,7 @@ import type {
   LaneStatus,
   ProjectRuntime,
   ProjectTab,
+  ResumableSession,
   WorkspaceState,
 } from "../controllerTypes";
 import type { TaskBundleDraft } from "../../api/types";
@@ -27,7 +28,7 @@ type Ref<T> = { value: T };
 
 const HISTORY_EXECUTE_PREVIEW_LINES = 3;
 const THREAD_RESUMED_NOTICE = "已恢复后端上下文线程。";
-const HISTORY_INJECTION_NOTICE = "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。";
+const HISTORY_INJECTION_NOTICE = "没有可复用的原生会话，下一轮发送时会注入最近聊天历史来延续上下文。";
 const TRANSIENT_RETRY_NOTICE_ID = "transient-retry-notice";
 const BACKEND_WAITING_STATUS_MESSAGES = new Set([
   "上一轮仍在执行，正在等待后端结果。",
@@ -1033,8 +1034,58 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "session_list_result") {
+      const rec = msg as Record<string, unknown>;
+      rt.resumableSessionsBusy.value = false;
+      const error = typeof rec.error === "string" ? rec.error : null;
+      rt.resumableSessionsError.value = error;
+      const items = Array.isArray(rec.items) ? (rec.items as ResumableSession[]) : [];
+      // A cursor page extends the list; anything else replaces it. Dedupe by id
+      // so a session that shifted between pages cannot appear twice.
+      if (rec.appended === true) {
+        const seen = new Set(rt.resumableSessions.value.map((entry) => entry.sessionId));
+        rt.resumableSessions.value = [
+          ...rt.resumableSessions.value,
+          ...items.filter((entry) => !seen.has(entry.sessionId)),
+        ];
+      } else {
+        rt.resumableSessions.value = items;
+      }
+      rt.resumableSessionsNextCursor.value =
+        typeof rec.nextCursor === "string" && rec.nextCursor ? rec.nextCursor : null;
+      const hidden = rec.hidden as
+        | { singleTurn?: unknown; duplicates?: unknown; forks?: unknown }
+        | undefined;
+      rt.resumableSessionsHidden.value =
+        hidden && typeof hidden === "object"
+          ? {
+              singleTurn: typeof hidden.singleTurn === "number" ? hidden.singleTurn : 0,
+              duplicates: typeof hidden.duplicates === "number" ? hidden.duplicates : 0,
+              forks: typeof hidden.forks === "number" ? hidden.forks : 0,
+            }
+          : null;
+      if (!error && Array.isArray(rec.degraded) && rec.degraded.length > 0) {
+        // A degraded source still returns rows; say so rather than implying the list is complete.
+        rt.resumableSessionsError.value = "部分来源不可用，列表可能不完整";
+      }
+      return;
+    }
+
     if (type === "session_reset") {
       handleSharedSessionReset(msg as Record<string, unknown>);
+      return;
+    }
+
+    if (type === "session_fallback") {
+      // The provider lost the session mid-turn: this turn already ran without
+      // the old context, so say so instead of leaving the thread looking resumed.
+      const rec = msg as Record<string, unknown>;
+      const message = String(rec.message ?? "").trim();
+      rt.laneStatus.value = {
+        kind: "info",
+        message: message || "原生会话已不存在，已改用新会话继续。",
+      };
+      rt.threadWarning.value = "原生会话已不存在，本轮已改用新会话；下一轮会带上最近聊天历史。";
       return;
     }
 

@@ -631,7 +631,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     });
   };
 
-  const resumeTaskThread = async (projectId: string = activeProjectId.value): Promise<void> => {
+  const resumeTaskThread = async (
+    projectId: string = activeProjectId.value,
+    options?: { sessionId?: string },
+  ): Promise<void> => {
     const pid = normalizeProjectId(projectId);
     const rt = getRuntime(pid);
     rt.apiError.value = null;
@@ -654,7 +657,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       if (!rt.ws || !rt.connected.value) {
         await deps.connectWs(pid);
       }
-      const sent = rt.ws?.send("task_resume");
+      const sessionId = options?.sessionId?.trim();
+      // Keep the no-selection call shape identical to the original one-click resume.
+      const sent = sessionId ? rt.ws?.send("task_resume", { threadId: sessionId }) : rt.ws?.send("task_resume");
       if (sent === false) {
         throw new Error("WebSocket 尚未连接，请稍后重试");
       }
@@ -663,6 +668,47 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       rt.apiError.value = msg;
       cancelPendingResume(rt);
       rt.laneStatus.value = { kind: "error", message: `恢复上下文失败：${msg}` };
+    }
+  };
+
+  /**
+   * Ask the backend for resumable sessions. Read-only, so it is safe to call
+   * whenever the picker opens; results land on the runtime via
+   * `session_list_result`.
+   */
+  const listResumableSessions = async (
+    projectId: string = activeProjectId.value,
+    options?: {
+      search?: string;
+      includeAllCwds?: boolean;
+      includeNoise?: boolean;
+      agentId?: string;
+      cursor?: string;
+    },
+  ): Promise<void> => {
+    const pid = normalizeProjectId(projectId);
+    const rt = getRuntime(pid);
+    rt.resumableSessionsBusy.value = true;
+    rt.resumableSessionsError.value = null;
+
+    try {
+      if (!rt.ws || !rt.connected.value) {
+        await deps.connectWs(pid);
+      }
+      const sent = rt.ws?.send("session_list", {
+        search: options?.search,
+        includeAllCwds: options?.includeAllCwds === true,
+        includeNoise: options?.includeNoise === true,
+        agentId: options?.agentId,
+        cursor: options?.cursor,
+      });
+      if (sent === false) {
+        throw new Error("WebSocket 尚未连接，请稍后重试");
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      rt.resumableSessionsBusy.value = false;
+      rt.resumableSessionsError.value = msg;
     }
   };
 
@@ -773,6 +819,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     clearActiveChat,
     clearPlannerChat,
     resumeTaskThread,
+    listResumableSessions,
     resumePlannerThread,
     addPendingImages,
     clearPendingImages,

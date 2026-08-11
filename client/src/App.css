@@ -674,6 +674,35 @@
   cursor: not-allowed;
 }
 
+/*
+ * The session picker entry carries a label, not just an icon: a bare icon is
+ * indistinguishable from the adjacent controls, and its `title` never renders on
+ * touch devices where this is most needed.
+ */
+.laneTabTextBtn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(255, 255, 255, 0.75);
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.laneTabTextBtn:hover {
+  color: #0f172a;
+  border-color: rgba(100, 116, 139, 0.75);
+  background: rgba(255, 255, 255, 0.95);
+}
+
 .laneTab {
   border: none;
   background: transparent;

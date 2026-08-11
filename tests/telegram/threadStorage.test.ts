@@ -22,6 +22,76 @@ describe("ThreadStorage", () => {
     }
   });
 
+  it("clears one agent's session id without touching the others", () => {
+    // The old stale-thread branch wrote `agentThreads: { resume: <id> }`, which
+    // replaced the whole map and silently discarded every other agent's id.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-thread-storage-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "legacy-threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+
+    storage.setRecord(1, {
+      threadId: "codex-thread",
+      cwd: "/tmp/a",
+      agentThreads: { codex: "codex-thread", claude: "claude-session", gemini: "gemini-session" },
+      activeAgentId: "codex",
+    });
+
+    storage.clearThreadId(1, "claude");
+
+    const record = storage.getRecord(1);
+    assert.equal(record?.agentThreads?.claude, undefined);
+    assert.equal(record?.agentThreads?.codex, "codex-thread");
+    assert.equal(record?.agentThreads?.gemini, "gemini-session");
+    assert.equal(record?.cwd, "/tmp/a");
+    assert.equal(record?.activeAgentId, "codex");
+  });
+
+  it("clears the legacy top-level threadId when codex is the cleared agent", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-thread-storage-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "legacy-threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+
+    storage.setRecord(1, {
+      threadId: "codex-thread",
+      cwd: "/tmp/a",
+      agentThreads: { codex: "codex-thread", claude: "claude-session" },
+    });
+
+    storage.clearThreadId(1, "codex");
+
+    // `getThreadId("codex")` falls back to the top-level column, so leaving it
+    // set would hand back the dead id the caller just asked to forget.
+    assert.equal(storage.getThreadId(1, "codex"), undefined);
+    assert.equal(storage.getThreadId(1, "claude"), "claude-session");
+  });
+
+  it("is a no-op for an unknown user or agent", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-thread-storage-"));
+    const storage = new ThreadStorage({
+      namespace: "test",
+      stateDbPath: path.join(tmpDir, "state.db"),
+      storagePath: path.join(tmpDir, "legacy-threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+
+    storage.clearThreadId(99, "codex");
+    assert.equal(storage.getRecord(99), undefined);
+
+    storage.setRecord(1, { threadId: "codex-thread", cwd: "/tmp/a", agentThreads: { codex: "codex-thread" } });
+    const before = storage.getRecord(1)?.updatedAt;
+    storage.clearThreadId(1, "gemini");
+    assert.equal(storage.getThreadId(1, "codex"), "codex-thread");
+    assert.equal(storage.getRecord(1)?.updatedAt, before);
+  });
+
   it("clones records while preserving updatedAt semantics", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-thread-storage-"));
     const stateDbPath = path.join(tmpDir, "state.db");

@@ -18,6 +18,10 @@ import {
   runWithTransientModelRetry,
   type RetryAttemptState,
 } from "./transientModelRetry.js";
+import {
+  createProviderSessionFallbackEvent,
+  isMissingProviderSessionError,
+} from "./missingProviderSession.js";
 
 const logger = createLogger("CodexCliAdapter");
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -401,8 +405,35 @@ export class CodexCliAdapter implements AgentAdapter {
         logger.info(
           `Resume failed due to model mismatch (thread=${this.threadId ?? "null"}); explicit thread rotation is required.`,
         );
+        throw error;
       }
-      throw error;
+      if (!isMissingProviderSessionError(message)) {
+        throw error;
+      }
+      // The saved thread is gone from disk. This is the one resume failure that
+      // may be absorbed: retrying it forever would strand the user, so drop the
+      // id and run the turn on a fresh thread instead of surfacing an error.
+      const previousThreadId = this.threadId ?? "";
+      logger.warn(
+        `Resume target missing (thread=${previousThreadId || "null"}); retrying on a fresh thread. cause=${message}`,
+      );
+      this.threadId = null;
+      this.emitEvent(
+        createProviderSessionFallbackEvent({
+          agentName: "Codex CLI",
+          previousSessionId: previousThreadId,
+          message,
+        }),
+      );
+      return await runWithTransientModelRetry(
+        {
+          agentName: "Codex CLI",
+          signal: options?.signal,
+          log: (notice) => logger.warn(notice),
+          onRetry: (notice) => this.emitEvent(createTransientModelRetryEvent(notice)),
+        },
+        (retryState) => runAttempt(false, retryState),
+      );
     }
   }
 

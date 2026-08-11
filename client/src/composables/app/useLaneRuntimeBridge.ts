@@ -5,6 +5,8 @@ export type ChatLane = "planner" | "worker";
 type RuntimePrompt = { id: string; text: string; images: unknown[] };
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 type LaneStatus = { kind: "info" | "progress" | "disconnected" | "error"; message: string };
+type ResumableSessionShape = { sessionId: string; updatedAt: number };
+type ResumableSessionsHiddenShape = { singleTurn: number; duplicates: number; forks: number };
 type RuntimeShape = {
   messages: Ref<unknown[]>;
   queuedPrompts: Ref<RuntimePrompt[]>;
@@ -18,6 +20,11 @@ type RuntimeShape = {
   availableAgents: Ref<AgentOption[]>;
   activeAgentId: Ref<string>;
   threadWarning: Ref<string | null>;
+  resumableSessions: Ref<ResumableSessionShape[]>;
+  resumableSessionsBusy: Ref<boolean>;
+  resumableSessionsError: Ref<string | null>;
+  resumableSessionsHidden: Ref<ResumableSessionsHiddenShape | null>;
+  resumableSessionsNextCursor: Ref<string | null>;
 };
 type PlannerRuntimeShape = RuntimeShape & {
   taskBundleDrafts: Ref<unknown[]>;
@@ -56,7 +63,11 @@ export function useLaneRuntimeBridge(params: {
   clearPlannerChat: () => void;
   startNewChatSession: () => void;
   resumePlannerThread: () => void;
-  resumeTaskThread: () => void;
+  resumeTaskThread: (projectId?: string, options?: { sessionId?: string }) => void;
+  listResumableSessions: (
+    projectId?: string,
+    options?: { search?: string; includeAllCwds?: boolean; includeNoise?: boolean; cursor?: string },
+  ) => void;
 }) {
   const activeChatLane = ref<ChatLane>("worker");
   watch(
@@ -111,6 +122,11 @@ export function useLaneRuntimeBridge(params: {
     () => `${params.activeProjectId.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
   );
   const workerQueuedPrompts = computed(() => mapQueuedPrompts(params.queuedPrompts.value));
+  const resumableSessions = computed(() => workerRuntime.value.resumableSessions.value);
+  const resumableSessionsBusy = computed(() => workerRuntime.value.resumableSessionsBusy.value);
+  const resumableSessionsError = computed(() => workerRuntime.value.resumableSessionsError.value);
+  const resumableSessionsHidden = computed(() => workerRuntime.value.resumableSessionsHidden.value);
+  const resumableSessionsNextCursor = computed(() => workerRuntime.value.resumableSessionsNextCursor.value);
 
   const resumeThreadBlocked = computed(
     () =>
@@ -145,6 +161,50 @@ export function useLaneRuntimeBridge(params: {
     else if (activeChatLane.value === "worker") params.resumeTaskThread();
   }
 
+  /**
+   * The picker only backs the worker lane, where provider sessions are tracked.
+   * The planner lane keeps the original one-click resume.
+   */
+  const sessionPickerOpen = ref(false);
+  const sessionPickerSupported = computed(() => activeChatLane.value === "worker");
+  let lastSessionQuery: { search?: string; includeAllCwds?: boolean; includeNoise?: boolean } = {};
+
+  function openSessionPicker(): void {
+    if (!sessionPickerSupported.value) {
+      params.resumePlannerThread();
+      return;
+    }
+    sessionPickerOpen.value = true;
+  }
+
+  function closeSessionPicker(): void {
+    sessionPickerOpen.value = false;
+  }
+
+  function refreshResumableSessions(options: {
+    search?: string;
+    includeAllCwds: boolean;
+    includeNoise?: boolean;
+  }): void {
+    lastSessionQuery = { ...options };
+    params.listResumableSessions(undefined, options);
+  }
+
+  /**
+   * Continue the current listing. The filters are replayed from the last refresh
+   * so a page boundary cannot silently change what is being listed.
+   */
+  function loadMoreResumableSessions(): void {
+    const cursor = resumableSessionsNextCursor.value;
+    if (!cursor || resumableSessionsBusy.value) return;
+    params.listResumableSessions(undefined, { ...lastSessionQuery, cursor });
+  }
+
+  function resumeSelectedSession(sessionId: string | undefined): void {
+    sessionPickerOpen.value = false;
+    params.resumeTaskThread(undefined, sessionId ? { sessionId } : undefined);
+  }
+
   return {
     activeChatLane,
     plannerMessages,
@@ -172,6 +232,11 @@ export function useLaneRuntimeBridge(params: {
     workerLatestPromptKey,
     workerChatKey,
     workerQueuedPrompts,
+    resumableSessions,
+    resumableSessionsBusy,
+    resumableSessionsError,
+    resumableSessionsHidden,
+    resumableSessionsNextCursor,
     resumeThreadBlocked,
     activeLaneBusy,
     activeLaneThreadWarning,
@@ -179,5 +244,12 @@ export function useLaneRuntimeBridge(params: {
     activeLaneNewSessionBlocked,
     handleLaneNewSession,
     handleLaneResumeThread,
+    sessionPickerOpen,
+    sessionPickerSupported,
+    openSessionPicker,
+    closeSessionPicker,
+    refreshResumableSessions,
+    loadMoreResumableSessions,
+    resumeSelectedSession,
   };
 }

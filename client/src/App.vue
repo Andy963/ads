@@ -10,12 +10,13 @@ import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 import ModelManager from "./components/ModelManager.vue";
 import GlobalRuleManager from "./components/GlobalRuleManager.vue";
+import SessionResumePicker from "./components/SessionResumePicker.vue";
 
 import { createAppController } from "./app/controller";
 import type { TaskBundle } from "./api/types";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
-import { CirclePlus, Refresh, ChatDotRound, Setting, Document } from "@element-plus/icons-vue";
+import { CirclePlus, ChatDotRound, Setting, Document, Clock } from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -58,6 +59,7 @@ const {
   onTaskEvent,
   openTaskCreateDialog,
   resumeTaskThread,
+  listResumableSessions,
   resumePlannerThread,
   clearActiveChat,
   clearPlannerChat,
@@ -159,6 +161,11 @@ const {
   workerLatestPromptKey,
   workerChatKey,
   workerQueuedPrompts,
+  resumableSessions,
+  resumableSessionsBusy,
+  resumableSessionsError,
+  resumableSessionsHidden,
+  resumableSessionsNextCursor,
   resumeThreadBlocked,
   activeLaneBusy,
   activeLaneThreadWarning,
@@ -166,6 +173,12 @@ const {
   activeLaneNewSessionBlocked,
   handleLaneNewSession,
   handleLaneResumeThread,
+  sessionPickerOpen,
+  openSessionPicker,
+  closeSessionPicker,
+  refreshResumableSessions,
+  loadMoreResumableSessions,
+  resumeSelectedSession,
 } = useLaneRuntimeBridge({
   activeProjectId,
   activeProject,
@@ -180,6 +193,17 @@ const {
   startNewChatSession,
   resumePlannerThread,
   resumeTaskThread,
+  listResumableSessions,
+});
+
+/**
+ * Browsing the list is read-only and always allowed; only the resume action is
+ * gated. Saying why beats a row that is silently unclickable.
+ */
+const sessionResumeDisabledReason = computed(() => {
+  if (activeLaneBusy.value) return "当前对话正在生成，结束后才能恢复其它会话";
+  if (resumeThreadBlocked.value) return "有任务正在运行，结束后才能恢复其它会话";
+  return "";
 });
 
 const {
@@ -470,14 +494,14 @@ const plannerConnectionStatus = computed(() => {
           <span class="laneTabSpacer" />
           <button
             v-if="activeLaneHasResume"
-            class="laneTabIconBtn"
+            class="laneTabTextBtn"
             type="button"
-            title="恢复上下文"
-            :disabled="activeLaneBusy || resumeThreadBlocked"
+            title="从历史会话中选择一个恢复"
             data-testid="lane-resume-thread"
-            @click.stop="handleLaneResumeThread"
+            @click.stop="openSessionPicker"
           >
-            <el-icon :size="16" aria-hidden="true"><Refresh /></el-icon>
+            <el-icon :size="15" aria-hidden="true"><Clock /></el-icon>
+            <span>历史会话</span>
           </button>
           <button
             class="laneTabIconBtn"
@@ -595,6 +619,23 @@ const plannerConnectionStatus = computed(() => {
 
     <DraggableModal v-if="modelManagerOpen" card-variant="large" @close="closeModelManager">
       <ModelManager :api="api" @close="closeModelManager" @changed="onModelManagerChanged" />
+    </DraggableModal>
+
+    <DraggableModal v-if="sessionPickerOpen" card-variant="large" @close="closeSessionPicker">
+      <SessionResumePicker
+        :sessions="resumableSessions"
+        :busy="resumableSessionsBusy"
+        :error="resumableSessionsError"
+        :hidden="resumableSessionsHidden"
+        :next-cursor="resumableSessionsNextCursor"
+        :agent-id="workerActiveAgentId"
+        :disabled="activeLaneBusy || resumeThreadBlocked"
+        :disabled-reason="sessionResumeDisabledReason"
+        @close="closeSessionPicker"
+        @refresh="refreshResumableSessions"
+        @load-more="loadMoreResumableSessions"
+        @resume="resumeSelectedSession"
+      />
     </DraggableModal>
 
     <DraggableModal v-if="globalRuleManagerOpen" card-variant="large" @close="closeGlobalRuleManager">

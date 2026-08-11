@@ -245,8 +245,14 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       // ignore
     }
 
-    const resumeThread = !sessionManager.hasSession(userId);
-    let orchestrator = sessionManager.getOrCreate(userId, currentCwd, resumeThread);
+    // Always ask to reattach. When a runtime session is already in memory
+    // `getOrCreate` returns it before this flag is read; when it is not, this is
+    // exactly the case a saved provider session exists for. The previous
+    // `!hasSession(userId)` guard looked equivalent but was not: any earlier
+    // read-only `getOrCreate` (an agents broadcast, a model override) put a
+    // fresh session in memory first, after which this branch never resumed
+    // again and the saved thread id was stranded for the rest of the process.
+    let orchestrator = sessionManager.getOrCreate(userId, currentCwd, true);
     const contextMode = sessionManager.getContextRestoreMode(userId);
 
     logger.info(
