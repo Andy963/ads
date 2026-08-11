@@ -7,6 +7,7 @@ import { createAuthMiddleware } from './middleware/auth.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
 import { resolveCodexConfig } from '../codexConfig.js';
 import { SessionManager, resolveSessionAgentAllowlist } from './utils/sessionManager.js';
+import { ThreadStorage } from './utils/threadStorage.js';
 import { DirectoryManager } from './utils/directoryManager.js';
 import { cleanupAllTempFiles } from './utils/fileHandler.js';
 import { createLogger } from '../utils/logger.js';
@@ -83,12 +84,13 @@ async function main() {
 
   // 创建管理器
   const directoryManager = new DirectoryManager(config.allowedDirs);
+  const threadStorage = new ThreadStorage({ namespace: 'tg' });
   const sessionManager = new SessionManager(
     config.sessionTimeoutMs,
     5 * 60 * 1000,
     config.sandboxMode,
     config.defaultModel,
-    undefined,
+    threadStorage,
     undefined,
     {
       agentAllowlist: resolveSessionAgentAllowlist("telegram"),

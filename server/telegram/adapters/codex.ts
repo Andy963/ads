@@ -176,7 +176,11 @@ export async function handleCodexMessage(
   const activeAgentLabel = 'Codex';
 
   const saveThreadIdIfNeeded = () => {
-    // No-op in simplified version
+    const threadId = session.getThreadId?.();
+    if (!threadId) {
+      return;
+    }
+    sessionManager.saveThreadId(userId, threadId, session.getActiveAgentId?.() ?? 'codex');
   };
 
   // 注册请求

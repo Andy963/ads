@@ -31,4 +31,24 @@ describe("ThreadStorage", () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it("isolates Telegram state from Web lane state", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-thread-storage-"));
+    const stateDbPath = path.join(tmpDir, "state.db");
+    const options = {
+      stateDbPath,
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "thread-storage-salt"),
+    };
+    const telegramStorage = new ThreadStorage({ ...options, namespace: "tg" });
+    const webWorkerStorage = new ThreadStorage({ ...options, namespace: "web-worker" });
+
+    telegramStorage.setThreadId(42, "tg-codex-thread", "codex");
+    webWorkerStorage.setThreadId(42, "web-codex-thread", "codex");
+
+    assert.equal(telegramStorage.getThreadId(42, "codex"), "tg-codex-thread");
+    assert.equal(webWorkerStorage.getThreadId(42, "codex"), "web-codex-thread");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
