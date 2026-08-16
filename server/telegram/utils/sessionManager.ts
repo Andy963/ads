@@ -90,6 +90,7 @@ export type SessionAgentSurface =
   | "scheduler-compiler";
 
 const INTERACTIVE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude", "gemini"];
+const TASK_QUEUE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude"];
 const CODEX_ONLY_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex"];
 
 export function resolveSessionAgentAllowlist(
@@ -99,7 +100,9 @@ export function resolveSessionAgentAllowlist(
   const preferred =
     surface === "telegram" || surface === "web-worker" || surface === "web-planner"
       ? INTERACTIVE_AGENT_ALLOWLIST
-      : CODEX_ONLY_AGENT_ALLOWLIST;
+      : surface === "task-queue"
+        ? TASK_QUEUE_AGENT_ALLOWLIST
+        : CODEX_ONLY_AGENT_ALLOWLIST;
 
   return preferred.filter((agentId) => {
     if (agentId === "claude") {

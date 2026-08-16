@@ -20,8 +20,11 @@ describe("SessionManager agent allowlists", () => {
     assert.deepEqual(resolveSessionAgentAllowlist("web-planner"), ["codex", "claude", "gemini"]);
   });
 
-  it("uses codex-only allowlists for task queue and scheduler surfaces", () => {
-    assert.deepEqual(resolveSessionAgentAllowlist("task-queue"), ["codex"]);
+  it("allows Codex and Claude in the task queue", () => {
+    assert.deepEqual(resolveSessionAgentAllowlist("task-queue"), ["codex", "claude"]);
+  });
+
+  it("uses codex-only allowlists for scheduler surfaces", () => {
     assert.deepEqual(resolveSessionAgentAllowlist("scheduler-runtime"), ["codex"]);
     assert.deepEqual(resolveSessionAgentAllowlist("scheduler-compiler"), ["codex"]);
   });
@@ -32,6 +35,7 @@ describe("SessionManager agent allowlists", () => {
 
     assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex"]);
     assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("task-queue"), ["codex"]);
   });
 
   it("keeps the configured allowlist on SessionManager instances", () => {
