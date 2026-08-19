@@ -12,7 +12,11 @@ import type {
 import type { AgentEvent } from "../../codex/events.js";
 import type { SandboxMode } from "../../telegram/config.js";
 import { runCli } from "../cli/cliRunner.js";
-import { ClaudeStreamParser } from "../cli/claudeStreamParser.js";
+import {
+  ClaudeStreamParser,
+  createClaudeTaskPlanState,
+  type ClaudeTaskPlanState,
+} from "../cli/claudeStreamParser.js";
 import { createLogger } from "../../utils/logger.js";
 import { extractTextFromInput } from "../../utils/inputText.js";
 import { createAbortError } from "../../utils/abort.js";
@@ -147,6 +151,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     process.env[CLAUDE_AUTOCOMPACT_PCT_OVERRIDE_ENV],
   );
   private sessionId: string | null;
+  private readonly taskPlanState: ClaudeTaskPlanState = createClaudeTaskPlanState();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private sendChain: Promise<void> = Promise.resolve();
   private pendingSends = 0;
@@ -185,6 +190,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       return;
     }
     this.sessionId = null;
+    this.clearTaskPlanState();
   }
 
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
@@ -261,6 +267,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       if (this.pendingReset) {
         this.pendingReset = false;
         this.sessionId = null;
+        this.clearTaskPlanState();
       }
       return await this.sendInner(input, options);
     });
@@ -332,7 +339,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       retryState: RetryAttemptState,
     ): Promise<AgentRunResult> => {
       const args = buildArgs(sessionId);
-      const parser = new ClaudeStreamParser();
+      const parser = new ClaudeStreamParser(this.taskPlanState);
       let sawTurnFailed = false;
       let sawTerminalResult = false;
       let resumedPromptAccepted = false;
@@ -473,6 +480,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
         `Resume target missing (session=${savedSessionId}); retrying on a fresh session. cause=${message}`,
       );
       this.sessionId = null;
+      this.clearTaskPlanState();
       this.emitEvent(
         createProviderSessionFallbackEvent({
           agentName: "Claude CLI",
@@ -482,6 +490,11 @@ export class ClaudeCliAdapter implements AgentAdapter {
       );
       return await driveAttempts(null);
     }
+  }
+
+  private clearTaskPlanState(): void {
+    this.taskPlanState.tasks.clear();
+    this.taskPlanState.hasEmitted = false;
   }
 
   private emitEvent(event: AgentEvent): void {

@@ -10,12 +10,32 @@ import {
   type TrackedTool,
 } from "./streamParserUtils.js";
 
+type ClaudeTaskStatus = "pending" | "in_progress" | "completed";
+type ClaudeTaskPlanEntry = {
+  id: string;
+  text: string;
+  status: ClaudeTaskStatus;
+};
+
+export type ClaudeTaskPlanState = {
+  tasks: Map<string, ClaudeTaskPlanEntry>;
+  hasEmitted: boolean;
+};
+
+export function createClaudeTaskPlanState(): ClaudeTaskPlanState {
+  return {
+    tasks: new Map<string, ClaudeTaskPlanEntry>(),
+    hasEmitted: false,
+  };
+}
+
 function classifyToolName(name: string): ToolKind {
   const key = name.trim().toLowerCase();
   if (key === "bash" || key === "bashoutput" || key === "killshell") return "command";
   if (key === "edit" || key === "write" || key === "notebookedit") return "file_change";
   if (key === "websearch" || key === "web_search") return "web_search";
   if (key === "task") return "subagent";
+  if (key === "taskcreate" || key === "taskupdate" || key === "tasklist") return "task_plan";
   if (key === "todowrite" || key === "todo_write" || key === "update_plan" || key === "updateplan") return "plan";
   return "tool_call";
 }
@@ -44,12 +64,74 @@ function extractTextContent(items: unknown[]): string {
     .join("");
 }
 
+function normalizeTaskStatus(value: unknown): ClaudeTaskStatus {
+  const status = String(value ?? "").trim().toLowerCase();
+  if (status === "completed" || status === "done") return "completed";
+  if (status === "in_progress" || status === "active" || status === "doing" || status === "running") {
+    return "in_progress";
+  }
+  return "pending";
+}
+
+function extractTaskEntries(value: unknown): ClaudeTaskPlanEntry[] {
+  const root = asRecord(value);
+  const rawTasks = Array.isArray(value)
+    ? value
+    : Array.isArray(root?.tasks)
+      ? root.tasks
+      : Array.isArray(root?.items)
+        ? root.items
+        : [];
+  const tasks: ClaudeTaskPlanEntry[] = [];
+  for (const rawTask of rawTasks) {
+    const task = asRecord(rawTask);
+    if (!task) continue;
+    const id = extractStringField(task, ["id", "taskId", "task_id"]);
+    const text = extractStringField(task, ["subject", "title", "content", "text", "description"]);
+    if (!id || !text) continue;
+    tasks.push({
+      id,
+      text,
+      status: normalizeTaskStatus(task.status),
+    });
+  }
+  return tasks;
+}
+
+function parseTaskListText(text: string): ClaudeTaskPlanEntry[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    const tasks = extractTaskEntries(parsed);
+    if (tasks.length > 0) return tasks;
+  } catch {
+    // Claude normally returns a human-readable list. Fall through to line parsing.
+  }
+
+  const tasks: ClaudeTaskPlanEntry[] = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    const match = line.match(
+      /^\s*(?:[-*]\s*)?(?:#|Task\s+#?)?([A-Za-z0-9._:-]+)[.):]?\s+\[(pending|in_progress|completed|done)\]\s+(.+?)\s*$/i,
+    );
+    if (!match) continue;
+    tasks.push({
+      id: match[1]!,
+      status: normalizeTaskStatus(match[2]),
+      text: match[3]!.trim(),
+    });
+  }
+  return tasks;
+}
+
 export class ClaudeStreamParser {
   private agentMessage = "";
   private reasoning = "";
   private tools = new Map<string, TrackedTool>();
   private sessionId: string | null = null;
   private lastError: string | null = null;
+
+  constructor(private readonly taskPlanState: ClaudeTaskPlanState = createClaudeTaskPlanState()) {}
 
   getSessionId(): string | null {
     return this.sessionId;
@@ -241,6 +323,10 @@ export class ClaudeStreamParser {
       );
     }
 
+    if (kind === "task_plan") {
+      return null;
+    }
+
     return attachCliPayload(
       {
         type: "item.started",
@@ -266,6 +352,9 @@ export class ClaudeStreamParser {
       if (!tool) continue;
 
       const resultText = typeof rec.content === "string" ? rec.content : "";
+      const structuredResult =
+        asRecord(obj.tool_use_result) ??
+        asRecord(obj.toolUseResult);
 
       if (tool.kind === "command") {
         const command = extractStringField(tool.input, ["command", "cmd"]) ?? "bash";
@@ -377,6 +466,21 @@ export class ClaudeStreamParser {
         continue;
       }
 
+      if (tool.kind === "task_plan") {
+        if (isError) {
+          const msg = resultText.trim() ? `Claude task plan tool failed: ${resultText.trim()}` : "Claude task plan tool failed";
+          events.push(...mapEvent(attachCliPayload({ type: "error", message: msg } as unknown as ThreadEvent, payload)));
+          this.lastError = msg;
+          continue;
+        }
+
+        const taskEvent = this.applyTaskPlanTool(tool, resultText, structuredResult, payload);
+        if (taskEvent) {
+          events.push(...mapEvent(taskEvent));
+        }
+        continue;
+      }
+
       const ev = attachCliPayload(
         {
           type: "item.completed",
@@ -387,6 +491,90 @@ export class ClaudeStreamParser {
       events.push(...mapEvent(ev));
     }
     return events;
+  }
+
+  private applyTaskPlanTool(
+    tool: TrackedTool,
+    resultText: string,
+    structuredResult: Record<string, unknown> | null,
+    payload: unknown,
+  ): ThreadEvent | null {
+    const toolName = tool.name.trim().toLowerCase();
+
+    if (toolName === "taskcreate") {
+      const structuredTask = asRecord(structuredResult?.task);
+      const taskId =
+        extractStringField(structuredTask ?? {}, ["id", "taskId", "task_id"]) ??
+        resultText.match(/Task\s+#([A-Za-z0-9._:-]+)\s+created successfully/i)?.[1];
+      const text =
+        extractStringField(structuredTask ?? {}, ["subject", "title", "content", "text"]) ??
+        extractStringField(tool.input, ["subject", "title", "content", "text"]);
+      if (taskId && text) {
+        this.taskPlanState.tasks.set(taskId, {
+          id: taskId,
+          text,
+          status: normalizeTaskStatus(structuredTask?.status ?? tool.input.status),
+        });
+      }
+    } else if (toolName === "taskupdate") {
+      const taskId =
+        extractStringField(tool.input, ["taskId", "task_id", "id"]) ??
+        extractStringField(structuredResult ?? {}, ["taskId", "task_id", "id"]) ??
+        resultText.match(/task\s+#([A-Za-z0-9._:-]+)/i)?.[1];
+      if (taskId) {
+        const existing = this.taskPlanState.tasks.get(taskId);
+        const text =
+          extractStringField(tool.input, ["subject", "title", "content", "text"]) ??
+          existing?.text;
+        if (text) {
+          this.taskPlanState.tasks.set(taskId, {
+            id: taskId,
+            text,
+            status:
+              tool.input.status === undefined
+                ? existing?.status ?? "pending"
+                : normalizeTaskStatus(tool.input.status),
+          });
+        }
+      }
+    } else if (toolName === "tasklist") {
+      const tasks = extractTaskEntries(structuredResult);
+      const listedTasks = tasks.length > 0 ? tasks : parseTaskListText(resultText);
+      if (listedTasks.length > 0) {
+        this.taskPlanState.tasks.clear();
+        for (const task of listedTasks) {
+          this.taskPlanState.tasks.set(task.id, task);
+        }
+      }
+    }
+
+    if (this.taskPlanState.tasks.size === 0) return null;
+
+    const items = [...this.taskPlanState.tasks.values()].map((task) => ({
+      text: task.text,
+      status: task.status,
+      completed: task.status === "completed",
+    }));
+    const completed = items.every((item) => item.status === "completed");
+    const eventType = !this.taskPlanState.hasEmitted
+      ? "item.started"
+      : completed
+        ? "item.completed"
+        : "item.updated";
+    this.taskPlanState.hasEmitted = true;
+
+    return attachCliPayload(
+      {
+        type: eventType,
+        item: {
+          type: "todo_list",
+          id: "claude-task-plan",
+          status: completed ? "completed" : "in_progress",
+          items,
+        },
+      } as unknown as ThreadEvent,
+      payload,
+    );
   }
 
   private parseResult(obj: Record<string, unknown>, payload: unknown): AgentEvent[] {

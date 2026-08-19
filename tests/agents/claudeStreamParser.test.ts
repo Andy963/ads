@@ -322,4 +322,168 @@ describe("ClaudeStreamParser", () => {
     assert.equal(rawCompleted2.item?.type, "todo_list");
     assert.equal(rawCompleted2.item?.status, "completed");
   });
+
+  it("aggregates TaskCreate and TaskUpdate tools into one stateful todo list", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+
+    parser.parseLine({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "create-1",
+            name: "TaskCreate",
+            input: { subject: "Inspect parser", activeForm: "Inspecting parser" },
+          },
+        ],
+      },
+    });
+    const first = parser.parseLine({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "create-1", content: "Task #1 created successfully: Inspect parser" }],
+      },
+      tool_use_result: { task: { id: "1", subject: "Inspect parser" } },
+    });
+    assert.equal(first.length, 1);
+    const firstRaw = first[0]!.raw as {
+      type?: string;
+      item?: { id?: string; items?: Array<{ text?: string; status?: string }> };
+    };
+    assert.equal(firstRaw.type, "item.started");
+    assert.equal(firstRaw.item?.id, "claude-task-plan");
+    assert.deepEqual(firstRaw.item?.items, [
+      { text: "Inspect parser", status: "pending", completed: false },
+    ]);
+
+    parser.parseLine({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "create-2",
+            name: "TaskCreate",
+            input: { subject: "Add tests", activeForm: "Adding tests" },
+          },
+        ],
+      },
+    });
+    const second = parser.parseLine({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "create-2", content: "Task #2 created successfully: Add tests" }],
+      },
+    });
+    const secondRaw = second[0]!.raw as {
+      type?: string;
+      item?: { items?: Array<{ text?: string; status?: string }> };
+    };
+    assert.equal(secondRaw.type, "item.updated");
+    assert.deepEqual(
+      secondRaw.item?.items?.map((item) => [item.text, item.status]),
+      [
+        ["Inspect parser", "pending"],
+        ["Add tests", "pending"],
+      ],
+    );
+
+    parser.parseLine({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "update-1",
+            name: "TaskUpdate",
+            input: { taskId: "1", status: "in_progress" },
+          },
+        ],
+      },
+    });
+    const inProgress = parser.parseLine({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "update-1", content: "Updated task #1 status" }],
+      },
+    });
+    const inProgressRaw = inProgress[0]!.raw as {
+      type?: string;
+      item?: { items?: Array<{ status?: string }> };
+    };
+    assert.equal(inProgressRaw.type, "item.updated");
+    assert.deepEqual(inProgressRaw.item?.items?.map((item) => item.status), ["in_progress", "pending"]);
+
+    for (const taskId of ["1", "2"]) {
+      const toolUseId = `complete-${taskId}`;
+      parser.parseLine({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: toolUseId,
+              name: "TaskUpdate",
+              input: { taskId, status: "completed" },
+            },
+          ],
+        },
+      });
+      const completed = parser.parseLine({
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", tool_use_id: toolUseId, content: `Updated task #${taskId} status` }],
+        },
+      });
+      if (taskId === "2") {
+        const completedRaw = completed[0]!.raw as {
+          type?: string;
+          item?: { status?: string; items?: Array<{ status?: string }> };
+        };
+        assert.equal(completedRaw.type, "item.completed");
+        assert.equal(completedRaw.item?.status, "completed");
+        assert.deepEqual(completedRaw.item?.items?.map((item) => item.status), ["completed", "completed"]);
+      }
+    }
+  });
+
+  it("rebuilds the Claude task plan from a TaskList result", () => {
+    const parser = new ClaudeStreamParser();
+    parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
+    parser.parseLine({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "list-1", name: "TaskList", input: {} }],
+      },
+    });
+
+    const events = parser.parseLine({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "list-1",
+            content: "#1 [completed] Inspect parser\n#2 [in_progress] Add tests\n#3 [pending] Deploy",
+          },
+        ],
+      },
+    });
+    assert.equal(events.length, 1);
+    const raw = events[0]!.raw as {
+      type?: string;
+      item?: { items?: Array<{ text?: string; status?: string }> };
+    };
+    assert.equal(raw.type, "item.started");
+    assert.deepEqual(
+      raw.item?.items?.map((item) => [item.text, item.status]),
+      [
+        ["Inspect parser", "completed"],
+        ["Add tests", "in_progress"],
+        ["Deploy", "pending"],
+      ],
+    );
+  });
 });
