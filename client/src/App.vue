@@ -494,14 +494,13 @@ const plannerConnectionStatus = computed(() => {
           <span class="laneTabSpacer" />
           <button
             v-if="activeLaneHasResume"
-            class="laneTabTextBtn"
+            class="laneTabIconBtn"
             type="button"
             title="从历史会话中选择一个恢复"
             data-testid="lane-resume-thread"
             @click.stop="openSessionPicker"
           >
             <el-icon :size="15" aria-hidden="true"><Clock /></el-icon>
-            <span>历史会话</span>
           </button>
           <button
             class="laneTabIconBtn"
