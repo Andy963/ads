@@ -61,6 +61,8 @@ function defaultBinaryForAgent(agentId: AgentIdentifier): string | null {
       return process.env.ADS_CLAUDE_BIN ?? "claude";
     case "gemini":
       return process.env.ADS_GEMINI_BIN ?? "gemini";
+    case "droid":
+      return process.env.ADS_DROID_BIN ?? "droid";
     default:
       return null;
   }
@@ -173,7 +175,7 @@ export class CliAgentAvailability implements AgentAvailability {
   }
 
   async probeAll(agentIds?: AgentIdentifier[]): Promise<void> {
-    const targets = (agentIds && agentIds.length > 0 ? agentIds : (["codex", "claude", "gemini"] as const))
+    const targets = (agentIds && agentIds.length > 0 ? agentIds : (["codex", "claude", "gemini", "droid"] as const))
       .map((id) => String(id).trim())
       .filter(Boolean) as AgentIdentifier[];
 

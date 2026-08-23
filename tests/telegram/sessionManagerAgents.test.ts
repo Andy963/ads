@@ -15,9 +15,9 @@ describe("SessionManager agent allowlists", () => {
   });
 
   it("uses interactive allowlists for telegram and interactive web lanes", () => {
-    assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex", "claude", "gemini"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex", "claude", "gemini"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-planner"), ["codex", "claude", "gemini"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex", "claude", "gemini", "droid"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex", "claude", "gemini", "droid"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-planner"), ["codex", "claude", "gemini", "droid"]);
   });
 
   it("allows Codex and Claude in the task queue", () => {
@@ -32,6 +32,7 @@ describe("SessionManager agent allowlists", () => {
   it("honors compatibility env toggles when resolving allowlists", () => {
     process.env.ADS_CLAUDE_ENABLED = "0";
     process.env.ADS_GEMINI_ENABLED = "0";
+    process.env.ADS_DROID_ENABLED = "0";
 
     assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex"]);
     assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex"]);

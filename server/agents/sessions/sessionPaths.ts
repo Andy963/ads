@@ -5,7 +5,7 @@ import path from "node:path";
 
 /**
  * Provider session files live outside the repository, so every path decision is
- * centralized here. Both roots honour the provider's own environment override
+ * centralized here. The roots honour each provider's own environment override
  * (matching `resolveAgentSessionLocator` in the history store).
  */
 
@@ -19,12 +19,21 @@ export function resolveClaudeHome(): string {
   return override || path.join(os.homedir(), ".claude");
 }
 
+export function resolveDroidHome(): string {
+  const override = process.env.FACTORY_HOME_OVERRIDE?.trim();
+  return override || path.join(os.homedir(), ".factory");
+}
+
 export function codexSessionsRoot(): string {
   return path.join(resolveCodexHome(), "sessions");
 }
 
 export function claudeProjectsRoot(): string {
   return path.join(resolveClaudeHome(), "projects");
+}
+
+export function droidSessionsRoot(): string {
+  return path.join(resolveDroidHome(), "sessions");
 }
 
 /**
@@ -37,6 +46,15 @@ export function claudeProjectsRoot(): string {
 export function claudeProjectSlug(cwd: string): string {
   const resolved = path.resolve(String(cwd ?? "")).replace(/\/+$/, "");
   return resolved.replace(/[/.]/g, "-");
+}
+
+/**
+ * Droid groups sessions by cwd below `~/.factory/sessions`, replacing path
+ * separators with dashes while preserving dots and other filename characters.
+ */
+export function droidProjectSlug(cwd: string): string {
+  const resolved = path.resolve(String(cwd ?? "")).replace(/[\\/]+$/, "");
+  return resolved.replace(/[\\/]/g, "-");
 }
 
 async function listFilesRecursive(root: string, matcher: (name: string) => boolean, limit: number): Promise<string[]> {
@@ -106,6 +124,29 @@ export async function findClaudeTranscriptPath(sessionId: string, cwd?: string):
 }
 
 /**
+ * Droid stores `<sessionId>.jsonl` below a cwd-derived directory. Prefer the
+ * expected cwd, then scan the bounded provider root for sessions moved or
+ * resumed from another working directory.
+ */
+export async function findDroidSessionPath(sessionId: string, cwd?: string): Promise<string | null> {
+  const id = String(sessionId ?? "").trim();
+  if (!id) {
+    return null;
+  }
+  if (cwd) {
+    const direct = path.join(droidSessionsRoot(), droidProjectSlug(cwd), `${id}.jsonl`);
+    try {
+      await fsp.access(direct, fs.constants.R_OK);
+      return direct;
+    } catch {
+      // Fall through to the broader scan below.
+    }
+  }
+  const matches = await listFilesRecursive(droidSessionsRoot(), (name) => name === `${id}.jsonl`, 1);
+  return matches[0] ?? null;
+}
+
+/**
  * Cheap existence check used in place of running a real model turn: if the
  * provider still has the session on disk, resuming it is worth attempting.
  * Unknown agents are optimistically treated as resumable.
@@ -157,6 +198,12 @@ export async function probeSessionOnDisk(args: {
       return "unknown";
     }
     return (await findClaudeTranscriptPath(sessionId, args.cwd)) ? "present" : "absent";
+  }
+  if (args.agentId === "droid") {
+    if (!(await isReadableDir(droidSessionsRoot()))) {
+      return "unknown";
+    }
+    return (await findDroidSessionPath(sessionId, args.cwd)) ? "present" : "absent";
   }
   return "unknown";
 }
