@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig, loadEnv } from "vite";
 import vue from "@vitejs/plugin-vue";
+import { VitePWA } from "vite-plugin-pwa";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,7 +23,45 @@ export default defineConfig(({ mode }) => {
     root: __dirname,
     cacheDir: path.resolve(repoRoot, "node_modules", ".vite", "client"),
     base,
-    plugins: [vue()],
+    plugins: [
+      vue(),
+      VitePWA({
+        registerType: "autoUpdate",
+        includeAssets: ["favicon.ico", "apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png"],
+        manifest: {
+          name: "ADS Tasks",
+          short_name: "ADS",
+          description: "ADS Task & Agent Management",
+          theme_color: "#18181b",
+          background_color: "#09090b",
+          display: "standalone",
+          orientation: "portrait",
+          start_url: "/",
+          icons: [
+            {
+              src: "pwa-192x192.png",
+              sizes: "192x192",
+              type: "image/png",
+            },
+            {
+              src: "pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+            },
+            {
+              src: "pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "any maskable",
+            },
+          ],
+        },
+        workbox: {
+          navigateFallbackDenylist: [/^\/api/, /^\/ws/],
+          globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+        },
+      }),
+    ],
     server: {
       proxy: {
         "/api": {
