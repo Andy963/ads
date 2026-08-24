@@ -29,6 +29,7 @@ export default defineConfig(({ mode }) => {
         registerType: "autoUpdate",
         includeAssets: ["favicon.ico", "apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png"],
         manifest: {
+          id: base,
           name: "ADS Tasks",
           short_name: "ADS",
           description: "ADS Task & Agent Management",
@@ -36,7 +37,8 @@ export default defineConfig(({ mode }) => {
           background_color: "#09090b",
           display: "standalone",
           orientation: "portrait",
-          start_url: "/",
+          start_url: base,
+          scope: base,
           icons: [
             {
               src: "pwa-192x192.png",

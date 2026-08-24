@@ -10,4 +10,13 @@ describe("TaskCreateForm image preview", () => {
     expect(sfc).toMatch(/\.thumbWrap\s*\{[\s\S]*height:\s*24px\s*;/);
     expect(sfc).toMatch(/\.thumbImg\s*\{[\s\S]*object-fit:\s*cover\s*;/);
   });
+
+  it("opens uploaded images in the in-app viewer instead of a browser tab", async () => {
+    const sfc = await readSfc("../components/TaskCreateForm.vue", import.meta.url);
+
+    expect(sfc).toContain("<MainChatPendingImageViewer");
+    expect(sfc).toContain('@click.stop="openAttachmentPreview(a)"');
+    expect(sfc).not.toContain('target="_blank"');
+    expect(sfc).not.toContain("window.open");
+  });
 });

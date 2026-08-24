@@ -2,7 +2,9 @@
 import { computed, nextTick, ref, watch } from "vue";
 import type { CreateTaskInput } from "../api/types";
 
+import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import TaskCreateFormConfigFields from "./TaskCreateFormConfigFields.vue";
+import type { LocalAttachment } from "./taskCreateForm/types";
 import { useImageAttachments } from "./taskCreateForm/useImageAttachments";
 import { useVoiceInput } from "./taskCreateForm/useVoiceInput";
 
@@ -31,6 +33,7 @@ const maxRetries = ref(3);
 const goalModeEnabled = ref(false);
 const goalObjective = ref("");
 const goalTokenBudget = ref<number | null>(null);
+const attachmentPreview = ref<Array<{ key: string; src: string; href: string }>>([]);
 
 const agentOptions = computed(() => {
   const raw = Array.isArray(props.agents) ? props.agents : [];
@@ -171,6 +174,28 @@ const canSubmit = computed(() => {
   return true;
 });
 
+function openAttachmentPreview(attachment: LocalAttachment): void {
+  if (!attachment.uploaded?.url || !attachment.previewUrl) return;
+  attachmentPreview.value = [
+    {
+      key: attachment.localId,
+      src: attachment.previewUrl,
+      href: withTokenQuery(attachment.uploaded.url),
+    },
+  ];
+}
+
+function closeAttachmentPreview(): void {
+  attachmentPreview.value = [];
+}
+
+function removeImageAttachment(localId: string): void {
+  if (attachmentPreview.value.some((preview) => preview.key === localId)) {
+    closeAttachmentPreview();
+  }
+  removeAttachment(localId);
+}
+
 function submit(): void {
   emitSubmit("submit");
 }
@@ -213,6 +238,7 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   goalModeEnabled.value = false;
   goalObjective.value = "";
   goalTokenBudget.value = null;
+  closeAttachmentPreview();
   clearAllAttachments();
 }
 
@@ -328,16 +354,15 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
       <div v-if="attachments.length" class="attachments">
         <div v-for="a in attachments" :key="a.localId" class="thumbCard" :data-status="a.status">
           <div class="thumbWrap">
-            <a
+            <button
               v-if="a.uploaded?.url"
               class="thumbLink"
-              :href="withTokenQuery(a.uploaded.url)"
-              target="_blank"
-              rel="noreferrer"
-              @click.stop
+              type="button"
+              aria-label="预览附件"
+              @click.stop="openAttachmentPreview(a)"
             >
               <img class="thumbImg" :src="a.previewUrl" alt="" />
-            </a>
+            </button>
             <img v-else class="thumbImg" :src="a.previewUrl" alt="" />
 
             <div v-if="a.status === 'uploading'" class="overlay">
@@ -354,10 +379,16 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
               <button class="retryBtn" type="button" @click="retryUpload(a.localId)">重试</button>
             </div>
 
-            <button class="removeBtn" type="button" title="移除" @click="removeAttachment(a.localId)">×</button>
+            <button class="removeBtn" type="button" title="移除" @click="removeImageAttachment(a.localId)">×</button>
           </div>
         </div>
       </div>
+
+      <MainChatPendingImageViewer
+        v-if="attachmentPreview.length"
+        :previews="attachmentPreview"
+        @close="closeAttachmentPreview"
+      />
 
       <div class="actions">
         <div class="actionsLeft">
@@ -771,6 +802,10 @@ textarea {
   display: block;
   width: 100%;
   height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
 }
 
 .overlay {
