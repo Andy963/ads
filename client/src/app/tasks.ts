@@ -535,6 +535,24 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       return;
     }
     const compatibleModels = enabledModels.filter((model) => supportsAgentModel({ agentId: nextAgentId, model }));
+    if (compatibleModels.length === 0) {
+      void loadModels().then(() => {
+        const reloaded = models.value.filter((model) => model.isEnabled && supportsAgentModel({ agentId: nextAgentId, model }));
+        const reloadedFallback = reloaded.find((model) => model.isDefault) ?? reloaded[0] ?? null;
+        const reloadedFallbackId = String(reloadedFallback?.modelId ?? reloadedFallback?.id ?? "").trim();
+        if (reloadedFallbackId) {
+          rt.modelId.value = normalizeModelId(reloadedFallbackId);
+          if (sessionId) {
+            try {
+              localStorage.setItem(buildModelIdStorageKey(sessionId, rt.chatSessionId, nextAgentId), rt.modelId.value);
+            } catch {
+              // ignore
+            }
+          }
+        }
+      });
+      return;
+    }
     const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
     const fallbackId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
     if (!fallbackId || fallbackId === current) return;
@@ -553,10 +571,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const next = String(agentId ?? "").trim();
     if (!next) return;
     const rt = activeRuntime.value;
-    if (rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) {
-      rt.activeAgentId.value = next;
-      alignRuntimeModelForAgent(rt, next);
-    }
+    rt.activeAgentId.value = next;
+    alignRuntimeModelForAgent(rt, next);
     rt.ws?.send?.("set_agent", { agentId: next });
   };
 
@@ -565,10 +581,8 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const next = String(agentId ?? "").trim();
     if (!next) return;
     const rt = activePlannerRuntime.value;
-    if (rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) {
-      rt.activeAgentId.value = next;
-      alignRuntimeModelForAgent(rt, next);
-    }
+    rt.activeAgentId.value = next;
+    alignRuntimeModelForAgent(rt, next);
     rt.ws?.send?.("set_agent", { agentId: next });
   };
 

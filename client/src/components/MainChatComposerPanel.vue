@@ -139,6 +139,7 @@ function onAgentChange(ev: Event): void {
   const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
   const next = String(value ?? "").trim();
   if (!next) return;
+  lastAutoSwitchedAgentId.value = null;
   emit("switchAgent", next);
 }
 
