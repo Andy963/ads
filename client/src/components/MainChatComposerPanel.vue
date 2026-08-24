@@ -26,6 +26,9 @@ type PendingImagePreview = {
 
 const DEFAULT_REASONING_EFFORTS = ["medium", "high", "xhigh"] as const;
 const REASONING_EFFORT_LABELS: Record<string, string> = {
+  off: "Off",
+  none: "None",
+  minimal: "Minimal",
   low: "Low",
   medium: "Medium",
   high: "High",
@@ -565,7 +568,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
               </option>
             </select>
           </div>
-          <div v-if="selectedAgentId === 'codex' || selectedAgentId === 'claude'" class="agentSelect">
+          <div v-if="selectedAgentId === 'codex' || selectedAgentId === 'claude' || selectedAgentId === 'droid'" class="agentSelect">
             <select
               class="agentSelectInput"
               :value="reasoningEffortValue"

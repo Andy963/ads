@@ -8,7 +8,7 @@ function makeModel(
   id: string,
   displayName: string,
   provider: string,
-  agent: "codex" | "claude",
+  agent: "codex" | "claude" | "droid",
   modelId = id,
 ): ModelConfig {
   return {
@@ -36,6 +36,7 @@ describe("ModelManager", () => {
         .fn()
         .mockResolvedValueOnce([
           makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"),
+          makeModel("droid-opus", "Droid Opus", "factory", "droid", "claude-opus-5"),
           {
             id: "local-model",
             displayName: "Local Model",
@@ -62,13 +63,15 @@ describe("ModelManager", () => {
 
     // One row per CLI, both expanded by default.
     const groups = wrapper.findAll(".cliGroup");
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(3);
     expect(groups[0]!.text()).toContain("Codex CLI");
     expect(groups[1]!.text()).toContain("Claude Code");
+    expect(groups[2]!.text()).toContain("Droid CLI");
 
     // A model only ever renders under its own CLI, and unknown CLIs are dropped.
     expect(groups[0]!.text()).not.toContain("Claude Sonnet");
     expect(groups[1]!.text()).toContain("Claude Sonnet");
+    expect(groups[2]!.text()).toContain("Droid Opus");
     expect(wrapper.text()).not.toContain("Local Model");
 
     // Adding starts from the CLI row, so the dialog never asks which CLI again.

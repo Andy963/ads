@@ -110,6 +110,57 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
+  it("shows only Droid catalog models and exposes Droid reasoning efforts", () => {
+    const droidModel = makeModel("droid:opus", "Opus 5", "factory");
+    droidModel.modelId = "claude-opus-5";
+    droidModel.isDefault = true;
+    droidModel.configJson = {
+      allowedAgents: ["droid"],
+      reasoningEfforts: ["off", "low", "medium", "high", "xhigh", "max"],
+    };
+    const customDroidModel = makeModel("droid:custom", "sub-sol", "factory");
+    customDroidModel.modelId = "custom:GPT-5.6-sol-0";
+    customDroidModel.configJson = { allowedAgents: ["droid"] };
+
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        agents: [
+          { id: "claude", name: "Claude", ready: true },
+          { id: "droid", name: "Droid", ready: true },
+        ],
+        activeAgentId: "droid",
+        models: [
+          makeModel("claude-direct", "Claude Direct", "anthropic"),
+          droidModel,
+          customDroidModel,
+        ],
+        modelId: "claude-opus-5",
+        modelReasoningEffort: "off",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
+    expect(modelSelect.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "claude-opus-5",
+      "custom:GPT-5.6-sol-0",
+    ]);
+    expect(modelSelect.text()).not.toContain("Claude Direct");
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("off");
+    expect(effortSelect.findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "off",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    wrapper.unmount();
+  });
+
   it("does not show execution context under user messages", () => {
     const wrapper = mount(MainChat, {
       props: {

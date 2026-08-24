@@ -31,6 +31,7 @@ export function resolveModelAgentId(model: ModelConfig, availableAgentIds: reado
   }
 
   const provider = String(model.provider ?? "").trim().toLowerCase();
+  if (provider.includes("factory") || provider.includes("droid")) return "droid";
   if (provider.includes("anthropic") || provider.includes("claude")) return "claude";
   if (provider.includes("google") || provider.includes("gemini")) return "gemini";
   if (provider.includes("openai") || provider.includes("codex")) return "codex";
@@ -54,6 +55,9 @@ export function supportsAgentModel(args: { agentId: string; model: ModelConfig }
 
   const provider = String(args.model.provider ?? "").trim().toLowerCase();
   const modelId = String(args.model.modelId ?? args.model.id ?? "").trim();
+  if (agentId === "droid") {
+    return provider.includes("factory") || provider.includes("droid");
+  }
   if (agentId === "claude") {
     if (provider.includes("anthropic")) return true;
     return isClaudeModelId(modelId);
@@ -67,5 +71,5 @@ export function supportsAgentModel(args: { agentId: string; model: ModelConfig }
     if (isClaudeModelId(modelId) || isGeminiModelId(modelId)) return false;
     return true;
   }
-  return true;
+  return false;
 }

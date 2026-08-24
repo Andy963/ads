@@ -6,6 +6,9 @@ function normalizeStorageKeySegment(value: unknown, fallback: string): string {
 export function normalizeReasoningEffort(value: unknown): string {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (
+    normalized === "off" ||
+    normalized === "none" ||
+    normalized === "minimal" ||
     normalized === "low" ||
     normalized === "medium" ||
     normalized === "high" ||

@@ -22,6 +22,14 @@ describe("context resume — history injection", () => {
       present: true,
       effort: "ultra",
     });
+    assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "off" }), {
+      present: true,
+      effort: "off",
+    });
+    assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "minimal" }), {
+      present: true,
+      effort: "minimal",
+    });
   });
 
   it("builds transcript from conversation and context-bearing status entries", () => {

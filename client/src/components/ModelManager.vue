@@ -6,7 +6,7 @@ import type { ApiClient } from "../api/client";
 import type { ModelConfig } from "../api/types";
 import { resolveModelAgentId } from "../lib/model_agent";
 
-type AgentKind = "codex" | "claude";
+type AgentKind = "codex" | "claude" | "droid";
 
 type ModelForm = {
   id: string;
@@ -36,11 +36,12 @@ const statusMessage = ref<string | null>(null);
 const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
-const expanded = reactive<Record<AgentKind, boolean>>({ codex: true, claude: true });
+const expanded = reactive<Record<AgentKind, boolean>>({ codex: true, claude: true, droid: true });
 
 const AGENT_GROUPS: Array<{ kind: AgentKind; label: string; description: string }> = [
   { kind: "codex", label: "Codex CLI", description: "OpenAI Codex" },
   { kind: "claude", label: "Claude Code", description: "Anthropic Claude" },
+  { kind: "droid", label: "Droid CLI", description: "Factory Droid" },
 ];
 
 const emptyForm = (agent: AgentKind = "codex"): ModelForm => ({
@@ -83,15 +84,17 @@ function parseConfigJson(raw: string): Record<string, unknown> | null {
 }
 
 function resolveAgent(model: ModelConfig): AgentKind | null {
-  const agentId = resolveModelAgentId(model, ["codex", "claude"]);
-  return agentId === "codex" || agentId === "claude" ? agentId : null;
+  const agentId = resolveModelAgentId(model, ["codex", "claude", "droid"]);
+  return agentId === "codex" || agentId === "claude" || agentId === "droid" ? agentId : null;
 }
 
 function providerForAgent(agent: AgentKind): string {
+  if (agent === "droid") return "factory";
   return agent === "claude" ? "anthropic" : "openai";
 }
 
 function agentLabel(agent: AgentKind): string {
+  if (agent === "droid") return "Droid CLI";
   return agent === "claude" ? "Claude Code" : "Codex CLI";
 }
 
@@ -100,7 +103,7 @@ function modelLabel(model: ModelConfig): string {
 }
 
 const groupedModels = computed(() => {
-  const buckets: Record<AgentKind, ModelConfig[]> = { codex: [], claude: [] };
+  const buckets: Record<AgentKind, ModelConfig[]> = { codex: [], claude: [], droid: [] };
   for (const model of modelConfigs.value) {
     const agent = resolveAgent(model);
     if (!agent) continue;
@@ -496,7 +499,7 @@ onMounted(() => {
             <input
               v-model="form.modelId"
               class="modelInput"
-              :placeholder="form.agent === 'claude' ? 'claude-opus-4-8' : 'gpt-5.2'"
+              :placeholder="form.agent === 'droid' ? 'claude-opus-5' : form.agent === 'claude' ? 'claude-opus-4-8' : 'gpt-5.2'"
               autocomplete="off"
               autocapitalize="off"
               spellcheck="false"
@@ -739,6 +742,11 @@ onMounted(() => {
 .cliGroup.agent-claude .cliDot {
   background: #7c3aed;
   box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.14);
+}
+
+.cliGroup.agent-droid .cliDot {
+  background: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
 }
 
 .cliText {
@@ -1116,6 +1124,11 @@ onMounted(() => {
 .cliChip.agent-claude {
   background: rgba(124, 58, 237, 0.12);
   color: #6d28d9;
+}
+
+.cliChip.agent-droid {
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
 }
 
 .dialogHint {

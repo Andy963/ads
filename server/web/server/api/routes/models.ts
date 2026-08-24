@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { getStateDatabase } from "../../../../state/database.js";
 import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "../../../../state/globalModelConfigStore.js";
 import type { ModelConfig } from "../../../../tasks/types.js";
+import { discoverDroidModels } from "../../../../agents/health/droidModelCatalog.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 
@@ -41,6 +42,7 @@ type UpdateModelConfigInput = z.infer<typeof updateModelConfigSchema>;
 
 type ModelRouteDeps = {
   modelStore?: GlobalModelConfigStore;
+  droidModelCatalog?: () => Promise<ModelConfig[]>;
 };
 
 function normalizeString(value: unknown): string {
@@ -83,8 +85,21 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
 
   if (req.method === "GET" && pathname === "/api/models") {
     const modelStore = getModelStore();
-    const models = modelStore.listModelConfigs().filter((m) => m.isEnabled);
-    sendJson(res, 200, models);
+    const configured = modelStore.listModelConfigs();
+    const configuredDroidModelIds = new Set(
+      configured
+        .filter((model) => {
+          const allowed = model.configJson?.allowedAgents;
+          return Array.isArray(allowed) && allowed.some((agent) => String(agent).trim().toLowerCase() === "droid");
+        })
+        .map((model) => String(model.modelId ?? model.id).trim())
+        .filter(Boolean),
+    );
+    const droidModels = await (deps.droidModelCatalog ?? discoverDroidModels)();
+    const discovered = droidModels.filter(
+      (model) => !configuredDroidModelIds.has(String(model.modelId ?? model.id).trim()),
+    );
+    sendJson(res, 200, [...configured.filter((model) => model.isEnabled), ...discovered]);
     return true;
   }
 

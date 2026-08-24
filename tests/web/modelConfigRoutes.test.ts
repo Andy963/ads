@@ -281,7 +281,18 @@ describe("web/model-config routes", () => {
         res: res as any,
         url: new URL("http://localhost/api/models"),
         pathname: "/api/models",
-      } as any, { modelStore }),
+      } as any, {
+        modelStore,
+        droidModelCatalog: async () => [{
+          id: "droid-discovered:claude-opus-5",
+          modelId: "claude-opus-5",
+          displayName: "Opus 5",
+          provider: "factory",
+          isEnabled: true,
+          isDefault: true,
+          configJson: { allowedAgents: ["droid"] },
+        }],
+      }),
       true,
     );
 
@@ -289,7 +300,7 @@ describe("web/model-config routes", () => {
     const models = parseJson<Array<{ id: string }>>(res.body);
     assert.deepEqual(
       models.map((model) => model.id),
-      ["gpt-5.4"],
+      ["gpt-5.4", "droid-discovered:claude-opus-5"],
     );
   });
 });
