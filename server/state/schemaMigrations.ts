@@ -330,4 +330,66 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    description: "Seed Droid model configs",
+    up: (db) => {
+      const insert = db.prepare(`
+        INSERT INTO model_configs
+          (id, model_id, display_name, provider, is_enabled, is_default, config_json, updated_at)
+        SELECT ?, ?, ?, ?, 1, 0, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM model_configs WHERE id = ?)
+      `);
+      const now = Date.now();
+      const models = [
+        [
+          "model-seed-droid-gpt-5-6-sol",
+          "gpt-5.6-sol",
+          "GPT-5.6 Sol",
+          "factory",
+          ["droid"],
+          ["medium", "high", "xhigh", "max"],
+          "high",
+        ],
+        [
+          "model-seed-droid-gpt-5-6-terra",
+          "gpt-5.6-terra",
+          "GPT-5.6 Terra",
+          "factory",
+          ["droid"],
+          ["medium", "high", "xhigh", "max"],
+          "high",
+        ],
+        [
+          "model-seed-droid-gpt-5-6-luna",
+          "gpt-5.6-luna",
+          "GPT-5.6 Luna",
+          "factory",
+          ["droid"],
+          ["medium", "high", "xhigh", "max"],
+          "high",
+        ],
+        [
+          "model-seed-droid-glm-5-2",
+          "glm-5.2",
+          "GLM-5.2",
+          "factory",
+          ["droid"],
+          ["off", "high", "max"],
+          "high",
+        ],
+      ] as const;
+      for (const [id, modelId, displayName, provider, allowedAgents, reasoningEfforts, defaultReasoningEffort] of models) {
+        insert.run(
+          id,
+          modelId,
+          displayName,
+          provider,
+          JSON.stringify({ allowedAgents, reasoningEfforts, defaultReasoningEffort }),
+          now,
+          id,
+        );
+      }
+    },
+  },
 ];
