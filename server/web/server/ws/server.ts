@@ -292,10 +292,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         return { ok: true, payload };
       }
       if (isTransientSyncEvent(eventType)) {
-        // Per-token frames stay live-only. Main assistant text is folded into a
-        // single coalesced `delta_snapshot`; step/reasoning chatter is not resumable
-        // state and is dropped from the log entirely.
-        if (deltaCoalescer && !String(payloadRecord.source ?? "").trim()) {
+        // Live-only frames are broadcast without entering the replay log. Main
+        // assistant deltas are folded into one coalesced `delta_snapshot`.
+        if (eventType === "delta" && deltaCoalescer && !String(payloadRecord.source ?? "").trim()) {
           deltaCoalescer.appendDelta(String(payloadRecord.delta ?? ""));
         }
         return { ok: true, payload };

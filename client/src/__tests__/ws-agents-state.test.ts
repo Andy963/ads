@@ -112,4 +112,27 @@ describe("ws agents snapshot", () => {
 
     expect(rt.activeAgentId.value).toBe("claude");
   });
+
+  it("ignores persisted agent snapshots replayed from the sync log", () => {
+    const rt = createRuntime();
+    const handler = createHandler(rt);
+
+    handler({
+      type: "agents",
+      activeAgentId: "droid",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "droid", name: "Droid", ready: true },
+      ],
+    });
+    handler({
+      type: "agents",
+      seq: 42,
+      activeAgentId: "codex",
+      agents: [{ id: "codex", name: "Codex", ready: true }],
+    });
+
+    expect(rt.activeAgentId.value).toBe("droid");
+    expect(rt.availableAgents.value.map((agent: { id: string }) => agent.id)).toEqual(["codex", "droid"]);
+  });
 });

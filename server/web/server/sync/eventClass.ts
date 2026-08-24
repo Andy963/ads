@@ -13,15 +13,16 @@
  * - `ephemeral` — live UI decoration that the `history` bootstrap already covers
  *                 (see TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES on the client).
  *                 Small quota; trimming one must NOT force a full resync.
- * - `transient` — never persisted. Per-token `delta` frames are broadcast live and
- *                 represented in the log by a single coalesced `delta_snapshot`.
+ * - `transient` — never persisted. Per-token `delta` frames are represented in the
+ *                 log by a single coalesced `delta_snapshot`; current-state control
+ *                 snapshots such as `agents` are rebuilt during every bootstrap.
  */
 export type SyncEventClass = "durable" | "ephemeral" | "transient";
 
 export const DELTA_SNAPSHOT_EVENT_TYPE = "delta_snapshot";
 
-/** Per-token stream frames. Broadcast live, never written to the log. */
-export const TRANSIENT_SYNC_EVENT_TYPES: readonly string[] = ["delta"];
+/** Live-only frames. Broadcast immediately, never written to the replay log. */
+export const TRANSIENT_SYNC_EVENT_TYPES: readonly string[] = ["delta", "agents"];
 
 /** Live decoration already reproducible from the `history` bootstrap. */
 export const EPHEMERAL_SYNC_EVENT_TYPES: readonly string[] = [

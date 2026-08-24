@@ -697,6 +697,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "agents") {
       const rec = msg as Record<string, unknown>;
+      const sequence = Number(rec.seq);
+      if (Number.isFinite(sequence) && sequence > 0) {
+        // Agent availability is current-state data supplied by the unsequenced
+        // bootstrap/live snapshot. Older ADS versions persisted these snapshots,
+        // so replaying one can remove newly added agents and strand the selector.
+        return;
+      }
       const activeAgentId = String((msg as { activeAgentId?: unknown }).activeAgentId ?? rec["active_agent_id"] ?? "").trim();
       const agentsRaw = (msg as { agents?: unknown }).agents ?? rec["agents"];
       const agents = (Array.isArray(agentsRaw) ? agentsRaw : [])
