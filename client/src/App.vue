@@ -390,7 +390,7 @@ const plannerConnectionStatus = computed(() => {
               </span>
               <span class="projectRowActions">
                 <span
-                  v-if="p.id !== 'default'"
+                  v-if="p.id !== 'default' && p.id === activeProjectId"
                   class="projectRemove"
                   :class="{ disabled: !canRemoveProject(p.id) }"
                   title="Remove project"

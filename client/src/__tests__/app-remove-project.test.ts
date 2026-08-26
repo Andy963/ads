@@ -185,6 +185,33 @@ describe("App.removeProject", () => {
     wrapper.unmount();
   });
 
+  it("renders the remove icon only for the active project", async () => {
+    projectsFromApi = [
+      { id: "p1", workspaceRoot: "/w/p1", name: "P1", chatSessionId: "main", createdAt: 1, updatedAt: 1 },
+      { id: "p2", workspaceRoot: "/w/p2", name: "P2", chatSessionId: "main", createdAt: 2, updatedAt: 2 },
+      { id: "p3", workspaceRoot: "/w/p3", name: "P3", chatSessionId: "main", createdAt: 3, updatedAt: 3 },
+    ];
+    activeProjectIdFromApi = "p2";
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await waitForProjectIds(wrapper as any, ["default", "p1", "p2", "p3"]);
+
+    const rowsWithRemoveIcon = () =>
+      wrapper
+        .findAll("button.projectRow")
+        .filter((row) => row.find(".projectRemove").exists())
+        .map((row) => row.find(".projectName").text());
+
+    expect(rowsWithRemoveIcon()).toEqual(["P2"]);
+
+    (wrapper.vm as any).activeProjectId = "p3";
+    await settleUi(wrapper);
+    expect(rowsWithRemoveIcon()).toEqual(["P3"]);
+
+    wrapper.unmount();
+  });
+
   it("clears stale local projects when the server returns an empty list", async () => {
     localStorage.setItem(
       "ADS_WEB_PROJECTS",
