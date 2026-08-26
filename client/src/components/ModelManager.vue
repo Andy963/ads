@@ -402,10 +402,10 @@ onMounted(() => {
             @click="selectModel(model)"
           >
             <div class="modelRowMain">
-              <span class="modelRowName">
+              <div class="modelRowHeader">
                 <span class="modelRowText">{{ modelLabel(model) || model.id }}</span>
                 <span v-if="model.isDefault" class="modelPill default">默认</span>
-              </span>
+              </div>
               <code class="modelRowId">{{ model.modelId || model.id }}</code>
             </div>
 
@@ -477,7 +477,7 @@ onMounted(() => {
                   :data-testid="`model-manager-delete-${model.id}`"
                   @click="requestDelete(model)"
                 >
-                  <el-icon :size="14" aria-hidden="true"><Delete /></el-icon>
+                  <el-icon :size="14" aria-hidden="true"><Close /></el-icon>
                 </button>
               </template>
             </div>
@@ -902,25 +902,26 @@ onMounted(() => {
 
 .modelRowMain {
   min-width: 0;
+  flex: 1 1 auto;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
-.modelRowName {
+.modelRowHeader {
   display: flex;
   align-items: center;
   gap: 7px;
-  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .modelRowText {
-  overflow: hidden;
   color: var(--text);
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .modelPill {
@@ -937,16 +938,14 @@ onMounted(() => {
 }
 
 .modelRowId {
-  overflow: hidden;
-  min-width: 0;
-  padding: 1px 6px;
+  padding: 2px 6px;
   border-radius: 6px;
   background: rgba(15, 23, 42, 0.05);
   color: #475569;
   font-family: var(--font-mono);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 11.5px;
+  word-break: break-all;
+  line-height: 1.3;
 }
 
 .modelRowActions {
