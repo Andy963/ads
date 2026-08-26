@@ -15,6 +15,6 @@ describe("project row layout", () => {
 
     expect(css).not.toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*\.projectText\s*\{[\s\S]*flex-direction:\s*row\s*;/);
     expect(css).not.toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*\.projectBranch\s*\{[\s\S]*display:\s*inline\s*;/);
+    expect(css).toMatch(/\.projectNode\.active\s+\.projectRowActions\s*\{[\s\S]*opacity:\s*1\s*[;\s][\s\S]*pointer-events:\s*auto\s*;/);
   });
 });
-

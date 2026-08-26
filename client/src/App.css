@@ -541,6 +541,10 @@
     opacity: 1;
     pointer-events: auto;
   }
+  .projectNode.active .projectRowActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .projectRemove {
   width: 18px;
