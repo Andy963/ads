@@ -36,6 +36,7 @@ const statusMessage = ref<string | null>(null);
 const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
+const selectedModelId = ref<string | null>(null);
 const expanded = reactive<Record<AgentKind, boolean>>({ codex: true, claude: true, droid: true });
 
 const AGENT_GROUPS: Array<{ kind: AgentKind; label: string; description: string }> = [
@@ -149,6 +150,7 @@ async function loadModelConfigs(): Promise<void> {
   loading.value = true;
   error.value = null;
   pendingDeleteId.value = null;
+  selectedModelId.value = null;
   try {
     modelConfigs.value = await props.api.get<ModelConfig[]>("/api/model-configs");
   } catch (err) {
@@ -161,6 +163,7 @@ async function loadModelConfigs(): Promise<void> {
 function toggleGroup(agent: AgentKind): void {
   expanded[agent] = !expanded[agent];
   pendingDeleteId.value = null;
+  selectedModelId.value = null;
 }
 
 function closeDialog(): void {
@@ -168,6 +171,7 @@ function closeDialog(): void {
   dialogOpen.value = false;
   assignForm(emptyForm());
   error.value = null;
+  selectedModelId.value = null;
 }
 
 function startCreate(agent: AgentKind): void {
@@ -175,6 +179,7 @@ function startCreate(agent: AgentKind): void {
   editingId.value = null;
   dialogOpen.value = true;
   pendingDeleteId.value = null;
+  selectedModelId.value = null;
   assignForm(emptyForm(agent));
   error.value = null;
   statusMessage.value = null;
@@ -183,6 +188,7 @@ function startCreate(agent: AgentKind): void {
 function editModel(model: ModelConfig): void {
   const agent = resolveAgent(model) ?? "codex";
   editingId.value = model.id;
+  selectedModelId.value = model.id;
   dialogOpen.value = true;
   pendingDeleteId.value = null;
   assignForm({
@@ -280,9 +286,14 @@ function toggleEnabled(model: ModelConfig): void {
   void patchModel(model, { isEnabled: next }, next ? `已启用 ${modelLabel(model)}` : `已停用 ${modelLabel(model)}`);
 }
 
+function selectModel(model: ModelConfig): void {
+  selectedModelId.value = selectedModelId.value === model.id ? null : model.id;
+}
+
 function requestDelete(model: ModelConfig): void {
   if (model.isDefault || busy.value) return;
   pendingDeleteId.value = model.id;
+  selectedModelId.value = model.id;
   statusMessage.value = null;
   error.value = null;
 }
@@ -300,6 +311,7 @@ async function deleteModel(model: ModelConfig): Promise<void> {
     if (editingId.value === model.id) closeDialog();
     await loadModelConfigs();
     pendingDeleteId.value = null;
+    selectedModelId.value = null;
     statusMessage.value = "模型已删除";
     emit("changed");
   } catch (err) {
@@ -385,8 +397,9 @@ onMounted(() => {
             v-for="model in groupedModels[group.kind]"
             :key="model.id"
             class="modelRow"
-            :class="{ off: !model.isEnabled, busy: busyRowId === model.id }"
+            :class="{ selected: selectedModelId === model.id, off: !model.isEnabled, busy: busyRowId === model.id }"
             :data-testid="`model-manager-row-${model.id}`"
+            @click="selectModel(model)"
           >
             <div class="modelRowMain">
               <span class="modelRowName">
@@ -396,7 +409,7 @@ onMounted(() => {
               <code class="modelRowId">{{ model.modelId || model.id }}</code>
             </div>
 
-            <div class="modelRowActions">
+            <div class="modelRowActions" @click.stop>
               <template v-if="pendingDeleteId === model.id">
                 <span class="confirmText">确定删除？</span>
                 <button
@@ -456,6 +469,7 @@ onMounted(() => {
                 </button>
 
                 <button
+                  v-if="selectedModelId === model.id"
                   type="button"
                   class="rowAction icon danger"
                   :title="model.isDefault ? '默认模型不能删除' : '删除'"
@@ -818,6 +832,27 @@ onMounted(() => {
 .cliModels {
   display: flex;
   flex-direction: column;
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.25) transparent;
+}
+
+.cliModels::-webkit-scrollbar {
+  width: 6px;
+}
+
+.cliModels::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cliModels::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.25);
+  border-radius: 999px;
+}
+
+.cliModels::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.45);
 }
 
 .cliEmpty {
@@ -836,6 +871,7 @@ onMounted(() => {
   gap: 12px;
   padding: 9px 12px;
   border-top: 1px solid var(--border);
+  cursor: pointer;
   transition: background 0.14s ease, opacity 0.14s ease;
 }
 
@@ -845,6 +881,15 @@ onMounted(() => {
 
 .modelRow:hover {
   background: rgba(37, 99, 235, 0.03);
+}
+
+.modelRow.selected {
+  background: rgba(37, 99, 235, 0.08);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.modelRow.selected:hover {
+  background: rgba(37, 99, 235, 0.12);
 }
 
 .modelRow.off .modelRowText {

@@ -179,6 +179,9 @@ describe("ModelManager", () => {
     });
     expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
 
+    // Delete button is only visible when the model row is selected.
+    expect(wrapper.find('[data-testid="model-manager-delete-claude-sonnet"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="model-manager-row-claude-sonnet"]').trigger("click");
     await wrapper.find('[data-testid="model-manager-delete-claude-sonnet"]').trigger("click");
     expect(api.delete).not.toHaveBeenCalled();
     await wrapper.find('[data-testid="model-manager-delete-confirm-claude-sonnet"]').trigger("click");
@@ -247,8 +250,10 @@ describe("ModelManager", () => {
     await wrapper.find('[data-testid="model-manager-edit-gpt-5.2"]').trigger("click");
     expect(wrapper.find('[data-testid="model-manager-default"]').attributes("disabled")).toBeDefined();
     expect(wrapper.find('[data-testid="model-manager-enabled"]').attributes("disabled")).toBeDefined();
+    await wrapper.find('.btnSecondary').trigger("click");
 
-    // Deleting is already blocked, so the default can only ever be moved to another model.
+    // Deleting is already blocked, so the default can only ever be moved to another model (when selected).
+    await wrapper.find('[data-testid="model-manager-row-gpt-5.2"]').trigger("click");
     expect(wrapper.find('[data-testid="model-manager-delete-gpt-5.2"]').attributes("disabled")).toBeDefined();
 
     wrapper.unmount();
