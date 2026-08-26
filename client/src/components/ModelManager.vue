@@ -693,6 +693,7 @@ onMounted(() => {
 }
 
 .cliGroup {
+  flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: 13px;
   background: var(--surface);
