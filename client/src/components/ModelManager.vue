@@ -832,27 +832,6 @@ onMounted(() => {
 .cliModels {
   display: flex;
   flex-direction: column;
-  max-height: 280px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(100, 116, 139, 0.25) transparent;
-}
-
-.cliModels::-webkit-scrollbar {
-  width: 6px;
-}
-
-.cliModels::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.cliModels::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.25);
-  border-radius: 999px;
-}
-
-.cliModels::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.45);
 }
 
 .cliEmpty {

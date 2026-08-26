@@ -57,9 +57,10 @@ function serveFile(req: http.IncomingMessage, res: http.ServerResponse, filePath
     setSecurityHeaders(res);
 
     const contentType = resolveContentType(filePath);
+    const isHashedAsset = filePath.includes(`${path.sep}assets${path.sep}`) && !filePath.endsWith(".html");
     const headers: http.OutgoingHttpHeaders = {
       "Content-Type": contentType,
-      "Cache-Control": filePath.endsWith(".html") ? "no-store" : "public, max-age=31536000, immutable",
+      "Cache-Control": isHashedAsset ? "public, max-age=31536000, immutable" : "no-cache, no-store, must-revalidate",
     };
 
     // Check for compression eligibility
