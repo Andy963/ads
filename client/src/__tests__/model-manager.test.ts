@@ -104,6 +104,39 @@ describe("ModelManager", () => {
     wrapper.unmount();
   });
 
+  it("filters the manager to the selected CLI", async () => {
+    const api = {
+      get: vi.fn().mockResolvedValue([
+        makeModel("gpt-5.2", "GPT 5.2", "openai", "codex"),
+        makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"),
+        makeModel("droid-opus", "Droid Opus", "factory", "droid"),
+      ]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any, agent: "claude" },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    expect(wrapper.findAll(".cliGroup")).toHaveLength(1);
+    expect(wrapper.text()).toContain("Claude Code 模型");
+    expect(wrapper.text()).toContain("Claude Sonnet");
+    expect(wrapper.text()).not.toContain("GPT 5.2");
+    expect(wrapper.text()).not.toContain("Droid Opus");
+    expect(wrapper.find('[data-testid="model-manager-add-claude"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="model-manager-add-codex"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="model-manager-add-claude"]').trigger("click");
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').text()).toContain("Claude Code");
+
+    wrapper.unmount();
+  });
+
   it("collapses and expands a CLI row without touching the other CLI", async () => {
     const api = {
       get: vi.fn().mockResolvedValue([

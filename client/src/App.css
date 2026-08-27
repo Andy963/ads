@@ -369,21 +369,6 @@
   align-items: center;
   gap: 4px;
 }
-.drawerCloseBtn {
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-.drawerCloseBtn:hover {
-  background: rgba(15, 23, 42, 0.06);
-  color: var(--text);
-}
 .projectTreeTitle {
   font-size: 13px;
   font-weight: 800;
@@ -823,8 +808,9 @@
   .mobileMenuBtn {
     display: grid;
     place-items: center;
-    width: 34px;
-    height: 34px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
     flex: 0 0 auto;
     border: none;
     border-radius: 9px;
@@ -835,6 +821,9 @@
   .mobileMenuBtn:hover {
     background: rgba(15, 23, 42, 0.06);
     color: var(--text);
+  }
+  .mobileMenuIcon {
+    display: block;
   }
   .mobileContextTitle {
     display: block;
@@ -920,27 +909,25 @@
   }
   .mobileDrawerNav {
     display: flex;
+    flex-direction: column;
     flex: 0 0 auto;
-    gap: 5px;
-    padding: 2px;
-    border: 1px solid var(--border);
-    border-radius: 11px;
-    background: var(--surface-2);
+    gap: 4px;
+    width: 100%;
   }
   .mobileDrawerNavItem {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 5px;
+    justify-content: flex-start;
+    gap: 10px;
+    width: 100%;
     min-width: 0;
-    min-height: 36px;
-    flex: 1 1 0;
-    padding: 0 7px;
+    min-height: 44px;
+    padding: 8px 10px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--muted);
-    font-size: 11px;
+    font-size: 14px;
     font-weight: 800;
     cursor: pointer;
   }
@@ -948,6 +935,69 @@
     background: var(--surface);
     color: var(--accent-2);
     box-shadow: var(--shadow-sm);
+  }
+  .mobileDrawerNavItem:focus-visible,
+  .mobileDrawerSubitem:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .mobileDrawerSubitems {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    margin-top: 8px;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--border);
+    overflow-y: auto;
+  }
+  .mobileDrawerSubitem {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    min-height: 52px;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .mobileDrawerSubitem:hover,
+  .mobileDrawerSubitem.active {
+    border-color: rgba(37, 99, 235, 0.18);
+    background: rgba(37, 99, 235, 0.08);
+  }
+  .mobileDrawerSubitemText {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .mobileDrawerSubitemText strong {
+    overflow: hidden;
+    color: inherit;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobileDrawerSubitemText small {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobileDrawerSubitemArrow {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 22px;
+    line-height: 1;
   }
   .mobileDrawerBackdrop {
     position: fixed;
@@ -967,64 +1017,88 @@
   .projectTreeHeader {
     flex: 0 0 auto;
   }
-  .mobileDrawerManager {
+  .mobileMainPanel {
     display: flex;
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
     width: 100%;
     overflow: hidden;
   }
-  .mobileDrawerManager :deep(.modelManager),
-  .mobileDrawerManager :deep(.ruleManager) {
+  .mobileMainPanel :deep(.modelManager),
+  .mobileMainPanel :deep(.ruleManager) {
+    flex: 1 1 auto;
     height: 100%;
     max-height: none;
     border-radius: 13px;
   }
-  .mobileDrawerManager :deep(.modelHeader),
-  .mobileDrawerManager :deep(.ruleHeader) {
+  .mobileMainPanel :deep(.modelHeader),
+  .mobileMainPanel :deep(.ruleHeader) {
     padding: 11px 12px;
   }
-  .mobileDrawerManager :deep(.modelSubtitle),
-  .mobileDrawerManager :deep(.ruleSubtitle) {
+  .mobileMainPanel :deep(.modelSubtitle),
+  .mobileMainPanel :deep(.ruleSubtitle) {
     display: none;
   }
-  .mobileDrawerManager :deep(.cliList),
-  .mobileDrawerManager :deep(.ruleBody) {
+  .mobileMainPanel :deep(.cliList),
+  .mobileMainPanel :deep(.ruleBody) {
     padding-left: 10px;
     padding-right: 10px;
   }
-  .mobileDrawerManager :deep(.cliRow) {
+  .mobileMainPanel :deep(.cliRow) {
     flex-wrap: wrap;
   }
-  .mobileDrawerManager :deep(.cliCount) {
+  .mobileMainPanel :deep(.cliCount) {
     display: none;
   }
-  .mobileDrawerManager :deep(.modelRow) {
+  .mobileMainPanel :deep(.modelRow) {
     grid-template-columns: minmax(0, 1fr);
   }
-  .mobileDrawerManager :deep(.modelRowActions),
-  .mobileDrawerManager :deep(.ruleRowActions) {
+  .mobileMainPanel :deep(.modelRowActions),
+  .mobileMainPanel :deep(.ruleRowActions) {
     justify-content: flex-end;
     flex-wrap: wrap;
   }
-  .mobileDrawerManager :deep(.modelToggleGrid) {
+  .mobileMainPanel :deep(.modelToggleGrid) {
     grid-template-columns: minmax(0, 1fr);
   }
-  .mobileDrawerManager :deep(.ruleTab span:not(.tabBadge)) {
+  .mobileMainPanel :deep(.ruleTab span:not(.tabBadge)) {
     display: none;
   }
-  .mobileDrawerManager :deep(.ruleTab) {
+  .mobileMainPanel :deep(.ruleTab) {
     padding-left: 8px;
     padding-right: 8px;
   }
-  .mobileDrawerManager :deep(.ruleRow) {
+  .mobileMainPanel :deep(.ruleRow) {
     flex-wrap: wrap;
   }
-  .mobileDrawerManager :deep(.sevOptions) {
+  .mobileMainPanel :deep(.sevOptions) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .mobileDrawerManager :deep(.twoCol) {
+  .mobileMainPanel :deep(.twoCol) {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .mobileModuleEmpty {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 0;
+    padding: 28px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: var(--surface);
+    color: var(--muted);
+    text-align: center;
+  }
+  .mobileModuleEmpty strong {
+    color: var(--text);
+  }
+  .mobileModuleEmpty span {
+    max-width: 280px;
+    font-size: 12px;
+    line-height: 1.5;
   }
   .chatShell {
     display: flex;

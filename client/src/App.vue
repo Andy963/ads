@@ -16,12 +16,11 @@ import { createAppController } from "./app/controller";
 import type { TaskBundle } from "./api/types";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
+import { MODEL_AGENT_GROUPS, type AgentKind } from "./lib/model_agent";
 import {
   CirclePlus,
   ChatDotRound,
-  Close,
   Document,
-  Menu,
   MoreFilled,
   Setting,
   Clock,
@@ -143,7 +142,8 @@ type MobileContextActionId =
   | "create-rule"
   | "refresh-rules"
   | "create-model"
-  | "refresh-models";
+  | "refresh-models"
+  | "choose-model-cli";
 type MobileContextAction = {
   id: MobileContextActionId;
   label: string;
@@ -156,6 +156,7 @@ type MobileManagerHandle = {
 
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
+const mobileModelAgent = ref<AgentKind | null>(null);
 const mobileContextMenuOpen = ref(false);
 const mobileGlobalRuleManagerRef = ref<MobileManagerHandle | null>(null);
 const mobileModelManagerRef = ref<MobileManagerHandle | null>(null);
@@ -242,31 +243,36 @@ const newSessionDisabledReason = computed(() => {
   return "";
 });
 
-const mobileContextSection = computed<MobileDrawerSection>(() =>
-  mobileDrawerOpen.value ? mobileDrawerSection.value : "projects",
-);
-
 const mobileContextTitle = computed(() => {
-  if (mobileContextSection.value === "rules") return "Rules";
-  if (mobileContextSection.value === "models") return "模型管理";
+  if (mobileDrawerSection.value === "rules") return "Rule";
+  if (mobileDrawerSection.value === "models") {
+    const selected = MODEL_AGENT_GROUPS.find((group) => group.kind === mobileModelAgent.value);
+    return selected?.label || "Model";
+  }
   return activeProject.value?.name?.trim() || "项目";
 });
 
 const mobileContextMenuTitle = computed(() => {
-  if (mobileContextSection.value === "rules") return "Rules 操作";
-  if (mobileContextSection.value === "models") return "模型操作";
+  if (mobileDrawerSection.value === "rules") return "Rule 操作";
+  if (mobileDrawerSection.value === "models") {
+    return mobileModelAgent.value ? `${mobileContextTitle.value} 操作` : "Model";
+  }
   return "项目操作";
 });
 
 const mobileContextActions = computed<MobileContextAction[]>(() => {
-  if (mobileContextSection.value === "rules") {
+  if (mobileDrawerSection.value === "rules") {
     return [
       { id: "create-rule", label: "新增规则" },
       { id: "refresh-rules", label: "刷新规则" },
     ];
   }
-  if (mobileContextSection.value === "models") {
+  if (mobileDrawerSection.value === "models") {
+    if (!mobileModelAgent.value) {
+      return [{ id: "choose-model-cli", label: "选择 CLI" }];
+    }
     return [
+      { id: "choose-model-cli", label: "切换 CLI" },
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
     ];
@@ -292,12 +298,14 @@ function closeMobileContextMenu(): void {
 function closeMobileDrawer(): void {
   mobileDrawerOpen.value = false;
   mobileContextMenuOpen.value = false;
-  mobileDrawerSection.value = "projects";
 }
 
-function openMobileDrawer(section: MobileDrawerSection = "projects"): void {
+function openMobileDrawer(section?: MobileDrawerSection): void {
   if (!isMobile.value) return;
-  mobileDrawerSection.value = section;
+  if (section) {
+    mobileDrawerSection.value = section;
+    if (section !== "models") mobileModelAgent.value = null;
+  }
   mobileDrawerOpen.value = true;
   mobileContextMenuOpen.value = false;
 }
@@ -309,7 +317,16 @@ function toggleMobileDrawer(): void {
 
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
   mobileDrawerSection.value = section;
+  if (section !== "models") mobileModelAgent.value = null;
   mobileContextMenuOpen.value = false;
+  if (section === "rules") closeMobileDrawer();
+}
+
+function selectMobileModelAgent(agent: AgentKind): void {
+  mobileDrawerSection.value = "models";
+  mobileModelAgent.value = agent;
+  mobileContextMenuOpen.value = false;
+  closeMobileDrawer();
 }
 
 function toggleMobileContextMenu(): void {
@@ -341,7 +358,12 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
     mobileModelManagerRef.value?.create();
     return;
   }
-  void mobileModelManagerRef.value?.refresh();
+  if (actionId === "refresh-models") {
+    void mobileModelManagerRef.value?.refresh();
+    return;
+  }
+  mobileModelAgent.value = null;
+  openMobileDrawer("models");
 }
 
 function requestProjectSwitchFromMobile(projectId: string): void {
@@ -352,6 +374,12 @@ function requestProjectSwitchFromMobile(projectId: string): void {
 function openProjectDialogFromDrawer(): void {
   if (isMobile.value) closeMobileDrawer();
   openProjectDialog();
+}
+
+function closeMobileModule(): void {
+  mobileModelAgent.value = null;
+  mobileDrawerSection.value = "projects";
+  closeMobileDrawer();
 }
 
 function onMobileKeydown(ev: KeyboardEvent): void {
@@ -492,15 +520,16 @@ const plannerConnectionStatus = computed(() => {
         v-if="isMobile"
         type="button"
         class="mobileMenuBtn"
-        title="打开导航"
-        aria-label="打开导航"
+        :title="mobileDrawerOpen ? '关闭导航' : '打开导航'"
+        :aria-label="mobileDrawerOpen ? '关闭导航' : '打开导航'"
         :aria-expanded="mobileDrawerOpen"
         data-testid="mobile-drawer-toggle"
         @click.stop="toggleMobileDrawer"
       >
-        <el-icon :size="18" aria-hidden="true">
-          <Menu />
-        </el-icon>
+        <svg class="mobileMenuIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <rect x="2" y="5.5" width="16" height="2.2" rx="1.1" />
+          <rect x="2" y="12.3" width="10" height="2.2" rx="1.1" />
+        </svg>
       </button>
       <div class="brand">ADS</div>
       <div class="topbarMain">
@@ -610,7 +639,7 @@ const plannerConnectionStatus = computed(() => {
             @click="selectMobileDrawerSection('rules')"
           >
             <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
-            <span>Rules</span>
+            <span>Rule</span>
           </button>
           <button
             type="button"
@@ -621,26 +650,33 @@ const plannerConnectionStatus = computed(() => {
             @click="selectMobileDrawerSection('models')"
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
-            <span>模型</span>
+            <span>Model</span>
           </button>
         </nav>
 
-        <div v-show="!isMobile || mobileDrawerSection === 'projects'" class="projectTree">
+        <div v-if="isMobile && mobileDrawerSection === 'models'" class="mobileDrawerSubitems" aria-label="模型 CLI">
+          <button
+            v-for="group in MODEL_AGENT_GROUPS"
+            :key="group.kind"
+            type="button"
+            class="mobileDrawerSubitem"
+            :class="{ active: mobileModelAgent === group.kind }"
+            :data-testid="`mobile-drawer-model-${group.kind}`"
+            @click="selectMobileModelAgent(group.kind)"
+          >
+            <span class="mobileDrawerSubitemText">
+              <strong>{{ group.label }}</strong>
+              <small>{{ group.description }}</small>
+            </span>
+            <span class="mobileDrawerSubitemArrow" aria-hidden="true">›</span>
+          </button>
+        </div>
+
+        <div v-if="!isMobile || mobileDrawerSection === 'projects'" class="projectTree">
           <div class="projectTreeHeader">
             <div class="projectTreeTitle">项目</div>
             <div class="projectTreeHeaderActions">
               <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialogFromDrawer"><el-icon :size="16" aria-hidden="true" class="icon"><CirclePlus /></el-icon></button>
-              <button
-                v-if="isMobile"
-                type="button"
-                class="drawerCloseBtn"
-                title="关闭抽屉"
-                aria-label="关闭抽屉"
-                data-testid="mobile-drawer-close"
-                @click="closeMobileDrawer"
-              >
-                <el-icon :size="17" aria-hidden="true"><Close /></el-icon>
-              </button>
             </div>
           </div>
 
@@ -747,24 +783,32 @@ const plannerConnectionStatus = computed(() => {
               </div>
             </div>
         </div>
-        <div v-if="isMobile && mobileDrawerSection === 'rules'" class="mobileDrawerManager">
-          <GlobalRuleManager
-            ref="mobileGlobalRuleManagerRef"
-            :api="api"
-            @close="closeMobileDrawer"
-          />
-        </div>
-        <div v-if="isMobile && mobileDrawerSection === 'models'" class="mobileDrawerManager">
-          <ModelManager
-            ref="mobileModelManagerRef"
-            :api="api"
-            @close="closeMobileDrawer"
-            @changed="onModelManagerChanged"
-          />
-        </div>
       </aside>
 
-      <section class="chatShell">
+      <section v-if="isMobile && mobileDrawerSection !== 'projects'" class="mobileMainPanel">
+        <GlobalRuleManager
+          v-if="mobileDrawerSection === 'rules'"
+          ref="mobileGlobalRuleManagerRef"
+          :api="api"
+          @close="closeMobileModule"
+        />
+        <ModelManager
+          v-else-if="mobileDrawerSection === 'models' && mobileModelAgent"
+          :key="mobileModelAgent"
+          ref="mobileModelManagerRef"
+          :api="api"
+          :agent="mobileModelAgent"
+          @close="closeMobileModule"
+          @changed="onModelManagerChanged"
+        />
+        <div v-else-if="mobileDrawerSection === 'models'" class="mobileModuleEmpty">
+          <el-icon :size="30" aria-hidden="true"><Setting /></el-icon>
+          <strong>选择一个 CLI</strong>
+          <span>打开左上角导航，从模型下面选择 Codex、Claude 或 Droid。</span>
+        </div>
+      </section>
+
+      <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
         <div class="laneTabs" role="tablist" aria-label="切换对话 lane">
           <button
             v-for="lane in chatLanes"

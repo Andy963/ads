@@ -1,5 +1,13 @@
 import type { ModelConfig } from "../api/types";
 
+export type AgentKind = "codex" | "claude" | "droid";
+
+export const MODEL_AGENT_GROUPS: Array<{ kind: AgentKind; label: string; description: string }> = [
+  { kind: "codex", label: "Codex CLI", description: "OpenAI Codex" },
+  { kind: "claude", label: "Claude Code", description: "Anthropic Claude" },
+  { kind: "droid", label: "Droid CLI", description: "Factory Droid" },
+];
+
 export function modelAllowedAgents(model: ModelConfig): string[] | null {
   const cfg = (model as ModelConfig & { configJson?: unknown }).configJson;
   if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return null;

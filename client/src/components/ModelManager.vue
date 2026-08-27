@@ -4,9 +4,7 @@ import { ArrowRight, Close, Delete, EditPen, Plus, Refresh, StarFilled } from "@
 
 import type { ApiClient } from "../api/client";
 import type { ModelConfig } from "../api/types";
-import { resolveModelAgentId } from "../lib/model_agent";
-
-type AgentKind = "codex" | "claude" | "droid";
+import { MODEL_AGENT_GROUPS, resolveModelAgentId, type AgentKind } from "../lib/model_agent";
 
 type ModelForm = {
   id: string;
@@ -20,6 +18,7 @@ type ModelForm = {
 
 const props = defineProps<{
   api: ApiClient;
+  agent?: AgentKind | null;
 }>();
 
 const emit = defineEmits<{
@@ -38,12 +37,6 @@ const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
 const expanded = reactive<Record<AgentKind, boolean>>({ codex: true, claude: true, droid: true });
-
-const AGENT_GROUPS: Array<{ kind: AgentKind; label: string; description: string }> = [
-  { kind: "codex", label: "Codex CLI", description: "OpenAI Codex" },
-  { kind: "claude", label: "Claude Code", description: "Anthropic Claude" },
-  { kind: "droid", label: "Droid CLI", description: "Factory Droid" },
-];
 
 const emptyForm = (agent: AgentKind = "codex"): ModelForm => ({
   id: "",
@@ -120,12 +113,17 @@ const groupedModels = computed(() => {
   return buckets;
 });
 
+const visibleGroups = computed(() =>
+  props.agent ? MODEL_AGENT_GROUPS.filter((group) => group.kind === props.agent) : MODEL_AGENT_GROUPS,
+);
+
 function enabledCount(agent: AgentKind): number {
   return groupedModels.value[agent].filter((model) => model.isEnabled).length;
 }
 
 const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
 const isEditing = computed(() => Boolean(editingId.value));
+const managerTitle = computed(() => (props.agent ? `${agentLabel(props.agent)} 模型` : "模型管理"));
 // The global default must always exist, stay enabled, and be replaced rather than cleared — the
 // server never picks a successor, so un-defaulting or disabling it silently drops every consumer
 // back to whichever model happens to sort first.
@@ -327,7 +325,7 @@ onMounted(() => {
 
 defineExpose({
   refresh: loadModelConfigs,
-  create: () => startCreate("codex"),
+  create: () => startCreate(props.agent ?? "codex"),
 });
 </script>
 
@@ -335,7 +333,7 @@ defineExpose({
   <section class="modelManager" data-testid="model-manager">
     <header class="modelHeader" data-drag-handle>
       <div class="modelHeaderTitle">
-        <div class="modelTitle">模型管理</div>
+        <div class="modelTitle">{{ managerTitle }}</div>
         <div class="modelSubtitle">每个模型只属于一个 CLI，保存后输入框下拉会立即刷新。</div>
       </div>
       <div class="modelHeaderActions">
@@ -355,7 +353,7 @@ defineExpose({
 
     <div class="cliList">
       <section
-        v-for="group in AGENT_GROUPS"
+        v-for="group in visibleGroups"
         :key="group.kind"
         class="cliGroup"
         :class="[`agent-${group.kind}`, { open: expanded[group.kind] }]"
