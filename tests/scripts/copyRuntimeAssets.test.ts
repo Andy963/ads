@@ -14,7 +14,6 @@ const requiredTemplateFiles = [
   "instructions.md",
   "rules.md",
   "supervisor.md",
-  "task.md",
 ];
 
 describe("scripts/copy-runtime-assets", () => {
@@ -36,12 +35,9 @@ describe("scripts/copy-runtime-assets", () => {
     const tempTemplatesDir = path.join(tempRoot, "templates");
     fs.mkdirSync(tempScriptDir, { recursive: true });
     fs.mkdirSync(tempTemplatesDir, { recursive: true });
-    fs.mkdirSync(path.join(tempTemplatesDir, "skills"), { recursive: true });
 
     const scriptSource = fs.readFileSync(scriptSourcePath, "utf8");
     fs.writeFileSync(path.join(tempScriptDir, "copy-runtime-assets.js"), scriptSource, "utf8");
-    fs.writeFileSync(path.join(tempTemplatesDir, "skills", "README.md"), "skill body", "utf8");
-
     for (const fileName of requiredTemplateFiles) {
       fs.writeFileSync(path.join(tempTemplatesDir, fileName), `${fileName}\n`, "utf8");
     }
@@ -57,7 +53,6 @@ describe("scripts/copy-runtime-assets", () => {
 
     const copiedTemplate = path.join(tempRoot, "dist", "templates", "instructions.md");
     assert.equal(fs.readFileSync(copiedTemplate, "utf8"), "instructions.md\n");
-    assert.equal(fs.existsSync(path.join(tempRoot, "dist", "templates", "skills", "README.md")), true);
     assert.equal(fs.existsSync(path.join(tempRoot, "dist", "server", "graph")), false);
   });
 });
