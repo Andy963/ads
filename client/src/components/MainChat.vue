@@ -25,13 +25,6 @@ const props = defineProps<{
   models?: ModelConfig[];
   modelId?: string;
   modelReasoningEffort?: string;
-  agentDelegations?: Array<{
-    id: string;
-    agentId: string;
-    agentName: string;
-    prompt: string;
-    startedAt: number;
-  }>;
   apiToken?: string;
   runningTaskCount?: number;
   workspaceRoot?: string | null;
@@ -390,7 +383,6 @@ onBeforeUnmount(() => {
       :models="models"
       :model-id="modelId"
       :model-reasoning-effort="modelReasoningEffort"
-      :agent-delegations="agentDelegations"
       :api-token="apiToken"
       :running-task-count="runningTaskCount"
       :connection-status-kind="connectionStatusKind"

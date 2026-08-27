@@ -1,7 +1,7 @@
 /**
  * Session previews come from the raw prompt that was sent to the provider, and
  * ADS wraps every prompt in a large preamble (agent instructions, global rules,
- * skill listings, collaboration hints). Rendering that verbatim would make every
+ * and skill listings). Rendering that verbatim would make every
  * session in the picker look identical, so this module recovers the part the
  * user actually typed.
  */
@@ -11,9 +11,6 @@ const USER_REQUEST_MARKERS = [
   "**用户请求（请直接回应以下内容，上面是背景指令）：**",
   "用户请求（请直接回应以下内容，上面是背景指令）：",
 ];
-
-/** Trailing blocks that are appended after the user request. */
-const TRAILING_MARKERS = ["【协作代理指令】", "<<<agent.codex", "<<<agent.gemini"];
 
 /** Wrapper elements injected around prompts; dropped with their contents. */
 const WRAPPED_TAGS = [
@@ -33,17 +30,6 @@ function stripWrappedTags(input: string): string {
   for (const tag of WRAPPED_TAGS) {
     const pattern = new RegExp(`<${tag}[^>]*>[\\s\\S]*?<\\/${tag}>`, "gi");
     output = output.replace(pattern, " ");
-  }
-  return output;
-}
-
-function stripTrailingBlocks(input: string): string {
-  let output = input;
-  for (const marker of TRAILING_MARKERS) {
-    const index = output.indexOf(marker);
-    if (index >= 0) {
-      output = output.slice(0, index);
-    }
   }
   return output;
 }
@@ -91,7 +77,6 @@ export function extractUserFacingPrompt(rawText: string): string {
   let text = takeAfterLastMarker(raw);
   text = dropContextRestoreBlock(text);
   text = stripWrappedTags(text);
-  text = stripTrailingBlocks(text);
   return collapse(text);
 }
 

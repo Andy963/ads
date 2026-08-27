@@ -665,7 +665,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     rt.busy.value = false;
     rt.turnInFlight = false;
     rt.turnHasPatch = false;
-    rt.delegationsInFlight.value = [];
     rt.awaitingBootstrapHistory = false;
     rt.pendingAckClientMessageId = null;
     rt.queuedPrompts.value = [];
@@ -736,48 +735,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         clearThreadWarningIfCurrent(threadId);
         rt.activeThreadId.value = threadId || null;
       }
-      return;
-    }
-
-    if (type === "agent") {
-      const rec = msg as Record<string, unknown>;
-      const event = String((msg as { event?: unknown }).event ?? "").trim();
-      const agentId = String((msg as { agentId?: unknown }).agentId ?? rec["agent_id"] ?? rec["agent"] ?? "").trim();
-      const agentName = String((msg as { agentName?: unknown }).agentName ?? rec["agent_name"] ?? agentId).trim() || agentId || "agent";
-      const delegationId = String((msg as { delegationId?: unknown; id?: unknown }).delegationId ?? rec["delegation_id"] ?? rec["id"] ?? "").trim();
-      const prompt = String((msg as { prompt?: unknown }).prompt ?? "").trim();
-
-      const existing = Array.isArray(rt.delegationsInFlight.value) ? rt.delegationsInFlight.value : [];
-
-      if (event === "delegation:start") {
-        rt.busy.value = true;
-        rt.turnInFlight = true;
-
-        const id = delegationId || randomId("delegation");
-        if (existing.some((d) => String(d.id) === id)) {
-          return;
-        }
-        rt.delegationsInFlight.value = [
-          ...existing,
-          { id, agentId: agentId || "agent", agentName, prompt, startedAt: Date.now() },
-        ];
-        return;
-      }
-
-      if (event === "delegation:result") {
-        if (!existing.length) return;
-        const id = delegationId;
-        if (id) {
-          rt.delegationsInFlight.value = existing.filter((d) => String(d.id) !== id);
-          return;
-        }
-        // Fallback matching when the backend didn't provide a stable delegation id.
-        const idx = existing.findIndex((d) => String(d.agentId) === agentId && String(d.prompt) === prompt);
-        if (idx < 0) return;
-        rt.delegationsInFlight.value = [...existing.slice(0, idx), ...existing.slice(idx + 1)];
-        return;
-      }
-
       return;
     }
 
@@ -908,7 +865,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             }
           }
           rt.turnHasPatch = false;
-          rt.delegationsInFlight.value = [];
         }
       }
 
@@ -1476,7 +1432,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
       resetTurnPatchSummary();
-      rt.delegationsInFlight.value = [];
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
       const output = String(msg.output ?? "");
@@ -1578,7 +1533,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
       resetTurnPatchSummary();
-      rt.delegationsInFlight.value = [];
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
       clearStepLive(rt);

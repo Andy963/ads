@@ -38,9 +38,9 @@ describe("DroidStreamParser", () => {
       type: "tool_call",
       id: "task-1",
       toolName: "Task",
-      parameters: { subagent_type: "explorer", description: "Inspect files", prompt: "Read the repository" },
+      parameters: { description: "Inspect files", prompt: "Read the repository" },
     });
-    assert.equal(task[0]?.phase, "subagent");
+    assert.equal(task[0]?.phase, "tool");
 
     const plan = parser.parseLine({
       type: "tool_call",

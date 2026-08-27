@@ -10,7 +10,6 @@ function createRuntime() {
     pendingImages: ref([]),
     connected: ref(false),
     busy: ref(false),
-    delegationsInFlight: ref([]),
     composerDraft: ref(""),
     availableAgents: ref([]),
     activeAgentId: ref(""),

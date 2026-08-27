@@ -170,7 +170,7 @@ describe("ClaudeStreamParser", () => {
     assert.equal(parser.getLastError(), "API Error: Request rejected (429) · Service Unavailable");
   });
 
-  it("maps Task tool_use into subagent_dispatch (not generic tool_call)", () => {
+  it("maps Task tool_use into a generic tool call", () => {
     const parser = new ClaudeStreamParser();
     parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
 
@@ -185,7 +185,6 @@ describe("ClaudeStreamParser", () => {
             input: {
               description: "Explore project layout",
               prompt: "Map the repo and report key dirs.",
-              subagent_type: "general-purpose",
             },
           },
         ],
@@ -193,20 +192,17 @@ describe("ClaudeStreamParser", () => {
     });
     assert.equal(started.length, 1);
     const startedEv = started[0]!;
-    assert.equal(startedEv.phase, "subagent");
-    assert.equal(startedEv.title, "调度子代理");
+    assert.equal(startedEv.phase, "tool");
+    assert.equal(startedEv.title, "调用工具");
 
     const rawStarted = startedEv.raw as {
       type?: string;
-      item?: { type?: string; subagent_type?: string; description?: string; prompt?: string; tool_use_id?: string; status?: string };
+      item?: { type?: string; server?: string; tool?: string; status?: string };
     };
     assert.equal(rawStarted.type, "item.started");
-    assert.equal(rawStarted.item?.type, "subagent_dispatch");
-    assert.notEqual(rawStarted.item?.type, "tool_call");
-    assert.equal(rawStarted.item?.subagent_type, "general-purpose");
-    assert.equal(rawStarted.item?.description, "Explore project layout");
-    assert.equal(rawStarted.item?.prompt, "Map the repo and report key dirs.");
-    assert.equal(rawStarted.item?.tool_use_id, "task-1");
+    assert.equal(rawStarted.item?.type, "tool_call");
+    assert.equal(rawStarted.item?.server, "claude");
+    assert.equal(rawStarted.item?.tool, "Task");
     assert.equal(rawStarted.item?.status, "in_progress");
 
     const completed = parser.parseLine({
@@ -224,20 +220,20 @@ describe("ClaudeStreamParser", () => {
     });
     assert.equal(completed.length, 1);
     const completedEv = completed[0]!;
-    assert.equal(completedEv.phase, "subagent");
-    assert.equal(completedEv.title, "子代理完成");
+    assert.equal(completedEv.phase, "tool");
+    assert.equal(completedEv.title, "工具调用完成");
     const rawCompleted = completedEv.raw as {
       type?: string;
-      item?: { type?: string; status?: string; result?: string; subagent_type?: string };
+      item?: { type?: string; status?: string; server?: string; tool?: string };
     };
     assert.equal(rawCompleted.type, "item.completed");
-    assert.equal(rawCompleted.item?.type, "subagent_dispatch");
+    assert.equal(rawCompleted.item?.type, "tool_call");
     assert.equal(rawCompleted.item?.status, "completed");
-    assert.equal(rawCompleted.item?.result, "Found src/, tests/, docs/.");
-    assert.equal(rawCompleted.item?.subagent_type, "general-purpose");
+    assert.equal(rawCompleted.item?.server, "claude");
+    assert.equal(rawCompleted.item?.tool, "Task");
   });
 
-  it("marks failed Task tool_result as subagent failure and emits error", () => {
+  it("maps failed Task tool_result as a generic tool failure", () => {
     const parser = new ClaudeStreamParser();
     parser.parseLine({ type: "system", subtype: "init", session_id: "sid" });
 
@@ -249,7 +245,7 @@ describe("ClaudeStreamParser", () => {
             type: "tool_use",
             id: "task-err",
             name: "Task",
-            input: { description: "Run thing", prompt: "do it", subagent_type: "Explore" },
+            input: { description: "Run thing", prompt: "do it" },
           },
         ],
       },
@@ -262,13 +258,12 @@ describe("ClaudeStreamParser", () => {
         ],
       },
     });
-    // Expect a completed subagent_dispatch event + an error event.
-    assert.equal(events.length, 2);
-    assert.equal(events[0]?.phase, "subagent");
-    const rawCompleted = events[0]!.raw as { item?: { status?: string } };
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.phase, "tool");
+    const rawCompleted = events[0]!.raw as { item?: { type?: string; status?: string } };
+    assert.equal(rawCompleted.item?.type, "tool_call");
     assert.equal(rawCompleted.item?.status, "failed");
-    assert.equal(events[1]?.phase, "error");
-    assert.ok(parser.getLastError()?.includes("boom"));
+    assert.equal(parser.getLastError(), null);
   });
 
   it("maps TodoWrite tool_use to a todo_list item with normalized statuses", () => {

@@ -578,7 +578,6 @@ export function createChatActions(ctx: AppContext) {
     const next = state.queuedPrompts.value[0]!;
     state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
     const messagesBeforeFlush = state.messages.value.slice();
-    const delegationsBeforeFlush = state.delegationsInFlight.value.slice();
     const busyBeforeFlush = state.busy.value;
     const turnInFlightBeforeFlush = state.turnInFlight;
     const turnHasPatchBeforeFlush = state.turnHasPatch;
@@ -612,7 +611,6 @@ export function createChatActions(ctx: AppContext) {
 
       finalizeCommandBlock(state);
       clearStepLive(state);
-
       const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
       const effort = queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high";
       const queuedModel = String(next.model ?? "").trim();
@@ -628,7 +626,6 @@ export function createChatActions(ctx: AppContext) {
       };
       pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution }, state);
       pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
-      state.delegationsInFlight.value = [];
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
@@ -650,7 +647,6 @@ export function createChatActions(ctx: AppContext) {
       }
     } catch {
       state.messages.value = messagesBeforeFlush;
-      state.delegationsInFlight.value = delegationsBeforeFlush;
       state.busy.value = busyBeforeFlush;
       state.turnInFlight = turnInFlightBeforeFlush;
       state.turnHasPatch = turnHasPatchBeforeFlush;

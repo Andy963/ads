@@ -1,6 +1,5 @@
 import type { Input } from "../../../agents/protocol/types.js";
 
-import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
 import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
@@ -8,7 +7,7 @@ import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
-import { runCollaborativeTurn } from "../../../agents/hub.js";
+import { runAgentTurn } from "../../../agents/turn.js";
 import { injectPlannerDraftSkill, parsePlannerDraftSlashCommand } from "../planner/draftSlashCommand.js";
 import type { WsPromptHandlerDeps } from "./deps.js";
 import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
@@ -20,7 +19,6 @@ import {
 } from "./promptModelConfig.js";
 import { applySessionOverrides } from "./sessionOverrides.js";
 import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
-import { createDelegationTracker } from "./delegationTracker.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
 import { beginWsPromptRun, isWsPromptAbort, raceWsPromptAbort } from "./promptLifecycle.js";
@@ -172,7 +170,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         }
       },
     });
-    let collaborativeTurnPromise: Promise<Awaited<ReturnType<typeof runCollaborativeTurn>>> | undefined;
+    let agentTurnPromise: Promise<Awaited<ReturnType<typeof runAgentTurn>>> | undefined;
 
     try {
       const activeAgentId = orchestrator.getActiveAgentId();
@@ -188,8 +186,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           cwd: turnCwd,
         });
       }
-
-      const delegationTracker = createDelegationTracker();
 
       let effectiveInput: Input = inputToSend;
       if (deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId)) {
@@ -215,67 +211,21 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
 
-      collaborativeTurnPromise = runCollaborativeTurn(orchestrator, effectiveInput, {
+      agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         streaming: true,
         signal: controller.signal,
         onExploredEntry: handleExploredEntry,
-        hooks: {
-          onSupervisorRound: (round, directives) =>
-            deps.observability.logger.info(`[Auto] supervisor round=${round} directives=${directives}`),
-          onDelegationStart: ({ agentId, agentName, prompt }) => {
-            deps.observability.logger.info(`[Auto] invoke ${agentName} (${agentId}): ${truncateForLog(prompt)}`);
-            // The LiveActivity UI is intentionally short-lived (TTL). Emit a structured message so
-            // the frontend can keep a persistent "agents in progress" indicator while delegations run.
-            const delegationId = delegationTracker.stash(agentId, prompt);
-            sendToChat({
-              type: "agent",
-              event: "delegation:start",
-              delegationId,
-              agentId,
-              agentName,
-              prompt: truncateForLog(prompt, 200),
-              ts: Date.now(),
-            });
-            handleExploredEntry({
-              category: "Agent",
-              summary: `${agentName}（${agentId}）在后台执行：${truncateForLog(prompt, 140)}`,
-              ts: Date.now(),
-              source: "tool_hook",
-            } as ExploredEntry);
-          },
-          onDelegationResult: (summary) => {
-            deps.observability.logger.info(
-              `[Auto] done ${summary.agentName} (${summary.agentId}): ${truncateForLog(summary.prompt)}`,
-            );
-            const delegationId = delegationTracker.pop(summary.agentId, summary.prompt);
-            sendToChat({
-              type: "agent",
-              event: "delegation:result",
-              delegationId,
-              agentId: summary.agentId,
-              agentName: summary.agentName,
-              prompt: truncateForLog(summary.prompt, 200),
-              ts: Date.now(),
-            });
-            handleExploredEntry({
-              category: "Agent",
-              summary: `✓ ${summary.agentName} 完成：${truncateForLog(summary.prompt, 140)}`,
-              ts: Date.now(),
-              source: "tool_hook",
-            } as ExploredEntry);
-          },
-        },
         cwd: turnCwd,
-        historyNamespace: "web",
+        workspaceRoot,
         historySessionId: deps.context.historyKey,
       });
       const result = await raceWsPromptAbort({
         controller,
-        runPromise: collaborativeTurnPromise,
+        runPromise: agentTurnPromise,
       });
       promptRun.ensureActive();
 
-      const workspaceRootForAdr = detectWorkspaceFrom(turnCwd);
+      const workspaceRootForAdr = workspaceRoot;
       const { outputToSend } = await processPromptOutputBlocks({
         rawResponse: result.response,
         workspaceRoot: workspaceRootForAdr,
@@ -381,7 +331,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       }
     } catch (error) {
       if (isWsPromptAbort(error)) {
-        const activePromise = typeof collaborativeTurnPromise !== "undefined" ? collaborativeTurnPromise : undefined;
+        const activePromise = typeof agentTurnPromise !== "undefined" ? agentTurnPromise : undefined;
         if (activePromise) {
           void activePromise.catch((innerError) => {
             const detail = innerError instanceof Error ? innerError.message : String(innerError);

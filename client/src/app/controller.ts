@@ -134,7 +134,6 @@ export function createAppContext() {
 
   const tasksBusy = computed(() => tasks.value.some((t) => t.status === "planning" || t.status === "running"));
   const agentBusy = computed(() => busy.value || tasksBusy.value);
-  const agentDelegations = computed(() => activeRuntime.value.delegationsInFlight.value);
   const pendingDeleteTask = computed(() => {
     const taskId = String(pendingDeleteTaskId.value ?? "").trim();
     if (!taskId) return null;
@@ -265,7 +264,6 @@ export function createAppContext() {
     queuedPrompts,
     tasksBusy,
     agentBusy,
-    agentDelegations,
     pendingDeleteTask,
     apiAuthorized,
     runtimeOrActive,

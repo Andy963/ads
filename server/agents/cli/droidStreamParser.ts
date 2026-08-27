@@ -41,7 +41,6 @@ function classifyTool(toolName: string): ToolKind {
   if (name === "edit" || name === "create" || name.includes("patch") || name.includes("write")) return "file_change";
   if (name.includes("search")) return "web_search";
   if (name === "todowrite" || name === "todo_write" || name.includes("plan")) return "plan";
-  if (name === "task") return "subagent";
   return "tool_call";
 }
 
@@ -142,12 +141,6 @@ export class DroidStreamParser {
       const query = extractStringField(input, ["query", "q", "text"]) ?? "";
       return mapEvent(attachCliPayload({ type: "item.started", item: { type: "web_search", id, query } } as unknown as ThreadEvent, payload));
     }
-    if (kind === "subagent") {
-      const subagentType = extractStringField(input, ["subagent_type", "subagentType", "type"]) ?? "general-purpose";
-      const description = extractStringField(input, ["description", "label", "title"]) ?? subagentType;
-      const prompt = extractStringField(input, ["prompt", "task", "instructions", "message"]) ?? "";
-      return mapEvent(attachCliPayload({ type: "item.started", item: { type: "subagent_dispatch", id, subagent_type: subagentType, description, prompt, tool_use_id: id, status: "in_progress" } } as unknown as ThreadEvent, payload));
-    }
     return mapEvent(attachCliPayload({ type: "item.started", item: { type: "tool_call", id, server: "droid", tool: toolName, status: "in_progress", input } } as unknown as ThreadEvent, payload));
   }
 
@@ -168,12 +161,6 @@ export class DroidStreamParser {
     if (tool.kind === "web_search") {
       const query = extractStringField(tool.input, ["query", "q", "text"]) ?? "";
       return mapEvent(attachCliPayload({ type: "item.completed", item: { type: "web_search", id, query } } as unknown as ThreadEvent, payload));
-    }
-    if (tool.kind === "subagent") {
-      const subagentType = extractStringField(tool.input, ["subagent_type", "subagentType", "type"]) ?? "general-purpose";
-      const description = extractStringField(tool.input, ["description", "label", "title"]) ?? subagentType;
-      const prompt = extractStringField(tool.input, ["prompt", "task", "instructions", "message"]) ?? "";
-      return mapEvent(attachCliPayload({ type: "item.completed", item: { type: "subagent_dispatch", id, subagent_type: subagentType, description, prompt, tool_use_id: id, status: failed ? "failed" : "completed", result: output } } as unknown as ThreadEvent, payload));
     }
     if (tool.kind === "plan") {
       const items = normalizePlanItems(tool.input);

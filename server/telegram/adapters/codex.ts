@@ -242,7 +242,7 @@ export async function handleCodexMessage(
     statusUpdater.queueEvent(event);
   }
 
-  // queueStatusLine removed in simplified version (no collaborative turns)
+  // Telegram uses a direct session.send() turn without queue status decoration.
 
   const imagePaths: string[] = [];
   const filePaths: string[] = [];
@@ -387,7 +387,7 @@ export async function handleCodexMessage(
       input = inputParts as Input;
     }
 
-    // Direct session.send() call instead of runCollaborativeTurn
+    // Telegram sends a normal turn directly through the active session.
     const result = await session.send(input, {
       streaming: true,
       signal,

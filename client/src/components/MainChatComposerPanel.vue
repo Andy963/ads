@@ -10,13 +10,6 @@ import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
-type AgentDelegation = {
-  id: string;
-  agentId: string;
-  agentName: string;
-  prompt: string;
-  startedAt: number;
-};
 
 type PendingImagePreview = {
   key: string;
@@ -50,7 +43,6 @@ const props = defineProps<{
   models?: ModelConfig[];
   modelId?: string;
   modelReasoningEffort?: string;
-  agentDelegations?: AgentDelegation[];
   apiToken?: string;
   runningTaskCount?: number;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
@@ -272,22 +264,6 @@ function onReasoningEffortChange(ev: Event): void {
   emit("setReasoningEffort", String(value ?? "").trim());
 }
 
-const agentDelegationLabel = computed(() => {
-  const entries = Array.isArray(props.agentDelegations) ? props.agentDelegations : [];
-  if (!props.busy || entries.length === 0) return "";
-  const names: string[] = [];
-  for (const entry of entries) {
-    const label = String(entry.agentName || entry.agentId || "").trim();
-    if (!label) continue;
-    if (!names.includes(label)) names.push(label);
-  }
-  if (names.length === 0) return "正在委托代理…";
-  const shown = names.slice(0, 3).join(", ");
-  const hidden = Math.max(0, names.length - 3);
-  const suffix = hidden ? ` +${hidden}` : "";
-  return `正在委托: ${shown}${suffix}`;
-});
-
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 const latestPrompt = ref("");
 const latestPromptStorageKey = computed(() => {
@@ -444,11 +420,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 
 <template>
   <div class="composer">
-    <div v-if="agentDelegationLabel" class="delegationBar" aria-label="代理委托状态">
-      <span class="delegationSpinner" aria-hidden="true" />
-      <span class="delegationText">{{ agentDelegationLabel }}</span>
-    </div>
-
     <div
       v-if="connectionStatusMessage"
       class="laneStatusBar"
@@ -698,36 +669,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   padding: 12px 12px calc(8px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1)) 12px;
   border-top: 1px solid #e2e8f0;
   background: white;
-}
-
-.delegationBar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px dashed rgba(148, 163, 184, 0.9);
-  background: #f1f5f9;
-  color: #0f172a;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.delegationSpinner {
-  width: 12px;
-  height: 12px;
-  border-radius: 999px;
-  border: 2px solid rgba(29, 78, 216, 0.22);
-  border-top-color: #1d4ed8;
-  animation: voiceSpin 0.75s linear infinite;
-  flex-shrink: 0;
-}
-
-.delegationText {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .laneStatusBar {

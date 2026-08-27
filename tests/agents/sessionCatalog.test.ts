@@ -43,10 +43,6 @@ describe("agents/sessions/promptPreview", () => {
       "<global_rules>never do bad things</global_rules>",
       "**用户请求（请直接回应以下内容，上面是背景指令）：**",
       "帮我修复登录超时的问题",
-      "【协作代理指令】",
-      "<<<agent.codex",
-      "do something",
-      ">>>",
     ].join("\n");
 
     assert.equal(extractUserFacingPrompt(composed), "帮我修复登录超时的问题");

@@ -15,7 +15,6 @@ type RuntimeShape = {
   busy: Ref<boolean>;
   inputLocked: Ref<boolean>;
   laneStatus: Ref<LaneStatus | null>;
-  delegationsInFlight: Ref<unknown[]>;
   composerDraft: Ref<string>;
   availableAgents: Ref<AgentOption[]>;
   activeAgentId: Ref<string>;
@@ -91,7 +90,6 @@ export function useLaneRuntimeBridge(params: {
   const plannerBusy = computed(() => plannerRuntime.value.busy.value);
   const plannerInputLocked = computed(() => plannerRuntime.value.inputLocked.value);
   const plannerLaneStatus = computed(() => plannerRuntime.value.laneStatus.value);
-  const plannerAgentDelegations = computed(() => plannerRuntime.value.delegationsInFlight.value);
   const plannerDrafts = computed(() => plannerRuntime.value.taskBundleDrafts.value);
   const plannerDraftsBusy = computed(() => plannerRuntime.value.taskBundleDraftsBusy.value);
   const plannerDraftsError = computed(() => plannerRuntime.value.taskBundleDraftsError.value);
@@ -214,7 +212,6 @@ export function useLaneRuntimeBridge(params: {
     plannerBusy,
     plannerInputLocked,
     plannerLaneStatus,
-    plannerAgentDelegations,
     plannerDrafts,
     plannerDraftsBusy,
     plannerDraftsError,

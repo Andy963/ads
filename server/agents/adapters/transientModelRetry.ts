@@ -216,7 +216,7 @@ export function resolveTransientRetryDelayMs(options: {
 
 export function isSideEffectItem(item: ThreadItem | null | undefined): boolean {
   if (!item) return false;
-  return item.type === "command_execution" || item.type === "file_change" || item.type === "tool_call" || item.type === "subagent_dispatch";
+  return item.type === "command_execution" || item.type === "file_change" || item.type === "tool_call";
 }
 
 export function eventHasSideEffect(event: AgentEvent | ThreadEvent | ThreadItem | null | undefined): boolean {
@@ -313,8 +313,7 @@ function isThreadItem(value: unknown): value is ThreadItem {
     type === "todo_list" ||
     type === "agent_message" ||
     type === "reasoning" ||
-    type === "error" ||
-    type === "subagent_dispatch"
+    type === "error"
   );
 }
 

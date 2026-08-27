@@ -10,7 +10,7 @@ import { PROJECT_ROOT } from "../utils/projectRoot.js";
 const GIT_MARKER = ".git";
 const WORKSPACE_CONFIG_FILE = "workspace.json";
 const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
-const REQUIRED_TEMPLATE_FILES = ["instructions.md", "rules.md", "supervisor.md"];
+const REQUIRED_TEMPLATE_FILES = ["instructions.md", "rules.md"];
 const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];
 const logger = createLogger("WorkspaceDetector");
 

@@ -179,85 +179,30 @@ function translateItem(appItem: unknown): ThreadItem | null {
         id,
         text: typeof obj.text === "string" ? obj.text : "",
       } as ThreadItem;
-    case "collabAgentToolCall":
-      return translateCollabAgentToolCall(obj, id);
     default:
       return null;
   }
 }
 
-/** Collab agent statuses that mean the target thread is no longer running. */
-const COLLAB_TERMINAL_STATUSES = new Set(["completed", "errored", "shutdown", "notFound"]);
-
-interface CollabAgentStateView {
-  status?: string;
-  message?: string;
-}
-
-function readCollabAgentsStates(value: unknown): Map<string, CollabAgentStateView> {
-  const states = new Map<string, CollabAgentStateView>();
-  if (!value || typeof value !== "object") return states;
-  for (const [threadId, state] of Object.entries(value as Record<string, unknown>)) {
-    if (!state || typeof state !== "object") continue;
-    const record = state as Record<string, unknown>;
-    states.set(threadId, {
-      status: typeof record.status === "string" ? record.status : undefined,
-      message: typeof record.message === "string" ? record.message : undefined,
-    });
-  }
-  return states;
-}
-
-function readCollabReceiverThreadIds(obj: Record<string, unknown>): string[] {
-  const raw = Array.isArray(obj.receiverThreadIds) ? obj.receiverThreadIds : [];
-  return raw.filter((value): value is string => typeof value === "string" && value.length > 0);
-}
-
 /**
- * Bridge the daemon's native collab tool calls (`spawnAgent`/`wait`/…) into the
- * protocol's `subagent_dispatch` item so the existing event chain (agent events,
- * web delegation start/result) surfaces them without downstream changes.
- *
- * The collab item `id` doubles as `tool_use_id`: it is stable between
- * `item/started` and `item/completed`, which the web delegation view relies on.
+ * Native provider collaboration can still be enabled by the provider's own
+ * configuration. ADS deliberately does not bridge that item, but it must still
+ * count as a side effect so a transient error cannot replay a spawned agent.
  */
-function translateCollabAgentToolCall(
-  obj: Record<string, unknown>,
-  id: string | undefined,
-): ThreadItem {
-  const tool = typeof obj.tool === "string" ? obj.tool : "collab";
-  const receiverThreadIds = readCollabReceiverThreadIds(obj);
-  const agentsStates = readCollabAgentsStates(obj.agentsStates);
-  const prompt = typeof obj.prompt === "string" ? obj.prompt : "";
-
-  const rawStatus = typeof obj.status === "string" ? obj.status : "";
-  let status: string;
-  if (rawStatus === "failed") {
-    status = "failed";
-  } else if (rawStatus === "completed") {
-    const anyErrored = [...agentsStates.values()].some((state) => state.status === "errored");
-    status = anyErrored ? "failed" : "completed";
-  } else {
-    status = "in_progress";
+function markNativeCollaborationAsSideEffect(
+  appItem: unknown,
+  retryState: RetryAttemptState,
+): void {
+  if (!appItem || typeof appItem !== "object") return;
+  const obj = appItem as Record<string, unknown>;
+  if (obj.type !== "collabAgentToolCall") {
+    return;
   }
-
-  const messages: string[] = [];
-  for (const [threadId, state] of agentsStates) {
-    if (!state.message) continue;
-    messages.push(agentsStates.size > 1 ? `${threadId}: ${state.message}` : state.message);
-  }
-
-  const target = receiverThreadIds.join(", ");
-  return {
-    type: "subagent_dispatch",
-    id,
-    subagent_type: "codex-collab",
-    description: target ? `${tool} → ${target}` : tool,
-    prompt,
-    tool_use_id: id ?? "",
-    status,
-    result: messages.length > 0 ? messages.join("\n") : undefined,
-  } as ThreadItem;
+  retryState.markSideEffect({
+    type: "tool_call",
+    id: typeof obj.id === "string" ? obj.id : undefined,
+    tool: "provider-collaboration",
+  });
 }
 
 interface TurnState {
@@ -268,58 +213,12 @@ interface TurnState {
   turnId: string | null;
   failed: boolean;
   failureMessage: string | null;
-  /** Last known collab agent status per spawned/target thread id. */
-  collabAgentStatuses: Map<string, string>;
 }
 
 interface ContextUsage {
   threadId: string;
   totalTokens: number;
   modelContextWindow: number;
-}
-
-/**
- * Record the latest known status for every thread touched by a collab tool
- * call, so `turn/completed` can report subagents still running in the daemon.
- */
-function trackCollabAgentStates(state: TurnState, appItem: unknown): void {
-  if (!appItem || typeof appItem !== "object") return;
-  const obj = appItem as Record<string, unknown>;
-  if (obj.type !== "collabAgentToolCall") return;
-  const agentsStates = readCollabAgentsStates(obj.agentsStates);
-  for (const [threadId, agentState] of agentsStates) {
-    if (agentState.status) {
-      state.collabAgentStatuses.set(threadId, agentState.status);
-    }
-  }
-  // Receivers without a reported state yet (e.g. a spawnAgent that just
-  // started) are assumed running until a later item says otherwise.
-  for (const threadId of readCollabReceiverThreadIds(obj)) {
-    if (!state.collabAgentStatuses.has(threadId)) {
-      state.collabAgentStatuses.set(threadId, "running");
-    }
-  }
-}
-
-function countRunningCollabAgents(state: TurnState): number {
-  let running = 0;
-  for (const status of state.collabAgentStatuses.values()) {
-    if (!COLLAB_TERMINAL_STATUSES.has(status)) {
-      running += 1;
-    }
-  }
-  return running;
-}
-
-/**
- * 额外传给 codex 全局命令行的参数（ADS_CODEX_DAEMON_ARGS，按空白拆分），用于
- * 按所装 codex 版本开启 collab 等实验特性（例如 `-c features.collab=true`）。
- * daemonRegistry 会在参数变化时重启对应 daemon。
- */
-function resolveDaemonGlobalArgs(): string[] | undefined {
-  const raw = String(process.env.ADS_CODEX_DAEMON_ARGS ?? "").trim();
-  if (!raw) return undefined;
-  return raw.split(/\s+/);
 }
 
 /**
@@ -474,7 +373,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
       binary: this.binary,
       workingDirectory: this.workingDirectory,
       env: this.spawnEnv,
-      globalArgs: resolveDaemonGlobalArgs(),
     };
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
     if (this.goalSubscriptionsAttached) {
@@ -640,7 +538,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
       env: options?.env
         ? { ...this.spawnEnv, ...options.env }
         : this.spawnEnv,
-      globalArgs: resolveDaemonGlobalArgs(),
     };
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
 
@@ -656,7 +553,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
       turnId: null,
       failed: false,
       failureMessage: null,
-      collabAgentStatuses: new Map(),
     };
 
     const cleanupFns: Array<() => void> = [];
@@ -714,18 +610,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
         if (usage) {
           state.usage = usage;
         }
-        const runningSubagents = countRunningCollabAgents(state);
-        if (runningSubagents > 0) {
-          // Spawned collab threads live in the daemon and survive the turn;
-          // tell consumers so "turn completed" is not read as "all done".
-          this.emitEvent({
-            phase: "subagent",
-            title: "子代理仍在后台运行",
-            detail: `${runningSubagents} 个 subagent 在 turn 结束后仍在后台运行`,
-            timestamp: Date.now(),
-            raw: { type: "turn.completed" } as ThreadEvent,
-          });
-        }
         emit({ type: "turn.completed", usage: usage ?? undefined });
         turnDone();
       }),
@@ -747,11 +631,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
       client.onNotification("item/started", (params) => {
         if (!belongsToThisTurn(params)) return;
         const item = (params as { item?: unknown }).item;
-        trackCollabAgentStates(state, item);
         const translated = translateItem(item);
         if (translated) {
           retryState.markSideEffect(translated);
           emit({ type: "item.started", item: translated });
+        } else {
+          markNativeCollaborationAsSideEffect(item, retryState);
         }
       }),
     );
@@ -759,9 +644,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
       client.onNotification("item/completed", (params) => {
         if (!belongsToThisTurn(params)) return;
         const item = (params as { item?: unknown }).item;
-        trackCollabAgentStates(state, item);
         const translated = translateItem(item);
-        if (!translated) return;
+        if (!translated) {
+          markNativeCollaborationAsSideEffect(item, retryState);
+          return;
+        }
         retryState.markSideEffect(translated);
         if (translated.type === "agent_message" && typeof translated.text === "string") {
           // The completed agent_message carries the canonical final text.

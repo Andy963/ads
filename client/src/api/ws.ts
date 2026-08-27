@@ -52,15 +52,6 @@ type WsMessage =
       agents?: Array<{ id?: string; name?: string; ready?: boolean; error?: string }>;
       threadId?: string | null;
     }
-  | {
-      type: "agent";
-      event: "delegation:start" | "delegation:result";
-      delegationId?: string;
-      agentId?: string;
-      agentName?: string;
-      prompt?: string;
-      ts?: number;
-    }
   | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number; seq?: number }
   | { type: "task_bundle_draft"; action?: "upsert" | "delete"; draft?: TaskBundleDraft | null }
   | { type: string; seq?: number; [k: string]: unknown };

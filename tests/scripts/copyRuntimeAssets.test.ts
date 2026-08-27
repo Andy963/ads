@@ -13,7 +13,6 @@ const scriptSourcePath = path.join(repoRoot, "scripts", "copy-runtime-assets.js"
 const requiredTemplateFiles = [
   "instructions.md",
   "rules.md",
-  "supervisor.md",
 ];
 
 describe("scripts/copy-runtime-assets", () => {

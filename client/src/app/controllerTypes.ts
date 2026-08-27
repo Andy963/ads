@@ -41,14 +41,6 @@ export type ChatExecutionContext = {
   effectiveModelReasoningEffort?: string;
 };
 
-export type AgentDelegationInFlight = {
-  id: string;
-  agentId: string;
-  agentName: string;
-  prompt: string;
-  startedAt: number;
-};
-
 /** One provider-native session the user can resume, as listed by the backend catalog. */
 export type ResumableSession = {
   agentId: string;
@@ -194,7 +186,6 @@ export type ProjectRuntime = {
   taskBundleDrafts: Ref<TaskBundleDraft[]>;
   taskBundleDraftsBusy: Ref<boolean>;
   taskBundleDraftsError: Ref<string | null>;
-  delegationsInFlight: Ref<AgentDelegationInFlight[]>;
   resumableSessions: Ref<ResumableSession[]>;
   resumableSessionsBusy: Ref<boolean>;
   resumableSessionsError: Ref<string | null>;

@@ -34,7 +34,6 @@ function classifyToolName(name: string): ToolKind {
   if (key === "bash" || key === "bashoutput" || key === "killshell") return "command";
   if (key === "edit" || key === "write" || key === "notebookedit") return "file_change";
   if (key === "websearch" || key === "web_search") return "web_search";
-  if (key === "task") return "subagent";
   if (key === "taskcreate" || key === "taskupdate" || key === "tasklist") return "task_plan";
   if (key === "todowrite" || key === "todo_write" || key === "update_plan" || key === "updateplan") return "plan";
   return "tool_call";
@@ -282,27 +281,6 @@ export class ClaudeStreamParser {
       );
     }
 
-    if (kind === "subagent") {
-      const subagentType = extractStringField(input, ["subagent_type", "subagentType", "type"]) ?? "general-purpose";
-      const description = extractStringField(input, ["description", "label", "title"]) ?? subagentType;
-      const subagentPrompt = extractStringField(input, ["prompt", "task", "instructions", "message"]) ?? "";
-      return attachCliPayload(
-        {
-          type: "item.started",
-          item: {
-            type: "subagent_dispatch",
-            id,
-            subagent_type: subagentType,
-            description,
-            prompt: subagentPrompt,
-            tool_use_id: id,
-            status: "in_progress",
-          },
-        } as unknown as ThreadEvent,
-        payload,
-      );
-    }
-
     if (kind === "plan") {
       const items = normalizePlanItems(input);
       return attachCliPayload(
@@ -404,35 +382,6 @@ export class ClaudeStreamParser {
         events.push(...mapEvent(ev));
         if (isError) {
           const msg = resultText.trim() ? `Claude web_search failed: ${resultText.trim()}` : "Claude web_search failed";
-          events.push(...mapEvent(attachCliPayload({ type: "error", message: msg } as unknown as ThreadEvent, payload)));
-          this.lastError = msg;
-        }
-        continue;
-      }
-
-      if (tool.kind === "subagent") {
-        const subagentType = extractStringField(tool.input, ["subagent_type", "subagentType", "type"]) ?? "general-purpose";
-        const description = extractStringField(tool.input, ["description", "label", "title"]) ?? subagentType;
-        const subagentPrompt = extractStringField(tool.input, ["prompt", "task", "instructions", "message"]) ?? "";
-        const ev = attachCliPayload(
-          {
-            type: "item.completed",
-            item: {
-              type: "subagent_dispatch",
-              id: toolUseId,
-              subagent_type: subagentType,
-              description,
-              prompt: subagentPrompt,
-              tool_use_id: toolUseId,
-              status: isError ? "failed" : "completed",
-              result: resultText,
-            },
-          } as unknown as ThreadEvent,
-          payload,
-        );
-        events.push(...mapEvent(ev));
-        if (isError) {
-          const msg = resultText.trim() ? `Claude subagent failed: ${resultText.trim()}` : "Claude subagent failed";
           events.push(...mapEvent(attachCliPayload({ type: "error", message: msg } as unknown as ThreadEvent, payload)));
           this.lastError = msg;
         }

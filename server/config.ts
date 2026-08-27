@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { parseBooleanFlag, parsePositiveIntFlag } from "./utils/flags.js";
+import { parseBooleanFlag } from "./utils/flags.js";
 
 type EnvSource = NodeJS.ProcessEnv | Record<string, string | undefined>;
 
@@ -38,10 +38,6 @@ export interface AgentConfig {
   skillAutoloadEnabled: boolean;
   skillAutosaveEnabled: boolean;
   preferenceDirectiveEnabled: boolean;
-  taskMaxParallel: number;
-  taskTimeoutMs: number;
-  taskMaxAttempts: number;
-  taskRetryBackoffMs: number;
 }
 
 export interface ResolvedTelegramConfig {
@@ -103,10 +99,6 @@ const agentConfigSchema = z.object({
   skillAutoloadEnabled: z.boolean(),
   skillAutosaveEnabled: z.boolean(),
   preferenceDirectiveEnabled: z.boolean(),
-  taskMaxParallel: z.number().int().positive(),
-  taskTimeoutMs: z.number().int().positive(),
-  taskMaxAttempts: z.number().int().positive(),
-  taskRetryBackoffMs: z.number().int().positive(),
 });
 
 const telegramConfigSchema = z.object({
@@ -311,10 +303,6 @@ export function resolveAgentConfig(options: DomainConfigOptions = {}): AgentConf
     skillAutoloadEnabled: parseBooleanFlag(env.ADS_SKILLS_AUTOLOAD, true),
     skillAutosaveEnabled: parseBooleanFlag(env.ADS_SKILLS_AUTOSAVE, true),
     preferenceDirectiveEnabled: parseBooleanFlag(env.ADS_PREFERENCE_DIRECTIVES, true),
-    taskMaxParallel: parsePositiveIntFlag(env.ADS_TASK_MAX_PARALLEL, 3),
-    taskTimeoutMs: parsePositiveIntFlag(env.ADS_TASK_TIMEOUT_MS, 2 * 60 * 1000),
-    taskMaxAttempts: parsePositiveIntFlag(env.ADS_TASK_MAX_ATTEMPTS, 2),
-    taskRetryBackoffMs: parsePositiveIntFlag(env.ADS_TASK_RETRY_BACKOFF_MS, 1200),
   });
 }
 

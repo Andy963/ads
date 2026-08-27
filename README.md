@@ -153,7 +153,7 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `TASK_QUEUE_AUTO_START` | `false` | Web 启动后是否自动运行队列 |
 | `TASK_QUEUE_DEFAULT_MODEL` | 未设置 | 任务队列默认模型覆盖 |
 
-### Agent 与协作
+### Agent
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -167,20 +167,12 @@ ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` �
 | `ADS_AGENT_RUN_TIMEOUT_MS` | 未设置 | 兼容旧配置；单独设置时保留旧版硬超时语义并禁用 idle watchdog，建议迁移到上面两个变量 |
 | `ADS_CLI_POST_COMPLETION_GRACE_MS` | `10000` | CLI 输出终态结果后等待进程自然退出的宽限；超时则终止进程组并按成功收尾，`0` 表示禁用 |
 | `ADS_CODEX_ADAPTER` | `auto` | Codex 适配器路径：`auto` 仅 Goal Mode 走 app-server；`app-server` 强制所有 codex 会话走 daemon（无 projectId 时按工作区派生）；`cli` 强制走一次性 CLI |
-| `ADS_CODEX_DAEMON_ARGS` | 未设置 | 追加给 codex daemon 的全局参数（按空白拆分），用于按版本开启 collab 等实验特性，例如 `-c features.collab=true` |
 | `ADS_UPSTREAM_RETRY_COUNT` | `1` | 临时上游模型错误的重试次数 |
 | `ADS_TASK_UPSTREAM_RETRY_BASE_DELAY_MS` | `60000` | 外层上游重试耗尽后，任务级重试的初始持久化冷却时间；`0` 表示禁用冷却 |
 | `ADS_TASK_UPSTREAM_RETRY_MAX_DELAY_MS` | `900000` | 外层上游重试耗尽后，任务级指数冷却的最大时间；`0` 表示禁用冷却 |
 | `ADS_CLI_MAX_CONCURRENCY` | `4` | 单个 ADS 进程允许同时运行的 CLI 数量 |
 | `ADS_CLI_MAX_PENDING` | `32` | CLI 并发已满时允许驻留内存的等待请求数，超出后立即失败 |
 | `ADS_CLI_OUTPUT_MAX_BYTES` | `8388608` | 单次 CLI 分别保留的 stdout/stderr 最大字节数，超出时只保留尾部 |
-| `ADS_COORDINATOR_ENABLED` | 未设置 | 是否启用多 Agent coordinator |
-| `ADS_TASK_MAX_PARALLEL` | `3` | coordinator 最大并行委派数 |
-| `ADS_TASK_TIMEOUT_MS` | `120000` | coordinator 单个委派任务超时 |
-| `ADS_TASK_MAX_ATTEMPTS` | `2` | coordinator 委派任务尝试次数 |
-| `ADS_TASK_RETRY_BACKOFF_MS` | `1200` | coordinator 重试退避 |
-| `ADS_TASK_VERIFICATION_ENABLED` | `true` | 是否执行 TaskSpec verification commands |
-
 Codex app-server 将 `willRetry=true` 的错误通知作为中间连接状态发送。ADS 会继续等待当前 turn；只有 `willRetry=false`、重连耗尽或收到其他终止错误后，才将请求标记为失败。
 
 Agent 上游重试会识别限流/高负载、HTTP 503 Service Unavailable、Cloudflare/API 网关 HTTP 520–524（包括无响应体），以及 Claude Fable safeguard 的已知误拦截文案。仅在尚未产生命令、文件写入、工具调用等副作用时自动重放请求。
@@ -295,7 +287,7 @@ Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_
 ```text
 ads/
 ├── server/
-│   ├── agents/        # Codex / Claude adapters, coordination, probes
+│   ├── agents/        # Codex / Claude adapters, probes
 │   ├── codex/         # Codex app-server protocol and RPC client
 │   ├── context/       # context compaction and token estimation
 │   ├── memory/        # soul, preference directives, markdown memory
@@ -304,7 +296,7 @@ ads/
 │   ├── skills/        # skill discovery, loading, creation, built-in tools
 │   ├── state/         # global SQLite schema, migrations, stores
 │   ├── storage/       # workspace SQLite schema, migrations, stores
-│   ├── systemPrompt/  # instructions, rules, supervisor injection
+│   ├── systemPrompt/  # instructions and rules
 │   ├── tasks/         # task model, queue, executor, store
 │   ├── telegram/      # Telegram bot, commands, attachments, voice
 │   ├── web/           # Web server, API, WebSocket, auth, task queue

@@ -162,178 +162,6 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
-  it("maps native collab tool calls to subagent events with a stable tool_use id", async () => {
-    const fake = buildFakeServer({
-      autoReplies: {
-        "thread/start": () => ({ thread: { id: "thread-collab" } }),
-        "turn/start": () => ({}),
-      },
-    });
-    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({ projectId: "demo", registry });
-
-    const subagentEvents: Array<{ title: string; detail?: string; itemId?: string; status?: string }> = [];
-    adapter.onEvent((e) => {
-      if (e.phase !== "subagent") return;
-      const rawItem = (e.raw as { item?: { id?: string; status?: string } } | undefined)?.item;
-      subagentEvents.push({ title: e.title, detail: e.detail, itemId: rawItem?.id, status: rawItem?.status });
-    });
-
-    const sendPromise = adapter.send("spawn a helper");
-    await new Promise((r) => setTimeout(r, 30));
-
-    fake.notify("thread/started", { thread: { id: "thread-collab" } });
-    fake.notify("turn/started", { threadId: "thread-collab", turn: { id: "turn-1" } });
-    // Daemon spawns a collab agent: started → completed with terminal states.
-    fake.notify("item/started", {
-      item: {
-        type: "collabAgentToolCall",
-        id: "collab-1",
-        tool: "spawnAgent",
-        status: "inProgress",
-        receiverThreadIds: ["child-thread-9"],
-        prompt: "review the diff",
-        agentsStates: {},
-      },
-      threadId: "thread-collab",
-      turnId: "turn-1",
-    });
-    fake.notify("item/completed", {
-      item: {
-        type: "collabAgentToolCall",
-        id: "collab-1",
-        tool: "spawnAgent",
-        status: "completed",
-        receiverThreadIds: ["child-thread-9"],
-        prompt: "review the diff",
-        agentsStates: { "child-thread-9": { status: "completed", message: "done: no issues" } },
-      },
-      threadId: "thread-collab",
-      turnId: "turn-1",
-    });
-    fake.notify("item/completed", {
-      item: { type: "agentMessage", id: "m1", text: "ok" },
-      threadId: "thread-collab",
-      turnId: "turn-1",
-    });
-    fake.notify("turn/completed", { threadId: "thread-collab", turn: { id: "turn-1" } });
-
-    const result = await sendPromise;
-    assert.equal(result.response, "ok");
-
-    // started + completed both surfaced, sharing the collab item id so the web
-    // delegation view can correlate them.
-    assert.equal(subagentEvents.length, 2);
-    assert.equal(subagentEvents[0]?.title, "调度子代理");
-    assert.equal(subagentEvents[1]?.title, "子代理完成");
-    assert.equal(subagentEvents[0]?.itemId, "collab-1");
-    assert.equal(subagentEvents[1]?.itemId, "collab-1");
-    assert.match(subagentEvents[0]?.detail ?? "", /spawnAgent → child-thread-9/);
-
-    await registry.stopAll();
-  });
-
-  it("marks collab dispatch failed when an agent state reports errored", async () => {
-    const fake = buildFakeServer({
-      autoReplies: {
-        "thread/start": () => ({ thread: { id: "thread-collab-err" } }),
-        "turn/start": () => ({}),
-      },
-    });
-    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({ projectId: "demo", registry });
-
-    const statuses: Array<string | undefined> = [];
-    adapter.onEvent((e) => {
-      if (e.phase !== "subagent") return;
-      const rawItem = (e.raw as { item?: { status?: string } } | undefined)?.item;
-      statuses.push(rawItem?.status);
-    });
-
-    const sendPromise = adapter.send("spawn a failing helper");
-    await new Promise((r) => setTimeout(r, 30));
-
-    fake.notify("thread/started", { thread: { id: "thread-collab-err" } });
-    fake.notify("turn/started", { threadId: "thread-collab-err", turn: { id: "turn-1" } });
-    fake.notify("item/completed", {
-      item: {
-        type: "collabAgentToolCall",
-        id: "collab-err",
-        tool: "wait",
-        status: "completed",
-        receiverThreadIds: ["child-a"],
-        prompt: "",
-        agentsStates: { "child-a": { status: "errored", message: "boom" } },
-      },
-      threadId: "thread-collab-err",
-      turnId: "turn-1",
-    });
-    fake.notify("item/completed", {
-      item: { type: "agentMessage", id: "m1", text: "done" },
-      threadId: "thread-collab-err",
-      turnId: "turn-1",
-    });
-    fake.notify("turn/completed", { threadId: "thread-collab-err", turn: { id: "turn-1" } });
-
-    await sendPromise;
-    // An errored child flips the dispatch item status to failed.
-    assert.deepEqual(statuses, ["failed"]);
-
-    await registry.stopAll();
-  });
-
-  it("announces subagents still running in the daemon when the turn completes", async () => {
-    const fake = buildFakeServer({
-      autoReplies: {
-        "thread/start": () => ({ thread: { id: "thread-collab-bg" } }),
-        "turn/start": () => ({}),
-      },
-    });
-    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({ projectId: "demo", registry });
-
-    const subagentTitles: string[] = [];
-    adapter.onEvent((e) => {
-      if (e.phase === "subagent") subagentTitles.push(`${e.title}|${e.detail ?? ""}`);
-    });
-
-    const sendPromise = adapter.send("spawn a background helper");
-    await new Promise((r) => setTimeout(r, 30));
-
-    fake.notify("thread/started", { thread: { id: "thread-collab-bg" } });
-    fake.notify("turn/started", { threadId: "thread-collab-bg", turn: { id: "turn-1" } });
-    // spawnAgent completes as a tool call, but the spawned thread keeps running
-    // (no terminal state reported for child-bg before the turn ends).
-    fake.notify("item/completed", {
-      item: {
-        type: "collabAgentToolCall",
-        id: "collab-bg",
-        tool: "spawnAgent",
-        status: "completed",
-        receiverThreadIds: ["child-bg"],
-        prompt: "long background task",
-        agentsStates: { "child-bg": { status: "running" } },
-      },
-      threadId: "thread-collab-bg",
-      turnId: "turn-1",
-    });
-    fake.notify("item/completed", {
-      item: { type: "agentMessage", id: "m1", text: "kicked off" },
-      threadId: "thread-collab-bg",
-      turnId: "turn-1",
-    });
-    fake.notify("turn/completed", { threadId: "thread-collab-bg", turn: { id: "turn-1" } });
-
-    const result = await sendPromise;
-    assert.equal(result.response, "kicked off");
-    assert(
-      subagentTitles.some((t) => t.startsWith("子代理仍在后台运行|") && t.includes("1 个")),
-      `expected still-running notice, got: ${JSON.stringify(subagentTitles)}`,
-    );
-
-    await registry.stopAll();
-  });
-
   it("reuses an existing threadId on a subsequent send", async () => {
     const fake = buildFakeServer({
       autoReplies: {
@@ -797,6 +625,40 @@ describe("CodexAppServerAdapter", () => {
         message: "We're currently experiencing high demand, which may cause temporary errors",
       },
       threadId: "t-side-effect",
+      turnId: "turn-1",
+    });
+
+    await assert.rejects(sendPromise, /high demand/);
+    assert.equal(turnStarts, 1);
+    await registry.stopAll();
+  });
+
+  it("does not retry after native collaboration starts", async () => {
+    let turnStarts = 0;
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-unbridged-item" } }),
+        "turn/start": () => {
+          turnStarts += 1;
+          return {};
+        },
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "retry-unbridged-item", registry });
+
+    const sendPromise = adapter.send("retry me");
+    await new Promise((r) => setTimeout(r, 20));
+    fake.notify("item/started", {
+      item: { type: "collabAgentToolCall", id: "collab-1", tool: "spawnAgent" },
+      threadId: "t-unbridged-item",
+      turnId: "turn-1",
+    });
+    fake.notify("error", {
+      error: {
+        message: "We're currently experiencing high demand, which may cause temporary errors",
+      },
+      threadId: "t-unbridged-item",
       turnId: "turn-1",
     });
 

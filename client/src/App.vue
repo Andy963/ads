@@ -74,7 +74,6 @@ const {
   updateTaskBundleDraft,
   deleteTaskBundleDraft,
   approveTaskBundleDraft,
-  agentDelegations,
   sendMainPrompt,
   sendPlannerPrompt,
   setMainModelId,
@@ -143,7 +142,6 @@ const {
   plannerBusy,
   plannerInputLocked,
   plannerLaneStatus,
-  plannerAgentDelegations,
   plannerDrafts,
   plannerDraftsBusy,
   plannerDraftsError,
@@ -539,7 +537,6 @@ const plannerConnectionStatus = computed(() => {
               :models="models"
               :model-id="activePlannerRuntime.modelId.value"
               :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
-              :agent-delegations="plannerAgentDelegations"
               :workspace-root="resolveActiveWorkspaceRoot()"
               :connection-status-kind="plannerConnectionStatus?.kind ?? null"
               :connection-status-message="plannerConnectionStatus?.message ?? null"
@@ -579,7 +576,6 @@ const plannerConnectionStatus = computed(() => {
               :models="models"
               :model-id="activeRuntime.modelId.value"
               :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
-              :agent-delegations="agentDelegations"
               :workspace-root="resolveActiveWorkspaceRoot()"
               :running-task-count="runningTaskCount"
               :connection-status-kind="workerConnectionStatus?.kind ?? null"

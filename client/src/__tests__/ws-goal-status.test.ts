@@ -9,7 +9,6 @@ function createRuntime(tasks: any[] = []): any {
     busy: { value: false } satisfies Ref<boolean>,
     turnInFlight: false,
     turnHasPatch: false,
-    delegationsInFlight: { value: [] } satisfies Ref<any[]>,
     pendingAckClientMessageId: null,
     suppressNextClearHistoryResult: false,
     pendingCdRequestedPath: null,

@@ -45,7 +45,6 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     taskBundleDrafts: ref([]),
     taskBundleDraftsBusy: ref(false),
     taskBundleDraftsError: ref<string | null>(null),
-    delegationsInFlight: ref([]),
     resumableSessions: ref([]),
     resumableSessionsBusy: ref(false),
     resumableSessionsError: ref<string | null>(null),

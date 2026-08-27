@@ -692,7 +692,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
-      rt.delegationsInFlight.value = [];
       rt.inputLocked.value = false;
       rt.laneStatus.value = null;
       clearPendingPromptReplayState(rt);

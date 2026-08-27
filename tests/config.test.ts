@@ -131,18 +131,12 @@ describe("server config resolvers", () => {
     const config = resolveAgentConfig({
       env: {
         ADS_SKILLS_AUTOLOAD: "no",
-        ADS_TASK_TIMEOUT_MS: "invalid",
-        ADS_TASK_MAX_ATTEMPTS: "-1",
       },
     });
 
     assert.strictEqual(config.skillAutoloadEnabled, false);
     assert.strictEqual(config.skillAutosaveEnabled, true);
     assert.strictEqual(config.preferenceDirectiveEnabled, true);
-    assert.strictEqual(config.taskMaxParallel, 3);
-    assert.strictEqual(config.taskTimeoutMs, 2 * 60 * 1000);
-    assert.strictEqual(config.taskMaxAttempts, 2);
-    assert.strictEqual(config.taskRetryBackoffMs, 1200);
   });
 
   it("resolves telegram defaults and normalizes proxy urls", () => {

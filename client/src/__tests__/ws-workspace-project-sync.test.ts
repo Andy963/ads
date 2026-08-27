@@ -11,7 +11,6 @@ function createRuntime(): any {
     laneStatus: { value: null } satisfies Ref<any>,
     turnInFlight: false,
     turnHasPatch: false,
-    delegationsInFlight: { value: [] } satisfies Ref<any[]>,
     pendingAckClientMessageId: null,
     suppressNextClearHistoryResult: false,
     pendingCdRequestedPath: null,
@@ -966,7 +965,6 @@ describe("ws workspace project sync", () => {
     rt.busy.value = true;
     rt.turnInFlight = true;
     rt.turnHasPatch = true;
-    rt.delegationsInFlight.value = [{ id: "delegation-1" }];
     rt.pendingAckClientMessageId = "ack-1";
     rt.queuedPrompts.value = ["queued"];
     const updateProject = vi.fn();
@@ -982,7 +980,6 @@ describe("ws workspace project sync", () => {
     expect(rt.busy.value).toBe(false);
     expect(rt.turnInFlight).toBe(false);
     expect(rt.turnHasPatch).toBe(false);
-    expect(rt.delegationsInFlight.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(clearPendingPrompt).toHaveBeenCalledWith(rt);
