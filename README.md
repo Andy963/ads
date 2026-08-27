@@ -1,34 +1,35 @@
-# ADS
+# ADS (Agent Dispatch & Orchestration System)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console。它围绕项目、Advisor/Worker 对话、任务草稿与队列、定时任务、技能和长期记忆组织工作，支持通过 Web Console 与 Telegram Bot 远程对话与控制 Agent 及任务（不止于任务通知）。
+ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）/ Task（任务看板与队列）构建了一体化的 AI 开发工作流，并支持多 Provider CLI 接入与可选的 Telegram Bot 远程交互。
 
-当前不支持把 ADS 当作独立的用户命令行产品使用。仓库里仍有 `server/cli.ts` 和 `package.json` 的 `bin` 配置，但它们只是构建后的服务启动入口和兼容包装；日常交互入口是 Web Console，Web Console 与 Telegram Bot 均支持远程对话与控制，Telegram Bot 为可选入口。
+---
 
-## 当前能力
+## 核心特性
 
-- **Web Console**：登录保护的浏览器界面，支持项目列表、项目切换、Advisor/Worker 双 lane 对话、WebSocket 流式输出、附件/图片、模型选择、Agent 切换和中断；项目切换会立即反映本地选择，后台项目列表刷新不会覆盖刚选中的项目；项目行按 workspace 路径（默认项目按固定槽位）保持身份，服务端回填 canonical project id 时不会重建行，配合 pointerdown/pointerup 配对处理，避免刷新恰好落在按下与松开之间时首次点击被浏览器丢弃；模型选择器只展示当前 Agent CLI 支持的已启用模型，切换 Agent 时会恢复该 Agent 上次选择的兼容模型；断线重连会从持久化事件日志补齐消息，每个浏览器标签独立维护同步 cursor；输入框会按项目/lane 收藏最新 Prompt，并支持用三引号包裹选中文本。
-- **任务看板与队列**：支持创建、编辑、排序、运行、暂停、取消、重试、删除任务，并在任务终态记录结果与 workspace patch artifact。
-- **任务草稿**：Advisor 可生成 task bundle draft，Web UI 支持查看、编辑和审批，通过后加入任务队列。
-- **多 Agent 适配**：Codex 是主要执行 Agent；Claude 是可选协作 Agent，是否可用取决于本机二进制与凭据配置。
-- **模型配置**：Web UI 左侧竖排列出 Codex CLI / Claude Code，右侧维护该 CLI 的全局模型配置；列表行内可直接启用/停用、设为默认、编辑与删除，新增和编辑走独立表单（CLI 归属由左侧选择决定，表单内不再重复选择）。任何变更都会立即刷新对话输入框，且每个输入框只展示当前 CLI 支持的已启用模型。配置存储在 ADS 全局 SQLite 状态库中。
-- **定时任务**：Advisor/Worker 输出 `ads-schedule` block 后，Web 服务会编译为 schedule spec，并由内置 scheduler 调度执行。
-- **技能与记忆**：支持内置、状态目录、仓库级、全局和可选 workspace skills；支持 workspace soul、偏好指令和系统提示再注入。
-- **Telegram Bot**：可选单用户 Bot，支持文本、图片、文件、语音转写、目录切换、偏好管理、笔记标记和中断当前任务；与 Web Console 同样支持远程对话与控制 Agent 及任务执行，不止于任务通知。
-- **集中状态存储**：Web 用户、会话、历史、模型配置等存储在全局 SQLite；任务、附件、队列、schedule 等按 workspace 隔离。
+- **现代 Web Console**：基于 Vue 3 + Vite 构建的响应式控制台，支持移动端抽屉导航与桌面端全功能布局。
+- **三 Tab 协作工作流**：
+  - **Task (任务看板)**：可视化任务排队、执行、重试、错误追踪及 Task Bundle 任务草稿审批。
+  - **Advisor (规划 Lane)**：专属架构方案研讨、复杂任务拆解与定时指令生成。
+  - **Worker (执行 Lane)**：专注代码执行与命令运行，实时输出紧凑预览。
+- **多 Provider CLI 支持**：原生适配 **OpenAI Codex**、**Anthropic Claude Code** 与 **Factory Droid CLI**，支持模型可视化启用/停用与即时配置。
+- **全局规则引擎 (Global Rules)**：跨项目、跨终端（Web / Telegram）统一注入 system prompt 规范，支持在线测试与修改即时生效。
+- **原生会话恢复 (Session Resume)**：零 Token 冗余恢复底层 CLI 真实历史上下文，断线重连自动增量同步。
+- **多模态与语音转写**：支持拖拽/粘贴图片预览、语音一键转写 Prompt，以及代码文件与行号跳转预览模态框。
+- **远程 Telegram 控制**：可选单用户安全 Bot，支持远程对话、命令执行、语音/图片输入与任务终态通知。
 
-## 环境要求
-
-- Node.js 20 或更新版本。
-- npm 可用，并能构建 `better-sqlite3` native 依赖。
-- Codex CLI 可用，默认从 `codex` 或 `ADS_CODEX_BIN` 解析。
-- Claude 为可选能力，默认从 `claude` 或对应 `ADS_CLAUDE_BIN` 解析。
-- Telegram Bot 仅在需要远程入口或任务通知时配置。
+---
 
 ## 快速开始
 
+### 1. 环境依赖
+- **Node.js**: `>= 20.0.0`
+- **npm**: 确保具备 C++ 编译环境以支持 `better-sqlite3` 原生模块构建。
+- **Agent CLI**: 本机已安装并配置 `codex`、`claude` 或 `droid`。
+
+### 2. 安装与构建
 ```bash
 git clone https://github.com/Andy963/ads.git
 cd ads
@@ -36,297 +37,80 @@ npm install
 npm run build
 ```
 
-首次登录 Web Console 前需要创建管理员账号：
-
+### 3. 初始化管理员
+首次启动前需创建 Web Console 管理员账号：
 ```bash
 npm run web:init-admin -- --username admin --password-stdin
 ```
 
-开发时启动 Web 服务：
+### 4. 启动服务
+- **生产方式启动 Web Console**：
+  ```bash
+  npm start
+  # or
+  npm run web
+  ```
+  默认监听 `http://127.0.0.1:8787`。
 
-```bash
-npm run dev
-```
+- **开发调试模式**：
+  ```bash
+  npm run dev       # 服务端源码监听 (tsx watch)
+  npm run dev:web   # 前端 Vite 热重载开发服务器
+  ```
 
-使用构建产物启动 Web 服务：
+- **启动 Telegram Bot（可选）**：
+  ```bash
+  export TELEGRAM_BOT_TOKEN="your-bot-token"
+  export TELEGRAM_ALLOWED_USER_ID="your-user-id"
+  node dist/server/cli.js telegram
+  ```
 
-```bash
-npm run web
-# or
-npm start
-```
+---
 
-默认监听 `127.0.0.1:8787`，浏览器访问 `http://127.0.0.1:8787`。
+## 模块文档索引
 
-如果只改前端并需要 Vite 开发服务器：
+详细的模块说明与进阶指南请查阅 `docs/` 目录：
 
-```bash
-npm run dev:web
-```
+- 📖 **[Web Console 完整使用指南](docs/web.md)**：工作区 Tab、Provider 模型管理、全局规则系统、移动端交互规范与 Web 专属配置。
+- 📱 **[Telegram Bot 配置与使用手册](docs/telegram.md)**：Bot 设置、完整指令清单、多模态语音交互与权限保护。
+- 🏛 **[系统架构与核心机制](docs/architecture.md)**：双层 SQLite 数据模型、Agent 适配器层、Durable Sync 状态同步协议与调度器引擎。
+- ⚙️ **[完整环境变量配置参考](docs/configuration.md)**：核心配置、Web、Agent、Rules/Memory、Scheduler 及 Telegram 变量全览。
 
-`npm run dev:web` 会把 `/api` 和 `/ws` 代理到 `http://localhost:8787`，通常需要同时运行 Web 服务。
+---
 
-## 支持的服务入口
-
-ADS 当前只把以下入口作为服务启动方式维护：
-
-```bash
-npm run dev
-npm run web
-npm start
-```
-
-`npm run web` 和 `npm start` 都会运行构建后的 `node dist/server/cli.js web`。这个文件名里的 `cli` 是历史实现细节，不代表 ADS 仍提供受支持的交互式 CLI 工作流。
-
-Telegram Bot 需要先构建，并配置 token 与允许用户：
-
-```bash
-export TELEGRAM_BOT_TOKEN='your-bot-token'
-export TELEGRAM_ALLOWED_USER_ID='123456789'
-npm run build
-node dist/server/cli.js telegram
-```
-
-`ads`、`ads-telegram` 这类 bin alias 仍可能随包产物存在，但 README 不再把它们列为推荐或支持入口。
-
-## 常用脚本
-
-| 脚本 | 说明 |
-| --- | --- |
-| `npm run build` | TypeScript 构建、复制 runtime assets、构建 Web 前端 |
-| `npm run build:web` | 仅构建 Web 前端 |
-| `npm run dev` | 用 `tsx watch` 启动 Web 服务源码 |
-| `npm run dev:web` | 启动 Vite 前端开发服务器 |
-| `npm run web` | 启动构建后的 Web 服务 |
-| `npm start` | 等同于启动构建后的 Web 服务 |
-| `npm test` | 运行后端 Node test runner 测试 |
-| `npm run test:web` | 运行前端 Vitest 组件测试 |
-| `npm run coverage` | 生成 server 覆盖率报告 |
-| `npm run lint` | 运行 ESLint |
-| `npm run bundle` | 构建并生成更自包含的 `dist/` |
-| `npm run web:init-admin` | 初始化 Web 管理员 |
-| `npm run web:reset-admin` | 创建或重置第一个 Web 管理员 |
-| `npm run skills:migrate` | 迁移 skill 数据 |
-| `npm run codex:regen-types` | 重新生成 Codex app-server 类型 |
-
-## 配置
-
-ADS 会从当前目录向上查找 `.env`，并在同路径存在 `.env.local` 时用它覆盖；也可以通过 `ADS_ENV_PATH` 指定 env 文件。未设置 `CODEX_HOME` 时会自动解析默认 Codex 目录。
-
-### 核心配置
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ADS_STATE_DIR` | `<repo>/.ads` | ADS 全局状态目录 |
-| `ADS_STATE_DB_PATH` | `$ADS_STATE_DIR/state.db` | 全局 SQLite 数据库路径 |
-| `ALLOWED_DIRS` | 当前工作目录 | Web/Telegram 可访问目录，逗号分隔 |
-| `SANDBOX_MODE` | `workspace-write` | `read-only`、`workspace-write` 或 `danger-full-access` |
-| `ADS_ENV_PATH` | 未设置 | 显式指定 env 文件 |
-| `ADS_DEBUG` | 未设置 | 设为 `1` 启用 debug 日志 |
-| `ADS_LOG_FILE` / `ADS_LOG_DIR` | 未设置 | 日志输出文件或目录 |
-| `ADS_LOG_STDOUT` | 未设置 | 控制日志是否镜像到 stdout |
-
-### Web
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ADS_WEB_HOST` | `127.0.0.1` | Web 监听地址 |
-| `ADS_WEB_PORT` | `8787` | Web 监听端口 |
-| `ADS_WEB_MAX_CLIENTS` | `32` | WebSocket 最大连接数 |
-| `ADS_WEB_WS_PING_INTERVAL_MS` | `15000` | WebSocket ping 间隔 |
-| `ADS_WEB_WS_MAX_MISSED_PONGS` | `3` | 断线前允许缺失 pong 次数 |
-| `ADS_WEB_WS_MAX_PAYLOAD_BYTES` | `16777216` | 单个 WebSocket payload 上限 |
-| `ADS_WEB_ALLOWED_ORIGINS` | 未设置 | 未设置时仅放行同源和 localhost |
-| `ADS_WEB_SESSION_TTL_SECONDS` | `604800` | 登录 session cookie TTL |
-| `ADS_WEB_SESSION_PEPPER` | 空 | session token hash pepper |
-| `ADS_WEB_COOKIE_SECURE` | `auto` | Cookie Secure 策略 |
-| `ADS_WEB_LOGIN_MAX_ATTEMPTS` | `5` | 登录失败锁定阈值 |
-| `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` | 登录锁定基础时长 |
-| `ADS_WEB_SESSION_SLIDING` | `false` | 是否滑动刷新登录 session |
-| `ADS_WEB_SESSION_TIMEOUT_HOURS` | `24` | Web Agent 会话空闲超时 |
-| `ADS_WEB_SESSION_TIMEOUT_MS` | 未设置 | Web Agent 会话超时毫秒覆盖 |
-| `ADS_WEB_SESSION_CLEANUP_INTERVAL_MINUTES` | `5` | 会话清理间隔 |
-| `ADS_WEB_SESSION_CLEANUP_INTERVAL_MS` | 未设置 | 会话清理间隔毫秒覆盖 |
-| `ADS_WEB_BASE_PATH` / `VITE_BASE_PATH` | `/` | 前端构建 base path |
-| `ADS_PLANNER_CODEX_MODEL` | 未设置 | Advisor lane Codex 模型覆盖 |
-| `TASK_QUEUE_ENABLED` | `true` | 是否启用任务队列 |
-| `TASK_QUEUE_AUTO_START` | `false` | Web 启动后是否自动运行队列 |
-| `TASK_QUEUE_DEFAULT_MODEL` | 未设置 | 任务队列默认模型覆盖 |
-
-### Agent
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ADS_CODEX_BIN` | `codex` | Codex 二进制路径 |
-| `ADS_CLAUDE_ENABLED` | 启用 | 设为 `0` 禁用 Claude |
-| `ADS_CLAUDE_BIN` | `claude` | Claude 二进制路径 |
-| `ADS_CLAUDE_MODEL` | 未设置 | Claude 模型覆盖 |
-| `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | Agent 可用性探测超时 |
-| `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` | Agent CLI 连续无 stdout/stderr 活动的空闲超时；有输出会续期，`0` 表示禁用 |
-| `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` | 单次 Agent CLI 的最大墙钟运行时长，默认 12 小时，`0` 表示禁用 |
-| `ADS_AGENT_RUN_TIMEOUT_MS` | 未设置 | 兼容旧配置；单独设置时保留旧版硬超时语义并禁用 idle watchdog，建议迁移到上面两个变量 |
-| `ADS_CLI_POST_COMPLETION_GRACE_MS` | `10000` | CLI 输出终态结果后等待进程自然退出的宽限；超时则终止进程组并按成功收尾，`0` 表示禁用 |
-| `ADS_CODEX_ADAPTER` | `auto` | Codex 适配器路径：`auto` 仅 Goal Mode 走 app-server；`app-server` 强制所有 codex 会话走 daemon（无 projectId 时按工作区派生）；`cli` 强制走一次性 CLI |
-| `ADS_UPSTREAM_RETRY_COUNT` | `1` | 临时上游模型错误的重试次数 |
-| `ADS_TASK_UPSTREAM_RETRY_BASE_DELAY_MS` | `60000` | 外层上游重试耗尽后，任务级重试的初始持久化冷却时间；`0` 表示禁用冷却 |
-| `ADS_TASK_UPSTREAM_RETRY_MAX_DELAY_MS` | `900000` | 外层上游重试耗尽后，任务级指数冷却的最大时间；`0` 表示禁用冷却 |
-| `ADS_CLI_MAX_CONCURRENCY` | `4` | 单个 ADS 进程允许同时运行的 CLI 数量 |
-| `ADS_CLI_MAX_PENDING` | `32` | CLI 并发已满时允许驻留内存的等待请求数，超出后立即失败 |
-| `ADS_CLI_OUTPUT_MAX_BYTES` | `8388608` | 单次 CLI 分别保留的 stdout/stderr 最大字节数，超出时只保留尾部 |
-Codex app-server 将 `willRetry=true` 的错误通知作为中间连接状态发送。ADS 会继续等待当前 turn；只有 `willRetry=false`、重连耗尽或收到其他终止错误后，才将请求标记为失败。
-
-Agent 上游重试会识别限流/高负载、HTTP 503 Service Unavailable、Cloudflare/API 网关 HTTP 520–524（包括无响应体），以及 Claude Fable safeguard 的已知误拦截文案。仅在尚未产生命令、文件写入、工具调用等副作用时自动重放请求。
-
-### 技能、记忆与系统提示
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ADS_SKILLS_AUTOLOAD` | `true` | 自动加载匹配技能 |
-| `ADS_SKILLS_AUTOSAVE` | `true` | 自动保存技能草稿 |
-| `ADS_ENABLE_WORKSPACE_SKILLS` | 未设置 | 显式启用 workspace `.agent/skills` |
-| `ADS_SKILLS_METADATA_PATH` | 未设置 | skill registry metadata 覆盖 |
-| `ADS_PREFERENCE_DIRECTIVES` | `true` | 是否识别偏好写入指令 |
-| `ADS_MEMORY_INJECTION_ENABLED` | `true` | 是否注入长期记忆 |
-| `ADS_MEMORY_MAX_TOKENS` | `1024` | memory 注入 token 上限 |
-| `ADS_SOUL_MAX_TOKENS` | `512` | soul 注入 token 上限 |
-| `ADS_REINJECTION_ENABLED` | `true` | 是否再注入系统提示 |
-| `ADS_REINJECTION_TURNS` | `6` | instructions 再注入轮次 |
-| `ADS_RULES_REINJECTION_TURNS` | `1` | rules 再注入轮次 |
-| `ADS_RULE_ENFORCEMENT_MODE` | `observe` | 全局规则执行 Gate 模式；`observe` 只记录，`enforce` 让决定生效 |
-| `ADS_AUDIO_TRANSCRIPTION_TIMEOUT_MS` | `120000` | 语音转写单次 skill 超时 |
-| `ADS_AUDIO_TRANSCRIPTION_SKILLS` | 未设置 | 语音转写 skill 优先级，逗号分隔 |
-
-### Scheduler
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ADS_SCHEDULER_ENABLED` | `true` | 是否启用 scheduler |
-| `ADS_SCHEDULER_TICK_MS` | `5000` | 调度轮询间隔 |
-| `ADS_SCHEDULER_IDLE_RECYCLE_MS` | 未设置 | 空闲回收间隔 |
-| `ADS_SCHEDULER_LEASE_TTL_MS` | `30000` | schedule lease TTL |
-| `ADS_SCHEDULER_DUE_LIMIT` | `20` | 单轮最多取出的 due schedules |
-| `ADS_SCHEDULER_RECONCILE_LIMIT` | `200` | 单轮 reconcile 上限 |
-| `ADS_SCHEDULER_RUNNER_POLL_MS` | `1000` | runner 轮询间隔 |
-| `ADS_SCHEDULER_RUNNER_TIMEOUT_SECS` | `1800` | 单次 schedule 运行超时 |
-| `ADS_SCHEDULER_RUNNER_CONCURRENCY` | `1` | schedule runner 并发数 |
-| `ADS_SCHEDULER_MODEL` | `TASK_QUEUE_DEFAULT_MODEL` | schedule 执行模型 |
-| `ADS_SCHEDULER_COMPILE_MODEL` | 未设置 | schedule 编译模型 |
-| `ADS_SCHEDULER_COMPILE_TIMEOUT_MS` | `120000` | schedule 编译超时 |
-| `ADS_SCHEDULER_COMPILE_MAX_ATTEMPTS` | `2` | schedule 编译尝试次数 |
-
-### Telegram
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | 必填 | Bot token |
-| `TELEGRAM_ALLOWED_USER_ID` | 必填 | 单个允许用户 ID |
-| `TELEGRAM_ALLOWED_USERS` | legacy | legacy alias，但当前只允许单个用户 ID |
-| `TELEGRAM_MAX_RPM` | `10` | 每分钟请求限制 |
-| `TELEGRAM_SESSION_TIMEOUT` | `24h` | Telegram Agent 会话超时，`0` 表示禁用 |
-| `TELEGRAM_STREAM_UPDATE_INTERVAL` | `1500` | 流式消息更新间隔 |
-| `TELEGRAM_MODEL` | 未设置 | Telegram 默认模型覆盖 |
-| `TELEGRAM_PROXY_URL` | 未设置 | Telegram HTTP/HTTPS 代理 |
-| `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默发送通知 |
-| `ADS_PM2_APP_WEB` | 未设置 | Telegram restart web 命令使用的 pm2 app 名称 |
-| `ADS_TG_ALLOW_SUICIDE_RESTART` | `false` | 非 pm2 场景是否允许自重启 |
-| `ADS_TELEGRAM_NOTIFY_TIMEZONE` | `Asia/Shanghai` | Web 任务终态通知时区 |
-
-Web 任务终态通知会复用 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_ID`，发送到同一个 user id 对应的 chat id。
-
-## Web 使用要点
-
-- 首次登录前必须运行 `npm run web:init-admin`。
-- 默认 `default` project 绑定到 `ALLOWED_DIRS` 的第一个目录；也可以在 Web UI 添加、移除、排序项目。
-- Web Worker lane 默认用于实际执行，Advisor lane 用于规划和任务草稿。
-- Worker 执行过程中只展示最新一条命令预览；连接恢复后，一旦收到新的命令、流式活动或同步到命令结果，重连/等待状态提示会立即消失，但当前 turn 仍保持忙碌直到收到最终结果。服务端会在 welcome 中声明是否紧随 bootstrap history，客户端据此先对账未确认请求再决定是否重发，避免重复执行或永久锁定输入；恢复历史继续到命令活动时会丢弃断线前未完成的 assistant 片段。恢复上下文期间完成的语音转写仍会保留到当前输入草稿。
-- Web 内置 `/pwd` 和 `/cd <path>`；旧的用户可见 `/ads.*` slash 规划命令已停用，任务草稿和审批由 UI 与 Advisor 流程驱动。
-- Goal Mode 依赖 Codex app-server 正常启动；普通 Worker/任务执行依赖 Codex CLI。
-- Web 服务启动时会同步 runtime templates，并启动 scheduler、任务队列管理器、Agent 可用性探测和 Telegram 任务通知重试循环。
-- 顶栏「全局规则」入口管理跨 channel 的统一规则：规则存在 `state.db` 的 `global_rules` 表，首次启动时从 `templates/rules.md` 导入种子规则，之后由数据库作为唯一事实来源；启用规则以 `<global_rules>` 区块注入 Web / Telegram / Codex / Claude 的同一份 system prompt，保存后下一轮请求即生效，不需要重启。数据库不可用时降级为 `templates/rules.md` 只读 bootstrap 规则并记录告警。界面同时提供注入预览、规则测试和最近修改记录。详见 [docs/global-rules-architecture.md](docs/global-rules-architecture.md)。
-- 会话工具条的「历史会话」按钮打开会话选择器，列出当前工作目录下最近的 Codex / Claude 会话（标题、时间、轮数、来源），点击即按 provider 原生会话续接，不再向模型重复注入一份 ADS 历史文本。Codex 走 app-server `thread/list`（不可用时回退扫描 rollout 文件），Claude 合并 `history_session_links` 与 `~/.claude/projects` transcript。列表默认隐藏一次性会话（只有一轮问答）并把同标题会话折叠为最新一条，隐藏数量会显示在列表顶部并可一键「显示全部」；搜索时不做降噪。CLI 在 `--resume` 时会 fork 出新的 session id，因此同一条对话往往对应几十个 provider session，列表按对话只保留最新的那个（更早的 fork 缺少后续轮次），并标注合并了多少个。会话不设空闲超时：磁盘上的会话文件不会因为时间流逝而失效，闲置一个月的会话与一分钟前的会话恢复方式完全相同，列表也不做任何年龄标记。列表满一页后可「加载更多」。列表为只读，任务运行中也能打开，仅恢复动作被禁用并说明原因。会话可恢复性用文件系统查找判定，不消耗模型调用；只有在确认会话文件缺失时才清理已保存的 session ID 并降级为历史注入，且降级时会说明原因（「未能原生恢复（会话文件已不存在）」）而不是与「本来就没有原生会话」混为一谈。重新连接一律尝试原生恢复，不再按空闲时长丢弃线程；只有 provider 明确报告会话已不存在时才降级——此时当前这一轮会自动改用新会话跑完（不会报错），并从下一轮起注入最近聊天历史，界面会明确说明发生了什么。Telegram 侧对应 `/sessions`。详见 [docs/session-resume-architecture.md](docs/session-resume-architecture.md)。
-
-## Telegram 命令
+## 常用开发命令
 
 | 命令 | 说明 |
-| --- | --- |
-| `/start` | 欢迎信息 |
-| `/help` | 命令帮助 |
-| `/status` | 系统状态 |
-| `/reset` | 重置会话，开始新对话 |
-| `/sessions [关键词]` | 列出当前目录下最近可恢复的会话，点按钮即续接其原生上下文 |
-| `/resume` | 提示改用 `/sessions` 选择要恢复的会话 |
-| `/esc` | 中断当前任务，Agent 进程保留 |
-| `/mark [on\|off]` | 将后续对话记录到当天 note |
-| `/pref [list\|add\|del]` | 管理长期偏好 |
-| `/pwd` | 查看当前工作目录 |
-| `/cd <path>` | 在 `ALLOWED_DIRS` 约束内切换工作目录 |
+|---|---|
+| `npm run build` | 完整构建（TypeScript 编译 + 资源同步 + Vite 前端打包） |
+| `npm run build:web` | 仅重新打包前端 Web 资源 |
+| `npm run test` | 运行服务端完整单元测试（Node test runner） |
+| `npm run test:web` | 运行前端 Vitest 组件与状态测试 |
+| `npm run lint` | 运行 ESLint 代码规范检查 |
+| `npm run web:reset-admin` | 重置或创建新的 Web 管理员账号 |
 
-## 数据与目录布局
+---
 
-默认全局状态目录为仓库根目录下 `.ads/`：
-
-```text
-.ads/
-├── state.db
-├── run/
-│   └── web.pid
-├── .agent/
-│   └── skills/
-└── workspaces/
-    └── <workspace-id>/
-        ├── ads.db
-        ├── workspace.json
-        ├── templates/
-        └── ...
-```
-
-`state.db` 保存 Web 用户、登录会话、历史、模型配置、全局草稿等状态。每个 workspace 会在 `.ads/workspaces/<workspace-id>/` 下维护独立 `ads.db` 和模板/运行时状态。历史版本的 workspace 内 `.ads/` 会被尽力迁移到集中状态目录。
-
-## 项目结构
+## 项目目录结构
 
 ```text
 ads/
-├── server/
-│   ├── agents/        # Codex / Claude adapters, probes
-│   ├── codex/         # Codex app-server protocol and RPC client
-│   ├── context/       # context compaction and token estimation
-│   ├── memory/        # soul, preference directives, markdown memory
-│   ├── scheduler/     # schedule spec compiler and runtime
-│   ├── rules/         # global rule service and enforcement gate
-│   ├── skills/        # skill discovery, loading, creation, built-in tools
-│   ├── state/         # global SQLite schema, migrations, stores
-│   ├── storage/       # workspace SQLite schema, migrations, stores
-│   ├── systemPrompt/  # instructions and rules
-│   ├── tasks/         # task model, queue, executor, store
-│   ├── telegram/      # Telegram bot, commands, attachments, voice
-│   ├── web/           # Web server, API, WebSocket, auth, task queue
-│   └── workspace/     # workspace detection, paths, template sync
-├── client/            # Vue 3 + Vite Web UI
-├── tests/             # backend Node test runner tests
-├── templates/         # runtime prompt and workspace templates
-├── scripts/           # build, bundle, type generation helpers
-└── docs/              # project documentation
+├── server/            # 服务端源码 (Node.js / Express-WS / Telegram)
+│   ├── agents/        # Agent CLI 适配器与执行守护器 (Codex / Claude / Droid)
+│   ├── rules/         # 全局规则服务与执行网关
+│   ├── scheduler/     # 自然语言定时调度引擎与 Cron 运行时
+│   ├── state/         # 全局 SQLite (state.db) 数据表与迁移
+│   ├── storage/       # 工作区独立 SQLite (ads.db) 数据表与迁移
+│   ├── tasks/         # 任务队列、执行器与状态流转
+│   ├── telegram/      # Telegram Bot 控制逻辑与多模态处理器
+│   └── web/           # Web HTTP API、WebSocket Hub 与鉴权系统
+├── client/            # 前端 Web Console 源码 (Vue 3 + TypeScript + Vite)
+├── docs/              # 模块化详细设计与配置文档
+├── templates/         # 运行时 Prompt 与种子模板
+└── tests/             # 后端完整测试用例集
 ```
 
-## 验证
-
-```bash
-npx tsc --noEmit
-npm run lint
-npm test
-npm run test:web
-npm run build
-```
-
-只修改 README 时，通常重点检查文档里的命令、路径和环境变量是否仍能在代码中找到；涉及 TypeScript 或前端代码时再运行完整验证。
-
-## 安全提示
-
-- 不要提交 `.env`、`.env.local`、token、cookie 或 Agent 凭据。
-- Web 必须初始化管理员账号；公网部署应配置 TLS、`ADS_WEB_ALLOWED_ORIGINS`、`ADS_WEB_SESSION_PEPPER` 和 `ADS_WEB_COOKIE_SECURE=true`。
-- Telegram 必须限制 `TELEGRAM_ALLOWED_USER_ID`，当前实现不是多用户 Bot。
-- `ALLOWED_DIRS` 应尽量收窄到可信工作区；谨慎使用 `SANDBOX_MODE=danger-full-access`。
-- 泄露的 Telegram token、Agent API key 或 CLI 凭据应立即撤销并轮换。
+---
 
 ## License
 

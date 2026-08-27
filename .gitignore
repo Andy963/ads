@@ -27,9 +27,6 @@ deploy/
 # Agent-local instructions and skills
 .agent/
 
-# Local documentation
-docs/
-
 # Soul (long-term memory)
 soul.md
 
