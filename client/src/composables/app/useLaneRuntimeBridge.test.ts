@@ -18,7 +18,7 @@ function createRuntime() {
 }
 
 describe("useLaneRuntimeBridge", () => {
-  it("defaults the visible lane to worker so existing worker context stays visible", () => {
+  it("defaults the visible lane to planner", () => {
     const plannerRuntime = {
       ...createRuntime(),
       taskBundleDrafts: ref([]),
@@ -42,7 +42,7 @@ describe("useLaneRuntimeBridge", () => {
       resumeTaskThread: () => {},
     });
 
-    expect(bridge.activeChatLane.value).toBe("worker");
+    expect(bridge.activeChatLane.value).toBe("planner");
   });
 
   it("keeps the worker latest-prompt key stable across chat sessions", () => {

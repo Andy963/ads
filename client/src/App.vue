@@ -136,6 +136,7 @@ const modelManagerOpen = ref(false);
 const globalRuleManagerOpen = ref(false);
 
 type MobileDrawerSection = "projects" | "rules" | "models";
+type MobileWorkspaceTab = ChatLane | "tasks";
 type MobileContextActionId =
   | "resume"
   | "new-session"
@@ -158,6 +159,7 @@ type MobileManagerHandle = {
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
 const mobileModelAgent = ref<AgentKind | null>(null);
+const mobileTaskTabActive = ref(false);
 const mobileContextMenuOpen = ref(false);
 const mobileGlobalRuleManagerRef = ref<MobileManagerHandle | null>(null);
 const mobileModelManagerRef = ref<MobileManagerHandle | null>(null);
@@ -166,6 +168,12 @@ const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "planner", label: "Advisor" },
   { id: "worker", label: "Worker" },
 ];
+const workspaceTabs = computed<Array<{ id: MobileWorkspaceTab; label: string }>>(() =>
+  isMobile.value ? [{ id: "tasks", label: "Task" }, ...chatLanes] : chatLanes,
+);
+const activeWorkspaceTab = computed<MobileWorkspaceTab>(() =>
+  mobileTaskTabActive.value ? "tasks" : activeChatLane.value,
+);
 
 const {
   activeChatLane,
@@ -258,6 +266,7 @@ const mobileContextMenuTitle = computed(() => {
   if (mobileDrawerSection.value === "models") {
     return mobileModelAgent.value ? `${mobileContextTitle.value} 操作` : "Provider";
   }
+  if (mobileTaskTabActive.value) return "任务操作";
   return "项目操作";
 });
 
@@ -277,6 +286,9 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
     ];
+  }
+  if (mobileTaskTabActive.value) {
+    return [{ id: "create-task", label: "新增任务" }];
   }
   return [
     { id: "create-task", label: "新增任务" },
@@ -315,6 +327,16 @@ function openMobileDrawer(section?: MobileDrawerSection): void {
 function toggleMobileDrawer(): void {
   if (mobileDrawerOpen.value) closeMobileDrawer();
   else openMobileDrawer();
+}
+
+function selectWorkspaceTab(tab: MobileWorkspaceTab): void {
+  if (tab === "tasks") {
+    mobileTaskTabActive.value = true;
+  } else {
+    mobileTaskTabActive.value = false;
+    activeChatLane.value = tab;
+  }
+  closeMobileContextMenu();
 }
 
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
@@ -402,6 +424,7 @@ function onMobileKeydown(ev: KeyboardEvent): void {
 
 watch(isMobile, (mobile) => {
   if (mobile) return;
+  mobileTaskTabActive.value = false;
   closeMobileDrawer();
 });
 
@@ -740,7 +763,7 @@ const plannerConnectionStatus = computed(() => {
               </span>
             </button>
 
-            <div v-if="p.expanded" class="projectTasks">
+            <div v-if="!isMobile && p.expanded" class="projectTasks">
               <div v-if="queueStatus && (!queueStatus.enabled || !queueStatus.ready)" class="error">
                 <div>任务队列未运行：{{ !queueStatus.enabled ? "TASK_QUEUE_ENABLED=false" : queueStatus.error || "agent not ready" }}</div>
                 <div style="margin-top: 6px; opacity: 0.85">
@@ -818,26 +841,26 @@ const plannerConnectionStatus = computed(() => {
       </section>
 
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
-        <div class="laneTabs" role="tablist" aria-label="切换对话 lane">
+        <div class="laneTabs" role="tablist" aria-label="切换工作区">
           <button
-            v-for="lane in chatLanes"
-            :id="`lane-tab-${lane.id}`"
-            :key="lane.id"
+            v-for="tab in workspaceTabs"
+            :id="`lane-tab-${tab.id}`"
+            :key="tab.id"
             type="button"
             class="laneTab"
-            :class="{ active: activeChatLane === lane.id }"
+            :class="{ active: activeWorkspaceTab === tab.id }"
             role="tab"
-            :aria-selected="activeChatLane === lane.id"
-            :aria-controls="`lane-panel-${lane.id}`"
-            :data-testid="`lane-tab-${lane.id}`"
-            @click="activeChatLane = lane.id"
+            :aria-selected="activeWorkspaceTab === tab.id"
+            :aria-controls="`lane-panel-${tab.id}`"
+            :data-testid="`lane-tab-${tab.id}`"
+            @click="selectWorkspaceTab(tab.id)"
           >
-            {{ lane.label }}
+            {{ tab.label }}
           </button>
-          <span v-if="activeLaneThreadWarning" class="laneTabWarning" data-testid="lane-thread-warning">
+          <span v-if="activeWorkspaceTab !== 'tasks' && activeLaneThreadWarning" class="laneTabWarning" data-testid="lane-thread-warning">
             {{ activeLaneThreadWarning }}
           </span>
-          <span class="laneTabSpacer" />
+          <span v-if="!isMobile" class="laneTabSpacer" />
           <button
             v-if="!isMobile && activeLaneHasResume"
             class="laneTabIconBtn"
@@ -864,7 +887,7 @@ const plannerConnectionStatus = computed(() => {
         <div class="lanePanels">
           <section
             :id="'lane-panel-planner'"
-            v-show="activeChatLane === 'planner'"
+            v-show="activeWorkspaceTab === 'planner'"
             class="lanePanel"
             role="tabpanel"
             aria-labelledby="lane-tab-planner"
@@ -903,7 +926,7 @@ const plannerConnectionStatus = computed(() => {
 
           <section
             :id="'lane-panel-worker'"
-            v-show="activeChatLane === 'worker'"
+            v-show="activeWorkspaceTab === 'worker'"
             class="lanePanel"
             role="tabpanel"
             aria-labelledby="lane-tab-worker"
@@ -940,6 +963,66 @@ const plannerConnectionStatus = computed(() => {
               @clearImages="clearPendingImages"
               @removeQueued="removeQueuedPrompt"
             />
+          </section>
+
+          <section
+            v-if="isMobile"
+            :id="'lane-panel-tasks'"
+            v-show="activeWorkspaceTab === 'tasks'"
+            class="lanePanel taskLanePanel"
+            role="tabpanel"
+            aria-labelledby="lane-tab-tasks"
+            data-testid="lane-panel-tasks"
+          >
+            <div class="mobileTaskWorkspace">
+              <div v-if="queueStatus && (!queueStatus.enabled || !queueStatus.ready)" class="error">
+                <div>任务队列未运行：{{ !queueStatus.enabled ? "TASK_QUEUE_ENABLED=false" : queueStatus.error || "agent not ready" }}</div>
+                <div style="margin-top: 6px; opacity: 0.85">
+                  任务会保持 pending；请在启动 web server 前配置模型 Key，并确保 `TASK_QUEUE_ENABLED=true`。
+                </div>
+              </div>
+              <div v-if="apiError" class="error">API: {{ apiError }}</div>
+              <div v-if="wsError" class="error">WS: {{ wsError }}</div>
+
+              <TaskBundleDraftPanel
+                v-if="plannerDrafts.length > 0 || plannerDraftsError"
+                :drafts="plannerDrafts"
+                :busy="plannerDraftsBusy"
+                :error="plannerDraftsError"
+                @refresh="refreshPlannerDrafts"
+                @approve="onApproveDraft"
+                @update="onUpdateDraft"
+                @delete="onDeleteDraft"
+              />
+
+              <TaskBoard
+                class="taskBoard"
+                :tasks="tasks"
+                :api="api"
+                :workspace-root="resolveActiveWorkspaceRoot()"
+                :agents="workerAgents"
+                :active-agent-id="workerActiveAgentId"
+                :selected-id="selectedId"
+                :queue-status="queueStatus"
+                :can-run-single="apiAuthorized"
+                :show-create-button="false"
+                :run-busy-ids="runBusyIds"
+                @select="select"
+                @update="({ id, updates }) => updateQueuedTask(id, updates)"
+                @update-and-run="({ id, updates }) => updateQueuedTaskAndRun(id, updates)"
+                @reorder="(ids) => reorderPendingTasks(ids)"
+                @queueRun="runTaskQueue"
+                @queuePause="pauseTaskQueue"
+                @runSingle="(id) => runSingleTask(id)"
+                @cancel="cancelTask"
+                @retry="retryTask"
+                @delete="deleteTask"
+                @create="openTaskCreateDialogHandler"
+                @goal-pause="(id) => goalPause(id)"
+                @goal-resume="(id) => goalResume(id)"
+                @goal-clear="(id) => goalClear(id)"
+              />
+            </div>
           </section>
         </div>
       </section>

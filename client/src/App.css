@@ -1104,6 +1104,21 @@
   .chatShell {
     display: flex;
   }
+  .mobileTaskWorkspace {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 4px 4px;
+  }
+  .mobileTaskWorkspace :deep(.taskBoard) {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+  }
   .laneTabs {
     width: 100%;
     justify-content: stretch;

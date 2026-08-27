@@ -68,7 +68,7 @@ export function useLaneRuntimeBridge(params: {
     options?: { search?: string; includeAllCwds?: boolean; includeNoise?: boolean; cursor?: string },
   ) => void;
 }) {
-  const activeChatLane = ref<ChatLane>("worker");
+  const activeChatLane = ref<ChatLane>("planner");
   watch(
     () => params.activeProjectId.value,
     (nextProjectId, prevProjectId) => {

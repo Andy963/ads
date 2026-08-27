@@ -148,6 +148,9 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="mobile-drawer-toggle"]').exists()).toBe(true);
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
+    expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Task", "Advisor", "Worker"]);
+    expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-tasks"]').classes()).not.toContain("active");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
@@ -155,6 +158,27 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
+
+    await wrapper.find('[data-testid="lane-tab-planner"]').trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-panel-planner"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').isVisible()).toBe(false);
+    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
+    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-tasks"]').trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-panel-tasks"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-planner"]').attributes("style")).toContain("display: none");
+    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
+    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+    await settleUi(wrapper);
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);

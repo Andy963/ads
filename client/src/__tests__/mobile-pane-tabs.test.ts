@@ -2,22 +2,25 @@ import { describe, it, expect } from "vitest";
 import { readSfc } from "./readSfc";
 
 describe("mobile navigation shell", () => {
-  it("renders Advisor and Worker in one shared lane tab shell", async () => {
+  it("renders Task, Advisor, and Worker in one shared mobile workspace tab shell", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('const chatLanes: Array<{ id: ChatLane; label: string }> = [');
     expect(sfc).toContain('{ id: "planner", label: "Advisor" }');
     expect(sfc).toContain('{ id: "worker", label: "Worker" }');
+    expect(sfc).toContain('{ id: "tasks", label: "Task" }');
+    expect(sfc).toMatch(/isMobile\.value \? \[\{ id: "tasks", label: "Task" \}, \.\.\.chatLanes\]/);
     expect(sfc).not.toContain('{ id: "reviewer", label: "Reviewer" }');
     expect(sfc).toMatch(/<div class="laneTabs"[^>]*role="tablist"[^>]*>/);
   });
 
   it("shows only the active lane panel and binds panel visibility to the shared active tab state", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toMatch(/v-show="activeChatLane === 'planner'"/);
-    expect(sfc).toMatch(/v-show="activeChatLane === 'worker'"/);
-    expect(sfc).not.toMatch(/v-show="activeChatLane === 'reviewer'"/);
-    expect(sfc).toMatch(/:class="\{ active: activeChatLane === lane.id \}"/);
-    expect(sfc).toMatch(/:aria-selected="activeChatLane === lane.id"/);
+    expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'planner'"/);
+    expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'worker'"/);
+    expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'tasks'"/);
+    expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'reviewer'"/);
+    expect(sfc).toMatch(/:class="\{ active: activeWorkspaceTab === tab.id \}"/);
+    expect(sfc).toMatch(/:aria-selected="activeWorkspaceTab === tab.id"/);
   });
 
   it("uses a vertical module drawer with module-specific subitems", async () => {
@@ -31,6 +34,9 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('v-for="group in MODEL_AGENT_GROUPS"');
     expect(sfc).toContain(':data-testid="`mobile-drawer-model-${group.kind}`"');
     expect(sfc).toContain('class="mobileMainPanel"');
+    expect(sfc).toContain('v-if="!isMobile && p.expanded"');
+    expect(sfc).toContain('class="lanePanel taskLanePanel"');
+    expect(sfc).toContain('class="mobileTaskWorkspace"');
     expect(sfc).toContain('v-if="mobileDrawerSection === \'rules\'"');
     expect(sfc).toContain(':agent="mobileModelAgent"');
     expect(sfc).toContain("flex-direction: column");
