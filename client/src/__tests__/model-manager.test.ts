@@ -124,15 +124,14 @@ describe("ModelManager", () => {
     await settle(wrapper);
 
     expect(wrapper.findAll(".cliGroup")).toHaveLength(1);
-    expect(wrapper.text()).toContain("Claude Code 模型");
+    expect(wrapper.text()).toContain("模型");
     expect(wrapper.text()).toContain("Claude Sonnet");
     expect(wrapper.text()).not.toContain("GPT 5.2");
     expect(wrapper.text()).not.toContain("Droid Opus");
-    expect(wrapper.find('[data-testid="model-manager-add-claude"]').exists()).toBe(true);
+    expect(wrapper.find(".cliRow").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="model-manager-cli-claude"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="model-manager-add-claude"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="model-manager-add-codex"]').exists()).toBe(false);
-
-    await wrapper.find('[data-testid="model-manager-add-claude"]').trigger("click");
-    expect(wrapper.find('[data-testid="model-manager-dialog"]').text()).toContain("Claude Code");
 
     wrapper.unmount();
   });

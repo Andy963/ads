@@ -123,7 +123,7 @@ function enabledCount(agent: AgentKind): number {
 
 const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
 const isEditing = computed(() => Boolean(editingId.value));
-const managerTitle = computed(() => (props.agent ? `${agentLabel(props.agent)} 模型` : "模型管理"));
+const managerTitle = computed(() => (props.agent ? "模型" : "模型管理"));
 // The global default must always exist, stay enabled, and be replaced rather than cleared — the
 // server never picks a successor, so un-defaulting or disabling it silently drops every consumer
 // back to whichever model happens to sort first.
@@ -358,7 +358,7 @@ defineExpose({
         class="cliGroup"
         :class="[`agent-${group.kind}`, { open: expanded[group.kind] }]"
       >
-        <div class="cliRow">
+        <div v-if="!props.agent" class="cliRow">
           <button
             type="button"
             class="cliToggle"
@@ -391,9 +391,13 @@ defineExpose({
           </div>
         </div>
 
-        <div v-if="expanded[group.kind]" class="cliModels">
+        <div v-if="props.agent || expanded[group.kind]" class="cliModels">
           <p v-if="groupedModels[group.kind].length === 0" class="cliEmpty">
-            还没有模型，新增后会立即出现在 {{ group.label }} 的输入框下拉里。
+            {{
+              props.agent
+                ? "还没有模型，请使用右上角菜单新增。"
+                : `还没有模型，新增后会立即出现在 ${group.label} 的输入框下拉里。`
+            }}
           </p>
 
           <article

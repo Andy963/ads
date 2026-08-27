@@ -826,14 +826,21 @@
     display: block;
   }
   .mobileContextTitle {
+    position: absolute;
+    left: 50%;
     display: block;
+    width: max-content;
+    max-width: calc(100% - 180px);
     min-width: 0;
     overflow: hidden;
     color: var(--text);
     font-size: 13px;
     font-weight: 800;
+    text-align: center;
     text-overflow: ellipsis;
+    transform: translateX(-50%);
     white-space: nowrap;
+    pointer-events: none;
   }
   .mobileContextMenu {
     position: absolute;
@@ -992,12 +999,6 @@
     font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .mobileDrawerSubitemArrow {
-    flex: 0 0 auto;
-    color: var(--muted);
-    font-size: 22px;
-    line-height: 1;
   }
   .mobileDrawerBackdrop {
     position: fixed;

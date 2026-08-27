@@ -55,6 +55,23 @@ describe("UI smoke selectors", () => {
     wrapper.unmount();
   });
 
+  it("can hide the task create entry for the mobile project drawer", () => {
+    const wrapper = shallowMount(TaskBoard, {
+      props: {
+        tasks: [],
+        agents: [],
+        queueStatus: null,
+        canRunSingle: true,
+        runBusyIds: new Set(),
+        showCreateButton: false,
+      },
+    });
+
+    expect(wrapper.find('[data-testid="task-board-create"]').exists()).toBe(false);
+    expect(wrapper.find(".hint").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("exposes stable selectors for login flow", async () => {
     const wrapper = mount(LoginGate, { attachTo: document.body });
     try {

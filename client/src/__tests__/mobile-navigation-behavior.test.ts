@@ -147,6 +147,7 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
@@ -155,7 +156,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(3);
     expect(wrapper.findAll(".mobileDrawerNavItem")[0]?.text()).toContain("项目");
     expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("Rule");
-    expect(wrapper.findAll(".mobileDrawerNavItem")[2]?.text()).toContain("Model");
+    expect(wrapper.findAll(".mobileDrawerNavItem")[2]?.text()).toContain("Provider");
 
     await wrapper.find('[data-testid="mobile-drawer-section-rules"]').trigger("click");
     await settleUi(wrapper);
@@ -168,6 +169,7 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
     await settleUi(wrapper);
     expect(wrapper.findAll(".mobileDrawerSubitem")).toHaveLength(3);
+    expect(wrapper.findAll(".mobileDrawerSubitemArrow")).toHaveLength(0);
     expect(wrapper.find(".mobileModuleEmpty").exists()).toBe(true);
 
     await wrapper.find('[data-testid="mobile-drawer-model-claude"]').trigger("click");
@@ -178,7 +180,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".selected-agent").text()).toBe("claude");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
-    expect(wrapper.find('[data-testid="mobile-context-action-choose-model-cli"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-create-model"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-refresh-models"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);

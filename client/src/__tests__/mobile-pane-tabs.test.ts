@@ -26,6 +26,7 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('data-testid="mobile-drawer-section-projects"');
     expect(sfc).toContain('data-testid="mobile-drawer-section-rules"');
     expect(sfc).toContain('data-testid="mobile-drawer-section-models"');
+    expect(sfc).toContain("<span>Provider</span>");
     expect(sfc).toContain('class="mobileDrawerSubitems"');
     expect(sfc).toContain('v-for="group in MODEL_AGENT_GROUPS"');
     expect(sfc).toContain(':data-testid="`mobile-drawer-model-${group.kind}`"');
@@ -33,6 +34,10 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('v-if="mobileDrawerSection === \'rules\'"');
     expect(sfc).toContain(':agent="mobileModelAgent"');
     expect(sfc).toContain("flex-direction: column");
+    expect(sfc).toContain('v-if="!isMobile && p.id === \'default\'"');
+    expect(sfc).toContain(':show-create-button="!isMobile"');
+    expect(sfc).toContain('id: "create-task"');
+    expect(sfc).not.toContain("mobileDrawerSubitemArrow");
     expect(sfc).not.toContain("mobileDrawerManager");
     expect(sfc).not.toContain('mobilePane === "tasks"');
     expect(sfc).not.toContain('mobilePane === "chat"');
@@ -50,7 +55,7 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('id: "refresh-rules"');
     expect(sfc).toContain('id: "create-model"');
     expect(sfc).toContain('id: "refresh-models"');
-    expect(sfc).toContain('id: "choose-model-cli"');
+    expect(sfc).toContain('id: "choose-provider"');
     expect(sfc).toContain("disabled: activeLaneBusy.value || resumeThreadBlocked.value");
     expect(sfc).toContain("mobileGlobalRuleManagerRef.value?.create()");
     expect(sfc).toContain("mobileModelManagerRef.value?.create()");

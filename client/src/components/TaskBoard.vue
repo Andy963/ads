@@ -18,17 +18,23 @@ import { statusLabel, useTaskBoardStages } from "./taskBoard/useTaskBoardStages"
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
-const props = defineProps<{
-  tasks: Task[];
-  api?: ApiClient;
-  workspaceRoot?: string | null;
-  agents?: AgentOption[];
-  activeAgentId?: string;
-  selectedId?: string | null;
-  queueStatus?: TaskQueueStatus | null;
-  canRunSingle?: boolean;
-  runBusyIds?: Set<string>;
-}>();
+const props = withDefaults(
+  defineProps<{
+    tasks: Task[];
+    api?: ApiClient;
+    workspaceRoot?: string | null;
+    agents?: AgentOption[];
+    activeAgentId?: string;
+    selectedId?: string | null;
+    queueStatus?: TaskQueueStatus | null;
+    canRunSingle?: boolean;
+    runBusyIds?: Set<string>;
+    showCreateButton?: boolean;
+  }>(),
+  {
+    showCreateButton: true,
+  },
+);
 
 const emit = defineEmits<{
   (e: "select", id: string): void;
@@ -200,6 +206,7 @@ function toggleQueue(): void {
           </button>
         </div>
         <button
+          v-if="props.showCreateButton"
           class="iconBtn primary"
           type="button"
           title="新建任务"
@@ -216,7 +223,7 @@ function toggleQueue(): void {
 
     <div v-if="totalVisibleTasks === 0" class="empty">
       <span>暂无任务</span>
-      <span class="hint">点击 + 新建任务</span>
+      <span v-if="props.showCreateButton" class="hint">点击 + 新建任务</span>
     </div>
 
     <div v-else class="list">

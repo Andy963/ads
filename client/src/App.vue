@@ -139,11 +139,12 @@ type MobileDrawerSection = "projects" | "rules" | "models";
 type MobileContextActionId =
   | "resume"
   | "new-session"
+  | "create-task"
   | "create-rule"
   | "refresh-rules"
   | "create-model"
   | "refresh-models"
-  | "choose-model-cli";
+  | "choose-provider";
 type MobileContextAction = {
   id: MobileContextActionId;
   label: string;
@@ -247,7 +248,7 @@ const mobileContextTitle = computed(() => {
   if (mobileDrawerSection.value === "rules") return "Rule";
   if (mobileDrawerSection.value === "models") {
     const selected = MODEL_AGENT_GROUPS.find((group) => group.kind === mobileModelAgent.value);
-    return selected?.label || "Model";
+    return selected?.label || "Provider";
   }
   return activeProject.value?.name?.trim() || "项目";
 });
@@ -255,7 +256,7 @@ const mobileContextTitle = computed(() => {
 const mobileContextMenuTitle = computed(() => {
   if (mobileDrawerSection.value === "rules") return "Rule 操作";
   if (mobileDrawerSection.value === "models") {
-    return mobileModelAgent.value ? `${mobileContextTitle.value} 操作` : "Model";
+    return mobileModelAgent.value ? `${mobileContextTitle.value} 操作` : "Provider";
   }
   return "项目操作";
 });
@@ -269,15 +270,16 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
   }
   if (mobileDrawerSection.value === "models") {
     if (!mobileModelAgent.value) {
-      return [{ id: "choose-model-cli", label: "选择 CLI" }];
+      return [{ id: "choose-provider", label: "选择 Provider" }];
     }
     return [
-      { id: "choose-model-cli", label: "切换 CLI" },
+      { id: "choose-provider", label: "切换 Provider" },
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
     ];
   }
   return [
+    { id: "create-task", label: "新增任务" },
     {
       id: "resume",
       label: "恢复会话",
@@ -344,6 +346,11 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
   if (actionId === "new-session") {
     closeMobileDrawer();
     handleLaneNewSession();
+    return;
+  }
+  if (actionId === "create-task") {
+    closeMobileDrawer();
+    openTaskCreateDialog();
     return;
   }
   if (actionId === "create-rule") {
@@ -650,11 +657,11 @@ const plannerConnectionStatus = computed(() => {
             @click="selectMobileDrawerSection('models')"
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
-            <span>Model</span>
+            <span>Provider</span>
           </button>
         </nav>
 
-        <div v-if="isMobile && mobileDrawerSection === 'models'" class="mobileDrawerSubitems" aria-label="模型 CLI">
+        <div v-if="isMobile && mobileDrawerSection === 'models'" class="mobileDrawerSubitems" aria-label="Provider CLI">
           <button
             v-for="group in MODEL_AGENT_GROUPS"
             :key="group.kind"
@@ -668,7 +675,6 @@ const plannerConnectionStatus = computed(() => {
               <strong>{{ group.label }}</strong>
               <small>{{ group.description }}</small>
             </span>
-            <span class="mobileDrawerSubitemArrow" aria-hidden="true">›</span>
           </button>
         </div>
 
@@ -716,9 +722,9 @@ const plannerConnectionStatus = computed(() => {
                     <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                   </svg>
                 </span>
-                <span v-if="p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
+                <span v-if="!isMobile && p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
                 <span
-                  v-else
+                  v-else-if="!isMobile"
                   class="projectDragHandle"
                   draggable="true"
                   title="Drag to reorder"
@@ -764,6 +770,7 @@ const plannerConnectionStatus = computed(() => {
                   :selected-id="selectedId"
                   :queue-status="queueStatus"
                   :can-run-single="apiAuthorized"
+                  :show-create-button="!isMobile"
                 :run-busy-ids="runBusyIds"
                 @select="select"
                 @update="({ id, updates }) => updateQueuedTask(id, updates)"
@@ -803,8 +810,8 @@ const plannerConnectionStatus = computed(() => {
         />
         <div v-else-if="mobileDrawerSection === 'models'" class="mobileModuleEmpty">
           <el-icon :size="30" aria-hidden="true"><Setting /></el-icon>
-          <strong>选择一个 CLI</strong>
-          <span>打开左上角导航，从模型下面选择 Codex、Claude 或 Droid。</span>
+          <strong>选择一个 Provider</strong>
+          <span>打开左上角导航，从 Provider 下面选择 Codex、Claude 或 Droid。</span>
         </div>
       </section>
 
