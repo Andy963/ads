@@ -279,7 +279,7 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
   }
   if (mobileDrawerSection.value === "models") {
     if (!mobileModelAgent.value) {
-      return [{ id: "choose-provider", label: "选择 Provider" }];
+      return [{ id: "choose-provider", label: "切换 Provider" }];
     }
     return [
       { id: "choose-provider", label: "切换 Provider" },
@@ -821,6 +821,7 @@ const plannerConnectionStatus = computed(() => {
           ref="mobileGlobalRuleManagerRef"
           :api="api"
           :show-header="false"
+          :show-add-button="false"
           @close="closeMobileModule"
         />
         <ModelManager

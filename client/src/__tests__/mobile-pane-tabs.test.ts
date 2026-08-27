@@ -34,6 +34,7 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('v-for="group in MODEL_AGENT_GROUPS"');
     expect(sfc).toContain(':data-testid="`mobile-drawer-model-${group.kind}`"');
     expect(sfc).toContain('class="mobileMainPanel"');
+    expect(sfc).toContain(':show-add-button="false"');
     expect(sfc).toContain('v-if="!isMobile && p.expanded"');
     expect(sfc).toContain('class="lanePanel taskLanePanel"');
     expect(sfc).toContain('class="mobileTaskWorkspace"');
@@ -62,6 +63,7 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('id: "create-model"');
     expect(sfc).toContain('id: "refresh-models"');
     expect(sfc).toContain('id: "choose-provider"');
+    expect(sfc).not.toContain('label: "选择 Provider"');
     expect(sfc).toContain("disabled: activeLaneBusy.value || resumeThreadBlocked.value");
     expect(sfc).toContain("mobileGlobalRuleManagerRef.value?.create()");
     expect(sfc).toContain("mobileModelManagerRef.value?.create()");

@@ -45,9 +45,11 @@ const props = withDefaults(
   defineProps<{
     api: ApiClient;
     showHeader?: boolean;
+    showAddButton?: boolean;
   }>(),
   {
     showHeader: true,
+    showAddButton: true,
   },
 );
 
@@ -453,7 +455,7 @@ defineExpose({
         <span v-if="tab.key === 'rules'" class="tabBadge">{{ rules.length }}</span>
         <span v-else-if="tab.key === 'audit' && auditEntries.length" class="tabBadge muted">{{ auditEntries.length }}</span>
       </button>
-      <button type="button" class="addBtn" :disabled="busy" data-testid="global-rule-add" @click="startCreate">
+      <button v-if="showAddButton" type="button" class="addBtn" :disabled="busy" data-testid="global-rule-add" @click="startCreate">
         <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
         <span>新增规则</span>
       </button>

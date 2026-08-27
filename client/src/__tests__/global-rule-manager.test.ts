@@ -64,6 +64,15 @@ describe("GlobalRuleManager", () => {
     expect(wrapper.find(".ruleTabs").exists()).toBe(true);
   });
 
+  it("can hide the add-rule button for embedded mobile navigation", async () => {
+    const api = makeApi([makeRule()]);
+    const wrapper = mount(GlobalRuleManager, { props: { api: api as never, showAddButton: false } });
+    await settle(wrapper);
+
+    expect(wrapper.find('[data-testid="global-rule-add"]').exists()).toBe(false);
+    expect(wrapper.find(".ruleTabs").exists()).toBe(true);
+  });
+
   it("renders one row per rule with its severity and enforceability", async () => {
     const api = makeApi([makeRule(), makeRule({ id: "rule-2", title: "文档位置", severity: "required", match: null })]);
     const wrapper = mount(GlobalRuleManager, { props: { api: api as never } });

@@ -74,8 +74,10 @@ const RuleManagerStub = defineComponent({
   name: "GlobalRuleManager",
   props: {
     showHeader: { type: Boolean, default: true },
+    showAddButton: { type: Boolean, default: true },
   },
-  template: '<section data-testid="global-rule-manager" :data-show-header="showHeader" />',
+  template:
+    '<section data-testid="global-rule-manager" :data-show-header="showHeader" :data-show-add-button="showAddButton" />',
   setup(_, { expose }) {
     expose({ create: vi.fn(), refresh: vi.fn() });
     return {};
@@ -194,6 +196,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(true);
     expect(wrapper.find('[data-testid="global-rule-manager"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="global-rule-manager"]').attributes("data-show-header")).toBe("false");
+    expect(wrapper.find('[data-testid="global-rule-manager"]').attributes("data-show-add-button")).toBe("false");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
