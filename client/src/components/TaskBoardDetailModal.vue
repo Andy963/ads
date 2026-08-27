@@ -190,31 +190,6 @@ function confirmClear(): void {
   cursor: not-allowed;
 }
 
-.btnPrimary {
-  border-radius: 14px;
-  padding: 8px 12px;
-  min-height: 38px;
-  line-height: 1.1;
-  font-size: 15px;
-  font-weight: 700;
-  cursor: pointer;
-  border: none;
-  background: linear-gradient(90deg, #4f8ef7 0%, #7aa9ff 100%);
-  color: white;
-  box-shadow: 0 10px 20px rgba(79, 142, 247, 0.35);
-  transition: background-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
-}
-
-.btnPrimary:hover:not(:disabled) {
-  transform: translateY(-1px);
-}
-
-.btnPrimary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-
 .btnSecondary {
   border-radius: 14px;
   padding: 8px 12px;
@@ -244,48 +219,6 @@ function confirmClear(): void {
   padding: 4px 10px;
   font-size: 13px;
   border-radius: 999px;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1.2;
-}
-
-.badge[data-review="none"] {
-  color: #475569;
-  background: rgba(148, 163, 184, 0.18);
-}
-
-.badge[data-review="pending"] {
-  color: #9a3412;
-  background: rgba(251, 146, 60, 0.2);
-}
-
-.badge[data-review="running"] {
-  color: #1d4ed8;
-  background: rgba(96, 165, 250, 0.18);
-}
-
-.badge[data-review="passed"] {
-  color: #166534;
-  background: rgba(134, 239, 172, 0.24);
-}
-
-.badge[data-review="rejected"] {
-  color: #b91c1c;
-  background: rgba(252, 165, 165, 0.24);
-}
-
-.badge[data-review="failed"] {
-  color: #7c2d12;
-  background: rgba(253, 186, 116, 0.28);
 }
 
 .detailModalHeader {

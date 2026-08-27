@@ -64,60 +64,6 @@
   background: transparent;
 }
 
-.reviewArtifactBanner {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(59, 130, 246, 0.16);
-  background: linear-gradient(180deg, rgba(239, 246, 255, 0.96), rgba(248, 250, 252, 0.98));
-  color: #0f172a;
-}
-
-.reviewArtifactBannerHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.reviewArtifactBannerTitle {
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: #1d4ed8;
-}
-
-.reviewArtifactVerdict {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #334155;
-}
-
-.reviewArtifactMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  font-size: 12px;
-  color: #334155;
-}
-
-.reviewArtifactMetaItem code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-}
-
-.reviewArtifactSummary {
-  font-size: 13px;
-  line-height: 1.5;
-  color: #0f172a;
-  white-space: pre-wrap;
-}
-
 .scrollToBottom {
   position: sticky;
   float: right;
@@ -134,47 +80,4 @@
 
 .scrollToBottom:hover {
   color: #0f172a;
-}
-
-.cmdText {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  color: rgba(226, 232, 240, 0.92);
-  white-space: pre-wrap;
-  word-break: break-word;
-  text-align: left;
-}
-
-@keyframes voiceBars {
-
-  0%,
-  100% {
-    height: 4px;
-    opacity: 0.55;
-  }
-
-  50% {
-    height: 14px;
-    opacity: 1;
-  }
-}
-
-@keyframes voiceSpin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes voiceToastIn {
-  from {
-    transform: translateY(4px);
-    opacity: 0;
-  }
-
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
 }

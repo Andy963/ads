@@ -1,12 +1,3 @@
-.boot {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  background:
-    radial-gradient(circle at top, rgba(9, 105, 218, 0.08), transparent 32%),
-    linear-gradient(180deg, #ffffff 0%, #f6f8fa 100%);
-  color: #57606a;
-}
 .app {
   position: fixed;
   top: 0;
@@ -46,44 +37,6 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
-}
-.projectTabs {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-}
-.projectTabs::-webkit-scrollbar {
-  display: none;
-}
-.projectTab {
-  border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.04);
-  color: #334155;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 10px;
-  border-radius: 999px;
-  cursor: pointer;
-  flex-shrink: 0;
-  max-width: 200px;
-  overflow: hidden;
-}
-.projectTab.active {
-  background: rgba(37, 99, 235, 0.12);
-  border-color: rgba(37, 99, 235, 0.45);
-  color: #1d4ed8;
-  box-shadow: var(--shadow-sm);
-}
-.projectTabText {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .projectAdd {
   flex-shrink: 0;
@@ -316,10 +269,6 @@
 .dot.on {
   background: #10b981;
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
-}
-.muted {
-  color: #64748b;
-  font-size: 13px;
 }
 .layout {
   --sidebar-width: clamp(280px, 24vw, 360px);
@@ -661,35 +610,6 @@
   cursor: not-allowed;
 }
 
-/*
- * The session picker entry carries a label, not just an icon: a bare icon is
- * indistinguishable from the adjacent controls, and its `title` never renders on
- * touch devices where this is most needed.
- */
-.laneTabTextBtn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.5);
-  background: rgba(255, 255, 255, 0.75);
-  color: #475569;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.laneTabTextBtn:hover {
-  color: #0f172a;
-  border-color: rgba(100, 116, 139, 0.75);
-  background: rgba(255, 255, 255, 0.95);
-}
-
 .laneTab {
   border: none;
   background: transparent;
@@ -721,19 +641,6 @@
   flex: 1 1 auto;
 }
 
-.link {
-  background: transparent;
-  border: none;
-  color: #2563eb;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  transition: color 0.15s;
-}
-.link:hover {
-  color: #1d4ed8;
-  text-decoration: underline;
-}
 .error {
   border: 1px solid rgba(239, 68, 68, 0.3);
   background: rgba(239, 68, 68, 0.08);
@@ -741,14 +648,6 @@
   border-radius: 8px;
   font-size: 13px;
   color: #dc2626;
-}
-.warning {
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.12);
-  padding: 12px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #b45309;
 }
 .noticeToast {
   position: fixed;
