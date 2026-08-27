@@ -397,6 +397,11 @@ async function runRuleTest(): Promise<void> {
 onMounted(() => {
   void loadRules();
 });
+
+defineExpose({
+  refresh: loadRules,
+  create: startCreate,
+});
 </script>
 
 <template>

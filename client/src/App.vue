@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
@@ -16,13 +16,21 @@ import { createAppController } from "./app/controller";
 import type { TaskBundle } from "./api/types";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
-import { CirclePlus, ChatDotRound, Setting, Document, Clock } from "@element-plus/icons-vue";
+import {
+  CirclePlus,
+  ChatDotRound,
+  Close,
+  Document,
+  Menu,
+  MoreFilled,
+  Setting,
+  Clock,
+} from "@element-plus/icons-vue";
 const {
   isExecuteBlockFixture,
   loggedIn,
   handleLoggedIn,
   isMobile,
-  mobilePane,
   api,
   models,
   loadModels,
@@ -128,6 +136,30 @@ const {
 const modelManagerOpen = ref(false);
 const globalRuleManagerOpen = ref(false);
 
+type MobileDrawerSection = "projects" | "rules" | "models";
+type MobileContextActionId =
+  | "resume"
+  | "new-session"
+  | "create-rule"
+  | "refresh-rules"
+  | "create-model"
+  | "refresh-models";
+type MobileContextAction = {
+  id: MobileContextActionId;
+  label: string;
+  disabled?: boolean;
+};
+type MobileManagerHandle = {
+  refresh: () => Promise<void>;
+  create: () => void;
+};
+
+const mobileDrawerOpen = ref(false);
+const mobileDrawerSection = ref<MobileDrawerSection>("projects");
+const mobileContextMenuOpen = ref(false);
+const mobileGlobalRuleManagerRef = ref<MobileManagerHandle | null>(null);
+const mobileModelManagerRef = ref<MobileManagerHandle | null>(null);
+
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "planner", label: "Advisor" },
   { id: "worker", label: "Worker" },
@@ -204,6 +236,148 @@ const sessionResumeDisabledReason = computed(() => {
   return "";
 });
 
+const newSessionDisabledReason = computed(() => {
+  if (activeLaneBusy.value) return "当前对话正在生成，结束后才能新建会话";
+  if (activeLaneNewSessionBlocked.value) return "当前 Advisor 尚未连接，暂时无法新建会话";
+  return "";
+});
+
+const mobileContextSection = computed<MobileDrawerSection>(() =>
+  mobileDrawerOpen.value ? mobileDrawerSection.value : "projects",
+);
+
+const mobileContextTitle = computed(() => {
+  if (mobileContextSection.value === "rules") return "Rules";
+  if (mobileContextSection.value === "models") return "模型管理";
+  return activeProject.value?.name?.trim() || "项目";
+});
+
+const mobileContextMenuTitle = computed(() => {
+  if (mobileContextSection.value === "rules") return "Rules 操作";
+  if (mobileContextSection.value === "models") return "模型操作";
+  return "项目操作";
+});
+
+const mobileContextActions = computed<MobileContextAction[]>(() => {
+  if (mobileContextSection.value === "rules") {
+    return [
+      { id: "create-rule", label: "新增规则" },
+      { id: "refresh-rules", label: "刷新规则" },
+    ];
+  }
+  if (mobileContextSection.value === "models") {
+    return [
+      { id: "create-model", label: "新增模型" },
+      { id: "refresh-models", label: "刷新模型列表" },
+    ];
+  }
+  return [
+    {
+      id: "resume",
+      label: "恢复会话",
+      disabled: activeLaneBusy.value || resumeThreadBlocked.value,
+    },
+    {
+      id: "new-session",
+      label: "新建会话",
+      disabled: activeLaneBusy.value || activeLaneNewSessionBlocked.value,
+    },
+  ];
+});
+
+function closeMobileContextMenu(): void {
+  mobileContextMenuOpen.value = false;
+}
+
+function closeMobileDrawer(): void {
+  mobileDrawerOpen.value = false;
+  mobileContextMenuOpen.value = false;
+  mobileDrawerSection.value = "projects";
+}
+
+function openMobileDrawer(section: MobileDrawerSection = "projects"): void {
+  if (!isMobile.value) return;
+  mobileDrawerSection.value = section;
+  mobileDrawerOpen.value = true;
+  mobileContextMenuOpen.value = false;
+}
+
+function toggleMobileDrawer(): void {
+  if (mobileDrawerOpen.value) closeMobileDrawer();
+  else openMobileDrawer();
+}
+
+function selectMobileDrawerSection(section: MobileDrawerSection): void {
+  mobileDrawerSection.value = section;
+  mobileContextMenuOpen.value = false;
+}
+
+function toggleMobileContextMenu(): void {
+  if (!isMobile.value) return;
+  mobileContextMenuOpen.value = !mobileContextMenuOpen.value;
+}
+
+function handleMobileContextAction(actionId: MobileContextActionId): void {
+  closeMobileContextMenu();
+  if (actionId === "resume") {
+    closeMobileDrawer();
+    openSessionPicker();
+    return;
+  }
+  if (actionId === "new-session") {
+    closeMobileDrawer();
+    handleLaneNewSession();
+    return;
+  }
+  if (actionId === "create-rule") {
+    mobileGlobalRuleManagerRef.value?.create();
+    return;
+  }
+  if (actionId === "refresh-rules") {
+    void mobileGlobalRuleManagerRef.value?.refresh();
+    return;
+  }
+  if (actionId === "create-model") {
+    mobileModelManagerRef.value?.create();
+    return;
+  }
+  void mobileModelManagerRef.value?.refresh();
+}
+
+function requestProjectSwitchFromMobile(projectId: string): void {
+  requestProjectSwitch(projectId);
+  if (isMobile.value) closeMobileDrawer();
+}
+
+function openProjectDialogFromDrawer(): void {
+  if (isMobile.value) closeMobileDrawer();
+  openProjectDialog();
+}
+
+function onMobileKeydown(ev: KeyboardEvent): void {
+  if (ev.key !== "Escape") return;
+  if (mobileContextMenuOpen.value) {
+    closeMobileContextMenu();
+    return;
+  }
+  if (mobileDrawerOpen.value) {
+    closeMobileDrawer();
+  }
+}
+
+watch(isMobile, (mobile) => {
+  if (mobile) return;
+  closeMobileDrawer();
+});
+
+onMounted(() => {
+  window.addEventListener("keydown", onMobileKeydown);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onMobileKeydown);
+});
+
 const {
   draggingProjectId,
   dropTargetProjectId,
@@ -227,7 +401,7 @@ const {
   projects,
   getRuntime,
   runtimeProjectInProgress,
-  requestProjectSwitch,
+  requestProjectSwitch: requestProjectSwitchFromMobile,
   reorderProjects,
   removeProject,
 });
@@ -252,6 +426,10 @@ function openTaskCreateDialogHandler(): void {
 }
 
 function openModelManager(): void {
+  if (isMobile.value) {
+    openMobileDrawer("models");
+    return;
+  }
   modelManagerOpen.value = true;
 }
 
@@ -260,6 +438,10 @@ function closeModelManager(): void {
 }
 
 function openGlobalRuleManager(): void {
+  if (isMobile.value) {
+    openMobileDrawer("rules");
+    return;
+  }
   globalRuleManagerOpen.value = true;
 }
 
@@ -304,35 +486,31 @@ const plannerConnectionStatus = computed(() => {
 <template>
   <ExecuteBlockFixture v-if="isExecuteBlockFixture" />
   <LoginGate v-else-if="!loggedIn" @logged-in="handleLoggedIn" />
-  <div v-else class="app">
+  <div v-else class="app" @click="closeMobileContextMenu">
     <header class="topbar">
+      <button
+        v-if="isMobile"
+        type="button"
+        class="mobileMenuBtn"
+        title="打开导航"
+        aria-label="打开导航"
+        :aria-expanded="mobileDrawerOpen"
+        data-testid="mobile-drawer-toggle"
+        @click.stop="toggleMobileDrawer"
+      >
+        <el-icon :size="18" aria-hidden="true">
+          <Menu />
+        </el-icon>
+      </button>
       <div class="brand">ADS</div>
       <div class="topbarMain">
-        <div v-if="isMobile" class="paneTabs" role="tablist" aria-label="切换面板">
-          <button
-            type="button"
-            class="paneTab"
-            :class="{ active: mobilePane === 'tasks' }"
-            role="tab"
-            :aria-selected="mobilePane === 'tasks'"
-            @click="mobilePane = 'tasks'"
-          >
-            项目
-          </button>
-          <button
-            type="button"
-            class="paneTab"
-            :class="{ active: mobilePane === 'chat' }"
-            role="tab"
-            :aria-selected="mobilePane === 'chat'"
-            @click="mobilePane = 'chat'"
-          >
-            对话
-          </button>
+        <div v-if="isMobile" class="mobileContextTitle" :title="mobileContextTitle">
+          {{ mobileContextTitle }}
         </div>
       </div>
       <div class="right">
         <button
+          v-if="!isMobile"
           type="button"
           class="topbarIconBtn"
           title="管理模型"
@@ -343,6 +521,7 @@ const plannerConnectionStatus = computed(() => {
           <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
         </button>
         <button
+          v-if="!isMobile"
           type="button"
           class="topbarIconBtn"
           title="全局规则"
@@ -352,16 +531,117 @@ const plannerConnectionStatus = computed(() => {
         >
           <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
         </button>
+        <button
+          v-if="isMobile"
+          type="button"
+          class="topbarIconBtn mobileContextMenuBtn"
+          title="当前模块操作"
+          aria-label="当前模块操作"
+          :aria-expanded="mobileContextMenuOpen"
+          data-testid="mobile-context-menu-toggle"
+          @click.stop="toggleMobileContextMenu"
+        >
+          <el-icon :size="18" aria-hidden="true"><MoreFilled /></el-icon>
+        </button>
         <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
+      </div>
+      <div
+        v-if="isMobile && mobileContextMenuOpen"
+        class="mobileContextMenu"
+        role="menu"
+        :aria-label="mobileContextMenuTitle"
+        data-testid="mobile-context-menu"
+        @click.stop
+      >
+        <div class="mobileContextMenuTitle">{{ mobileContextMenuTitle }}</div>
+        <button
+          v-for="action in mobileContextActions"
+          :key="action.id"
+          type="button"
+          class="mobileContextAction"
+          role="menuitem"
+          :disabled="action.disabled"
+          :data-testid="`mobile-context-action-${action.id}`"
+          @click="handleMobileContextAction(action.id)"
+        >
+          <span>{{ action.label }}</span>
+          <span v-if="action.disabled" class="mobileContextActionHint">
+            {{
+              action.id === "resume"
+                ? sessionResumeDisabledReason
+                : newSessionDisabledReason
+            }}
+          </span>
+        </button>
       </div>
     </header>
 
-    <main class="layout" :data-pane="mobilePane">
-      <aside class="left">
-        <div class="projectTree">
+    <main class="layout">
+      <div
+        v-if="isMobile && mobileDrawerOpen"
+        class="mobileDrawerBackdrop"
+        data-testid="mobile-drawer-backdrop"
+        @click="closeMobileDrawer"
+      />
+      <aside
+        v-if="!isMobile || mobileDrawerOpen"
+        class="left"
+        :class="{ mobileDrawer: isMobile }"
+        data-testid="mobile-drawer"
+      >
+        <nav v-if="isMobile" class="mobileDrawerNav" aria-label="导航模块">
+          <button
+            type="button"
+            class="mobileDrawerNavItem"
+            :class="{ active: mobileDrawerSection === 'projects' }"
+            :aria-current="mobileDrawerSection === 'projects' ? 'page' : undefined"
+            data-testid="mobile-drawer-section-projects"
+            @click="selectMobileDrawerSection('projects')"
+          >
+            <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
+            <span>项目</span>
+          </button>
+          <button
+            type="button"
+            class="mobileDrawerNavItem"
+            :class="{ active: mobileDrawerSection === 'rules' }"
+            :aria-current="mobileDrawerSection === 'rules' ? 'page' : undefined"
+            data-testid="mobile-drawer-section-rules"
+            @click="selectMobileDrawerSection('rules')"
+          >
+            <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
+            <span>Rules</span>
+          </button>
+          <button
+            type="button"
+            class="mobileDrawerNavItem"
+            :class="{ active: mobileDrawerSection === 'models' }"
+            :aria-current="mobileDrawerSection === 'models' ? 'page' : undefined"
+            data-testid="mobile-drawer-section-models"
+            @click="selectMobileDrawerSection('models')"
+          >
+            <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
+            <span>模型</span>
+          </button>
+        </nav>
+
+        <div v-show="!isMobile || mobileDrawerSection === 'projects'" class="projectTree">
           <div class="projectTreeHeader">
             <div class="projectTreeTitle">项目</div>
-            <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialog"><el-icon :size="16" aria-hidden="true" class="icon"><CirclePlus /></el-icon></button>
+            <div class="projectTreeHeaderActions">
+              <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialogFromDrawer"><el-icon :size="16" aria-hidden="true" class="icon"><CirclePlus /></el-icon></button>
+              <button
+                v-if="isMobile"
+                type="button"
+                class="drawerCloseBtn"
+                title="关闭抽屉"
+                aria-label="关闭抽屉"
+                data-testid="mobile-drawer-close"
+                @click="closeMobileDrawer"
+              >
+                <el-icon :size="17" aria-hidden="true"><Close /></el-icon>
+              </button>
+            </div>
           </div>
 
           <div v-for="p in projects" :key="projectRowKey(p)" class="projectNode" :class="{ active: p.id === activeProjectId }">
@@ -467,6 +747,21 @@ const plannerConnectionStatus = computed(() => {
               </div>
             </div>
         </div>
+        <div v-if="isMobile && mobileDrawerSection === 'rules'" class="mobileDrawerManager">
+          <GlobalRuleManager
+            ref="mobileGlobalRuleManagerRef"
+            :api="api"
+            @close="closeMobileDrawer"
+          />
+        </div>
+        <div v-if="isMobile && mobileDrawerSection === 'models'" class="mobileDrawerManager">
+          <ModelManager
+            ref="mobileModelManagerRef"
+            :api="api"
+            @close="closeMobileDrawer"
+            @changed="onModelManagerChanged"
+          />
+        </div>
       </aside>
 
       <section class="chatShell">
@@ -491,7 +786,7 @@ const plannerConnectionStatus = computed(() => {
           </span>
           <span class="laneTabSpacer" />
           <button
-            v-if="activeLaneHasResume"
+            v-if="!isMobile && activeLaneHasResume"
             class="laneTabIconBtn"
             type="button"
             title="从历史会话中选择一个恢复"
@@ -501,6 +796,7 @@ const plannerConnectionStatus = computed(() => {
             <el-icon :size="15" aria-hidden="true"><Clock /></el-icon>
           </button>
           <button
+            v-if="!isMobile"
             class="laneTabIconBtn"
             type="button"
             title="新会话"

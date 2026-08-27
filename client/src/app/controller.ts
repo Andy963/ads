@@ -70,7 +70,6 @@ export function createAppContext() {
   const models = ref<ModelConfig[]>([]);
 
   const isMobile = ref(false);
-  const mobilePane = ref<"tasks" | "chat">("tasks");
 
   const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
 
@@ -237,7 +236,6 @@ export function createAppContext() {
     api,
     models,
     isMobile,
-    mobilePane,
     activeProject,
     runtimeByProjectId,
     plannerRuntimeByProjectId,

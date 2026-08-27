@@ -1,14 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readSfc } from "./readSfc";
 
-import { createAppContext } from "../app/controller";
-
-describe("mobile pane tabs", () => {
-  it("defaults to the project pane on mobile", () => {
-    const ctx = createAppContext();
-    expect(ctx.mobilePane.value).toBe("tasks");
-  });
-
+describe("mobile navigation shell", () => {
   it("renders Advisor and Worker in one shared lane tab shell", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('const chatLanes: Array<{ id: ChatLane; label: string }> = [');
@@ -27,11 +20,35 @@ describe("mobile pane tabs", () => {
     expect(sfc).toMatch(/:aria-selected="activeChatLane === lane.id"/);
   });
 
-  it("removes the legacy worker drawer path and repeated project label from the central chat shell", async () => {
+  it("uses a mobile drawer and keeps the chat shell visible instead of pane tabs", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).not.toContain("topbarWorker");
-    expect(sfc).not.toContain("workerDrawerOverlay");
-    expect(sfc).not.toContain("workerDrawer");
-    expect(sfc).not.toContain('class="activeProjectDisplay"');
+    expect(sfc).toContain('data-testid="mobile-drawer-toggle"');
+    expect(sfc).toContain('data-testid="mobile-drawer-section-projects"');
+    expect(sfc).toContain('data-testid="mobile-drawer-section-rules"');
+    expect(sfc).toContain('data-testid="mobile-drawer-section-models"');
+    expect(sfc).toContain('data-testid="mobile-context-menu-toggle"');
+    expect(sfc).not.toContain('mobilePane === "tasks"');
+    expect(sfc).not.toContain('mobilePane === "chat"');
+    expect(sfc).not.toContain('class="paneTabs"');
+  });
+
+  it("scopes the context menu actions to the active drawer module", async () => {
+    const sfc = await readSfc("../App.vue", import.meta.url);
+    expect(sfc).toContain('id: "resume"');
+    expect(sfc).toContain('id: "new-session"');
+    expect(sfc).toContain('id: "create-rule"');
+    expect(sfc).toContain('id: "refresh-rules"');
+    expect(sfc).toContain('id: "create-model"');
+    expect(sfc).toContain('id: "refresh-models"');
+    expect(sfc).toContain("disabled: activeLaneBusy.value || resumeThreadBlocked.value");
+    expect(sfc).toContain("mobileGlobalRuleManagerRef.value?.create()");
+    expect(sfc).toContain("mobileModelManagerRef.value?.create()");
+    expect(sfc).not.toContain("打开项目");
+  });
+
+  it("hides duplicate lane session buttons on mobile", async () => {
+    const sfc = await readSfc("../App.vue", import.meta.url);
+    expect(sfc).toContain('v-if="!isMobile && activeLaneHasResume"');
+    expect(sfc).toContain('v-if="!isMobile"\n            class="laneTabIconBtn"');
   });
 });

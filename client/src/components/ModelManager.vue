@@ -324,6 +324,11 @@ async function deleteModel(model: ModelConfig): Promise<void> {
 onMounted(() => {
   void loadModelConfigs();
 });
+
+defineExpose({
+  refresh: loadModelConfigs,
+  create: () => startCreate("codex"),
+});
 </script>
 
 <template>
