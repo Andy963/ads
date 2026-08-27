@@ -7,23 +7,13 @@ if [[ "$branch" == "main" ]]; then
   exit 1
 fi
 
-blocked_gitignore_paths="$(
-  git diff --cached --name-only --diff-filter=ACMRD \
-    | grep -E '^\.gitignore$' \
-    || true
-)"
-if [[ -n "$blocked_gitignore_paths" ]]; then
-  echo "ERROR: committing changes to '.gitignore' is blocked." >&2
-  exit 1
-fi
-
 blocked_paths="$(
   git diff --cached --name-only --diff-filter=ACMR \
-    | grep -E '^docs/' \
+    | grep -E '^(docs/|\.agent/|\.ads/|deploy/)' \
     || true
 )"
 if [[ -n "$blocked_paths" ]]; then
-  echo "ERROR: committing files under 'docs/' is blocked." >&2
+  echo "ERROR: committing files under 'docs/', '.agent/', '.ads/', or 'deploy/' is blocked." >&2
   echo "Blocked paths:" >&2
   while IFS= read -r path; do
     [[ -z "$path" ]] && continue
