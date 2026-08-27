@@ -144,8 +144,7 @@ type MobileContextActionId =
   | "create-rule"
   | "refresh-rules"
   | "create-model"
-  | "refresh-models"
-  | "choose-provider";
+  | "refresh-models";
 type MobileContextAction = {
   id: MobileContextActionId;
   label: string;
@@ -253,7 +252,7 @@ const newSessionDisabledReason = computed(() => {
 });
 
 const mobileContextTitle = computed(() => {
-  if (mobileDrawerSection.value === "rules") return "Rule";
+  if (mobileDrawerSection.value === "rules") return "规则";
   if (mobileDrawerSection.value === "models") {
     const selected = MODEL_AGENT_GROUPS.find((group) => group.kind === mobileModelAgent.value);
     return selected?.label || "Provider";
@@ -262,7 +261,7 @@ const mobileContextTitle = computed(() => {
 });
 
 const mobileContextMenuTitle = computed(() => {
-  if (mobileDrawerSection.value === "rules") return "Rule 操作";
+  if (mobileDrawerSection.value === "rules") return "规则操作";
   if (mobileDrawerSection.value === "models") {
     return mobileModelAgent.value ? `${mobileContextTitle.value} 操作` : "Provider";
   }
@@ -278,11 +277,8 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
     ];
   }
   if (mobileDrawerSection.value === "models") {
-    if (!mobileModelAgent.value) {
-      return [{ id: "choose-provider", label: "切换 Provider" }];
-    }
+    if (!mobileModelAgent.value) return [];
     return [
-      { id: "choose-provider", label: "切换 Provider" },
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
     ];
@@ -391,8 +387,6 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
     void mobileModelManagerRef.value?.refresh();
     return;
   }
-  mobileModelAgent.value = null;
-  openMobileDrawer("models");
 }
 
 function requestProjectSwitchFromMobile(projectId: string): void {
@@ -669,7 +663,7 @@ const plannerConnectionStatus = computed(() => {
             @click="selectMobileDrawerSection('rules')"
           >
             <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
-            <span>Rule</span>
+            <span>规则</span>
           </button>
           <button
             type="button"

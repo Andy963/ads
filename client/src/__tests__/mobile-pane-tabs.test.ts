@@ -62,8 +62,10 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('id: "refresh-rules"');
     expect(sfc).toContain('id: "create-model"');
     expect(sfc).toContain('id: "refresh-models"');
-    expect(sfc).toContain('id: "choose-provider"');
+    expect(sfc).not.toContain('id: "choose-provider"');
     expect(sfc).not.toContain('label: "选择 Provider"');
+    expect(sfc).not.toContain('label: "切换 Provider"');
+    expect(sfc).toContain("<span>规则</span>");
     expect(sfc).toContain("disabled: activeLaneBusy.value || resumeThreadBlocked.value");
     expect(sfc).toContain("mobileGlobalRuleManagerRef.value?.create()");
     expect(sfc).toContain("mobileModelManagerRef.value?.create()");

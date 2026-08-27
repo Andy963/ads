@@ -186,7 +186,7 @@ describe("mobile navigation behavior", () => {
     await settleUi(wrapper);
     expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(3);
     expect(wrapper.findAll(".mobileDrawerNavItem")[0]?.text()).toContain("项目");
-    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("Rule");
+    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("规则");
     expect(wrapper.findAll(".mobileDrawerNavItem")[2]?.text()).toContain("Provider");
 
     await wrapper.find('[data-testid="mobile-drawer-section-rules"]').trigger("click");
@@ -214,7 +214,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="model-manager"]').attributes("data-show-header")).toBe("false");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
-    expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="mobile-context-action-create-model"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-refresh-models"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);
