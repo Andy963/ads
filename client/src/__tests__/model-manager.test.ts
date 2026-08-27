@@ -29,6 +29,25 @@ async function settle(wrapper: { vm: { $nextTick: () => Promise<void> } }): Prom
 }
 
 describe("ModelManager", () => {
+  it("can hide the desktop header for embedded mobile navigation", async () => {
+    const api = {
+      get: vi.fn().mockResolvedValue([makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude")]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any, agent: "claude", showHeader: false },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    expect(wrapper.find(".modelHeader").exists()).toBe(false);
+    expect(wrapper.find(".cliList").exists()).toBe(true);
+  });
+
   it("lists every CLI as one row and creates a codex model from that row", async () => {
     const createdModel = makeModel("model-generated", "gpt-5.2", "openai", "codex", "gpt-5.2");
     const api = {

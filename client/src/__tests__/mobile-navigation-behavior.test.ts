@@ -72,7 +72,10 @@ vi.mock("../components/LoginGate.vue", () => ({
 
 const RuleManagerStub = defineComponent({
   name: "GlobalRuleManager",
-  template: '<section data-testid="global-rule-manager" />',
+  props: {
+    showHeader: { type: Boolean, default: true },
+  },
+  template: '<section data-testid="global-rule-manager" :data-show-header="showHeader" />',
   setup(_, { expose }) {
     expose({ create: vi.fn(), refresh: vi.fn() });
     return {};
@@ -83,8 +86,10 @@ const ModelManagerStub = defineComponent({
   name: "ModelManager",
   props: {
     agent: { type: String, default: null },
+    showHeader: { type: Boolean, default: true },
   },
-  template: '<section data-testid="model-manager"><span class="selected-agent">{{ agent }}</span></section>',
+  template:
+    '<section data-testid="model-manager" :data-show-header="showHeader"><span class="selected-agent">{{ agent }}</span></section>',
   setup(_, { expose }) {
     expose({ create: vi.fn(), refresh: vi.fn() });
     return {};
@@ -164,6 +169,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".chatShell").exists()).toBe(false);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(true);
     expect(wrapper.find('[data-testid="global-rule-manager"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="global-rule-manager"]').attributes("data-show-header")).toBe("false");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
@@ -178,6 +184,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".chatShell").exists()).toBe(false);
     expect(wrapper.find('[data-testid="model-manager"]').exists()).toBe(true);
     expect(wrapper.find(".selected-agent").text()).toBe("claude");
+    expect(wrapper.find('[data-testid="model-manager"]').attributes("data-show-header")).toBe("false");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(true);

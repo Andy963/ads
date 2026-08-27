@@ -16,10 +16,16 @@ type ModelForm = {
   configJsonText: string;
 };
 
-const props = defineProps<{
-  api: ApiClient;
-  agent?: AgentKind | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    api: ApiClient;
+    agent?: AgentKind | null;
+    showHeader?: boolean;
+  }>(),
+  {
+    showHeader: true,
+  },
+);
 
 const emit = defineEmits<{
   (e: "close"): void;
@@ -331,7 +337,7 @@ defineExpose({
 
 <template>
   <section class="modelManager" data-testid="model-manager">
-    <header class="modelHeader" data-drag-handle>
+    <header v-if="showHeader" class="modelHeader" data-drag-handle>
       <div class="modelHeaderTitle">
         <div class="modelTitle">{{ managerTitle }}</div>
         <div class="modelSubtitle">每个模型只属于一个 CLI，保存后输入框下拉会立即刷新。</div>

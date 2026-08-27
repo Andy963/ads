@@ -41,9 +41,15 @@ type RuleForm = {
 
 type TabKey = "rules" | "test" | "preview" | "audit";
 
-const props = defineProps<{
-  api: ApiClient;
-}>();
+const props = withDefaults(
+  defineProps<{
+    api: ApiClient;
+    showHeader?: boolean;
+  }>(),
+  {
+    showHeader: true,
+  },
+);
 
 const emit = defineEmits<{
   (e: "close"): void;
@@ -406,7 +412,7 @@ defineExpose({
 
 <template>
   <section class="ruleManager" data-testid="global-rule-manager">
-    <header class="ruleHeader" data-drag-handle>
+    <header v-if="showHeader" class="ruleHeader" data-drag-handle>
       <div class="ruleHeaderTitle">
         <div class="ruleTitle">全局规则</div>
         <div class="ruleSubtitle">

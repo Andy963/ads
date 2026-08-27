@@ -797,6 +797,7 @@ const plannerConnectionStatus = computed(() => {
           v-if="mobileDrawerSection === 'rules'"
           ref="mobileGlobalRuleManagerRef"
           :api="api"
+          :show-header="false"
           @close="closeMobileModule"
         />
         <ModelManager
@@ -805,6 +806,7 @@ const plannerConnectionStatus = computed(() => {
           ref="mobileModelManagerRef"
           :api="api"
           :agent="mobileModelAgent"
+          :show-header="false"
           @close="closeMobileModule"
           @changed="onModelManagerChanged"
         />

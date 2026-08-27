@@ -55,6 +55,15 @@ async function settle(wrapper: { vm: { $nextTick: () => Promise<void> } }): Prom
 }
 
 describe("GlobalRuleManager", () => {
+  it("can hide the desktop header for embedded mobile navigation", async () => {
+    const api = makeApi([makeRule()]);
+    const wrapper = mount(GlobalRuleManager, { props: { api: api as never, showHeader: false } });
+    await settle(wrapper);
+
+    expect(wrapper.find(".ruleHeader").exists()).toBe(false);
+    expect(wrapper.find(".ruleTabs").exists()).toBe(true);
+  });
+
   it("renders one row per rule with its severity and enforceability", async () => {
     const api = makeApi([makeRule(), makeRule({ id: "rule-2", title: "文档位置", severity: "required", match: null })]);
     const wrapper = mount(GlobalRuleManager, { props: { api: api as never } });
