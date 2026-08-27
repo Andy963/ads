@@ -1055,12 +1055,18 @@ textarea {
   }
 
   .actionsRight {
-    flex-direction: column;
+    flex-direction: row;
+    justify-content: flex-end;
     gap: 8px;
   }
 
   .actionsRight button {
-    width: 100%;
+    width: auto;
+    min-height: 30px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    white-space: nowrap;
   }
 
   .goalConfig {
