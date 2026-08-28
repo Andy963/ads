@@ -1,6 +1,8 @@
 import type { Input, InputTextPart } from "../../../agents/protocol/types.js";
 
 import { parseSlashCommand } from "../../../codexConfig.js";
+import { discoverSkills } from "../../../skills/loader.js";
+import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 
 export const PLANNER_DRAFT_SLASH_COMMAND = "draft";
 export const PLANNER_DRAFT_SKILL_ID = "planner-slash-draft";
@@ -59,5 +61,27 @@ export function injectPlannerDraftSkill(input: Input): Input {
 
   const trimmed = String(input ?? "").trimEnd();
   return `${trimmed}\n\n${marker}`;
+}
+
+/**
+ * `/draft` is meaningless without its skill: the marker would resolve to
+ * `<skill missing="true" />` and the planner would invent its own bundle format.
+ * Callers check this first so the failure is visible instead of silent.
+ */
+export function isPlannerDraftSkillAvailable(cwd: string): boolean {
+  try {
+    const workspaceRoot = detectWorkspaceFrom(cwd || process.cwd());
+    return discoverSkills(workspaceRoot).some((skill) => skill.name.toLowerCase() === PLANNER_DRAFT_SKILL_ID);
+  } catch {
+    return false;
+  }
+}
+
+export function buildPlannerDraftSkillMissingMessage(): string {
+  return (
+    `/draft 不可用：缺少 \`${PLANNER_DRAFT_SKILL_ID}\` skill，交付格式无法保证。\n` +
+    `请确认 ADS 安装完整（应存在 .agent/skills/${PLANNER_DRAFT_SKILL_ID}/SKILL.md），` +
+    `或在 workspace 的 .agent/skills/ 下自行提供同名 skill。`
+  );
 }
 

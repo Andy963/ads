@@ -8,7 +8,13 @@ import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runAgentTurn } from "../../../agents/turn.js";
-import { injectPlannerDraftSkill, parsePlannerDraftSlashCommand } from "../planner/draftSlashCommand.js";
+import {
+  PLANNER_DRAFT_SKILL_ID,
+  buildPlannerDraftSkillMissingMessage,
+  injectPlannerDraftSkill,
+  isPlannerDraftSkillAvailable,
+  parsePlannerDraftSlashCommand,
+} from "../planner/draftSlashCommand.js";
 import type { WsPromptHandlerDeps } from "./deps.js";
 import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
 import { processScheduleOutput } from "../planner/scheduleHandler.js";
@@ -83,6 +89,20 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const shouldHandleTaskBundleDrafts = isPlannerSession || isWorkerSession;
     const isPlannerDraftCommand = isPlannerSession && Boolean(parsePlannerDraftSlashCommand(inputToSend));
     if (isPlannerDraftCommand) {
+      if (!isPlannerDraftSkillAvailable(deps.context.currentCwd)) {
+        const message = buildPlannerDraftSkillMissingMessage();
+        deps.observability.sessionLogger?.logError(message);
+        deps.observability.logger.warn(`[PlannerDraft] ${PLANNER_DRAFT_SKILL_ID} skill not found; refusing /draft`);
+        deps.history.historyStore.add(deps.context.historyKey, {
+          role: "status",
+          text: message,
+          ts: Date.now(),
+          kind: "error",
+        });
+        sendToChat({ type: "error", message });
+        cleanupAttachments();
+        return;
+      }
       inputToSend = injectPlannerDraftSkill(inputToSend);
     }
     const cleanupAfter = cleanupAttachments;

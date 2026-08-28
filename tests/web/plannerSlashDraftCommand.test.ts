@@ -414,4 +414,40 @@ describe("web/ws/planner-slash-draft-command", () => {
     assert.equal(afterSecond.length, 1);
     assert.equal(afterSecond[0]!.id, firstDraftId);
   });
+
+  it("refuses /draft instead of silently running without the skill", async () => {
+    // Without the skill the marker degrades to <skill missing="true" /> and the
+    // planner improvises its own bundle format. Fail loudly instead.
+    const metadataPath = path.join(tmpDir, "skills-metadata.yaml");
+    fs.writeFileSync(metadataPath, "mode: overlay\nskills:\n  planner-slash-draft:\n    enabled: false\n", "utf8");
+    process.env.ADS_SKILLS_METADATA_PATH = metadataPath;
+
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+    const orchestrator = new FakeOrchestrator("should never be reached");
+
+    await handlePromptMessage(
+      createPlannerPromptDeps({
+        payload: "/draft ship it",
+        requestId: "req-draft-missing-skill",
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
+
+    assert.equal(orchestrator.invokeCount, 0);
+
+    const errors = [...chatMessages, ...clientMessages].filter(
+      (message) => message && typeof message === "object" && (message as { type?: unknown }).type === "error",
+    );
+    assert.equal(errors.length > 0, true);
+    assert.match(String((errors[0] as { message?: unknown }).message ?? ""), /planner-slash-draft/);
+
+    const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
+    assert.equal(drafts.length, 0);
+  });
 });
