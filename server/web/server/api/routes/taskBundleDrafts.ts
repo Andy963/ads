@@ -234,6 +234,7 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
         attachmentStore: taskCtx.attachmentStore,
         metrics: taskCtx.metrics,
         metricReason: "planner_draft",
+        workspaceRoot: taskCtx.workspaceRoot,
         buildAttachmentUrl: (attachmentId) => deps.buildAttachmentRawUrl(url, attachmentId),
         onTaskMaterialized: ({ task }) => {
           deps.broadcastToSession(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: now });

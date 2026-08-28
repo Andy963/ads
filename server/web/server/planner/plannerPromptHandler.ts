@@ -198,6 +198,7 @@ function createPlannerDraftPassProcessor(args: {
                 attachmentStore: taskCtx.attachmentStore,
                 metrics: taskCtx.metrics,
                 metricReason: "auto_approve",
+                workspaceRoot: args.workspaceRootForDraft,
                 buildAttachmentUrl: (attachmentId) => buildWorkspaceAttachmentRawUrl(args.workspaceRootForDraft, attachmentId),
                 createTaskErrorPrefix: "Auto-approve: create task failed",
                 onTaskMaterialized: ({ task }) => {
