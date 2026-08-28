@@ -17,6 +17,12 @@ import {
 } from "../planner/draftSlashCommand.js";
 import type { WsPromptHandlerDeps } from "./deps.js";
 import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
+import {
+  enforceWriteAllowlist,
+  formatWriteGuardMessage,
+  resolvePlannerWriteRoots,
+  snapshotDirtyFiles,
+} from "../planner/specWriteGuard.js";
 import { processScheduleOutput } from "../planner/scheduleHandler.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
 import {
@@ -231,6 +237,9 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
 
+      const plannerWriteRoots = isPlannerSession ? resolvePlannerWriteRoots() : [];
+      const plannerDirtyBefore = isPlannerSession ? snapshotDirtyFiles(workspaceRoot) : null;
+
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         streaming: true,
         signal: controller.signal,
@@ -244,6 +253,28 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         runPromise: agentTurnPromise,
       });
       promptRun.ensureActive();
+
+      if (isPlannerSession) {
+        const guard = enforceWriteAllowlist({
+          workspaceRoot,
+          before: plannerDirtyBefore,
+          roots: plannerWriteRoots,
+          timestamp: Date.now(),
+        });
+        const guardMessage = formatWriteGuardMessage(guard, plannerWriteRoots);
+        if (guardMessage) {
+          deps.observability.logger.warn(
+            `[PlannerWriteGuard] reverted=${guard.reverted.length} flagged=${guard.flagged.length}`,
+          );
+          deps.history.historyStore.add(deps.context.historyKey, {
+            role: "status",
+            text: guardMessage,
+            ts: Date.now(),
+            kind: "error",
+          });
+          sendToChat({ type: "status", kind: "error", message: guardMessage, ts: Date.now() });
+        }
+      }
 
       const workspaceRootForAdr = workspaceRoot;
       const { outputToSend } = await processPromptOutputBlocks({

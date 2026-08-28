@@ -206,7 +206,9 @@ export function createWebLaneResources(args: {
     }),
     planner: createLaneRuntime({
       namespace: WEB_PLANNER_NAMESPACE,
-      sandboxMode: "read-only",
+      // The planner needs to write specs; everything it touches outside the
+      // allowlist is rolled back after each turn by specWriteGuard.
+      sandboxMode: "workspace-write",
       defaultModel: args.plannerCodexModel,
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
