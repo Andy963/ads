@@ -84,20 +84,41 @@ in a repo built on a different toolchain.
     {
       "title": "<short imperative title>",
       "prompt": "Implement the \"Stage 1 — <name>\" section of the spec.\n\nScope: only that stage. Do not start later stages.\nAcceptance: the checklist at the end of that section must pass.\nIf the spec and this prompt disagree, follow the spec and say so in your result."
+    },
+    {
+      "title": "<short imperative title>",
+      "prompt": "Implement the \"Stage 2 — <name>\" section of the spec.\n\nBefore starting, verify Stage 1 landed: <concrete check>.\nIf it did not, stop and report that instead of implementing this stage.\n\nScope: only that stage.\nAcceptance: the checklist at the end of that section must pass."
     }
   ]
 }
 ```
 
+A single-stage spec emits a single task — do not invent stages to fill the shape.
+
 The server prepends the pinned spec reference to `prompt` at approval time — do
 not write `git show` lines yourself.
 
-### Splitting work across stages
+### How many tasks
 
-One `/draft` produces one task. For a multi-stage spec, run `/draft` once per
-stage, each pointing at its own section. Later stages can note their dependency
-in the prompt (`assumes Stage 1 is merged`), but each task must be independently
-implementable from the spec text alone.
+Split by what a Worker can sensibly finish in one run, not by how many headings
+the spec has. A small spec is **one task**; splitting it just to have stages
+wastes a round trip per stage. Split only where a later step genuinely depends
+on an earlier one landing first, or where one run would be too large to review.
+
+Deliver the whole spec at once — emit every task in a single bundle, ordered.
+They run in queue order, so task N can assume task N-1 already ran.
+
+Because the queue does **not** stop on failure, every task after the first must
+open by checking its premise, and stop rather than build on a broken base:
+
+```
+Before starting, verify Stage 1 landed: <a concrete, checkable condition>.
+If it did not, stop and report that instead of implementing this stage.
+```
+
+`/draft` is the exception: it emits exactly one task, for adding or reworking a
+single task without touching the rest. Use plain output (no `/draft`) for the
+full multi-task delivery.
 
 ## How the pin works
 
@@ -115,6 +136,7 @@ whenever it suits the project's own workflow.
 - [ ] Spec file written or updated, reflecting the **final** state of discussion
 - [ ] Rejected alternatives recorded under Decisions, not silently dropped
 - [ ] Every stage has a concrete acceptance checklist
-- [ ] Exactly one `ads-tasks` block, exactly one task
+- [ ] One `ads-tasks` block; task count matches the work, not the heading count
+- [ ] Every task after the first opens by verifying its premise
 - [ ] `specRef` set, under `docs/spec/`
 - [ ] `prompt` points at a section — it does not restate the spec
