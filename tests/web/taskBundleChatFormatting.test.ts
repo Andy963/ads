@@ -67,6 +67,21 @@ describe("planner task bundle chat formatting", () => {
     assert.ok(markdown.includes("Goal:"));
   });
 
+  it("names the spec the tasks are bound to", () => {
+    const markdown = formatTaskBundleSummaryMarkdown(
+      [{ title: "Stage 1", prompt: 'Implement the "Stage 1" section of the spec.' }],
+      "docs/spec/feature.md",
+    );
+    assert.ok(markdown.includes("docs/spec/feature.md"), "summary must name the spec");
+  });
+
+  it("flags a bundle that is not bound to any spec", () => {
+    // A task saying "implement Stage 1" with no spec named is unactionable, so
+    // the absence has to be loud rather than invisible.
+    const markdown = formatTaskBundleSummaryMarkdown([{ title: "Stage 1", prompt: "Implement stage 1." }]);
+    assert.ok(markdown.includes("未绑定规格文档"), "missing specRef must be called out");
+  });
+
   it("normalizes escaped newlines in task prompts", () => {
     const raw = '{"version":1,"tasks":[{"prompt":"Goal:\\\\n- Do thing\\\\n- Do other"}]}';
     const parsed = parseTaskBundle(raw);

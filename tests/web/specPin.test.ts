@@ -56,7 +56,7 @@ describe("planner/specPin normalizeSpecRef", () => {
 });
 
 describe("planner/specPin resolveSpecPin", () => {
-  it("pins a committed spec to its blob sha", () => {
+  it("pins a spec to its blob sha", () => {
     const { root } = initRepoWithSpec("# Feature\n\nStage 1.\n");
     git(root, ["add", "."]);
     git(root, ["commit", "--quiet", "-m", "add spec"]);
@@ -72,8 +72,6 @@ describe("planner/specPin resolveSpecPin", () => {
 
   it("keeps the approved blob readable after the spec changes on disk", () => {
     const { root, specPath } = initRepoWithSpec("# Feature\n\nApproved wording.\n");
-    git(root, ["add", "."]);
-    git(root, ["commit", "--quiet", "-m", "add spec"]);
 
     const pin = resolveSpecPin({ workspaceRoot: root, specRef: "docs/spec/feature.md" });
     assert.equal(pin?.status, "pinned");
@@ -88,12 +86,35 @@ describe("planner/specPin resolveSpecPin", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("degrades to unpinned when the spec is not committed", () => {
-    const { root } = initRepoWithSpec("# Feature\n");
+  it("pins an uncommitted spec without creating a commit", () => {
+    // Requiring a commit per spec revision would litter the project history,
+    // so the pin must work straight off the working tree.
+    const { root } = initRepoWithSpec("# Feature\n\nNever committed.\n");
+    const headBefore = childProcess.spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+    const statusBefore = childProcess.spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).stdout;
+
     const pin = resolveSpecPin({ workspaceRoot: root, specRef: "docs/spec/feature.md" });
+    assert.equal(pin?.status, "pinned");
+    assert.match(pin?.blobSha ?? "", /^[0-9a-f]{40}$/);
+
+    const shown = childProcess.spawnSync("git", ["show", pin!.blobSha!], { cwd: root, encoding: "utf8" });
+    assert.equal(shown.status, 0);
+    assert.match(shown.stdout, /Never committed/);
+
+    const headAfter = childProcess.spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+    const statusAfter = childProcess.spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).stdout;
+    assert.equal(headAfter, headBefore, "pinning must not add a commit");
+    assert.equal(statusAfter, statusBefore, "pinning must not stage or modify anything");
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("degrades to unpinned when the spec file does not exist", () => {
+    const { root } = initRepoWithSpec("# Feature\n");
+    const pin = resolveSpecPin({ workspaceRoot: root, specRef: "docs/spec/missing.md" });
     assert.equal(pin?.status, "unpinned");
     assert.equal(pin?.blobSha, null);
-    assert.match(pin?.reason ?? "", /not committed/);
+    assert.match(pin?.reason ?? "", /does not exist/);
 
     fs.rmSync(root, { recursive: true, force: true });
   });

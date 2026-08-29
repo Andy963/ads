@@ -1,4 +1,5 @@
 import childProcess from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 /**
@@ -14,9 +15,9 @@ export type SpecPin = {
   /** Workspace-relative POSIX path, always under SPEC_ROOT. */
   path: string;
   status: SpecPinStatus;
-  /** Blob SHA of the file at approval time; null when it could not be resolved. */
+  /** Blob SHA of the file content at approval time; null when it could not be resolved. */
   blobSha: string | null;
-  /** HEAD commit at approval time, for human-facing provenance. */
+  /** HEAD at approval time. Provenance only — the blob is independent of it. */
   commitSha: string | null;
   /** Why the pin degraded; only set when status !== "pinned". */
   reason: string | null;
@@ -64,9 +65,18 @@ export function normalizeSpecRef(specRef: unknown): string | null {
 /**
  * Resolves the spec reference to the exact blob the approver saw.
  *
- * Degrades instead of throwing: a non-git workspace or an uncommitted spec is a
- * normal state during early drafting, and the worker can still fall back to the
- * working-tree file. The status field records which case happened.
+ * Uses `git hash-object -w`, which writes the current file content into the
+ * object database without touching the index, HEAD, or the working tree. The
+ * spec therefore needs no commit of its own — requiring one would litter the
+ * project history with spec-only commits — yet `git show <sha>` still returns
+ * exactly what was approved after the file moves on.
+ *
+ * The blob is unreachable until something references it, so an aggressive
+ * `git gc --prune` could collect it; the prompt keeps a working-tree fallback
+ * for that case.
+ *
+ * Degrades instead of throwing: a non-git workspace is a normal state, and the
+ * worker can still read the file. The status field records which case happened.
  */
 export function resolveSpecPin(args: { workspaceRoot: string; specRef: unknown }): SpecPin | null {
   const normalizedPath = normalizeSpecRef(args.specRef);
@@ -92,14 +102,24 @@ export function resolveSpecPin(args: { workspaceRoot: string; specRef: unknown }
     return { path: normalizedPath, status: "unpinned", blobSha: null, commitSha: null, reason: "workspace is not a git work tree" };
   }
 
-  const blob = runGit(workspaceRoot, ["rev-parse", `HEAD:${normalizedPath}`]);
-  if (blob.code !== 0 || !blob.stdout) {
+  if (!fs.existsSync(path.join(workspaceRoot, normalizedPath))) {
     return {
       path: normalizedPath,
       status: "unpinned",
       blobSha: null,
       commitSha: null,
-      reason: "spec file is not committed at HEAD",
+      reason: "spec file does not exist",
+    };
+  }
+
+  const blob = runGit(workspaceRoot, ["hash-object", "-w", "--", normalizedPath]);
+  if (blob.code !== 0 || !/^[0-9a-f]{40}$/.test(blob.stdout)) {
+    return {
+      path: normalizedPath,
+      status: "unpinned",
+      blobSha: null,
+      commitSha: null,
+      reason: "failed to store the spec in the git object database",
     };
   }
 

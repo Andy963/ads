@@ -173,6 +173,7 @@ export function formatTaskBundleSummaryMarkdown(
     title?: string | null;
     prompt?: string | null;
   }>,
+  specRef?: string | null,
 ): string {
   const normalized = Array.isArray(tasks)
     ? tasks
@@ -185,6 +186,11 @@ export function formatTaskBundleSummaryMarkdown(
 
   const lines: string[] = [];
   lines.push(`任务草稿已写入「任务草稿」面板（${normalized.length} 个任务）`);
+  const spec = String(specRef ?? "").trim();
+  // Without this the summary reads as "implement Stage 1" with no indication of
+  // which spec, which makes a correctly bound task look unbound.
+  lines.push("");
+  lines.push(spec ? `依据规格：\`${spec}\`` : "⚠️ 未绑定规格文档（specRef 缺失），Worker 将只能依据 prompt 文本执行");
   for (let i = 0; i < normalized.length; i += 1) {
     const task = normalized[i]!;
     const title = task.title || `Task ${i + 1}`;

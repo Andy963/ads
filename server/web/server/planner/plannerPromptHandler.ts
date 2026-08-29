@@ -98,6 +98,7 @@ function createPlannerDraftPassProcessor(args: {
     const blocks = extractTaskBundleJsonBlocks(outputText);
     const stripCandidates = new Set<string>();
     const summaryTasks: Array<{ title: string; prompt: string }> = [];
+    let summarySpecRef: string | null = null;
     const draftErrors: string[] = [];
 
     const invalidDraftBlockCount = pass.draftCommand && blocks.length !== 1;
@@ -149,6 +150,7 @@ function createPlannerDraftPassProcessor(args: {
             stripCandidates.add(block);
             for (const task of normalized.tasks ?? []) {
               summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
+              summarySpecRef = summarySpecRef ?? (String(normalized.specRef ?? "").trim() || null);
             }
             continue;
           }
@@ -248,6 +250,7 @@ function createPlannerDraftPassProcessor(args: {
         stripCandidates.add(block);
         for (const task of normalized.tasks ?? []) {
           summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
+          summarySpecRef = summarySpecRef ?? (String(normalized.specRef ?? "").trim() || null);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -267,7 +270,7 @@ function createPlannerDraftPassProcessor(args: {
 
       const parts: string[] = [];
       if (summaryTasks.length > 0) {
-        parts.push(formatTaskBundleSummaryMarkdown(summaryTasks));
+        parts.push(formatTaskBundleSummaryMarkdown(summaryTasks, summarySpecRef));
       }
       if (draftErrors.length > 0) {
         const uniqueErrors = Array.from(new Set(draftErrors));

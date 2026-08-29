@@ -99,23 +99,16 @@ stage, each pointing at its own section. Later stages can note their dependency
 in the prompt (`assumes Stage 1 is merged`), but each task must be independently
 implementable from the spec text alone.
 
-## How the pin works, and what it needs from you
+## How the pin works
 
-At approval time the server resolves `specRef` to a **git blob SHA** and pins the
-task to it. The Worker reads that exact revision, so later edits to the spec
-never silently change work that was already approved.
+At approval time the server runs `git hash-object -w` on `specRef` and pins the
+task to the resulting blob SHA. The Worker reads that exact content, so later
+edits to the spec never silently change work that was already approved.
 
-This has one consequence worth stating to the user: **the pin only works if the
-spec is committed.** If `docs/spec/<slug>.md` is uncommitted at approval time,
-the task degrades to `unpinned` — it still runs, reading the working-tree file,
-but it is exposed to drift.
-
-So after writing the spec, tell the user plainly:
-
-> Spec written to `docs/spec/<slug>.md`. Commit it before approving the task so
-> the Worker is pinned to this exact version.
-
-You cannot commit it yourself — you only have write access to `docs/spec/`.
+This writes into the git object database **without creating a commit** — the
+spec does not need to be committed, staged, or otherwise touched up before
+approval, and no spec-only commits end up in the project history. Commit it
+whenever it suits the project's own workflow.
 
 ## Checklist before you emit
 
@@ -125,4 +118,3 @@ You cannot commit it yourself — you only have write access to `docs/spec/`.
 - [ ] Exactly one `ads-tasks` block, exactly one task
 - [ ] `specRef` set, under `docs/spec/`
 - [ ] `prompt` points at a section — it does not restate the spec
-- [ ] User told to commit the spec before approving

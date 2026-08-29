@@ -27,4 +27,4 @@
 
 用 `/draft` 生成任务草稿。届时会加载完整的交付协议，按它执行。
 
-写完 spec 后提醒用户提交，因为任务批准时会把 spec pin 到 git blob；未提交的 spec 无法 pin，Worker 拿到的版本可能已经漂移。
+任务批准时系统会用 `git hash-object -w` 把 spec 当前内容写入 git 对象库并 pin 住，**不产生 commit**，所以不需要提醒用户为 spec 单独提交。
