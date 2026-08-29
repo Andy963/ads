@@ -3,10 +3,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { SPEC_ROOT } from "./specPin.js";
+import { ISSUE_ROOT, SPEC_ROOT } from "./workItem.js";
 
 /**
- * Workspace-relative roots the planner lane may write to. Anything else it
+ * Workspace-relative roots the Advisor lane may write to. Anything else it
  * touches during a turn is rolled back by enforceWriteAllowlist.
  */
 export function resolvePlannerWriteRoots(): string[] {
@@ -16,7 +16,7 @@ export function resolvePlannerWriteRoots(): string[] {
         .split(",")
         .map((entry) => entry.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, ""))
         .filter(Boolean)
-    : [SPEC_ROOT];
+    : [ISSUE_ROOT, SPEC_ROOT];
   return Array.from(new Set(roots));
 }
 

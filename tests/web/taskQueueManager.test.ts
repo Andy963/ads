@@ -95,27 +95,60 @@ describe("web/taskQueue manager", () => {
     );
   });
 
-  it("promotes queued tasks through the manager runtime wiring", () => {
+  it("promotes only tasks admitted to the current all-mode run", () => {
     const { manager, broadcasts } = createManager();
     const ctx = manager.ensureTaskContext(tmpDir);
     createdContexts.push(ctx);
-    ctx.queueRunning = true;
 
-    const task = ctx.taskStore.createTask({ title: "Queued", prompt: "Do work", model: "auto" }, Date.now(), {
+    const admittedTask = ctx.taskStore.createTask({ title: "Admitted", prompt: "Do work", model: "auto" }, Date.now(), {
+      status: "queued",
+    });
+    ctx.runController.setModeAll([admittedTask.id]);
+    ctx.queueRunning = true;
+    const lateTask = ctx.taskStore.createTask({ title: "Late", prompt: "Do later", model: "auto" }, Date.now(), {
       status: "queued",
     });
 
     manager.promoteQueuedTasksToPending(ctx);
 
-    assert.equal(ctx.taskStore.getTask(task.id)?.status, "pending");
+    assert.equal(ctx.taskStore.getTask(admittedTask.id)?.status, "pending");
+    assert.equal(ctx.taskStore.getTask(lateTask.id)?.status, "queued");
     assert.ok(
       broadcasts.some(
         (payload) =>
           typeof payload === "object" &&
           payload !== null &&
           (payload as { event?: string; data?: { id?: string } }).event === "task:updated" &&
-          (payload as { data?: { id?: string } }).data?.id === task.id,
+          (payload as { data?: { id?: string } }).data?.id === admittedTask.id,
       ),
     );
+  });
+
+  it("handles a large admission snapshot without exceeding sqlite parameter limits", () => {
+    const { manager } = createManager();
+    const ctx = manager.ensureTaskContext(tmpDir);
+    createdContexts.push(ctx);
+
+    const admittedIds: string[] = [];
+    for (let index = 0; index < 901; index += 1) {
+      const task = ctx.taskStore.createTask(
+        { title: `Admitted ${index}`, prompt: "Do work", model: "auto" },
+        Date.now(),
+        { status: "queued" },
+      );
+      admittedIds.push(task.id);
+    }
+    const lateTask = ctx.taskStore.createTask(
+      { title: "Late", prompt: "Do later", model: "auto" },
+      Date.now(),
+      { status: "queued" },
+    );
+    ctx.runController.setModeAll(admittedIds);
+    ctx.queueRunning = true;
+
+    manager.promoteQueuedTasksToPending(ctx);
+
+    assert.equal(ctx.taskStore.listTasks({ status: "queued", limit: 10 }).some((task) => task.id === lateTask.id), true);
+    assert.equal(ctx.taskStore.listTasks({ status: "pending", limit: 1000 }).length, 901);
   });
 });

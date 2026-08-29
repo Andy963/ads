@@ -72,12 +72,33 @@ function createMetrics(): TaskQueueMetrics {
   };
 }
 
+const workItemKey = "route-work-item";
+const issueRef = `docs/issue/${workItemKey}`;
+const specRef = `docs/spec/${workItemKey}`;
+const workspaceRoots: string[] = [];
+let routeTestTmpDir = "";
+
+function createWorkspaceRoot(name: string): string {
+  const workspaceRoot = fs.mkdtempSync(path.join(routeTestTmpDir, `${name}-`));
+  fs.mkdirSync(path.join(workspaceRoot, issueRef), { recursive: true });
+  fs.mkdirSync(path.join(workspaceRoot, specRef), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, issueRef, "README.md"), "# Issue\n", "utf8");
+  fs.writeFileSync(path.join(workspaceRoot, specRef, "requirements.md"), "# Requirements\n", "utf8");
+  workspaceRoots.push(workspaceRoot);
+  return workspaceRoot;
+}
+
+function makeBundle(requestId: string, tasks: Array<Record<string, unknown>>): Record<string, unknown> {
+  return { version: 1, requestId, issueRef, specRef, tasks };
+}
+
 describe("web/api/task-bundle-drafts", () => {
   let tmpDir: string;
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-task-bundle-drafts-"));
+    routeTestTmpDir = tmpDir;
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     resetStateDatabaseForTests();
   });
@@ -85,6 +106,9 @@ describe("web/api/task-bundle-drafts", () => {
   afterEach(() => {
     resetStateDatabaseForTests();
     process.env = { ...originalEnv };
+    for (const workspaceRoot of workspaceRoots.splice(0)) {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -94,14 +118,14 @@ describe("web/api/task-bundle-drafts", () => {
 
   it("lists, updates, deletes drafts in a workspace scope", async () => {
     const auth = { userId: "u-1", username: "u" };
-    const workspaceRoot = "/tmp/ws-1";
+    const workspaceRoot = createWorkspaceRoot("ws-1");
 
     const inserted = upsertTaskBundleDraft({
       authUserId: auth.userId,
       workspaceRoot,
       sourceChatSessionId: "planner",
       sourceHistoryKey: "hk",
-      bundle: { version: 1, requestId: "r1", tasks: [{ prompt: "p1" }] },
+      bundle: makeBundle("r1", [{ prompt: "p1" }]) as any,
       now: 10,
     });
 
@@ -153,7 +177,7 @@ describe("web/api/task-bundle-drafts", () => {
     assert.equal(listed.length, 1);
     assert.equal(listed[0]!.id, inserted.id);
 
-    const patchReq = createReq("PATCH", { bundle: { version: 1, requestId: "r1", tasks: [{ prompt: "p2" }, { prompt: "p3" }] } });
+    const patchReq = createReq("PATCH", { bundle: makeBundle("r1", [{ prompt: "p2" }, { prompt: "p3" }]) });
     const patchRes = createRes();
     const patchUrl = new URL(`http://localhost/api/task-bundle-drafts/${inserted.id}?workspace=${encodeURIComponent(workspaceRoot)}`);
     assert.equal(
@@ -269,23 +293,19 @@ describe("web/api/task-bundle-drafts", () => {
   });
 
 
-  it("approves drafts without a spec idempotently and can run the queue", async () => {
+  it("approves paired drafts idempotently and can run the queue", async () => {
     const auth = { userId: "u-1", username: "u" };
-    const workspaceRoot = "/tmp/ws-2";
+    const workspaceRoot = createWorkspaceRoot("ws-2");
 
     const inserted = upsertTaskBundleDraft({
       authUserId: auth.userId,
       workspaceRoot,
       sourceChatSessionId: "planner",
       sourceHistoryKey: "hk",
-      bundle: {
-        version: 1,
-        requestId: "r2",
-        tasks: [
-          { externalId: "a", prompt: "p1", attachments: ["att-1"] },
-          { externalId: "b", prompt: "p2" },
-        ],
-      },
+      bundle: makeBundle("r2", [
+        { externalId: "a", prompt: "p1", attachments: ["att-1"] },
+        { externalId: "b", prompt: "p2" },
+      ]) as any,
       now: 10,
     });
 
@@ -334,6 +354,9 @@ describe("web/api/task-bundle-drafts", () => {
             deleteTask(id: string) {
               tasksById.delete(id);
             },
+            listTasks() {
+              return Array.from(tasksById.values());
+            },
           },
           attachmentStore: {
             assignAttachmentsToTask(taskId: string, ids: string[]) {
@@ -354,10 +377,13 @@ describe("web/api/task-bundle-drafts", () => {
             },
           },
           taskQueue: { resume: () => void (resumeCalled += 1) },
-          queueRunning: false,
+          queueRunning: true,
           dequeueInProgress: false,
           metrics: createMetrics(),
-          runController: { setModeAll: () => void (setModeCalled += 1) },
+          runController: {
+            setModeAll: () => void (setModeCalled += 1),
+            getMode: () => "all",
+          },
           getStatusOrchestrator() {
             return {} as any;
           },
@@ -396,6 +422,7 @@ describe("web/api/task-bundle-drafts", () => {
     assert.equal(tasksById.size, 2);
     assert.equal(broadcasted.length, 2);
     assert.equal(resumeCalled, 0);
+    assert.equal(promoteCalled, 0, "approval without runQueue must not promote tasks in an active all run");
 
     const approveAgainReq = createReq("POST", { runQueue: false });
     const approveAgainRes = createRes();
@@ -412,6 +439,38 @@ describe("web/api/task-bundle-drafts", () => {
     assert.deepEqual(second.createdTaskIds, first.createdTaskIds);
     assert.equal(tasksById.size, 2);
 
+    const invalidDraft = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk-invalid",
+      bundle: {
+        version: 1,
+        requestId: "r2-invalid",
+        issueRef,
+        specRef: "docs/spec/other-work-item",
+        tasks: [{ prompt: "must not run" }],
+      },
+      now: 15,
+    });
+    const invalidApproveRes = createRes();
+    const invalidApproveUrl = new URL(
+      `http://localhost/api/task-bundle-drafts/${invalidDraft.id}/approve?workspace=${encodeURIComponent(workspaceRoot)}`,
+    );
+    await handleTaskBundleDraftRoutes(
+      {
+        req: createReq("POST", { runQueue: false }) as any,
+        res: invalidApproveRes as any,
+        url: invalidApproveUrl,
+        pathname: `/api/task-bundle-drafts/${invalidDraft.id}/approve`,
+        auth,
+      } as any,
+      deps as any,
+    );
+    assert.equal(invalidApproveRes.statusCode, 400);
+    assert.match(parseJson<{ error: string }>(invalidApproveRes.body).error, /same work-item key/);
+    assert.equal(tasksById.size, 2);
+
     const approveRunReq = createReq("POST", { runQueue: true });
     const approveRunRes = createRes();
     assert.equal(
@@ -425,17 +484,47 @@ describe("web/api/task-bundle-drafts", () => {
     assert.equal(setModeCalled, 0, "already approved drafts should not re-run queue side effects");
     assert.equal(resumeCalled, 0, "already approved drafts should not re-run queue side effects");
     assert.equal(promoteCalled, 0, "already approved drafts should not re-run queue side effects");
+
+    const runnableDraft = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk-run",
+      bundle: makeBundle("r2-run", [{ prompt: "p3" }]) as any,
+      now: 20,
+    });
+    const runnableApproveRes = createRes();
+    const runnableApproveUrl = new URL(
+      `http://localhost/api/task-bundle-drafts/${runnableDraft.id}/approve?workspace=${encodeURIComponent(workspaceRoot)}`,
+    );
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        {
+          req: createReq("POST", { runQueue: true }) as any,
+          res: runnableApproveRes as any,
+          url: runnableApproveUrl,
+          pathname: `/api/task-bundle-drafts/${runnableDraft.id}/approve`,
+          auth,
+        } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(runnableApproveRes.statusCode, 200);
+    assert.equal(setModeCalled, 1);
+    assert.equal(resumeCalled, 1);
+    assert.equal(promoteCalled, 1);
   });
 
   it("approves drafts without acquiring the workspace lock", async () => {
     const auth = { userId: "u-1", username: "u" };
-    const workspaceRoot = "/tmp/ws-lock-free";
+    const workspaceRoot = createWorkspaceRoot("ws-lock-free");
     const inserted = upsertTaskBundleDraft({
       authUserId: auth.userId,
       workspaceRoot,
       sourceChatSessionId: "planner",
       sourceHistoryKey: "hk",
-      bundle: { version: 1, requestId: "r-lock", tasks: [{ prompt: "p1" }] },
+      bundle: makeBundle("r-lock", [{ prompt: "p1" }]) as any,
       now: 10,
     });
 
@@ -522,13 +611,13 @@ describe("web/api/task-bundle-drafts", () => {
 
   it("returns 200 when approval loses the race and draft is already approved", async () => {
     const auth = { userId: "u-1", username: "u" };
-    const workspaceRoot = "/tmp/ws-approve-race";
+    const workspaceRoot = createWorkspaceRoot("ws-approve-race");
     const inserted = upsertTaskBundleDraft({
       authUserId: auth.userId,
       workspaceRoot,
       sourceChatSessionId: "planner",
       sourceHistoryKey: "hk",
-      bundle: { version: 1, requestId: "r-race", tasks: [{ prompt: "p1" }] },
+      bundle: makeBundle("r-race", [{ prompt: "p1" }]) as any,
       now: 10,
     });
 

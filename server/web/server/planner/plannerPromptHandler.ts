@@ -22,6 +22,7 @@ import type { TaskQueueContext } from "../taskQueue/manager.js";
 import { startQueueInAllMode } from "../../taskQueue/control.js";
 import { upsertTaskNotificationBinding } from "../../taskNotifications/store.js";
 import { processScheduleOutput } from "./scheduleHandler.js";
+import { validateWorkItemRefs } from "./workItem.js";
 
 type Orchestrator = ReturnType<SessionManager["getOrCreate"]>;
 
@@ -98,6 +99,7 @@ function createPlannerDraftPassProcessor(args: {
     const blocks = extractTaskBundleJsonBlocks(outputText);
     const stripCandidates = new Set<string>();
     const summaryTasks: Array<{ title: string; prompt: string }> = [];
+    let summaryIssueRef: string | null = null;
     let summarySpecRef: string | null = null;
     const draftErrors: string[] = [];
 
@@ -116,7 +118,10 @@ function createPlannerDraftPassProcessor(args: {
     for (const block of invalidDraftBlockCount ? [] : blocks) {
       const parsedBundle = parseTaskBundle(block);
       if (!parsedBundle.ok) {
+        const error = `Task bundle rejected: ${parsedBundle.error}`;
+        draftErrors.push(error);
         args.logger.warn(`[PlannerDraft] invalid bundle: ${parsedBundle.error}`);
+        stripCandidates.add(block);
         continue;
       }
       try {
@@ -137,6 +142,24 @@ function createPlannerDraftPassProcessor(args: {
           normalized = { ...normalized, autoApprove: undefined };
         }
 
+        const workItemValidation = validateWorkItemRefs({
+          workspaceRoot: args.workspaceRootForDraft,
+          issueRef: normalized.issueRef,
+          specRef: normalized.specRef,
+        });
+        if (!workItemValidation.ok) {
+          const error = `Task bundle rejected: ${workItemValidation.error}`;
+          draftErrors.push(error);
+          args.logger.warn(`[PlannerDraft] ${error}`);
+          stripCandidates.add(block);
+          continue;
+        }
+        normalized = {
+          ...normalized,
+          issueRef: workItemValidation.refs.issueRef,
+          specRef: workItemValidation.refs.specRef,
+        };
+
         const requestId = String(normalized.requestId ?? "").trim();
 
         if (!originalRequestId && requestId) {
@@ -150,6 +173,7 @@ function createPlannerDraftPassProcessor(args: {
             stripCandidates.add(block);
             for (const task of normalized.tasks ?? []) {
               summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
+              summaryIssueRef = summaryIssueRef ?? (String(normalized.issueRef ?? "").trim() || null);
               summarySpecRef = summarySpecRef ?? (String(normalized.specRef ?? "").trim() || null);
             }
             continue;
@@ -250,6 +274,7 @@ function createPlannerDraftPassProcessor(args: {
         stripCandidates.add(block);
         for (const task of normalized.tasks ?? []) {
           summaryTasks.push({ title: task.title ?? "", prompt: task.prompt ?? "" });
+          summaryIssueRef = summaryIssueRef ?? (String(normalized.issueRef ?? "").trim() || null);
           summarySpecRef = summarySpecRef ?? (String(normalized.specRef ?? "").trim() || null);
         }
       } catch (error) {
@@ -260,7 +285,7 @@ function createPlannerDraftPassProcessor(args: {
 
     let outputForChat = outputText;
     const shouldSummarize =
-      stripCandidates.size > 0 || (pass.draftCommand && (summaryTasks.length > 0 || draftErrors.length > 0));
+      stripCandidates.size > 0 || summaryTasks.length > 0 || draftErrors.length > 0;
     if (shouldSummarize) {
       const stripped =
         stripCandidates.size > 0
@@ -270,7 +295,7 @@ function createPlannerDraftPassProcessor(args: {
 
       const parts: string[] = [];
       if (summaryTasks.length > 0) {
-        parts.push(formatTaskBundleSummaryMarkdown(summaryTasks, summarySpecRef));
+        parts.push(formatTaskBundleSummaryMarkdown(summaryTasks, { issueRef: summaryIssueRef, specRef: summarySpecRef }));
       }
       if (draftErrors.length > 0) {
         const uniqueErrors = Array.from(new Set(draftErrors));

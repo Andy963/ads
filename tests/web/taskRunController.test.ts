@@ -10,6 +10,7 @@ import { TaskQueue } from "../../server/tasks/queue.js";
 import type { TaskExecutor } from "../../server/tasks/executor.js";
 import type { Task } from "../../server/tasks/types.js";
 import { TaskRunController } from "../../server/web/taskRunController.js";
+import { startQueueInAllMode } from "../../server/web/taskQueue/control.js";
 
 async function waitFor(fn: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -176,15 +177,16 @@ describe("web/taskRunController", () => {
     void queue.start();
 
     const controller = new TaskRunController();
-    const ctx = { taskStore: store, taskQueue: queue, queueRunning: false, queueAutoStart: false };
+    const ctx = { taskStore: store, taskQueue: queue, runController: controller, queueRunning: false, queueAutoStart: false };
 
     const promoteQueuedTasksToPending = (): void => {
       if (!ctx.queueRunning) return;
       if (ctx.taskStore.getActiveTaskId()) return;
       const now = Date.now();
+      const admittedTaskIds = controller.getAllModeAdmissionTaskIds();
       let promoted = 0;
       while (true) {
-        const next = ctx.taskStore.dequeueNextQueuedTask(now);
+        const next = ctx.taskStore.dequeueNextQueuedTask(now, admittedTaskIds ?? undefined);
         if (!next) break;
         promoted += 1;
       }
@@ -210,9 +212,7 @@ describe("web/taskRunController", () => {
     const t1 = store.createTask({ title: "T1", prompt: "P1" }, Date.now(), { status: "queued" });
     const t2 = store.createTask({ title: "T2", prompt: "P2" }, Date.now(), { status: "queued" });
 
-    controller.setModeAll();
-    queue.resume();
-    ctx.queueRunning = true;
+    startQueueInAllMode(ctx);
     promoteQueuedTasksToPending();
 
     await waitFor(() => store.getTask(t1.id)?.status === "completed" && store.getTask(t2.id)?.status === "completed" && ctx.queueRunning === false);
@@ -222,6 +222,59 @@ describe("web/taskRunController", () => {
     queue.notifyNewTask();
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(store.getTask(t3.id)?.status, "queued");
+  });
+
+  it("should leave tasks added during an all-mode run queued", async () => {
+    const store = new TaskStore();
+    let releaseFirstTask: (() => void) | null = null;
+    let firstTaskStarted: (() => void) | null = null;
+    const firstTaskStartedPromise = new Promise<void>((resolve) => {
+      firstTaskStarted = resolve;
+    });
+    const firstTaskReleasePromise = new Promise<void>((resolve) => {
+      releaseFirstTask = resolve;
+    });
+    const executor: TaskExecutor = {
+      async execute(task: Task): Promise<{ resultSummary?: string }> {
+        if (task.id === firstTask.id) {
+          firstTaskStarted?.();
+          await firstTaskReleasePromise;
+        }
+        return { resultSummary: `done:${task.id}` };
+      },
+    };
+    const queue = new TaskQueue({ store, executor });
+    queue.pause("manual");
+    void queue.start();
+
+    const controller = new TaskRunController();
+    const ctx = { taskStore: store, taskQueue: queue, runController: controller, queueRunning: false, queueAutoStart: false };
+    const promoteQueuedTasksToPending = (): void => {
+      if (!ctx.queueRunning || ctx.taskStore.getActiveTaskId()) return;
+      const admittedTaskIds = controller.getAllModeAdmissionTaskIds();
+      let promoted = 0;
+      while (ctx.taskStore.dequeueNextQueuedTask(Date.now(), admittedTaskIds ?? undefined)) {
+        promoted += 1;
+      }
+      if (promoted > 0) ctx.taskQueue.notifyNewTask();
+    };
+
+    queue.on("task:completed", ({ task }) => {
+      if (controller.onTaskTerminal(ctx, task.id)) return;
+      promoteQueuedTasksToPending();
+      controller.maybePauseAfterDrain(ctx);
+    });
+
+    const firstTask = store.createTask({ title: "First", prompt: "P1" }, Date.now(), { status: "queued" });
+    startQueueInAllMode(ctx);
+    promoteQueuedTasksToPending();
+    await firstTaskStartedPromise;
+
+    const lateTask = store.createTask({ title: "Late", prompt: "P2" }, Date.now(), { status: "queued" });
+    releaseFirstTask?.();
+
+    await waitFor(() => store.getTask(firstTask.id)?.status === "completed" && ctx.queueRunning === false);
+    assert.equal(store.getTask(lateTask.id)?.status, "queued");
   });
 
   it("should not keep the queue armed when running all-mode with no tasks", async () => {
@@ -236,11 +289,9 @@ describe("web/taskRunController", () => {
     void queue.start();
 
     const controller = new TaskRunController();
-    const ctx = { taskStore: store, taskQueue: queue, queueRunning: false, queueAutoStart: false };
+    const ctx = { taskStore: store, taskQueue: queue, runController: controller, queueRunning: false, queueAutoStart: false };
 
-    controller.setModeAll();
-    queue.resume();
-    ctx.queueRunning = true;
+    startQueueInAllMode(ctx);
 
     const paused = controller.maybePauseAfterDrain(ctx);
     assert.equal(paused, true);

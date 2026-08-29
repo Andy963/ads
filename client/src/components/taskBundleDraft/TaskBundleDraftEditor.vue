@@ -19,8 +19,9 @@ const props = defineProps<{
   draftTitle: (draft: TaskBundleDraft) => string;
 }>();
 
-// The prompt only points at a spec section, so without the spec named here the
-// reviewer is approving a task they cannot actually evaluate.
+// The prompt is intentionally short, so the reviewer must see the paired
+// directories before approving the task.
+const issueRef = computed(() => String(props.selectedDraft.bundle?.issueRef ?? "").trim());
 const specRef = computed(() => String(props.selectedDraft.bundle?.specRef ?? "").trim());
 
 const emit = defineEmits<{
@@ -43,6 +44,9 @@ const emit = defineEmits<{
           <div class="editorTitle">{{ draftTitle(selectedDraft) }}</div>
           <div class="editorMeta">
             <span>{{ taskStatusText }}</span>
+            <span v-if="issueRef" class="editorSpecRef" :title="issueRef" data-testid="task-bundle-draft-issue-ref">
+              📝 {{ issueRef }}
+            </span>
             <span v-if="specRef" class="editorSpecRef" :title="specRef" data-testid="task-bundle-draft-spec-ref">
               📄 {{ specRef }}
             </span>
@@ -67,8 +71,8 @@ const emit = defineEmits<{
       </div>
 
       <div v-if="editingError" class="modalError" data-testid="task-bundle-draft-error">{{ editingError }}</div>
-      <div v-if="!specRef" class="modalWarning" data-testid="task-bundle-draft-missing-spec">
-        ⚠️ 此草稿未绑定规格文档（specRef 缺失）。Worker 只能依据下方 prompt 文本执行。
+      <div v-if="!issueRef || !specRef" class="modalWarning" data-testid="task-bundle-draft-missing-spec">
+        ⚠️ 此草稿未绑定成对的 issue/spec 目录。补齐引用后才能批准交给 Worker 执行。
       </div>
       <div v-if="selectedDraft.degradeReason" class="modalWarning" data-testid="task-bundle-draft-degrade-reason">
         ⚠️ 此草稿已从自动入队降级：{{ selectedDraft.degradeReason }}

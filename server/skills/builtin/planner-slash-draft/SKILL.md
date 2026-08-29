@@ -1,39 +1,85 @@
 ---
 name: planner-slash-draft
-description: Delivery protocol for the Advisor `/draft` command. Use when turning a design discussion into a spec document under docs/spec/ plus exactly one ads-tasks bundle that references it.
+description: Delivery protocol for the Advisor `/draft` command. Use when turning a design discussion into one paired issue/spec work-item directory plus exactly one ads-tasks bundle for the Worker.
 ---
 
 # Planner `/draft` Delivery Protocol
 
 You are the **Advisor**. `/draft` is the moment a discussion becomes a delivery.
-The discussion may have branched, reversed, or explored dead ends. The task you
-emit must reflect only the **final agreed state**, and that state must live in a
-file — not in the conversation.
+The discussion may have branched, reversed, or explored dead ends. The work item
+you emit must reflect only the **final agreed state**, and that state must live
+in files — not only in the conversation.
 
 ## Non-negotiable rules
 
-1. **Write the spec first, then the bundle.** Never emit a bundle for a spec that
-   does not exist on disk.
+1. **Write the issue and spec first, then the bundle.** Never emit a bundle for
+   directories that do not exist on disk.
 2. **Exactly one** ` ```ads-tasks ` fenced block per `/draft`, containing
    **exactly one** task. More than one block, or more than one task, is rejected
    by the server and the draft is discarded.
-3. **`specRef` is mandatory** and must be a workspace-relative path under
-   `docs/spec/`. Anything else (absolute paths, `..`, other directories) is
-   rejected by the server.
-4. **Never restate spec content inside `prompt`.** The prompt points at a
-   section; the spec holds the detail. Duplicating them guarantees they diverge.
+3. **`issueRef` and `specRef` are mandatory paired directory references.** Both
+   must be workspace-relative direct children of their roots:
+   `docs/issue/<work-item-key>/` and `docs/spec/<work-item-key>/`. The keys must
+   be identical. File references such as `docs/spec/foo.md`, absolute paths,
+   `..`, and mismatched keys are rejected by the server.
+4. **Never restate issue or spec content inside `prompt`.** The directories hold
+   the detail. Duplicating it in the prompt guarantees that the handoff can
+   diverge.
 
-## Step 1 — write or update the spec
+## Step 1 — write or update the paired work item
 
-Path: `docs/spec/<slug>.md`, where `<slug>` is kebab-case and stable across
-revisions of the same feature. **Update the existing file when the topic already
-has one** — a spec is a living document, not an append-only log. Rewrite the
-sections the discussion changed and delete what was rejected.
+Choose one kebab-case `<work-item-key>` that is stable across revisions of the
+same feature. Use exactly the same key in both directory names:
 
-You have write access to `docs/spec/` only. Use your normal file tools. Read
-anything in the project to inform the spec; write nothing outside `docs/spec/`.
+- Issue record: `docs/issue/<work-item-key>/README.md`
+- Delivery spec: `docs/spec/<work-item-key>/requirements.md`
 
-Recommended structure:
+**Update the existing paired directories when the topic already has one** — do
+not create a second key for a revision. The issue record captures the final
+Advisor discussion, while the spec turns that decision into an executable
+Worker contract.
+
+You have write access to `docs/issue/` and `docs/spec/` only. Use your normal
+file tools. Read anything in the project to inform the work item; write nothing
+outside those two roots.
+
+Recommended issue structure:
+
+```markdown
+# <Issue title>
+
+## Goal
+What problem the user sees and what outcome is required.
+
+## Context
+Current behaviour, evidence, and the relevant modules.
+
+## Decisions
+Final decisions and rejected alternatives, each with its reason.
+
+## Constraints
+Safety, compatibility, and scope boundaries.
+```
+
+Recommended spec structure:
+
+```text
+docs/spec/<work-item-key>/
+├── requirements.md
+├── design.md
+└── implementation.md
+```
+
+`requirements.md` must contain the Worker-facing goal and concrete acceptance
+criteria. `design.md` records interfaces, invariants, and tradeoffs.
+`implementation.md` records ordered implementation stages and verification.
+Every file may be shorter for a small change, but `requirements.md` is always
+required.
+
+The spec should be self-contained. A Worker with **no access to this
+conversation** must be able to implement it from the directory alone.
+
+Use this shape inside `requirements.md`:
 
 ```markdown
 # <Feature name>
@@ -41,31 +87,13 @@ Recommended structure:
 ## Goal
 What changes for the user, in two or three sentences.
 
-## Context
-Current behaviour, and the files or modules involved.
-
-## Decisions
-Choices made during discussion, each with its reason. Record rejected
-alternatives here too — it stops them from being re-proposed later.
-
-## Stages
-### Stage 1 — <name>
-What to change, in which files, and why.
-
-**Acceptance**
+## Acceptance
 - [ ] Concrete, checkable condition
 - [ ] Tests or commands that must pass
 
-### Stage 2 — <name>
-...
-
 ## Out of scope
-What this spec deliberately does not cover.
+What this work item deliberately does not cover.
 ```
-
-Write the spec so a Worker with **no access to this conversation** can implement
-it. That is the actual bar: if a stage only makes sense to someone who watched
-the discussion, it is underspecified.
 
 ### Acceptance commands
 
@@ -79,27 +107,27 @@ in a repo built on a different toolchain.
 ```ads-tasks
 {
   "version": 1,
-  "specRef": "docs/spec/<slug>.md",
+  "issueRef": "docs/issue/<work-item-key>",
+  "specRef": "docs/spec/<work-item-key>",
   "tasks": [
     {
       "title": "<short imperative title>",
-      "prompt": "Implement the spec in full, working through its stages in order.\n\nAcceptance: every checklist in the spec must pass.\nIf the spec and this prompt disagree, follow the spec and say so in your result."
+      "prompt": "Implement the delivery spec in full. Read the paired issue and spec directories first, then complete every acceptance criterion. Report verification commands and results."
     }
   ]
 }
 ```
 
-The prompt stays this short on purpose: the spec holds the detail, and repeating
-it here only creates a second copy that can drift.
-
-The server prepends the pinned spec reference to `prompt` at approval time — do
-not write `git show` lines yourself.
+The prompt stays this short on purpose: the issue/spec directories hold the
+detail, and repeating it here only creates a second copy that can drift. The
+server adds immutable snapshots of both directories when the user approves the
+draft.
 
 ### How many tasks
 
-**One spec, one task.** The spec already carries every detail, and the Worker
-can work through its stages in a single run. Splitting a spec into a task per
-stage costs a round trip each time and buys nothing.
+**One work item, one spec, one task.** The spec already carries every detail, and
+the Worker can work through its stages in a single run. Splitting a spec into a
+task per stage costs a round trip each time and buys nothing.
 
 If that task fails, it is re-run as a whole — do not design around partial
 completion, and do not add "verify the previous stage landed" preambles.
@@ -108,22 +136,25 @@ Split into more than one task only when the spec genuinely covers separate
 pieces of work that were discussed together but ship independently. Sequential
 stages of one feature are not that case.
 
-## How the pin works
+## How the snapshot works
 
-At approval time the server runs `git hash-object -w` on `specRef` and pins the
-task to the resulting blob SHA. The Worker reads that exact content, so later
-edits to the spec never silently change work that was already approved.
+At approval time the server runs `git hash-object -w` on every regular file in
+both referenced directories and pins the task to those blob SHAs. The Worker
+reads those exact contents, so later edits to the issue or spec never silently
+change work that was already approved.
 
 This writes into the git object database **without creating a commit** — the
-spec does not need to be committed, staged, or otherwise touched up before
-approval, and no spec-only commits end up in the project history. Commit it
+directories do not need to be committed, staged, or otherwise touched up before
+approval, and no spec-only commits end up in the project history. Commit them
 whenever it suits the project's own workflow.
 
 ## Checklist before you emit
 
-- [ ] Spec file written or updated, reflecting the **final** state of discussion
+- [ ] Paired issue and spec directories written or updated, using one stable key
+- [ ] Issue contains `README.md`; spec contains `requirements.md`
+- [ ] Issue record reflects the **final** state of Advisor discussion
 - [ ] Rejected alternatives recorded under Decisions, not silently dropped
-- [ ] Every stage has a concrete acceptance checklist
+- [ ] Spec has concrete acceptance criteria and verification commands
 - [ ] One `ads-tasks` block, normally one task covering the whole spec
-- [ ] `specRef` set, under `docs/spec/`
-- [ ] `prompt` points at the spec — it does not restate its contents
+- [ ] `issueRef` and `specRef` use the same key and point at directories
+- [ ] `prompt` points at the paired directories — it does not restate their contents

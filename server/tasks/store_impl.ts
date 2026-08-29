@@ -52,8 +52,8 @@ export class TaskStore {
     return this.taskOps.getActiveTaskId();
   }
 
-  dequeueNextQueuedTask(now = Date.now()): Task | null {
-    return this.taskOps.dequeueNextQueuedTask(now);
+  dequeueNextQueuedTask(now = Date.now(), allowedTaskIds?: ReadonlySet<string>): Task | null {
+    return this.taskOps.dequeueNextQueuedTask(now, allowedTaskIds);
   }
 
   getTask(id: string): Task | null {

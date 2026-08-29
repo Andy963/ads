@@ -154,11 +154,18 @@ function createPlannerPromptDeps(args: {
 describe("web/ws/planner-slash-draft-command", () => {
   let tmpDir: string;
   let workspaceRoot: string;
+  const workItemKey = "draft-work-item";
+  const issueRef = `docs/issue/${workItemKey}`;
+  const specRef = `docs/spec/${workItemKey}`;
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-planner-slash-draft-"));
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-planner-slash-draft-workspace-"));
+    fs.mkdirSync(path.join(workspaceRoot, issueRef), { recursive: true });
+    fs.mkdirSync(path.join(workspaceRoot, specRef), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, issueRef, "README.md"), "# Issue\n", "utf8");
+    fs.writeFileSync(path.join(workspaceRoot, specRef, "requirements.md"), "# Requirements\n", "utf8");
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     resetStateDatabaseForTests();
   });
@@ -178,7 +185,7 @@ describe("web/ws/planner-slash-draft-command", () => {
     }
   });
 
-  it("hard-routes /draft to planner-slash-draft and persists exactly one draft task", async () => {
+  it("hard-routes /draft to planner-slash-draft and persists one paired draft task", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
@@ -187,7 +194,7 @@ describe("web/ws/planner-slash-draft-command", () => {
       [
         "Draft summary.",
         "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
+        JSON.stringify({ version: 1, issueRef, specRef, tasks: [{ title: "Task 1", prompt: "Do it", inheritContext: true }] }),
         "```",
       ].join("\n"),
     );
@@ -219,10 +226,12 @@ describe("web/ws/planner-slash-draft-command", () => {
     assert.equal(drafts[0]!.requestId, "req:req-draft-1");
     assert.ok(drafts[0]!.bundle);
     assert.equal(drafts[0]!.bundle!.tasks.length, 1);
+    assert.equal(drafts[0]!.bundle!.issueRef, issueRef);
+    assert.equal(drafts[0]!.bundle!.specRef, specRef);
     assert.equal(drafts[0]!.bundle!.autoApprove, undefined);
   });
 
-  it("persists a draft without a spec or recovery pass", async () => {
+  it("rejects a draft without the paired issue/spec directories", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
@@ -251,13 +260,13 @@ describe("web/ws/planner-slash-draft-command", () => {
     assert.equal(orchestrator.invokeCount, 1);
 
     const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
-    assert.equal(drafts.length, 1);
-    assert.equal(drafts[0]!.requestId, "req:req-draft-2");
-    assert.ok(drafts[0]!.bundle);
-    assert.equal(drafts[0]!.bundle!.tasks.length, 1);
+    assert.equal(drafts.length, 0);
+    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+    assert.ok(result);
+    assert.match(String((result as { output?: unknown }).output ?? ""), /issueRef must be/);
   });
 
-  it("persists task bundles emitted from the worker lane without a spec", async () => {
+  it("rejects task bundles emitted from the worker lane without a paired work item", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
@@ -285,9 +294,10 @@ describe("web/ws/planner-slash-draft-command", () => {
 
     assert.equal(orchestrator.invokeCount, 1);
     const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
-    assert.equal(drafts.length, 1);
-    assert.equal(drafts[0]!.bundle?.tasks[0]?.title, "Worker Task");
-    assert.equal(drafts[0]!.bundle?.specRef, undefined);
+    assert.equal(drafts.length, 0);
+    const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+    assert.ok(result);
+    assert.match(String((result as { output?: unknown }).output ?? ""), /issueRef must be/);
   });
 
   it("rejects /draft output when tasks.length is not 1", async () => {
@@ -299,7 +309,12 @@ describe("web/ws/planner-slash-draft-command", () => {
       [
         "Draft summary.",
         "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it"},{"title":"Task 2","prompt":"Do it too"}]}',
+        JSON.stringify({
+          version: 1,
+          issueRef,
+          specRef,
+          tasks: [{ title: "Task 1", prompt: "Do it" }, { title: "Task 2", prompt: "Do it too" }],
+        }),
         "```",
       ].join("\n"),
     );
@@ -336,7 +351,7 @@ describe("web/ws/planner-slash-draft-command", () => {
       [
         "Draft summary.",
         "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
+        JSON.stringify({ version: 1, issueRef, specRef, tasks: [{ title: "Task 1", prompt: "Do it", inheritContext: true }] }),
         "```",
         "```ads-schedule",
         '{"name":"should-not-run"}',
@@ -386,7 +401,7 @@ describe("web/ws/planner-slash-draft-command", () => {
       [
         "Draft summary.",
         "```ads-tasks",
-        '{"version":1,"tasks":[{"title":"Task 1","prompt":"Do it","inheritContext":true}]}',
+        JSON.stringify({ version: 1, issueRef, specRef, tasks: [{ title: "Task 1", prompt: "Do it", inheritContext: true }] }),
         "```",
       ].join("\n"),
     );

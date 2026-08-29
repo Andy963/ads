@@ -5,7 +5,7 @@ import { startQueueInAllMode } from "../../../taskQueue/control.js";
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
 import { sendJson } from "../../http.js";
 
-import { taskBundleSchema, type TaskBundle } from "../../planner/taskBundle.js";
+import { normalizeTaskBundleText, taskBundleSchema, type TaskBundle } from "../../planner/taskBundle.js";
 import {
   approveTaskBundleDraft,
   deleteTaskBundleDraft,
@@ -16,6 +16,7 @@ import {
 } from "../../planner/taskBundleDraftStore.js";
 import { upsertTaskNotificationBinding } from "../../../taskNotifications/store.js";
 import { materializeTaskBundleTasks } from "../../planner/taskBundleApprover.js";
+import { validateWorkItemRefs } from "../../planner/workItem.js";
 import { readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./shared.js";
 
 const updateTaskBundleDraftSchema = z.object({ bundle: z.unknown() }).passthrough();
@@ -56,13 +57,10 @@ function maybePromoteApprovedDraftTasks(args: {
   ownedApproval: boolean;
 }): void {
   const shouldStartQueue = args.ownedApproval && args.runQueue;
-  const shouldPromoteQueuedTasks = shouldStartQueue || (args.taskCtx.queueRunning && args.taskCtx.runController.getMode() === "all");
-  if (shouldStartQueue) {
-    startQueueInAllMode(args.taskCtx);
-  }
-  if (!shouldPromoteQueuedTasks) {
+  if (!shouldStartQueue) {
     return;
   }
+  startQueueInAllMode(args.taskCtx);
   try {
     args.deps.promoteQueuedTasksToPending(args.taskCtx);
   } catch (error) {
@@ -117,6 +115,16 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       sendJson(res, 400, { error: "Invalid task bundle schema" });
       return true;
     }
+    const normalizedBundle = normalizeTaskBundleText(bundleParsed.data);
+    const workItemValidation = validateWorkItemRefs({
+      workspaceRoot: taskCtx.workspaceRoot,
+      issueRef: normalizedBundle.issueRef,
+      specRef: normalizedBundle.specRef,
+    });
+    if (!workItemValidation.ok) {
+      sendJson(res, 400, { error: workItemValidation.error });
+      return true;
+    }
 
     const existing = getDraftForWorkspaceOrSendError({
       authUserId,
@@ -132,7 +140,15 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       return true;
     }
 
-    const updated = updateTaskBundleDraft({ authUserId, draftId, bundle: bundleParsed.data });
+    const updated = updateTaskBundleDraft({
+      authUserId,
+      draftId,
+      bundle: {
+        ...normalizedBundle,
+        issueRef: workItemValidation.refs.issueRef,
+        specRef: workItemValidation.refs.specRef,
+      },
+    });
     if (!updated) {
       sendJson(res, 400, { error: "Failed to update draft" });
       return true;
@@ -211,6 +227,16 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
     }
     if (!existing.bundle) {
       sendJson(res, 400, { error: "Draft bundle is not available" });
+      return true;
+    }
+
+    const workItemValidation = validateWorkItemRefs({
+      workspaceRoot: taskCtx.workspaceRoot,
+      issueRef: existing.bundle.issueRef,
+      specRef: existing.bundle.specRef,
+    });
+    if (!workItemValidation.ok) {
+      sendJson(res, 400, { error: workItemValidation.error });
       return true;
     }
 

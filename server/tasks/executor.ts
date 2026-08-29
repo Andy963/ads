@@ -151,7 +151,10 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         });
 
         const prompt = [
-          "你正在执行一个任务队列中的任务。请完成任务并输出结果。",
+          "You are the Worker executing an approved task from the task queue.",
+          "Execute the approved work item; do not invent a second plan or split one spec into extra tasks.",
+          "If the task description contains a Work item handoff, read the pinned Advisor issue record and delivery spec before editing.",
+          "The delivery spec is authoritative. Complete every acceptance criterion and report verification commands and results.",
           "",
           patchHint ? patchHint : "",
           patchHint ? "" : "",

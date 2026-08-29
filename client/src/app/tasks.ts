@@ -579,7 +579,14 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
    * reaches the same abort registry.
    */
   const interruptRuntime = (rt: ProjectRuntime): void => {
-    if (rt.ws?.interrupt() === true) return;
+    const activeTask = rt.tasks.value.find((task) => task.status === "planning" || task.status === "running");
+    if (activeTask) {
+      void cancelTask(activeTask.id);
+      return;
+    }
+
+    const ws = rt.ws as { interrupt?: () => boolean } | null;
+    if (ws?.interrupt?.() === true) return;
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
     const params = new URLSearchParams({

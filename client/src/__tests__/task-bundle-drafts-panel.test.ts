@@ -12,7 +12,13 @@ describe("TaskBundleDraftPanel", () => {
       workspaceRoot: "/tmp/ws",
       requestId: "r1",
       status: "draft",
-      bundle: { version: 1, requestId: "r1", specRef: "docs/spec/r1", tasks: [{ prompt: "p1" }] },
+      bundle: {
+        version: 1,
+        requestId: "r1",
+        issueRef: "docs/issue/r1",
+        specRef: "docs/spec/r1",
+        tasks: [{ prompt: "p1" }],
+      },
       createdAt: 1,
       updatedAt: 2,
       approvedAt: null,
@@ -34,6 +40,7 @@ describe("TaskBundleDraftPanel", () => {
 
     expect(wrapper.find('[data-testid="task-bundle-draft-task-panel"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="task-bundle-draft-spec-ref"]').text()).toContain("docs/spec/r1");
+    expect(wrapper.get('[data-testid="task-bundle-draft-issue-ref"]').text()).toContain("docs/issue/r1");
     expect(wrapper.find('[data-testid="task-bundle-draft-missing-spec"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="task-bundle-draft-tab-requirements"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="task-bundle-draft-tab-design"]').exists()).toBe(false);
@@ -72,7 +79,7 @@ describe("TaskBundleDraftPanel", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="task-bundle-draft-spec-ref"]').exists()).toBe(false);
-    expect(wrapper.get('[data-testid="task-bundle-draft-missing-spec"]').text()).toContain("未绑定规格文档");
+    expect(wrapper.get('[data-testid="task-bundle-draft-missing-spec"]').text()).toContain("未绑定成对的 issue/spec 目录");
   });
 
   it("shows the bound spec filename in the draft list", async () => {
@@ -83,7 +90,13 @@ describe("TaskBundleDraftPanel", () => {
       workspaceRoot: "/tmp/ws",
       requestId: "r-spec",
       status: "draft",
-      bundle: { version: 1, requestId: "r-spec", specRef: "docs/spec/telegram-watchdog.md", tasks: [{ prompt: "p1" }] },
+      bundle: {
+        version: 1,
+        requestId: "r-spec",
+        issueRef: "docs/issue/telegram-watchdog",
+        specRef: "docs/spec/telegram-watchdog",
+        tasks: [{ prompt: "p1" }],
+      },
       createdAt: 1,
       updatedAt: 2,
       approvedAt: null,
@@ -97,8 +110,8 @@ describe("TaskBundleDraftPanel", () => {
     await wrapper.vm.$nextTick();
 
     const row = wrapper.get('[data-testid="task-bundle-draft-row-spec"]');
-    expect(row.text()).toContain("telegram-watchdog.md");
-    expect(row.attributes("title")).toBe("docs/spec/telegram-watchdog.md");
+    expect(row.text()).toContain("telegram-watchdog");
+    expect(row.attributes("title")).toBe("docs/issue/telegram-watchdog ↔ docs/spec/telegram-watchdog");
   });
 
   it("edits a single task and normalizes multi-task drafts on save", async () => {
@@ -112,6 +125,8 @@ describe("TaskBundleDraftPanel", () => {
       bundle: {
         version: 1,
         requestId: "r1",
+        issueRef: "docs/issue/r1",
+        specRef: "docs/spec/r1",
         tasks: [
           { title: "Task A", prompt: "p1" },
           { title: "Task B", prompt: "p2" },
@@ -145,7 +160,13 @@ describe("TaskBundleDraftPanel", () => {
 
     expect(wrapper.emitted("update")?.[0]?.[0]).toEqual({
       id: "d-1",
-      bundle: { version: 1, requestId: "r1", tasks: [{ title: "Task A", prompt: "p1 updated" }] },
+      bundle: {
+        version: 1,
+        requestId: "r1",
+        issueRef: "docs/issue/r1",
+        specRef: "docs/spec/r1",
+        tasks: [{ title: "Task A", prompt: "p1 updated" }],
+      },
     });
     expect((wrapper.get('[data-testid="task-bundle-draft-approve"]').element as HTMLButtonElement).disabled).toBe(false);
   });

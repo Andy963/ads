@@ -81,6 +81,9 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
           sendJson(res, 409, { error: `Task not cancellable in status: ${existing.status}` });
           return true;
         }
+        if (taskCtx.queueRunning && taskCtx.runController.getMode() === "all") {
+          pauseQueueInManualMode(taskCtx, "cancel");
+        }
         taskCtx.taskQueue.cancel(taskId);
         const task = taskCtx.taskStore.getTask(taskId);
         if (task) {

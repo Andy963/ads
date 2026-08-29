@@ -6,9 +6,12 @@ import type { ModelConfig, Task, TaskDetail, TaskQueueStatus } from "../api/type
 
 type GetImpl = (url: string) => Promise<unknown>;
 type PostImpl = (url: string, body: unknown) => Promise<unknown>;
+type PatchImpl = (url: string, body: unknown) => Promise<unknown>;
 
 let getImpl: GetImpl | null = null;
 let postImpl: PostImpl | null = null;
+let patchImpl: PatchImpl | null = null;
+let wsInterruptCalls = 0;
 
 vi.mock("../api/client", () => {
   class ApiClient {
@@ -24,8 +27,9 @@ vi.mock("../api/client", () => {
       return (await postImpl(url, body)) as T;
     }
 
-    async patch<T>(): Promise<T> {
-      throw new Error("not implemented");
+    async patch<T>(url: string, body: unknown): Promise<T> {
+      if (!patchImpl) throw new Error("patchImpl not set");
+      return (await patchImpl(url, body)) as T;
     }
 
     async delete<T>(): Promise<T> {
@@ -45,6 +49,11 @@ vi.mock("../api/ws", () => {
     onMessage?: (msg: unknown) => void;
 
     constructor(_: { sessionId: string; chatSessionId?: string }) {}
+
+    interrupt(): boolean {
+      wsInterruptCalls += 1;
+      return true;
+    }
 
     connect(): void {
       queueMicrotask(() => this.onOpen?.());
@@ -118,11 +127,15 @@ describe("App.runSingleTask", () => {
     postImpl = async () => {
       throw new Error("postImpl not overridden");
     };
+    patchImpl = null;
+    wsInterruptCalls = 0;
   });
 
   afterEach(() => {
     getImpl = null;
     postImpl = null;
+    patchImpl = null;
+    wsInterruptCalls = 0;
     vi.clearAllMocks();
   });
 
@@ -185,5 +198,29 @@ describe("App.runSingleTask", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("cancels the active worker task instead of sending a chat interrupt", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    patchImpl = async (url: string, body: unknown) => {
+      calls.push({ url, body });
+      return { success: true, task: makeTask({ id: "t-1", status: "cancelled" }) };
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    wrapper.vm.tasks = [makeTask({ id: "t-1", status: "running" })];
+    await settleUi(wrapper);
+
+    wrapper.vm.interruptActive();
+    await settleUi(wrapper);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("/api/tasks/t-1");
+    expect(calls[0]?.body).toEqual({ action: "cancel" });
+    expect(wsInterruptCalls).toBe(0);
+    wrapper.unmount();
   });
 });

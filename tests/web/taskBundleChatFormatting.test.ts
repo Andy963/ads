@@ -70,16 +70,17 @@ describe("planner task bundle chat formatting", () => {
   it("names the spec the tasks are bound to", () => {
     const markdown = formatTaskBundleSummaryMarkdown(
       [{ title: "Stage 1", prompt: 'Implement the "Stage 1" section of the spec.' }],
-      "docs/spec/feature.md",
+      { issueRef: "docs/issue/feature", specRef: "docs/spec/feature" },
     );
-    assert.ok(markdown.includes("docs/spec/feature.md"), "summary must name the spec");
+    assert.ok(markdown.includes("docs/issue/feature"), "summary must name the issue");
+    assert.ok(markdown.includes("docs/spec/feature"), "summary must name the spec");
   });
 
-  it("flags a bundle that is not bound to any spec", () => {
-    // A task saying "implement Stage 1" with no spec named is unactionable, so
-    // the absence has to be loud rather than invisible.
+  it("flags a bundle that is not bound to a paired work item", () => {
+    // A task saying "implement Stage 1" with no paired directories is
+    // unactionable, so the absence has to be loud rather than invisible.
     const markdown = formatTaskBundleSummaryMarkdown([{ title: "Stage 1", prompt: "Implement stage 1." }]);
-    assert.ok(markdown.includes("未绑定规格文档"), "missing specRef must be called out");
+    assert.ok(markdown.includes("未绑定成对的 issue/spec 目录"), "missing work-item refs must be called out");
   });
 
   it("normalizes escaped newlines in task prompts", () => {

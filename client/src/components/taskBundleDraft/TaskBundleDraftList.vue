@@ -3,13 +3,16 @@ import { Delete, Refresh } from "@element-plus/icons-vue";
 
 import type { TaskBundleDraft } from "../../api/types";
 
+function issueRefOf(draft: TaskBundleDraft): string {
+  return String(draft.bundle?.issueRef ?? "").trim();
+}
+
 function specRefOf(draft: TaskBundleDraft): string {
   return String(draft.bundle?.specRef ?? "").trim();
 }
 
-/** Filename alone — the row has no space for the full path, which the title carries. */
-function specRefLabel(draft: TaskBundleDraft): string {
-  const ref = specRefOf(draft);
+function workItemKeyOf(draft: TaskBundleDraft): string {
+  const ref = issueRefOf(draft) || specRefOf(draft);
   return ref ? (ref.split("/").pop() ?? ref) : "";
 }
 
@@ -74,14 +77,14 @@ const emit = defineEmits<{
           <div class="draftRowLeft">
             <span class="draftRowTitle">{{ draftTitle(draft) }}</span>
             <span
-              v-if="specRefOf(draft)"
+              v-if="issueRefOf(draft) && specRefOf(draft)"
               class="draftRowSpec"
-              :title="specRefOf(draft)"
+              :title="`${issueRefOf(draft)} ↔ ${specRefOf(draft)}`"
               data-testid="task-bundle-draft-row-spec"
             >
-              📄 {{ specRefLabel(draft) }}
+              📁 {{ workItemKeyOf(draft) }}
             </span>
-            <span v-else class="draftRowNoSpec" title="未绑定规格文档，Worker 只能依据 prompt 执行">⚠️ 无规格</span>
+            <span v-else class="draftRowNoSpec" title="缺少成对的 issue/spec 目录引用">⚠️ issue/spec 不完整</span>
             <span v-if="draft.degradeReason" class="draftRowDegraded" :title="draft.degradeReason">⚠️ 已降级</span>
           </div>
           <div class="draftRowRight">

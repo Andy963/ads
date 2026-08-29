@@ -28,6 +28,33 @@ export class ApiClient {
     return text.slice(0, maxLen) + "...";
   }
 
+  private parseErrorMessage(raw: string): string | null {
+    const trimmed = String(raw ?? "").trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (typeof parsed === "string") {
+        return parsed.trim() || null;
+      }
+      if (parsed && typeof parsed === "object") {
+        const record = parsed as { error?: unknown; message?: unknown };
+        for (const value of [record.error, record.message]) {
+          if (typeof value === "string" && value.trim()) {
+            return value.trim();
+          }
+        }
+      }
+    } catch {
+      // Non-JSON responses, such as an intermediary HTML error page, are not user-facing API messages.
+    }
+    return null;
+  }
+
+  private httpErrorMessage(res: Response): string {
+    const statusText = String(res.statusText ?? "").trim();
+    return statusText ? `HTTP ${res.status} ${statusText}` : `HTTP ${res.status}`;
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -41,7 +68,7 @@ export class ApiClient {
     });
     if (!res.ok) {
       const text = await this.readResponseText(res);
-      const message = text.trim() || `HTTP ${res.status}`;
+      const message = this.parseErrorMessage(text) ?? this.httpErrorMessage(res);
       throw new Error(message, { cause: { method, path, url, status: res.status } });
     }
     const text = await this.readResponseText(res);

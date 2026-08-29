@@ -20,6 +20,7 @@ export const taskBundleSchema = z
     runQueue: z.boolean().optional(),
     insertPosition: z.enum(["front", "back"]).optional(),
     autoApprove: z.boolean().optional(),
+    issueRef: z.string().min(1).optional(),
     specRef: z.string().optional(),
     defaults: z.object({}).passthrough().optional(),
     tasks: z.array(taskBundleTaskSchema).min(1),
@@ -65,6 +66,13 @@ function normalizeEscapedNewlines(text: string): string {
 
 export function normalizeTaskBundleText(bundle: TaskBundle): TaskBundle {
   let changed = false;
+  const issueRefRaw = bundle.issueRef;
+  const issueRef = typeof issueRefRaw === "string" ? issueRefRaw.trim() : issueRefRaw;
+  const specRefRaw = bundle.specRef;
+  const specRef = typeof specRefRaw === "string" ? specRefRaw.trim() : specRefRaw;
+  if (issueRef !== issueRefRaw || specRef !== specRefRaw) {
+    changed = true;
+  }
   const tasks = bundle.tasks.map((task) => {
     const promptRaw = task.prompt;
     const prompt = normalizeEscapedNewlines(promptRaw);
@@ -85,7 +93,12 @@ export function normalizeTaskBundleText(bundle: TaskBundle): TaskBundle {
     return bundle;
   }
 
-  return { ...bundle, tasks };
+  return {
+    ...bundle,
+    ...(issueRef ? { issueRef } : { issueRef: undefined }),
+    ...(specRef ? { specRef } : { specRef: undefined }),
+    tasks,
+  };
 }
 
 function normalizeRequestId(value: unknown): string | null {
@@ -173,7 +186,10 @@ export function formatTaskBundleSummaryMarkdown(
     title?: string | null;
     prompt?: string | null;
   }>,
-  specRef?: string | null,
+  refs?: {
+    issueRef?: string | null;
+    specRef?: string | null;
+  } | null,
 ): string {
   const normalized = Array.isArray(tasks)
     ? tasks
@@ -186,11 +202,14 @@ export function formatTaskBundleSummaryMarkdown(
 
   const lines: string[] = [];
   lines.push(`任务草稿已写入「任务草稿」面板（${normalized.length} 个任务）`);
-  const spec = String(specRef ?? "").trim();
-  // Without this the summary reads as "implement Stage 1" with no indication of
-  // which spec, which makes a correctly bound task look unbound.
+  const issue = String(refs?.issueRef ?? "").trim();
+  const spec = String(refs?.specRef ?? "").trim();
   lines.push("");
-  lines.push(spec ? `依据规格：\`${spec}\`` : "⚠️ 未绑定规格文档（specRef 缺失），Worker 将只能依据 prompt 文本执行");
+  if (issue && spec) {
+    lines.push(`工作项：\`${issue}\` ↔ \`${spec}\``);
+  } else {
+    lines.push("⚠️ 未绑定成对的 issue/spec 目录，Worker 任务不会被批准执行");
+  }
   for (let i = 0; i < normalized.length; i += 1) {
     const task = normalized[i]!;
     const title = task.title || `Task ${i + 1}`;

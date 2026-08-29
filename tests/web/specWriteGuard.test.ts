@@ -142,9 +142,9 @@ describe("planner/specWriteGuard", () => {
     fs.rmSync(plain, { recursive: true, force: true });
   });
 
-  it("resolves write roots from env, defaulting to docs/spec", () => {
+  it("resolves write roots from env, defaulting to the paired work-item roots", () => {
     delete process.env.ADS_PLANNER_WRITE_ROOTS;
-    assert.deepEqual(resolvePlannerWriteRoots(), ["docs/spec"]);
+    assert.deepEqual(resolvePlannerWriteRoots(), ["docs/issue", "docs/spec"]);
 
     process.env.ADS_PLANNER_WRITE_ROOTS = "docs/spec, notes/ ,./plans";
     assert.deepEqual(resolvePlannerWriteRoots(), ["docs/spec", "notes", "plans"]);

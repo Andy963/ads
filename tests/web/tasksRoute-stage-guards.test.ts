@@ -202,6 +202,67 @@ describe("web/api stage guards", () => {
     assert.deepEqual(parseJson(res.body), { error: "Task not cancellable in status: pending" });
   });
 
+  it("pauses an all-mode queue before cancelling its active task", async () => {
+    const calls: string[] = [];
+    const task = { id: "t-1", title: "Task", status: "running" } as Task;
+    const req = createReq("PATCH", { action: "cancel" });
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/t-1?workspace=/tmp/ws");
+
+    const taskCtx = {
+      sessionId: "s-1",
+      queueRunning: true,
+      runController: {
+        getMode() {
+          return "all";
+        },
+        setModeManual() {
+          calls.push("setModeManual");
+        },
+      },
+      taskQueue: {
+        pause(reason: string) {
+          calls.push(`pause:${reason}`);
+        },
+        cancel() {
+          calls.push("cancel");
+          task.status = "cancelled";
+        },
+      },
+      taskStore: {
+        getTask() {
+          return task;
+        },
+      },
+    };
+
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as any,
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as any;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+
+    const handled = await handleTaskByIdRoute(
+      { req: req as any, res: res as any, url, pathname: url.pathname, auth: { userId: "u", username: "u" } },
+      deps,
+    );
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(calls, ["setModeManual", "pause:cancel", "cancel"]);
+    assert.equal(taskCtx.queueRunning, false);
+    assert.equal(task.status, "cancelled");
+  });
+
   it("resume action promotes queued tasks before resuming the queue", async () => {
     let promoteCalls = 0;
     let resumeCalls = 0;
@@ -235,6 +296,9 @@ describe("web/api stage guards", () => {
       taskStore: {
         getTask() {
           return { id: "t-1", status: "queued" } as Task;
+        },
+        listTasks() {
+          return [];
         },
       },
     };
@@ -274,4 +338,3 @@ describe("web/api stage guards", () => {
     assert.equal(maybePauseCalls, 1);
   });
 });
-

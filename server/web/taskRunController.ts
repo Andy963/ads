@@ -48,19 +48,33 @@ function toFrontQueueOrder(store: TaskStore, now: number): number {
 export class TaskRunController {
   private mode: TaskRunMode = "manual";
   private singleTaskId: string | null = null;
+  private allModeAdmissionTaskIds: Set<string> | null = null;
 
   getMode(): TaskRunMode {
     return this.mode;
   }
 
-  setModeAll(): void {
+  setModeAll(admittedTaskIds?: Iterable<string>): void {
     this.mode = "all";
     this.singleTaskId = null;
+    this.allModeAdmissionTaskIds = admittedTaskIds === undefined ? null : new Set(
+      Array.from(admittedTaskIds)
+        .map((id) => String(id ?? "").trim())
+        .filter(Boolean),
+    );
   }
 
   setModeManual(): void {
     this.mode = "manual";
     this.singleTaskId = null;
+    this.allModeAdmissionTaskIds = null;
+  }
+
+  getAllModeAdmissionTaskIds(): ReadonlySet<string> | null {
+    if (this.mode !== "all") {
+      return new Set<string>();
+    }
+    return this.allModeAdmissionTaskIds;
   }
 
   /**
@@ -86,7 +100,12 @@ export class TaskRunController {
     if (ctx.taskStore.listTasks({ status: "pending", limit: 1 }).length > 0) {
       return false;
     }
-    if (ctx.taskStore.listTasks({ status: "queued", limit: 1 }).length > 0) {
+    const admissionTaskIds = this.allModeAdmissionTaskIds;
+    if (
+      admissionTaskIds === null
+        ? ctx.taskStore.listTasks({ status: "queued", limit: 1 }).length > 0
+        : Array.from(admissionTaskIds).some((id) => ctx.taskStore.getTask(id)?.status === "queued")
+    ) {
       return false;
     }
 

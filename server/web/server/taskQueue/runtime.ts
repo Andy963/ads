@@ -99,9 +99,10 @@ export function promoteQueuedTasksToPending(ctx: TaskQueueContext, args: {
     }
 
     const now = Date.now();
+    const admittedTaskIds = ctx.runController.getAllModeAdmissionTaskIds();
     let promoted = 0;
     while (true) {
-      const dequeued = ctx.taskStore.dequeueNextQueuedTask(now);
+      const dequeued = ctx.taskStore.dequeueNextQueuedTask(now, admittedTaskIds ?? undefined);
       if (!dequeued) {
         break;
       }

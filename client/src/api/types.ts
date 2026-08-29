@@ -217,6 +217,7 @@ export type TaskBundleTask = {
 
 export type TaskBundle = {
   version: 1;
+  issueRef?: string;
   requestId?: string;
   runQueue?: boolean;
   autoApprove?: boolean;

@@ -4,7 +4,13 @@ import type { TaskBundle, TaskBundleTask } from "./taskBundle.js";
 import type { Attachment } from "../../../attachments/types.js";
 import type { CreateTaskInput, Task } from "../../../tasks/types.js";
 import { recordTaskQueueMetric, type TaskQueueMetrics } from "../taskQueue/manager.js";
-import { buildSpecPromptPreamble, resolveSpecPin, toSpecPinMetadata, type SpecPin } from "./specPin.js";
+import {
+  buildWorkItemPromptPreamble,
+  resolveWorkItemPin,
+  toWorkItemPinMetadata,
+  validateWorkItemRefs,
+  type WorkItemPin,
+} from "./workItem.js";
 
 type TaskStoreLike = {
   createTask: (input: CreateTaskInput, now: number, options: { status: "queued" }) => Task;
@@ -98,7 +104,7 @@ export function normalizeCreateTaskInput(
   index: number,
   createdBy?: string,
   _bundle?: Pick<TaskBundle, "defaults"> | null,
-  specPin?: SpecPin | null,
+  workItemPin?: WorkItemPin | null,
 ): {
   id: string;
   title?: string;
@@ -111,7 +117,7 @@ export function normalizeCreateTaskInput(
   attachments?: string[];
 } & CreateTaskInput {
   const basePrompt = String(task.prompt ?? "");
-  const prompt = specPin ? `${buildSpecPromptPreamble(specPin)}\n\n${basePrompt}` : basePrompt;
+  const prompt = workItemPin ? `${buildWorkItemPromptPreamble(workItemPin)}\n\n${basePrompt}` : basePrompt;
   const id = deriveStableTaskId(originId, task, index);
   const title = normalizeTaskTitle(task);
   const model = String(task.model ?? "").trim();
@@ -128,7 +134,7 @@ export function normalizeCreateTaskInput(
     priority,
     inheritContext,
     maxRetries,
-    modelParams: specPin ? { specPin: toSpecPinMetadata(specPin) } : undefined,
+    modelParams: workItemPin ? { specPin: toWorkItemPinMetadata(workItemPin) } : undefined,
     executionIsolation: "default",
     createdBy: createdBy ?? "planner_draft",
     attachments: attachments.length ? attachments : undefined,
@@ -137,7 +143,7 @@ export function normalizeCreateTaskInput(
 
 export function materializeTaskBundleTasks(args: {
   draftId: string;
-  bundleDefaults?: Pick<TaskBundle, "defaults" | "specRef"> | null;
+  bundleDefaults?: Pick<TaskBundle, "defaults" | "issueRef" | "specRef"> | null;
   tasks: TaskBundleTask[];
   now: number;
   taskStore: TaskStoreLike;
@@ -157,15 +163,31 @@ export function materializeTaskBundleTasks(args: {
   const taskTitles: string[] = [];
   const createdTasks: MaterializedDraftTask[] = [];
 
-  // Resolve once per bundle: every task in it shares the same spec snapshot, and
-  // shelling out to git per task would let the pin drift mid-approval.
-  const specPin = args.bundleDefaults?.specRef
-    ? resolveSpecPin({ workspaceRoot: args.workspaceRoot ?? "", specRef: args.bundleDefaults.specRef })
-    : null;
+  const issueRef = args.bundleDefaults?.issueRef;
+  const specRef = args.bundleDefaults?.specRef;
+  const workItemValidation = validateWorkItemRefs({
+    workspaceRoot: args.workspaceRoot,
+    issueRef,
+    specRef,
+  });
+  if (!workItemValidation.ok) {
+    throw new Error(workItemValidation.error);
+  }
+
+  // Resolve once per bundle: every task in it shares the same directory
+  // snapshot, and shelling out to git per task would let the pin drift mid-approval.
+  const workItemPin = resolveWorkItemPin({
+    workspaceRoot: args.workspaceRoot ?? "",
+    issueRef: workItemValidation.refs.issueRef,
+    specRef: workItemValidation.refs.specRef,
+  });
+  if (!workItemPin) {
+    throw new Error("Failed to resolve the issue/spec directories for this work item");
+  }
 
   for (let i = 0; i < args.tasks.length; i++) {
     const specTask = args.tasks[i]!;
-    const input = normalizeCreateTaskInput(args.draftId, specTask, i, undefined, args.bundleDefaults, specPin);
+    const input = normalizeCreateTaskInput(args.draftId, specTask, i, undefined, args.bundleDefaults, workItemPin);
     const attachmentIds = (input.attachments ?? []).slice();
     const { attachments: _attachments, ...createInput } = input;
 

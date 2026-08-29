@@ -1,5 +1,8 @@
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   buildWorkspaceAttachmentRawUrl,
@@ -19,15 +22,40 @@ function createMetrics() {
   };
 }
 
+const workspaceRoots: string[] = [];
+
+function createWorkItemWorkspace(): {
+  workspaceRoot: string;
+  bundleDefaults: { issueRef: string; specRef: string };
+} {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-task-approver-"));
+  const issueRef = "docs/issue/feature";
+  const specRef = "docs/spec/feature";
+  fs.mkdirSync(path.join(workspaceRoot, issueRef), { recursive: true });
+  fs.mkdirSync(path.join(workspaceRoot, specRef), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, issueRef, "README.md"), "# Issue\n", "utf8");
+  fs.writeFileSync(path.join(workspaceRoot, specRef, "requirements.md"), "# Requirements\n", "utf8");
+  workspaceRoots.push(workspaceRoot);
+  return { workspaceRoot, bundleDefaults: { issueRef, specRef } };
+}
+
+afterEach(() => {
+  for (const workspaceRoot of workspaceRoots.splice(0)) {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 describe("planner/taskBundleApprover", () => {
   it("materializes attachments into task payloads and metrics", () => {
     const tasksById = new Map<string, any>();
     const attachmentsByTaskId = new Map<string, string[]>();
     const materialized: Array<{ task: { attachments?: Array<{ id: string; url: string }> } }> = [];
     const metrics = createMetrics();
+    const workItem = createWorkItemWorkspace();
 
     const result = materializeTaskBundleTasks({
       draftId: "draft-1",
+      bundleDefaults: workItem.bundleDefaults,
       tasks: [{ prompt: "Review planner draft", attachments: ["att-1"] }],
       now: 123,
       taskStore: {
@@ -77,6 +105,7 @@ describe("planner/taskBundleApprover", () => {
       },
       metrics,
       metricReason: "auto_approve",
+      workspaceRoot: workItem.workspaceRoot,
       buildAttachmentUrl: (attachmentId) => buildWorkspaceAttachmentRawUrl("/tmp/ws-auto", attachmentId),
       onTaskMaterialized: (record) => materialized.push(record),
     });
@@ -114,11 +143,13 @@ describe("planner/taskBundleApprover", () => {
       createdAt: 1,
     };
     let deleteCalls = 0;
+    const workItem = createWorkItemWorkspace();
 
     assert.throws(
       () =>
         materializeTaskBundleTasks({
           draftId: "draft-2",
+          bundleDefaults: workItem.bundleDefaults,
           tasks: [{ externalId: "existing", prompt: "Existing", attachments: ["att-2"] }],
           now: 123,
           taskStore: {
@@ -142,6 +173,7 @@ describe("planner/taskBundleApprover", () => {
           },
           metrics: createMetrics(),
           metricReason: "planner_draft",
+          workspaceRoot: workItem.workspaceRoot,
         }),
       /Assign attachments failed/,
     );
@@ -151,10 +183,12 @@ describe("planner/taskBundleApprover", () => {
 
   it("ignores deprecated execution isolation from bundle inputs", () => {
     const seenInputs: Array<Record<string, unknown>> = [];
+    const workItem = createWorkItemWorkspace();
 
     materializeTaskBundleTasks({
       draftId: "draft-iso",
       bundleDefaults: {
+        ...workItem.bundleDefaults,
         defaults: {
           execution: { isolation: "required" },
         },
@@ -195,6 +229,7 @@ describe("planner/taskBundleApprover", () => {
       },
       metrics: createMetrics(),
       metricReason: "planner_draft",
+      workspaceRoot: workItem.workspaceRoot,
     });
 
     assert.equal(seenInputs.length, 2);

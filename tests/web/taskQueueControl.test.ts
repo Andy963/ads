@@ -9,13 +9,22 @@ describe("web/taskQueue/control", () => {
     const ctx = {
       queueRunning: false,
       runController: {
-        setModeAll() {
+        setModeAll(admittedTaskIds?: Iterable<string>) {
           calls.push("setModeAll");
+          if (admittedTaskIds) {
+            calls.push(`admitted:${Array.from(admittedTaskIds).join(",")}`);
+          }
         },
         setModeManual() {
           calls.push("setModeManual");
         },
       },
+      taskStore: {
+        listTasks() {
+          return [{ id: "t-1" }];
+        },
+      },
+      queueAutoStart: false,
       taskQueue: {
         resume() {
           calls.push("resume");
@@ -30,7 +39,7 @@ describe("web/taskQueue/control", () => {
 
     assert.equal(result, ctx);
     assert.equal(ctx.queueRunning, true);
-    assert.deepEqual(calls, ["setModeAll", "resume"]);
+    assert.deepEqual(calls, ["setModeAll", "admitted:t-1", "resume"]);
   });
 
   it("pauses queue in manual mode with explicit reason", () => {

@@ -253,10 +253,70 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     return id || null;
   };
 
-  const dequeueNextQueuedTask = (now = Date.now()): Task | null => {
+  type QueuedCandidate = {
+    id?: string;
+    queued_at?: number | null;
+    queue_order?: number | null;
+    created_at?: number | null;
+  };
+
+  const compareQueueValue = (left: number | null | undefined, right: number | null | undefined): number => {
+    if (left == null && right == null) return 0;
+    if (left == null) return -1;
+    if (right == null) return 1;
+    return left - right;
+  };
+
+  const isEarlierQueuedCandidate = (left: QueuedCandidate, right: QueuedCandidate): boolean => {
+    for (const [leftValue, rightValue] of [
+      [left.queued_at, right.queued_at],
+      [left.queue_order, right.queue_order],
+      [left.created_at, right.created_at],
+    ] as Array<[number | null | undefined, number | null | undefined]>) {
+      const comparison = compareQueueValue(leftValue, rightValue);
+      if (comparison !== 0) return comparison < 0;
+    }
+    return String(left.id ?? "") < String(right.id ?? "");
+  };
+
+  const selectNextQueuedTaskFromIds = (ids: string[]): QueuedCandidate | undefined => {
+    // SQLite installations commonly cap bound parameters at 999. Chunk the
+    // admission snapshot and merge the first row from each chunk in SQL order.
+    const maxVariablesPerQuery = 900;
+    let selected: QueuedCandidate | undefined;
+    for (let offset = 0; offset < ids.length; offset += maxVariablesPerQuery) {
+      const chunk = ids.slice(offset, offset + maxVariablesPerQuery);
+      const candidate = db
+        .prepare(
+          `SELECT id, queued_at, queue_order, created_at
+           FROM tasks
+           WHERE status = 'queued' AND id IN (${chunk.map(() => "?").join(", ")})
+           ORDER BY queued_at ASC, queue_order ASC, created_at ASC, id ASC
+           LIMIT 1`,
+        )
+        .get(...chunk) as QueuedCandidate | undefined;
+      if (candidate && (!selected || isEarlierQueuedCandidate(candidate, selected))) {
+        selected = candidate;
+      }
+    }
+    return selected;
+  };
+
+  const dequeueNextQueuedTask = (now = Date.now(), allowedTaskIds?: ReadonlySet<string>): Task | null => {
     void now;
     const tx = db.transaction((): Task | null => {
-      const next = stmts.selectNextQueuedStmt.get() as { id?: string } | undefined;
+      const normalizedAllowedTaskIds = allowedTaskIds
+        ? Array.from(allowedTaskIds)
+            .map((id) => String(id ?? "").trim())
+            .filter(Boolean)
+        : null;
+      if (normalizedAllowedTaskIds && normalizedAllowedTaskIds.length === 0) {
+        return null;
+      }
+
+      const next = normalizedAllowedTaskIds
+        ? selectNextQueuedTaskFromIds(normalizedAllowedTaskIds)
+        : (stmts.selectNextQueuedStmt.get() as { id?: string } | undefined);
       const id = String(next?.id ?? "").trim();
       if (!id) {
         return null;
