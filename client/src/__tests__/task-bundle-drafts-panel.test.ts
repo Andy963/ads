@@ -33,13 +33,72 @@ describe("TaskBundleDraftPanel", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="task-bundle-draft-task-panel"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="task-bundle-draft-spec-ref"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="task-bundle-draft-spec-ref"]').text()).toContain("docs/spec/r1");
+    expect(wrapper.find('[data-testid="task-bundle-draft-missing-spec"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="task-bundle-draft-tab-requirements"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="task-bundle-draft-tab-design"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="task-bundle-draft-tab-implementation"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="task-bundle-draft-spec-panel"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="task-bundle-draft-save-task"]').text()).toBe("保存任务");
     expect((wrapper.get('[data-testid="task-bundle-draft-approve"]').element as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("warns when a draft is not bound to any spec", async () => {
+    // The prompt only points at a spec section, so an unbound draft is not
+    // reviewable — the gap has to be visible before approval, not after.
+    const { default: TaskBundleDraftPanel } = await import("../components/TaskBundleDraftPanel.vue");
+
+    const draft: TaskBundleDraft = {
+      id: "d-nospec",
+      workspaceRoot: "/tmp/ws",
+      requestId: "r-nospec",
+      status: "draft",
+      bundle: { version: 1, requestId: "r-nospec", tasks: [{ prompt: "p1" }] },
+      createdAt: 1,
+      updatedAt: 2,
+      approvedAt: null,
+      approvedTaskIds: [],
+      lastError: null,
+    };
+
+    const wrapper = mount(TaskBundleDraftPanel, {
+      props: { drafts: [draft], busy: false, error: null },
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-testid="task-bundle-draft-row-spec"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="task-bundle-draft-d-nospec"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="task-bundle-draft-spec-ref"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="task-bundle-draft-missing-spec"]').text()).toContain("未绑定规格文档");
+  });
+
+  it("shows the bound spec filename in the draft list", async () => {
+    const { default: TaskBundleDraftPanel } = await import("../components/TaskBundleDraftPanel.vue");
+
+    const draft: TaskBundleDraft = {
+      id: "d-spec",
+      workspaceRoot: "/tmp/ws",
+      requestId: "r-spec",
+      status: "draft",
+      bundle: { version: 1, requestId: "r-spec", specRef: "docs/spec/telegram-watchdog.md", tasks: [{ prompt: "p1" }] },
+      createdAt: 1,
+      updatedAt: 2,
+      approvedAt: null,
+      approvedTaskIds: [],
+      lastError: null,
+    };
+
+    const wrapper = mount(TaskBundleDraftPanel, {
+      props: { drafts: [draft], busy: false, error: null },
+    });
+    await wrapper.vm.$nextTick();
+
+    const row = wrapper.get('[data-testid="task-bundle-draft-row-spec"]');
+    expect(row.text()).toContain("telegram-watchdog.md");
+    expect(row.attributes("title")).toBe("docs/spec/telegram-watchdog.md");
   });
 
   it("edits a single task and normalizes multi-task drafts on save", async () => {

@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { computed } from "vue";
+
 import DraggableModal from "../DraggableModal.vue";
 
 import type { TaskBundleDraft } from "../../api/types";
 import type { EditingTask } from "./useDraftTaskEditor";
 
-defineProps<{
+const props = defineProps<{
   selectedDraft: TaskBundleDraft;
   busy?: boolean;
   editingError?: string | null;
@@ -16,6 +18,10 @@ defineProps<{
   canApproveDraft: boolean;
   draftTitle: (draft: TaskBundleDraft) => string;
 }>();
+
+// The prompt only points at a spec section, so without the spec named here the
+// reviewer is approving a task they cannot actually evaluate.
+const specRef = computed(() => String(props.selectedDraft.bundle?.specRef ?? "").trim());
 
 const emit = defineEmits<{
   (e: "close"): void;
@@ -37,6 +43,9 @@ const emit = defineEmits<{
           <div class="editorTitle">{{ draftTitle(selectedDraft) }}</div>
           <div class="editorMeta">
             <span>{{ taskStatusText }}</span>
+            <span v-if="specRef" class="editorSpecRef" :title="specRef" data-testid="task-bundle-draft-spec-ref">
+              📄 {{ specRef }}
+            </span>
           </div>
         </div>
         <button
@@ -58,6 +67,9 @@ const emit = defineEmits<{
       </div>
 
       <div v-if="editingError" class="modalError" data-testid="task-bundle-draft-error">{{ editingError }}</div>
+      <div v-if="!specRef" class="modalWarning" data-testid="task-bundle-draft-missing-spec">
+        ⚠️ 此草稿未绑定规格文档（specRef 缺失）。Worker 只能依据下方 prompt 文本执行。
+      </div>
       <div v-if="selectedDraft.degradeReason" class="modalWarning" data-testid="task-bundle-draft-degrade-reason">
         ⚠️ 此草稿已从自动入队降级：{{ selectedDraft.degradeReason }}
       </div>

@@ -201,6 +201,27 @@
   cursor: not-allowed;
 }
 
+.draftRowSpec {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin-left: 6px;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.draftRowNoSpec {
+  font-size: 0.75rem;
+  color: #e6a23c;
+  margin-left: 6px;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.editorSpecRef {
+  cursor: help;
+  word-break: break-all;
+}
+
 .draftRowDegraded {
   font-size: 0.75rem;
   color: #e6a23c;
