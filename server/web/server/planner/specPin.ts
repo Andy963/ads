@@ -146,7 +146,7 @@ export function buildSpecPromptPreamble(pin: SpecPin): string {
   if (pin.status === "pinned" && pin.blobSha) {
     const shortSha = pin.blobSha.slice(0, 12);
     lines.push(
-      `This task implements part of \`${pin.path}\`, pinned at approval time.`,
+      `This task implements \`${pin.path}\`, pinned at approval time.`,
       "",
       "Read the pinned version first — it is the source of truth for this task:",
       "```bash",
@@ -158,7 +158,7 @@ export function buildSpecPromptPreamble(pin: SpecPin): string {
     );
   } else if (pin.status === "unpinned") {
     lines.push(
-      `This task implements part of \`${pin.path}\`. Read that file first — it is the source of truth.`,
+      `This task implements \`${pin.path}\`. Read that file first — it is the source of truth.`,
       "",
       `Note: the spec could not be pinned to a git object (${pin.reason ?? "unknown reason"}), so it may have changed since approval.`,
       "Report any mismatch between the spec and this prompt instead of guessing.",
