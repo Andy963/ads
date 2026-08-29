@@ -54,7 +54,7 @@ describe("SystemPromptManager rule reinjection", () => {
     assert.equal(reinjected.reason, "rules-only-5");
   });
 
-  it("injects rules every turn by default", () => {
+  it("injects rules every eight turns by default", () => {
     const manager = new SystemPromptManager({
       workspaceRoot: workspace,
       reinjection: { enabled: true, turns: 999 },
@@ -65,15 +65,38 @@ describe("SystemPromptManager rule reinjection", () => {
     assert(initial);
     assert.equal(initial.reason, "initial");
 
-    manager.completeTurn();
-    let injection = manager.maybeInject();
-    assert(injection);
-    assert.equal(injection.reason, "rules-only-1");
+    for (let i = 0; i < 7; i += 1) {
+      manager.completeTurn();
+      assert.equal(manager.maybeInject(), null, `unexpected reinjection at turn ${i + 1}`);
+    }
 
     manager.completeTurn();
-    injection = manager.maybeInject();
+    const injection = manager.maybeInject();
     assert(injection);
-    assert.equal(injection.reason, "rules-only-2");
+    assert.equal(injection.reason, "rules-only-8");
+  });
+
+  it("reinjects edited rules immediately rather than waiting out the cadence", () => {
+    // The long cadence is only safe because a rule edit still lands on the next
+    // turn. If this breaks, changing a rule silently takes up to 8 turns.
+    const manager = new SystemPromptManager({
+      workspaceRoot: workspace,
+      reinjection: { enabled: true, turns: 999 },
+      templateRoot,
+    });
+
+    assert.equal(manager.maybeInject()?.reason, "initial");
+
+    manager.completeTurn();
+    assert.equal(manager.maybeInject(), null);
+
+    fs.writeFileSync(path.join(templateRoot, "rules.md"), "# Rules\nA newly added rule.\n", "utf8");
+
+    manager.completeTurn();
+    const injection = manager.maybeInject();
+    assert(injection);
+    assert.equal(injection.reason, "rules-updated");
+    assert.match(injection.text, /A newly added rule/);
   });
 
   it("detects instruction updates and workspace switch", () => {

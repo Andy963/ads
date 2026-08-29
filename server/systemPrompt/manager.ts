@@ -18,6 +18,15 @@ export interface ReinjectionConfig {
   rulesTurns?: number;
 }
 
+const DEFAULT_INSTRUCTIONS_REINJECTION_TURNS = 6;
+/**
+ * Rules used to be re-sent every turn. Current models hold instructions well
+ * enough that this mostly burned tokens restating an unchanged block. Edits to
+ * the rules still reinject on the next turn via the "global-rules-updated"
+ * pending reason, so a longer cadence does not delay rule changes.
+ */
+const DEFAULT_RULES_REINJECTION_TURNS = 8;
+
 export interface SystemPromptManagerOptions {
   workspaceRoot: string;
   reinjection?: Partial<ReinjectionConfig>;
@@ -77,8 +86,8 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
 
   return {
     enabled: enabledEnv ?? true,
-    turns: turnsEnv ?? 6,
-    rulesTurns: rulesTurnsEnv ?? 1,
+    turns: turnsEnv ?? DEFAULT_INSTRUCTIONS_REINJECTION_TURNS,
+    rulesTurns: rulesTurnsEnv ?? DEFAULT_RULES_REINJECTION_TURNS,
   };
 }
 
@@ -125,15 +134,15 @@ export class SystemPromptManager {
       : null;
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
-      turns: options.reinjection?.turns ?? 6,
-      rulesTurns: options.reinjection?.rulesTurns ?? 1,
+      turns: options.reinjection?.turns ?? DEFAULT_INSTRUCTIONS_REINJECTION_TURNS,
+      rulesTurns: options.reinjection?.rulesTurns ?? DEFAULT_RULES_REINJECTION_TURNS,
     };
     if (this.reinjection.turns < 1) {
       this.reinjection.turns = 10;
     }
     const ruleTurns = this.reinjection.rulesTurns && this.reinjection.rulesTurns > 0
       ? this.reinjection.rulesTurns
-      : 1;
+      : DEFAULT_RULES_REINJECTION_TURNS;
     this.rulesReinjectionTurns = ruleTurns;
     this.logger = options.logger ?? createLogger("SystemPrompt");
     // A custom template root means a caller-scoped bootstrap file (tests, embedded
