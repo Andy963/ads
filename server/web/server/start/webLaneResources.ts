@@ -162,6 +162,7 @@ function createLaneRuntime(args: {
         undefined,
         {
           agentAllowlist: resolveSessionAgentAllowlist(args.namespace === WEB_PLANNER_NAMESPACE ? "web-planner" : "web-worker"),
+          ...(args.namespace === WEB_PLANNER_NAMESPACE ? { laneInstructionsFile: "planner-instructions.md" } : {}),
           ...args.sessionManagerOptions,
         },
       ),

@@ -24,6 +24,11 @@ export interface SystemPromptManagerOptions {
   templateRoot?: string;
   logger?: Logger;
   globalRuleService?: GlobalRuleService;
+  /**
+   * Template filename injected only for this lane, resolved under templateRoot.
+   * Lets the planner carry role rules the worker must not see.
+   */
+  laneInstructionsFile?: string;
 }
 
 interface FileCache {
@@ -83,11 +88,14 @@ export class SystemPromptManager {
   private readonly templateRoot: string;
   private readonly defaultInstructionsPath: string;
   private readonly defaultRulesPath: string;
+  private readonly laneInstructionsPath: string | null;
   private readonly logger: Logger;
   private readonly reinjection: ReinjectionConfig;
   private readonly rulesReinjectionTurns: number;
   private instructionsCache: FileCache | null = null;
   private rulesCache: FileCache | null = null;
+  private laneInstructionsCache: FileCache | null = null;
+  private lastLaneInstructionsHash: string | null = null;
   private lastSoulHash: string | null = null;
   private lastMemoryHash: string | null = null;
   private lastSkillsHash: string | null = null;
@@ -112,6 +120,9 @@ export class SystemPromptManager {
     this.templateRoot = options.templateRoot ? path.resolve(options.templateRoot) : path.join(PROJECT_ROOT, "templates");
     this.defaultInstructionsPath = path.join(this.templateRoot, "instructions.md");
     this.defaultRulesPath = path.join(this.templateRoot, "rules.md");
+    this.laneInstructionsPath = options.laneInstructionsFile
+      ? path.join(this.templateRoot, options.laneInstructionsFile)
+      : null;
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
       turns: options.reinjection?.turns ?? 6,
@@ -176,6 +187,7 @@ export class SystemPromptManager {
   maybeInject(): PromptInjection | null {
     // 先刷新缓存以捕获指令/规则变更，确保 pendingReason 在本次判断前就绪
     const instructionsCache = this.readInstructions();
+    const laneInstructionsCache = this.readLaneInstructions();
     const rulesCache = this.resolveRules();
     const soulHash = this.computeSoulHash();
     const memoryHash = this.computeMemoryHash();
@@ -209,6 +221,9 @@ export class SystemPromptManager {
     }
     if (!rulesOnly && instructions && instructions.content.trim()) {
       textParts.push(instructions.content.trim());
+    }
+    if (!rulesOnly && laneInstructionsCache && laneInstructionsCache.content.trim()) {
+      textParts.push(laneInstructionsCache.content.trim());
     }
     if (rules.content.trim()) {
       textParts.push(rules.content.trim());
@@ -245,6 +260,9 @@ export class SystemPromptManager {
     this.lastSkillsHash = skillsHash;
     if (!rulesOnly && instructions) {
       this.lastInstructionsHash = instructions.hash;
+    }
+    if (!rulesOnly && laneInstructionsCache && laneInstructionsCache.hash !== "missing") {
+      this.lastLaneInstructionsHash = laneInstructionsCache.hash;
     }
     this.lastRulesHash = rules.hash;
     this.requestedSkillNames = [];
@@ -387,6 +405,18 @@ export class SystemPromptManager {
       return `skills-requested-${this.turnCount}`;
     }
     return null;
+  }
+
+  private readLaneInstructions(): FileCache | null {
+    if (!this.laneInstructionsPath) {
+      return null;
+    }
+    const cache = this.readFileWithCache(this.laneInstructionsPath, false, "lane instructions", this.laneInstructionsCache);
+    this.laneInstructionsCache = cache;
+    if (this.lastLaneInstructionsHash && cache.hash !== this.lastLaneInstructionsHash && cache.hash !== "missing") {
+      this.pendingReason = this.pendingReason ?? "lane-instructions-updated";
+    }
+    return cache;
   }
 
   private readInstructions(): FileCache {

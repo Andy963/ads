@@ -66,6 +66,8 @@ export interface SessionDisposeInfo {
 
 export interface SessionManagerOptions {
   agentAllowlist?: AgentIdentifier[];
+  /** Template file injected into this lane's system prompt only (see SystemPromptManager). */
+  laneInstructionsFile?: string;
   createSession?: (args: {
     userId: number;
     cwd: string;
@@ -576,6 +578,7 @@ export class SessionManager {
     const systemPromptManager = new SystemPromptManager({
       workspaceRoot: args.workspaceRoot,
       reinjection: resolveReinjectionConfig(),
+      laneInstructionsFile: this.options.laneInstructionsFile,
     });
 
     const orchestrator = new HybridOrchestrator({
