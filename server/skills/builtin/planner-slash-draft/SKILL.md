@@ -83,42 +83,30 @@ in a repo built on a different toolchain.
   "tasks": [
     {
       "title": "<short imperative title>",
-      "prompt": "Implement the \"Stage 1 — <name>\" section of the spec.\n\nScope: only that stage. Do not start later stages.\nAcceptance: the checklist at the end of that section must pass.\nIf the spec and this prompt disagree, follow the spec and say so in your result."
-    },
-    {
-      "title": "<short imperative title>",
-      "prompt": "Implement the \"Stage 2 — <name>\" section of the spec.\n\nBefore starting, verify Stage 1 landed: <concrete check>.\nIf it did not, stop and report that instead of implementing this stage.\n\nScope: only that stage.\nAcceptance: the checklist at the end of that section must pass."
+      "prompt": "Implement the spec in full, working through its stages in order.\n\nAcceptance: every checklist in the spec must pass.\nIf the spec and this prompt disagree, follow the spec and say so in your result."
     }
   ]
 }
 ```
 
-A single-stage spec emits a single task — do not invent stages to fill the shape.
+The prompt stays this short on purpose: the spec holds the detail, and repeating
+it here only creates a second copy that can drift.
 
 The server prepends the pinned spec reference to `prompt` at approval time — do
 not write `git show` lines yourself.
 
 ### How many tasks
 
-Split by what a Worker can sensibly finish in one run, not by how many headings
-the spec has. A small spec is **one task**; splitting it just to have stages
-wastes a round trip per stage. Split only where a later step genuinely depends
-on an earlier one landing first, or where one run would be too large to review.
+**One spec, one task.** The spec already carries every detail, and the Worker
+can work through its stages in a single run. Splitting a spec into a task per
+stage costs a round trip each time and buys nothing.
 
-Deliver the whole spec at once — emit every task in a single bundle, ordered.
-They run in queue order, so task N can assume task N-1 already ran.
+If that task fails, it is re-run as a whole — do not design around partial
+completion, and do not add "verify the previous stage landed" preambles.
 
-Because the queue does **not** stop on failure, every task after the first must
-open by checking its premise, and stop rather than build on a broken base:
-
-```
-Before starting, verify Stage 1 landed: <a concrete, checkable condition>.
-If it did not, stop and report that instead of implementing this stage.
-```
-
-`/draft` is the exception: it emits exactly one task, for adding or reworking a
-single task without touching the rest. Use plain output (no `/draft`) for the
-full multi-task delivery.
+Split into more than one task only when the spec genuinely covers separate
+pieces of work that were discussed together but ship independently. Sequential
+stages of one feature are not that case.
 
 ## How the pin works
 
@@ -136,7 +124,6 @@ whenever it suits the project's own workflow.
 - [ ] Spec file written or updated, reflecting the **final** state of discussion
 - [ ] Rejected alternatives recorded under Decisions, not silently dropped
 - [ ] Every stage has a concrete acceptance checklist
-- [ ] One `ads-tasks` block; task count matches the work, not the heading count
-- [ ] Every task after the first opens by verifying its premise
+- [ ] One `ads-tasks` block, normally one task covering the whole spec
 - [ ] `specRef` set, under `docs/spec/`
-- [ ] `prompt` points at a section — it does not restate the spec
+- [ ] `prompt` points at the spec — it does not restate its contents
