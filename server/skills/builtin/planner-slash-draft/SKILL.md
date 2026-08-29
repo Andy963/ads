@@ -67,6 +67,13 @@ Write the spec so a Worker with **no access to this conversation** can implement
 it. That is the actual bar: if a stage only makes sense to someone who watched
 the discussion, it is underspecified.
 
+### Acceptance commands
+
+Derive verification from the repo's own toolchain — read `package.json`,
+`Makefile`, `justfile`, CI config, or whatever this project actually uses, and
+name those commands. Never default to npm, and never hardcode npm verification
+in a repo built on a different toolchain.
+
 ## Step 2 — emit the bundle
 
 ```ads-tasks
