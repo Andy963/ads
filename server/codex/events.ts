@@ -61,6 +61,36 @@ export interface AgentEvent {
 type ItemEvent = ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent;
 
 const DEFAULT_DETAIL_LIMIT = 160;
+
+export const STEP_TRACE_PHASES: ReadonlySet<string> = new Set([
+  "boot",
+  "analysis",
+  "context",
+  "editing",
+  "tool",
+  "connection",
+]);
+
+export function isStepTracePhase(
+  phase: unknown,
+): phase is "boot" | "analysis" | "context" | "editing" | "tool" | "connection" {
+  return typeof phase === "string" && STEP_TRACE_PHASES.has(phase);
+}
+
+export function formatStepTraceLine(event: AgentEvent): string | null {
+  const phase = String(event.phase ?? "").trim();
+  if (!isStepTracePhase(phase)) {
+    return null;
+  }
+  const title = String(event.title ?? "").trim();
+  if (!title) {
+    return null;
+  }
+  const prefix = `[${phase}] `;
+  const detail = phase === "analysis" ? "" : String(event.detail ?? "").trim();
+  return detail ? `${prefix}${title}: ${detail}\n` : `${prefix}${title}\n`;
+}
+
 const RECONNECTING_REGEX = /re-?connecting\.\.\.\s*(\d+)\/(\d+)/i;
 
 export function parseReconnectingMessage(message: string): { attempt: number; total: number } | null {

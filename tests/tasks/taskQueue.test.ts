@@ -97,4 +97,33 @@ describe("tasks/taskQueue", () => {
 
     queue.stop();
   });
+
+  it("should forward message:delta with source step and source chat", async () => {
+    const store = new TaskStore();
+    const deltas: Array<{ role: string; delta: string; source?: "step" | "chat" }> = [];
+    const executor: TaskExecutor = {
+      async execute(task: Task, options): Promise<{ resultSummary?: string }> {
+        void task;
+        options?.hooks?.onMessageDelta?.({ role: "assistant", delta: "[tool] Running\n", source: "step" });
+        options?.hooks?.onMessageDelta?.({ role: "assistant", delta: "Done", source: "chat" });
+        return { resultSummary: "ok" };
+      },
+    };
+    const queue = new TaskQueue({ store, executor });
+    queue.on("message:delta", (payload) => {
+      deltas.push({ role: payload.role, delta: payload.delta, source: payload.source });
+    });
+    void queue.start();
+
+    const task = store.createTask({ title: "T", prompt: "P" });
+    queue.notifyNewTask();
+
+    await waitFor(() => store.getTask(task.id)?.status === "completed");
+    assert.deepEqual(deltas, [
+      { role: "assistant", delta: "[tool] Running\n", source: "step" },
+      { role: "assistant", delta: "Done", source: "chat" },
+    ]);
+
+    queue.stop();
+  });
 });

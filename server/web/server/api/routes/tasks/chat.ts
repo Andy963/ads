@@ -1,7 +1,8 @@
 import { z } from "zod";
 
-import type { AgentEvent } from "../../../../../codex/events.js";
+import { formatStepTraceLine, isStepTracePhase, type AgentEvent } from "../../../../../codex/events.js";
 import { selectAgentForTask } from "../../../../../tasks/agentSelection.js";
+import { mergeStreamingText } from "../../../../../utils/streamingText.js";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
 import { sendJson } from "../../../http.js";
@@ -87,19 +88,13 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
     const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
       try {
         if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
-          const next = event.delta;
-          let delta = next;
-          if (lastRespondingText && next.startsWith(lastRespondingText)) {
-            delta = next.slice(lastRespondingText.length);
-          }
-          if (next.length >= lastRespondingText.length) {
-            lastRespondingText = next;
-          }
-          if (delta) {
+          const merged = mergeStreamingText(lastRespondingText, event.delta);
+          lastRespondingText = merged.full;
+          if (merged.delta) {
             deps.broadcastToSession(taskCtx.sessionId, {
               type: "task:event",
               event: "message:delta",
-              data: { taskId: latest.id, role: "assistant", delta, modelUsed: modelOverride ?? null, source: "chat" },
+              data: { taskId: latest.id, role: "assistant", delta: merged.delta, modelUsed: modelOverride ?? null, source: "chat" },
               ts: Date.now(),
             });
           }
@@ -126,6 +121,18 @@ export async function handleTaskChatRoute(ctx: ApiRouteContext, deps: ApiSharedD
               type: "task:event",
               event: "command",
               data: { taskId: latest.id, command },
+              ts: Date.now(),
+            });
+          }
+          return;
+        }
+        if (isStepTracePhase(event.phase)) {
+          const line = formatStepTraceLine(event);
+          if (line) {
+            deps.broadcastToSession(taskCtx.sessionId, {
+              type: "task:event",
+              event: "message:delta",
+              data: { taskId: latest.id, role: "assistant", delta: line, modelUsed: modelOverride ?? null, source: "step" },
               ts: Date.now(),
             });
           }

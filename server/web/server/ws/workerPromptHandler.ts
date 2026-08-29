@@ -1,7 +1,7 @@
 import type { ThreadEvent } from "../../../agents/protocol/types.js";
 
 import { isTransientUpstreamModelError } from "../../../agents/adapters/transientModelRetry.js";
-import type { AgentEvent } from "../../../codex/events.js";
+import { formatStepTraceLine, isStepTracePhase, type AgentEvent } from "../../../codex/events.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
@@ -30,17 +30,6 @@ function isTransientRetryEvent(event: AgentEvent): boolean {
   const rawMessage = raw.type === "turn.failed" ? raw.error?.message : raw.message;
   const message = String(rawMessage ?? event.detail ?? event.title ?? "").trim();
   return isTransientUpstreamModelError(message);
-}
-
-function formatStepTraceLine(event: AgentEvent): string | null {
-  const title = String(event.title ?? "").trim();
-  if (!title) {
-    return null;
-  }
-  const phase = String(event.phase ?? "").trim();
-  const prefix = phase ? `[${phase}] ` : "";
-  const detail = phase === "analysis" ? "" : String(event.detail ?? "").trim();
-  return detail ? `${prefix}${title}: ${detail}\n` : `${prefix}${title}\n`;
 }
 
 export function formatWriteExploredSummary(
@@ -294,14 +283,7 @@ export function attachWorkerPromptHandler(args: {
       }
       return;
     }
-    if (
-      event.phase === "boot" ||
-      event.phase === "analysis" ||
-      event.phase === "context" ||
-      event.phase === "editing" ||
-      event.phase === "tool" ||
-      event.phase === "connection"
-    ) {
+    if (isStepTracePhase(event.phase)) {
       const line = formatStepTraceLine(event);
       if (line) {
         args.sendToChat({ type: "delta", delta: line, source: "step" });

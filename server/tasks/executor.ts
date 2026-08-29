@@ -1,6 +1,6 @@
 import type { AgentIdentifier } from "../agents/types.js";
 import type { HybridOrchestrator } from "../agents/orchestrator.js";
-import type { AgentEvent } from "../codex/events.js";
+import { formatStepTraceLine, isStepTracePhase, type AgentEvent } from "../codex/events.js";
 import type { AsyncLock } from "../utils/asyncLock.js";
 
 import { isAbortError } from "../utils/abort.js";
@@ -17,7 +17,12 @@ import {
 
 export interface TaskExecutorHooks {
   onMessage?: (message: { role: string; content: string; modelUsed?: string | null }) => void;
-  onMessageDelta?: (message: { role: string; delta: string; modelUsed?: string | null }) => void;
+  onMessageDelta?: (message: {
+    role: string;
+    delta: string;
+    modelUsed?: string | null;
+    source?: "step" | "chat";
+  }) => void;
   onCommand?: (payload: { command: string }) => void;
   onGoalUpdate?: (goal: {
     status: TaskGoalStatus;
@@ -189,7 +194,12 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
               const merged = mergeStreamingText(respondingText, event.delta);
               respondingText = merged.full;
               if (merged.delta) {
-                options?.hooks?.onMessageDelta?.({ role: "assistant", delta: merged.delta, modelUsed: modelForStorage });
+                options?.hooks?.onMessageDelta?.({
+                  role: "assistant",
+                  delta: merged.delta,
+                  modelUsed: modelForStorage,
+                  source: "chat",
+                });
               }
               return;
             }
@@ -211,6 +221,19 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
                   // ignore
                 }
                 options?.hooks?.onCommand?.({ command });
+              }
+              return;
+            }
+
+            if (isStepTracePhase(event.phase)) {
+              const line = formatStepTraceLine(event);
+              if (line) {
+                options?.hooks?.onMessageDelta?.({
+                  role: "assistant",
+                  delta: line,
+                  modelUsed: modelForStorage,
+                  source: "step",
+                });
               }
             }
           } catch {

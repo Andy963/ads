@@ -187,13 +187,18 @@ export class TaskQueue extends EventEmitter {
         const hooks = {
           onMessage: (message: { role: string; content: string; modelUsed?: string | null }) =>
             this.emit("message", { task: runningTask, role: message.role, content: message.content }),
-          onMessageDelta: (message: { role: string; delta: string; modelUsed?: string | null }) =>
+          onMessageDelta: (message: {
+            role: string;
+            delta: string;
+            modelUsed?: string | null;
+            source?: "step" | "chat";
+          }) =>
             this.emit("message:delta", {
               task: runningTask,
               role: message.role,
               delta: message.delta,
               modelUsed: message.modelUsed,
-              source: "chat",
+              source: message.source ?? "chat",
             }),
           onCommand: (payload: { command: string }) => this.emit("command", { task: runningTask, command: payload.command }),
           onGoalUpdate: (goal: {
