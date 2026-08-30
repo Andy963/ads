@@ -230,11 +230,25 @@
   background: var(--danger-2);
 }
 .brand {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-weight: 700;
   font-size: 14px;
   color: var(--accent);
   white-space: nowrap;
   flex-shrink: 0;
+}
+.brandVersion {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
 }
 .right {
   display: flex;

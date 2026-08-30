@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,11 +19,16 @@ export default defineConfig(({ mode }) => {
   const repoRoot = path.resolve(__dirname, "..");
   const env = loadEnv(mode, repoRoot, "");
   const base = normalizeBasePath(env.ADS_WEB_BASE_PATH || env.VITE_BASE_PATH);
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(repoRoot, "package.json"), "utf8")) as { version?: string };
+  const appVersion = pkg.version || "0.0.1";
 
   return {
     root: __dirname,
     cacheDir: path.resolve(repoRoot, "node_modules", ".vite", "client"),
     base,
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+    },
     plugins: [
       vue(),
       VitePWA({

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
+declare const __APP_VERSION__: string | undefined;
+const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.1";
+
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
 import TaskCreateForm from "./components/TaskCreateForm.vue";
@@ -555,7 +558,10 @@ const plannerConnectionStatus = computed(() => {
           <rect x="2" y="12.3" width="10" height="2.2" rx="1.1" />
         </svg>
       </button>
-      <div class="brand">ADS</div>
+      <div class="brand">
+        <span>ADS</span>
+        <span class="brandVersion">v{{ appVersion }}</span>
+      </div>
       <div class="topbarMain">
         <div v-if="isMobile" class="mobileContextTitle" :title="mobileContextTitle">
           {{ mobileContextTitle }}
