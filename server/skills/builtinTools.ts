@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { getDatabase } from "../storage/database.js";
+import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { updateMemory } from "../memory/memory.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -77,7 +77,8 @@ export function searchSessionMessages(args: { workspaceRoot: string; query: stri
 }> {
   const query = String(args.query ?? "").trim();
   if (!query) return [];
-  const db = args.db ?? getDatabase(args.workspaceRoot);
+  const db = args.db ?? getWorkspacesDatabase(undefined, args.workspaceRoot);
+  const workspaceId = resolveWorkspaceId(args.workspaceRoot);
   const limit = Math.max(1, Math.min(20, Math.floor(args.limit ?? 5)));
   const rows = db.prepare(`
     SELECT conversation_messages.conversation_id AS session_id,
@@ -86,10 +87,10 @@ export function searchSessionMessages(args: { workspaceRoot: string; query: stri
            snippet(conversation_messages_fts, 0, '[', ']', '…', 12) AS snippet
     FROM conversation_messages_fts
     JOIN conversation_messages ON conversation_messages.id = conversation_messages_fts.rowid
-    WHERE conversation_messages_fts MATCH ?
+    WHERE conversation_messages_fts MATCH ? AND conversation_messages.workspace_id = ?
     ORDER BY bm25(conversation_messages_fts)
     LIMIT ?
-  `).all(query, limit) as Array<Record<string, unknown>>;
+  `).all(query, workspaceId, limit) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
     sessionId: String(row.session_id ?? ""),
     role: String(row.role ?? ""),

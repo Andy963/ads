@@ -538,6 +538,18 @@ export const migrations: Migration[] = [
     version: 18,
     description: "Repair legacy schema-v17 isolation columns for task runs and review snapshots",
     up: (db) => {
+      // Some historical repair tests and interrupted upgrades can expose a newer
+      // trigger set to an older table shape. Drop it before repairing; v26 recreates it.
+      const futureWorkspaceTriggers = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'enforce_%'")
+        .all() as Array<{ name?: unknown }>;
+      for (const row of futureWorkspaceTriggers) {
+        const name = String(row.name ?? "");
+        if (/^enforce_[a-z0-9_]+$/.test(name)) {
+          db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+        }
+      }
+
       const taskNames = getTableColumnNames(db, "tasks");
       if (!taskNames.has("execution_isolation")) {
         db.exec(`ALTER TABLE tasks ADD COLUMN execution_isolation TEXT NOT NULL DEFAULT 'default'`);
@@ -754,6 +766,121 @@ export const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_tasks_next_attempt_at
           ON tasks(status, next_attempt_at, queue_order, created_at)
       `);
+    },
+  },
+  {
+    version: 24,
+    description: "Central workspaces database isolation columns and composite uniqueness",
+    up: (db) => {
+      const addColumn = (table: string, column: string) => {
+        const names = getTableColumnNames(db, table);
+        if (!names.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`);
+      };
+      for (const table of ["tasks", "task_plans", "task_messages", "task_contexts", "task_runs", "schedules", "schedule_runs", "attachments", "conversations", "conversation_messages", "review_snapshots", "review_queue_items", "review_artifacts"]) {
+        addColumn(table, "workspace_id");
+      }
+      db.exec(`
+        DROP INDEX IF EXISTS idx_attachments_sha256;
+        DROP INDEX IF EXISTS idx_schedule_runs_external_id;
+        CREATE TABLE IF NOT EXISTS legacy_workspace_migrations (
+          workspace_id TEXT PRIMARY KEY,
+          source_path TEXT NOT NULL UNIQUE,
+          summary_json TEXT NOT NULL,
+          completed_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_workspace_sha256 ON attachments(workspace_id, sha256);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_runs_workspace_external_id ON schedule_runs(workspace_id, external_id);
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_status ON tasks(workspace_id, status, queue_order, created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_messages_workspace_task ON task_messages(workspace_id, task_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_runs_workspace_task ON task_runs(workspace_id, task_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_schedules_workspace_due ON schedules(workspace_id, enabled, next_run_at);
+        CREATE INDEX IF NOT EXISTS idx_schedule_runs_workspace_schedule ON schedule_runs(workspace_id, schedule_id, run_at);
+        CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_conversation_messages_workspace ON conversation_messages(workspace_id, conversation_id, created_at);
+      `);
+    },
+  },
+  {
+    version: 25,
+    description: "Repair central workspace migration audit table",
+    up: (db) => {
+      db.exec("CREATE TABLE IF NOT EXISTS legacy_workspace_migrations (workspace_id TEXT PRIMARY KEY, source_path TEXT NOT NULL UNIQUE, summary_json TEXT NOT NULL, completed_at INTEGER NOT NULL)");
+    },
+  },
+  {
+    version: 26,
+    description: "Enforce workspace ownership across business table references",
+    up: (db) => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_attachments_sha256;
+        DROP INDEX IF EXISTS idx_schedule_runs_external_id;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_workspace_sha256
+          ON attachments(workspace_id, sha256);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_runs_workspace_external_id
+          ON schedule_runs(workspace_id, external_id);
+      `);
+
+      const references = [
+        ["tasks", "parent_task_id", "tasks"],
+        ["task_plans", "task_id", "tasks"],
+        ["task_messages", "task_id", "tasks"],
+        ["task_messages", "plan_step_id", "task_plans"],
+        ["task_contexts", "task_id", "tasks"],
+        ["task_runs", "task_id", "tasks"],
+        ["schedules", "id", "schedules"],
+        ["schedule_runs", "schedule_id", "schedules"],
+        ["schedule_runs", "task_id", "tasks"],
+        ["attachments", "task_id", "tasks"],
+        ["conversations", "task_id", "tasks"],
+        ["conversation_messages", "conversation_id", "conversations"],
+        ["conversation_messages", "task_id", "tasks"],
+        ["review_snapshots", "task_id", "tasks"],
+        ["review_snapshots", "task_run_id", "task_runs"],
+        ["review_queue_items", "task_id", "tasks"],
+        ["review_queue_items", "snapshot_id", "review_snapshots"],
+        ["review_artifacts", "task_id", "tasks"],
+        ["review_artifacts", "snapshot_id", "review_snapshots"],
+        ["review_artifacts", "queue_item_id", "review_queue_items"],
+        ["review_artifacts", "prior_artifact_id", "review_artifacts"],
+      ] as const;
+
+      for (const [table, column, parentTable] of references) {
+        // The schedules self-reference is a no-op used to ensure every workspace-owned root
+        // table participates in the same validation path without inventing a parent relation.
+        if (table === parentTable && column === "id") continue;
+        if (!getTableColumnNames(db, table).has("workspace_id") || !getTableColumnNames(db, parentTable).has("workspace_id")) {
+          continue;
+        }
+        const invalid = db.prepare(
+          `SELECT COUNT(*) AS count FROM ${table} child
+           WHERE child.${column} IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM ${parentTable} parent
+               WHERE parent.id = child.${column}
+                 AND parent.workspace_id = child.workspace_id
+             )`,
+        ).get() as { count?: unknown };
+        if (Number(invalid?.count ?? 0) > 0) {
+          throw new Error(`${table}.${column} contains cross-workspace or missing references`);
+        }
+
+        for (const operation of ["INSERT", "UPDATE"] as const) {
+          const trigger = `enforce_${table}_${column}_${operation.toLowerCase()}`;
+          db.exec(`
+            CREATE TRIGGER IF NOT EXISTS ${trigger}
+            BEFORE ${operation} ON ${table}
+            WHEN NEW.${column} IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM ${parentTable} parent
+                WHERE parent.id = NEW.${column}
+                  AND parent.workspace_id = NEW.workspace_id
+              )
+            BEGIN
+              SELECT RAISE(ABORT, '${table}.${column} workspace mismatch');
+            END;
+          `);
+        }
+      }
     },
   },
   // 示例：未来的迁移

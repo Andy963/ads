@@ -62,7 +62,11 @@ export function createTaskStoreConversationOps(deps: { stmts: TaskStoreStatement
       merged.updatedAt,
     );
 
-    return merged;
+    const saved = getConversation(id);
+    if (!saved) {
+      throw new Error(`Conversation id collision across workspaces: ${id}`);
+    }
+    return saved;
   };
 
   const addConversationMessage = (message: Omit<ConversationMessage, "id">, now = Date.now()): ConversationMessage => {

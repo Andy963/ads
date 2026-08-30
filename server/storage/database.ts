@@ -3,64 +3,38 @@ import path from "node:path";
 
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
-import { detectWorkspace, getWorkspaceDbPath, resolveConfiguredDatabasePath } from "../workspace/detector.js";
+import { detectWorkspace, getWorkspaceDbPath, resolveConfiguredDatabasePath, resolveWorkspaceRoot } from "../workspace/detector.js";
+import { deriveWorkspaceStateId, resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { getWorkspaceContextRoot } from "../workspace/asyncWorkspaceContext.js";
 import { parseNonNegativeIntFlag } from "../utils/flags.js";
 import { migrations } from "./migrations.js";
-import { PROJECT_ROOT } from "../utils/projectRoot.js";
+import { migrateLegacyWorkspacesToCentralDb } from "./legacyWorkspaceMigration.js";
 
 let cachedDbs: Map<string, DatabaseType> = new Map();
+let workspacesDb: DatabaseType | null = null;
+let workspacesDbPath: string | null = null;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000;
 
 /** 当前 schema 版本（等于 migrations 数组长度） */
 export const SCHEMA_VERSION = migrations.length;
 
-function readPackageName(): string | null {
-  const pkgPath = path.join(PROJECT_ROOT, "package.json");
-  if (!fs.existsSync(pkgPath)) {
-    return null;
-  }
-  try {
-    const content = fs.readFileSync(pkgPath, "utf-8");
-    const parsed = JSON.parse(content) as { name?: string };
-    return parsed?.name ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveDatabasePath(workspacePath?: string): string {
+function resolveDatabasePath(_workspacePath?: string): string {
   const configuredPath = resolveConfiguredDatabasePath();
   if (configuredPath) {
     return configuredPath;
   }
-
-  const requestedWorkspace = String(workspacePath ?? "").trim();
-  if (requestedWorkspace) {
-    return getWorkspaceDbPath(requestedWorkspace);
-  }
-
+  const requested = String(_workspacePath ?? "").trim();
+  if (requested) return getWorkspaceDbPath(requested);
   const contextWorkspace = getWorkspaceContextRoot();
-  if (contextWorkspace && fs.existsSync(contextWorkspace)) {
-    return getWorkspaceDbPath(contextWorkspace);
-  }
+  if (contextWorkspace && fs.existsSync(contextWorkspace)) return getWorkspaceDbPath(contextWorkspace);
+  if (process.env.AD_WORKSPACE) return getWorkspaceDbPath(process.env.AD_WORKSPACE);
+  try { return getWorkspaceDbPath(detectWorkspace()); } catch { return path.resolve(process.cwd(), "ads.db"); }
+}
 
-  const envWorkspace = process.env.AD_WORKSPACE;
-  if (envWorkspace) {
-    return getWorkspaceDbPath(envWorkspace);
-  }
-
-  const projectName = readPackageName();
-  if (projectName === "ads") {
-    return path.join(PROJECT_ROOT, "ads.db");
-  }
-
-  try {
-    const workspaceRoot = detectWorkspace();
-    return getWorkspaceDbPath(workspaceRoot);
-  } catch {
-    return path.resolve(process.cwd(), "ads.db");
-  }
+export function resolveWorkspaceId(workspacePath?: string): string {
+  const contextWorkspace = getWorkspaceContextRoot();
+  const root = resolveWorkspaceRoot(workspacePath || contextWorkspace || process.env.AD_WORKSPACE);
+  return deriveWorkspaceStateId(root);
 }
 
 /**
@@ -145,6 +119,17 @@ function initializeDatabase(db: DatabaseType): void {
   runMigrations(db);
 }
 
+function assertWorkspaceIdsPresent(db: DatabaseType): void {
+  const tables = ["tasks", "task_plans", "task_messages", "task_contexts", "task_runs", "schedules", "schedule_runs", "attachments", "conversations", "conversation_messages", "review_snapshots", "review_queue_items", "review_artifacts"];
+  for (const table of tables) {
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE workspace_id IS NULL OR TRIM(workspace_id) = ''`).get() as { count?: unknown };
+    const count = Number(row?.count ?? 0);
+    if (count > 0) {
+      throw new Error(`Central database contains ${count} rows without workspace_id in ${table}; assign workspace ownership before opening workspaces.db`);
+    }
+  }
+}
+
 export function getDatabase(workspacePath?: string): DatabaseType {
   const dbPath = resolveDatabasePath(workspacePath);
   const existing = cachedDbs.get(dbPath);
@@ -166,6 +151,41 @@ export function getDatabase(workspacePath?: string): DatabaseType {
   return db;
 }
 
+export function resolveWorkspacesDbPath(explicitPath?: string): string {
+  const configured = explicitPath?.trim() || process.env.ADS_DATABASE_PATH?.trim() || process.env.ADS_WORKSPACES_DATABASE_PATH?.trim();
+  if (configured) {
+    const normalized = configured.replace(/^sqlite:\/\//, "");
+    const resolved = path.isAbsolute(normalized) ? normalized : path.resolve(normalized);
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    return resolved;
+  }
+  return path.join(resolveAdsStateDir(), "workspaces.db");
+}
+
+export function getWorkspacesDatabase(explicitPath?: string, _workspacePath?: string): DatabaseType {
+  const dbPath = resolveWorkspacesDbPath(explicitPath);
+  if (workspacesDb && workspacesDbPath === dbPath) return workspacesDb;
+  if (workspacesDb) {
+    try { workspacesDb.close(); } catch { /* ignore */ }
+    workspacesDb = null;
+    workspacesDbPath = null;
+  }
+  const db = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  const busyTimeoutMs = parseNonNegativeIntFlag(process.env.ADS_SQLITE_BUSY_TIMEOUT_MS, DEFAULT_SQLITE_BUSY_TIMEOUT_MS);
+  db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+  initializeDatabase(db);
+  // Workspace ownership must be explicit; never guess an owner for existing rows.
+  assertWorkspaceIdsPresent(db);
+  if (!process.env.ADS_DATABASE_PATH) {
+    migrateLegacyWorkspacesToCentralDb(db);
+  }
+  workspacesDb = db;
+  workspacesDbPath = dbPath;
+  return db;
+}
+
 export function closeAllWorkspaceDatabases(): void {
   for (const db of cachedDbs.values()) {
     try {
@@ -175,6 +195,11 @@ export function closeAllWorkspaceDatabases(): void {
     }
   }
   cachedDbs = new Map();
+  if (workspacesDb) {
+    try { workspacesDb.close(); } catch { /* ignore */ }
+    workspacesDb = null;
+    workspacesDbPath = null;
+  }
 }
 
 export function resetDatabaseForTests(): void {

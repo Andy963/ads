@@ -6,7 +6,8 @@ import path from "node:path";
 
 import { detectImageInfo } from "../../server/attachments/images.js";
 import { AttachmentStore } from "../../server/attachments/store.js";
-import { getDatabase, resetDatabaseForTests } from "../../server/storage/database.js";
+import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { TaskStore } from "../../server/tasks/store.js";
 
 function makeTinyPng(width: number, height: number): Buffer {
   const buf = Buffer.alloc(8 + 4 + 4 + 13 + 4);
@@ -151,10 +152,7 @@ describe("attachments/store", () => {
   });
 
   it("assignAttachmentsToTask should require task to exist (FK)", () => {
-    const db = getDatabase();
-    db.prepare(
-      `INSERT INTO tasks (id, title, prompt, created_at) VALUES (?, ?, ?, ?)`,
-    ).run("task-1", "t", "p", 1);
+    const task = new TaskStore().createTask({ id: "task-1", title: "t", prompt: "p" }, 1);
 
     const store = new AttachmentStore();
     const sha = "b".repeat(64);
@@ -168,10 +166,9 @@ describe("attachments/store", () => {
       now: 1,
     });
 
-    store.assignAttachmentsToTask("task-1", [att.id]);
+    store.assignAttachmentsToTask(task.id, [att.id]);
     const updated = store.getAttachment(att.id);
     assert.ok(updated);
     assert.equal(updated.taskId, "task-1");
   });
 });
-

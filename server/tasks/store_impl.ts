@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { getDatabase } from "../storage/database.js";
+import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { type TaskStoreStatements, prepareTaskStoreStatements } from "./storeStatements.js";
 import type {
   CreateTaskInput,
@@ -31,10 +31,11 @@ export class TaskStore {
   private readonly conversationOps: ReturnType<typeof createTaskStoreConversationOps>;
 
   constructor(options?: { workspacePath?: string }) {
-    this.db = getDatabase(options?.workspacePath);
-    this.stmts = prepareTaskStoreStatements(this.db);
+    this.db = getWorkspacesDatabase(undefined, options?.workspacePath);
+    const workspaceId = resolveWorkspaceId(options?.workspacePath);
+    this.stmts = prepareTaskStoreStatements(this.db, workspaceId);
 
-    this.taskOps = createTaskStoreTaskOps({ db: this.db, stmts: this.stmts });
+    this.taskOps = createTaskStoreTaskOps({ db: this.db, stmts: this.stmts, workspaceId });
     this.messageOps = createTaskStoreMessageOps({ stmts: this.stmts });
     this.modelConfigOps = createTaskStoreModelConfigOps({ db: this.db, stmts: this.stmts });
     this.conversationOps = createTaskStoreConversationOps({ stmts: this.stmts });

@@ -4,12 +4,12 @@ import path from "node:path";
 import type { Database as SqliteDatabase } from "better-sqlite3";
 import type { Runner, SqliteQueue } from "liteque";
 
-import { getDatabaseInfo } from "../storage/database.js";
 import { TaskStore } from "../tasks/store.js";
 import type { Task } from "../tasks/types.js";
 import { OrchestratorTaskExecutor } from "../tasks/executor.js";
 import type { Logger } from "../utils/logger.js";
-import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
+import { detectWorkspaceFrom, resolveConfiguredDatabasePath } from "../workspace/detector.js";
 
 import { ScheduleStore } from "./store.js";
 import type { StoredSchedule } from "./store.js";
@@ -117,7 +117,8 @@ export function normalizeWorkspaceRoot(workspaceRoot: string): string {
 }
 
 export function resolveLitequeDbPath(workspaceRoot: string): string {
-  const base = getDatabaseInfo(workspaceRoot).path;
+  const base = resolveConfiguredDatabasePath()
+    ?? resolveWorkspaceStatePath(normalizeWorkspaceRoot(workspaceRoot), "ads.db");
   const ext = path.extname(base);
   if (!ext) {
     return `${base}.liteque.db`;

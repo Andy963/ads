@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { getDatabase } from "../storage/database.js";
+import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { parseOptionalSqliteInt, parseSqliteBoolean } from "../utils/sqlite.js";
 
 import { ScheduleSpecSchema, type ScheduleSpec } from "./scheduleSpec.js";
@@ -132,9 +132,11 @@ function parseScheduleRunRow(row: Record<string, unknown>): StoredScheduleRun {
 
 export class ScheduleStore {
   private readonly db: DatabaseType;
+  private readonly workspaceId: string;
 
   constructor(options?: { workspacePath?: string }) {
-    this.db = getDatabase(options?.workspacePath);
+    this.db = getWorkspacesDatabase(undefined, options?.workspacePath);
+    this.workspaceId = resolveWorkspaceId(options?.workspacePath);
   }
 
   createSchedule(input: { instruction: string; spec: ScheduleSpec; enabled: boolean; nextRunAt: number | null }, now = Date.now()): StoredSchedule {
@@ -147,12 +149,12 @@ export class ScheduleStore {
     this.db
       .prepare(
         `INSERT INTO schedules (
-          id, instruction, spec_json, enabled, next_run_at,
+          workspace_id, id, instruction, spec_json, enabled, next_run_at,
           lease_owner, lease_until,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
       )
-      .run(id, instruction, specJson, enabled, nextRunAt, now, now);
+      .run(this.workspaceId, id, instruction, specJson, enabled, nextRunAt, now, now);
 
     const created = this.getSchedule(id);
     if (!created) {
@@ -164,7 +166,7 @@ export class ScheduleStore {
   getSchedule(id: string): StoredSchedule | null {
     const scheduleId = normalizeTrimmedString(id);
     if (!scheduleId) return null;
-    const row = this.db.prepare(`SELECT * FROM schedules WHERE id = ? LIMIT 1`).get(scheduleId) as
+    const row = this.db.prepare(`SELECT * FROM schedules WHERE workspace_id = ? AND id = ? LIMIT 1`).get(this.workspaceId, scheduleId) as
       | Record<string, unknown>
       | undefined;
     return row ? parseScheduleRow(row) : null;
@@ -173,8 +175,8 @@ export class ScheduleStore {
   listSchedules(options?: { limit?: number }): StoredSchedule[] {
     const limit = normalizePositiveLimit(options?.limit, DEFAULT_LIST_LIMIT);
     const rows = this.db
-      .prepare(`SELECT * FROM schedules ORDER BY created_at DESC, id DESC LIMIT ?`)
-      .all(limit) as Record<string, unknown>[];
+      .prepare(`SELECT * FROM schedules WHERE workspace_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .all(this.workspaceId, limit) as Record<string, unknown>[];
     return rows.map((row) => parseScheduleRow(row));
   }
 
@@ -206,9 +208,9 @@ export class ScheduleStore {
       .prepare(
         `UPDATE schedules
          SET instruction = ?, spec_json = ?, enabled = ?, next_run_at = ?, lease_owner = ?, lease_until = ?, updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND workspace_id = ?`,
       )
-      .run(instruction, JSON.stringify(spec), enabled, nextRunAt, leaseOwner, leaseUntil, now, scheduleId);
+      .run(instruction, JSON.stringify(spec), enabled, nextRunAt, leaseOwner, leaseUntil, now, scheduleId, this.workspaceId);
 
     const updated = this.getSchedule(scheduleId);
     if (!updated) {
@@ -224,14 +226,14 @@ export class ScheduleStore {
       .prepare(
         `SELECT id
          FROM schedules
-         WHERE enabled = 1
+         WHERE workspace_id = ? AND enabled = 1
            AND next_run_at IS NOT NULL
            AND next_run_at <= ?
            AND (lease_until IS NULL OR lease_until <= ?)
          ORDER BY next_run_at ASC, id ASC
          LIMIT ?`,
       )
-      .all(now, now, limit) as Array<{ id?: unknown }>;
+      .all(this.workspaceId, now, now, limit) as Array<{ id?: unknown }>;
     return rows.map((r) => normalizeTrimmedString(r.id)).filter(Boolean);
   }
 
@@ -245,13 +247,13 @@ export class ScheduleStore {
       .prepare(
         `UPDATE schedules
          SET lease_owner = ?, lease_until = ?, updated_at = ?
-         WHERE id = ?
+         WHERE id = ? AND workspace_id = ?
            AND enabled = 1
            AND next_run_at IS NOT NULL
            AND next_run_at <= ?
            AND (lease_until IS NULL OR lease_until <= ?)`,
       )
-      .run(owner, until, now, scheduleId, now, now) as { changes?: number };
+      .run(owner, until, now, scheduleId, this.workspaceId, now, now) as { changes?: number };
     return Boolean(result && result.changes === 1);
   }
 
@@ -260,12 +262,12 @@ export class ScheduleStore {
     if (!scheduleId) return;
     const owner = normalizeOptionalTrimmedString(options.leaseOwner);
     if (!owner) {
-      this.db.prepare(`UPDATE schedules SET lease_owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ?`).run(now, scheduleId);
+      this.db.prepare(`UPDATE schedules SET lease_owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND workspace_id = ?`).run(now, scheduleId, this.workspaceId);
       return;
     }
     this.db
-      .prepare(`UPDATE schedules SET lease_owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND lease_owner = ?`)
-      .run(now, scheduleId, owner);
+      .prepare(`UPDATE schedules SET lease_owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND lease_owner = ? AND workspace_id = ?`)
+      .run(now, scheduleId, owner, this.workspaceId);
   }
 
   insertRun(
@@ -282,14 +284,15 @@ export class ScheduleStore {
     const status = input.status;
 
     const stmt = this.db.prepare(
-      `INSERT OR IGNORE INTO schedule_runs (
-        schedule_id, external_id, run_at, status, task_id,
+      `INSERT INTO schedule_runs (
+        workspace_id, schedule_id, external_id, run_at, status, task_id,
         result, error,
         created_at, started_at, completed_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?)
+      ON CONFLICT(workspace_id, external_id) DO NOTHING`,
     );
 
-    const result = stmt.run(scheduleId, externalId, runAt, status, taskId, now, now) as { changes?: number; lastInsertRowid?: unknown };
+    const result = stmt.run(this.workspaceId, scheduleId, externalId, runAt, status, taskId, now, now) as { changes?: number; lastInsertRowid?: unknown };
     const inserted = Boolean(result && result.changes === 1);
     const runId = inserted ? Number(result.lastInsertRowid ?? 0) : null;
     return { inserted, runId: inserted && Number.isFinite(runId) ? runId : null };
@@ -299,8 +302,8 @@ export class ScheduleStore {
     const id = normalizeTrimmedString(externalId);
     if (!id) return null;
     const row = this.db
-      .prepare(`SELECT * FROM schedule_runs WHERE external_id = ? LIMIT 1`)
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`SELECT * FROM schedule_runs WHERE workspace_id = ? AND external_id = ? LIMIT 1`)
+      .get(this.workspaceId, id) as Record<string, unknown> | undefined;
     return row ? parseScheduleRunRow(row) : null;
   }
 
@@ -336,9 +339,9 @@ export class ScheduleStore {
       .prepare(
         `UPDATE schedule_runs
          SET status = ?, task_id = ?, result = ?, error = ?, started_at = ?, completed_at = ?, updated_at = ?
-         WHERE external_id = ?`,
+         WHERE external_id = ? AND workspace_id = ?`,
       )
-      .run(status, taskId, result, error, startedAt, completedAt, now, id);
+      .run(status, taskId, result, error, startedAt, completedAt, now, id, this.workspaceId);
 
     const updated = this.getRunByExternalId(id);
     if (!updated) {
@@ -352,8 +355,8 @@ export class ScheduleStore {
     if (!id) return [];
     const limit = normalizePositiveLimit(options?.limit, DEFAULT_LIST_LIMIT);
     const rows = this.db
-      .prepare(`SELECT * FROM schedule_runs WHERE schedule_id = ? ORDER BY run_at DESC, id DESC LIMIT ?`)
-      .all(id, limit) as Record<string, unknown>[];
+      .prepare(`SELECT * FROM schedule_runs WHERE workspace_id = ? AND schedule_id = ? ORDER BY run_at DESC, id DESC LIMIT ?`)
+      .all(this.workspaceId, id, limit) as Record<string, unknown>[];
     return rows.map((r) => parseScheduleRunRow(r));
   }
 
@@ -365,15 +368,15 @@ export class ScheduleStore {
       .prepare(
         `SELECT r.external_id AS external_id, r.task_id AS task_id, r.status AS status
          FROM schedule_runs r
-         WHERE r.status IN ('queued', 'running')
+         WHERE r.workspace_id = ? AND r.status IN ('queued', 'running')
          ORDER BY r.run_at DESC, r.id DESC
          LIMIT ?`,
       )
-      .all(limit) as Array<{ external_id?: unknown; task_id?: unknown; status?: unknown }>;
+      .all(this.workspaceId, limit) as Array<{ external_id?: unknown; task_id?: unknown; status?: unknown }>;
 
     let updated = 0;
 
-    const taskStmt = this.db.prepare(`SELECT status, result, error, started_at, completed_at FROM tasks WHERE id = ? LIMIT 1`);
+    const taskStmt = this.db.prepare(`SELECT status, result, error, started_at, completed_at FROM tasks WHERE workspace_id = ? AND id = ? LIMIT 1`);
 
     for (const row of rows) {
       const externalId = normalizeTrimmedString(row.external_id);
@@ -381,7 +384,7 @@ export class ScheduleStore {
       if (!externalId || !taskId) {
         continue;
       }
-      const task = taskStmt.get(taskId) as
+      const task = taskStmt.get(this.workspaceId, taskId) as
         | { status?: unknown; result?: unknown; error?: unknown; started_at?: unknown; completed_at?: unknown }
         | undefined;
       if (!task) {

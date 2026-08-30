@@ -16,8 +16,8 @@ import {
   normalizeTaskStatus,
 } from "./normalize.js";
 
-export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStoreStatements }) {
-  const { db, stmts } = deps;
+export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStoreStatements; workspaceId: string }) {
+  const { db, stmts, workspaceId } = deps;
 
   const deriveTaskTitle = (prompt: string): string => {
     const firstLine = String(prompt ?? "")
@@ -290,11 +290,11 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
         .prepare(
           `SELECT id, queued_at, queue_order, created_at
            FROM tasks
-           WHERE status = 'queued' AND id IN (${chunk.map(() => "?").join(", ")})
+           WHERE workspace_id = ? AND status = 'queued' AND id IN (${chunk.map(() => "?").join(", ")})
            ORDER BY queued_at ASC, queue_order ASC, created_at ASC, id ASC
            LIMIT 1`,
         )
-        .get(...chunk) as QueuedCandidate | undefined;
+        .get(workspaceId, ...chunk) as QueuedCandidate | undefined;
       if (candidate && (!selected || isEarlierQueuedCandidate(candidate, selected))) {
         selected = candidate;
       }
@@ -426,11 +426,11 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
         .prepare(
           `SELECT id
            FROM tasks
-           WHERE status = 'completed' AND archived_at IS NOT NULL AND archived_at <= ?
+           WHERE workspace_id = ? AND status = 'completed' AND archived_at IS NOT NULL AND archived_at <= ?
            ORDER BY archived_at ASC, completed_at ASC, created_at ASC, id ASC
            LIMIT ?`,
         )
-        .all(cutoffMs, limit) as Array<{ id?: unknown }>;
+        .all(workspaceId, cutoffMs, limit) as Array<{ id?: unknown }>;
 
       const taskIds = rows.map((r) => String(r?.id ?? "").trim()).filter(Boolean);
       if (taskIds.length === 0) {
@@ -439,13 +439,13 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
 
       const placeholders = taskIds.map(() => "?").join(", ");
       const attachments = db
-        .prepare(`SELECT id, storage_key FROM attachments WHERE task_id IN (${placeholders})`)
-        .all(...taskIds) as Array<{ id?: unknown; storage_key?: unknown }>;
+        .prepare(`SELECT id, storage_key FROM attachments WHERE workspace_id = ? AND task_id IN (${placeholders})`)
+        .all(workspaceId, ...taskIds) as Array<{ id?: unknown; storage_key?: unknown }>;
 
       // tasks.parent_task_id uses a self-FK without ON DELETE SET NULL, so detach children first.
-      db.prepare(`UPDATE tasks SET parent_task_id = NULL WHERE parent_task_id IN (${placeholders})`).run(...taskIds);
-      db.prepare(`DELETE FROM attachments WHERE task_id IN (${placeholders})`).run(...taskIds);
-      db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...taskIds);
+      db.prepare(`UPDATE tasks SET parent_task_id = NULL WHERE workspace_id = ? AND parent_task_id IN (${placeholders})`).run(workspaceId, ...taskIds);
+      db.prepare(`DELETE FROM attachments WHERE workspace_id = ? AND task_id IN (${placeholders})`).run(workspaceId, ...taskIds);
+      db.prepare(`DELETE FROM tasks WHERE workspace_id = ? AND id IN (${placeholders})`).run(workspaceId, ...taskIds);
 
       return {
         taskIds,

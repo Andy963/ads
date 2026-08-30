@@ -25,14 +25,22 @@ function collectTests(directory) {
 }
 
 const tests = collectTests(testsRoot).sort();
+const testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-test-state-"));
 if (tests.length === 0) {
   console.error(`No test files found under ${testsRoot}`);
   process.exitCode = 1;
 } else {
-  const result = spawnSync(nodeBin, ["--import", "tsx", "--test", ...tests], {
+  const result = spawnSync(nodeBin, ["--import", "tsx", "--import", "./tests/helpers/adsStateDir.ts", "--test", ...tests], {
     cwd: root,
+    env: { ...process.env, ADS_TEST_STATE_ROOT: testStateDir },
     stdio: "inherit",
   });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
+}
+
+try {
+  fs.rmSync(testStateDir, { recursive: true, force: true });
+} catch {
+  // ignore test cleanup errors
 }

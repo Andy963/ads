@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 import type { Database as DatabaseType, Statement as StatementType } from "better-sqlite3";
 
-import { getDatabase } from "../storage/database.js";
+import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import type { Attachment } from "./types.js";
 
 type SqliteStatement = StatementType<unknown[], unknown>;
@@ -29,6 +29,7 @@ function normalizeFilename(value: unknown): string | null {
 
 export class AttachmentStore {
   private readonly db: DatabaseType;
+  private readonly workspaceId: string;
 
   private readonly getByIdStmt: SqliteStatement;
   private readonly getByShaStmt: SqliteStatement;
@@ -38,12 +39,14 @@ export class AttachmentStore {
   private readonly setFilenameStmt: SqliteStatement;
 
   constructor(options?: { workspacePath?: string }) {
-    this.db = getDatabase(options?.workspacePath);
+    this.db = getWorkspacesDatabase(undefined, options?.workspacePath);
+    this.workspaceId = resolveWorkspaceId(options?.workspacePath);
 
-    this.getByIdStmt = this.db.prepare(`SELECT * FROM attachments WHERE id = ? LIMIT 1`);
-    this.getByShaStmt = this.db.prepare(`SELECT * FROM attachments WHERE sha256 = ? LIMIT 1`);
+    this.getByIdStmt = this.db.prepare(`SELECT * FROM attachments WHERE workspace_id = ? AND id = ? LIMIT 1`);
+    this.getByShaStmt = this.db.prepare(`SELECT * FROM attachments WHERE workspace_id = ? AND sha256 = ? LIMIT 1`);
     this.insertStmt = this.db.prepare(`
       INSERT INTO attachments (
+        workspace_id,
         id,
         task_id,
         kind,
@@ -55,34 +58,34 @@ export class AttachmentStore {
         sha256,
         storage_key,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.listByTaskStmt = this.db.prepare(
-      `SELECT * FROM attachments WHERE task_id = ? ORDER BY created_at ASC, id ASC`,
+      `SELECT * FROM attachments WHERE workspace_id = ? AND task_id = ? ORDER BY created_at ASC, id ASC`,
     );
     this.claimForTaskStmt = this.db.prepare(
       `UPDATE attachments
        SET task_id = ?
-       WHERE id = ? AND (task_id IS NULL OR task_id = ?)`,
+       WHERE workspace_id = ? AND id = ? AND (task_id IS NULL OR task_id = ?)`,
     );
     this.setFilenameStmt = this.db.prepare(
       `UPDATE attachments
        SET filename = ?
-       WHERE id = ? AND (filename IS NULL OR TRIM(filename) = '')`,
+       WHERE workspace_id = ? AND id = ? AND (filename IS NULL OR TRIM(filename) = '')`,
     );
   }
 
   getAttachment(id: string): Attachment | null {
     const normalized = String(id ?? "").trim();
     if (!normalized) return null;
-    const row = this.getByIdStmt.get(normalized) as Record<string, unknown> | undefined;
+    const row = this.getByIdStmt.get(this.workspaceId, normalized) as Record<string, unknown> | undefined;
     return row ? this.toAttachment(row) : null;
   }
 
   getAttachmentBySha256(sha256: string): Attachment | null {
     const normalized = normalizeHexSha256(sha256);
     if (!normalized) return null;
-    const row = this.getByShaStmt.get(normalized) as Record<string, unknown> | undefined;
+    const row = this.getByShaStmt.get(this.workspaceId, normalized) as Record<string, unknown> | undefined;
     return row ? this.toAttachment(row) : null;
   }
 
@@ -113,7 +116,7 @@ export class AttachmentStore {
       if (existing) {
         if (filename && (!existing.filename || !existing.filename.trim())) {
           try {
-            this.setFilenameStmt.run(filename, existing.id);
+            this.setFilenameStmt.run(filename, this.workspaceId, existing.id);
           } catch {
             // ignore
           }
@@ -124,6 +127,7 @@ export class AttachmentStore {
       const id = crypto.randomUUID();
       try {
         this.insertStmt.run(
+          this.workspaceId,
           id,
           input.taskId ?? null,
           "image",
@@ -158,7 +162,7 @@ export class AttachmentStore {
   listAttachmentsForTask(taskId: string): Attachment[] {
     const normalized = String(taskId ?? "").trim();
     if (!normalized) return [];
-    const rows = this.listByTaskStmt.all(normalized) as Record<string, unknown>[];
+    const rows = this.listByTaskStmt.all(this.workspaceId, normalized) as Record<string, unknown>[];
     return rows.map((row) => this.toAttachment(row));
   }
 
@@ -185,7 +189,7 @@ export class AttachmentStore {
         if (existing.kind !== "image") {
           throw new Error(`Attachment kind not supported: ${existing.kind}`);
         }
-        const updated = this.claimForTaskStmt.run(normalizedTaskId, existing.id, normalizedTaskId) as { changes?: number };
+        const updated = this.claimForTaskStmt.run(normalizedTaskId, this.workspaceId, existing.id, normalizedTaskId) as { changes?: number };
         if (!updated || updated.changes !== 1) {
           const current = this.getAttachment(existing.id);
           const owner = current?.taskId ?? null;

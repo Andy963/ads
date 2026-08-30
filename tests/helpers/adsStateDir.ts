@@ -94,3 +94,20 @@ export function installTempAdsStateDir(prefix = "ads-state-"): TempAdsStateDir {
   };
 }
 
+export function installProcessAdsStateSandbox(): void {
+  const root = process.env.ADS_TEST_STATE_ROOT?.trim();
+  if (!root) return;
+  const stateDir = path.join(root, String(process.pid));
+  fs.mkdirSync(stateDir, { recursive: true });
+  process.env.ADS_STATE_DIR = stateDir;
+  process.env.ADS_STATE_DB_PATH = path.join(stateDir, "state.db");
+  process.env.ADS_WORKSPACES_DATABASE_PATH = path.join(stateDir, "workspaces.db");
+  // ADS_DATABASE_PATH takes precedence over both legacy and central resolution.
+  // Clear inherited values so each database stays under the test state root.
+  delete process.env.ADS_DATABASE_PATH;
+  process.once("exit", () => {
+    try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+}
+
+installProcessAdsStateSandbox();
