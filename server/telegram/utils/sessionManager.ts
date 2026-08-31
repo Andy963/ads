@@ -374,15 +374,22 @@ export class SessionManager {
     }
     const record = this.runtime.getRecord(userId);
     const previousModel = record?.session.getModel?.() ?? this.getSavedState(userId)?.model ?? this.defaultModel;
+    const activeAgentId = record?.session.getActiveAgentId?.();
+    const preservesThread = activeAgentId
+      ? record?.session.getAdapter?.(activeAgentId)?.preservesThreadOnModelChange === true
+      : true;
     if (record) {
       record.session.setModel(normalized || undefined);
       record.lastActivity = Date.now();
     }
     const modelChanged = previousModel !== (normalized || undefined);
-    if (modelChanged) {
+    if (modelChanged && record && !preservesThread) {
+      if (activeAgentId) {
+        this.threadStorage?.clearThreadId(userId, activeAgentId);
+      }
       this.markHistoryInjection(userId);
     }
-    this.syncStoredState(userId, { clearThreads: modelChanged });
+    this.syncStoredState(userId);
     this.logger.info(`Switched to model: ${normalized || "(default)"}`);
   }
 

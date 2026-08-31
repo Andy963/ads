@@ -43,6 +43,8 @@ export interface AgentAdapter {
   reset(): void;
   setWorkingDirectory?(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   setModel?(model?: string): void;
+  /** Whether changing the model preserves the provider-native thread. */
+  readonly preservesThreadOnModelChange?: boolean;
   setModelConfig?(config?: Record<string, unknown> | null): void;
   setModelReasoningEffort?(effort?: string): void;
   setDeveloperInstructions?(instructions: string): void;

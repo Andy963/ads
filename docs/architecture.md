@@ -38,6 +38,8 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 
 ## 2. 核心架构特性
 
+模型切换按 provider 能力处理：支持同线程切换的 adapter 保留 native thread；不支持的 adapter 只清除当前 agent 的线程并走历史注入，不影响其他 agent 的线程绑定。
+
 ### 2.1 双层存储模型 (Two-Tier Storage)
 - **全局状态库 (`state.db`)**：
   - 存放 Web 管理员账号、认证 Session、模型管理配置、跨工作区全局规则（Global Rules）以及多工作区注册表。

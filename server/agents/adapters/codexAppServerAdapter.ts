@@ -230,6 +230,7 @@ interface ContextUsage {
  * `"codex-appserver"` so both can coexist.
  */
 export class CodexAppServerAdapter implements AgentAdapter {
+  readonly preservesThreadOnModelChange = true;
   readonly id: string;
   readonly metadata: AgentMetadata;
 
@@ -314,7 +315,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
     if (!normalized) {
       if (!this.model) return;
       this.model = undefined;
-      this.reset();
       return;
     }
     const lower = normalized.toLowerCase();
@@ -331,7 +331,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
     if (this.model === normalized) return;
     this.model = normalized;
-    this.reset();
   }
 
   setModelReasoningEffort(effort?: string): void {
