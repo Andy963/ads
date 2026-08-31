@@ -234,9 +234,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     runTaskQueue,
     upsertTask: (t) => upsertTask(t),
   });
-  const updateQueuedTaskAndRun = async (id: string, updates: Record<string, unknown>): Promise<void> => {
+  const updateQueuedTaskAndRun = async (id: string, updates: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
     const taskId = String(id ?? "").trim();
-    if (!taskId) return;
+    if (!taskId) return { ok: false, error: "Task ID is required" };
 
     const existing = tasks.value.find((t) => t.id === taskId) ?? null;
     const status = existing?.status ?? null;
@@ -254,24 +254,23 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
         } else {
           await loadTasks();
         }
+        return apiError.value ? { ok: false, error: apiError.value } : { ok: true };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         apiError.value = msg;
+        return { ok: false, error: msg };
       }
-      return;
     }
 
     const shouldUseSingleRun = status === "cancelled";
     if (!shouldUseSingleRun) {
-      await reorderUpdateQueuedTaskAndRun(taskId, updates);
-      return;
+      return await reorderUpdateQueuedTaskAndRun(taskId, updates);
     }
 
-    await updateQueuedTask(taskId, updates);
-    if (apiError.value) {
-      return;
-    }
+    const updated = await updateQueuedTask(taskId, updates);
+    if (!updated.ok) return updated;
     await runSingleTask(taskId);
+    return apiError.value ? { ok: false, error: apiError.value } : { ok: true };
   };
 
   const refreshTaskRow = async (id: string, projectId: string = activeProjectId.value): Promise<void> => {

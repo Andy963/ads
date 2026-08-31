@@ -2,6 +2,8 @@ import type { Task } from "../../api/types";
 import type { ChatActions } from "../chat";
 import type { AppContext } from "../controller";
 
+export type TaskActionResult = { ok: boolean; error?: string };
+
 function normalizeQueueOrderForSort(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   return Number.POSITIVE_INFINITY;
@@ -84,7 +86,7 @@ export function createTaskReorderActions(
     }
   };
 
-  const updateQueuedTask = async (id: string, updates: Record<string, unknown>): Promise<void> => {
+  const updateQueuedTask = async (id: string, updates: Record<string, unknown>): Promise<TaskActionResult> => {
     apiError.value = null;
     clearNotice();
     try {
@@ -94,34 +96,35 @@ export function createTaskReorderActions(
       } else {
         await loadTasks();
       }
+      return { ok: true };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       apiError.value = msg;
+      return { ok: false, error: msg };
     }
   };
 
-  const updateQueuedTaskAndRun = async (id: string, updates: Record<string, unknown>): Promise<void> => {
+  const updateQueuedTaskAndRun = async (id: string, updates: Record<string, unknown>): Promise<TaskActionResult> => {
     const taskId = String(id ?? "").trim();
-    if (!taskId) return;
+    if (!taskId) return { ok: false, error: "Task ID is required" };
 
-    await updateQueuedTask(taskId, updates);
-    if (apiError.value) {
-      return;
-    }
+    const updated = await updateQueuedTask(taskId, updates);
+    if (!updated.ok) return updated;
 
     const ids = pendingIdsInQueueOrder();
     if (!ids.includes(taskId)) {
       await runTaskQueue();
-      return;
+      return apiError.value ? { ok: false, error: apiError.value } : { ok: true };
     }
     const next = ids.filter((x) => x !== taskId);
     next.push(taskId);
     await reorderPendingTasks(next);
     if (apiError.value) {
-      return;
+      return { ok: false, error: apiError.value };
     }
 
     await runTaskQueue();
+    return apiError.value ? { ok: false, error: apiError.value } : { ok: true };
   };
 
   return { pendingIdsInQueueOrder, reorderPendingTasks, updateQueuedTask, updateQueuedTaskAndRun };

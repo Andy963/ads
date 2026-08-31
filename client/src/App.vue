@@ -480,6 +480,14 @@ function openTaskCreateDialogHandler(): void {
   openTaskCreateDialog();
 }
 
+async function saveTask(payload: { id: string; updates: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
+  return await updateQueuedTask(payload.id, payload.updates);
+}
+
+async function saveTaskAndRun(payload: { id: string; updates: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
+  return await updateQueuedTaskAndRun(payload.id, payload.updates);
+}
+
 function openModelManager(): void {
   if (isMobile.value) {
     openMobileDrawer("models");
@@ -794,6 +802,8 @@ const plannerConnectionStatus = computed(() => {
                   :queue-status="queueStatus"
                   :can-run-single="apiAuthorized"
                   :show-create-button="!isMobile"
+                  :update-task="saveTask"
+                  :update-task-and-run="saveTaskAndRun"
                 :run-busy-ids="runBusyIds"
                 @select="select"
                 @update="({ id, updates }) => updateQueuedTask(id, updates)"
@@ -1007,6 +1017,8 @@ const plannerConnectionStatus = computed(() => {
                 :queue-status="queueStatus"
                 :can-run-single="apiAuthorized"
                 :show-create-button="false"
+                :update-task="saveTask"
+                :update-task-and-run="saveTaskAndRun"
                 :run-busy-ids="runBusyIds"
                 @select="select"
                 @update="({ id, updates }) => updateQueuedTask(id, updates)"
