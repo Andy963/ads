@@ -18,9 +18,29 @@ export interface Migration {
   up: (db: DatabaseType) => void;
 }
 
+function quoteIdentifier(value: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(value)) {
+    throw new Error("Invalid identifier: " + value);
+  }
+  return `"${value}"`;
+}
+
 function getTableColumnNames(db: DatabaseType, table: string): Set<string> {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+  const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{ name?: string }>;
   return new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+}
+
+function getTableColumnNullability(db: DatabaseType, table: string): Map<string, boolean> {
+  const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{ name?: unknown; notnull?: unknown }>;
+  return new Map(
+    columns
+      .map((column) => [String(column.name ?? "").trim(), Number(column.notnull) === 1] as const)
+      .filter(([name]) => name.length > 0),
+  );
+}
+
+function serializeSqliteRow(row: Record<string, unknown>): string {
+  return JSON.stringify(row, (_, value: unknown) => (typeof value === "bigint" ? value.toString() : value)) ?? "{}";
 }
 
 /**
@@ -811,6 +831,9 @@ export const migrations: Migration[] = [
     version: 26,
     description: "Enforce workspace ownership across business table references",
     up: (db) => {
+      // Some invalid parents may have restrictive child foreign keys. Defer those
+      // checks for this transaction while every affected reference is repaired.
+      db.pragma("defer_foreign_keys = ON");
       db.exec(`
         DROP INDEX IF EXISTS idx_attachments_sha256;
         DROP INDEX IF EXISTS idx_schedule_runs_external_id;
@@ -818,6 +841,20 @@ export const migrations: Migration[] = [
           ON attachments(workspace_id, sha256);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_runs_workspace_external_id
           ON schedule_runs(workspace_id, external_id);
+        CREATE TABLE IF NOT EXISTS workspace_reference_repairs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          table_name TEXT NOT NULL,
+          column_name TEXT NOT NULL,
+          parent_table TEXT NOT NULL,
+          row_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          reference_value TEXT NOT NULL,
+          action TEXT NOT NULL,
+          row_json TEXT NOT NULL,
+          repaired_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_reference_repairs_lookup
+          ON workspace_reference_repairs(table_name, column_name, repaired_at);
       `);
 
       const references = [
@@ -848,20 +885,60 @@ export const migrations: Migration[] = [
         // The schedules self-reference is a no-op used to ensure every workspace-owned root
         // table participates in the same validation path without inventing a parent relation.
         if (table === parentTable && column === "id") continue;
-        if (!getTableColumnNames(db, table).has("workspace_id") || !getTableColumnNames(db, parentTable).has("workspace_id")) {
+        const childColumns = getTableColumnNames(db, table);
+        const parentColumns = getTableColumnNames(db, parentTable);
+        if (!childColumns.has("workspace_id") || !parentColumns.has("workspace_id") || !childColumns.has(column)) {
           continue;
         }
-        const invalid = db.prepare(
-          `SELECT COUNT(*) AS count FROM ${table} child
-           WHERE child.${column} IS NOT NULL
+        const invalidRows = db.prepare(
+          `SELECT child.rowid AS __repair_rowid__, child.* FROM ${quoteIdentifier(table)} child
+           WHERE child.${quoteIdentifier(column)} IS NOT NULL
              AND NOT EXISTS (
-               SELECT 1 FROM ${parentTable} parent
-               WHERE parent.id = child.${column}
+               SELECT 1 FROM ${quoteIdentifier(parentTable)} parent
+               WHERE parent.id = child.${quoteIdentifier(column)}
+                 AND parent.workspace_id = child.workspace_id
+             )`,
+        ).all() as Array<Record<string, unknown>>;
+        if (invalidRows.length > 0) {
+          const action = getTableColumnNullability(db, table).get(column) ? "delete" : "nullify";
+          const audit = db.prepare(
+            `INSERT INTO workspace_reference_repairs (
+               table_name, column_name, parent_table, row_id, workspace_id,
+               reference_value, action, row_json, repaired_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          );
+          const mutate = action === "nullify"
+            ? db.prepare(`UPDATE ${quoteIdentifier(table)} SET ${quoteIdentifier(column)} = NULL WHERE rowid = ?`)
+            : db.prepare(`DELETE FROM ${quoteIdentifier(table)} WHERE rowid = ?`);
+          const repairedAt = Date.now();
+          for (const row of invalidRows) {
+            const rowId = String(row.__repair_rowid__ ?? row.id ?? "");
+            audit.run(
+              table,
+              column,
+              parentTable,
+              rowId,
+              String(row.workspace_id ?? ""),
+              String(row[column] ?? ""),
+              action,
+              serializeSqliteRow(row),
+              repairedAt,
+            );
+            mutate.run(row.__repair_rowid__);
+          }
+        }
+
+        const remaining = db.prepare(
+          `SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)} child
+           WHERE child.${quoteIdentifier(column)} IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM ${quoteIdentifier(parentTable)} parent
+               WHERE parent.id = child.${quoteIdentifier(column)}
                  AND parent.workspace_id = child.workspace_id
              )`,
         ).get() as { count?: unknown };
-        if (Number(invalid?.count ?? 0) > 0) {
-          throw new Error(`${table}.${column} contains cross-workspace or missing references`);
+        if (Number(remaining?.count ?? 0) > 0) {
+          throw new Error(`${table}.${column} contains cross-workspace or missing references after repair`);
         }
 
         for (const operation of ["INSERT", "UPDATE"] as const) {
@@ -880,6 +957,11 @@ export const migrations: Migration[] = [
             END;
           `);
         }
+      }
+
+      const foreignKeyErrors = db.prepare("PRAGMA foreign_key_check").all();
+      if (foreignKeyErrors.length > 0) {
+        throw new Error("Workspace ownership migration left foreign key violations");
       }
     },
   },

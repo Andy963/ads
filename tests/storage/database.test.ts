@@ -280,4 +280,110 @@ describe("storage/database", () => {
     const version = migrated.prepare("SELECT version FROM schema_version WHERE id = 1").get() as { version: number };
     assert.strictEqual(version.version, SCHEMA_VERSION);
   });
+
+  it("should repair invalid workspace references before installing enforcement triggers", () => {
+    const db = getDatabase();
+    db.exec(`
+      DROP TRIGGER enforce_conversation_messages_conversation_id_insert;
+      DROP TRIGGER enforce_conversation_messages_conversation_id_update;
+      DROP TRIGGER enforce_tasks_parent_task_id_insert;
+      DROP TRIGGER enforce_tasks_parent_task_id_update;
+    `);
+    db.prepare("UPDATE schema_version SET version = 25 WHERE id = 1").run();
+    db.prepare(
+      `INSERT INTO conversations (workspace_id, id, created_at, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run("workspace-a", "chat-1", 1, 1);
+    db.prepare(
+      `INSERT INTO conversation_messages (workspace_id, conversation_id, role, content, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run("workspace-b", "chat-1", "user", "orphan message", 2);
+    db.pragma("foreign_keys = OFF");
+    db.prepare(
+      `INSERT INTO tasks (workspace_id, id, title, prompt, model, status, created_at, parent_task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("workspace-b", "task-1", "Task", "Prompt", "auto", "pending", 3, "missing-parent");
+    db.pragma("foreign_keys = ON");
+
+    resetDatabaseForTests();
+
+    const migrated = getDatabase();
+    const messageCount = migrated.prepare("SELECT COUNT(*) AS count FROM conversation_messages").get() as { count: number };
+    const task = migrated.prepare("SELECT parent_task_id FROM tasks WHERE id = ?").get("task-1") as { parent_task_id: string | null };
+    const repairs = migrated
+      .prepare("SELECT table_name, column_name, action, reference_value FROM workspace_reference_repairs ORDER BY id")
+      .all() as Array<{ table_name: string; column_name: string; action: string; reference_value: string }>;
+    const version = migrated.prepare("SELECT version FROM schema_version WHERE id = 1").get() as { version: number };
+
+    assert.strictEqual(version.version, SCHEMA_VERSION);
+    assert.strictEqual(messageCount.count, 0);
+    assert.strictEqual(task.parent_task_id, null);
+    assert.deepStrictEqual(repairs, [
+      {
+        table_name: "tasks",
+        column_name: "parent_task_id",
+        action: "nullify",
+        reference_value: "missing-parent",
+      },
+      {
+        table_name: "conversation_messages",
+        column_name: "conversation_id",
+        action: "delete",
+        reference_value: "chat-1",
+      },
+    ]);
+
+    assert.throws(
+      () => migrated.prepare(
+        `INSERT INTO conversation_messages (workspace_id, conversation_id, role, content, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("workspace-b", "chat-1", "user", "blocked", 4),
+      /conversation_messages\.conversation_id workspace mismatch/,
+    );
+    migrated.prepare(
+      `INSERT INTO conversation_messages (workspace_id, conversation_id, role, content, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run("workspace-a", "chat-1", "user", "valid", 5);
+  });
+
+  it("should defer restrictive foreign keys while repairing dependent rows", () => {
+    const db = getDatabase();
+    db.exec(`
+      DROP TRIGGER enforce_task_plans_task_id_insert;
+      DROP TRIGGER enforce_task_plans_task_id_update;
+      DROP TRIGGER enforce_task_messages_plan_step_id_insert;
+      DROP TRIGGER enforce_task_messages_plan_step_id_update;
+    `);
+    db.prepare("UPDATE schema_version SET version = 25 WHERE id = 1").run();
+    db.pragma("foreign_keys = OFF");
+    db.prepare(
+      `INSERT INTO tasks (workspace_id, id, title, prompt, model, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("workspace-a", "task-1", "Task", "Prompt", "auto", "pending", 1);
+    db.prepare(
+      `INSERT INTO task_plans (workspace_id, id, task_id, step_number, title)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run("workspace-a", 99, "missing-task", 1, "Orphan plan");
+    db.prepare(
+      `INSERT INTO task_messages (workspace_id, task_id, plan_step_id, role, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("workspace-a", "task-1", 99, "user", "Dependent message", 2);
+    db.pragma("foreign_keys = ON");
+
+    resetDatabaseForTests();
+
+    const migrated = getDatabase();
+    const plan = migrated.prepare("SELECT COUNT(*) AS count FROM task_plans WHERE id = 99").get() as { count: number };
+    const message = migrated.prepare("SELECT plan_step_id FROM task_messages WHERE content = ?").get("Dependent message") as { plan_step_id: number | null };
+    const repairs = migrated
+      .prepare("SELECT table_name, column_name, action FROM workspace_reference_repairs ORDER BY id")
+      .all() as Array<{ table_name: string; column_name: string; action: string }>;
+
+    assert.strictEqual(plan.count, 0);
+    assert.strictEqual(message.plan_step_id, null);
+    assert.deepStrictEqual(repairs, [
+      { table_name: "task_plans", column_name: "task_id", action: "delete" },
+      { table_name: "task_messages", column_name: "plan_step_id", action: "nullify" },
+    ]);
+  });
 });
