@@ -7,6 +7,10 @@ import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
 type GetImpl = (url: string) => Promise<unknown>;
 
 let getImpl: GetImpl | null = null;
+let projectsResponse: {
+  projects: Array<{ id: string; workspaceRoot: string; name: string; chatSessionId: string }>;
+  activeProjectId: string | null;
+} = { projects: [], activeProjectId: null };
 
 vi.mock("../api/client", () => {
   class ApiClient {
@@ -112,9 +116,10 @@ describe("mobile navigation behavior", () => {
     previousInnerWidth = window.innerWidth;
     Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
     localStorage.clear();
+    projectsResponse = { projects: [], activeProjectId: null };
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
-      if (url === "/api/projects") return { projects: [], activeProjectId: null };
+      if (url === "/api/projects") return projectsResponse;
       if (url.includes("/api/task-queue/status")) {
         return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
       }
@@ -181,6 +186,7 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await settleUi(wrapper);
+    expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBe("worker");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
@@ -218,6 +224,77 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="mobile-context-action-create-model"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-refresh-models"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  }, 40_000);
+
+  it("restores the last tab independently for each project", async () => {
+    projectsResponse = {
+      projects: [
+        { id: "p1", workspaceRoot: "/workspace/project-a", name: "Project A", chatSessionId: "main" },
+        { id: "p2", workspaceRoot: "/workspace/project-b", name: "Project B", chatSessionId: "main" },
+      ],
+      activeProjectId: "p1",
+    };
+    localStorage.setItem("ads.mobileWorkspaceTab.p1", "worker");
+    localStorage.setItem("ads.mobileWorkspaceTab.p2", "tasks");
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: {
+        stubs: {
+          LoginGate: false,
+          MainChatView: false,
+          GlobalRuleManager: RuleManagerStub,
+          ModelManager: ModelManagerStub,
+          DraggableModal: true,
+        },
+      },
+    });
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).not.toContain("active");
+
+    await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
+    await settleUi(wrapper);
+    const projectB = wrapper.findAll("button.projectRow").find((row) => row.text().includes("Project B"));
+    expect(projectB).toBeDefined();
+    await projectB!.trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-tab-tasks"]').classes()).toContain("active");
+
+    await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
+    await settleUi(wrapper);
+    const projectA = wrapper.findAll("button.projectRow").find((row) => row.text().includes("Project A"));
+    expect(projectA).toBeDefined();
+    await projectA!.trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-tasks"]').classes()).not.toContain("active");
+
+    wrapper.unmount();
+  }, 40_000);
+
+  it("does not write mobile tab preferences from desktop lane navigation", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: {
+        stubs: {
+          LoginGate: false,
+          MainChatView: false,
+          GlobalRuleManager: RuleManagerStub,
+          ModelManager: ModelManagerStub,
+          DraggableModal: true,
+        },
+      },
+    });
+    await settleUi(wrapper);
+
+    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+    expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBeNull();
 
     wrapper.unmount();
   }, 40_000);

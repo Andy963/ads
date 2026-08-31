@@ -21,6 +21,11 @@ import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRu
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { MODEL_AGENT_GROUPS, type AgentKind } from "./lib/model_agent";
 import {
+  readMobileWorkspaceTab,
+  writeMobileWorkspaceTab,
+  type MobileWorkspaceTab,
+} from "./lib/mobileWorkspacePreferences";
+import {
   CirclePlus,
   ChatDotRound,
   Document,
@@ -139,7 +144,6 @@ const modelManagerOpen = ref(false);
 const globalRuleManagerOpen = ref(false);
 
 type MobileDrawerSection = "projects" | "rules" | "models";
-type MobileWorkspaceTab = ChatLane | "tasks";
 type MobileContextActionId =
   | "resume"
   | "new-session"
@@ -335,7 +339,15 @@ function selectWorkspaceTab(tab: MobileWorkspaceTab): void {
     mobileTaskTabActive.value = false;
     activeChatLane.value = tab;
   }
+  if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
+}
+
+function restoreMobileWorkspaceTab(): void {
+  const projectId = activeProjectId.value.trim();
+  const tab = readMobileWorkspaceTab(projectId);
+  mobileTaskTabActive.value = tab === "tasks";
+  if (tab !== "tasks") activeChatLane.value = tab;
 }
 
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
@@ -420,9 +432,17 @@ function onMobileKeydown(ev: KeyboardEvent): void {
 }
 
 watch(isMobile, (mobile) => {
-  if (mobile) return;
+  if (mobile) {
+    restoreMobileWorkspaceTab();
+    return;
+  }
   mobileTaskTabActive.value = false;
   closeMobileDrawer();
+});
+
+watch(activeProjectId, (projectId, previousProjectId) => {
+  if (!isMobile.value || !projectId.trim() || projectId === previousProjectId) return;
+  restoreMobileWorkspaceTab();
 });
 
 onMounted(() => {

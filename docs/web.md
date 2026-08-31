@@ -59,7 +59,7 @@ Web Console 将对话与任务流组织为三大工作区：
 
 Web Console 经过专门的移动端交互优化：
 1. **抽屉式导航 (Drawer Navigation)**：左上角汉堡菜单可无缝滑出抽屉，按 **项目 (Projects)**、**规则 (Rules)**、**Provider** 进行全局模块切换。
-2. **三 Tab 扁平导航**：移动端顶栏按 `Task | Advisor | Worker` 排布，默认聚焦 Advisor。
+2. **三 Tab 扁平导航**：移动端顶栏按 `Task | Advisor | Worker` 排布；首次使用或项目没有记录时聚焦 Advisor，之后按项目恢复上次打开的 Tab。
 3. **独立上下文菜单 (Context Actions)**：右上角根据当前激活模块提供专属操作（如新增任务、恢复会话、新建会话、新增规则、刷新模型列表等），语言与操作深度统一。
 4. **软键盘自适应**：自动侦测移动端虚拟键盘开启与高度，精确调整底部 Composer 避让，消除空白与遮挡。
 
