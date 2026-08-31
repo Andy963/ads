@@ -22,6 +22,7 @@ Web Console 将对话与任务流组织为三大工作区：
   - 专注于代码执行、命令运行与文件修改的执行 Lane。
   - 执行任务时先读取批准时固定的 issue/spec 快照；spec 是执行真源，issue 只提供讨论背景。
   - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出（最新命令预览），自动收起长文本输出。
+  - Plan 卡片按单轮逻辑计划合并 provider 更新，并在任务完成与历史重连时保持唯一且状态一致。
 
 ### 2. Provider CLI 与全局模型配置 (Provider & Models)
 - **多 Provider CLI 接入**：

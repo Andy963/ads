@@ -1343,10 +1343,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const itemId = `plan:${planId}`;
       const existing = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
       const content = items.map((entry) => `${entry.status === "completed" ? "[x]" : entry.status === "in_progress" ? "[~]" : "[ ]"} ${entry.text}`).join("\n");
-      const idx = existing.findIndex((m) => String(m?.id ?? "") === itemId);
+      const matchingIndexes = existing
+        .map((message, index) => String(message?.plan?.planId ?? "").trim() === planId ? index : -1)
+        .filter((index) => index >= 0);
+      const idx = matchingIndexes[0] ?? -1;
       if (idx >= 0) {
         existing[idx] = { ...existing[idx]!, content, plan, ts };
-        rt.messages.value = existing;
+        const duplicates = new Set(matchingIndexes.slice(1));
+        rt.messages.value = existing.filter((_message, index) => !duplicates.has(index));
       } else {
         pushMessageBeforeLive({ id: itemId, role: "system", kind: "plan", content, plan, ts }, rt);
       }

@@ -615,6 +615,32 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }),
     );
     cleanupFns.push(
+      client.onNotification("turn/plan/updated", (params) => {
+        if (!belongsToThisTurn(params)) return;
+        const payload = params as { plan?: unknown };
+        const steps = Array.isArray(payload.plan) ? payload.plan : [];
+        const items = steps
+          .map((step) => {
+            if (!step || typeof step !== "object") return null;
+            const rec = step as Record<string, unknown>;
+            const text = String(rec.step ?? "").trim();
+            if (!text) return null;
+            const status = String(rec.status ?? "pending").trim().toLowerCase();
+            return {
+              text,
+              status: status === "completed" ? "completed" : status === "inprogress" ? "in_progress" : "pending",
+            };
+          })
+          .filter((item): item is { text: string; status: "pending" | "in_progress" | "completed" } => item !== null);
+        if (items.length === 0) return;
+        const completed = items.every((item) => item.status === "completed");
+        emit({
+          type: "item.updated",
+          item: { type: "todo_list", id: "codex-turn-plan", status: completed ? "completed" : "in_progress", items },
+        });
+      }),
+    );
+    cleanupFns.push(
       client.onNotification("thread/tokenUsage/updated", (params) => {
         if (!belongsToThisTurn(params)) return;
         const usage = extractUsageFromTokenUsage(params);

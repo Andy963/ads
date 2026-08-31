@@ -25,6 +25,7 @@ function msg(overrides: Partial<ChatItem>): ChatItem {
     commandsLimit: overrides.commandsLimit,
     ts: overrides.ts,
     streaming: overrides.streaming,
+    plan: overrides.plan,
   };
 }
 
@@ -109,6 +110,49 @@ describe("chat_sync.finalizeStreamingOnDisconnect", () => {
 });
 
 describe("chat_sync.mergeHistoryFromServer", () => {
+  it("keeps only the newest snapshot for a duplicated logical plan", () => {
+    const plan = (id: string, status: "in_progress" | "completed", itemStatus: "pending" | "completed") =>
+      msg({
+        id,
+        role: "system",
+        kind: "plan",
+        content: itemStatus === "completed" ? "[x] Step" : "[ ] Step",
+        plan: { planId: "logical-plan", status, items: [{ text: "Step", status: itemStatus }] },
+      });
+    const server = [
+      msg({ id: "u1", role: "user", content: "Work" }),
+      plan("plan:first", "in_progress", "pending"),
+      plan("plan:second", "completed", "completed"),
+    ];
+
+    const out = mergeHistoryFromServer([], server, LIVE);
+
+    expect(out.filter((item) => item.kind === "plan")).toHaveLength(1);
+    expect(out.find((item) => item.kind === "plan")?.plan?.status).toBe("completed");
+  });
+
+  it("prefers a persisted plan snapshot over a stale local snapshot", () => {
+    const local = [
+      msg({ id: "u1", role: "user", content: "Work" }),
+      msg({
+        id: "plan:live", role: "system", kind: "plan", content: "[ ] Step",
+        plan: { planId: "logical-plan", status: "in_progress", items: [{ text: "Step", status: "pending" }] },
+      }),
+    ];
+    const server = [
+      msg({ id: "h-u-0", role: "user", content: "Work" }),
+      msg({
+        id: "plan:persisted", role: "system", kind: "plan", content: "[x] Step",
+        plan: { planId: "logical-plan", status: "completed", items: [{ text: "Step", status: "completed" }] },
+      }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    const plans = out.filter((item) => item.kind === "plan");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]?.plan?.status).toBe("completed");
+  });
+
   it("appends only the server tail after the newest overlap", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Hi" }),
