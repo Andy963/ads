@@ -162,6 +162,47 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("bridges structured turn plan updates as todo_list events", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-plan" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "plan-events", registry });
+    const rawEvents: unknown[] = [];
+    adapter.onEvent((event) => rawEvents.push(event.raw));
+
+    const sendPromise = adapter.send("execute the plan");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-plan", turn: { id: "turn-plan" } });
+    fake.notify("turn/plan/updated", {
+      threadId: "thread-plan",
+      turnId: "turn-plan",
+      explanation: null,
+      plan: [
+        { step: "Inspect", status: "completed" },
+        { step: "Implement", status: "inProgress" },
+        { step: "Verify", status: "pending" },
+      ],
+    });
+    fake.notify("turn/completed", { threadId: "thread-plan", turn: { id: "turn-plan" } });
+    await sendPromise;
+
+    const planEvent = rawEvents.find((event) => {
+      const raw = event as { type?: unknown; item?: { type?: unknown } };
+      return raw.type === "item.updated" && raw.item?.type === "todo_list";
+    }) as { item?: { items?: Array<{ text: string; status: string }> } } | undefined;
+    assert.deepEqual(planEvent?.item?.items, [
+      { text: "Inspect", status: "completed" },
+      { text: "Implement", status: "in_progress" },
+      { text: "Verify", status: "pending" },
+    ]);
+
+    await registry.stopAll();
+  });
+
   it("reuses an existing threadId on a subsequent send", async () => {
     const fake = buildFakeServer({
       autoReplies: {
