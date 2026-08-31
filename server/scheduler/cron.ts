@@ -199,11 +199,17 @@ function getZonedParts(tsMs: number, timeZone: string): ZonedParts {
     throw new Error(`Unsupported weekday token: ${weekdayText}`);
   }
 
+  const hour = parseIntStrict(pick("hour"), "hour");
+
+  // Some Node/ICU combinations ignore hourCycle='h23' for en-US and expose
+  // midnight as 24:00. The scheduler's wall-clock representation uses the
+  // canonical 00:00 form, so normalize that equivalent value before doing
+  // date arithmetic. The formatted calendar date is retained as-is.
   return {
     year: parseIntStrict(pick("year"), "year"),
     month: parseIntStrict(pick("month"), "month"),
     day: parseIntStrict(pick("day"), "day"),
-    hour: parseIntStrict(pick("hour"), "hour"),
+    hour: hour === 24 ? 0 : hour,
     minute: parseIntStrict(pick("minute"), "minute"),
     second: parseIntStrict(pick("second"), "second"),
     weekday,
@@ -372,4 +378,3 @@ export function computeNextCronRunAt(options: { cron: string; timezone: string; 
 
   throw new Error("No next run found within search horizon");
 }
-

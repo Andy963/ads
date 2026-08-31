@@ -35,6 +35,10 @@ describe("scheduler/store", () => {
     const next = computeNextCronRunAt({ cron: "0 9 * * *", timezone: "UTC", afterMs });
     assert.equal(new Date(next).toISOString(), "2026-01-01T09:00:00.000Z");
 
+    const afterBeforeMidnight = Date.UTC(2025, 11, 31, 23, 59, 0);
+    const midnight = computeNextCronRunAt({ cron: "0 0 * * *", timezone: "UTC", afterMs: afterBeforeMidnight });
+    assert.equal(new Date(midnight).toISOString(), "2026-01-01T00:00:00.000Z");
+
     const spec: ScheduleSpec = {
       version: 1,
       name: "daily-sample",

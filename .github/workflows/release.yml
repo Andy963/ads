@@ -35,14 +35,14 @@ jobs:
           npx --no tsx --version
           npx --no vitest --version
 
+      - name: Build
+        run: npm run build
+
       - name: Run unit tests
         run: npm test
 
       - name: Run web tests
         run: npm run test:web
-
-      - name: Build
-        run: npm run build
 
       - name: Resolve release version and tag
         id: vars
