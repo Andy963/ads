@@ -28,6 +28,7 @@ import { transcribeTelegramVoiceMessage } from '../utils/voiceTranscription.js';
 import type { ScheduleCompiler } from '../../scheduler/compiler.js';
 import type { SchedulerRuntime } from '../../scheduler/runtime.js';
 import { processScheduleOutput } from '../../web/server/planner/scheduleHandler.js';
+import { recordConversationMessage } from '../../utils/conversationMessageRecorder.js';
 // 全局中断管理器
 const interruptManager = new InterruptManager();
 const adapterLogger = createLogger('TelegramCodexAdapter');
@@ -347,6 +348,16 @@ export async function handleCodexMessage(
 
     // 记录用户输入
     userLogEntry = buildUserLogEntry(effectiveText, imagePaths, filePaths);
+    const telegramEventId = `telegram:${chatId}:${ctx.message?.message_id ?? ctx.update.update_id}`;
+    recordConversationMessage({
+      eventId: `${telegramEventId}:user`,
+      workspaceRoot,
+      sessionId: String(session.getThreadId?.() ?? `telegram-${chatId}`),
+      source: 'telegram',
+      role: 'user',
+      text: userLogEntry,
+      agentId: session.getActiveAgentId?.() ?? 'codex',
+    });
 
     // 监听事件
     unsubscribe = session.onEvent((event: AgentEvent) => {
@@ -449,6 +460,15 @@ export async function handleCodexMessage(
       replyOptions: replyParameters,
       logWarning,
       recordFallback,
+    });
+    recordConversationMessage({
+      eventId: `${telegramEventId}:assistant`,
+      workspaceRoot,
+      sessionId: String(session.getThreadId?.() ?? `telegram-${chatId}`),
+      source: 'telegram',
+      role: 'assistant',
+      text: outputToSend,
+      agentId: session.getActiveAgentId?.() ?? 'codex',
     });
 
     await statusUpdater.cleanup();
