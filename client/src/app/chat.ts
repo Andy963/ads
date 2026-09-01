@@ -577,11 +577,6 @@ export function createChatActions(ctx: AppContext) {
 
     const next = state.queuedPrompts.value[0]!;
     state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
-    const messagesBeforeFlush = state.messages.value.slice();
-    const busyBeforeFlush = state.busy.value;
-    const turnInFlightBeforeFlush = state.turnInFlight;
-    const turnHasPatchBeforeFlush = state.turnHasPatch;
-    const pendingAckBeforeFlush = state.pendingAckClientMessageId;
     let sendAccepted = false;
 
     try {
