@@ -5,6 +5,7 @@ import type { Task } from "../../api/types";
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
 export type TaskUpdates = Partial<Pick<Task, "title" | "prompt" | "agentId" | "priority" | "maxRetries">>;
+export type TaskSaveResult = { ok: boolean; error?: string };
 
 function formatAgentLabel(agent: AgentOption): string {
   const id = String(agent.id ?? "").trim();
@@ -46,8 +47,8 @@ export function useTaskBoardEditing(params: {
   tasks: Ref<Task[]>;
   readyAgentOptions: ComputedRef<AgentOption[]>;
   activeAgentId: ComputedRef<string>;
-  emitUpdate: (payload: { id: string; updates: TaskUpdates }) => void;
-  emitUpdateAndRun: (payload: { id: string; updates: TaskUpdates }) => void;
+  persistUpdate: (payload: { id: string; updates: TaskUpdates }) => Promise<TaskSaveResult>;
+  persistUpdateAndRun: (payload: { id: string; updates: TaskUpdates }) => Promise<TaskSaveResult>;
 }) {
   const editingId = ref<string | null>(null);
   const editTitle = ref("");
@@ -56,6 +57,8 @@ export function useTaskBoardEditing(params: {
   const editPriority = ref(0);
   const editMaxRetries = ref(3);
   const error = ref<string | null>(null);
+  const saving = ref(false);
+  let editSession = 0;
 
   const editAgentOptions = computed(() =>
     params.readyAgentOptions.value.map((agent) => ({
@@ -102,6 +105,7 @@ export function useTaskBoardEditing(params: {
 
   function startEdit(task: Task): void {
     if (editingId.value) return;
+    editSession += 1;
     editingId.value = task.id;
     editTitle.value = task.title ?? "";
     editPrompt.value = task.prompt ?? "";
@@ -112,22 +116,29 @@ export function useTaskBoardEditing(params: {
   }
 
   function stopEdit(): void {
+    editSession += 1;
     editingId.value = null;
     error.value = null;
+    saving.value = false;
   }
 
-  function saveEdit(task: Task): void {
-    saveEditWithEvent(task, params.emitUpdate);
+  async function saveEdit(task: Task | null): Promise<void> {
+    await saveEditWithEvent(task, params.persistUpdate);
   }
 
-  function saveEditAndRun(task: Task): void {
-    saveEditWithEvent(task, params.emitUpdateAndRun);
+  async function saveEditAndRun(task: Task | null): Promise<void> {
+    await saveEditWithEvent(task, params.persistUpdateAndRun);
   }
 
-  function saveEditWithEvent(
-    task: Task,
-    emitEvent: (payload: { id: string; updates: TaskUpdates }) => void,
-  ): void {
+  async function saveEditWithEvent(
+    task: Task | null,
+    persist: (payload: { id: string; updates: TaskUpdates }) => Promise<TaskSaveResult>,
+  ): Promise<void> {
+    if (saving.value) return;
+    if (!task || task.id !== editingId.value) {
+      stopEdit();
+      return;
+    }
     const prompt = editPrompt.value.trim();
     if (!prompt) {
       error.value = "任务描述不能为空";
@@ -137,17 +148,31 @@ export function useTaskBoardEditing(params: {
     if (!editTitle.value.trim()) {
       editTitle.value = title;
     }
-    emitEvent({
-      id: task.id,
-      updates: {
-        title,
-        prompt,
-        agentId: editAgentId.value.trim() ? editAgentId.value.trim() : null,
-        priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
-        maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
-      },
-    });
-    stopEdit();
+    const session = editSession;
+    saving.value = true;
+    error.value = null;
+    let result: TaskSaveResult;
+    try {
+      result = await persist({
+        id: task.id,
+        updates: {
+          title,
+          prompt,
+          agentId: editAgentId.value.trim() ? editAgentId.value.trim() : null,
+          priority: Number.isFinite(editPriority.value) ? editPriority.value : 0,
+          maxRetries: Number.isFinite(editMaxRetries.value) ? editMaxRetries.value : 3,
+        },
+      });
+    } catch (saveError) {
+      result = { ok: false, error: saveError instanceof Error ? saveError.message : String(saveError) };
+    }
+    if (session !== editSession || editingId.value !== task.id) return;
+    saving.value = false;
+    if (result.ok) {
+      stopEdit();
+      return;
+    }
+    error.value = result.error?.trim() || "保存任务失败，请重试";
   }
 
   return {
@@ -159,6 +184,7 @@ export function useTaskBoardEditing(params: {
     editPriority,
     editMaxRetries,
     error,
+    saving,
     editAgentOptions,
     editPrimaryLabel,
     showEditSaveButton,

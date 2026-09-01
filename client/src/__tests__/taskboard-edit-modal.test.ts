@@ -184,6 +184,50 @@ describe("TaskBoard edit modal", () => {
     wrapper.unmount();
   });
 
+  it("keeps the editor open when async save fails and allows retry", async () => {
+    const task = makeTask({ id: "t-fail", title: "Original", prompt: "Hello", status: "pending" });
+    let attempts = 0;
+    const wrapper = mount(TaskBoard, {
+      props: {
+        tasks: [task], agents, activeAgentId: "codex", selectedId: null, queueStatus: null, canRunSingle: true,
+        runBusyIds: new Set<string>(),
+        updateTask: async () => {
+          attempts += 1;
+          return attempts === 1 ? { ok: false, error: "request failed" } : { ok: true };
+        },
+      },
+      attachTo: document.body,
+    });
+    await expandStage(wrapper, "backlog");
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    await wrapper.find('[data-testid="task-edit-prompt"]').setValue("Updated");
+    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="task-edit-modal"]').text()).toContain("request failed");
+    await wrapper.find('[data-testid="task-edit-modal-save"]').trigger("click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("clears stale editing state when the edited task disappears", async () => {
+    const task = makeTask({ id: "t-stale", status: "pending" });
+    const replacement = makeTask({ id: "t-next", status: "pending" });
+    const wrapper = mount(TaskBoard, {
+      props: { tasks: [task], agents, activeAgentId: "codex", selectedId: null, queueStatus: null, canRunSingle: true, runBusyIds: new Set<string>() },
+      attachTo: document.body,
+    });
+    await expandStage(wrapper, "backlog");
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    await wrapper.setProps({ tasks: [replacement] });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="task-edit"]').trigger("click");
+    expect(wrapper.find('[data-testid="task-edit-modal"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("emits update-and-run on save-and-run", async () => {
     const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending" });
 

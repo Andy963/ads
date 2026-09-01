@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
 import type { Task, TaskQueueStatus } from "../api/types";
 import type { ApiClient } from "../api/client";
@@ -12,6 +12,7 @@ import {
   canRunSingleTask,
   useTaskBoardEditing,
   type TaskUpdates,
+  type TaskSaveResult,
 } from "./taskBoard/useTaskBoardEditing";
 import { usePendingTaskDnD } from "./taskBoard/usePendingTaskDnD";
 import { statusLabel, useTaskBoardStages } from "./taskBoard/useTaskBoardStages";
@@ -30,6 +31,8 @@ const props = withDefaults(
     canRunSingle?: boolean;
     runBusyIds?: Set<string>;
     showCreateButton?: boolean;
+    updateTask?: (payload: { id: string; updates: TaskUpdates }) => Promise<TaskSaveResult>;
+    updateTaskAndRun?: (payload: { id: string; updates: TaskUpdates }) => Promise<TaskSaveResult>;
   }>(),
   {
     showCreateButton: true,
@@ -134,6 +137,7 @@ const {
   editPriority,
   editMaxRetries,
   error,
+  saving,
   editAgentOptions,
   editPrimaryLabel,
   showEditSaveButton,
@@ -145,8 +149,25 @@ const {
   tasks: tasksRef,
   readyAgentOptions,
   activeAgentId,
-  emitUpdate: (payload) => emit("update", payload),
-  emitUpdateAndRun: (payload) => emit("update-and-run", payload),
+  persistUpdate: async (payload) => {
+    if (props.updateTask) return await props.updateTask(payload);
+    emit("update", payload);
+    return { ok: true };
+  },
+  persistUpdateAndRun: async (payload) => {
+    if (props.updateTaskAndRun) return await props.updateTaskAndRun(payload);
+    emit("update-and-run", payload);
+    return { ok: true };
+  },
+});
+
+watch(workspaceRoot, (next, previous) => {
+  if (previous !== undefined && next !== previous && editingId.value) stopEdit();
+});
+
+watch(tasksRef, (nextTasks) => {
+  const id = editingId.value;
+  if (id && !nextTasks.some((task) => task.id === id)) stopEdit();
 });
 
 const pendingBacklogIds = computed(() =>
@@ -353,9 +374,10 @@ function toggleQueue(): void {
       :agent-options="editAgentOptions"
       :show-save-button="showEditSaveButton"
       :primary-label="editPrimaryLabel"
+      :saving="saving"
       @close="stopEdit"
-      @save="saveEdit(editingTask)"
-      @save-and-run="saveEditAndRun(editingTask)"
+      @save="void saveEdit(editingTask)"
+      @save-and-run="void saveEditAndRun(editingTask)"
       @update:title="editTitle = $event"
       @update:prompt="editPrompt = $event"
       @update:agent-id="editAgentId = $event"
