@@ -20,14 +20,13 @@ const webServiceName = "ads-web";
 const webServicePath = path.join(serviceDir, "ads-web.service");
 const telegramServiceName = "ads-tg";
 const telegramServicePath = path.join(serviceDir, "ads-tg.service");
-const nodeBinDir = path.join(home, ".local", "nodejs", "bin");
-const preferredNode = path.join(nodeBinDir, "node");
+const nodeBin = process.execPath;
+const nodeBinDir = path.dirname(nodeBin);
 const preferredNpm = path.join(nodeBinDir, "npm");
-const nodeBin = fs.existsSync(preferredNode) ? preferredNode : process.execPath;
 const npmBin = fs.existsSync(preferredNpm) ? preferredNpm : "npm";
 const toolEnv = {
   ...process.env,
-  PATH: [nodeBinDir, process.env.PATH].filter(Boolean).join(path.delimiter),
+  PATH: [nodeBinDir, path.join(home, ".local", "bin"), process.env.PATH].filter(Boolean).join(path.delimiter),
 };
 const releaseName = `${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${process.pid}`;
 const stagingDir = path.join(releasesDir, `.staging-${releaseName}`);
@@ -167,12 +166,12 @@ function buildServiceUnit(options) {
     (!sourceRelativeToProjects.startsWith(`..${path.sep}`) && sourceRelativeToProjects !== ".." && !path.isAbsolute(sourceRelativeToProjects));
   const allowedDirs = sourceIsInsideProjects ? projectsRoot : [projectsRoot, sourceRoot].join(",");
   const servicePathValue = [
+    nodeBinDir,
     path.join(home, ".local", "bin"),
-    path.join(home, ".local", "nodejs", "bin"),
     "/usr/local/bin",
     "/usr/bin",
     "/bin",
-  ].join(":");
+  ].filter(Boolean).join(":");
 
   return `[Unit]
 Description=${options.description}

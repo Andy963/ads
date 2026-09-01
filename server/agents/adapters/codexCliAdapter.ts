@@ -448,8 +448,6 @@ export class CodexCliAdapter implements AgentAdapter {
       args.push("--sandbox", "read-only");
     } else if (this.sandboxMode === "danger-full-access") {
       args.push("--dangerously-bypass-approvals-and-sandbox");
-    } else {
-      args.push("--full-auto");
     }
 
     args.push("--json", "--skip-git-repo-check");

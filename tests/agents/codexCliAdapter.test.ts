@@ -316,4 +316,50 @@ describe("CodexCliAdapter", () => {
     const result = await adapter.send("hi");
     assert.equal(result.response, "OK");
   });
+
+  it("does not pass --full-auto in workspace-write mode", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'for arg in "$@"; do',
+      '  if [ "$arg" = "--full-auto" ]; then',
+      '    printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "turn.failed", error: { message: "unexpected --full-auto" } })) + '; exit 0',
+      '  fi',
+      'done',
+      'cat >/dev/null || true',
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "thread.started", thread_id: "t-ww" })),
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "turn.started" })),
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "OK" } })),
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } })),
+      'exit 0',
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary, sandboxMode: "workspace-write" });
+    const result = await adapter.send("hi");
+    assert.equal(result.response, "OK");
+  });
+
+  it("passes --dangerously-bypass-approvals-and-sandbox in danger-full-access mode", async () => {
+    const binary = await createExecutableScript([
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'found=0',
+      'for arg in "$@"; do',
+      '  if [ "$arg" = "--dangerously-bypass-approvals-and-sandbox" ]; then found=1; fi',
+      'done',
+      'if [ "$found" -ne 1 ]; then',
+      '    printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "turn.failed", error: { message: "missing danger flag" } })) + '; exit 0',
+      'fi',
+      'cat >/dev/null || true',
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "thread.started", thread_id: "t-dfa" })),
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "turn.started" })),
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "OK" } })),
+      'printf "%s\\n" ' + JSON.stringify(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } })),
+      'exit 0',
+    ].join("\n"));
+
+    const adapter = new CodexCliAdapter({ binary, sandboxMode: "danger-full-access" });
+    const result = await adapter.send("hi");
+    assert.equal(result.response, "OK");
+  });
 });
