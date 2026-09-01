@@ -7,9 +7,6 @@ export function normalizeAgentId(raw: unknown): AgentIdentifier | null {
 
 export function selectAgentForModel(model: string): AgentIdentifier {
   const normalized = String(model ?? "").trim().toLowerCase();
-  if (normalized.startsWith("gemini") || normalized.startsWith("auto-gemini") || normalized.includes("gemini")) {
-    return "gemini";
-  }
   if (normalized.startsWith("claude") || normalized === "sonnet" || normalized === "opus" || normalized === "haiku") {
     return "claude";
   }

@@ -10,7 +10,7 @@ const TABLES = [
   "schedules", "schedule_runs", "attachments", "conversations",
   "conversation_messages", "review_snapshots", "review_queue_items", "review_artifacts",
 ] as const;
-const MAX_SUPPORTED_SOURCE_SCHEMA_VERSION = 26;
+const MAX_SUPPORTED_SOURCE_SCHEMA_VERSION = 27;
 
 function quoteIdentifier(value: string): string {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) throw new Error("Invalid identifier: " + value);

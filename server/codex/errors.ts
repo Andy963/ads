@@ -180,7 +180,7 @@ const ERROR_PATTERNS: Array<{
   {
     pattern: /unexpected argument '?--|unrecognized option|unknown option '?--/i,
     code: "cli_version_mismatch",
-    userHint: "CLI 参数不被当前版本支持，请升级对应的 CLI（claude/codex/gemini）到最新版本",
+    userHint: "CLI 参数不被当前版本支持，请升级对应的 CLI（claude/codex）到最新版本",
     retryable: false,
     needsReset: false,
   },

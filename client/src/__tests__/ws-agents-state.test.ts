@@ -71,15 +71,15 @@ describe("ws agents snapshot", () => {
 
     handler({
       type: "agents",
-      activeAgentId: "gemini",
+      activeAgentId: "claude",
       agents: [
         { id: "codex", name: "Codex", ready: true },
-        { id: "gemini", name: "Gemini", ready: false, error: "missing api key" },
+        { id: "claude", name: "Claude", ready: false, error: "missing api key" },
       ],
       threadId: "thread-123",
     });
 
-    expect(rt.activeAgentId.value).toBe("gemini");
+    expect(rt.activeAgentId.value).toBe("claude");
     expect(rt.availableAgents.value.length).toBe(2);
     expect(rt.availableAgents.value[0].id).toBe("codex");
     expect(rt.availableAgents.value[1].ready).toBe(false);
@@ -118,10 +118,10 @@ describe("ws agents snapshot", () => {
 
     handler({
       type: "agents",
-      activeAgentId: "droid",
+      activeAgentId: "claude",
       agents: [
         { id: "codex", name: "Codex", ready: true },
-        { id: "droid", name: "Droid", ready: true },
+        { id: "claude", name: "Claude", ready: true },
       ],
     });
     handler({
@@ -131,7 +131,7 @@ describe("ws agents snapshot", () => {
       agents: [{ id: "codex", name: "Codex", ready: true }],
     });
 
-    expect(rt.activeAgentId.value).toBe("droid");
-    expect(rt.availableAgents.value.map((agent: { id: string }) => agent.id)).toEqual(["codex", "droid"]);
+    expect(rt.activeAgentId.value).toBe("claude");
+    expect(rt.availableAgents.value.map((agent: { id: string }) => agent.id)).toEqual(["codex", "claude"]);
   });
 });

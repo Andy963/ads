@@ -1,4 +1,4 @@
-import type { Conversation, ConversationMessage, ModelConfig, Task, TaskGoalStatus, TaskMessage, TaskRun } from "../types.js";
+import type { Conversation, ConversationMessage, ModelConfig, Task, TaskCategory, TaskGoalStatus, TaskMessage, TaskRun } from "../types.js";
 import {
   normalizeConversationStatus,
   normalizeNullableString,
@@ -47,6 +47,17 @@ function toGoalStatus(value: unknown): TaskGoalStatus | null {
   return GOAL_STATUS_VALUES.has(str as TaskGoalStatus) ? (str as TaskGoalStatus) : null;
 }
 
+function toTaskCategory(value: unknown): TaskCategory {
+  switch (String(value ?? "").trim().toLowerCase()) {
+    case "review":
+      return "review";
+    case "rework":
+      return "rework";
+    default:
+      return "development";
+  }
+}
+
 export function toTask(row: Record<string, unknown>): Task {
   const createdAt = toNumber(row.created_at);
   return {
@@ -57,6 +68,7 @@ export function toTask(row: Record<string, unknown>): Task {
     modelParams: normalizeTaskModelParams(parseJson<Record<string, unknown>>(row.model_params)),
     status: normalizeTaskStatus(row.status),
     priority: toNumber(row.priority),
+    category: toTaskCategory(row.category),
     queueOrder: row.queue_order == null ? createdAt : toNumber(row.queue_order),
     queuedAt: toNullableNumber(row.queued_at),
     promptInjectedAt: toNullableNumber(row.prompt_injected_at),

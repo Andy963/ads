@@ -207,7 +207,7 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.findAll(".mobileDrawerSubitem")).toHaveLength(3);
+    expect(wrapper.findAll(".mobileDrawerSubitem")).toHaveLength(2);
     expect(wrapper.findAll(".mobileDrawerSubitemArrow")).toHaveLength(0);
     expect(wrapper.find(".mobileModuleEmpty").exists()).toBe(true);
 

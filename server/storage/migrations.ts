@@ -965,6 +965,22 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 27,
+    description: "Task workflow - add development, review, and rework categories",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("category")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN category TEXT NOT NULL DEFAULT 'development'`);
+      }
+      db.exec(`
+        UPDATE tasks SET category = 'development'
+        WHERE category IS NULL OR category NOT IN ('development', 'review', 'rework');
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_category
+          ON tasks(workspace_id, category, priority DESC, queue_order ASC, created_at ASC);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

@@ -145,8 +145,8 @@ export async function handleTaskBundleDraftRoutes(ctx: ApiRouteContext, deps: Ap
       draftId,
       bundle: {
         ...normalizedBundle,
-        issueRef: workItemValidation.refs.issueRef,
-        specRef: workItemValidation.refs.specRef,
+        issueRef: workItemValidation.refs.issueRef || undefined,
+        specRef: workItemValidation.refs.specRef || undefined,
       },
     });
     if (!updated) {

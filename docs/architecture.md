@@ -30,7 +30,7 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 │ - Codex App Server (RPC)     │ │ - 全局库: state.db           │
 │ - Codex CLI Adapter          │ │   (用户/会话/模型/规则/草稿) │
 │ - Claude Code CLI Adapter    │ │ - 工作区库: <ws>/ads.db      │
-│ - Droid CLI Adapter          │ │   (任务/队列/运行/附件/历史) │
+│ - Claude CLI Adapter         │ │   (任务/队列/运行/附件/历史) │
 └──────────────────────────────┘ └──────────────────────────────┘
 ```
 
@@ -57,7 +57,7 @@ Web、Telegram 与 Task Queue 保留各自现有的本地存储和消息交付�
 
 ### 2.2 多 Agent 抽象与容错执行
 - **统一适配器抽象 (`AgentAdapter`)**：
-  - 标准化封装 Codex、Claude Code 与 Droid CLI 的命令行调用、输入输出流解析（Stream Parser）与进程生命周期。
+  - 标准化封装 Codex 与 Claude Code 的命令行调用、输入输出流解析（Stream Parser）与进程生命周期。
   - 支持 Codex App Server JSON-RPC 长连接与一次性 CLI 的无缝降级。
 - **上游重试与自愈 (Upstream Retry & Healing)**：
   - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及 Claude Fable 误拦截。

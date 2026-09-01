@@ -19,6 +19,7 @@ export type TaskGoalStatus =
 export type TaskRole = "system" | "user" | "assistant" | "tool";
 
 export type TaskExecutionIsolation = "default" | "required";
+export type TaskCategory = "development" | "review" | "rework";
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
 export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | "skipped";
@@ -65,6 +66,7 @@ export interface Task {
   modelParams?: Record<string, unknown> | null;
   status: TaskStatus;
   priority: number;
+  category: TaskCategory;
   queueOrder: number;
   queuedAt?: number | null;
   promptInjectedAt?: number | null;
@@ -99,6 +101,7 @@ export interface CreateTaskInput {
   model?: string;
   modelParams?: Record<string, unknown> | null;
   priority?: number;
+  category?: TaskCategory;
   inheritContext?: boolean;
   agentId?: string | null;
   parentTaskId?: string | null;

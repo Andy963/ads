@@ -93,9 +93,9 @@ describe("TaskCreateForm submit-and-run", () => {
         workspaceRoot: "",
         agents: [
           { id: "codex", name: "Codex", ready: true },
-          { id: "gemini", name: "Gemini", ready: false, error: "missing api key" },
+          { id: "claude", name: "Claude", ready: false, error: "missing api key" },
         ],
-        activeAgentId: "gemini",
+        activeAgentId: "claude",
       },
     });
 

@@ -31,7 +31,6 @@ describe("web lazy planner lane", () => {
     process.env.ADS_TASK_QUEUE_SESSION_TIMEOUT_MS = "0";
     process.env.ADS_TASK_QUEUE_SESSION_CLEANUP_INTERVAL_MS = "0";
     process.env.ADS_CLAUDE_ENABLED = "0";
-    process.env.ADS_GEMINI_ENABLED = "0";
     resetStateDatabaseForTests();
   });
 

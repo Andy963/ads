@@ -33,6 +33,7 @@ import {
   Setting,
   Clock,
 } from "@element-plus/icons-vue";
+import { isLaneConnected } from "./lib/laneConnectionStatus";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -630,7 +631,6 @@ const plannerConnectionStatus = computed(() => {
         >
           <el-icon :size="18" aria-hidden="true"><MoreFilled /></el-icon>
         </button>
-        <span class="dot" :class="{ on: connected }" :title="connected ? 'WS connected' : 'WS disconnected'" />
       </div>
       <div
         v-if="isMobile && mobileContextMenuOpen"
@@ -867,7 +867,7 @@ const plannerConnectionStatus = computed(() => {
         <div v-else-if="mobileDrawerSection === 'models'" class="mobileModuleEmpty">
           <el-icon :size="30" aria-hidden="true"><Setting /></el-icon>
           <strong>选择一个 Provider</strong>
-          <span>打开左上角导航，从 Provider 下面选择 Codex、Claude 或 Droid。</span>
+          <span>打开左上角导航，从 Provider 下面选择 Codex 或 Claude。</span>
         </div>
       </section>
 
@@ -879,7 +879,11 @@ const plannerConnectionStatus = computed(() => {
             :key="tab.id"
             type="button"
             class="laneTab"
-            :class="{ active: activeWorkspaceTab === tab.id }"
+            :class="{
+              active: activeWorkspaceTab === tab.id,
+              'laneTab--connected': isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
+              'laneTab--disconnected': tab.id !== 'tasks' && !isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
+            }"
             role="tab"
             :aria-selected="activeWorkspaceTab === tab.id"
             :aria-controls="`lane-panel-${tab.id}`"

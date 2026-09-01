@@ -15,7 +15,7 @@ import {
   type TaskSaveResult,
 } from "./taskBoard/useTaskBoardEditing";
 import { usePendingTaskDnD } from "./taskBoard/usePendingTaskDnD";
-import { statusLabel, useTaskBoardStages } from "./taskBoard/useTaskBoardStages";
+import { statusLabel, taskCategoryLabel, useTaskBoardStages } from "./taskBoard/useTaskBoardStages";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
@@ -274,6 +274,10 @@ function toggleQueue(): void {
                   <div class="row-top">
                     <div class="row-head">
                       <span class="row-title" :title="statusLabel(t.status)">{{ t.title || "(未命名任务)" }}</span>
+                      <span class="taskCategoryBadge" :data-category="t.category ?? 'development'">
+                        {{ taskCategoryLabel(t.category) }}
+                      </span>
+                      <span class="taskPriorityBadge" :data-priority="t.priority">P{{ t.priority }}</span>
                       <span
                         v-if="t.goalMode"
                         class="goalBadge"
@@ -356,6 +360,7 @@ function toggleQueue(): void {
       v-if="detailTask"
       :task="detailTask"
       :status-label="statusLabel(detailTask.status)"
+      :category-label="taskCategoryLabel(detailTask.category)"
       @close="closeDetail"
       @goal-pause="(id) => emit('goal-pause', id)"
       @goal-resume="(id) => emit('goal-resume', id)"

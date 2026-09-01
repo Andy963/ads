@@ -542,7 +542,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
               </option>
             </select>
           </div>
-          <div v-if="selectedAgentId === 'codex' || selectedAgentId === 'claude' || selectedAgentId === 'droid'" class="agentSelect">
+          <div v-if="selectedAgentId === 'codex' || selectedAgentId === 'claude'" class="agentSelect">
             <select
               class="agentSelectInput"
               :value="reasoningEffortValue"
