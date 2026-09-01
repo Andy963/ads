@@ -80,6 +80,7 @@ Web Console 经过专门的移动端交互优化：
 | `ADS_WEB_LOGIN_MAX_ATTEMPTS` | `5` | 登录重试超限锁定阈值 |
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 登录锁定基础时长 |
 | `ADS_PLANNER_CODEX_MODEL` | 未设置 | Advisor Lane 使用的专属 Codex 模型覆盖 |
+| `ADS_PLANNER_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；非法值回退为 `workspace-write` |
 | `TASK_QUEUE_ENABLED` | `true` | 是否开启后台任务队列 |
 | `TASK_QUEUE_AUTO_START` | `false` | 服务启动后是否自动开始运行任务队列 |
 | `TASK_QUEUE_DEFAULT_MODEL` | 未设置 | 任务队列默认执行模型 |

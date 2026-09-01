@@ -37,6 +37,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 触发锁定后的基础冷却时长 |
 | `ADS_WEB_SESSION_SLIDING` | `false` | 是否开启滑动刷新 Session 有效期 |
 | `ADS_PLANNER_CODEX_MODEL` | 未设置 | Advisor (规划 Lane) 专用的 Codex 模型覆盖 |
+| `ADS_PLANNER_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write` |
 | `TASK_QUEUE_ENABLED` | `true` | 是否启用任务看板的后台队列执行器 |
 | `TASK_QUEUE_AUTO_START` | `false` | 服务启动后是否自动开始运行排队任务 |
 | `TASK_QUEUE_DEFAULT_MODEL` | 未设置 | 任务队列派发任务时的默认执行模型 |

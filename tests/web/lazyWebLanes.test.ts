@@ -94,30 +94,47 @@ describe("web lazy planner lane", () => {
   });
 
   it("supports overriding planner sandbox mode via environment variable and explicit argument", () => {
-    process.env.ADS_PLANNER_SANDBOX_MODE = "workspace-write";
-    const envLanes = createWebLaneResources({
-      stateDbPath: process.env.ADS_STATE_DB_PATH!,
-      sessionTimeoutMs: 0,
-      sessionCleanupIntervalMs: 0,
-    });
     try {
-      assert.equal(envLanes.planner.sessionManager.getStats().sandboxMode, "workspace-write");
-    } finally {
-      envLanes.worker.sessionManager.destroy();
-      destroySessionManagerIfMaterialized(envLanes.planner.sessionManager);
-    }
+      process.env.ADS_PLANNER_SANDBOX_MODE = "workspace-write";
+      const envLanes = createWebLaneResources({
+        stateDbPath: process.env.ADS_STATE_DB_PATH!,
+        sessionTimeoutMs: 0,
+        sessionCleanupIntervalMs: 0,
+      });
+      try {
+        assert.equal(envLanes.planner.sessionManager.getStats().sandboxMode, "workspace-write");
+      } finally {
+        envLanes.worker.sessionManager.destroy();
+        destroySessionManagerIfMaterialized(envLanes.planner.sessionManager);
+      }
 
-    const argLanes = createWebLaneResources({
-      stateDbPath: process.env.ADS_STATE_DB_PATH!,
-      sessionTimeoutMs: 0,
-      sessionCleanupIntervalMs: 0,
-      plannerSandboxMode: "read-only",
-    });
-    try {
-      assert.equal(argLanes.planner.sessionManager.getStats().sandboxMode, "read-only");
+      process.env.ADS_PLANNER_SANDBOX_MODE = "not-a-sandbox-mode";
+      const invalidEnvLanes = createWebLaneResources({
+        stateDbPath: process.env.ADS_STATE_DB_PATH!,
+        sessionTimeoutMs: 0,
+        sessionCleanupIntervalMs: 0,
+      });
+      try {
+        assert.equal(invalidEnvLanes.planner.sessionManager.getStats().sandboxMode, "workspace-write");
+      } finally {
+        invalidEnvLanes.worker.sessionManager.destroy();
+        destroySessionManagerIfMaterialized(invalidEnvLanes.planner.sessionManager);
+      }
+
+      const argLanes = createWebLaneResources({
+        stateDbPath: process.env.ADS_STATE_DB_PATH!,
+        sessionTimeoutMs: 0,
+        sessionCleanupIntervalMs: 0,
+        plannerSandboxMode: "read-only",
+      });
+      try {
+        assert.equal(argLanes.planner.sessionManager.getStats().sandboxMode, "read-only");
+      } finally {
+        argLanes.worker.sessionManager.destroy();
+        destroySessionManagerIfMaterialized(argLanes.planner.sessionManager);
+      }
     } finally {
-      argLanes.worker.sessionManager.destroy();
-      destroySessionManagerIfMaterialized(argLanes.planner.sessionManager);
+      delete process.env.ADS_PLANNER_SANDBOX_MODE;
     }
   });
 });

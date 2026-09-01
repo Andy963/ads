@@ -14,10 +14,13 @@ export const WEB_PLANNER_NAMESPACE = "web-planner";
 
 export function resolvePlannerSandboxMode(raw: string | undefined): SandboxMode {
   const value = raw?.trim();
+  if (value === undefined || value === "") {
+    return "danger-full-access";
+  }
   if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
     return value;
   }
-  return "danger-full-access";
+  return "workspace-write";
 }
 
 export type MaterializationState = {
