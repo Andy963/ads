@@ -47,6 +47,43 @@ describe("mapThreadEventToAgentEvent", () => {
     assert.equal(mapped.detail, undefined);
   });
 
+  it("maps file changes to concise editing stages without file paths", () => {
+    const started = mapThreadEventToAgentEvent(
+      {
+        type: "item.started",
+        item: {
+          type: "file_change",
+          id: "file-1",
+          changes: [
+            { kind: "update", path: "src/one.ts" },
+            { kind: "update", path: "src/two.ts" },
+          ],
+        },
+      },
+      0,
+    );
+    assert(started);
+    assert.equal(started.phase, "editing");
+    assert.equal(started.title, "准备文件修改");
+    assert.equal(started.detail, undefined);
+
+    const completed = mapThreadEventToAgentEvent(
+      {
+        type: "item.completed",
+        item: {
+          type: "file_change",
+          id: "file-1",
+          changes: [{ kind: "update", path: "src/one.ts" }],
+        },
+      },
+      0,
+    );
+    assert(completed);
+    assert.equal(completed.phase, "editing");
+    assert.equal(completed.title, "应用文件修改完成");
+    assert.equal(completed.detail, undefined);
+  });
+
   it("maps reconnect errors to connection phase", () => {
     const event = {
       type: "error" as const,

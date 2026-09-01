@@ -68,7 +68,7 @@ describe("ClaudeStreamParser", () => {
     });
     assert.equal(completed.length, 1);
     assert.equal(completed[0]?.phase, "editing");
-    assert.equal(completed[0]?.title, "应用文件修改");
+    assert.equal(completed[0]?.title, "应用文件修改完成");
   });
 
   it("maps result error into error event and exposes lastError", () => {
