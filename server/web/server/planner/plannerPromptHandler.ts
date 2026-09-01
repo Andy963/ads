@@ -156,8 +156,8 @@ function createPlannerDraftPassProcessor(args: {
         }
         normalized = {
           ...normalized,
-          issueRef: workItemValidation.refs.issueRef,
-          specRef: workItemValidation.refs.specRef,
+          issueRef: workItemValidation.refs.issueRef || undefined,
+          specRef: workItemValidation.refs.specRef || undefined,
         };
 
         const requestId = String(normalized.requestId ?? "").trim();
