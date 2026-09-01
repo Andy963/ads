@@ -231,7 +231,7 @@ describe("web/ws/planner-slash-draft-command", () => {
     assert.equal(drafts[0]!.bundle!.autoApprove, undefined);
   });
 
-  it("rejects a draft without the paired issue/spec directories", async () => {
+  it("accepts a draft without local issue/spec directories", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
@@ -260,13 +260,15 @@ describe("web/ws/planner-slash-draft-command", () => {
     assert.equal(orchestrator.invokeCount, 1);
 
     const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
-    assert.equal(drafts.length, 0);
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]!.bundle!.issueRef, undefined);
+    assert.equal(drafts[0]!.bundle!.specRef, undefined);
     const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
     assert.ok(result);
-    assert.match(String((result as { output?: unknown }).output ?? ""), /issueRef must be/);
+    assert.match(String((result as { output?: unknown }).output ?? ""), /任务草稿已写入/);
   });
 
-  it("rejects task bundles emitted from the worker lane without a paired work item", async () => {
+  it("accepts worker task bundles without a local work item", async () => {
     const chatMessages: unknown[] = [];
     const clientMessages: unknown[] = [];
     const historyStore = new MemoryHistoryStore();
@@ -294,10 +296,12 @@ describe("web/ws/planner-slash-draft-command", () => {
 
     assert.equal(orchestrator.invokeCount, 1);
     const drafts = listTaskBundleDrafts({ authUserId: "test-user", workspaceRoot, limit: 10 });
-    assert.equal(drafts.length, 0);
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]!.bundle!.issueRef, undefined);
+    assert.equal(drafts[0]!.bundle!.specRef, undefined);
     const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
     assert.ok(result);
-    assert.match(String((result as { output?: unknown }).output ?? ""), /issueRef must be/);
+    assert.match(String((result as { output?: unknown }).output ?? ""), /Worker draft/);
   });
 
   it("rejects /draft output when tasks.length is not 1", async () => {

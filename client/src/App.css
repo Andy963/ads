@@ -274,16 +274,6 @@
   background: rgba(15, 23, 42, 0.06);
   color: #0f172a;
 }
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #ef4444;
-}
-.dot.on {
-  background: #10b981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
-}
 .layout {
   --sidebar-width: clamp(280px, 24vw, 360px);
   flex: 1;
@@ -634,6 +624,14 @@
   border-radius: 12px;
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.laneTab--connected {
+  color: #059669;
+}
+
+.laneTab--disconnected {
+  color: #94a3b8;
 }
 
 .laneTab:hover {

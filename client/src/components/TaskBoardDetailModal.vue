@@ -6,6 +6,7 @@ import DraggableModal from "./DraggableModal.vue";
 const props = defineProps<{
   task: Task;
   statusLabel: string;
+  categoryLabel: string;
 }>();
 
 const emit = defineEmits<{
@@ -87,6 +88,14 @@ function confirmClear(): void {
         <div class="detailMetaRow">
           <span class="detailMetaKey">状态</span>
           <span class="detailMetaValue">{{ props.statusLabel }}</span>
+        </div>
+        <div class="detailMetaRow">
+          <span class="detailMetaKey">类型</span>
+          <span class="detailMetaValue">{{ props.categoryLabel }}</span>
+        </div>
+        <div class="detailMetaRow">
+          <span class="detailMetaKey">优先级</span>
+          <span class="detailMetaValue detailMono">P{{ props.task.priority }}</span>
         </div>
         <div class="detailMetaRow">
           <span class="detailMetaKey">模型</span>

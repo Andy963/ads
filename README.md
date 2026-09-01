@@ -11,9 +11,9 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 
 - **现代 Web Console**：基于 Vue 3 + Vite 构建的响应式控制台，支持移动端抽屉导航与桌面端全功能布局。
 - **三 Tab 协作工作流**：
-  - **Task (任务看板)**：可视化任务排队、执行、重试、错误追踪及 Task Bundle 任务草稿审批。
-  - **Advisor (规划 Lane)**：专属架构方案研讨；结论沉淀到 `docs/issue/<key>/`，并生成对应的 `docs/spec/<key>/`。
-  - **Worker (执行 Lane)**：读取批准时固定的 issue/spec 快照，专注代码执行与命令运行，实时输出紧凑预览。
+  - **Task (任务看板)**：可视化任务排队、执行、重试、错误追踪、开发/审核/返工分类及 Task Bundle 任务草稿审批。
+  - **Advisor (规划 Lane)**：专属架构方案研讨；任务草稿可直接引用 GitHub Issue/PR 或使用自包含 prompt，不要求本地 issue/spec 文档。
+  - **Worker (执行 Lane)**：有本地快照时读取批准时固定的 issue/spec 内容，否则直接依据任务 prompt 与 GitHub 引用执行，实时输出紧凑预览。
 - **多 Provider CLI 支持**：原生适配 **OpenAI Codex** 与 **Anthropic Claude Code**，支持模型可视化启用/停用与即时配置。
 - **全局规则引擎 (Global Rules)**：跨项目、跨终端（Web / Telegram）统一注入 system prompt 规范，支持在线测试与修改即时生效。
 - **原生会话恢复 (Session Resume)**：零 Token 冗余恢复底层 CLI 真实历史上下文，断线重连自动增量同步。

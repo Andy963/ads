@@ -90,6 +90,17 @@ function normalizeDirectoryRef(rawValue: unknown, root: string): string | null {
   return normalized;
 }
 
+function isGitHubReference(rawValue: unknown): boolean {
+  const raw = String(rawValue ?? "").trim();
+  if (!raw) return false;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && (url.hostname === "github.com" || url.hostname.endsWith(".github.com"));
+  } catch {
+    return false;
+  }
+}
+
 /** Normalizes an issue directory reference under docs/issue/<work-item-key>. */
 export function normalizeIssueRef(issueRef: unknown): string | null {
   return normalizeDirectoryRef(issueRef, ISSUE_ROOT);
@@ -177,19 +188,21 @@ export function validateWorkItemRefs(args: {
   issueRef: unknown;
   specRef: unknown;
 }): WorkItemRefValidation {
-  const issueRef = normalizeIssueRef(args.issueRef);
-  if (!issueRef) {
-    return {
-      ok: false,
-      error: `issueRef must be a relative directory under ${ISSUE_ROOT}/<work-item-key>/`,
-    };
+  const rawIssueRef = String(args.issueRef ?? "").trim();
+  const rawSpecRef = String(args.specRef ?? "").trim();
+  if (!rawIssueRef && !rawSpecRef) {
+    return { ok: true, refs: { issueRef: "", specRef: "", workItemKey: "" } };
   }
 
-  const specRef = normalizeSpecRef(args.specRef);
-  if (!specRef) {
+  const issueRef = normalizeIssueRef(rawIssueRef);
+  const specRef = normalizeSpecRef(rawSpecRef);
+  if (!issueRef || !specRef) {
+    if ((!rawIssueRef || isGitHubReference(rawIssueRef)) && (!rawSpecRef || isGitHubReference(rawSpecRef))) {
+      return { ok: true, refs: { issueRef: rawIssueRef, specRef: rawSpecRef, workItemKey: "" } };
+    }
     return {
       ok: false,
-      error: `specRef must be a relative directory under ${SPEC_ROOT}/<work-item-key>/`,
+      error: `issueRef/specRef must be paired local directories or GitHub URLs`,
     };
   }
 
@@ -286,7 +299,7 @@ export function resolveWorkItemPin(args: {
 
   const { issueRef, specRef, workItemKey } = validation.refs;
   const workspaceRoot = String(args.workspaceRoot ?? "").trim();
-  if (!workspaceRoot) return null;
+  if (!workspaceRoot || !issueRef || !specRef || !workItemKey) return null;
 
   let issueFiles: string[];
   let specFiles: string[];
