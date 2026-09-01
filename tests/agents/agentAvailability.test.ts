@@ -47,8 +47,8 @@ describe("CliAgentAvailability", () => {
       },
     });
 
-    await availability.probeAll(["gemini"]);
-    const record = availability.get("gemini");
+    await availability.probeAll(["claude"]);
+    const record = availability.get("claude");
     assert.ok(record);
     assert.equal(record.ready, true);
     assert.ok(seen.length >= 1);

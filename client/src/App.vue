@@ -867,7 +867,7 @@ const plannerConnectionStatus = computed(() => {
         <div v-else-if="mobileDrawerSection === 'models'" class="mobileModuleEmpty">
           <el-icon :size="30" aria-hidden="true"><Setting /></el-icon>
           <strong>选择一个 Provider</strong>
-          <span>打开左上角导航，从 Provider 下面选择 Codex、Claude 或 Droid。</span>
+          <span>打开左上角导航，从 Provider 下面选择 Codex 或 Claude。</span>
         </div>
       </section>
 

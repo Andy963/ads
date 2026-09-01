@@ -29,15 +29,15 @@ Web Console 将对话与任务流组织为三大工作区：
 
 ### 2. Provider CLI 与全局模型配置 (Provider & Models)
 - **多 Provider CLI 接入**：
-  - 原生支持 **Codex CLI**（OpenAI Codex）、**Claude Code**（Anthropic Claude）与 **Droid CLI**（Factory Droid）。
+  - 原生支持 **Codex CLI**（OpenAI Codex）与 **Claude Code**（Anthropic Claude）。
   - 左侧导航可切换 Provider，右侧维护各 Provider 的模型列表。
 - **模型管理**：
-  - 在线启用/停用模型、设置默认模型、编辑与新增模型。
-  - 输入框模型选择器严格联动：仅展示当前 Agent 兼容且已启用的模型，切换 Agent 时自动恢复对应兼容偏好。
+  - 在线启用/停用模型、按 CLI 设置默认模型、编辑与新增模型；Codex 与 Claude 的默认模型彼此独立。
+  - 输入框模型选择器严格联动：仅展示当前 Agent 兼容且已启用的模型，切换 Agent 时自动恢复对应兼容偏好。页面加载或模型列表刷新不会覆盖已有的自定义模型选择。
   - 所有模型配置持久化于全局 SQLite 状态库 (`state.db`)。
 
 ### 3. 全局规则系统 (Global Rules)
-- 跨项目、跨 Channel（Web Console / Telegram Bot）以及跨 Agent（Codex / Claude / Droid）统一生效的规则引擎。
+- 跨项目、跨 Channel（Web Console / Telegram Bot）以及跨 Agent（Codex / Claude）统一生效的规则引擎。
 - 规则分为四种级别：`advisory`（建议）、`required`（必须遵守）、`approval_required`（需审批）、`blocked`（阻断）。
 - 支持在线规则编辑、启用/停用、匹配模式过滤（针对特定 Agent、工具或路径）。
 - 提供 **注入预览 (Preview)** 与 **规则测试面板 (Test Playground)**，修改后实时保存至数据库，下一轮对话即时注入 `<global_rules>` 上下文生效，无需重启服务。

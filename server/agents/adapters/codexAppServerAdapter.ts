@@ -319,9 +319,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
     const lower = normalized.toLowerCase();
     if (
-      lower.startsWith("gemini") ||
-      lower.startsWith("auto-gemini") ||
-      lower.includes("gemini") ||
       lower.startsWith("claude") ||
       lower === "sonnet" ||
       lower === "opus" ||
