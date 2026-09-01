@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "npm"
@@ -65,7 +65,7 @@ jobs:
           tar -czf "ads-${TAG}.tgz" dist package.json package-lock.json README.md LICENSE .env.example .env.advanced.example
 
       - name: Create GitHub pre-release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: "ADS ${{ steps.vars.outputs.tag }} (Pre-release)"
           tag_name: ${{ steps.vars.outputs.tag }}
