@@ -673,7 +673,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.turnInFlight).toBe(false);
     expect(rt.pendingAckClientMessageId).toBeNull();
     expect(rt.queuedPrompts.value.map((q: any) => q.text)).toEqual(["send later"]);
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain("send later");
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toContain("send later");
     expect(localStorage.getItem("ads.outbox.default.main")).not.toBeNull();
     wrapper.unmount();
   });

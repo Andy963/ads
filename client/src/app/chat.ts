@@ -338,7 +338,7 @@ export function createChatActions(ctx: AppContext) {
     const existing = state.messages.value.slice();
     const liveIndex = findFirstLiveIndex(existing);
     const explicitId = String(item.id ?? "").trim();
-    const next = { ...item, id: explicitId || randomId("msg"), ts: item.ts ?? Date.now() };
+    const next = { ...item, id: explicitId || randomId("msg") };
     if (liveIndex < 0) {
       setMessages([...existing, next], state);
       return;
@@ -577,11 +577,6 @@ export function createChatActions(ctx: AppContext) {
 
     const next = state.queuedPrompts.value[0]!;
     state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
-    const messagesBeforeFlush = state.messages.value.slice();
-    const busyBeforeFlush = state.busy.value;
-    const turnInFlightBeforeFlush = state.turnInFlight;
-    const turnHasPatchBeforeFlush = state.turnHasPatch;
-    const pendingAckBeforeFlush = state.pendingAckClientMessageId;
     let sendAccepted = false;
 
     try {
@@ -624,8 +619,14 @@ export function createChatActions(ctx: AppContext) {
         ...(model ? { model } : {}),
         ...(effort ? { modelReasoningEffort: effort } : {}),
       };
-      pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution }, state);
-      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
+      const alreadyInMessages = state.messages.value.some((m) => m.id === next.clientMessageId);
+      if (!alreadyInMessages) {
+        pushMessageBeforeLive(
+          { id: next.clientMessageId, role: "user", kind: "text", content: display, execution, ts: next.createdAt ?? Date.now() },
+          state,
+        );
+      }
+      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true, ts: Date.now() }, state);
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
@@ -646,13 +647,16 @@ export function createChatActions(ctx: AppContext) {
         state.laneStatus.value = { kind: "progress", message: "请求已重新发送，正在等待后端结果…" };
       }
     } catch {
-      state.messages.value = messagesBeforeFlush;
-      state.busy.value = busyBeforeFlush;
-      state.turnInFlight = turnInFlightBeforeFlush;
-      state.turnHasPatch = turnHasPatchBeforeFlush;
-      state.pendingAckClientMessageId = pendingAckBeforeFlush;
+      dropEmptyAssistantPlaceholder(state);
+      state.busy.value = false;
+      state.turnInFlight = false;
+      state.turnHasPatch = false;
+      state.pendingAckClientMessageId = null;
       if (!sendAccepted) {
         state.connected.value = false;
+        if (!options?.preserveErrorStatus && !state.laneStatus.value) {
+          state.laneStatus.value = { kind: "error", message: "Failed to send prompt: connection lost or prompt rejected." };
+        }
       }
       const remaining = state.queuedPrompts.value.filter((q) => q.clientMessageId !== next.clientMessageId);
       state.queuedPrompts.value = [next, ...remaining];
@@ -707,7 +711,7 @@ export function createChatActions(ctx: AppContext) {
       }
     }
 
-    pushMessageBeforeLive({ role: "assistant", kind: "text", content: text }, state);
+    pushMessageBeforeLive({ role: "assistant", kind: "text", content: text, ts: Date.now() }, state);
   };
 
   const pruneTaskChatBuffer = (rt: ProjectRuntime): void => {
@@ -751,7 +755,7 @@ export function createChatActions(ctx: AppContext) {
         if (ev.role === "assistant") {
           finalizeAssistant(ev.content, rt);
         } else {
-          pushMessageBeforeLive({ role: ev.role, kind: "text", content: ev.content }, rt);
+      pushMessageBeforeLive({ role: ev.role, kind: "text", content: ev.content, ts: Date.now() }, rt);
         }
         continue;
       }
