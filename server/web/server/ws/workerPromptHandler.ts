@@ -394,5 +394,9 @@ export function attachWorkerPromptHandler(args: {
     exploredHeaderSent = true;
   };
 
-  return { unsubscribe, handleExploredEntry };
+  return {
+    unsubscribe,
+    handleExploredEntry,
+    getReasoningText: () => lastReasoningText,
+  };
 }

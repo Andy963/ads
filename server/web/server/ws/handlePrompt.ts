@@ -159,7 +159,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       cleanupAfter();
       return;
     }
-    const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
+    const { unsubscribe, handleExploredEntry, getReasoningText } = attachWorkerPromptHandler({
       orchestrator,
       turnCwd,
       historyKey: deps.context.historyKey,
@@ -371,6 +371,15 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       if (deps.observability.sessionLogger) {
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
+      }
+      const reasoningText = getReasoningText?.();
+      if (reasoningText && reasoningText.trim()) {
+        deps.history.historyStore.add(deps.context.historyKey, {
+          role: "assistant",
+          kind: "thought",
+          text: reasoningText.trim(),
+          ts: Date.now() - 1,
+        });
       }
       const persistedAssistant = deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
       if (persistedAssistant) {

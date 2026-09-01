@@ -206,8 +206,32 @@ export function createStreamingActions(params: {
     clearLiveActivityTimer(state);
     clearLiveActivityWindow(state.liveActivity);
     const existing = state.messages.value.slice();
+    const stepMsg = existing.find((m) => m.id === liveStepId);
+    const stepContent = String(stepMsg?.content ?? "").trim();
+
     const next = existing.filter((m) => !isLiveMessageId(m.id));
-    if (next.length === existing.length) return;
+    if (stepContent && !shouldIgnoreStepDelta(stepContent)) {
+      const alreadyHas = next.some((m) => m.kind === "thought" && m.content === stepContent);
+      if (!alreadyHas) {
+        const thoughtItem: ChatItem = {
+          id: randomId("thought"),
+          role: "assistant",
+          kind: "thought",
+          content: stepContent,
+          streaming: false,
+          ts: stepMsg?.ts ?? Date.now(),
+        };
+        let insertAt = next.length;
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i]?.role === "assistant") {
+            insertAt = i;
+            break;
+          }
+        }
+        next.splice(insertAt, 0, thoughtItem);
+      }
+    }
+    if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;
     setMessages(next, state);
   };
 
