@@ -9,7 +9,7 @@ function createHarness() {
   const upserts: Array<{ role: string; text: string; kind?: string }> = [];
   let eventHandler: ((event: any) => void) | null = null;
 
-  attachWorkerPromptHandler({
+  const handler = attachWorkerPromptHandler({
     orchestrator: {
       onEvent: (handler) => {
         eventHandler = handler;
@@ -36,7 +36,7 @@ function createHarness() {
   });
 
   assert.ok(eventHandler);
-  return { emit: eventHandler, sent, history, upserts };
+  return { emit: eventHandler, sent, history, upserts, handler };
 }
 
 function commandEvent(args: {
@@ -92,6 +92,34 @@ describe("web/server/ws/workerPromptHandler", () => {
 
     assert.deepEqual(history, []);
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
+  });
+
+  it("accumulates replayable step traces without mixing them into command history", () => {
+    const { emit, handler, history } = createHarness();
+
+    emit({
+      phase: "reasoning",
+      title: "Inspecting workspace",
+      timestamp: 1,
+      raw: { type: "item.started", item: { type: "reasoning" } },
+    });
+    emit({
+      phase: "reasoning",
+      title: "Inspecting workspace",
+      timestamp: 2,
+      raw: { type: "item.updated", item: { type: "reasoning" } },
+      delta: "first thought",
+    });
+    emit({
+      phase: "tool",
+      title: "Running tool",
+      detail: "bash",
+      timestamp: 3,
+      raw: { type: "item.started", item: { type: "tool_call" } },
+    });
+
+    assert.equal(handler.getStepTraceText(), "[analysis] first thought[tool] Running tool: bash\n");
+    assert.deepEqual(history, []);
   });
 
   it("forwards failed agent command completion without persisting replayable history", () => {

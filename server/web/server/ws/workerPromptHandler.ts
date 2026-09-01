@@ -106,9 +106,11 @@ export function attachWorkerPromptHandler(args: {
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
+  getStepTraceText: () => string;
 } {
   let lastRespondingText = "";
   let lastReasoningText = "";
+  let stepTraceText = "";
   const lastCommandOutputsByKey = new Map<string, string>();
   const announcedCommandKeys = new Set<string>();
   const terminalCommandKeys = new Set<string>();
@@ -176,6 +178,9 @@ export function attachWorkerPromptHandler(args: {
     if (raw.type === "turn.started") {
       logicalPlanId = null;
       latestPlan = null;
+      lastRespondingText = "";
+      lastReasoningText = "";
+      stepTraceText = "";
     }
     if (raw.type === "thread.started" && raw.thread_id) {
       args.onThreadStarted?.(raw.thread_id);
@@ -256,6 +261,7 @@ export function attachWorkerPromptHandler(args: {
       lastReasoningText = next;
       if (delta) {
         const payload = prev ? delta : `[analysis] ${delta}`;
+        stepTraceText += payload;
         args.sendToChat({ type: "delta", delta: payload, source: "step" });
       }
       return;
@@ -308,6 +314,7 @@ export function attachWorkerPromptHandler(args: {
     if (isStepTracePhase(event.phase)) {
       const line = formatStepTraceLine(event);
       if (line) {
+        stepTraceText += line;
         args.sendToChat({ type: "delta", delta: line, source: "step" });
       }
     }
@@ -397,6 +404,6 @@ export function attachWorkerPromptHandler(args: {
   return {
     unsubscribe,
     handleExploredEntry,
-    getReasoningText: () => lastReasoningText,
+    getStepTraceText: () => stepTraceText,
   };
 }
