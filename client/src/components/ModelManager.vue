@@ -569,7 +569,7 @@ defineExpose({
               <span>
                 <strong>设为默认</strong>
                 <small v-if="editingCurrentDefault">已是默认模型；要更换请在别的模型上设为默认。</small>
-                <small v-else>全局唯一，未选择模型时优先使用它。</small>
+                <small v-else>当前 CLI 的默认模型；未选择模型时优先使用它。</small>
               </span>
             </label>
           </div>
