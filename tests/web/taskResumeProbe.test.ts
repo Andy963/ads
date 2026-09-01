@@ -4,10 +4,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  droidProjectSlug,
-  probeSessionOnDisk,
-} from "../../server/agents/sessions/sessionPaths.js";
+import { probeSessionOnDisk } from "../../server/agents/sessions/sessionPaths.js";
 import { assertSessionResumable } from "../../server/web/server/ws/taskResumeProbe.js";
 import { isPermanentTaskResumeFailure } from "../../server/web/server/ws/taskResume.js";
 
@@ -21,20 +18,6 @@ async function withCodexHome<T>(setup: (home: string) => Promise<void>, fn: () =
   } finally {
     if (previous === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previous;
-    await fsp.rm(home, { recursive: true, force: true });
-  }
-}
-
-async function withDroidHome<T>(setup: (home: string) => Promise<void>, fn: () => Promise<T>): Promise<T> {
-  const previous = process.env.FACTORY_HOME_OVERRIDE;
-  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "ads-droid-home-"));
-  try {
-    await setup(home);
-    process.env.FACTORY_HOME_OVERRIDE = home;
-    return await fn();
-  } finally {
-    if (previous === undefined) delete process.env.FACTORY_HOME_OVERRIDE;
-    else process.env.FACTORY_HOME_OVERRIDE = previous;
     await fsp.rm(home, { recursive: true, force: true });
   }
 }
@@ -71,7 +54,7 @@ describe("web/ws/taskResumeProbe", () => {
   });
 
   it("treats agents without a known layout as unknown", async () => {
-    assert.equal(await probeSessionOnDisk({ agentId: "gemini", sessionId: "x" }), "unknown");
+    assert.equal(await probeSessionOnDisk({ agentId: "other", sessionId: "x" }), "unknown");
   });
 
   it("does not reject a session when the root is unreadable", async () => {
@@ -105,36 +88,4 @@ describe("web/ws/taskResumeProbe", () => {
     await assert.rejects(() => assertSessionResumable({ agentId: "codex", sessionId: "  " }), /empty session id/);
   });
 
-  it("finds an existing Droid session in the cwd-derived directory", async () => {
-    const cwd = "/home/andy/repos/project.with-dot";
-    const sessionId = "droid-session-present";
-    assert.equal(droidProjectSlug(cwd), "-home-andy-repos-project.with-dot");
-
-    const probe = await withDroidHome(
-      async (home) => {
-        const projectDir = path.join(home, "sessions", "-home-andy-repos-project.with-dot");
-        await fsp.mkdir(projectDir, { recursive: true });
-        await fsp.writeFile(path.join(projectDir, `${sessionId}.jsonl`), "{}\n");
-      },
-      () => probeSessionOnDisk({ agentId: "droid", sessionId, cwd }),
-    );
-    assert.equal(probe, "present");
-  });
-
-  it("rejects a missing Droid session instead of reporting a native resume", async () => {
-    await withDroidHome(
-      async (home) => {
-        await fsp.mkdir(path.join(home, "sessions"), { recursive: true });
-      },
-      () =>
-        assert.rejects(
-          assertSessionResumable({
-            agentId: "droid",
-            sessionId: "droid-session-missing",
-            cwd: "/home/andy/repos/project.with-dot",
-          }),
-          /session not found on disk for agent=droid/,
-        ),
-    );
-  });
 });

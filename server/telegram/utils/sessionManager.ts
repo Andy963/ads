@@ -3,8 +3,6 @@ import { createLogger } from '../../utils/logger.js';
 import { CodexCliAdapter } from '../../agents/adapters/codexCliAdapter.js';
 import { CodexAppServerAdapter } from '../../agents/adapters/codexAppServerAdapter.js';
 import { ClaudeCliAdapter } from '../../agents/adapters/claudeCliAdapter.js';
-import { GeminiCliAdapter } from '../../agents/adapters/geminiCliAdapter.js';
-import { DroidCliAdapter } from '../../agents/adapters/droidCliAdapter.js';
 import type { AgentAdapter, AgentIdentifier } from '../../agents/types.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
@@ -92,7 +90,7 @@ export type SessionAgentSurface =
   | "scheduler-runtime"
   | "scheduler-compiler";
 
-const INTERACTIVE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude", "gemini", "droid"];
+const INTERACTIVE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude"];
 const TASK_QUEUE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude"];
 const CODEX_ONLY_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex"];
 
@@ -110,12 +108,6 @@ export function resolveSessionAgentAllowlist(
   return preferred.filter((agentId) => {
     if (agentId === "claude") {
       return env.ADS_CLAUDE_ENABLED !== "0";
-    }
-    if (agentId === "gemini") {
-      return env.ADS_GEMINI_ENABLED !== "0";
-    }
-    if (agentId === "droid") {
-      return env.ADS_DROID_ENABLED !== "0";
     }
     return true;
   });
@@ -673,28 +665,6 @@ export class SessionManager {
         continue;
       }
 
-      if (agentId === "gemini") {
-        adapters.push(
-          new GeminiCliAdapter({
-            sandboxMode: this.sandboxMode,
-            workingDirectory: args.effectiveCwd,
-            sessionId: args.resumeThreadIds?.gemini,
-          }),
-        );
-        continue;
-      }
-
-      if (agentId === "droid") {
-        adapters.push(
-          new DroidCliAdapter({
-            sandboxMode: this.sandboxMode,
-            workingDirectory: args.effectiveCwd,
-            model: args.userModel,
-            modelReasoningEffort: args.userModelReasoningEffort,
-            sessionId: args.resumeThreadIds?.droid,
-          }),
-        );
-      }
     }
 
     if (adapters.length === 0) {

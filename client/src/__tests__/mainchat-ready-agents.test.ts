@@ -19,7 +19,6 @@ describe("MainChat ready agents", () => {
         agents: [
           { id: "codex", name: "Codex", ready: false, error: "missing api key" },
           { id: "claude", name: "Claude", ready: true },
-          { id: "gemini", name: "Gemini", ready: true },
         ],
         activeAgentId: "codex",
         models: [],
@@ -35,7 +34,7 @@ describe("MainChat ready agents", () => {
     expect((agentSelect.element as HTMLSelectElement).value).toBe("claude");
 
     const values = agentSelect.findAll("option").map((opt) => opt.attributes("value"));
-    expect(values).toEqual(["claude", "gemini"]);
+    expect(values).toEqual(["claude"]);
 
     expect(wrapper.emitted("switchAgent")?.[0]?.[0]).toBe("claude");
     expect(wrapper.emitted("switchAgent")?.length).toBe(1);
@@ -43,4 +42,3 @@ describe("MainChat ready agents", () => {
     wrapper.unmount();
   });
 });
-

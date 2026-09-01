@@ -22,7 +22,7 @@ function cloneHistoryEntries(entries: readonly HistoryEntry[]): HistoryEntry[] {
 }
 
 /** Agents whose CLI can reattach to a provider-native session by id. */
-const NATIVE_RESUME_AGENTS = new Set(["codex", "claude", "droid"]);
+const NATIVE_RESUME_AGENTS = new Set(["codex", "claude"]);
 
 function supportsNativeResume(agentId: string | undefined): boolean {
   return NATIVE_RESUME_AGENTS.has(String(agentId ?? "").trim());

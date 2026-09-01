@@ -361,13 +361,13 @@ describe("TaskBoard edit modal", () => {
   });
 
   it("falls back to Auto when the task agent is not ready", async () => {
-    const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending", agentId: "gemini" });
+    const task = makeTask({ id: "t-1", title: "My title", prompt: "Hello", status: "pending", agentId: "claude" });
 
     const wrapper = mount(TaskBoard, {
       props: {
         tasks: [task],
         agents: [
-          { id: "gemini", name: "Gemini", ready: false, error: "missing api key" },
+          { id: "claude", name: "Claude", ready: false, error: "missing api key" },
           { id: "codex", name: "Codex", ready: true },
         ],
         activeAgentId: "codex",

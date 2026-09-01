@@ -7,7 +7,7 @@ export type RuleSeverity = (typeof RULE_SEVERITIES)[number];
 /** Known categories. Free-form strings are accepted so operators can add their own. */
 export const RULE_CATEGORIES = ["instruction", "safety", "execution"] as const;
 
-export type RuleAgent = "codex" | "claude" | "gemini" | "droid";
+export type RuleAgent = "codex" | "claude";
 export type RuleChannel = "web" | "telegram" | "cli";
 
 /**
