@@ -278,19 +278,13 @@ function mapCommandExecution(event: ItemEvent, item: CommandExecutionItem, times
   };
 }
 
-function mapFileChange(event: ItemEvent, item: FileChangeItem, timestamp: number): AgentEvent | null {
+function mapFileChange(event: ItemEvent, _item: FileChangeItem, timestamp: number): AgentEvent | null {
   if (event.type === "item.updated") {
     return null;
   }
-  const changes = item.changes
-    .slice(0, 3)
-    .map((change) => `${change.kind}:${change.path}`)
-    .join(", ");
-  const detail = item.changes.length > 3 ? `${changes} 等` : changes;
   return {
     phase: "editing",
-    title: event.type === "item.completed" ? "应用文件修改" : "准备文件修改",
-    detail: detail || undefined,
+    title: event.type === "item.completed" ? "应用文件修改完成" : "准备文件修改",
     timestamp,
     raw: event,
   };
