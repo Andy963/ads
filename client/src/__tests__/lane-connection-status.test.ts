@@ -26,7 +26,7 @@ describe("lane connection status", () => {
     const css = readAppCss();
 
     expect(css).toMatch(
-      /\.laneTab\.active\.laneTab--connected,\s*\.laneTab--connected\s*\{[\s\S]*?color:\s*#059669\s*;/,
+      /\.laneTab\.active\.laneTab--connected\s*\{[\s\S]*?color:\s*#059669\s*;/,
     );
   });
 });
