@@ -83,6 +83,7 @@ describe("web/ws/preflight", () => {
   it("persists prompt execution metadata and dedupes by client id", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight-prompt-meta", maxEntriesPerSession: 20 });
     const sent: unknown[] = [];
+    const persistedMessages: Array<{ clientMessageId: string; role: "user"; text: string }> = [];
     const sanitizeInput = (payload: unknown) => {
       if (typeof payload === "string") return payload;
       if (payload && typeof payload === "object" && !Array.isArray(payload)) {
@@ -109,6 +110,7 @@ describe("web/ws/preflight", () => {
         warn: () => {},
         sessionId: "session-1",
         userId: 7,
+        onPersistedMessage: (message) => persistedMessages.push(message),
       });
       const second = preflightPersistAndAck({
         parsed: {
@@ -127,11 +129,13 @@ describe("web/ws/preflight", () => {
         warn: () => {},
         sessionId: "session-1",
         userId: 7,
+        onPersistedMessage: (message) => persistedMessages.push(message),
       });
 
       const entries = historyStore.get("history-1");
       assert.deepEqual(first, { enqueue: true });
       assert.deepEqual(second, { enqueue: false });
+      assert.deepEqual(persistedMessages, [{ clientMessageId: "p1", role: "user", text: "hello" }]);
       assert.deepEqual(sent, [
         { type: "ack", client_message_id: "p1", duplicate: false },
         { type: "ack", client_message_id: "p1", duplicate: true },

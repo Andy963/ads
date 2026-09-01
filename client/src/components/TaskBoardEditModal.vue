@@ -19,6 +19,7 @@ const props = defineProps<{
   agentOptions: EditAgentOption[];
   showSaveButton: boolean;
   primaryLabel: string;
+  saving: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -110,7 +111,7 @@ onMounted(() => {
               v-if="props.showSaveButton"
               class="btnSecondary"
               type="button"
-              :disabled="!props.task"
+              :disabled="!props.task || props.saving"
               data-testid="task-edit-modal-save"
               @click="emit('save')"
             >
@@ -119,7 +120,7 @@ onMounted(() => {
             <button
               class="btnPrimary"
               type="button"
-              :disabled="!props.task"
+              :disabled="!props.task || props.saving"
               data-testid="task-edit-modal-save-and-run"
               @click="emit('saveAndRun')"
             >

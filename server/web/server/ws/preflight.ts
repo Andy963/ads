@@ -59,6 +59,7 @@ export function preflightPersistAndAck(args: {
   warn: (message: string) => void;
   sessionId: string;
   userId: number;
+  onPersistedMessage?: (message: { clientMessageId: string; role: "user"; text: string }) => void;
 }): { enqueue: boolean } {
   if (!args.clientMessageId) {
     return { enqueue: true };
@@ -120,6 +121,7 @@ export function preflightPersistAndAck(args: {
       }
       return { enqueue: replayIncomplete };
     }
+    args.onPersistedMessage?.({ clientMessageId: args.clientMessageId, role: "user", text: textResult.text });
     args.broadcastPersistedHistory?.();
     args.broadcastInFlight?.();
     return { enqueue: true };
