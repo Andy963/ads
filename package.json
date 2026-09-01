@@ -1,6 +1,6 @@
 {
   "name": "ads",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "AI agent workspace and task orchestration with optional Telegram bot support",
   "author": "ADS Contributors",
@@ -43,7 +43,7 @@
     "codex:regen-types": "node scripts/generate-codex-app-server-types.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "bin": {
     "ads": "./dist/server/cli.js",

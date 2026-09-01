@@ -1,7 +1,7 @@
 # ADS (Agent Dispatch & Orchestration System)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![Node Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 
 ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）/ Task（任务看板与队列）构建了一体化的 AI 开发工作流，并支持多 Provider CLI 接入与可选的 Telegram Bot 远程交互。
 
@@ -25,7 +25,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 ## 快速开始
 
 ### 1. 环境依赖
-- **Node.js**: `>= 20.0.0`
+- **Node.js**: `>= 24.0.0`
 - **npm**: 确保具备 C++ 编译环境以支持 `better-sqlite3` 原生模块构建。
 - **Agent CLI**: 本机已安装并配置 `codex`、`claude` 或 `droid`。
 

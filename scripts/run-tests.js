@@ -8,8 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testsRoot = path.join(root, "tests");
-const preferredNode = path.join(os.homedir(), ".local", "nodejs", "bin", "node");
-const nodeBin = fs.existsSync(preferredNode) ? preferredNode : process.execPath;
+const nodeBin = process.execPath;
 
 function collectTests(directory) {
   const tests = [];
