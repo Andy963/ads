@@ -44,7 +44,7 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 | Agent | 实现位置 | 机制 |
 |---|---|---|
-| Codex | [`codexCliAdapter.ts:263`](../server/agents/adapters/codexCliAdapter.ts) / `:439` | `shouldResume` 为真时 argv 追加 `resume <threadId>`；`thread.started` 事件回写新的 `thread_id` |
+| Codex | [`codexAppServerAdapter.ts`](../server/agents/adapters/codexAppServerAdapter.ts) | 通过 `thread/start` 或 `turn/start` 的 `threadId` 参数原生恢复；`thread/started` 事件回写新的 `threadId` |
 | Claude | [`claudeCliAdapter.ts:296`](../server/agents/adapters/claudeCliAdapter.ts) | `sessionId` 存在时 argv 追加 `--resume <sessionId>` |
 
 也就是说 **adapter 层没有缺口**，缺的是上面的编排与 UI。

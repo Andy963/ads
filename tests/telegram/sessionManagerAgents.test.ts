@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { resolveSessionAgentAllowlist, SessionManager } from "../../server/telegram/utils/sessionManager.js";
+import { CodexAppServerAdapter } from "../../server/agents/adapters/codexAppServerAdapter.js";
 
 describe("SessionManager agent allowlists", () => {
   const originalEnv = process.env;
@@ -57,6 +58,21 @@ describe("SessionManager agent allowlists", () => {
 
     try {
     assert.deepEqual(manager.getConfiguredAgentIds(), ["codex", "claude"]);
+    } finally {
+      manager.destroy();
+    }
+  });
+
+  it("uses the app-server adapter for the codex agent by default", () => {
+    const manager = new SessionManager(0, 0, "workspace-write");
+
+    try {
+      const session = manager.getOrCreate(123456, "/tmp/ads-codex-unified");
+      const adapter = session.getAdapter("codex");
+
+      assert(adapter instanceof CodexAppServerAdapter);
+      assert.equal(adapter?.id, "codex");
+      assert.equal(adapter?.preservesThreadOnModelChange, true);
     } finally {
       manager.destroy();
     }

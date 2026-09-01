@@ -39,13 +39,13 @@ import {
 
 const logger = createLogger("CodexAppServerAdapter");
 
-export const CODEX_APP_SERVER_ADAPTER_ID = "codex-appserver";
+export const CODEX_ADAPTER_ID = "codex";
 const DEFAULT_AUTO_COMPACT_TIMEOUT_MS = 120_000;
 const COMPACT_INTERRUPT_GRACE_MS = 5_000;
 
 const DEFAULT_METADATA: AgentMetadata = {
-  id: CODEX_APP_SERVER_ADAPTER_ID,
-  name: "Codex (app-server)",
+  id: CODEX_ADAPTER_ID,
+  name: "Codex",
   vendor: "OpenAI",
   description: "Codex daemon over the experimental app-server JSON-RPC protocol",
   capabilities: ["text", "images", "files", "commands"],
@@ -222,12 +222,8 @@ interface ContextUsage {
 }
 
 /**
- * Adapter that drives a persistent `codex app-server` daemon via JSON-RPC.
- *
- * Implements the same `AgentAdapter` contract as `CodexCliAdapter` so the
- * orchestrator can swap them transparently. The legacy id `"codex"` is kept
- * for the CLI adapter; this implementation registers under the distinct id
- * `"codex-appserver"` so both can coexist.
+ * Adapter that drives the unified persistent `codex app-server` daemon via
+ * JSON-RPC.
  */
 export class CodexAppServerAdapter implements AgentAdapter {
   readonly preservesThreadOnModelChange = true;
