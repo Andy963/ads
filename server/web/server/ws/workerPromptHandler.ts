@@ -24,6 +24,9 @@ type Logger = {
   debug: (msg: string) => void;
 };
 
+type PlanItem = { text: string; status: "pending" | "in_progress" | "completed" };
+type PlanSnapshot = { planId: string; status: "in_progress" | "completed" | "failed"; items: PlanItem[] };
+
 function isTransientRetryEvent(event: AgentEvent): boolean {
   const raw = event.raw as ThreadEvent | null | undefined;
   if (raw?.type !== "turn.failed" && raw?.type !== "error") return false;
@@ -111,6 +114,24 @@ export function attachWorkerPromptHandler(args: {
   const terminalCommandKeys = new Set<string>();
   let hasCommandOutput = false;
   let exploredHeaderSent = false;
+  let logicalPlanId: string | null = null;
+  let latestPlan: PlanSnapshot | null = null;
+
+  const publishPlan = (snapshot: PlanSnapshot): void => {
+    latestPlan = snapshot;
+    const ts = Date.now();
+    args.sendToChat({ type: "plan", ...snapshot, ts });
+    try {
+      args.historyStore.upsertEntryByKind(args.historyKey, {
+        role: "status",
+        text: JSON.stringify(snapshot),
+        ts,
+        kind: `plan:${snapshot.planId}`,
+      });
+    } catch (err) {
+      args.logger.debug(`[Plan] failed to persist plan snapshot: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   /**
    * Report every command the agent runs to the global-rule gate. The gate ships
@@ -152,6 +173,10 @@ export function attachWorkerPromptHandler(args: {
     args.sessionLogger?.logEvent(event);
     args.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
     const raw = event.raw as ThreadEvent;
+    if (raw.type === "turn.started") {
+      logicalPlanId = null;
+      latestPlan = null;
+    }
     if (raw.type === "thread.started" && raw.thread_id) {
       args.onThreadStarted?.(raw.thread_id);
     }
@@ -179,6 +204,13 @@ export function attachWorkerPromptHandler(args: {
         maxAttempts: event.retry.maxAttempts,
       });
       return;
+    }
+    if (raw.type === "turn.completed" && latestPlan && latestPlan.status !== "failed") {
+      publishPlan({
+        ...latestPlan,
+        status: "completed",
+        items: latestPlan.items.map((item) => ({ ...item, status: "completed" })),
+      });
     }
     if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
       const next = event.delta;
@@ -230,16 +262,8 @@ export function attachWorkerPromptHandler(args: {
     }
     if (rawItemType === "todo_list" && (raw.type === "item.started" || raw.type === "item.updated" || raw.type === "item.completed")) {
       const item = rawItem as { id?: unknown; status?: unknown; items?: unknown };
-      const planId = String(item.id ?? "").trim() || `plan-${event.timestamp}`;
+      const providerPlanId = String(item.id ?? "").trim();
       const planStatusRaw = String(item.status ?? "").trim().toLowerCase();
-      const planStatus =
-        raw.type === "item.completed"
-          ? planStatusRaw === "failed"
-            ? "failed"
-            : "completed"
-          : planStatusRaw === "completed"
-            ? "completed"
-            : "in_progress";
       const rawItems = Array.isArray(item.items) ? item.items : [];
       const items = rawItems
         .map((entry) => {
@@ -262,25 +286,23 @@ export function attachWorkerPromptHandler(args: {
           return { text, status };
         })
         .filter((entry): entry is { text: string; status: "pending" | "in_progress" | "completed" } => entry !== null);
-      const ts = Date.now();
-      args.sendToChat({
-        type: "plan",
-        planId,
-        status: planStatus,
-        items,
-        ts,
-      });
-      const persistText = JSON.stringify({ planId, status: planStatus, items });
-      try {
-        args.historyStore.upsertEntryByKind(args.historyKey, {
-          role: "status",
-          text: persistText,
-          ts,
-          kind: `plan:${planId}`,
-        });
-      } catch (err) {
-        args.logger.debug(`[Plan] failed to persist plan snapshot: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      const latestTexts = latestPlan?.items.map((entry) => entry.text) ?? [];
+      const nextTexts = items.map((entry) => entry.text);
+      const startsDistinctPlan =
+        Boolean(logicalPlanId) &&
+        Boolean(providerPlanId) &&
+        providerPlanId !== logicalPlanId &&
+        latestPlan?.status === "completed" &&
+        JSON.stringify(latestTexts) !== JSON.stringify(nextTexts);
+      const planId = startsDistinctPlan ? providerPlanId : logicalPlanId ?? (providerPlanId || `plan-${event.timestamp}`);
+      logicalPlanId = planId;
+      const hasIncompleteItems = items.some((entry) => entry.status !== "completed");
+      const planStatus = planStatusRaw === "failed"
+        ? "failed"
+        : raw.type === "item.completed" && !hasIncompleteItems
+          ? "completed"
+          : "in_progress";
+      publishPlan({ planId, status: planStatus, items });
       return;
     }
     if (isStepTracePhase(event.phase)) {

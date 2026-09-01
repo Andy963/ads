@@ -24,7 +24,27 @@ function isTransientExecutePreview(item: ChatItem): boolean {
 }
 
 function withoutLiveAndTransientExecute(items: ChatItem[], liveStepId: string): ChatItem[] {
-  return items.filter((m) => m.id !== liveStepId && !isTransientExecutePreview(m));
+  const filtered = items.filter((m) => m.id !== liveStepId && !isTransientExecutePreview(m));
+  const lastPlanIndex = new Map<string, number>();
+  for (let i = 0; i < filtered.length; i += 1) {
+    const planId = String(filtered[i]?.plan?.planId ?? "").trim();
+    if (planId) lastPlanIndex.set(planId, i);
+  }
+  return filtered.filter((item, index) => {
+    const planId = String(item.plan?.planId ?? "").trim();
+    return !planId || lastPlanIndex.get(planId) === index;
+  });
+}
+
+function preferServerPlanSnapshots(local: ChatItem[], server: ChatItem[]): ChatItem[] {
+  const serverPlanIds = new Set(
+    server.map((item) => String(item.plan?.planId ?? "").trim()).filter(Boolean),
+  );
+  if (serverPlanIds.size === 0) return local;
+  return local.filter((item) => {
+    const planId = String(item.plan?.planId ?? "").trim();
+    return !planId || !serverPlanIds.has(planId);
+  });
 }
 
 function toComparable(items: ChatItem[]): ComparableChat[] {
@@ -122,8 +142,8 @@ export function mergeHistoryFromServer(
   serverHistory: ChatItem[],
   liveStepId: string,
 ): ChatItem[] {
-  const local = withoutLiveAndTransientExecute(localMessages, liveStepId);
   const server = withoutLiveAndTransientExecute(serverHistory, liveStepId);
+  const local = preferServerPlanSnapshots(withoutLiveAndTransientExecute(localMessages, liveStepId), server);
   if (local.length === 0) return server;
   if (server.length === 0) return local;
 
