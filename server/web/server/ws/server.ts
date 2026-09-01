@@ -161,8 +161,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     }
 
     const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: config.workspaceRoot });
-    const chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
-    const { sessionManager, historyStore, getWorkspaceLock } = resolveWsLaneResources({
+    let chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
+    let { sessionManager, historyStore, getWorkspaceLock } = resolveWsLaneResources({
       chatSessionId,
       sessions,
       history,
@@ -182,7 +182,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       aliveWs.missedPongs = 0;
     });
 
-    const {
+    let {
       authUserId,
       legacyUserId,
       userId,
@@ -515,7 +515,82 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         );
       }
 
-      const preflight = preflightPersistAndAck({
+      if (parsed.type === "switch_chat_session") {
+        messageChain = messageChain
+          .then(async () => {
+            const payload = parsed.payload;
+            const targetChatSessionId =
+              typeof payload === "object" && payload !== null && "chatSessionId" in payload
+                ? String((payload as { chatSessionId?: unknown }).chatSessionId ?? "").trim()
+                : "";
+            const nextChatSessionId = targetChatSessionId || crypto.randomUUID();
+
+            abortInFlightForHistoryKey(historyKey);
+
+            chatSessionId = nextChatSessionId;
+            const laneRes = resolveWsLaneResources({ chatSessionId, sessions, history });
+            sessionManager = laneRes.sessionManager;
+            historyStore = laneRes.historyStore;
+            getWorkspaceLock = laneRes.getWorkspaceLock;
+
+            const nextIdentity = buildWsConnectionIdentity({
+              authUserId,
+              sessionId,
+              chatSessionId,
+              connectionId,
+            });
+            legacyUserId = nextIdentity.legacyUserId;
+            userId = nextIdentity.userId;
+            historyKey = nextIdentity.historyKey;
+            cacheKey = nextIdentity.cacheKey;
+            clientMeta = nextIdentity.clientMeta;
+            state.clientMetaByWs.set(ws, clientMeta);
+            registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
+
+            registerSessionCacheBinding();
+            sessionManager.maybeMigrateThreadState(legacyUserId, userId);
+            orchestrator = sessionManager.getOrCreate(userId, currentCwd, true);
+
+            const nextSyncNamespace = resolveSyncNamespace(chatSessionId);
+            const nextSyncLaneKeys = resolveSyncLaneKeys({
+              authUserId,
+              sessionId,
+              chatSessionId,
+            });
+
+            sendInitialBootstrapMessages({
+              ws,
+              safeJsonSend,
+              sessionManager,
+              orchestrator,
+              userId,
+              agentAvailability: agents.agentAvailability,
+              sessionId,
+              chatSessionId,
+              workspace: getWorkspaceState(currentCwd),
+              inFlight: false,
+              historyStore,
+              historyKey,
+              additionalHistoryEntries:
+                chatSessionId === "planner"
+                  ? undefined
+                  : historyStore.get(resolveSharedWorkerSyncLaneKey(sessionId)),
+              latestSeq: state.syncEventStore?.getLatestSeqForLanes(nextSyncNamespace, nextSyncLaneKeys) ?? 0,
+            });
+
+            logger.info(
+              "[WebSocket] in-band session switch conn=" + connectionId + " session=" + sessionId + " chat=" + chatSessionId + " user=" + userId + " history=" + historyKey,
+            );
+          })
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn("[WebSocket] switch_chat_session failed conn=" + connectionId + " user=" + userId + ": " + message);
+            safeJsonSend(ws, { type: "error", message: "Failed to switch chat session" });
+          });
+        return;
+      }
+
+            const preflight = preflightPersistAndAck({
         parsed,
         requestId,
         clientMessageId,

@@ -59,7 +59,7 @@ type WsMessage =
 export class AdsWebSocket {
   private ws: WebSocket | null = null;
   private readonly sessionId: string;
-  private readonly chatSessionId: string;
+  private chatSessionId: string;
   private pingTimer: number | null = null;
 
   onOpen?: () => void;
@@ -98,6 +98,13 @@ export class AdsWebSocket {
   /** Returns false when the socket is not open, so the caller can fall back to HTTP. */
   interrupt(): boolean {
     return this.send("interrupt");
+  }
+
+  switchChatSession(chatSessionId: string): boolean {
+    const id = String(chatSessionId ?? "").trim();
+    if (!id) return false;
+    this.chatSessionId = id;
+    return this.send("switch_chat_session", { chatSessionId: id });
   }
 
   clearHistory(payload?: unknown): void {
