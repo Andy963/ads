@@ -59,4 +59,31 @@ describe("chat timestamp preservation", () => {
     expect(userMsg!.ts!).toBeGreaterThanOrEqual(before);
     expect(userMsg!.ts!).toBeLessThanOrEqual(after);
   });
+
+  it("preserves missing timestamps when applying replayed history", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+
+    chat.applyResumeHistory([
+      { id: "history-user", role: "user", kind: "text", content: "Old question", ts: 1672531199000 },
+      { id: "history-assistant", role: "assistant", kind: "text", content: "Old answer" },
+    ], rt);
+
+    expect(rt.messages.value[0]?.ts).toBe(1672531199000);
+    expect(rt.messages.value[1]?.ts).toBeUndefined();
+  });
+
+  it("assigns a timestamp to a newly created live assistant message", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+
+    const before = Date.now();
+    chat.finalizeAssistant("Live answer", rt);
+    const after = Date.now();
+
+    expect(rt.messages.value[0]?.ts).toBeGreaterThanOrEqual(before);
+    expect(rt.messages.value[0]?.ts).toBeLessThanOrEqual(after);
+  });
 });
