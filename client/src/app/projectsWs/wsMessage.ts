@@ -20,10 +20,10 @@ import {
   normalizeReasoningEffort,
 } from "../../lib/chatPreferences";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
+import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
 
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
 import { isReconnectNotice } from "./reconnectNotice";
-import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
 
 type Ref<T> = { value: T };
 

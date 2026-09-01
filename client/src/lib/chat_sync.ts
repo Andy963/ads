@@ -1,4 +1,5 @@
 import type { ChatItem } from "../app/controllerTypes";
+import { isLiveMessageId } from "../app/chatLive";
 
 type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string; command: string };
 
@@ -211,10 +212,10 @@ export function mergeHistoryFromServer(
   return [...hydratedLocal, ...tail];
 }
 
-
 export function getSemanticCardRank(item: ChatItem): number {
   if (item.role === "user") return 0;
   if (item.kind === "plan") return 1;
+  if (isLiveMessageId(item.id)) return 1.5;
   if (item.kind === "execute") return 2;
   if (item.kind === "patch") return 3;
   if (item.role === "assistant") return 4;

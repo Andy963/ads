@@ -636,7 +636,6 @@ describe("chat_sync.mergeHistoryFromServer", () => {
   });
 });
 
-
 describe("chat_sync.normalizeTurnSemanticOrder", () => {
   it("orders cards within a turn: user -> plan -> execute -> patch -> assistant", () => {
     const raw: ChatItem[] = [
@@ -676,5 +675,17 @@ describe("chat_sync.normalizeTurnSemanticOrder", () => {
 
     const out = normalizeTurnSemanticOrder(raw);
     expect(out.map((m) => m.id)).toEqual(["u1", "p1", "e1", "u2", "p2", "e2"]);
+  });
+
+  it("keeps live activity between the plan and execute cards", () => {
+    const raw: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run task" }),
+      msg({ id: "e1", role: "system", kind: "execute", content: "exec" }),
+      msg({ id: "live-step", role: "assistant", kind: "text", content: "working", streaming: true }),
+      msg({ id: "p1", role: "system", kind: "plan", content: "Plan" }),
+    ];
+
+    const out = normalizeTurnSemanticOrder(raw);
+    expect(out.map((m) => m.id)).toEqual(["u1", "p1", "live-step", "e1"]);
   });
 });
