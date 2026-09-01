@@ -7,6 +7,7 @@ export const taskBundleTaskSchema = z
     prompt: z.string().min(1),
     model: z.string().min(1).optional(),
     priority: z.number().finite().optional(),
+    category: z.enum(["development", "review", "rework"]).optional(),
     inheritContext: z.boolean().optional(),
     maxRetries: z.number().int().min(0).optional(),
     attachments: z.array(z.string().min(1)).optional(),

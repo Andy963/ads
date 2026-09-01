@@ -14,6 +14,7 @@ import type {
   TaskMessage,
   TaskRun,
   TaskStatus,
+  TaskCategory,
 } from "./types.js";
 
 import { createTaskStoreConversationOps } from "./storeImpl/conversationOps.js";
@@ -59,6 +60,10 @@ export class TaskStore {
 
   getTask(id: string): Task | null {
     return this.taskOps.getTask(id);
+  }
+
+  findChildTask(parentTaskId: string, category: TaskCategory): Task | null {
+    return this.taskOps.findChildTask(parentTaskId, category);
   }
 
   listTasks(filter?: TaskFilter): Task[] {
