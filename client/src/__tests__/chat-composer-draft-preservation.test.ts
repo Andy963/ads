@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createAppContext, type AppContext } from "../app/controller";
 import { createChatActions } from "../app/chat";
 import { createProjectActions } from "../app/projectsWs/projectActions";
+import { createTaskActions } from "../app/tasks";
 
 describe("composer draft preservation on session reset", () => {
   it("preserves composerDraft text when clearChatState is executed", () => {
@@ -56,5 +57,30 @@ describe("composer draft preservation on session reset", () => {
     // Composer draft text must be preserved
     expect(rt.composerDraft.value).toBe("Draft for a new clean session");
   });
-});
 
+  it("preserves drafts when resetting worker and planner chat state", async () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      activateProject: vi.fn(async () => {}),
+    });
+    const tasks = createTaskActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      connectWs: vi.fn(async () => {}),
+      connectPlannerWs: vi.fn(async () => {}),
+    });
+
+    ctx.loggedIn.value = true;
+    projects.initializeProjects();
+
+    const workerRt = ctx.activeRuntime.value;
+    const plannerRt = ctx.activePlannerRuntime.value;
+    workerRt.composerDraft.value = "Worker reset draft";
+    plannerRt.composerDraft.value = "Planner reset draft";
+
+    tasks.clearActiveChat();
+    tasks.clearPlannerChat();
+
+    expect(workerRt.composerDraft.value).toBe("Worker reset draft");
+    expect(plannerRt.composerDraft.value).toBe("Planner reset draft");
+  });
+});
