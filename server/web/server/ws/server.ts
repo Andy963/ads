@@ -182,19 +182,19 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       aliveWs.missedPongs = 0;
     });
 
-    let {
-      authUserId,
-      legacyUserId,
-      userId,
-      historyKey,
-      connectionId,
-      cacheKey,
-      clientMeta,
-    } = buildWsConnectionIdentity({
+    const initialIdentity = buildWsConnectionIdentity({
       authUserId: authResult.userId,
       sessionId,
       chatSessionId,
     });
+    const { authUserId, connectionId } = initialIdentity;
+    let {
+      legacyUserId,
+      userId,
+      historyKey,
+      cacheKey,
+      clientMeta,
+    } = initialIdentity;
     sessionManager.maybeMigrateThreadState(legacyUserId, userId);
     state.clientMetaByWs.set(ws, clientMeta);
     registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
@@ -261,7 +261,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     );
     const inFlight = state.interruptControllers.has(historyKey);
 
-    const syncNamespace = resolveSyncNamespace(chatSessionId);
+    let syncNamespace = resolveSyncNamespace(chatSessionId);
     const syncLaneKeys = resolveSyncLaneKeys({
       authUserId,
       sessionId,
@@ -276,7 +276,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       });
     };
     const syncEventStore = state.syncEventStore;
-    const deltaCoalescer = syncEventStore
+    let deltaCoalescer = syncEventStore
       ? createDeltaStreamCoalescer({
           store: syncEventStore,
           namespace: syncNamespace,
@@ -471,6 +471,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
 
     let messageChain = Promise.resolve();
+    let pendingSwitchCount = 0;
     let lastReceivedAt = 0;
 
     ws.on("message", (data: RawData) => {
@@ -506,6 +507,31 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         return;
       }
 
+      if (parsed.type === "interrupt" && pendingSwitchCount > 0) {
+        messageChain = messageChain
+          .then(() => {
+            handleImmediateWsMessage({
+              parsed,
+              receivedAt,
+              abortInFlight: () => abortInFlightForHistoryKey(historyKey),
+              sendJson: (payload) => safeJsonSend(ws, payload),
+              broadcastJson,
+              recordStatusError: (message) =>
+                historyStore.add(historyKey, {
+                  role: "status",
+                  text: message,
+                  ts: Date.now(),
+                  kind: "error",
+                }),
+            });
+          })
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`[WebSocket] deferred interrupt failed conn=${connectionId} user=${userId}: ${message}`);
+          });
+        return;
+      }
+
       const requestId = crypto.randomBytes(4).toString("hex");
       if (config.traceWsDuplication) {
         const meta = state.clientMetaByWs.get(ws);
@@ -516,6 +542,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
 
       if (parsed.type === "switch_chat_session") {
+        pendingSwitchCount += 1;
         messageChain = messageChain
           .then(async () => {
             const payload = parsed.payload;
@@ -539,11 +566,14 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
               chatSessionId,
               connectionId,
             });
+            const workspaceRoot = clientMeta.workspaceRoot;
             legacyUserId = nextIdentity.legacyUserId;
             userId = nextIdentity.userId;
             historyKey = nextIdentity.historyKey;
             cacheKey = nextIdentity.cacheKey;
-            clientMeta = nextIdentity.clientMeta;
+            clientMeta = workspaceRoot
+              ? { ...nextIdentity.clientMeta, workspaceRoot }
+              : nextIdentity.clientMeta;
             state.clientMetaByWs.set(ws, clientMeta);
             registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
 
@@ -557,6 +587,15 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
               sessionId,
               chatSessionId,
             });
+            deltaCoalescer?.finish();
+            syncNamespace = nextSyncNamespace;
+            deltaCoalescer = syncEventStore
+              ? createDeltaStreamCoalescer({
+                  store: syncEventStore,
+                  namespace: syncNamespace,
+                  laneKey: historyKey,
+                })
+              : null;
 
             sendInitialBootstrapMessages({
               ws,
@@ -586,45 +625,55 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             const message = error instanceof Error ? error.message : String(error);
             logger.warn("[WebSocket] switch_chat_session failed conn=" + connectionId + " user=" + userId + ": " + message);
             safeJsonSend(ws, { type: "error", message: "Failed to switch chat session" });
+          })
+          .finally(() => {
+            pendingSwitchCount = Math.max(0, pendingSwitchCount - 1);
           });
         return;
       }
 
-            const preflight = preflightPersistAndAck({
-        parsed,
-        requestId,
-        clientMessageId,
-        receivedAt,
-        historyStore,
-        historyKey,
-        sanitizeInput: commands.sanitizeInput,
-        sendJson: (payload) => safeJsonSend(ws, payload),
-        broadcastPersistedHistory: broadcastHistoryToSiblingConnections,
-        broadcastInFlight: broadcastInFlightToSiblingConnections,
-        inFlight: state.interruptControllers.has(historyKey),
-        traceWsDuplication: config.traceWsDuplication,
-        warn: (message) => logger.warn(message),
-        sessionId,
-        userId,
-        onPersistedMessage: ({ clientMessageId: persistedId, text }) => {
-          recordConversationMessage({
-            eventId: persistedId,
-            workspaceRoot: normalizeWorkspaceRootForMeta(currentCwd),
-            sessionId,
-            source: "web",
-            role: "user",
-            text,
-            agentId: orchestrator.getActiveAgentId?.(),
-          });
-        },
-      });
-      if (!preflight.enqueue) {
+      const runPreflight = (): ReturnType<typeof preflightPersistAndAck> =>
+        preflightPersistAndAck({
+          parsed,
+          requestId,
+          clientMessageId,
+          receivedAt,
+          historyStore,
+          historyKey,
+          sanitizeInput: commands.sanitizeInput,
+          sendJson: (payload) => safeJsonSend(ws, payload),
+          broadcastPersistedHistory: broadcastHistoryToSiblingConnections,
+          broadcastInFlight: broadcastInFlightToSiblingConnections,
+          inFlight: state.interruptControllers.has(historyKey),
+          traceWsDuplication: config.traceWsDuplication,
+          warn: (message) => logger.warn(message),
+          sessionId,
+          userId,
+          onPersistedMessage: ({ clientMessageId: persistedId, text }) => {
+            recordConversationMessage({
+              eventId: persistedId,
+              workspaceRoot: normalizeWorkspaceRootForMeta(currentCwd),
+              sessionId,
+              source: "web",
+              role: "user",
+              text,
+              agentId: orchestrator.getActiveAgentId?.(),
+            });
+          },
+        });
+      const preflight = pendingSwitchCount === 0 ? runPreflight() : null;
+      if (preflight && !preflight.enqueue) {
         return;
       }
 
       const msg: IncomingWsMessage = { parsed, requestId, clientMessageId, receivedAt };
       messageChain = messageChain
         .then(async () => {
+          const queuedPreflight = preflight ?? runPreflight();
+          if (!queuedPreflight.enqueue) {
+            return;
+          }
+
           const result = await dispatchWsMessage({
             msg,
             ws,

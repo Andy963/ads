@@ -8,12 +8,15 @@ import path from "node:path";
 import WebSocket, { type RawData } from "ws";
 
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { SessionManager } from "../../server/telegram/utils/sessionManager.js";
 import { DirectoryManager } from "../../server/telegram/utils/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
+import { resolveSyncLaneKey, resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
+import { SyncEventStore } from "../../server/web/server/sync/store.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -31,9 +34,17 @@ function waitForWsOpen(client: WebSocket, timeoutMs = 2000): Promise<void> {
   });
 }
 
-function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean, timeoutMs = 2000): Promise<WsJson> {
+function waitForWsMessage(
+  client: WebSocket,
+  predicate: (msg: WsJson) => boolean,
+  timeoutMs = 2000,
+  label = "",
+): Promise<WsJson> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Timed out waiting for ws message")), timeoutMs);
+    const timer = setTimeout(
+      () => reject(new Error(`Timed out waiting for ws message${label ? `: ${label}` : ""}`)),
+      timeoutMs,
+    );
     const handler = (raw: RawData) => {
       let parsed: WsJson | null = null;
       try {
@@ -57,39 +68,66 @@ function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean
   });
 }
 
-function createFakeSessionFactory(prefix: string) {
+function createFakeSessionFactory(prefix: string, options: { blockFirstSend?: boolean } = {}) {
   let nextId = 1;
+  let firstSend = true;
+  let resolveFirstSendStarted: (() => void) | null = null;
+  let releaseFirstSend: (() => void) | null = null;
+  const firstSendStarted = new Promise<void>((resolve) => {
+    resolveFirstSendStarted = resolve;
+  });
+  const firstSendGate = new Promise<void>((resolve) => {
+    releaseFirstSend = resolve;
+  });
   const created: any[] = [];
 
   return {
     created,
     factory: ({ cwd }: { cwd: string }) => {
-      const session = {
-        resetCalls: 0,
-        threadId: `${prefix}-thread-${nextId++}`,
-        workingDirectory: cwd,
-        send: async () => ({ response: "ok" }),
-        onEvent: () => () => {},
-        getThreadId: () => session.threadId,
-        reset: () => {
-          session.resetCalls += 1;
-          session.threadId = null;
+      let resetCalls = 0;
+      let threadId: string | null = `${prefix}-thread-${nextId++}`;
+      let workingDirectory = cwd;
+      const adapter = {
+        id: "codex" as const,
+        metadata: { id: "codex" as const, name: "Codex", capabilities: ["text" as const] },
+        send: async (input: unknown) => {
+          if (options.blockFirstSend && firstSend) {
+            firstSend = false;
+            resolveFirstSendStarted?.();
+            await firstSendGate;
+          }
+          const inputText = typeof input === "string" ? input : "";
+          const response = inputText.includes("first prompt")
+            ? "first response"
+            : inputText.includes("second prompt")
+              ? "second response"
+              : "ok";
+          return { response, usage: null, agentId: "codex" };
         },
-        setModel: () => {},
-        setWorkingDirectory: (workingDirectory: string, options?: { preserveSession?: boolean }) => {
-          session.workingDirectory = workingDirectory;
+        onEvent: () => () => {},
+        getThreadId: () => threadId,
+        reset: () => {
+          resetCalls += 1;
+          threadId = null;
+        },
+        setWorkingDirectory: (nextDirectory: string, options?: { preserveSession?: boolean }) => {
+          workingDirectory = nextDirectory;
           if (!options?.preserveSession) {
-            session.threadId = null;
+            threadId = null;
           }
         },
         status: () => ({ ready: true, streaming: false }),
-        getActiveAgentId: () => "codex",
-        listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: false } }],
-        switchAgent: () => {},
       };
-      created.push(session);
-      return session;
+      const orchestrator = new HybridOrchestrator({
+        adapters: [adapter],
+        initialWorkingDirectory: workingDirectory,
+        initialModel: "test-model",
+      });
+      created.push({ orchestrator, get resetCalls() { return resetCalls; } });
+      return orchestrator;
     },
+    firstSendStarted,
+    releaseFirstSend: () => releaseFirstSend?.(),
   };
 }
 
@@ -100,6 +138,8 @@ describe("web/server/ws: in-band switch_chat_session", () => {
   let workspaceRoot: string;
   let workerHistoryStore: HistoryStore;
   let plannerHistoryStore: HistoryStore;
+  let syncEventStore: SyncEventStore;
+  let workerFactory: ReturnType<typeof createFakeSessionFactory> | null = null;
   const sockets: WebSocket[] = [];
 
   beforeEach(async () => {
@@ -113,10 +153,12 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     const clientMetaByWs = new Map<import("ws").WebSocket, any>();
     workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
+    syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
-    const workerFactory = createFakeSessionFactory("worker");
+    const nextWorkerFactory = createFakeSessionFactory("worker", { blockFirstSend: true });
+    workerFactory = nextWorkerFactory;
     const plannerFactory = createFakeSessionFactory("planner");
 
     attachWebSocketServer({
@@ -148,10 +190,11 @@ describe("web/server/ws: in-band switch_chat_session", () => {
         cwdStore: new Map(),
         cwdStorePath: process.env.ADS_STATE_DB_PATH,
         persistCwdStore: () => {},
+        syncEventStore,
       },
       sessions: {
         workerSessionManager: new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, {
-          createSession: workerFactory.factory as never,
+          createSession: nextWorkerFactory.factory as never,
         }),
         plannerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
           createSession: plannerFactory.factory as never,
@@ -187,21 +230,26 @@ describe("web/server/ws: in-band switch_chat_session", () => {
   });
 
   afterEach(async () => {
+    workerFactory?.releaseFirstSend();
     for (const ws of sockets) {
       try {
         ws.close();
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
     sockets.length = 0;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // ignore
+    }
   });
 
   it("switches chatSessionId in-band without dropping the socket connection", async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.main", "ads-chat.session-initial"]);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.main", "ads-chat.planner"]);
     sockets.push(ws);
 
     let isClosed = false;
@@ -213,7 +261,7 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     await waitForWsOpen(ws);
 
     const initialWelcome = await welcomePromise;
-    assert.equal(initialWelcome.chatSessionId, "session-initial");
+    assert.equal(initialWelcome.chatSessionId, "planner");
 
     // Send in-band switch message and wait for new welcome
     const switchPromise = waitForWsMessage(ws, (m) => m.type === "welcome" && m.chatSessionId === "session-switched");
@@ -225,8 +273,79 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     const switchedWelcome = await switchPromise;
     assert.equal(switchedWelcome.chatSessionId, "session-switched");
 
+    const errorPromise = waitForWsMessage(
+      ws,
+      (m) => m.type === "error" && m.message === "当前没有正在执行的任务",
+    );
+    ws.send(JSON.stringify({ type: "interrupt" }));
+    await errorPromise;
+
+    const switchedLaneKey = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "main",
+      chatSessionId: "session-switched",
+    });
+    const initialLaneKey = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "main",
+      chatSessionId: "planner",
+    });
+    assert.ok(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("session-switched"), [switchedLaneKey]) > 0);
+    assert.equal(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("planner"), [initialLaneKey]), 0);
+
     // Connection must have remained open
     assert.equal(isClosed, false);
     assert.equal(ws.readyState, WebSocket.OPEN);
+  });
+
+  it("persists prompts received during a switch in the new history lane", async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.main", "ads-chat.session-initial"]);
+    sockets.push(ws);
+
+    const welcomePromise = waitForWsMessage(ws, (m) => m.type === "welcome");
+    await waitForWsOpen(ws);
+    await welcomePromise;
+
+    const firstAckPromise = waitForWsMessage(ws, (m) => m.type === "ack" && m.client_message_id === "first", 2000, "first ack");
+    const firstResultPromise = waitForWsMessage(
+      ws,
+      (m) => m.type === "result" && m.output === "first response",
+      2000,
+      "first result",
+    );
+    ws.send(JSON.stringify({ type: "prompt", payload: "first prompt", client_message_id: "first" }));
+    await firstAckPromise;
+    await workerFactory!.firstSendStarted;
+
+    const switchPromise = waitForWsMessage(ws, (m) => m.type === "welcome" && m.chatSessionId === "session-switched");
+    ws.send(JSON.stringify({
+      type: "switch_chat_session",
+      payload: { chatSessionId: "session-switched" },
+    }));
+
+    const secondAckPromise = waitForWsMessage(ws, (m) => m.type === "ack" && m.client_message_id === "second", 2000, "second ack");
+    const secondResultPromise = waitForWsMessage(ws, (m) => m.type === "result" && m.output === "second response", 2000, "second result");
+    ws.send(JSON.stringify({ type: "prompt", payload: "second prompt", client_message_id: "second" }));
+    workerFactory!.releaseFirstSend();
+
+    await firstResultPromise;
+    await switchPromise;
+    await secondAckPromise;
+    await secondResultPromise;
+
+    const initialHistoryKey = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "main",
+      chatSessionId: "session-initial",
+    });
+    const switchedHistoryKey = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "main",
+      chatSessionId: "session-switched",
+    });
+    const initialHistory = workerHistoryStore.get(initialHistoryKey);
+    const switchedHistory = workerHistoryStore.get(switchedHistoryKey);
+    assert.equal(initialHistory.some((entry) => entry.text === "second prompt"), false);
+    assert.ok(switchedHistory.some((entry) => entry.text === "second prompt"));
   });
 });
