@@ -338,7 +338,7 @@ export function createChatActions(ctx: AppContext) {
     const existing = state.messages.value.slice();
     const liveIndex = findFirstLiveIndex(existing);
     const explicitId = String(item.id ?? "").trim();
-    const next = { ...item, id: explicitId || randomId("msg"), ts: item.ts ?? Date.now() };
+    const next = { ...item, id: explicitId || randomId("msg") };
     if (liveIndex < 0) {
       setMessages([...existing, next], state);
       return;
@@ -621,9 +621,12 @@ export function createChatActions(ctx: AppContext) {
       };
       const alreadyInMessages = state.messages.value.some((m) => m.id === next.clientMessageId);
       if (!alreadyInMessages) {
-        pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution }, state);
+        pushMessageBeforeLive(
+          { id: next.clientMessageId, role: "user", kind: "text", content: display, execution, ts: next.createdAt ?? Date.now() },
+          state,
+        );
       }
-      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
+      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true, ts: Date.now() }, state);
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
@@ -708,7 +711,7 @@ export function createChatActions(ctx: AppContext) {
       }
     }
 
-    pushMessageBeforeLive({ role: "assistant", kind: "text", content: text }, state);
+    pushMessageBeforeLive({ role: "assistant", kind: "text", content: text, ts: Date.now() }, state);
   };
 
   const pruneTaskChatBuffer = (rt: ProjectRuntime): void => {
@@ -752,7 +755,7 @@ export function createChatActions(ctx: AppContext) {
         if (ev.role === "assistant") {
           finalizeAssistant(ev.content, rt);
         } else {
-          pushMessageBeforeLive({ role: ev.role, kind: "text", content: ev.content }, rt);
+      pushMessageBeforeLive({ role: ev.role, kind: "text", content: ev.content, ts: Date.now() }, rt);
         }
         continue;
       }

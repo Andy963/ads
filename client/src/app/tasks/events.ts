@@ -133,11 +133,12 @@ export function createTaskEventActions(
       if (state.messages.value.some((m) => m.role === "user" && m.kind === "text" && String(m.content ?? "").trim() === normalized)) {
         return;
       }
-      pushMessageBeforeLive({ role: "user", kind: "text", content }, state);
+      const messageTs = Date.now();
+      pushMessageBeforeLive({ role: "user", kind: "text", content, ts: messageTs }, state);
       const task = state.tasks.value.find((t) => t.id === taskId) ?? null;
       const status = String(task?.status ?? "");
       if ((status === "pending" || status === "planning" || status === "running") && !hasEmptyAssistantPlaceholder(state)) {
-        pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
+        pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true, ts: messageTs }, state);
       }
       return;
     }
