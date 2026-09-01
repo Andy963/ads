@@ -338,7 +338,7 @@ export function createChatActions(ctx: AppContext) {
     const existing = state.messages.value.slice();
     const liveIndex = findFirstLiveIndex(existing);
     const explicitId = String(item.id ?? "").trim();
-    const next = { ...item, id: explicitId || randomId("msg"), ts: item.ts ?? Date.now() };
+    const next = { ...item, id: explicitId || randomId("msg") };
     if (liveIndex < 0) {
       setMessages([...existing, next], state);
       return;
@@ -624,7 +624,7 @@ export function createChatActions(ctx: AppContext) {
         ...(model ? { model } : {}),
         ...(effort ? { modelReasoningEffort: effort } : {}),
       };
-      pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution }, state);
+      pushMessageBeforeLive({ id: next.clientMessageId, role: "user", kind: "text", content: display, execution, ts: next.createdAt ?? Date.now() }, state);
       pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true }, state);
       state.busy.value = true;
       state.turnInFlight = true;
