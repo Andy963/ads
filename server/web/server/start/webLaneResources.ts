@@ -12,6 +12,17 @@ import { WorkspaceLockPool } from "../workspaceLockPool.js";
 export const WEB_WORKER_NAMESPACE = "web-worker";
 export const WEB_PLANNER_NAMESPACE = "web-planner";
 
+export function resolvePlannerSandboxMode(raw: string | undefined): SandboxMode {
+  const value = raw?.trim();
+  if (value === undefined || value === "") {
+    return "danger-full-access";
+  }
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+    return value;
+  }
+  return "workspace-write";
+}
+
 export type MaterializationState = {
   materialized: boolean;
   materializeCount: number;
@@ -190,9 +201,14 @@ export function createWebLaneResources(args: {
   historyMaxEntriesPerSession?: number;
   historyMaxTextLength?: number;
   plannerCodexModel?: string;
+  plannerSandboxMode?: SandboxMode;
   workerSessionManagerOptions?: SessionManagerOptions;
   plannerSessionManagerOptions?: SessionManagerOptions;
 }): WebLaneResources {
+  const plannerSandboxMode =
+    args.plannerSandboxMode ??
+    resolvePlannerSandboxMode(process.env.ADS_PLANNER_SANDBOX_MODE);
+
   return {
     worker: createLaneRuntime({
       namespace: WEB_WORKER_NAMESPACE,
@@ -207,9 +223,10 @@ export function createWebLaneResources(args: {
     }),
     planner: createLaneRuntime({
       namespace: WEB_PLANNER_NAMESPACE,
-      // The Advisor needs to write paired issue/spec work items; everything it
-      // touches outside the allowlist is rolled back after each turn.
-      sandboxMode: "workspace-write",
+      // The Advisor needs danger-full-access for tools like GitHub CLI (gh),
+      // while specWriteGuard protects the local codebase by rolling back any
+      // mutations outside docs/issue/ and docs/spec/ after each turn.
+      sandboxMode: plannerSandboxMode,
       defaultModel: args.plannerCodexModel,
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
