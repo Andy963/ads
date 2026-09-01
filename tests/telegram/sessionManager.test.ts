@@ -28,6 +28,7 @@ type FakeSession = {
   setWorkingDirectory: (workingDirectory?: string, options?: { preserveSession?: boolean }) => void;
   status: () => { ready: boolean; streaming: boolean };
   getActiveAgentId: () => string;
+  getAdapter: (agentId: string) => { preservesThreadOnModelChange: boolean } | null;
   listAgents: () => Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean } }>;
   switchAgent: (agentId: string) => void;
 };
@@ -73,7 +74,6 @@ function createFakeSessionFactory() {
         },
         setModel: (model) => {
           session.model = model;
-          session.threadId = null;
         },
         setModelReasoningEffort: (effort) => {
           session.modelReasoningEffort = effort;
@@ -86,6 +86,9 @@ function createFakeSessionFactory() {
         },
         status: () => ({ ready: true, streaming: true }),
         getActiveAgentId: () => session.activeAgentId,
+        getAdapter: (agentId) => agentId === session.activeAgentId
+          ? { preservesThreadOnModelChange: true }
+          : null,
         listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
         switchAgent: (agentId) => {
           session.activeAgentId = agentId;
@@ -196,15 +199,26 @@ describe("SessionManager", () => {
     assert.equal(manager.getUserModel(123456), "model-override");
   });
 
-  it("marks history injection when a model change clears provider threads", () => {
+  it("preserves session continuity when changing the model", () => {
     const session = manager.getOrCreate(123456, "/tmp/a") as unknown as FakeSession;
     session.threadId = "thread-before-model-change";
 
     manager.setUserModel(123456, "model-override");
 
-    assert.equal(session.threadId, null);
+    assert.equal(session.threadId, "thread-before-model-change");
+    assert.equal(manager.needsHistoryInjection(123456), false);
+    assert.equal(manager.getContextRestoreMode(123456), "fresh");
+  });
+
+  it("clears only the active agent thread when its provider cannot switch models in place", () => {
+    const session = manager.getOrCreate(123456, "/tmp/a") as unknown as FakeSession;
+    session.threadId = "thread-before-model-change";
+    session.getAdapter = () => ({ preservesThreadOnModelChange: false });
+
+    manager.setUserModel(123456, "model-override");
+
+    assert.equal(session.threadId, "thread-before-model-change");
     assert.equal(manager.needsHistoryInjection(123456), true);
-    assert.equal(manager.getContextRestoreMode(123456), "history_injection");
   });
 
   it("injects history when switching to an agent with no session of its own", () => {
@@ -491,7 +505,7 @@ describe("SessionManager", () => {
     assert.equal(manager.getContextRestoreMode(7), "thread_resumed");
   });
 
-  it("clears saved thread bindings but preserves authoritative model metadata on model switch", () => {
+  it("preserves saved thread bindings and updates model metadata on model switch", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
     const storage = new ThreadStorage({
       namespace: "test",
@@ -518,8 +532,8 @@ describe("SessionManager", () => {
 
     const record = storage.getRecord(7);
     assert.equal(record?.model, "gpt-4o");
-    assert.equal(record?.threadId, undefined);
-    assert.deepEqual(record?.agentThreads, {});
+    assert.equal(record?.threadId, "thread-1");
+    assert.deepEqual(record?.agentThreads, { codex: "thread-1" });
     assert.equal(record?.activeAgentId, "codex");
   });
 

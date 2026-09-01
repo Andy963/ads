@@ -38,6 +38,8 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 
 ## 2. 核心架构特性
 
+模型切换按 provider 能力处理：支持同线程切换的 adapter 保留 native thread；不支持的 adapter 只清除当前 agent 的线程并走历史注入，不影响其他 agent 的线程绑定。
+
 ### 2.0 统一会话消息记录
 
 Web、Telegram 与 Task Queue 保留各自现有的本地存储和消息交付行为。通道接受最终用户消息或成功记录最终 Agent 回复后，还会通过 `server/utils/conversationMessageRecorder.ts` 中的共享 `ConversationMessageRecorder` 契约发布规范化消息。

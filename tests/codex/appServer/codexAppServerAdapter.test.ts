@@ -189,6 +189,36 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("keeps the thread and applies a new model on the next turn", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-model-switch" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "model-switch", model: "gpt-5", registry });
+
+    const firstSend = adapter.send("first");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/completed", { threadId: "thread-model-switch", turn: { id: "turn-1" } });
+    await firstSend;
+    assert.equal(adapter.getThreadId(), "thread-model-switch");
+
+    adapter.setModel("gpt-5-mini");
+    assert.equal(adapter.getThreadId(), "thread-model-switch");
+
+    const secondSend = adapter.send("second");
+    await waitForRequestCount(fake, "turn/start", 2);
+    const turnStarts = fake.requests.filter((request) => request.method === "turn/start");
+    assert.equal(turnStarts[1]?.params?.threadId, "thread-model-switch");
+    assert.equal(turnStarts[1]?.params?.model, "gpt-5-mini");
+    fake.notify("turn/completed", { threadId: "thread-model-switch", turn: { id: "turn-2" } });
+    await secondSend;
+
+    await registry.stopAll();
+  });
+
   it("compacts at 80 percent before starting the next turn", async () => {
     const fake = buildFakeServer({
       autoReplies: {
