@@ -1,6 +1,6 @@
 import { watch } from "vue";
 
-import { finalizeStreamingOnDisconnect, mergeHistoryFromServer } from "../lib/chat_sync";
+import { finalizeStreamingOnDisconnect, mergeHistoryFromServer, normalizeTurnSemanticOrder } from "../lib/chat_sync";
 import { ingestCommandActivity, ingestExploredActivity } from "../lib/live_activity";
 
 import type { AppContext, BufferedTaskChatEvent, ChatItem, IncomingImage, ProjectRuntime, QueuedPrompt } from "./controller";
@@ -330,7 +330,7 @@ export function createChatActions(ctx: AppContext) {
   };
 
   const setMessages = (items: ChatItem[], rt?: ProjectRuntime): void => {
-    runtimeOrActive(rt).messages.value = trimChatItems(items);
+    runtimeOrActive(rt).messages.value = trimChatItems(normalizeTurnSemanticOrder(items));
   };
 
   const pushMessageBeforeLive = (item: Omit<ChatItem, "id"> & { id?: string }, rt?: ProjectRuntime): void => {

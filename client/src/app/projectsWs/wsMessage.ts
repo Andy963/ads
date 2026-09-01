@@ -23,6 +23,7 @@ import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 
 import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
 import { isReconnectNotice } from "./reconnectNotice";
+import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
 
 type Ref<T> = { value: T };
 
@@ -1350,7 +1351,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (idx >= 0) {
         existing[idx] = { ...existing[idx]!, content, plan, ts };
         const duplicates = new Set(matchingIndexes.slice(1));
-        rt.messages.value = existing.filter((_message, index) => !duplicates.has(index));
+        rt.messages.value = normalizeTurnSemanticOrder(existing.filter((_message, index) => !duplicates.has(index)));
       } else {
         pushMessageBeforeLive({ id: itemId, role: "system", kind: "plan", content, plan, ts }, rt);
       }
