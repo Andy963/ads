@@ -64,6 +64,7 @@ describe("web lazy planner lane", () => {
         sessionManager: { materialized: false, materializeCount: 0 },
         workspaceLockPool: { materialized: false, materializeCount: 0 },
       });
+      assert.equal(lanes.planner.sessionManager.getStats().sandboxMode, "danger-full-access");
       const firstOrchestrator = lanes.planner.sessionManager.getOrCreate(123, workspaceRoot, false);
       assert.equal(firstOrchestrator.status().streaming, true);
       assert.equal(lanes.planner.historyStore.add("planner::session", { role: "user", text: "/pwd", ts: Date.now() }), true);
@@ -89,6 +90,34 @@ describe("web lazy planner lane", () => {
     } finally {
       lanes.worker.sessionManager.destroy();
       destroySessionManagerIfMaterialized(lanes.planner.sessionManager);
+    }
+  });
+
+  it("supports overriding planner sandbox mode via environment variable and explicit argument", () => {
+    process.env.ADS_PLANNER_SANDBOX_MODE = "workspace-write";
+    const envLanes = createWebLaneResources({
+      stateDbPath: process.env.ADS_STATE_DB_PATH!,
+      sessionTimeoutMs: 0,
+      sessionCleanupIntervalMs: 0,
+    });
+    try {
+      assert.equal(envLanes.planner.sessionManager.getStats().sandboxMode, "workspace-write");
+    } finally {
+      envLanes.worker.sessionManager.destroy();
+      destroySessionManagerIfMaterialized(envLanes.planner.sessionManager);
+    }
+
+    const argLanes = createWebLaneResources({
+      stateDbPath: process.env.ADS_STATE_DB_PATH!,
+      sessionTimeoutMs: 0,
+      sessionCleanupIntervalMs: 0,
+      plannerSandboxMode: "read-only",
+    });
+    try {
+      assert.equal(argLanes.planner.sessionManager.getStats().sandboxMode, "read-only");
+    } finally {
+      argLanes.worker.sessionManager.destroy();
+      destroySessionManagerIfMaterialized(argLanes.planner.sessionManager);
     }
   });
 });
