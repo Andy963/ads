@@ -1190,6 +1190,17 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
           continue;
         }
+        if (kind === "thought" || role === "thought") {
+          restoredHistoryStatus = null;
+          next.push({
+            id: `h-th-${idx}`,
+            role: "assistant",
+            kind: "thought",
+            content: historyText,
+            ts: ts ?? undefined,
+          });
+          continue;
+        }
         if (role === "status") {
           restoredHistoryStatus = replayedLaneStatus(kind, historyText);
           continue;
@@ -1205,9 +1216,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             ts: ts ?? undefined,
             ...(execution ? { execution } : {}),
           });
-        } else if (role === "ai") {
+        } else if (role === "ai" || role === "assistant") {
           restoredHistoryStatus = null;
-          next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: historyText, ts: ts ?? undefined });
+          if (kind === "thought") {
+            next.push({ id: `h-th-${idx}`, role: "assistant", kind: "thought", content: historyText, ts: ts ?? undefined });
+          } else {
+            next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: historyText, ts: ts ?? undefined });
+          }
         }
       }
       dropReconnectBusyMessage();

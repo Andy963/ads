@@ -63,7 +63,7 @@ function comparableKey(chat: ComparableChat): string {
 
 function canReplaceLocalTailWithServer(local: ChatItem, server: ChatItem): boolean {
   if (local.role !== server.role || local.kind !== server.kind) return false;
-  if (local.role === "assistant" && local.kind === "text") return true;
+  if (local.role === "assistant" && (local.kind === "text" || local.kind === "thought")) return true;
   if (local.kind !== "execute") return false;
 
   const localCommand = String(local.command ?? "").trim();

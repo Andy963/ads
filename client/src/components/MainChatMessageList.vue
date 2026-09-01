@@ -31,6 +31,7 @@ const emit = defineEmits<{
 const openCommandTrees = ref<Set<string>>(new Set());
 const expandedExecuteIds = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
+const expandedThoughtIds = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 
 type PatchRenderRow = {
@@ -307,13 +308,32 @@ function toggleExecuteExpanded(id: string): void {
   expandedExecuteIds.value = next;
 }
 
+function isThoughtExpanded(id: string): boolean {
+  return expandedThoughtIds.value.has(id);
+}
+
+function toggleThoughtExpanded(id: string): void {
+  const next = new Set(expandedThoughtIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedThoughtIds.value = next;
+}
+
+function getThoughtSummary(content: string): string {
+  const normalized = String(content ?? "").trim();
+  if (!normalized) return "过程分析与推理";
+  const firstLine = normalized.split("\n")[0]!.replace(/^\[(?:analysis|thought|step)\]\s*/i, "").replace(/^\*+|\*+$/g, "").trim();
+  if (firstLine.length <= 60) return firstLine;
+  return `${firstLine.slice(0, 57)}…`;
+}
+
 function caretPath(open: boolean): string {
   return open ? "M6 8l4 4 4-4" : "M8 6l4 4-4 4";
 }
 
 function shouldShowMsgActions(m: RenderMessage): boolean {
   if (m.streaming && m.content.length === 0) return false;
-  if (m.kind === "patch") return false;
+  if (m.kind === "patch" || m.kind === "thought") return false;
   return true;
 }
 
@@ -468,6 +488,21 @@ function closeFilePreview(): void {
             <span class="planCardText" :class="{ 'planCardText--done': item.status === 'completed' }">{{ item.text }}</span>
           </li>
         </ul>
+      </div>
+      <div v-else-if="m.kind === 'thought'" :class="['bubble', 'bubble--compact', 'thoughtCard']">
+        <button
+          class="thoughtCardHeader"
+          type="button"
+          :aria-expanded="isThoughtExpanded(m.id)"
+          @click.stop="toggleThoughtExpanded(m.id)"
+        >
+          <span class="prompt-tag">思考</span>
+          <span class="thoughtCardSummary">{{ getThoughtSummary(m.content) }}</span>
+          <span class="thoughtCardToggleText">{{ isThoughtExpanded(m.id) ? "收起" : "展开" }}</span>
+        </button>
+        <div v-if="isThoughtExpanded(m.id)" class="thoughtCardBody">
+          <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+        </div>
       </div>
       <div
         v-else
@@ -1042,6 +1077,50 @@ function closeFilePreview(): void {
   background: rgba(255, 247, 237, 0.96);
   border-color: rgba(251, 146, 60, 0.55);
   color: #7c2d12;
+}
+
+.thoughtCard {
+  border-left: 3px solid #8b5cf6;
+  background: rgba(248, 250, 252, 0.94);
+}
+
+.thoughtCardHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  color: #475569;
+}
+
+.thoughtCardSummary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.thoughtCardToggleText {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.thoughtCardBody {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--github-border);
+  font-size: 13px;
+  color: #334155;
 }
 
 .msg[data-id="live-step"] .liveStepBody {
