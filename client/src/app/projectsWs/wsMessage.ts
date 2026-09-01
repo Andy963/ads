@@ -507,7 +507,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         kind: "patch",
         content: patch.diff,
         patch,
-        ts: options.ts ?? Date.now(),
+        ts: options.ts,
       }, rt);
       const reordered = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
       const insertedIndex = reordered.findIndex((item) => String(item.id ?? "") === patchId);
@@ -531,7 +531,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     const beforeIds = new Set(existing.map((m) => String(m?.id ?? "")));
-    pushMessageBeforeLive({ role: "system", kind: "patch", content: patch.diff, patch }, rt);
+    pushMessageBeforeLive({ role: "system", kind: "patch", content: patch.diff, patch, ts: options?.ts ?? Date.now() }, rt);
     const inserted =
       (Array.isArray(rt.messages.value) ? rt.messages.value : []).find(
         (m) => !beforeIds.has(String(m?.id ?? "")) && m?.role === "system" && m?.kind === "patch" && String(m?.content ?? "") === patch.diff,
@@ -1488,8 +1488,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const resultCommand = String(msg.command ?? "").trim();
       if (resultKind === "execute" && resultCommand) {
         finalizeAssistant("", rt);
+        const resultTsRaw = Number((msg as { ts?: unknown }).ts);
+        const resultTs = Number.isFinite(resultTsRaw) && resultTsRaw > 0 ? Math.floor(resultTsRaw) : Date.now();
         pushMessageBeforeLive(
-          buildExecuteMessage({ id: randomId("exec-result"), command: resultCommand, output, streaming: false }),
+          buildExecuteMessage({ id: randomId("exec-result"), command: resultCommand, output, streaming: false, ts: resultTs }),
           rt,
         );
         void flushQueuedPrompts(rt);

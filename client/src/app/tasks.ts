@@ -607,7 +607,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const clearActiveChat = (): void => {
     const rt = activeRuntime.value;
-    rt.composerDraft.value = "";
     rt.queuedPrompts.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {
@@ -622,7 +621,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const clearPlannerChat = (): void => {
     const rt = activePlannerRuntime.value;
-    rt.composerDraft.value = "";
     rt.queuedPrompts.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {

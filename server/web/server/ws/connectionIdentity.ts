@@ -18,6 +18,7 @@ export function buildWsConnectionIdentity(args: {
   authUserId: string;
   sessionId: string;
   chatSessionId: string;
+  connectionId?: string;
   randomHex?: (bytes: number) => string;
 }): WsConnectionIdentity {
   const authUserId = String(args.authUserId ?? "").trim();
@@ -27,7 +28,8 @@ export function buildWsConnectionIdentity(args: {
   const legacyUserId = deriveLegacyWebUserId(authUserId, chatKey);
   const userId = deriveWebUserId(authUserId, chatKey);
   const historyKey = `${authUserId}::${sessionId}::${chatSessionId}`;
-  const connectionId = (args.randomHex ?? ((bytes) => crypto.randomBytes(bytes).toString("hex")))(3);
+  const connectionId =
+    String(args.connectionId ?? "").trim() || (args.randomHex ?? ((bytes) => crypto.randomBytes(bytes).toString("hex")))(3);
   const cacheKey = `${authUserId}::${sessionId}`;
 
   return {

@@ -391,7 +391,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     busy.value = false;
     activeRuntime.value.inputLocked.value = false;
     activeRuntime.value.laneStatus.value = null;
-    activeRuntime.value.composerDraft.value = "";
     activeRuntime.value.pendingCdRequestedPath = null;
     queuedPrompts.value = [];
     pendingImages.value = [];
@@ -419,10 +418,18 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     const newChatSessionId = crypto.randomUUID?.() ?? randomId("chat");
     updateProject(pid, { chatSessionId: newChatSessionId });
     activeRuntime.value.chatSessionId = newChatSessionId;
-    activeRuntime.value.ignoreNextHistory = true;
+    activeRuntime.value.ignoreNextHistory = false;
     activeRuntime.value.suppressNextClearHistoryResult = false;
 
     clearChatState();
+
+    const currentWs = activeRuntime.value.ws as { switchChatSession?: (id: string) => boolean; close?: () => void } | null;
+    if (activeRuntime.value.connected.value && typeof currentWs?.switchChatSession === "function") {
+      const switched = currentWs.switchChatSession(newChatSessionId);
+      if (switched) {
+        return;
+      }
+    }
 
     const prev = activeRuntime.value.ws as { close?: () => void } | null;
     activeRuntime.value.ws = null;
