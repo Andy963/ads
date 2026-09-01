@@ -34,6 +34,7 @@ import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
 import { beginWsPromptRun, isWsPromptAbort, raceWsPromptAbort } from "./promptLifecycle.js";
+import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -371,7 +372,18 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
-      deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
+      const persistedAssistant = deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
+      if (persistedAssistant) {
+        recordConversationMessage({
+          eventId: `${deps.request.clientMessageId ?? deps.request.requestId}:assistant`,
+          workspaceRoot,
+          sessionId: deps.context.sessionId,
+          source: "web",
+          role: "assistant",
+          text: outputForChat,
+          agentId: orchestrator.getActiveAgentId?.(),
+        });
+      }
       if (threadReset) {
         deps.sessions.sessionManager.markHistoryInjection(deps.context.userId);
       }

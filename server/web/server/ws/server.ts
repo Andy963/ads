@@ -30,6 +30,7 @@ import { preflightPersistAndAck } from "./preflight.js";
 import { resolveSharedWorkerSyncLaneKey, resolveSyncLaneKeys, resolveSyncNamespace } from "../sync/lane.js";
 import { isStreamTerminalEvent, isTransientSyncEvent } from "../sync/eventClass.js";
 import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
+import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number; sessionTokenHash?: string };
 
@@ -530,6 +531,17 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         warn: (message) => logger.warn(message),
         sessionId,
         userId,
+        onPersistedMessage: ({ clientMessageId: persistedId, text }) => {
+          recordConversationMessage({
+            eventId: persistedId,
+            workspaceRoot: normalizeWorkspaceRootForMeta(currentCwd),
+            sessionId,
+            source: "web",
+            role: "user",
+            text,
+            agentId: orchestrator.getActiveAgentId?.(),
+          });
+        },
       });
       if (!preflight.enqueue) {
         return;

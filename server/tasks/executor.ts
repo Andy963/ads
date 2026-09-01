@@ -14,6 +14,7 @@ import {
   getLatestContextOfType,
   formatWorkspacePatchArtifactForPrompt,
 } from "./executorHelpers.js";
+import { recordConversationMessage } from "../utils/conversationMessageRecorder.js";
 
 export interface TaskExecutorHooks {
   onMessage?: (message: { role: string; content: string; modelUsed?: string | null }) => void;
@@ -144,7 +145,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         } catch {
           // ignore
         }
-        this.store.addConversationMessage({
+        const persistedUser = this.store.addConversationMessage({
           conversationId,
           taskId: task.id,
           role: "user",
@@ -153,6 +154,15 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           tokenCount: null,
           metadata: null,
           createdAt: Date.now(),
+        });
+        recordConversationMessage({
+          eventId: `${task.id}:user`,
+          workspaceRoot: this.workspaceRoot,
+          sessionId: conversationId,
+          source: "task",
+          role: "user",
+          text: persistedUser.content,
+          agentId,
         });
 
         const prompt = [
@@ -358,7 +368,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         } catch {
           // ignore
         }
-        this.store.addConversationMessage({
+        const persistedAssistant = this.store.addConversationMessage({
           conversationId,
           taskId: task.id,
           role: "assistant",
@@ -367,6 +377,15 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           tokenCount: null,
           metadata: null,
           createdAt: Date.now(),
+        });
+        recordConversationMessage({
+          eventId: `${task.id}:assistant`,
+          workspaceRoot: this.workspaceRoot,
+          sessionId: conversationId,
+          source: "task",
+          role: "assistant",
+          text: persistedAssistant.content,
+          agentId,
         });
         options?.hooks?.onMessage?.({ role: "assistant", content: lastOutput, modelUsed: modelForStorage });
 
