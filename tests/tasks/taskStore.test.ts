@@ -340,6 +340,31 @@ describe("tasks/taskStore", () => {
     );
   });
 
+  it("should keep task-store defaults independent for different agent scopes", () => {
+    const store = new TaskStore();
+    store.upsertModelConfig({
+      id: "codex-default",
+      modelId: "gpt-codex",
+      displayName: "Codex Default",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: true,
+      configJson: { allowedAgents: ["codex"] },
+    });
+    store.upsertModelConfig({
+      id: "claude-default",
+      modelId: "claude-default",
+      displayName: "Claude Default",
+      provider: "anthropic",
+      isEnabled: true,
+      isDefault: true,
+      configJson: { allowedAgents: ["claude"] },
+    });
+
+    assert.equal(store.getModelConfig("codex-default")?.isDefault, true);
+    assert.equal(store.getModelConfig("claude-default")?.isDefault, true);
+  });
+
   it("should persist conversation messages", () => {
     const store = new TaskStore();
     const task = store.createTask({ title: "T", prompt: "P" });

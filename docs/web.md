@@ -30,8 +30,9 @@ Web Console 将对话与任务流组织为三大工作区：
   - 原生支持 **Codex CLI**（OpenAI Codex）、**Claude Code**（Anthropic Claude）与 **Droid CLI**（Factory Droid）。
   - 左侧导航可切换 Provider，右侧维护各 Provider 的模型列表。
 - **模型管理**：
-  - 在线启用/停用模型、设置默认模型、编辑与新增模型。
+  - 在线启用/停用模型、按 CLI 设置默认模型、编辑与新增模型；Codex、Claude 和 Droid 的默认模型彼此独立。
   - 输入框模型选择器严格联动：仅展示当前 Agent 兼容且已启用的模型，切换 Agent 时自动恢复对应兼容偏好。
+  - 页面加载或模型列表刷新不会覆盖已有的自定义模型选择；默认模型只用于初始化尚未选择模型的会话。
   - 所有模型配置持久化于全局 SQLite 状态库 (`state.db`)。
 
 ### 3. 全局规则系统 (Global Rules)

@@ -108,6 +108,9 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       const compatibleIds = new Set(
         compatibleModels.map((model) => String(model.modelId ?? model.id ?? "").trim()).filter(Boolean),
       );
+      const knownIds = new Set(
+        enabledModels.map((model) => String(model.modelId ?? model.id ?? "").trim()).filter(Boolean),
+      );
       const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
       const fallbackModelId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
       const key = buildModelIdStorageKey(sessionId, rt.chatSessionId, agentId);
@@ -120,7 +123,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
       const storedModelId = stored === null ? null : normalizeModelId(stored);
       let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
-      if (candidate !== "auto" && !compatibleIds.has(candidate)) {
+      if (candidate === "auto" || (knownIds.has(candidate) && !compatibleIds.has(candidate))) {
         candidate = fallbackModelId || "auto";
       }
 
@@ -533,6 +536,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     if (currentModel && supportsAgentModel({ agentId: nextAgentId, model: currentModel })) {
       return;
     }
+    if (!currentModel && current !== "auto") return;
     const compatibleModels = enabledModels.filter((model) => supportsAgentModel({ agentId: nextAgentId, model }));
     const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
     const fallbackId = String(fallback?.modelId ?? fallback?.id ?? "").trim();

@@ -4,6 +4,19 @@ import type { TaskStoreStatements } from "../storeStatements.js";
 import type { ModelConfig } from "../types.js";
 
 import { toModelConfig } from "./mappers.js";
+import { modelConfigScopesOverlap } from "../../state/modelConfigScope.js";
+
+function parseConfigJson(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export function createTaskStoreModelConfigOps(deps: { db: DatabaseType; stmts: TaskStoreStatements }) {
   const { db, stmts } = deps;
@@ -47,7 +60,18 @@ export function createTaskStoreModelConfigOps(deps: { db: DatabaseType; stmts: T
 
     const tx = db.transaction(() => {
       if (isDefault) {
-        stmts.clearDefaultModelConfigsStmt.run();
+        const defaults = db
+          .prepare("SELECT id, model_id, provider, config_json FROM model_configs WHERE is_default <> 0")
+          .all() as Array<Record<string, unknown>>;
+        for (const row of defaults) {
+          if (modelConfigScopesOverlap(config, {
+            modelId: String(row.model_id ?? row.id ?? ""),
+            provider: String(row.provider ?? ""),
+            configJson: parseConfigJson(row.config_json),
+          })) {
+            db.prepare("UPDATE model_configs SET is_default = 0 WHERE id = ?").run(String(row.id ?? ""));
+          }
+        }
       }
       stmts.upsertModelConfigStmt.run(
         id,

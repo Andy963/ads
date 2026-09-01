@@ -130,9 +130,7 @@ function enabledCount(agent: AgentKind): number {
 const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
 const isEditing = computed(() => Boolean(editingId.value));
 const managerTitle = computed(() => (props.agent ? "模型" : "模型管理"));
-// The global default must always exist, stay enabled, and be replaced rather than cleared — the
-// server never picks a successor, so un-defaulting or disabling it silently drops every consumer
-// back to whichever model happens to sort first.
+// Each CLI scope keeps an enabled default; selecting a new default replaces only that CLI's default.
 const editingCurrentDefault = computed(
   () => Boolean(editingId.value) && modelConfigs.value.some((model) => model.id === editingId.value && model.isDefault),
 );
@@ -498,7 +496,7 @@ defineExpose({
         </div>
       </section>
 
-      <p class="listFoot">默认模型全局只有一个；未持有默认的 CLI 会自动使用列表中的第一个已启用模型。</p>
+      <p class="listFoot">每个 CLI 独立维护默认模型；未设置默认值时使用该 CLI 列表中的第一个已启用模型。</p>
     </div>
 
     <div v-if="dialogOpen" class="dialogMask" @click.self="closeDialog">

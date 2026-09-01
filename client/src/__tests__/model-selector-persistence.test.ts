@@ -304,7 +304,7 @@ describe("Model selector persistence", () => {
   );
 
   it(
-    "falls back to the first model and persists it when the stored id is invalid",
+    "preserves an unknown stored model instead of replacing it with a fallback",
     async () => {
       localStorage.setItem("ads.modelId.default.main", "not-a-real-model");
 
@@ -319,8 +319,8 @@ describe("Model selector persistence", () => {
       await settleUi(wrapper);
 
       expect(lastSendPromptPayload).toBeTruthy();
-      expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
-      expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
+      expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "not-a-real-model" });
+      expect(localStorage.getItem("ads.modelId.default.main")).toBe("not-a-real-model");
 
       wrapper.unmount();
     },
