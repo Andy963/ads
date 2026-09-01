@@ -71,6 +71,10 @@ export class MiddlewarePipeline {
           logger.warn(
             `[${mw.name}] onItemStart failed: ${err instanceof Error ? err.message : String(err)}`,
           );
+          return {
+            blockExecution: true,
+            reason: `Middleware ${mw.name} failed closed: ${err instanceof Error ? err.message : String(err)}`,
+          };
         }
       }
     }

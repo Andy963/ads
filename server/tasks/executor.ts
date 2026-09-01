@@ -15,6 +15,7 @@ import {
   formatWorkspacePatchArtifactForPrompt,
 } from "./executorHelpers.js";
 import { recordConversationMessage } from "../utils/conversationMessageRecorder.js";
+import { createMiddlewarePipeline, type MiddlewarePipeline } from "../middleware/index.js";
 
 export interface TaskExecutorHooks {
   onMessage?: (message: { role: string; content: string; modelUsed?: string | null }) => void;
@@ -47,6 +48,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
   private readonly autoModelOverride?: string;
   private readonly lock?: AsyncLock;
   private readonly getLock?: () => AsyncLock;
+  private readonly middleware?: MiddlewarePipeline;
 
   constructor(options: {
     getOrchestrator: (task: Task) => HybridOrchestrator;
@@ -56,6 +58,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     autoModelOverride?: string;
     lock?: AsyncLock;
     getLock?: () => AsyncLock;
+    middleware?: MiddlewarePipeline;
   }) {
     this.getOrchestrator = options.getOrchestrator;
     this.getAgentEnv = options.getAgentEnv;
@@ -64,6 +67,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     this.autoModelOverride = String(options.autoModelOverride ?? "").trim() || undefined;
     this.lock = options.lock;
     this.getLock = options.getLock;
+    this.middleware = options.middleware;
   }
 
   private resolveModelOverride(task: Task): { modelOverride?: string; modelForSelection: string; modelForStorage: string | null } {
@@ -309,11 +313,32 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           }
 
           const env = this.getAgentEnv?.(task, agentId);
-          result = await orchestrator.invokeAgent(agentId, prompt, {
-            signal: options?.signal,
-            streaming: true,
-            env,
-          });
+          const middleware = this.middleware ?? createMiddlewarePipeline();
+          const middlewareContext = {
+            turnId: `task:${task.id}`,
+            sessionId: conversationId,
+            workspaceRoot: this.workspaceRoot,
+            channel: "task_queue" as const,
+          };
+          const effectivePrompt = await middleware.executeBeforeInput({ ...middlewareContext, prompt });
+          await middleware.executeTurnStart({ ...middlewareContext, prompt: effectivePrompt });
+          try {
+            result = await orchestrator.invokeAgent(agentId, effectivePrompt, {
+              signal: options?.signal,
+              streaming: true,
+              env,
+            });
+            await middleware.executeAfterOutput(
+              { ...middlewareContext, prompt: effectivePrompt },
+              typeof result.response === "string" ? result.response : String(result.response ?? ""),
+            );
+          } catch (error) {
+            await middleware.executeTurnError(
+              { ...middlewareContext, prompt: effectivePrompt },
+              error instanceof Error ? error : new Error(String(error)),
+            );
+            throw error;
+          }
 
           // Set the goal AFTER the first turn so threadId is available. For
           // single-turn tasks this still records the goal for later reads.

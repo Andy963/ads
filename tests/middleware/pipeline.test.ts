@@ -13,6 +13,7 @@ import {
   type TurnContext,
   type AdsMiddleware,
 } from "../../server/middleware/index.js";
+import { runAgentTurn } from "../../server/agents/turn.js";
 
 describe("MiddlewarePipeline & Core Middlewares", () => {
   const baseCtx: TurnContext = {
@@ -135,6 +136,7 @@ describe("MiddlewarePipeline & Core Middlewares", () => {
     assert.match(enrichedPrompt, /User prefers TypeScript and dark theme./);
 
     await pipeline.executeAfterOutput(baseCtx, "I have updated the settings.");
+    await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(ingestedReply, "I have updated the settings.");
   });
 
@@ -160,5 +162,62 @@ describe("MiddlewarePipeline & Core Middlewares", () => {
     const testError = new Error("Agent turn crashed");
     await pipeline.executeTurnError(baseCtx, testError);
     assert.equal(caughtError, testError);
+  });
+
+  it("wraps a real agent turn with before, start, and after hooks", async () => {
+    const calls: string[] = [];
+    const pipeline = createMiddlewarePipeline([{
+      name: "lifecycle-test",
+      onBeforeInput: (ctx) => {
+        calls.push(`before:${ctx.prompt}`);
+        return { modifiedPrompt: `${ctx.prompt} [prepared]` };
+      },
+      onTurnStart: (ctx) => calls.push(`start:${ctx.prompt}`),
+      onAfterOutput: (_ctx, reply) => calls.push(`after:${reply}`),
+      onTurnError: (_ctx, error) => calls.push(`error:${error.message}`),
+    }]);
+    const orchestrator = {
+      getActiveAgentId: () => "codex",
+      onEvent: () => () => {},
+      invokeAgent: async (_agentId: string, input: unknown) => ({
+        response: `reply for ${String(input)}`,
+        usage: null,
+        agentId: "codex",
+      }),
+    } as any;
+
+    const result = await runAgentTurn(orchestrator, "original", {
+      middleware: pipeline,
+      middlewareContext: {
+        turnId: "turn-1",
+        sessionId: "session-1",
+        channel: "web",
+      },
+      workspaceRoot: os.tmpdir(),
+    });
+
+    assert.equal(result.response, "reply for original [prepared]");
+    assert.deepEqual(calls, [
+      "before:original",
+      "start:original [prepared]",
+      "after:reply for original [prepared]",
+    ]);
+  });
+
+  it("fails closed when an item-start middleware throws", async () => {
+    const pipeline = createMiddlewarePipeline([{
+      name: "broken-guard",
+      onItemStart: () => {
+        throw new Error("guard unavailable");
+      },
+    }]);
+
+    const result = await pipeline.executeItemStart(baseCtx, {
+      type: "command_execution",
+      command: "echo safe",
+    });
+
+    assert.equal(result.blockExecution, true);
+    assert.match(result.reason ?? "", /failed closed/);
   });
 });

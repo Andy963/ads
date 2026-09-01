@@ -5,7 +5,6 @@ export interface GlobalRulesMiddlewareOptions {
   blockedCommandPatterns?: RegExp[];
   customRulesHeader?: string;
 }
-
 const DEFAULT_BLOCKED_COMMAND_PATTERNS = [
   /\bpkill\s+(?:-[a-zA-Z0-9]+\s+)*-?f?\s*(?:ads|cli\.js)/i,
   /\bkillall\s+(?:-[a-zA-Z0-9]+\s+)*(?:node|ads)/i,
@@ -41,4 +40,3 @@ export function createGlobalRulesMiddleware(
     },
   };
 }
-

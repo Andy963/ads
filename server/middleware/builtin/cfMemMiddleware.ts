@@ -7,7 +7,6 @@ export interface CfMemMiddlewareOptions {
   fetchSemanticContext?: (ctx: TurnContext) => Promise<string | null>;
   ingestConversationTurn?: (ctx: TurnContext, assistantReply: string) => Promise<void>;
 }
-
 export function createCfMemMiddleware(
   options: CfMemMiddlewareOptions = {},
 ): AdsMiddleware {
@@ -27,14 +26,11 @@ export function createCfMemMiddleware(
       }
     },
 
-    async onAfterOutput(ctx: TurnContext, assistantReply: string): Promise<void> {
+    onAfterOutput(ctx: TurnContext, assistantReply: string): void {
       if (!options.ingestConversationTurn) return;
-      try {
-        await options.ingestConversationTurn(ctx, assistantReply);
-      } catch {
+      void options.ingestConversationTurn(ctx, assistantReply).catch(() => {
         // Non-blocking fail-safe
-      }
+      });
     },
   };
 }
-

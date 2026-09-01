@@ -65,6 +65,11 @@ Web、Telegram 与 Task Queue 保留各自现有的本地存储和消息交付�
 - **进程守卫 (Execution Governor)**：
   - 动态限制并发 CLI 实例数，提供空闲看门狗（Idle Watchdog）与最大硬超时保护，防止僵尸进程耗尽系统资源。
 
+### 2.2.1 Agent Turn Middleware
+- `server/middleware/` 提供可组合的 Turn/Item 生命周期钩子。
+- `runAgentTurn` 和 Task Queue 执行器支持注入同一个 middleware pipeline，用于输入预处理、回合启动、输出后处理和错误收尾。
+- Item 级安全钩子失败时默认拒绝执行；输出 artifact 使用私有目录和 `0600` 文件权限。
+
 ### 2.3 状态同步协议与双向通信 (Durable Sync Protocol)
 - 客户端与服务端基于增量序列号（`seq`）与 WebSocket 建立长连接通信。
 - 服务端记录不可篡改的 `SyncEvent` 事件流，客户端断线重连后通过 `/api/sync/events?afterSeq=...` 自动对账补齐断线期间产生的所有消息与命令事件。

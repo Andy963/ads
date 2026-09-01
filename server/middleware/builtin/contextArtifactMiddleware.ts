@@ -42,6 +42,7 @@ export function createContextArtifactMiddleware(
       const artifactPath = path.join(baseDir, artifactId);
       try {
         fs.writeFileSync(artifactPath, rawOutput, { encoding: "utf8", mode: 0o600 });
+        fs.chmodSync(artifactPath, 0o600);
         const lines = rawOutput.split("\n");
         const head = lines.slice(0, 20).join("\n");
         const tail = lines.slice(-20).join("\n");
