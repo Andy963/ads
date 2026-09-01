@@ -5,6 +5,7 @@ import {
   STREAM_DISCONNECT_NOTICE,
   finalizeStreamingOnDisconnect,
   mergeHistoryFromServer,
+  normalizeTurnSemanticOrder,
 } from "./chat_sync";
 import type { ChatItem } from "../app/controllerTypes";
 
@@ -632,5 +633,59 @@ describe("chat_sync.mergeHistoryFromServer", () => {
 
     const out = mergeHistoryFromServer(local, server, LIVE);
     expect(out.map((m) => m.content)).toEqual(["Hi", "Ack", "Tail"]);
+  });
+});
+
+describe("chat_sync.normalizeTurnSemanticOrder", () => {
+  it("orders cards within a turn: user -> plan -> execute -> patch -> assistant", () => {
+    const raw: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run task" }),
+      msg({ id: "e1", role: "system", kind: "execute", content: "ls output" }),
+      msg({ id: "e2", role: "system", kind: "execute", content: "git status output" }),
+      msg({ id: "p1", role: "system", kind: "plan", content: "Step 1" }),
+      msg({ id: "a1", role: "assistant", kind: "text", content: "Done" }),
+    ];
+
+    const out = normalizeTurnSemanticOrder(raw);
+    expect(out.map((m) => m.id)).toEqual(["u1", "p1", "e1", "e2", "a1"]);
+  });
+
+  it("preserves stable relative order among multiple execute blocks", () => {
+    const raw: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Execute commands" }),
+      msg({ id: "e1", role: "system", kind: "execute", content: "command 1" }),
+      msg({ id: "e2", role: "system", kind: "execute", content: "command 2" }),
+      msg({ id: "e3", role: "system", kind: "execute", content: "command 3" }),
+      msg({ id: "p1", role: "system", kind: "plan", content: "Plan" }),
+    ];
+
+    const out = normalizeTurnSemanticOrder(raw);
+    expect(out.map((m) => m.id)).toEqual(["u1", "p1", "e1", "e2", "e3"]);
+  });
+
+  it("isolates multiple turns cleanly without bleeding across user boundaries", () => {
+    const raw: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Turn 1" }),
+      msg({ id: "e1", role: "system", kind: "execute", content: "exec 1" }),
+      msg({ id: "p1", role: "system", kind: "plan", content: "plan 1" }),
+      msg({ id: "u2", role: "user", content: "Turn 2" }),
+      msg({ id: "e2", role: "system", kind: "execute", content: "exec 2" }),
+      msg({ id: "p2", role: "system", kind: "plan", content: "plan 2" }),
+    ];
+
+    const out = normalizeTurnSemanticOrder(raw);
+    expect(out.map((m) => m.id)).toEqual(["u1", "p1", "e1", "u2", "p2", "e2"]);
+  });
+
+  it("keeps live activity between the plan and execute cards", () => {
+    const raw: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run task" }),
+      msg({ id: "e1", role: "system", kind: "execute", content: "exec" }),
+      msg({ id: "live-step", role: "assistant", kind: "text", content: "working", streaming: true }),
+      msg({ id: "p1", role: "system", kind: "plan", content: "Plan" }),
+    ];
+
+    const out = normalizeTurnSemanticOrder(raw);
+    expect(out.map((m) => m.id)).toEqual(["u1", "p1", "live-step", "e1"]);
   });
 });

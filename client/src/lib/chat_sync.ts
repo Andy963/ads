@@ -1,4 +1,5 @@
 import type { ChatItem } from "../app/controllerTypes";
+import { isLiveMessageId } from "../app/chatLive";
 
 type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string; command: string };
 
@@ -209,4 +210,61 @@ export function mergeHistoryFromServer(
   }
 
   return [...hydratedLocal, ...tail];
+}
+
+export function getSemanticCardRank(item: ChatItem): number {
+  if (item.role === "user") return 0;
+  if (item.kind === "plan") return 1;
+  if (isLiveMessageId(item.id)) return 1.5;
+  if (item.kind === "execute") return 2;
+  if (item.kind === "patch") return 3;
+  if (item.role === "assistant") return 4;
+  return 5;
+}
+
+export function normalizeTurnSemanticOrder(messages: ChatItem[]): ChatItem[] {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return Array.isArray(messages) ? messages : [];
+  }
+
+  const result: ChatItem[] = [];
+  let turnStart = -1;
+
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]!.role === "user") {
+      if (turnStart >= 0) {
+        result.push(...sortSingleTurn(messages.slice(turnStart, i)));
+      } else if (i > 0) {
+        result.push(...messages.slice(0, i));
+      }
+      turnStart = i;
+    }
+  }
+
+  if (turnStart >= 0) {
+    result.push(...sortSingleTurn(messages.slice(turnStart)));
+  } else {
+    result.push(...sortSingleTurn(messages));
+  }
+
+  return result;
+}
+
+function sortSingleTurn(turnItems: ChatItem[]): ChatItem[] {
+  if (turnItems.length <= 1) return turnItems;
+
+  const indexed = turnItems.map((item, originalIndex) => ({
+    item,
+    originalIndex,
+    rank: getSemanticCardRank(item),
+  }));
+
+  indexed.sort((a, b) => {
+    if (a.rank !== b.rank) {
+      return a.rank - b.rank;
+    }
+    return a.originalIndex - b.originalIndex;
+  });
+
+  return indexed.map((x) => x.item);
 }
