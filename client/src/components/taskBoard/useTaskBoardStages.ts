@@ -226,6 +226,18 @@ export function statusLabel(status: string): string {
   }
 }
 
+export function taskCategoryLabel(category: string | undefined): string {
+  switch (category) {
+    case "review":
+      return "审核";
+    case "rework":
+      return "返工";
+    case "development":
+    default:
+      return "开发";
+  }
+}
+
 export function useTaskBoardStages(params: {
   tasks: Ref<Task[]>;
   workspaceRoot: Ref<string | null | undefined>;

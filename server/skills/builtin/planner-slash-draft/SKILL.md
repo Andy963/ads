@@ -1,39 +1,51 @@
 ---
 name: planner-slash-draft
-description: Opt-in delivery protocol for the Advisor `/draft` command. Use only when a local paired issue/spec work-item snapshot is explicitly requested before handing one task to the Worker.
+description: Opt-in delivery protocol for the Advisor `/draft` command. Use when turning a design discussion into exactly one ads-tasks bundle for the Worker, backed by a GitHub reference, a self-contained prompt, or an explicitly requested local snapshot.
 ---
 
 # Planner `/draft` Delivery Protocol
 
-You are the **Advisor**. `/draft` is an explicit opt-in local snapshot protocol,
-not the default project workflow. GitHub Issues and Pull Requests remain the
-source of truth for ordinary collaboration. Use this skill only when the user
-specifically asks for a local work-item snapshot before delivery.
-
-The discussion may have branched, reversed, or explored dead ends. The local
-work item you emit must reflect only the **final agreed state** so the Worker can
-read an immutable snapshot when the task is approved.
+You are the **Advisor**. `/draft` is the moment an explicitly requested
+discussion becomes a delivery. It supports GitHub references, self-contained
+prompts, and optional local snapshots; GitHub Issues and Pull Requests remain
+the source of truth for ordinary collaboration.
+The discussion may have branched, reversed, or explored dead ends. The bundle
+you emit must reflect only the **final agreed state**. When a local snapshot is
+used, it must be complete and immutable when the task is approved.
 
 ## Non-negotiable rules
 
-1. **Write the issue and spec first, then the bundle.** Never emit a bundle for
-   directories that do not exist on disk.
-2. **Exactly one** ` ```ads-tasks ` fenced block per `/draft`, containing
+1. **Exactly one** ` ```ads-tasks ` fenced block per `/draft`, containing
    **exactly one** task. More than one block, or more than one task, is rejected
    by the server and the draft is discarded.
-3. **`issueRef` and `specRef` are mandatory paired directory references.** Both
-   must be workspace-relative direct children of their roots:
+2. `issueRef` and `specRef` are optional. Use GitHub Issue or PR URLs when the
+   repository workflow is GitHub-native, or omit both when the task `prompt` is
+   self-contained.
+3. When using local snapshots, `issueRef` and `specRef` must be paired
+   workspace-relative direct children of their roots:
    `docs/issue/<work-item-key>/` and `docs/spec/<work-item-key>/`. The keys must
    be identical. File references such as `docs/spec/foo.md`, absolute paths,
    `..`, and mismatched keys are rejected by the server.
-4. **Never restate issue or spec content inside `prompt`.** The directories hold
-   the detail. Duplicating it in the prompt guarantees that the handoff can
+4. For GitHub-native or prompt-only bundles, put the complete implementation
+   intent and acceptance criteria in `prompt`; do not assume the Worker can
+   infer missing details from the conversation.
+5. For local snapshots, do not restate issue or spec content inside `prompt`.
+   The directories hold the detail, and duplicating it can make the handoff
    diverge.
 
-## Step 1 — write or update the paired work item
+## Step 1 — choose the delivery anchor
 
-Choose one kebab-case `<work-item-key>` that is stable across revisions of the
-same feature. Use exactly the same key in both directory names:
+Prefer a canonical GitHub Issue or PR URL when the work is already tracked
+there. If no remote reference exists, write a self-contained prompt with the
+goal, acceptance criteria, constraints, and verification commands. Local paired
+directories remain supported when immutable repository-local snapshots are
+useful, but they are not required.
+
+### Optional local snapshot
+
+If using local snapshots, choose one kebab-case `<work-item-key>` that is stable
+across revisions of the same feature. Use exactly the same key in both directory
+names:
 
 - Issue record: `docs/issue/<work-item-key>/README.md`
 - Delivery spec: `docs/spec/<work-item-key>/requirements.md`
@@ -43,9 +55,9 @@ not create a second key for a revision. The issue record captures the final
 Advisor discussion, while the spec turns that decision into an executable
 Worker contract.
 
-You have write access to `docs/issue/` and `docs/spec/` only. Use your normal
-file tools. Read anything in the project to inform the work item; write nothing
-outside those two roots.
+When `/draft` needs to create or update local snapshots, write only to
+`docs/issue/` and `docs/spec/`. Use your normal file tools. Read anything in the
+project to inform the work item; write nothing outside those two roots.
 
 Recommended issue structure:
 
@@ -111,21 +123,20 @@ in a repo built on a different toolchain.
 ```ads-tasks
 {
   "version": 1,
-  "issueRef": "docs/issue/<work-item-key>",
-  "specRef": "docs/spec/<work-item-key>",
+  "issueRef": "https://github.com/<owner>/<repo>/issues/<number>",
   "tasks": [
     {
       "title": "<short imperative title>",
-      "prompt": "Implement the delivery spec in full. Read the paired issue and spec directories first, then complete every acceptance criterion. Report verification commands and results."
+      "prompt": "Implement the GitHub task in full. Complete every acceptance criterion, run the relevant repository verification commands, and report their results."
     }
   ]
 }
 ```
 
-The prompt stays this short on purpose: the issue/spec directories hold the
-detail, and repeating it here only creates a second copy that can drift. The
-server adds immutable snapshots of both directories when the user approves the
-draft.
+For prompt-only bundles, omit `issueRef` and `specRef`, and make `prompt`
+self-contained. For local snapshots, use the paired directory references and
+keep the prompt short; the server adds immutable snapshots of both directories
+when the user approves the draft.
 
 ### How many tasks
 
@@ -142,10 +153,12 @@ stages of one feature are not that case.
 
 ## How the snapshot works
 
-At approval time the server runs `git hash-object -w` on every regular file in
-both referenced directories and pins the task to those blob SHAs. The Worker
-reads those exact contents, so later edits to the issue or spec never silently
-change work that was already approved.
+At approval time, when local paired directories are referenced, the server runs
+`git hash-object -w` on every regular file in both directories and pins the task
+to those blob SHAs. The Worker reads those exact contents, so later edits to the
+issue or spec never silently change work that was already approved. GitHub
+references and prompt-only tasks are passed through as task content without a
+local snapshot.
 
 This writes into the git object database **without creating a commit** — the
 directories do not need to be committed, staged, or otherwise touched up before
@@ -154,11 +167,10 @@ whenever it suits the project's own workflow.
 
 ## Checklist before you emit
 
-- [ ] Paired issue and spec directories written or updated, using one stable key
-- [ ] Issue contains `README.md`; spec contains `requirements.md`
-- [ ] Issue record reflects the **final** state of Advisor discussion
-- [ ] Rejected alternatives recorded under Decisions, not silently dropped
-- [ ] Spec has concrete acceptance criteria and verification commands
+- [ ] GitHub reference is canonical, or the task prompt is self-contained
+- [ ] If local snapshots are used, paired directories use one stable key
+- [ ] If local snapshots are used, issue contains `README.md` and spec contains `requirements.md`
+- [ ] Acceptance criteria and verification commands are concrete
 - [ ] One `ads-tasks` block, normally one task covering the whole spec
-- [ ] `issueRef` and `specRef` use the same key and point at directories
-- [ ] `prompt` points at the paired directories — it does not restate their contents
+- [ ] Local `issueRef` and `specRef`, when present, use the same key and point at directories
+- [ ] A local-snapshot prompt points at the paired directories without restating their contents

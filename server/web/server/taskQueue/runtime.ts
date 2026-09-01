@@ -4,8 +4,17 @@ import { buildWorkspacePatch, type WorkspacePatchPayload } from "../../gitPatch.
 import { broadcastTaskStart } from "../../taskStartBroadcast.js";
 import { pauseQueueInManualMode, startQueueInAllMode } from "../../taskQueue/control.js";
 import type { Logger } from "../../../utils/logger.js";
+import type { Task } from "../../../tasks/types.js";
 import type { TaskQueueContext } from "./types.js";
 import { recordTaskQueueMetric } from "./metrics.js";
+import {
+  buildReworkTaskInput,
+  buildReviewTaskInput,
+  findIssueNumberInTaskChain,
+  findPullRequestInTaskChain,
+  isReviewWorkflowCategory,
+  parseReviewDecision,
+} from "../../../tasks/reviewWorkflow.js";
 
 type ChangedPathsContext = { paths?: unknown };
 type TaskWorkspacePatchArtifact = {
@@ -83,6 +92,78 @@ function recordTaskWorkspacePatchArtifact(
     );
   } catch {
     // ignore
+  }
+}
+
+export function createTaskWorkflowFollowup(args: {
+  ctx: TaskQueueContext;
+  task: Task;
+  logger: Logger;
+  broadcastToSession: (sessionId: string, payload: unknown) => void;
+}): void {
+  const { ctx, task, logger } = args;
+  try {
+    if (task.category === "review") {
+      const decision = parseReviewDecision(task.result ?? "");
+      if (decision?.status !== "rejected" || ctx.taskStore.findChildTask(task.id, "rework")) {
+        return;
+      }
+      const pullRequest = findPullRequestInTaskChain(task, (id) => ctx.taskStore.getTask(id));
+      if (!pullRequest) {
+        logger.warn(`[Web][TaskReview] rejected review has no pull request reference taskId=${task.id}`);
+        return;
+      }
+      const rework = ctx.taskStore.createTask(
+        buildReworkTaskInput({ reviewTask: task, pullRequest, feedback: decision.feedback }),
+        Date.now(),
+        { status: "pending" },
+      );
+      recordTaskQueueMetric(ctx.metrics, "TASK_ADDED", {
+        ts: Date.now(),
+        taskId: rework.id,
+        reason: `rework_from:${task.id}`,
+      });
+      args.broadcastToSession(ctx.sessionId, {
+        type: "task:event",
+        event: "task:updated",
+        data: rework,
+        ts: Date.now(),
+      });
+      ctx.taskQueue.notifyNewTask();
+      return;
+    }
+
+    if (!isReviewWorkflowCategory(task.category) || ctx.taskStore.findChildTask(task.id, "review")) {
+      return;
+    }
+    const pullRequest = findPullRequestInTaskChain(task, (id) => ctx.taskStore.getTask(id));
+    if (!pullRequest) {
+      return;
+    }
+    const review = ctx.taskStore.createTask(
+      buildReviewTaskInput({
+        source: task,
+        pullRequest,
+        issueNumber: findIssueNumberInTaskChain(task, (id) => ctx.taskStore.getTask(id)),
+      }),
+      Date.now(),
+      { status: "pending" },
+    );
+    recordTaskQueueMetric(ctx.metrics, "TASK_ADDED", {
+      ts: Date.now(),
+      taskId: review.id,
+      reason: `review_for:${task.id}`,
+    });
+    args.broadcastToSession(ctx.sessionId, {
+      type: "task:event",
+      event: "task:updated",
+      data: review,
+      ts: Date.now(),
+    });
+    ctx.taskQueue.notifyNewTask();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[Web][TaskReview] follow-up creation failed taskId=${task.id} err=${message}`);
   }
 }
 
@@ -222,6 +303,12 @@ export function bindTaskQueueRuntime(args: {
   ctx.taskQueue.on("task:completed", ({ task }) => {
     recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
     recordTaskWorkspacePatchArtifact(ctx, task.id);
+    createTaskWorkflowFollowup({
+      ctx,
+      task,
+      logger: args.logger,
+      broadcastToSession: args.broadcastToSession,
+    });
     if (task.result && task.result.trim()) {
       args.recordToSessionHistories(ctx.sessionId, {
         role: "ai",

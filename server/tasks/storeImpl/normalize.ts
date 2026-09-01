@@ -1,6 +1,7 @@
 import type {
   ConversationStatus,
   TaskExecutionIsolation,
+  TaskCategory,
   TaskRole,
   TaskRunApplyStatus,
   TaskRunCaptureStatus,
@@ -24,6 +25,17 @@ export function normalizeNullableString(value: unknown): string | null {
 
 export function normalizeTaskModel(value: unknown): string {
   return normalizeNullableString(value) ?? "auto";
+}
+
+export function normalizeTaskCategory(value: unknown): TaskCategory {
+  switch (String(value ?? "").trim().toLowerCase()) {
+    case "review":
+      return "review";
+    case "rework":
+      return "rework";
+    default:
+      return "development";
+  }
 }
 
 export function normalizeTaskStatus(value: unknown): TaskStatus {
