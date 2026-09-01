@@ -304,6 +304,36 @@
   white-space: nowrap;
 }
 
+.taskCategoryBadge,
+.taskPriorityBadge {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.taskCategoryBadge {
+  color: #475569;
+  background: rgba(226, 232, 240, 0.8);
+}
+
+.taskCategoryBadge[data-category="review"] {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.taskCategoryBadge[data-category="rework"] {
+  color: #b45309;
+  background: #fef3c7;
+}
+
+.taskPriorityBadge {
+  color: #7c3aed;
+  background: #ede9fe;
+}
+
 .item[data-status="completed"] .row-title {
   text-decoration: line-through;
 }

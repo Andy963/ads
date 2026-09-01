@@ -111,6 +111,7 @@ export function normalizeCreateTaskInput(
   prompt: string;
   model?: string;
   priority?: number;
+  category?: "development" | "review" | "rework";
   inheritContext?: boolean;
   maxRetries?: number;
   createdBy: string;
@@ -122,6 +123,7 @@ export function normalizeCreateTaskInput(
   const title = normalizeTaskTitle(task);
   const model = String(task.model ?? "").trim();
   const priority = typeof task.priority === "number" && Number.isFinite(task.priority) ? task.priority : undefined;
+  const category = task.category;
   const inheritContext = typeof task.inheritContext === "boolean" ? task.inheritContext : undefined;
   const maxRetries =
     typeof task.maxRetries === "number" && Number.isFinite(task.maxRetries) ? Math.max(0, Math.floor(task.maxRetries)) : undefined;
@@ -132,6 +134,7 @@ export function normalizeCreateTaskInput(
     prompt,
     model: model || undefined,
     priority,
+    category,
     inheritContext,
     maxRetries,
     modelParams: workItemPin ? { specPin: toWorkItemPinMetadata(workItemPin) } : undefined,

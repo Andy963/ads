@@ -14,6 +14,7 @@ function bindWorkspace(stmt: StatementType<unknown[], unknown>, workspaceId: str
 export type TaskStoreStatements = {
   insertTaskStmt: SqliteStatement;
   getTaskStmt: SqliteStatement;
+  findChildTaskStmt: SqliteStatement;
   listTasksStmt: SqliteStatement;
   listTasksByStatusStmt: SqliteStatement;
   updateTaskStmt: SqliteStatement;
@@ -76,6 +77,7 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         model_params,
         status,
         priority,
+        category,
         queue_order,
         queued_at,
         inherit_context,
@@ -99,10 +101,22 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         goal_status,
         goal_tokens_used,
         goal_time_used_seconds
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?
+      )
     `),
 
     getTaskStmt: scoped(`SELECT * FROM tasks WHERE workspace_id = ? AND id = ? LIMIT 1`),
+
+    findChildTaskStmt: scoped(
+      `SELECT * FROM tasks
+       WHERE workspace_id = ? AND parent_task_id = ? AND category = ?
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1`,
+    ),
 
     selectNextQueueOrderStmt: scoped(
       `SELECT COALESCE(MAX(queue_order), 0) + 1 AS next FROM tasks WHERE workspace_id = ?`,
@@ -147,6 +161,7 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         model_params = ?,
         status = ?,
         priority = ?,
+        category = ?,
         queue_order = ?,
         queued_at = ?,
         inherit_context = ?,
@@ -186,7 +201,7 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
       `SELECT id
        FROM tasks
        WHERE workspace_id = ? AND status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-       ORDER BY queue_order ASC, created_at ASC
+       ORDER BY priority DESC, queue_order ASC, created_at ASC, id ASC
        LIMIT 1`,
     ),
 

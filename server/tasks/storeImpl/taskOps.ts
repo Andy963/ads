@@ -3,12 +3,13 @@ import crypto from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import type { TaskStoreStatements } from "../storeStatements.js";
-import type { CreateTaskInput, CreateTaskRunInput, Task, TaskFilter, TaskGoalStatus, TaskRun, TaskStatus } from "../types.js";
+import type { CreateTaskInput, CreateTaskRunInput, Task, TaskCategory, TaskFilter, TaskGoalStatus, TaskRun, TaskStatus } from "../types.js";
 
 import { toTask, toTaskRun } from "./mappers.js";
 import {
   normalizeNullableString,
   normalizeTaskCaptureStatus,
+  normalizeTaskCategory,
   normalizeTaskExecutionIsolation,
   normalizeTaskModelParams,
   normalizeTaskModel,
@@ -88,6 +89,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     task.modelParams = normalizeTaskModelParams(task.modelParams);
     normalizeTaskIdentityFields(task);
     task.priority = normalizeFiniteNumberOr(task.priority, existing?.priority ?? 0);
+    task.category = normalizeTaskCategory(task.category ?? existing?.category);
     task.queueOrder = normalizeFiniteNumberOr(task.queueOrder, existing?.queueOrder ?? task.createdAt);
     task.queuedAt = normalizeNullableFiniteNumber(task.queuedAt) ?? (existing?.queuedAt ?? null);
     task.retryCount = normalizeFiniteNumberOr(task.retryCount, existing?.retryCount ?? 0);
@@ -183,6 +185,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       modelParams: normalizeTaskModelParams(input.modelParams),
       status,
       priority: typeof input.priority === "number" ? input.priority : 0,
+      category: normalizeTaskCategory(input.category),
       queueOrder: nextQueueOrder,
       queuedAt,
       promptInjectedAt: null,
@@ -219,6 +222,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.modelParams ? JSON.stringify(task.modelParams) : null,
       task.status,
       task.priority,
+      task.category,
       task.queueOrder,
       task.queuedAt ?? null,
       task.inheritContext ? 1 : 0,
@@ -364,6 +368,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.modelParams ? JSON.stringify(merged.modelParams) : null,
       merged.status,
       merged.priority,
+      merged.category,
       merged.queueOrder,
       merged.queuedAt ?? null,
       merged.inheritContext ? 1 : 0,
@@ -391,6 +396,13 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     );
 
     return merged;
+  };
+
+  const findChildTask = (parentTaskId: string, category: TaskCategory): Task | null => {
+    const parentId = String(parentTaskId ?? "").trim();
+    if (!parentId) return null;
+    const row = stmts.findChildTaskStmt.get(parentId, category) as Record<string, unknown> | undefined;
+    return row ? toTask(row) : null;
   };
 
   const markPromptInjected = (taskId: string, now = Date.now()): boolean => {
@@ -731,6 +743,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     getActiveTaskId,
     dequeueNextQueuedTask,
     getTask,
+    findChildTask,
     listTasks,
     updateTask,
     markPromptInjected,
