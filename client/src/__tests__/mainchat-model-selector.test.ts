@@ -284,7 +284,7 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
-  it("normalizes model preferences after the composer unlocks", async () => {
+  it("preserves an unknown model preference after the composer unlocks", async () => {
     const model = makeModel("gpt-4.1", "GPT-4.1", "openai");
     model.configJson = {
       reasoningEfforts: ["medium", "high"],
@@ -309,8 +309,8 @@ describe("MainChat model selector", () => {
     await wrapper.setProps({ inputLocked: false });
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.emitted("setModel")?.[0]?.[0]).toBe("gpt-4.1");
-    expect(wrapper.emitted("setReasoningEffort")?.[0]?.[0]).toBe("high");
+    expect(wrapper.emitted("setModel")).toBeUndefined();
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
     wrapper.unmount();
   });
 });

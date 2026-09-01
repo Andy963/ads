@@ -44,7 +44,6 @@ export type TaskStoreStatements = {
 
   listModelConfigsStmt: SqliteStatement;
   getModelConfigStmt: SqliteStatement;
-  clearDefaultModelConfigsStmt: SqliteStatement;
   upsertModelConfigStmt: SqliteStatement;
   deleteModelConfigStmt: SqliteStatement;
 
@@ -260,10 +259,6 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
 
     getModelConfigStmt: db.prepare(
       `SELECT * FROM model_configs WHERE id = ? LIMIT 1`,
-    ),
-
-    clearDefaultModelConfigsStmt: db.prepare(
-      `UPDATE model_configs SET is_default = 0 WHERE is_default <> 0`,
     ),
 
     upsertModelConfigStmt: db.prepare(`

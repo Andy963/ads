@@ -1,6 +1,7 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import type { ModelConfig } from "../tasks/types.js";
+import { modelConfigScopesOverlap } from "./modelConfigScope.js";
 
 function parseJson(value: unknown): Record<string, unknown> | null {
   const raw = String(value ?? "").trim();
@@ -58,7 +59,7 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
   const listStmt = db.prepare("SELECT * FROM model_configs ORDER BY is_default DESC, updated_at DESC, display_name ASC");
   const getStmt = db.prepare("SELECT * FROM model_configs WHERE id = ? LIMIT 1");
   const getByModelIdStmt = db.prepare("SELECT * FROM model_configs WHERE model_id = ? LIMIT 1");
-  const clearDefaultStmt = db.prepare("UPDATE model_configs SET is_default = 0 WHERE is_default <> 0");
+  const clearDefaultStmt = db.prepare("UPDATE model_configs SET is_default = 0 WHERE id = ?");
   const upsertStmt = db.prepare(`
     INSERT INTO model_configs (id, model_id, display_name, provider, is_enabled, is_default, config_json, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -103,7 +104,16 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
 
     const tx = db.transaction(() => {
       if (config.isDefault) {
-        clearDefaultStmt.run();
+        const defaults = db.prepare("SELECT id, model_id, provider, config_json FROM model_configs WHERE is_default <> 0").all() as Array<Record<string, unknown>>;
+        for (const row of defaults) {
+          if (modelConfigScopesOverlap(config, {
+            modelId: String(row.model_id ?? row.id ?? ""),
+            provider: String(row.provider ?? ""),
+            configJson: parseJson(row.config_json),
+          })) {
+            clearDefaultStmt.run(String(row.id ?? ""));
+          }
+        }
       }
       upsertStmt.run(
         id,

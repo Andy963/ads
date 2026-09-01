@@ -158,7 +158,8 @@ const effectiveModelId = computed(() => {
   const options = compatibleModelOptions.value;
   if (options.length === 0) return "";
   const current = normalizeModelId(props.modelId);
-  if (!isUnsetModelId(current) && options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current)) {
+  const known = modelOptions.value.some((m) => String(m.modelId ?? m.id ?? "").trim() === current);
+  if (!isUnsetModelId(current) && (!known || options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current))) {
     return current;
   }
   const fallback = preferredModel(options);
@@ -183,7 +184,8 @@ watch(
     if (!desired) return;
 
     const current = normalizeModelId(props.modelId);
-    if (!isUnsetModelId(current) && options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current)) {
+    const known = modelOptions.value.some((m) => String(m.modelId ?? m.id ?? "").trim() === current);
+    if (!isUnsetModelId(current) && (!known || options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current))) {
       return;
     }
 

@@ -294,4 +294,42 @@ describe("web/model-config routes", () => {
       ["gpt-5.4"],
     );
   });
+
+  it("keeps defaults independent for different agent scopes", () => {
+    modelStore.upsertModelConfig({
+      id: "codex-default",
+      modelId: "gpt-codex",
+      displayName: "Codex Default",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: true,
+      configJson: { allowedAgents: ["codex"] },
+    });
+    modelStore.upsertModelConfig({
+      id: "claude-default",
+      modelId: "claude-default",
+      displayName: "Claude Default",
+      provider: "anthropic",
+      isEnabled: true,
+      isDefault: true,
+      configJson: { allowedAgents: ["claude"] },
+    });
+
+    assert.equal(modelStore.getModelConfig("codex-default")?.isDefault, true);
+    assert.equal(modelStore.getModelConfig("claude-default")?.isDefault, true);
+
+    modelStore.upsertModelConfig({
+      id: "codex-next",
+      modelId: "gpt-codex-next",
+      displayName: "Codex Next",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: true,
+      configJson: { allowedAgents: ["codex"] },
+    });
+
+    assert.equal(modelStore.getModelConfig("codex-default")?.isDefault, false);
+    assert.equal(modelStore.getModelConfig("codex-next")?.isDefault, true);
+    assert.equal(modelStore.getModelConfig("claude-default")?.isDefault, true);
+  });
 });
