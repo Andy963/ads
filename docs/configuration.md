@@ -48,7 +48,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `ADS_CODEX_BIN` | `codex` | Codex CLI 二进制执行文件路径或别名 |
+| `ADS_CODEX_BIN` | `codex` | Codex 二进制执行文件路径或别名；ADS 通过 `codex app-server` 启动 |
 | `ADS_CLAUDE_ENABLED` | `1` (启用) | 设为 `0` 完全禁用 Claude Code 适配器 |
 | `ADS_CLAUDE_BIN` | `claude` | Claude Code CLI 二进制执行文件路径 |
 | `ADS_CLAUDE_MODEL` | 未设置 | Claude 默认使用的模型 ID 覆盖 |
@@ -56,7 +56,6 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 单次 CLI 运行的最大硬超时保护，`0` 表示禁用 |
 | `ADS_CLI_POST_COMPLETION_GRACE_MS`| `10000` (10秒) | CLI 报告终态结果后等待其正常退出的宽限时长 |
-| `ADS_CODEX_ADAPTER` | `auto` | Codex 适配模式：`auto` (仅 Goal Mode 走 RPC)、`app-server`、`cli` |
 | `ADS_UPSTREAM_RETRY_COUNT` | `1` | 遭遇上游网络/服务故障时的自动安全重试次数 |
 | `ADS_CLI_MAX_CONCURRENCY` | `4` | 单机允许并发执行的 Agent CLI 最大数量 |
 | `ADS_CLI_MAX_PENDING` | `32` | 并发占满时进入排队等待的最大请求队列长度 |

@@ -6,7 +6,7 @@ import { CodexAppServerClient } from "../../../server/codex/appServer/rpcClient.
 import { CodexAppServerDaemonRegistry } from "../../../server/codex/appServer/daemonRegistry.js";
 import {
   CodexAppServerAdapter,
-  CODEX_APP_SERVER_ADAPTER_ID,
+  CODEX_ADAPTER_ID,
 } from "../../../server/agents/adapters/codexAppServerAdapter.js";
 
 interface RpcLine {
@@ -82,10 +82,10 @@ async function waitForRequestCount(
 }
 
 describe("CodexAppServerAdapter", () => {
-  it("uses the distinct adapter id 'codex-appserver'", () => {
+  it("uses the unified codex adapter id", () => {
     const adapter = new CodexAppServerAdapter({ projectId: "p" });
-    assert.equal(adapter.id, CODEX_APP_SERVER_ADAPTER_ID);
-    assert.equal(adapter.id, "codex-appserver");
+    assert.equal(adapter.id, CODEX_ADAPTER_ID);
+    assert.equal(adapter.id, "codex");
   });
 
   it("creates a thread, sends a turn, and returns the assistant message", async () => {
@@ -140,7 +140,7 @@ describe("CodexAppServerAdapter", () => {
     });
 
     const result = await sendPromise;
-    assert.equal(result.agentId, "codex-appserver");
+    assert.equal(result.agentId, "codex");
     assert.equal(result.response, "Hi there!");
     assert.equal(adapter.getThreadId(), "thread-1");
 
