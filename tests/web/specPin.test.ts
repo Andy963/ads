@@ -43,6 +43,20 @@ function initRepoWithWorkItem(issueContent: string, requirementsContent: string)
 }
 
 describe("planner/workItem references", () => {
+  it("accepts GitHub references and prompt-only bundles without local directories", () => {
+    const remote = validateWorkItemRefs({
+      issueRef: "https://github.com/Andy963/ads/issues/85",
+    });
+    assert.equal(remote.ok, true);
+    if (remote.ok) {
+      assert.equal(remote.refs.issueRef, "https://github.com/Andy963/ads/issues/85");
+      assert.equal(remote.refs.workItemKey, "");
+    }
+
+    const promptOnly = validateWorkItemRefs({ issueRef: undefined, specRef: undefined });
+    assert.deepEqual(promptOnly, { ok: true, refs: { issueRef: "", specRef: "", workItemKey: "" } });
+  });
+
   it("accepts matching direct-child directories and rejects file references", () => {
     assert.equal(normalizeIssueRef("docs/issue/feature"), "docs/issue/feature");
     assert.equal(normalizeSpecRef("./docs/spec/feature/"), "docs/spec/feature");

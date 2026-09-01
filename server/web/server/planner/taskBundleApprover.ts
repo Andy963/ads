@@ -184,9 +184,6 @@ export function materializeTaskBundleTasks(args: {
     issueRef: workItemValidation.refs.issueRef,
     specRef: workItemValidation.refs.specRef,
   });
-  if (!workItemPin) {
-    throw new Error("Failed to resolve the issue/spec directories for this work item");
-  }
 
   for (let i = 0; i < args.tasks.length; i++) {
     const specTask = args.tasks[i]!;

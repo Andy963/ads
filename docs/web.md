@@ -16,14 +16,14 @@ Web Console 将对话与任务流组织为三大工作区：
   - 集成 **Task Bundle Drafts（任务草稿箱）**：查看 Advisor 生成的结构化任务束，支持在线编辑子任务与一键审批入队。
 - **Advisor (规划 Lane)**：
   - 默认对话 Lane，用于方案讨论、代码架构设计与任务拆解。
-  - 讨论完成后将一个稳定 work-item key 的结论写入 `docs/issue/<key>/`，再在 `docs/spec/<key>/` 生成 Worker 规格。
-  - Task Bundle 必须同时携带匹配的 `issueRef` / `specRef` 目录，并且一个 spec 只生成一个 task；服务端会在批准时拒绝单文件引用、缺目录或 key 不匹配的 bundle。
+  - Task Bundle 可直接引用 GitHub Issue/PR URL，或只携带自包含的任务 prompt；不要求先创建本地 `docs/issue/` 与 `docs/spec/` 目录。
+  - 显式使用本地 `/draft` 快照时，仍可携带匹配的 `issueRef` / `specRef` 目录并在批准时固定内容；本地快照是兼容能力，不是 GitHub-native 流程的前置条件。
   - 支持输出 `ads-schedule` 定时指令或生成 Task Bundle 任务草稿。
   - 任务带有 `development`（开发）、`review`（审核）和 `rework`（返工）分类；待执行任务按 `priority` 降序、队列顺序升序领取。
   - 开发或返工任务完成并在结果中报告 GitHub PR 后，队列会幂等创建 P10 审核任务。审核结果使用 `REVIEW_STATUS: approved|rejected` 标记；拒绝且包含反馈时自动创建 P50 返工任务。
 - **Worker (执行 Lane)**：
   - 专注于代码执行、命令运行与文件修改的执行 Lane。
-  - 执行任务时先读取批准时固定的 issue/spec 快照；spec 是执行真源，issue 只提供讨论背景。
+  - 若任务带有本地 issue/spec 快照，执行时先读取批准时固定的内容；没有快照时直接以任务 prompt 及其 GitHub 引用作为执行依据。
   - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出（最新命令预览），自动收起长文本输出。
   - Plan 卡片按单轮逻辑计划合并 provider 更新，并在任务完成与历史重连时保持唯一且状态一致。
 

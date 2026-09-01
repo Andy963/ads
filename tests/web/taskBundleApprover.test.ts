@@ -46,6 +46,50 @@ afterEach(() => {
 });
 
 describe("planner/taskBundleApprover", () => {
+  it("materializes prompt-only tasks without a local work-item snapshot", () => {
+    const created: Array<{ prompt: string }> = [];
+
+    const result = materializeTaskBundleTasks({
+      draftId: "draft-remote",
+      tasks: [{ title: "Implement GitHub issue", prompt: "Implement https://github.com/Andy963/ads/issues/85" }],
+      now: 123,
+      taskStore: {
+        createTask(input, now, options) {
+          const task = {
+            id: input.id ?? "task-remote",
+            title: input.title ?? "",
+            prompt: input.prompt,
+            model: input.model ?? "auto",
+            status: options.status,
+            priority: input.priority ?? 0,
+            queueOrder: 0,
+            inheritContext: input.inheritContext ?? false,
+            retryCount: 0,
+            maxRetries: input.maxRetries ?? 0,
+            createdAt: now,
+          };
+          created.push({ prompt: task.prompt });
+          return task;
+        },
+        getTask() {
+          return null;
+        },
+        deleteTask() {},
+      },
+      attachmentStore: {
+        assignAttachmentsToTask() {},
+        listAttachmentsForTask() {
+          return [];
+        },
+      },
+      metrics: createMetrics(),
+      metricReason: "planner_draft",
+    });
+
+    assert.equal(result.createdTaskIds.length, 1);
+    assert.deepEqual(created, [{ prompt: "Implement https://github.com/Andy963/ads/issues/85" }]);
+  });
+
   it("materializes attachments into task payloads and metrics", () => {
     const tasksById = new Map<string, any>();
     const attachmentsByTaskId = new Map<string, string[]>();

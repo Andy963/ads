@@ -19,7 +19,7 @@ describe("mobile navigation shell", () => {
     expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'worker'"/);
     expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'tasks'"/);
     expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'reviewer'"/);
-    expect(sfc).toMatch(/:class="\{ active: activeWorkspaceTab === tab.id \}"/);
+    expect(sfc).toMatch(/:class="\{[\s\S]*active:\s*activeWorkspaceTab === tab.id/);
     expect(sfc).toMatch(/:aria-selected="activeWorkspaceTab === tab.id"/);
   });
 
