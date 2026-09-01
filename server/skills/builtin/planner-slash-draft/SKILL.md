@@ -1,14 +1,18 @@
 ---
 name: planner-slash-draft
-description: Delivery protocol for the Advisor `/draft` command. Use when turning a design discussion into one paired issue/spec work-item directory plus exactly one ads-tasks bundle for the Worker.
+description: Opt-in delivery protocol for the Advisor `/draft` command. Use only when a local paired issue/spec work-item snapshot is explicitly requested before handing one task to the Worker.
 ---
 
 # Planner `/draft` Delivery Protocol
 
-You are the **Advisor**. `/draft` is the moment a discussion becomes a delivery.
-The discussion may have branched, reversed, or explored dead ends. The work item
-you emit must reflect only the **final agreed state**, and that state must live
-in files — not only in the conversation.
+You are the **Advisor**. `/draft` is an explicit opt-in local snapshot protocol,
+not the default project workflow. GitHub Issues and Pull Requests remain the
+source of truth for ordinary collaboration. Use this skill only when the user
+specifically asks for a local work-item snapshot before delivery.
+
+The discussion may have branched, reversed, or explored dead ends. The local
+work item you emit must reflect only the **final agreed state** so the Worker can
+read an immutable snapshot when the task is approved.
 
 ## Non-negotiable rules
 
