@@ -33,8 +33,9 @@ import { applySessionOverrides } from "./sessionOverrides.js";
 import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
-import { beginWsPromptRun, isWsPromptAbort, raceWsPromptAbort } from "./promptLifecycle.js";
+import { beginWsPromptRun, isWsPromptAbort, isWsPromptSilentAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
+import { hasSubstantiveStepTrace } from "../../../codex/events.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -373,7 +374,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
       const stepTraceText = getStepTraceText();
-      if (stepTraceText && stepTraceText.trim()) {
+      if (stepTraceText && stepTraceText.trim() && hasSubstantiveStepTrace(stepTraceText)) {
         deps.history.historyStore.add(deps.context.historyKey, {
           role: "assistant",
           kind: "thought",
@@ -411,9 +412,11 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           });
         }
       }
+      const isSilent = isWsPromptSilentAbort(error);
       handlePromptError({
         error,
-        aborted: controller.signal.aborted || isWsPromptAbort(error),
+        aborted: controller.signal.aborted || isWsPromptAbort(error) || isSilent,
+        silent: isSilent,
         sessionLogger: deps.observability.sessionLogger,
         logger: deps.observability.logger,
         historyStore: deps.history.historyStore,

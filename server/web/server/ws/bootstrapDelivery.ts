@@ -30,20 +30,6 @@ function isReplayableBuiltinStatus(entry: HistoryEntry): boolean {
   return text.startsWith("当前工作目录:") || text.startsWith("已切换到:");
 }
 
-function shouldReplayFreshHistory(entries: HistoryEntry[]): boolean {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (!entry || !String(entry.text ?? "").trim()) {
-      continue;
-    }
-    if (entry.role === "status" && entry.kind === "status" && !isReplayableBuiltinStatus(entry)) {
-      continue;
-    }
-    return entry.role === "status" && (entry.kind === "error" || entry.kind === "execute" || isReplayableBuiltinStatus(entry));
-  }
-  return false;
-}
-
 function collectCompletedClientMessageIds(entries: HistoryEntry[]): string[] {
   const completed = new Set<string>();
   let currentClientMessageId = "";
@@ -107,10 +93,10 @@ export function sendInitialBootstrapMessages(args: {
     args.additionalHistoryEntries ?? [],
   ]);
   const shouldReplayHistory =
+    historyEntries.length > 0 ||
     args.inFlight ||
     bootstrapState.contextMode !== "fresh" ||
-    Boolean(bootstrapState.threadId) ||
-    shouldReplayFreshHistory(historyEntries);
+    Boolean(bootstrapState.threadId);
   const replayHistoryEntries =
     bootstrapState.contextMode === "fresh" ? trimTrailingFreshStatusNotices(historyEntries) : historyEntries;
   const historyPayload = shouldReplayHistory

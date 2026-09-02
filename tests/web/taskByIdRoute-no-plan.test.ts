@@ -123,4 +123,64 @@ describe("web/api/tasks/:id", () => {
     assert.ok(Array.isArray(payload.messages), "messages should be present");
     assert.ok(!("plan" in payload), "plan should not be present");
   });
+
+  it("returns the complete nested review chain", async () => {
+    const root = { id: "root-1", title: "Root", category: "development", status: "completed" } as Task;
+    const review = { id: "review-1", title: "Review", category: "review", status: "completed", parentTaskId: root.id } as Task;
+    const rework = { id: "rework-1", title: "Rework", category: "rework", status: "pending", parentTaskId: review.id } as Task;
+    const tasks = new Map([root, review, rework].map((task) => [task.id, task] as const));
+    const req = createReq("GET");
+    const res = createRes();
+    const url = new URL("http://localhost/api/tasks/rework-1");
+    const taskCtx = {
+      taskStore: {
+        getTask(id: string) {
+          return tasks.get(id) ?? null;
+        },
+        getRootTask() {
+          return root;
+        },
+        listChildTasks(parentTaskId: string) {
+          return [...tasks.values()].filter((task) => task.parentTaskId === parentTaskId);
+        },
+        getLatestTaskRun() {
+          return null;
+        },
+        getMessages() {
+          return [];
+        },
+      },
+      attachmentStore: {
+        listAttachmentsForTask() {
+          return [];
+        },
+      },
+    };
+    const deps: ApiSharedDeps = {
+      logger: { info() {}, warn() {}, debug() {}, error() {} } as unknown as ApiSharedDeps["logger"],
+      allowedDirs: [],
+      workspaceRoot: "/",
+      taskQueueAvailable: true,
+      resolveTaskContext() {
+        return taskCtx as unknown as ReturnType<ApiSharedDeps["resolveTaskContext"]>;
+      },
+      promoteQueuedTasksToPending() {},
+      broadcastToSession() {},
+      buildAttachmentRawUrl() {
+        return "";
+      },
+    };
+    const ctx: ApiRouteContext = {
+      req: req as unknown as ApiRouteContext["req"],
+      res: res as unknown as ApiRouteContext["res"],
+      url,
+      pathname: url.pathname,
+      auth: { userId: "u", username: "u" },
+    };
+
+    await handleTaskByIdRoute(ctx, deps);
+
+    const payload = parseJson(res.body) as { reviewChain?: Array<{ id: string }> };
+    assert.deepEqual(payload.reviewChain?.map((entry) => entry.id), ["root-1", "review-1", "rework-1"]);
+  });
 });

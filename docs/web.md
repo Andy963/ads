@@ -16,15 +16,18 @@ Web Console 将对话与任务流组织为三大工作区：
   - 集成 **Task Bundle Drafts（任务草稿箱）**：查看 Advisor 生成的结构化任务束，支持在线编辑子任务与一键审批入队。
 - **Advisor (规划 Lane)**：
   - 默认对话 Lane，用于方案讨论、代码架构设计与任务拆解。
-  - Task Bundle 可直接引用 GitHub Issue/PR URL，或只携带自包含的任务 prompt；不要求先创建本地 `docs/issue/` 与 `docs/spec/` 目录。
+  - Task Bundle 可直接引用 GitHub Issue/PR URL，或只携带自包含的任务 prompt；不要求先创建本地 `docs/issue/` 与 `docs/spec/` 目录，审批也不以这两个目录为前提。
   - 显式使用本地 `/draft` 快照时，仍可携带匹配的 `issueRef` / `specRef` 目录并在批准时固定内容；本地快照是兼容能力，不是 GitHub-native 流程的前置条件。
   - 支持输出 `ads-schedule` 定时指令或生成 Task Bundle 任务草稿。
   - 任务带有 `development`（开发）、`review`（审核）和 `rework`（返工）分类；待执行任务按 `priority` 降序、队列顺序升序领取。
   - 开发或返工任务完成并在结果中报告 GitHub PR 后，队列会幂等创建 P10 审核任务。审核结果使用 `REVIEW_STATUS: approved|rejected` 标记；拒绝且包含反馈时自动创建 P50 返工任务。
+  - 任务卡片和详情会显示持久化的审核状态、PR、Reviewer 模型、审核结论、返工轮次与关联任务链。审核拒绝在 `Auto with Fuse` 模式下最多自动返工两轮，之后进入需人工处理；`Human-Gated` 模式下拒绝不会自动返工。
+  - 详情面板支持 Force Approve、Edit & Rework、Skip Review 和 Abort。人工操作通过 `POST /api/tasks/:id/review-actions` 写入带操作者、原因、时间和幂等键的审计记录；审核设置通过 `GET/PATCH /api/review-settings` 管理。
+  - 审核状态通过 REST 和 WebSocket `review:updated` 事件同步，并在刷新、重连和重复终态事件下保持一致；Reviewer 未配置、PR 缺失、输出格式错误或后续任务创建失败会持久化为可见的错误或人工介入状态。
 - **Worker (执行 Lane)**：
   - 专注于代码执行、命令运行与文件修改的执行 Lane。
   - 若任务带有本地 issue/spec 快照，执行时先读取批准时固定的内容；没有快照时直接以任务 prompt 及其 GitHub 引用作为执行依据。
-  - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出（最新命令预览），阶段 trace 只显示简洁语义标签；文件路径和变更明细由 Patch 卡片展示，自动收起长文本输出。
+  - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出（最新命令预览），阶段 trace 只显示简洁语义标签；重复的 reasoning 生命周期噪声不会写入历史 thought；文件路径和变更明细由 Patch 卡片展示，自动收起长文本输出。
   - Plan 卡片按单轮逻辑计划合并 provider 更新，并在任务完成与历史重连时保持唯一且状态一致。
 
 ### 2. Provider CLI 与全局模型配置 (Provider & Models)
@@ -53,7 +56,10 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 - 原生恢复：直接按 CLI 底层 session 续接，不重复注入历史文本，保留完整的 Token 上下文与缓存状态。
 - 会话文件健康判定：断线或重连时若会话文件存在则原生恢复，缺失时平滑降级并友好提示。
 - 新建聊天会话时，在线 WebSocket 通过原连接内协议切换 session；连接状态保持在线，离线时自动回退到完整重连。
+- 重连或后端重启后，只要持久化历史存在就会发送历史快照；即使后端上下文暂时是 fresh，客户端也保留本地聊天记录，只有显式线程重置才会清空历史。
+- Bootstrap 等待期间提交的提示会进入持久 outbox，待历史同步完成后继续发送；若历史帧丢失，5 秒兜底会解除等待锁，避免 Composer 永久冻结。
 - 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；每轮消息中的 Plan、实时活动、Thought、Execute 与 Patch 卡片按稳定语义顺序展示，已完成的阶段 trace 会在历史重放时保留为可折叠 Thought 卡片。
+- Worker 与 Advisor 的清空操作默认只作用于发起操作的 chat lane；跨 lane 清理必须显式请求 shared scope，且 session reset 广播会校验来源 lane。
 
 ### 5. 多模态与文件联动
 - **多模态图片附件**：支持拖拽、粘贴与上传图片，MainChat 与任务创建表单均提供紧凑缩略图预览与大图查看器。

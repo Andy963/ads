@@ -763,7 +763,7 @@ describe("ws workspace project sync", () => {
     });
   });
 
-  it("treats fresh welcome as authoritative even when a thread id is unexpectedly present", () => {
+  it("preserves local history when a fresh welcome has an unexpected thread id", () => {
     const rt = createRuntime();
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "stale" }];
     rt.activeThreadId.value = "thread-stale";
@@ -782,13 +782,8 @@ describe("ws workspace project sync", () => {
       contextMode: "fresh",
     });
 
-    expect(threadReset).toHaveBeenCalledWith(
-      rt,
-      expect.objectContaining({
-        source: "welcome_fresh_context",
-        resetThreadId: true,
-      }),
-    );
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.messages.value.map((entry: any) => entry.content)).toEqual(["stale"]);
     expect(rt.activeThreadId.value).toBeNull();
   });
 
@@ -1021,6 +1016,24 @@ describe("ws workspace project sync", () => {
     expect(rt.activeThreadId.value).toBe("thread-keep");
   });
 
+  it("treats a reset without a scope as lane-local and requires its source lane", () => {
+    const rt = createRuntime();
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-keep";
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" });
+
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.activeThreadId.value).toBe("thread-keep");
+    expect(rt.messages.value).toHaveLength(1);
+  });
+
   it("clears stale local continuity when a sibling chat lane explicitly resets the shared session", () => {
     const rt = createRuntime();
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
@@ -1109,6 +1122,28 @@ describe("ws workspace project sync", () => {
     expect(threadReset).not.toHaveBeenCalled();
     expect(rt.messages.value.map((item) => item.content)).toContain("earlier request");
     expect(rt.threadWarning.value).toContain("下一轮将注入聊天历史");
+  });
+
+  it("routes session_fallback to laneStatus without duplicating into threadWarning", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "session_fallback",
+      message: "原生会话已不存在，已改用新会话继续（not found）。",
+    });
+
+    expect(rt.laneStatus.value).toEqual({
+      kind: "info",
+      message: "原生会话已不存在，已改用新会话继续（not found）。",
+    });
+    expect(rt.threadWarning.value).toBeNull();
   });
 
   it("renders a plan WS broadcast as a plan chat item with checklist", () => {

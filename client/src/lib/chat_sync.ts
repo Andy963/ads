@@ -215,11 +215,11 @@ export function mergeHistoryFromServer(
 export function getSemanticCardRank(item: ChatItem): number {
   if (item.role === "user") return 0;
   if (item.kind === "plan") return 1;
-  if (isLiveMessageId(item.id)) return 1.5;
-  if (item.kind === "execute") return 2;
-  if (item.kind === "patch") return 3;
-  if (item.role === "assistant") return 4;
-  return 5;
+  if (item.kind === "thought" || isLiveMessageId(item.id)) return 2;
+  if (item.kind === "execute") return 3;
+  if (item.kind === "patch") return 4;
+  if (item.role === "assistant") return 5;
+  return 6;
 }
 
 export function normalizeTurnSemanticOrder(messages: ChatItem[]): ChatItem[] {

@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { mapThreadEventToAgentEvent } from "../../server/codex/events.js";
+import {
+  formatStepTraceLine,
+  hasSubstantiveStepTrace,
+  mapThreadEventToAgentEvent,
+} from "../../server/codex/events.js";
 
 describe("mapThreadEventToAgentEvent", () => {
   it("maps turn.started to analysis phase", () => {
@@ -10,6 +14,33 @@ describe("mapThreadEventToAgentEvent", () => {
     assert(mapped);
     assert.equal(mapped.phase, "analysis");
     assert.equal(mapped.title, "开始处理请求");
+  });
+
+  it("does not format generic reasoning lifecycle events as step traces", () => {
+    assert.equal(
+      formatStepTraceLine({
+        phase: "analysis",
+        title: "Reasoning",
+        timestamp: 0,
+        raw: { type: "item.completed", item: { type: "reasoning" } } as any,
+      }),
+      null,
+    );
+    assert.equal(
+      formatStepTraceLine({
+        phase: "analysis",
+        title: "开始处理请求",
+        timestamp: 0,
+        raw: { type: "turn.started" } as any,
+      }),
+      null,
+    );
+  });
+
+  it("recognizes only non-analysis stages as persistable trace content", () => {
+    assert.equal(hasSubstantiveStepTrace("[analysis] reasoning\n"), false);
+    assert.equal(hasSubstantiveStepTrace("[analysis] reasoning[tool] Running tool\n"), true);
+    assert.equal(hasSubstantiveStepTrace("[context] Loading context\n"), true);
   });
 
   it("maps command execution events to command phase", () => {

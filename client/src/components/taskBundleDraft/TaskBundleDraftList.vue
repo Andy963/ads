@@ -11,6 +11,14 @@ function specRefOf(draft: TaskBundleDraft): string {
   return String(draft.bundle?.specRef ?? "").trim();
 }
 
+function hasAnyRef(draft: TaskBundleDraft): boolean {
+  return Boolean(issueRefOf(draft) || specRefOf(draft));
+}
+
+function refSummaryOf(draft: TaskBundleDraft): string {
+  return [issueRefOf(draft), specRefOf(draft)].filter(Boolean).join(" ↔ ");
+}
+
 function workItemKeyOf(draft: TaskBundleDraft): string {
   const ref = issueRefOf(draft) || specRefOf(draft);
   return ref ? (ref.split("/").pop() ?? ref) : "";
@@ -84,7 +92,22 @@ const emit = defineEmits<{
             >
               📁 {{ workItemKeyOf(draft) }}
             </span>
-            <span v-else class="draftRowNoSpec" title="缺少成对的 issue/spec 目录引用">⚠️ issue/spec 不完整</span>
+            <span
+              v-else-if="hasAnyRef(draft)"
+              class="draftRowSpec"
+              :title="refSummaryOf(draft)"
+              data-testid="task-bundle-draft-row-ref"
+            >
+              🔗 {{ workItemKeyOf(draft) || "GitHub 引用" }}
+            </span>
+            <span
+              v-else
+              class="draftRowSpec"
+              title="此草稿不要求本地 issue/spec 目录引用"
+              data-testid="task-bundle-draft-row-prompt-only"
+            >
+              📝 自包含任务
+            </span>
             <span v-if="draft.degradeReason" class="draftRowDegraded" :title="draft.degradeReason">⚠️ 已降级</span>
           </div>
           <div class="draftRowRight">

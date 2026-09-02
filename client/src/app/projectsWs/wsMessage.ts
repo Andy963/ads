@@ -94,6 +94,9 @@ function contextModeNotice(contextMode: string): string {
 
 function replayedLaneStatus(kind: string, content: string): LaneStatus | null {
   if (kind === "error") {
+    if (content.includes("codex app-server closed unexpectedly")) {
+      return null;
+    }
     return { kind: "error", message: content };
   }
   if (kind !== "status") {
@@ -649,9 +652,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
   const handleSharedSessionReset = (payload: Record<string, unknown>): void => {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
-    const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "shared";
+    const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
     const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
-    if (resetScope === "lane" && sourceChatSessionId && sourceChatSessionId !== effectiveChatSessionId) {
+    if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {
       return;
     }
     const hasVisibleLocalContinuity =
@@ -909,7 +912,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const serverThreadId = contextMode === "fresh" ? "" : rawServerThreadId;
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       const hasStaleLocalContinuity = Boolean(prevThreadId) || rt.messages.value.length > 0;
-      const welcomeInFlight = inFlight === true;
       if (handshakeReset) {
         resetTurnPatchSummary();
         threadReset(rt, {
@@ -919,16 +921,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           clearBackendHistory: false,
           resetThreadId: true,
           source: "welcome_reset",
-        });
-      } else if (contextMode === "fresh" && hasStaleLocalContinuity && !welcomeInFlight && !bootstrapHistory) {
-        resetTurnPatchSummary();
-        threadReset(rt, {
-          notice: "后端已是全新上下文。为避免误导，旧的本地聊天历史已清空。",
-          warning: null,
-          keepLatestTurn: false,
-          clearBackendHistory: false,
-          resetThreadId: true,
-          source: "welcome_fresh_context",
         });
       } else if (contextMode === "history_injection" && hasStaleLocalContinuity) {
         rt.threadWarning.value = HISTORY_INJECTION_NOTICE;
@@ -1042,14 +1034,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "session_fallback") {
       // The provider lost the session mid-turn: this turn already ran without
-      // the old context, so say so instead of leaving the thread looking resumed.
+      // the old context, so say so in the composer status surface.
       const rec = msg as Record<string, unknown>;
       const message = String(rec.message ?? "").trim();
       rt.laneStatus.value = {
         kind: "info",
-        message: message || "原生会话已不存在，已改用新会话继续。",
+        message: message || "原生会话已不存在，已改用新会话继续；下一轮会带上最近聊天历史。",
       };
-      rt.threadWarning.value = "原生会话已不存在，本轮已改用新会话；下一轮会带上最近聊天历史。";
+      rt.threadWarning.value = null;
       return;
     }
 

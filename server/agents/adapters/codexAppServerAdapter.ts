@@ -10,7 +10,7 @@ import type { AgentEvent } from "../../codex/events.js";
 import { mapThreadEventToAgentEvent, parseReconnectingMessage } from "../../codex/events.js";
 import type { SandboxMode } from "../../telegram/config.js";
 import { createLogger } from "../../utils/logger.js";
-import { createAbortError } from "../../utils/abort.js";
+import { createAbortError, createSilentAbortError } from "../../utils/abort.js";
 import {
   CodexAppServerDaemonRegistry,
   getSharedDaemonRegistry,
@@ -36,6 +36,10 @@ import {
   readAutoCompactConfig,
   resolveAutoCompactThresholdPercent,
 } from "./autoCompactConfig.js";
+import {
+  createProviderSessionFallbackEvent,
+  isMissingProviderSessionError,
+} from "./missingProviderSession.js";
 
 const logger = createLogger("CodexAppServerAdapter");
 
@@ -249,6 +253,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly goalUpdateHandlers = new Set<(goal: ThreadGoal) => void>();
   private readonly goalClearedHandlers = new Set<() => void>();
+  private readonly loadedThreadsByClient = new WeakMap<CodexAppServerClient, Set<string>>();
   private goalSubscriptionsAttached = false;
   private goalSubscriptionCleanup: Array<() => void> = [];
 
@@ -532,9 +537,69 @@ export class CodexAppServerAdapter implements AgentAdapter {
         : this.spawnEnv,
     };
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+    const savedThreadId = this.threadId;
+    let missingThreadRecovered = false;
+
+    const recoverMissingThread = (error: unknown): boolean => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !savedThreadId ||
+        missingThreadRecovered ||
+        this.threadId !== savedThreadId ||
+        !isMissingProviderSessionError(message)
+      ) {
+        return false;
+      }
+
+      logger.warn(
+        `[CodexAppServerAdapter] Thread ${savedThreadId} is missing; auto-starting a new thread. cause=${message}`,
+      );
+      this.threadId = null;
+      this.latestContextUsage = null;
+      missingThreadRecovered = true;
+     this.emitEvent(
+       createProviderSessionFallbackEvent({
+         agentName: "Codex app-server",
+         previousSessionId: savedThreadId,
+         message,
+       }),
+     );
+     return true;
+   };
+
+    const resumeThread = async (id: string): Promise<string> => {
+      const resumeResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
+        "thread/resume",
+        this.buildThreadResumeParams(id),
+        { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
+      );
+      const resumedId =
+        typeof resumeResult?.thread?.id === "string" && resumeResult.thread.id.length > 0
+          ? resumeResult.thread.id
+          : id;
+      this.markThreadLoaded(client, resumedId);
+      this.threadId = resumedId;
+      return resumedId;
+    };
+
+    if (this.threadId && !this.isThreadLoaded(client, this.threadId)) {
+      try {
+        await resumeThread(this.threadId);
+      } catch (error) {
+        if (!recoverMissingThread(error)) {
+          throw error;
+        }
+      }
+    }
 
     if (this.threadId) {
-      await this.maybeCompactThread(client, this.threadId, options?.signal);
+      try {
+        await this.maybeCompactThread(client, this.threadId, options?.signal);
+      } catch (error) {
+        if (!recoverMissingThread(error)) {
+          throw error;
+        }
+      }
     }
 
     const state: TurnState = {
@@ -720,10 +785,18 @@ export class CodexAppServerAdapter implements AgentAdapter {
     );
 
     const closeUnsub = client.onClose((code) => {
-      const message = `codex app-server closed unexpectedly (exit=${code ?? "null"})`;
-      state.failed = true;
-      state.failureMessage = message;
-      turnFail(new Error(message));
+      if (client.isGracefullyClosed?.()) {
+        const message = "系统服务重启或主动关闭，执行已终止";
+        state.failed = true;
+        state.failureMessage = message;
+        turnFail(createSilentAbortError(message));
+      } else {
+        const message = `codex app-server closed unexpectedly (exit=${code ?? "null"})`;
+        state.failed = true;
+        state.failureMessage = message;
+        emit({ type: "turn.failed", error: { message } });
+        turnFail(new Error(message));
+      }
     });
     cleanupFns.push(closeUnsub);
 
@@ -753,31 +826,55 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }
     }
 
-    try {
-      let threadId = this.threadId;
-      if (!threadId) {
-        const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
-          "thread/start",
-          this.buildThreadStartParams(),
-          { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
-        );
-        const newId = startResult?.thread?.id;
-        if (typeof newId === "string" && newId.length > 0) {
-          threadId = newId;
-          this.threadId = newId;
-        } else if (state.threadIdFromStarted) {
-          threadId = state.threadIdFromStarted;
-          this.threadId = state.threadIdFromStarted;
-        } else {
-          throw new Error("codex app-server did not return a thread id");
-        }
-      }
+    const startThread = async (): Promise<string> => {
+      const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
+        "thread/start",
+        this.buildThreadStartParams(),
+        { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
+      );
+     const newId = startResult?.thread?.id;
+     if (typeof newId === "string" && newId.length > 0) {
+       this.threadId = newId;
+       this.markThreadLoaded(client, newId);
+       return newId;
+     }
+     if (state.threadIdFromStarted) {
+       this.threadId = state.threadIdFromStarted;
+       this.markThreadLoaded(client, state.threadIdFromStarted);
+       return state.threadIdFromStarted;
+     }
+     throw new Error("codex app-server did not return a thread id");
+    };
 
+    const startTurn = async (threadId: string): Promise<void> => {
       await client.request(
         "turn/start",
         this.buildTurnStartParams(threadId, userInput),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+    };
+
+    try {
+      let threadId = this.threadId;
+      if (!threadId) {
+        threadId = await startThread();
+      }
+
+      try {
+        await startTurn(threadId);
+      } catch (error) {
+        if (!recoverMissingThread(error)) {
+          throw error;
+        }
+
+        state.threadIdFromStarted = null;
+        state.turnId = null;
+        state.failed = false;
+        state.failureMessage = null;
+
+        threadId = await startThread();
+        await startTurn(threadId);
+      }
 
       await turnPromise;
 
@@ -1008,7 +1105,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
       );
       const firstError = await Promise.race([requestOutcome, completionOutcome]);
       if (firstError && !settled) {
-        requestStop(firstError);
+        if (isMissingProviderSessionError(firstError.message)) {
+          // A missing thread cannot have started a compaction turn, so it is
+          // safe to fail immediately and let sendOnce create a fresh thread.
+          finish(firstError);
+        } else {
+          requestStop(firstError);
+        }
       }
       await completion;
     } finally {
@@ -1033,10 +1136,41 @@ export class CodexAppServerAdapter implements AgentAdapter {
       params.sandbox = "read-only";
     } else if (this.sandboxMode === "danger-full-access") {
       params.sandbox = "danger-full-access";
+   } else {
+     params.sandbox = "workspace-write";
+   }
+   return params;
+ }
+
+  private buildThreadResumeParams(threadId: string): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      threadId,
+      persistExtendedHistory: false,
+    };
+    if (this.workingDirectory) params.cwd = this.workingDirectory;
+    if (this.model) params.model = this.model;
+    if (this.developerInstructions) params.developerInstructions = this.developerInstructions;
+    if (this.sandboxMode === "read-only") {
+      params.sandbox = "read-only";
+    } else if (this.sandboxMode === "danger-full-access") {
+      params.sandbox = "danger-full-access";
     } else {
       params.sandbox = "workspace-write";
     }
     return params;
+  }
+
+  private isThreadLoaded(client: CodexAppServerClient, threadId: string): boolean {
+    return this.loadedThreadsByClient.get(client)?.has(threadId) ?? false;
+  }
+
+  private markThreadLoaded(client: CodexAppServerClient, threadId: string): void {
+    let set = this.loadedThreadsByClient.get(client);
+    if (!set) {
+      set = new Set();
+      this.loadedThreadsByClient.set(client, set);
+    }
+    set.add(threadId);
   }
 
   private buildTurnStartParams(threadId: string, input: UserInputPart[]): Record<string, unknown> {

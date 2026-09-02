@@ -81,7 +81,7 @@ export function useMainChatComposer(params: {
   isBusy: () => boolean;
   isInputLocked?: () => boolean;
   getApiToken: () => string;
-  onSend: (content: string) => void;
+  onSend: (content: string) => boolean | void;
   onAddImages: (images: IncomingImage[]) => void;
 }) {
   const input = computed({
@@ -329,12 +329,17 @@ export function useMainChatComposer(params: {
   };
 
   const send = (): void => {
-    if (params.isInputLocked?.()) return;
     if (recording.value || transcribing.value) return;
     const text = input.value.trim();
     if (!text && params.pendingImages.length === 0) return;
-    params.onSend(text);
-    input.value = "";
+    try {
+      const accepted = params.onSend(text);
+      if (accepted !== false) {
+        input.value = "";
+      }
+    } catch {
+      // Keep the draft when dispatch fails so the user can retry it.
+    }
   };
 
   const onInputKeydown = (ev: KeyboardEvent): void => {

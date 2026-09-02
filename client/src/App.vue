@@ -139,6 +139,7 @@ const {
   goalPause,
   goalResume,
   goalClear,
+  reviewTaskAction,
 } = createAppController();
 
 const modelManagerOpen = ref(false);
@@ -215,7 +216,6 @@ const {
   resumableSessionsNextCursor,
   resumeThreadBlocked,
   activeLaneBusy,
-  activeLaneThreadWarning,
   activeLaneHasResume,
   activeLaneNewSessionBlocked,
   handleLaneNewSession,
@@ -507,6 +507,15 @@ async function saveTask(payload: { id: string; updates: Record<string, unknown> 
 
 async function saveTaskAndRun(payload: { id: string; updates: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
   return await updateQueuedTaskAndRun(payload.id, payload.updates);
+}
+
+function onReviewAction(payload: {
+  taskId: string;
+  action: "force_approve" | "edit_rework" | "skip_review" | "abort";
+  feedback?: string;
+  reason?: string;
+}): void {
+  void reviewTaskAction({ ...payload, projectId: activeProjectId.value });
 }
 
 function openModelManager(): void {
@@ -839,6 +848,7 @@ const plannerConnectionStatus = computed(() => {
                   @goal-pause="(id) => goalPause(id)"
                   @goal-resume="(id) => goalResume(id)"
                   @goal-clear="(id) => goalClear(id)"
+                  @review-action="onReviewAction"
                 />
               </div>
             </div>
@@ -892,9 +902,6 @@ const plannerConnectionStatus = computed(() => {
           >
             {{ tab.label }}
           </button>
-          <span v-if="activeWorkspaceTab !== 'tasks' && activeLaneThreadWarning" class="laneTabWarning" data-testid="lane-thread-warning">
-            {{ activeLaneThreadWarning }}
-          </span>
           <span v-if="!isMobile" class="laneTabSpacer" />
           <button
             v-if="!isMobile && activeLaneHasResume"
@@ -1058,6 +1065,7 @@ const plannerConnectionStatus = computed(() => {
                 @goal-pause="(id) => goalPause(id)"
                 @goal-resume="(id) => goalResume(id)"
                 @goal-clear="(id) => goalClear(id)"
+                @review-action="onReviewAction"
               />
             </div>
           </section>

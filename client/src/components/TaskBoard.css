@@ -20,6 +20,48 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex-wrap: wrap;
+}
+
+.reviewSettings {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #475569;
+  font-size: 11px;
+}
+
+.reviewSettingsLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.reviewSettings select,
+.reviewSettings input {
+  min-height: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 7px;
+  padding: 2px 5px;
+  color: #334155;
+  background: #fff;
+  font: inherit;
+}
+
+.reviewSettings input {
+  width: 44px;
+}
+
+.reviewSettingsError {
+  color: #b91c1c;
+  font-weight: 800;
+}
+
+.reviewSettingsLoading {
+  color: #64748b;
+  font-size: 11px;
 }
 
 .headerRight {
@@ -313,6 +355,55 @@
   font-weight: 800;
   line-height: 1.1;
 }
+
+.reviewBadge,
+.reviewModelBadge,
+.reviewRoundBadge,
+.reviewPrLink {
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reviewBadge[data-review-status="approved"] { background: #bbf7d0; color: #166534; }
+.reviewBadge[data-review-status="rejected"],
+.reviewBadge[data-review-status="error"] { background: #fecaca; color: #991b1b; }
+.reviewBadge[data-review-status="needs_human_intervention"] { background: #fed7aa; color: #9a3412; }
+.reviewBadge[data-review-status="in_review"] { background: #bfdbfe; color: #1d4ed8; }
+.reviewBadge[data-review-status="pending_review"] { background: #e0e7ff; color: #4338ca; }
+.reviewBadge[data-review-status="skipped"] { background: #e2e8f0; color: #475569; }
+.reviewModelBadge { background: rgba(255, 255, 255, 0.45); }
+.reviewRoundBadge { background: rgba(15, 23, 42, 0.08); }
+.reviewPrLink { color: inherit; text-decoration: underline; background: rgba(255, 255, 255, 0.4); }
+
+.reviewCardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 10px 7px;
+}
+
+.reviewActionButton {
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(255, 255, 255, 0.45);
+  color: inherit;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.reviewActionButton:hover { background: rgba(255, 255, 255, 0.75); }
+.reviewActionButton.danger { color: #991b1b; }
 
 .taskCategoryBadge {
   color: #475569;

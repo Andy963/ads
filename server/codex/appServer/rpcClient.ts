@@ -74,10 +74,12 @@ export class CodexAppServerRpcError extends Error {
 
 export class CodexAppServerRpcClosedError extends Error {
   readonly exitCode: number | null;
-  constructor(exitCode: number | null, message?: string) {
+  readonly graceful: boolean;
+  constructor(exitCode: number | null, message?: string, graceful = false) {
     super(message ?? `codex app-server closed (exit=${exitCode ?? "null"})`);
-    this.name = "CodexAppServerRpcClosedError";
+    this.name = graceful ? "SilentAbortError" : "CodexAppServerRpcClosedError";
     this.exitCode = exitCode;
+    this.graceful = graceful;
   }
 }
 
@@ -114,6 +116,7 @@ export class CodexAppServerClient {
   private stdoutBuffer = "";
   private closed = false;
   private closeReported = false;
+  private gracefulCloseRequested = false;
   private readonly defaultTimeoutMs: number;
   private readonly spawnOptions: CodexAppServerSpawnOptions;
   private startPromise: Promise<void> | null = null;
@@ -428,6 +431,7 @@ export class CodexAppServerClient {
     if (this.closed) {
       return;
     }
+    this.gracefulCloseRequested = true;
     this.closed = true;
     if (!this.handle) {
       return;
@@ -470,7 +474,7 @@ export class CodexAppServerClient {
     }
     this.closeReported = true;
     this.closed = true;
-    const closeError = new CodexAppServerRpcClosedError(code);
+    const closeError = new CodexAppServerRpcClosedError(code, undefined, this.gracefulCloseRequested);
     for (const [id, pending] of this.pending.entries()) {
       if (pending.timer) clearTimeout(pending.timer);
       pending.reject(closeError);
@@ -488,5 +492,9 @@ export class CodexAppServerClient {
   /** Internal: exposed for adapter use. Indicates whether the client is alive. */
   isClosed(): boolean {
     return this.closed;
+  }
+
+  isGracefullyClosed(): boolean {
+    return this.gracefulCloseRequested;
   }
 }

@@ -20,6 +20,17 @@ export type TaskRole = "system" | "user" | "assistant" | "tool";
 
 export type TaskExecutionIsolation = "default" | "required";
 export type TaskCategory = "development" | "review" | "rework";
+export type TaskReviewStatus =
+  | "none"
+  | "pending_review"
+  | "in_review"
+  | "approved"
+  | "rejected"
+  | "skipped"
+  | "needs_human_intervention"
+  | "error";
+export type ReviewAutomationMode = "auto_with_fuse" | "human_gated";
+export type ReviewControlState = "automatic" | "human_gated" | "needs_intervention";
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
 export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | "skipped";
@@ -58,6 +69,49 @@ export interface ConversationMessage {
   createdAt: number;
 }
 
+export interface TaskReviewSummary {
+  required: boolean;
+  status: TaskReviewStatus;
+  rootTaskId: string | null;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  reviewTaskId: string | null;
+  reviewerModelConfigId: string | null;
+  reviewerModelId: string | null;
+  reviewerModelDisplayName: string | null;
+  reviewerAgentId: string | null;
+  reviewStartedAt: number | null;
+  reviewedAt: number | null;
+  conclusion: string | null;
+  feedback: string | null;
+  output: string | null;
+  artifactId: string | null;
+  reworkRound: number;
+  maxReworkRounds: number;
+  automationMode: ReviewAutomationMode;
+  stateReason: string | null;
+  reworkTaskIds: string[];
+  controlState: ReviewControlState;
+}
+
+export interface ReviewSettings {
+  automationMode: ReviewAutomationMode;
+  maxReworkRounds: number;
+  updatedAt: number | null;
+}
+
+export type ReviewAction = "force_approve" | "edit_rework" | "skip_review" | "abort";
+
+export interface ReviewActionAudit {
+  id: string;
+  taskId: string;
+  rootTaskId: string;
+  action: ReviewAction;
+  reason: string | null;
+  actorId: string;
+  createdAt: number;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -91,6 +145,7 @@ export interface Task {
   goalStatus?: TaskGoalStatus | null;
   goalTokensUsed?: number | null;
   goalTimeUsedSeconds?: number | null;
+  review?: TaskReviewSummary;
   latestRun?: TaskRun | null;
 }
 
@@ -112,6 +167,7 @@ export interface CreateTaskInput {
   goalMode?: boolean;
   goalObjective?: string | null;
   goalTokenBudget?: number | null;
+  review?: Partial<TaskReviewSummary>;
 }
 
 export interface TaskRun {
@@ -179,4 +235,6 @@ export type ReviewerModelSelection = {
   model: string;
   agentId: string;
   modelConfigId?: string;
+  modelId?: string;
+  displayName?: string;
 };

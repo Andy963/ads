@@ -30,6 +30,7 @@ const TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES = new Set([
   "agent",
   "task:event",
 ]);
+const BOOTSTRAP_HISTORY_WATCHDOG_MS = 5000;
 
 export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDeps) {
   const {
@@ -404,6 +405,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let bootstrapHistoryExpected = false;
     let bootstrapHistoryWait: Promise<void> | null = null;
     let resolveBootstrapHistoryWait: (() => void) | null = null;
+    let bootstrapHistoryWatchdogTimer: number | null = null;
     let syncRetryTimer: number | null = null;
     let syncRetryAttempts = 0;
     const sequencer = createSyncEventSequencer({
@@ -435,6 +437,39 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const finishBootstrapHistoryWait = (): void => {
       resolveBootstrapHistoryWait?.();
       resolveBootstrapHistoryWait = null;
+    };
+
+    const clearBootstrapHistoryWatchdog = (): void => {
+      if (bootstrapHistoryWatchdogTimer === null) return;
+      try {
+        clearTimeout(bootstrapHistoryWatchdogTimer);
+      } catch {
+        // ignore
+      }
+      bootstrapHistoryWatchdogTimer = null;
+    };
+
+    const armBootstrapHistoryWatchdog = (): void => {
+      clearBootstrapHistoryWatchdog();
+      bootstrapHistoryWatchdogTimer = window.setTimeout(() => {
+        bootstrapHistoryWatchdogTimer = null;
+        if (!isCurrentSync()) return;
+
+        if (bootstrapHistoryExpected) {
+          bootstrapHistoryExpected = false;
+          finishBootstrapHistoryWait();
+        }
+
+        if (!rt.awaitingBootstrapHistory && !rt.inputLocked.value) return;
+        if (rt.busy.value || rt.turnInFlight || rt.resumeReplacePending) return;
+
+        rt.awaitingBootstrapHistory = false;
+        rt.inputLocked.value = false;
+        if (rt.laneStatus.value?.kind === "progress") {
+          rt.laneStatus.value = null;
+        }
+        void flushQueuedPrompts(rt);
+      }, BOOTSTRAP_HISTORY_WATCHDOG_MS);
     };
 
     const waitForBootstrapHistory = async (): Promise<void> => {
@@ -574,6 +609,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         deferredBootstrapHistory = null;
         bootstrapHistoryExpected = false;
         bootstrapHistoryWait = null;
+        clearBootstrapHistoryWatchdog();
         const bootstrapHasTerminalAssistant = Boolean(
           bootstrapHistory && hasTerminalAssistantHistory(bootstrapHistory),
         );
@@ -689,6 +725,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     const cleanupTerminalCloseState = () => {
       clearReconnectTimer(rt);
+      clearBootstrapHistoryWatchdog();
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
@@ -707,6 +744,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.needsChatSync = true;
       rt.connected.value = false;
       clearSyncRetryTimer();
+      clearBootstrapHistoryWatchdog();
       finishBootstrapHistoryWait();
       clearStepLive(rt);
       applyStreamingDisconnectCleanup(rt);
@@ -722,6 +760,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     wsInstance.onOpen = () => {
       if (rt.ws !== wsInstance) return;
+      clearBootstrapHistoryWatchdog();
       rt.connected.value = true;
       rt.wsError.value = null;
       rt.reconnectAttempts = 0;
@@ -833,6 +872,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           } else {
             rt.needsChatSync = false;
           }
+          if (rec.bootstrapHistory === true || rt.awaitingBootstrapHistory || rt.inputLocked.value) {
+            armBootstrapHistoryWatchdog();
+          }
+        } else if (rec.type === "history" && !rt.awaitingBootstrapHistory && !bootstrapHistoryExpected) {
+          clearBootstrapHistoryWatchdog();
         }
       }
     };

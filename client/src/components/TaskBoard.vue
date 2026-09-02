@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { Delete, Edit, Plus } from "@element-plus/icons-vue";
-import type { Task, TaskQueueStatus } from "../api/types";
+import type { ReviewAutomationMode, ReviewSettings, Task, TaskDetail, TaskQueueStatus } from "../api/types";
 import type { ApiClient } from "../api/client";
 import TaskBoardDetailModal from "./TaskBoardDetailModal.vue";
 import TaskBoardEditModal from "./TaskBoardEditModal.vue";
@@ -54,6 +54,8 @@ const emit = defineEmits<{
   (e: "goal-pause", id: string): void;
   (e: "goal-resume", id: string): void;
   (e: "goal-clear", id: string): void;
+  (e: "review-action", payload: { taskId: string; action: "force_approve" | "edit_rework" | "skip_review" | "abort"; feedback?: string; reason?: string }): void;
+  (e: "review-navigate", taskId: string): void;
 }>();
 
 const agentOptions = computed(() => {
@@ -118,14 +120,36 @@ const {
 });
 
 const detailId = ref<string | null>(null);
-const detailTask = computed(() => {
+const detailData = ref<TaskDetail | null>(null);
+const detailLoading = ref(false);
+const detailTask = computed<Task | null>(() => {
   const id = String(detailId.value ?? "").trim();
   if (!id) return null;
-  return props.tasks.find((task) => task.id === id) ?? null;
+  const compact = props.tasks.find((task) => task.id === id) ?? null;
+  if (!compact) return null;
+  if (detailData.value?.id !== id) return compact;
+  return { ...compact, ...detailData.value };
 });
 
 function closeDetail(): void {
   detailId.value = null;
+  detailData.value = null;
+}
+
+async function loadTaskDetail(taskId: string): Promise<void> {
+  if (!props.api || !String(props.workspaceRoot ?? "").trim()) return;
+  const id = String(taskId ?? "").trim();
+  if (!id) return;
+  detailLoading.value = true;
+  try {
+    const workspace = encodeURIComponent(String(props.workspaceRoot).trim());
+    const detail = await props.api.get<TaskDetail>(`/api/tasks/${encodeURIComponent(id)}?workspace=${workspace}`);
+    if (detailId.value === id) detailData.value = detail;
+  } catch {
+    // The compact task remains usable when the detail request fails.
+  } finally {
+    if (detailId.value === id) detailLoading.value = false;
+  }
 }
 
 const {
@@ -196,12 +220,91 @@ function onTaskRowClick(taskId: string): void {
   emit("select", taskId);
   if (editingId.value) return;
   detailId.value = taskId;
+  detailData.value = null;
+  void loadTaskDetail(taskId);
 }
+
+function onReviewNavigate(taskId: string): void {
+  onTaskRowClick(taskId);
+}
+
+const reviewSettings = ref<ReviewSettings | null>(null);
+const reviewSettingsBusy = ref(false);
+const reviewSettingsError = ref<string | null>(null);
+
+async function loadReviewSettings(): Promise<void> {
+  if (!props.api || !String(props.workspaceRoot ?? "").trim()) {
+    reviewSettings.value = null;
+    return;
+  }
+  try {
+    const workspace = encodeURIComponent(String(props.workspaceRoot).trim());
+    reviewSettings.value = await props.api.get<ReviewSettings>(`/api/review-settings?workspace=${workspace}`);
+    reviewSettingsError.value = null;
+  } catch (error) {
+    reviewSettingsError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function saveReviewSettings(patch: Partial<ReviewSettings>): Promise<void> {
+  if (!props.api || !String(props.workspaceRoot ?? "").trim() || reviewSettingsBusy.value) return;
+  reviewSettingsBusy.value = true;
+  reviewSettingsError.value = null;
+  try {
+    const workspace = encodeURIComponent(String(props.workspaceRoot).trim());
+    reviewSettings.value = await props.api.patch<ReviewSettings>(`/api/review-settings?workspace=${workspace}`, patch);
+  } catch (error) {
+    reviewSettingsError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    reviewSettingsBusy.value = false;
+  }
+}
+
+function onReviewModeChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement | null)?.value;
+  if (value === "auto_with_fuse" || value === "human_gated") {
+    void saveReviewSettings({ automationMode: value as ReviewAutomationMode });
+  }
+}
+
+function onReviewRoundsChange(event: Event): void {
+  const value = Number((event.target as HTMLInputElement | null)?.value);
+  if (Number.isInteger(value) && value >= 0) void saveReviewSettings({ maxReworkRounds: value });
+}
+
+watch(workspaceRoot, () => {
+  void loadReviewSettings();
+}, { immediate: true });
 
 function toggleQueue(): void {
   if (!queueStatus.value) return;
   if (!queueCanRunAll.value) return;
   emit(queueIsRunning.value ? "queuePause" : "queueRun");
+}
+
+function reviewStatusLabel(task: Task): string {
+  switch (task.review?.status) {
+    case "pending_review": return "待审核";
+    case "in_review": return "审核中";
+    case "approved": return "已通过";
+    case "rejected": return "已拒绝";
+    case "needs_human_intervention": return "需人工处理";
+    case "skipped": return "已跳过";
+    case "error": return "审核错误";
+    default: return "";
+  }
+}
+
+function canUseReviewControls(task: Task): boolean {
+  return Boolean(task.review?.required)
+    && ["rejected", "needs_human_intervention", "error", "pending_review", "in_review"].includes(task.review?.status ?? "");
+}
+
+function emitReviewAction(task: Task, action: "force_approve" | "edit_rework" | "skip_review" | "abort"): void {
+  if (!canUseReviewControls(task)) return;
+  const destructive = action === "abort" || action === "skip_review";
+  if (destructive && !window.confirm(action === "abort" ? "Abort this review chain?" : "Skip this review?")) return;
+  emit("review-action", { taskId: task.id, action, feedback: task.review?.feedback ?? undefined });
 }
 </script>
 
@@ -210,6 +313,28 @@ function toggleQueue(): void {
     <div class="header">
       <div class="headerLeft">
         <h3 class="title">任务列表</h3>
+        <span v-if="detailLoading" class="reviewSettingsLoading">加载详情…</span>
+        <div v-if="reviewSettings" class="reviewSettings" data-testid="review-settings">
+          <label class="reviewSettingsLabel">
+            审核模式
+            <select :value="reviewSettings.automationMode" :disabled="reviewSettingsBusy" @change="onReviewModeChange">
+              <option value="auto_with_fuse">Auto with Fuse</option>
+              <option value="human_gated">Human-Gated</option>
+            </select>
+          </label>
+          <label class="reviewSettingsLabel">
+            自动返工上限
+            <input
+              type="number"
+              min="0"
+              step="1"
+              :value="reviewSettings.maxReworkRounds"
+              :disabled="reviewSettingsBusy"
+              @change="onReviewRoundsChange"
+            />
+          </label>
+          <span v-if="reviewSettingsError" class="reviewSettingsError" :title="reviewSettingsError">设置失败</span>
+        </div>
       </div>
       <div class="headerRight">
         <div v-if="queueStatus" class="queueControls">
@@ -278,6 +403,26 @@ function toggleQueue(): void {
                         {{ taskCategoryLabel(t.category) }}
                       </span>
                       <span class="taskPriorityBadge" :data-priority="t.priority">P{{ t.priority }}</span>
+                      <span
+                        v-if="t.review?.required && reviewStatusLabel(t)"
+                        class="reviewBadge"
+                        :data-review-status="t.review.status"
+                        :title="t.review.stateReason ?? reviewStatusLabel(t)"
+                      >{{ reviewStatusLabel(t) }}</span>
+                      <a
+                        v-if="t.review?.pullRequestNumber"
+                        class="reviewPrLink"
+                        :href="t.review.pullRequestUrl ?? undefined"
+                        target="_blank"
+                        rel="noreferrer"
+                        @click.stop
+                      >PR #{{ t.review.pullRequestNumber }}</a>
+                      <span v-if="t.review?.required && t.review.reviewerModelDisplayName" class="reviewModelBadge">
+                        {{ t.review.reviewerModelDisplayName }}
+                      </span>
+                      <span v-if="t.review?.required && t.review.maxReworkRounds > 0" class="reviewRoundBadge">
+                        Rework {{ t.review.reworkRound }}/{{ t.review.maxReworkRounds }}
+                      </span>
                       <span
                         v-if="t.goalMode"
                         class="goalBadge"
@@ -349,6 +494,12 @@ function toggleQueue(): void {
                     </el-icon>
                   </button>
                 </div>
+                <div v-if="canUseReviewControls(t)" class="reviewCardActions" @click.stop>
+                  <button type="button" class="reviewActionButton" data-testid="review-force-approve" @click="emitReviewAction(t, 'force_approve')">Force Approve</button>
+                  <button type="button" class="reviewActionButton" data-testid="review-edit-rework" @click="onTaskRowClick(t.id)">Edit &amp; Rework</button>
+                  <button type="button" class="reviewActionButton" data-testid="review-skip" @click="emitReviewAction(t, 'skip_review')">Skip Review</button>
+                  <button type="button" class="reviewActionButton danger" data-testid="review-abort" @click="emitReviewAction(t, 'abort')">Abort</button>
+                </div>
               </div>
             </div>
           </TransitionGroup>
@@ -365,6 +516,8 @@ function toggleQueue(): void {
       @goal-pause="(id) => emit('goal-pause', id)"
       @goal-resume="(id) => emit('goal-resume', id)"
       @goal-clear="(id) => emit('goal-clear', id)"
+      @review-action="(payload) => emit('review-action', payload)"
+      @review-navigate="onReviewNavigate"
     />
 
     <TaskBoardEditModal

@@ -1,4 +1,4 @@
-import { createAbortError, isAbortError } from "../../../utils/abort.js";
+import { createAbortError, isAbortError, isSilentAbortError } from "../../../utils/abort.js";
 
 export function beginWsPromptRun(args: {
   historyKey: string;
@@ -75,4 +75,8 @@ function bumpPromptRunEpoch(promptRunEpochs: Map<string, number> | undefined, hi
   const nextEpoch = (promptRunEpochs.get(historyKey) ?? 0) + 1;
   promptRunEpochs.set(historyKey, nextEpoch);
   return nextEpoch;
+}
+
+export function isWsPromptSilentAbort(error: unknown): boolean {
+  return isSilentAbortError(error);
 }
