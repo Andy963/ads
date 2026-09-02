@@ -155,6 +155,10 @@ function confirmClear(): void {
           <span class="detailMetaValue detailMono">{{ props.task.model }}</span>
         </div>
         <div class="detailMetaRow">
+          <span class="detailMetaKey">执行隔离</span>
+          <span class="detailMetaValue detailMono">{{ props.task.executionIsolation === "required" ? "独立 worktree" : "共享 workspace" }}</span>
+        </div>
+        <div class="detailMetaRow">
           <span class="detailMetaKey">ID</span>
           <span class="detailMetaValue detailMono">{{ props.task.id }}</span>
         </div>
@@ -162,6 +166,20 @@ function confirmClear(): void {
           <span class="detailMetaKey">最近 Run</span>
           <span class="detailMetaValue detailMono">{{ props.task.latestRun.id }}</span>
         </div>
+        <template v-if="props.task.latestRun">
+          <div class="detailMetaRow">
+            <span class="detailMetaKey">隔离状态</span>
+            <span class="detailMetaValue detailMono">{{ props.task.latestRun.status }} · {{ props.task.latestRun.cleanupStatus }}</span>
+          </div>
+          <div v-if="props.task.latestRun.branchName" class="detailMetaRow">
+            <span class="detailMetaKey">任务分支</span>
+            <span class="detailMetaValue detailMono">{{ props.task.latestRun.branchName }}</span>
+          </div>
+          <div v-if="props.task.latestRun.worktreeDir" class="detailMetaRow">
+            <span class="detailMetaKey">Worktree</span>
+            <span class="detailMetaValue detailMono">{{ props.task.latestRun.worktreeDir }}</span>
+          </div>
+        </template>
       </div>
 
       <div v-if="goalEnabled" class="goalPanel" data-testid="task-detail-goal-panel">

@@ -138,7 +138,7 @@ export function normalizeCreateTaskInput(
     inheritContext,
     maxRetries,
     modelParams: workItemPin ? { specPin: toWorkItemPinMetadata(workItemPin) } : undefined,
-    executionIsolation: "default",
+    executionIsolation: task.executionIsolation === "default" ? "default" : "required",
     createdBy: createdBy ?? "planner_draft",
     attachments: attachments.length ? attachments : undefined,
   };

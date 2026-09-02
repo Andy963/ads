@@ -7,7 +7,7 @@ import { isAbortError } from "../utils/abort.js";
 import { mergeStreamingText } from "../utils/streamingText.js";
 
 import type { TaskStore } from "./store.js";
-import type { Task, TaskGoalStatus } from "./types.js";
+import type { Task, TaskExecutionIsolation, TaskGoalStatus, TaskRun } from "./types.js";
 import { selectAgentForTask } from "./agentSelection.js";
 import {
   truncate,
@@ -16,6 +16,9 @@ import {
 } from "./executorHelpers.js";
 import { recordConversationMessage } from "../utils/conversationMessageRecorder.js";
 import { createMiddlewarePipeline, type MiddlewarePipeline } from "../middleware/index.js";
+import { buildWorkspacePatch } from "../web/gitPatch.js";
+import { extractPullRequestReference } from "./reviewWorkflow.js";
+import { TaskWorktreeManager, type TaskWorktree } from "./worktreeManager.js";
 
 export interface TaskExecutorHooks {
   onMessage?: (message: { role: string; content: string; modelUsed?: string | null }) => void;
@@ -49,6 +52,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
   private readonly lock?: AsyncLock;
   private readonly getLock?: () => AsyncLock;
   private readonly middleware?: MiddlewarePipeline;
+  private readonly worktreeManager: TaskWorktreeManager;
 
   constructor(options: {
     getOrchestrator: (task: Task) => HybridOrchestrator;
@@ -59,6 +63,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     lock?: AsyncLock;
     getLock?: () => AsyncLock;
     middleware?: MiddlewarePipeline;
+    worktreeManager?: TaskWorktreeManager;
   }) {
     this.getOrchestrator = options.getOrchestrator;
     this.getAgentEnv = options.getAgentEnv;
@@ -68,6 +73,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     this.lock = options.lock;
     this.getLock = options.getLock;
     this.middleware = options.middleware;
+    this.worktreeManager = options.worktreeManager ?? new TaskWorktreeManager({ workspaceRoot: this.workspaceRoot });
   }
 
   private resolveModelOverride(task: Task): { modelOverride?: string; modelForSelection: string; modelForStorage: string | null } {
@@ -81,48 +87,191 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
     };
   }
 
+  private persistTaskRunArtifacts(args: {
+    task: Task;
+    taskRun: TaskRun;
+    worktree: TaskWorktree | null;
+    changedPaths: Set<string>;
+    result: string;
+  }): TaskRun {
+    const { task, worktree, changedPaths } = args;
+    let taskRun = args.taskRun;
+    if (worktree) {
+      try {
+        for (const changedPath of this.worktreeManager.collectChangedPaths(worktree)) {
+          changedPaths.add(changedPath);
+        }
+      } catch {
+        // Best-effort collection; the run record still retains the worktree identity.
+      }
+      const endHead = this.worktreeManager.readHead(worktree);
+      try {
+        taskRun = this.store.updateTaskRun(
+          taskRun.id,
+          {
+            endHead,
+            captureStatus: endHead ? "ok" : "failed",
+          },
+          Date.now(),
+        );
+      } catch {
+        // The terminal task status remains authoritative when metadata persistence is unavailable.
+      }
+    }
+
+    const paths = Array.from(changedPaths.values());
+    const now = Date.now();
+    try {
+      this.store.saveContext(task.id, {
+        contextType: "artifact:changed_paths",
+        content: JSON.stringify({ paths }),
+        createdAt: now,
+      }, now);
+    } catch {
+      // ignore
+    }
+
+    if (worktree) {
+      let patch = null;
+      try {
+        patch = buildWorkspacePatch(worktree.worktreeDir, paths, {
+          baseRef: taskRun.baseHead ?? worktree.baseHead,
+        });
+      } catch {
+        patch = null;
+      }
+      try {
+        this.store.saveContext(task.id, {
+          contextType: "artifact:workspace_patch",
+          content: JSON.stringify({
+            paths,
+            patch,
+            reason: patch ? undefined : "patch_not_available",
+            createdAt: now,
+          }),
+          createdAt: now,
+        }, now);
+      } catch {
+        // ignore
+      }
+
+      const pullRequest = extractPullRequestReference(args.result);
+      try {
+        this.store.saveContext(task.id, {
+          contextType: "artifact:worker_handoff",
+          content: JSON.stringify({
+            taskRunId: taskRun.id,
+            executionIsolation: taskRun.executionIsolation,
+            workspaceRoot: taskRun.workspaceRoot,
+            worktreeDir: taskRun.worktreeDir,
+            branchName: taskRun.branchName,
+            baseHead: taskRun.baseHead,
+            endHead: taskRun.endHead,
+            pullRequest,
+            cleanupStatus: taskRun.cleanupStatus,
+            createdAt: now,
+          }),
+          createdAt: now,
+        }, now);
+      } catch {
+        // ignore
+      }
+    }
+    return taskRun;
+  }
+
+  private cleanupTaskWorktree(taskRun: TaskRun, worktree: TaskWorktree | null): TaskRun {
+    if (!worktree) {
+      try {
+        return this.store.updateTaskRun(taskRun.id, {
+          cleanupStatus: taskRun.executionIsolation === "required" ? "cleaned" : "not_required",
+          cleanupError: null,
+          cleanupAt: Date.now(),
+        }, Date.now());
+      } catch {
+        return taskRun;
+      }
+    }
+
+    const cleanup = this.worktreeManager.cleanup(worktree);
+    try {
+      return this.store.updateTaskRun(taskRun.id, {
+        cleanupStatus: cleanup.status,
+        cleanupError: cleanup.error,
+        cleanupAt: cleanup.cleanedAt,
+      }, cleanup.cleanedAt);
+    } catch {
+      return taskRun;
+    }
+  }
+
   async execute(
     task: Task,
     options?: { signal?: AbortSignal; hooks?: TaskExecutorHooks },
   ): Promise<{ resultSummary?: string }> {
     const run = async (): Promise<{ resultSummary?: string }> => {
       const startedAt = Date.now();
+      const executionIsolation: TaskExecutionIsolation = task.executionIsolation === "required" ? "required" : "default";
       let taskRun = this.store.createTaskRun(
         {
           taskId: task.id,
-          executionIsolation: "default",
+          executionIsolation,
           workspaceRoot: this.workspaceRoot,
-          status: "running",
-          captureStatus: "skipped",
+          status: "preparing",
+          captureStatus: executionIsolation === "required" ? "pending" : "skipped",
           applyStatus: "skipped",
+          cleanupStatus: executionIsolation === "required" ? "pending" : "not_required",
         },
         startedAt,
       );
-
-      const orchestrator = this.getOrchestrator(task);
-      const { modelOverride, modelForSelection, modelForStorage } = this.resolveModelOverride(task);
-      const agentId = selectAgentForTask({ agentId: task.agentId, modelToUse: modelForSelection });
-      orchestrator.setModel(modelOverride);
-
-      orchestrator.setWorkingDirectory(this.workspaceRoot);
-
-      const conversationId = String(task.threadId ?? "").trim() || `conv-${task.id}`;
-      this.store.upsertConversation({ id: conversationId, taskId: task.id, title: task.title, lastModel: modelForStorage }, Date.now());
-
-      let lastOutput = "";
+      let taskWorktree: TaskWorktree | null = null;
+      let executionWorkspaceRoot = this.workspaceRoot;
       const changedPaths = new Set<string>();
-      const contexts = (() => {
-        try {
-          return this.store.getContext(task.id);
-        } catch {
-          return [];
-        }
-      })();
-      const latestPatchContext =
-        getLatestContextOfType(contexts, "artifact:previous_workspace_patch") ?? getLatestContextOfType(contexts, "artifact:workspace_patch");
-      const patchHint = formatWorkspacePatchArtifactForPrompt(latestPatchContext);
+      let lastOutput = "";
 
       try {
+        if (executionIsolation === "required") {
+          taskWorktree = this.worktreeManager.prepare(task.id, taskRun.id);
+          executionWorkspaceRoot = taskWorktree.worktreeDir;
+          taskRun = this.store.updateTaskRun(
+            taskRun.id,
+            {
+              status: "running",
+              worktreeDir: taskWorktree.worktreeDir,
+              branchName: taskWorktree.branchName,
+              baseHead: taskWorktree.baseHead,
+              cleanupStatus: "pending",
+            },
+            Date.now(),
+          );
+        } else {
+          taskRun = this.store.updateTaskRun(
+            taskRun.id,
+            { status: "running", captureStatus: "skipped", cleanupStatus: "not_required" },
+            Date.now(),
+          );
+        }
+
+        const orchestrator = this.getOrchestrator(task);
+        const { modelOverride, modelForSelection, modelForStorage } = this.resolveModelOverride(task);
+        const agentId = selectAgentForTask({ agentId: task.agentId, modelToUse: modelForSelection });
+        orchestrator.setModel(modelOverride);
+        orchestrator.setWorkingDirectory(executionWorkspaceRoot);
+
+        const conversationId = String(task.threadId ?? "").trim() || `conv-${task.id}`;
+        this.store.upsertConversation({ id: conversationId, taskId: task.id, title: task.title, lastModel: modelForStorage }, Date.now());
+
+        const contexts = (() => {
+          try {
+            return this.store.getContext(task.id);
+          } catch {
+            return [];
+          }
+        })();
+        const latestPatchContext =
+          getLatestContextOfType(contexts, "artifact:previous_workspace_patch") ?? getLatestContextOfType(contexts, "artifact:workspace_patch");
+        const patchHint = formatWorkspacePatchArtifactForPrompt(latestPatchContext);
+
         const history = this.store
           .getConversationMessages(conversationId, { limit: 16 })
           .filter((msg) => msg.role === "user" || msg.role === "assistant");
@@ -317,7 +466,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           const middlewareContext = {
             turnId: `task:${task.id}`,
             sessionId: conversationId,
-            workspaceRoot: this.workspaceRoot,
+            workspaceRoot: executionWorkspaceRoot,
             channel: "task_queue" as const,
           };
           const effectivePrompt = await middleware.executeBeforeInput({ ...middlewareContext, prompt });
@@ -418,7 +567,7 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
           taskRun.id,
           {
             status: "completed",
-            captureStatus: "skipped",
+            captureStatus: executionIsolation === "required" ? "pending" : "skipped",
             applyStatus: "skipped",
             error: null,
           },
@@ -428,11 +577,11 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         const terminalStatus = isAbortError(error) ? "cancelled" : "failed";
         const message = isAbortError(error) ? "cancelled" : (error instanceof Error ? error.message : String(error));
         try {
-          this.store.updateTaskRun(
+          taskRun = this.store.updateTaskRun(
             taskRun.id,
             {
               status: terminalStatus,
-              captureStatus: "skipped",
+              captureStatus: executionIsolation === "required" ? "pending" : "skipped",
               applyStatus: "skipped",
               error: message,
             },
@@ -443,15 +592,28 @@ export class OrchestratorTaskExecutor implements TaskExecutor {
         }
         throw error;
       } finally {
-        try {
-          const payload = { paths: Array.from(changedPaths.values()) };
-          this.store.saveContext(task.id, { contextType: "artifact:changed_paths", content: JSON.stringify(payload) }, Date.now());
-        } catch {
-          // ignore
-        }
+        taskRun = this.persistTaskRunArtifacts({
+          task,
+          taskRun,
+          worktree: taskWorktree,
+          changedPaths,
+          result: lastOutput,
+        });
+        taskRun = this.cleanupTaskWorktree(taskRun, taskWorktree);
       }
 
-      return { resultSummary: truncate(lastOutput, 1600) };
+      const resultSummary = truncate(lastOutput, 1400);
+      if (taskRun.executionIsolation === "required" && taskRun.branchName) {
+        const pullRequest = extractPullRequestReference(lastOutput);
+        const handoff = [
+          "Worker handoff:",
+          `task run ${taskRun.id}`,
+          `branch ${taskRun.branchName}`,
+          pullRequest ? `PR #${pullRequest.number}${pullRequest.url ? ` (${pullRequest.url})` : ""}` : "PR reference unavailable",
+        ].join(" | ");
+        return { resultSummary: `${resultSummary}\n\n${handoff}`.trim() };
+      }
+      return { resultSummary };
     };
 
     const lock = this.lock ?? this.getLock?.();

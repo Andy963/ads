@@ -52,6 +52,7 @@ describe("tasks/reviewWorkflow", () => {
     assert.equal(review.model, "gpt-5.6-sol");
     assert.equal(review.agentId, "codex");
     assert.notEqual(review.model, source.model);
+    assert.equal(review.executionIsolation, "required");
     assert.match(review.prompt, /REVIEW_STATUS: approved/);
 
     const rework = buildReworkTaskInput({
@@ -62,6 +63,7 @@ describe("tasks/reviewWorkflow", () => {
     assert.equal(rework.category, "rework");
     assert.equal(rework.priority, 50);
     assert.equal(rework.parentTaskId, "review-1");
+    assert.equal(rework.executionIsolation, "required");
     assert.match(rework.prompt, /Fix the race/);
   });
 

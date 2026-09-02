@@ -20,6 +20,7 @@ Web Console 将对话与任务流组织为三大工作区：
   - 显式使用本地 `/draft` 快照时，仍可携带匹配的 `issueRef` / `specRef` 目录并在批准时固定内容；本地快照是兼容能力，不是 GitHub-native 流程的前置条件。
   - 支持输出 `ads-schedule` 定时指令或生成 Task Bundle 任务草稿。
   - 任务带有 `development`（开发）、`review`（审核）和 `rework`（返工）分类；待执行任务按 `priority` 降序、队列顺序升序领取。
+  - 仓库变更任务使用显式 `executionIsolation: "required"` 合约：Worker 在 ADS 管理的临时目录下创建唯一、干净的任务分支后执行，任务完成、失败或取消都会移除 checkout；分支引用保留用于 PR 交接，任务 Run 保留 worktree、分支、基线/终点提交和清理状态用于审计。`default` 仅适用于明确选择共享 workspace 的非仓库任务。
   - 开发或返工任务完成并在结果中报告 GitHub PR 后，队列会幂等创建 P10 审核任务。审核结果使用 `REVIEW_STATUS: approved|rejected` 标记；拒绝且包含反馈时自动创建 P50 返工任务。
   - 任务卡片和详情会显示持久化的审核状态、PR、Reviewer 模型、审核结论、返工轮次与关联任务链。审核拒绝在 `Auto with Fuse` 模式下最多自动返工两轮，之后进入需人工处理；`Human-Gated` 模式下拒绝不会自动返工。
   - 详情面板支持 Force Approve、Edit & Rework、Skip Review 和 Abort。人工操作通过 `POST /api/tasks/:id/review-actions` 写入带操作者、原因、时间和幂等键的审计记录；审核设置通过 `GET/PATCH /api/review-settings` 管理。

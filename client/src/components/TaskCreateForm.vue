@@ -217,6 +217,8 @@ function emitSubmit(event: "submit" | "submit-and-run"): void {
   emit(event, {
     title: titleTrimmed.length ? titleTrimmed : undefined,
     prompt: mergedPrompt,
+    category: "development",
+    executionIsolation: "required",
     ...(agentId.value ? { agentId: agentId.value } : {}),
     priority: Number.isFinite(priority.value) ? priority.value : 0,
     maxRetries: Number.isFinite(maxRetries.value) ? maxRetries.value : 3,

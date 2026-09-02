@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import childProcess from "node:child_process";
 
 import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { OrchestratorTaskExecutor } from "../../server/tasks/executor.js";
@@ -133,17 +134,21 @@ describe("tasks/executor artifacts", () => {
     assert.match(prompts[0] ?? "", new RegExp(tailMarker));
   });
 
-  it("runs legacy isolation and bootstrap tasks directly in the workspace", async () => {
+  it("runs required isolation in a clean worktree and persists cleanup metadata", async () => {
     const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "workspace-"));
+    childProcess.execFileSync("git", ["init", "-q", workspaceRoot]);
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "config", "user.email", "test@example.com"]);
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "config", "user.name", "ADS Test"]);
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "base\n", "utf8");
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "add", "README.md"]);
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "commit", "-qm", "base"]);
     const store = new TaskStore();
     const created = store.createTask({
       title: "legacy task",
       prompt: "update note",
       model: "auto",
       executionIsolation: "required",
-      modelParams: {
-        bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 },
-      },
+      modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project", maxIterations: 7 } },
     }) as Task;
     const task = {
       ...created,
@@ -175,14 +180,61 @@ describe("tasks/executor artifacts", () => {
 
     await executor.execute(task, {});
 
-    assert.equal(workingDirectory, workspaceRoot);
-    assert.equal(fs.readFileSync(path.join(workspaceRoot, "note.txt"), "utf8"), "changed\n");
+    assert.notEqual(workingDirectory, workspaceRoot);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, "note.txt")), false);
     const latestRun = store.getLatestTaskRun(task.id);
-    assert.equal(latestRun?.executionIsolation, "default");
-    assert.equal(latestRun?.worktreeDir, null);
+    assert.equal(latestRun?.executionIsolation, "required");
+    assert.ok(latestRun?.worktreeDir);
+    assert.equal(fs.existsSync(latestRun?.worktreeDir ?? ""), false);
+    assert.ok(latestRun?.branchName?.startsWith("ads/task/"));
+    assert.ok(latestRun?.baseHead);
+    assert.equal(latestRun?.endHead, latestRun?.baseHead);
     assert.equal(latestRun?.status, "completed");
-    assert.equal(typeof latestRun?.startedAt, "number");
-    assert.equal(latestRun?.captureStatus, "skipped");
+    assert.equal(latestRun?.captureStatus, "ok");
     assert.equal(latestRun?.applyStatus, "skipped");
+    assert.equal(latestRun?.cleanupStatus, "cleaned");
+    const patchContext = store.getContext(task.id).find((context) => context.contextType === "artifact:workspace_patch");
+    assert.ok(patchContext);
+    assert.match(patchContext?.content ?? "", /note\.txt/);
+  });
+
+  it("cleans the isolated worktree when the worker fails", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(tmpDir, "failed-workspace-"));
+    childProcess.execFileSync("git", ["init", "-q", workspaceRoot]);
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "config", "user.email", "test@example.com"]);
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "config", "user.name", "ADS Test"]);
+    fs.writeFileSync(path.join(workspaceRoot, "README.md"), "base\n", "utf8");
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "add", "README.md"]);
+    childProcess.execFileSync("git", ["-C", workspaceRoot, "commit", "-qm", "base"]);
+
+    const store = new TaskStore();
+    const task = store.createTask({ title: "failed", prompt: "fail", executionIsolation: "required" });
+    let worktreeDir = "";
+    const orchestrator = {
+      setModel() {},
+      setWorkingDirectory(dir?: string) {
+        worktreeDir = String(dir ?? "");
+      },
+      onEvent() {
+        return () => {};
+      },
+      async invokeAgent() {
+        fs.writeFileSync(path.join(worktreeDir, "failed.txt"), "failed\n", "utf8");
+        throw new Error("worker failed");
+      },
+    };
+    const executor = new OrchestratorTaskExecutor({
+      getOrchestrator: () => orchestrator as any,
+      store,
+      workspaceRoot,
+      autoModelOverride: "mock",
+    });
+
+    await assert.rejects(() => executor.execute(task, {}), /worker failed/);
+    const latestRun = store.getLatestTaskRun(task.id);
+    assert.equal(latestRun?.status, "failed");
+    assert.equal(latestRun?.cleanupStatus, "cleaned");
+    assert.equal(fs.existsSync(latestRun?.worktreeDir ?? ""), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, "failed.txt")), false);
   });
 });
