@@ -692,7 +692,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     });
   };
 
-  return (msg: unknown): void => {
+  const applyMessage = (msg: unknown): void => {
     if (!isRecord(msg)) return;
     const typeValue = msg.type;
     if (typeof typeValue !== "string") return;
@@ -1604,6 +1604,15 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         upsertLiveActivity(rt);
       }
       return;
+    }
+  };
+
+  return (msg: unknown): void => {
+    applyMessage(msg);
+    const current = Array.isArray(rt.messages.value) ? rt.messages.value : [];
+    const normalized = normalizeTurnSemanticOrder(current);
+    if (normalized.length !== current.length || normalized.some((item, index) => item !== current[index])) {
+      rt.messages.value = normalized;
     }
   };
 }

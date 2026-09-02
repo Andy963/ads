@@ -1,4 +1,5 @@
 import { clearLiveActivityWindow, renderLiveActivityMarkdown } from "../lib/live_activity";
+import { findAssistantInsertIndex, findProcessInsertIndex } from "../lib/chat_sync";
 
 import type { ChatItem, ProjectRuntime } from "./controller";
 
@@ -25,11 +26,12 @@ export function createStreamingActions(params: {
   runtimeOrActive: (rt?: ProjectRuntime) => ProjectRuntime;
   setMessages: (items: ChatItem[], rt?: ProjectRuntime) => void;
   dropEmptyAssistantPlaceholder: (rt?: ProjectRuntime) => void;
-  findLastLiveIndex: (items: ChatItem[]) => number;
+  /** Retained for compatibility with older callers; insertion uses shared anchors. */
+  findLastLiveIndex?: (items: ChatItem[]) => number;
   isLiveMessageId: (id: string) => boolean;
   randomId: (prefix: string) => string;
 }) {
-  const { liveStepId, liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, findLastLiveIndex, isLiveMessageId, randomId } =
+  const { liveStepId, liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, isLiveMessageId, randomId } =
     params;
 
   const findLastStreamingAssistantIndex = (items: ChatItem[]): number => {
@@ -40,11 +42,6 @@ export function createStreamingActions(params: {
       }
     }
     return -1;
-  };
-
-  const findInsertAtBeforeStreamingAssistant = (items: ChatItem[]): number => {
-    const index = findLastStreamingAssistantIndex(items);
-    return index >= 0 ? index : items.length;
   };
 
   const clearLiveActivityTimer = (state: ProjectRuntime): void => {
@@ -101,12 +98,7 @@ export function createStreamingActions(params: {
       streaming: true,
       ts: Date.now(),
     };
-    const lastLiveIndex = findLastLiveIndex(existing);
-    if (lastLiveIndex < 0) {
-      setMessages([...existing, nextItem], state);
-      return;
-    }
-    const insertAt = Math.min(existing.length, lastLiveIndex + 1);
+    const insertAt = findAssistantInsertIndex(existing);
     setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
   };
 
@@ -140,12 +132,7 @@ export function createStreamingActions(params: {
       streaming: true,
       ts: Date.now(),
     };
-    const lastLiveIndex = findLastLiveIndex(existing);
-    if (lastLiveIndex < 0) {
-      setMessages([...existing, nextItem], state);
-      return;
-    }
-    const insertAt = Math.min(existing.length, lastLiveIndex + 1);
+    const insertAt = findAssistantInsertIndex(existing);
     setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
   };
 
@@ -169,7 +156,7 @@ export function createStreamingActions(params: {
       ts: (idx >= 0 ? existing[idx]!.ts : null) ?? Date.now(),
     };
     const withoutStep = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
-    const insertAt = findInsertAtBeforeStreamingAssistant(withoutStep);
+    const insertAt = findProcessInsertIndex(withoutStep);
 
     const next = [...withoutStep.slice(0, insertAt), nextItem, ...withoutStep.slice(insertAt)];
     setMessages(next, state);
@@ -202,7 +189,7 @@ export function createStreamingActions(params: {
     const withoutActivity = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
 
     const stepIdx = withoutActivity.findIndex((m) => m.id === liveStepId);
-    const insertAt = stepIdx >= 0 ? stepIdx : findInsertAtBeforeStreamingAssistant(withoutActivity);
+    const insertAt = stepIdx >= 0 ? stepIdx : findProcessInsertIndex(withoutActivity);
 
     const next = [...withoutActivity.slice(0, insertAt), nextItem, ...withoutActivity.slice(insertAt)];
     setMessages(next, state);
@@ -233,13 +220,7 @@ export function createStreamingActions(params: {
           streaming: false,
           ts: stepMsg?.ts ?? Date.now(),
         };
-        let insertAt = next.length;
-        for (let i = next.length - 1; i >= 0; i--) {
-          if (next[i]?.role === "assistant") {
-            insertAt = i;
-            break;
-          }
-        }
+        const insertAt = findProcessInsertIndex(next);
         next.splice(insertAt, 0, thoughtItem);
       }
     }
