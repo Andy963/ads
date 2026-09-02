@@ -581,14 +581,6 @@
   flex: 1 1 auto;
 }
 
-.laneTabWarning {
-  font-size: 12px;
-  line-height: 1.35;
-  color: #c2410c;
-  word-break: break-word;
-  min-width: 0;
-}
-
 .laneTabIconBtn {
   flex: 0 0 auto;
   width: 28px;
@@ -623,6 +615,8 @@
   padding: 8px 14px;
   border-radius: 12px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -1041,5 +1035,6 @@
   .laneTab {
     flex: 1 1 0;
     min-width: 0;
+    white-space: nowrap;
   }
 }

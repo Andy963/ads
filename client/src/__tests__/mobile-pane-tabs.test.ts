@@ -77,4 +77,11 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('v-if="!isMobile && activeLaneHasResume"');
     expect(sfc).toContain('v-if="!isMobile"\n            class="laneTabIconBtn"');
   });
+
+  it("keeps lane tab row free of duplicate warning banners", async () => {
+    const sfc = await readSfc("../App.vue", import.meta.url);
+    expect(sfc).not.toContain('class="laneTabWarning"');
+    expect(sfc).not.toContain('data-testid="lane-thread-warning"');
+    expect(sfc).not.toContain("activeLaneThreadWarning");
+  });
 });

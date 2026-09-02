@@ -216,7 +216,6 @@ const {
   resumableSessionsNextCursor,
   resumeThreadBlocked,
   activeLaneBusy,
-  activeLaneThreadWarning,
   activeLaneHasResume,
   activeLaneNewSessionBlocked,
   handleLaneNewSession,
@@ -903,9 +902,6 @@ const plannerConnectionStatus = computed(() => {
           >
             {{ tab.label }}
           </button>
-          <span v-if="activeWorkspaceTab !== 'tasks' && activeLaneThreadWarning" class="laneTabWarning" data-testid="lane-thread-warning">
-            {{ activeLaneThreadWarning }}
-          </span>
           <span v-if="!isMobile" class="laneTabSpacer" />
           <button
             v-if="!isMobile && activeLaneHasResume"
