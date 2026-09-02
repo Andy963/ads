@@ -11,7 +11,7 @@ function stripStreamingOverlap(current: string, incoming: string): string {
   return incoming;
 }
 
-function trimToLastLines(text: string, maxLines: number, maxChars = 2500): string {
+function trimLiveStepSnapshot(text: string, maxLines: number, maxChars = 2500): string {
   const normalized = String(text ?? "");
   const recent = normalized.length > maxChars ? normalized.slice(normalized.length - maxChars) : normalized;
   const lines = recent.split("\n");
@@ -151,13 +151,15 @@ export function createStreamingActions(params: {
 
   const upsertStepLiveDelta = (delta: string, rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
-    dropEmptyAssistantPlaceholder(state);
     const chunk = String(delta ?? "");
-    if (!chunk) return;
+    if (!chunk || shouldIgnoreStepDelta(chunk)) return;
+    dropEmptyAssistantPlaceholder(state);
     const existing = state.messages.value.slice();
     const idx = existing.findIndex((m) => m.id === liveStepId);
-    const current = idx >= 0 ? existing[idx]!.content : "";
-    const nextText = trimToLastLines(current + chunk, 14);
+    // Step events are status snapshots. The wire field remains `delta` for
+    // protocol compatibility, but the live card must show only the newest
+    // substantive snapshot instead of an append-only transcript.
+    const nextText = trimLiveStepSnapshot(chunk, 14);
     const nextItem: ChatItem = {
       id: liveStepId,
       role: "assistant",
@@ -217,7 +219,7 @@ export function createStreamingActions(params: {
     clearLiveActivityWindow(state.liveActivity);
     const existing = state.messages.value.slice();
     const stepMsg = existing.find((m) => m.id === liveStepId);
-    const stepContent = String(stepMsg?.content ?? "").trim();
+    const stepContent = trimLiveStepSnapshot(String(stepMsg?.content ?? "").trim(), 14).trim();
 
     const next = existing.filter((m) => !isLiveMessageId(m.id));
     if (stepContent && !shouldIgnoreStepDelta(stepContent)) {
