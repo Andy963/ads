@@ -1124,6 +1124,28 @@ describe("ws workspace project sync", () => {
     expect(rt.threadWarning.value).toContain("下一轮将注入聊天历史");
   });
 
+  it("routes session_fallback to laneStatus without duplicating into threadWarning", () => {
+    const rt = createRuntime();
+    const updateProject = vi.fn();
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject,
+    });
+
+    handler({
+      type: "session_fallback",
+      message: "原生会话已不存在，已改用新会话继续（not found）。",
+    });
+
+    expect(rt.laneStatus.value).toEqual({
+      kind: "info",
+      message: "原生会话已不存在，已改用新会话继续（not found）。",
+    });
+    expect(rt.threadWarning.value).toBeNull();
+  });
+
   it("renders a plan WS broadcast as a plan chat item with checklist", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();

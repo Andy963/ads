@@ -1031,14 +1031,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "session_fallback") {
       // The provider lost the session mid-turn: this turn already ran without
-      // the old context, so say so instead of leaving the thread looking resumed.
+      // the old context, so say so in the composer status surface.
       const rec = msg as Record<string, unknown>;
       const message = String(rec.message ?? "").trim();
       rt.laneStatus.value = {
         kind: "info",
-        message: message || "原生会话已不存在，已改用新会话继续。",
+        message: message || "原生会话已不存在，已改用新会话继续；下一轮会带上最近聊天历史。",
       };
-      rt.threadWarning.value = "原生会话已不存在，本轮已改用新会话；下一轮会带上最近聊天历史。";
+      rt.threadWarning.value = null;
       return;
     }
 
