@@ -51,11 +51,21 @@ function buildFakeServer(opts?: {
       if (!line.trim()) continue;
       const msg = JSON.parse(line) as RpcLine;
       requests.push(msg);
-      if (msg.method === "initialize") {
-        stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} })}\n`);
-        continue;
-      }
-      const replier = msg.method ? autoReplies[msg.method] : undefined;
+     if (msg.method === "initialize") {
+       stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} })}\n`);
+       continue;
+     }
+     if (msg.method === "thread/resume" && !autoReplies["thread/resume"] && !autoErrors["thread/resume"]) {
+       stdout.write(
+         `${JSON.stringify({
+           jsonrpc: "2.0",
+           id: msg.id,
+           result: { thread: { id: msg.params?.threadId ?? "thread-resumed" } },
+         })}\n`,
+       );
+       continue;
+     }
+     const replier = msg.method ? autoReplies[msg.method] : undefined;
       const error = msg.method ? autoErrors[msg.method]?.(msg) : undefined;
       if (error) {
         stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, error })}\n`);
@@ -233,8 +243,119 @@ describe("CodexAppServerAdapter", () => {
     fake.notify("turn/completed", { threadId: "thread-1", turn: { id: "t2" } });
     await secondSend;
 
-    const startsAfter = fake.requests.filter((r) => r.method === "thread/start").length;
-    assert.equal(startsAfter, startsBefore, "thread/start must not be issued again");
+   const startsAfter = fake.requests.filter((r) => r.method === "thread/start").length;
+   assert.equal(startsAfter, startsBefore, "thread/start must not be issued again");
+
+   await registry.stopAll();
+ });
+
+  it("resumes an existing persisted thread via thread/resume before turn start", async () => {
+    let resumeCalls = 0;
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/resume": (msg) => {
+          resumeCalls += 1;
+          return { thread: { id: msg.params?.threadId } };
+        },
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({
+      projectId: "resume-thread-test",
+      resumeThreadId: "thread-persisted-abc",
+      registry,
+    });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+
+    const sendPromise = adapter.send("hello from resumed thread");
+    await waitForRequestCount(fake, "thread/resume", 1);
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m-resumed", text: "Welcome back" },
+      threadId: "thread-persisted-abc",
+      turnId: "turn-resumed",
+    });
+    fake.notify("turn/completed", { threadId: "thread-persisted-abc", turn: { id: "turn-resumed" } });
+
+    const result = await sendPromise;
+    assert.equal(result.response, "Welcome back");
+    assert.equal(adapter.getThreadId(), "thread-persisted-abc");
+    assert.equal(resumeCalls, 1);
+    assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 0);
+    assert.equal(
+      (fake.requests.find((request) => request.method === "turn/start")?.params as any)?.threadId,
+      "thread-persisted-abc",
+    );
+    const hasFallback = events.some(
+      (event) => typeof event === "object" && event !== null && "sessionFallback" in event,
+    );
+    assert.equal(hasFallback, false, "must not emit sessionFallback on successful resume");
+
+    // On second send, thread is already loaded in client, must not call thread/resume again
+    const secondSendPromise = adapter.send("second message");
+    await waitForRequestCount(fake, "turn/start", 2);
+    assert.equal(fake.requests.filter((request) => request.method === "thread/resume").length, 1);
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m-second", text: "Second reply" },
+      threadId: "thread-persisted-abc",
+      turnId: "turn-second",
+    });
+    fake.notify("turn/completed", { threadId: "thread-persisted-abc", turn: { id: "turn-second" } });
+    await secondSendPromise;
+
+    await registry.stopAll();
+  });
+
+  it("recreates a missing thread when thread/resume reports no rollout found", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-new-from-missing" } }),
+        "turn/start": () => ({}),
+      },
+      autoErrors: {
+        "thread/resume": () => ({
+          code: -32600,
+          message: "thread/resume: thread/resume failed: no rollout found for thread id thread-deleted",
+        }),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({
+      projectId: "missing-on-resume",
+      resumeThreadId: "thread-deleted",
+      registry,
+    });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+
+    const sendPromise = adapter.send("recover from deleted thread");
+    await waitForRequestCount(fake, "thread/resume", 1);
+    await waitForRequestCount(fake, "thread/start", 1);
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "m-recovered", text: "Recovered" },
+      threadId: "thread-new-from-missing",
+      turnId: "turn-recovered",
+    });
+    fake.notify("turn/completed", {
+      threadId: "thread-new-from-missing",
+      turn: { id: "turn-recovered" },
+    });
+
+    const result = await sendPromise;
+    assert.equal(result.response, "Recovered");
+    assert.equal(adapter.getThreadId(), "thread-new-from-missing");
+    const fallbackEvent = events.find(
+      (event): event is { sessionFallback?: unknown } =>
+        typeof event === "object" && event !== null && "sessionFallback" in event,
+    );
+    assert(fallbackEvent, "expected a session fallback event");
+    assert.deepEqual(fallbackEvent.sessionFallback, {
+      reason: "missing_provider_session",
+      previousSessionId: "thread-deleted",
+    });
 
     await registry.stopAll();
   });
