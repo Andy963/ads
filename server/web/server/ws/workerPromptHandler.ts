@@ -1,7 +1,7 @@
 import type { ThreadEvent } from "../../../agents/protocol/types.js";
 
 import { isTransientUpstreamModelError } from "../../../agents/adapters/transientModelRetry.js";
-import { formatStepTraceLine, isStepTracePhase, type AgentEvent } from "../../../codex/events.js";
+import { formatStepTraceLine, hasSubstantiveStepTrace, isStepTracePhase, type AgentEvent } from "../../../codex/events.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
@@ -110,7 +110,7 @@ export function attachWorkerPromptHandler(args: {
 } {
   const lastRespondingTextByItemId = new Map<string, string>();
   let lastReasoningText = "";
-  let stepTraceText = "";
+  let latestStepTraceText = "";
   const lastCommandOutputsByKey = new Map<string, string>();
   const announcedCommandKeys = new Set<string>();
   const terminalCommandKeys = new Set<string>();
@@ -180,7 +180,7 @@ export function attachWorkerPromptHandler(args: {
       latestPlan = null;
       lastRespondingTextByItemId.clear();
       lastReasoningText = "";
-      stepTraceText = "";
+      latestStepTraceText = "";
     }
     if (raw.type === "thread.started" && raw.thread_id) {
       args.onThreadStarted?.(raw.thread_id);
@@ -264,7 +264,6 @@ export function attachWorkerPromptHandler(args: {
       lastReasoningText = next;
       if (delta) {
         const payload = prev ? delta : `[analysis] ${delta}`;
-        stepTraceText += payload;
         args.sendToChat({ type: "delta", delta: payload, source: "step" });
       }
       return;
@@ -317,7 +316,11 @@ export function attachWorkerPromptHandler(args: {
     if (isStepTracePhase(event.phase)) {
       const line = formatStepTraceLine(event);
       if (line) {
-        stepTraceText += line;
+        // Keep the completion thought aligned with the live card: only the
+        // newest substantive stage is retained, never the full event history.
+        if (hasSubstantiveStepTrace(line)) {
+          latestStepTraceText = line;
+        }
         args.sendToChat({ type: "delta", delta: line, source: "step" });
       }
     }
@@ -407,6 +410,6 @@ export function attachWorkerPromptHandler(args: {
   return {
     unsubscribe,
     handleExploredEntry,
-    getStepTraceText: () => stepTraceText,
+    getStepTraceText: () => latestStepTraceText,
   };
 }
