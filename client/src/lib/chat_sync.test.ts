@@ -637,17 +637,32 @@ describe("chat_sync.mergeHistoryFromServer", () => {
 });
 
 describe("chat_sync.normalizeTurnSemanticOrder", () => {
-  it("orders cards within a turn: user -> plan -> execute -> patch -> assistant", () => {
+  it("orders cards within a turn: user -> plan -> thought/live -> execute -> patch -> assistant", () => {
     const raw: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Run task" }),
       msg({ id: "e1", role: "system", kind: "execute", content: "ls output" }),
       msg({ id: "e2", role: "system", kind: "execute", content: "git status output" }),
       msg({ id: "p1", role: "system", kind: "plan", content: "Step 1" }),
+      msg({ id: "t1", role: "assistant", kind: "thought", content: "Reason about the task" }),
       msg({ id: "a1", role: "assistant", kind: "text", content: "Done" }),
     ];
 
     const out = normalizeTurnSemanticOrder(raw);
-    expect(out.map((m) => m.id)).toEqual(["u1", "p1", "e1", "e2", "a1"]);
+    expect(out.map((m) => m.id)).toEqual(["u1", "p1", "t1", "e1", "e2", "a1"]);
+  });
+
+  it("keeps accumulating reasoning steps above command execution and preserves their relative order", () => {
+    const raw: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run task" }),
+      msg({ id: "e1", role: "system", kind: "execute", content: "exec" }),
+      msg({ id: "t1", role: "assistant", kind: "thought", content: "First thought" }),
+      msg({ id: "live-step", role: "assistant", kind: "text", content: "Current thought", streaming: true }),
+      msg({ id: "p1", role: "system", kind: "patch", content: "diff" }),
+      msg({ id: "a1", role: "assistant", kind: "text", content: "Done" }),
+    ];
+
+    const out = normalizeTurnSemanticOrder(raw);
+    expect(out.map((m) => m.id)).toEqual(["u1", "t1", "live-step", "e1", "p1", "a1"]);
   });
 
   it("preserves stable relative order among multiple execute blocks", () => {
