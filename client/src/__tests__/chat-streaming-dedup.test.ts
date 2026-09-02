@@ -38,4 +38,16 @@ describe("chat streaming duplicate protection", () => {
     expect(messages.value).toHaveLength(1);
     expect(messages.value[0]?.content).toBe(`${first} Continued with the next sentence.`);
   });
+
+  it("preserves legitimate text when the chunk starts with a repeated boundary", () => {
+    const { messages, runtime, streaming } = createHarness();
+    const repeatedBoundary = "This repeated boundary is legitimate response content.";
+    const current = `The existing response ends with: ${repeatedBoundary}`;
+    const incoming = `${repeatedBoundary} Then the answer continues normally.`;
+
+    streaming.upsertStreamingDelta(current, runtime);
+    streaming.upsertStreamingDelta(incoming, runtime);
+
+    expect(messages.value[0]?.content).toBe(current + incoming);
+  });
 });

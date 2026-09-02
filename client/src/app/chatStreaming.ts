@@ -3,19 +3,11 @@ import { clearLiveActivityWindow, renderLiveActivityMarkdown } from "../lib/live
 import type { ChatItem, ProjectRuntime } from "./controller";
 
 const LIVE_ACTIVITY_TTL_MS = 3000;
-const MIN_STREAMING_OVERLAP = 32;
 
 function stripStreamingOverlap(current: string, incoming: string): string {
   if (!current || !incoming) return incoming;
   if (incoming === current) return "";
   if (incoming.startsWith(current)) return incoming.slice(current.length);
-
-  const maxOverlap = Math.min(current.length, incoming.length);
-  for (let overlap = maxOverlap; overlap >= MIN_STREAMING_OVERLAP; overlap -= 1) {
-    if (current.slice(current.length - overlap) === incoming.slice(0, overlap)) {
-      return incoming.slice(overlap);
-    }
-  }
   return incoming;
 }
 
