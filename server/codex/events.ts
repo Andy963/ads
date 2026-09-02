@@ -62,6 +62,9 @@ type ItemEvent = ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent;
 
 const DEFAULT_DETAIL_LIMIT = 160;
 
+const NON_ACTIONABLE_ANALYSIS_TITLES = new Set(["开始处理请求"]);
+const STEP_TRACE_MARKER_REGEX = /\[(boot|analysis|context|editing|tool|connection)\]\s*/gi;
+
 export const STEP_TRACE_PHASES: ReadonlySet<string> = new Set([
   "boot",
   "analysis",
@@ -86,9 +89,23 @@ export function formatStepTraceLine(event: AgentEvent): string | null {
   if (!title) {
     return null;
   }
+  if (phase === "analysis" && (NON_ACTIONABLE_ANALYSIS_TITLES.has(title) || /^reasoning$/i.test(title))) {
+    return null;
+  }
   const prefix = `[${phase}] `;
   const detail = phase === "analysis" ? "" : String(event.detail ?? "").trim();
   return detail ? `${prefix}${title}: ${detail}\n` : `${prefix}${title}\n`;
+}
+
+/** Returns whether a trace contains a stage other than pure analysis/reasoning. */
+export function hasSubstantiveStepTrace(text: unknown): boolean {
+  const raw = String(text ?? "");
+  for (const match of raw.matchAll(STEP_TRACE_MARKER_REGEX)) {
+    if (String(match[1] ?? "").trim().toLowerCase() !== "analysis") {
+      return true;
+    }
+  }
+  return false;
 }
 
 const RECONNECTING_REGEX = /re-?connecting\.\.\.\s*(\d+)\/(\d+)/i;
