@@ -78,6 +78,19 @@ function respondingEvent(itemId: string, text: string) {
   };
 }
 
+function reasoningEvent(text: string) {
+  return {
+    phase: "analysis",
+    title: "Reasoning",
+    timestamp: Date.now(),
+    delta: text,
+    raw: {
+      type: "item.updated",
+      item: { type: "reasoning", id: "reasoning-1", text },
+    },
+  };
+}
+
 describe("web/server/ws/workerPromptHandler", () => {
   it("slices cumulative responding text independently for each agent message item", () => {
     const { emit, sent } = createHarness();
@@ -122,32 +135,65 @@ describe("web/server/ws/workerPromptHandler", () => {
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
   });
 
-  it("accumulates replayable step traces without mixing them into command history", () => {
-    const { emit, handler, history } = createHarness();
+  it("keeps only the latest substantive step snapshot without mixing it into command history", () => {
+    const { emit, handler, history, sent } = createHarness();
 
-    emit({
-      phase: "reasoning",
-      title: "Inspecting workspace",
-      timestamp: 1,
-      raw: { type: "item.started", item: { type: "reasoning" } },
-    });
-    emit({
-      phase: "reasoning",
-      title: "Inspecting workspace",
-      timestamp: 2,
-      raw: { type: "item.updated", item: { type: "reasoning" } },
-      delta: "first thought",
-    });
     emit({
       phase: "tool",
-      title: "Running tool",
+      title: "Inspecting workspace",
       detail: "bash",
-      timestamp: 3,
+      timestamp: 1,
       raw: { type: "item.started", item: { type: "tool_call" } },
     });
+    emit(commandEvent({ type: "item.started", id: "cmd-1", command: "npm test", status: "inProgress" }));
+    emit({
+      phase: "editing",
+      title: "Updating file",
+      detail: "src/index.ts",
+      timestamp: 2,
+      raw: { type: "item.started", item: { type: "file_change" } },
+    });
 
-    assert.equal(handler.getStepTraceText(), "[analysis] first thought[tool] Running tool: bash\n");
+    assert.equal(handler.getStepTraceText(), "[editing] Updating file: src/index.ts\n");
+    const stepDeltas = sent
+      .filter((payload) => {
+        const item = payload as { type?: unknown; source?: unknown };
+        return item.type === "delta" && item.source === "step";
+      })
+      .map((payload) => (payload as { delta?: unknown }).delta);
+    assert.deepEqual(stepDeltas, [
+      "[tool] Inspecting workspace: bash\n",
+      "[editing] Updating file: src/index.ts\n",
+    ]);
+    assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 1);
     assert.deepEqual(history, []);
+  });
+
+  it("keeps incremental reasoning classified as noise and preserves the completion snapshot", () => {
+    const { emit, handler, sent } = createHarness();
+
+    emit({
+      phase: "tool",
+      title: "Inspecting workspace",
+      detail: "bash",
+      timestamp: 1,
+      raw: { type: "item.started", item: { type: "tool_call" } },
+    });
+    emit(reasoningEvent("first reasoning"));
+    emit(reasoningEvent("first reasoning plus follow-up"));
+
+    const stepDeltas = sent
+      .filter((payload) => {
+        const item = payload as { type?: unknown; source?: unknown };
+        return item.type === "delta" && item.source === "step";
+      })
+      .map((payload) => (payload as { delta?: unknown }).delta);
+    assert.deepEqual(stepDeltas, [
+      "[tool] Inspecting workspace: bash\n",
+      "[analysis] first reasoning",
+      "[analysis]  plus follow-up",
+    ]);
+    assert.equal(handler.getStepTraceText(), "[tool] Inspecting workspace: bash\n");
   });
 
   it("forwards failed agent command completion without persisting replayable history", () => {

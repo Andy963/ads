@@ -27,7 +27,7 @@ Web Console 将对话与任务流组织为三大工作区：
 - **Worker (执行 Lane)**：
   - 专注于代码执行、命令运行与文件修改的执行 Lane。
   - 若任务带有本地 issue/spec 快照，执行时先读取批准时固定的内容；没有快照时直接以任务 prompt 及其 GitHub 引用作为执行依据。
-  - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出（最新命令预览），阶段 trace 只显示简洁语义标签；重复的 reasoning 生命周期噪声不会写入历史 thought；文件路径和变更明细由 Patch 卡片展示，自动收起长文本输出。
+  - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出（最新命令预览）；阶段 trace 使用单个可变过程卡片，只显示最新的实质阶段快照，不把历史步骤累积到同一块；重复的 reasoning 生命周期噪声不会写入历史 thought，完成后保留的 Thought 也只包含紧凑的最新阶段快照；文件路径和变更明细由 Patch 卡片展示，自动收起长文本输出。
   - Plan 卡片按单轮逻辑计划合并 provider 更新，并在任务完成与历史重连时保持唯一且状态一致。
 
 ### 2. Provider CLI 与全局模型配置 (Provider & Models)
@@ -58,7 +58,7 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 - 新建聊天会话时，在线 WebSocket 通过原连接内协议切换 session；连接状态保持在线，离线时自动回退到完整重连。
 - 重连或后端重启后，只要持久化历史存在就会发送历史快照；即使后端上下文暂时是 fresh，客户端也保留本地聊天记录，只有显式线程重置才会清空历史。
 - Bootstrap 等待期间提交的提示会进入持久 outbox，待历史同步完成后继续发送；若历史帧丢失，5 秒兜底会解除等待锁，避免 Composer 永久冻结。
-- 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；每轮消息中的 Plan、实时活动、Thought、Execute 与 Patch 卡片按稳定语义顺序展示，已完成的阶段 trace 会在历史重放时保留为可折叠 Thought 卡片。
+- 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；每轮消息中的 Plan、实时活动、Thought、Execute 与 Patch 卡片按稳定语义顺序展示，活动中的 live-step 只保留最新阶段快照，完成后该快照会作为可折叠 Thought 卡片保留在历史重放中。
 - Worker 与 Advisor 的清空操作默认只作用于发起操作的 chat lane；跨 lane 清理必须显式请求 shared scope，且 session reset 广播会校验来源 lane。
 
 ### 5. 多模态与文件联动
