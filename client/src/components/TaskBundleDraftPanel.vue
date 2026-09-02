@@ -43,9 +43,7 @@ const canApproveDraft = computed(
     !editorBusy.value &&
     !taskDirty.value &&
     !taskNormalizationPending.value &&
-    selectedDraft.value?.status === "draft" &&
-    Boolean(selectedDraft.value?.bundle?.issueRef?.trim()) &&
-    Boolean(selectedDraft.value?.bundle?.specRef?.trim()),
+    selectedDraft.value?.status === "draft",
 );
 const canSaveTask = computed(
   () =>
