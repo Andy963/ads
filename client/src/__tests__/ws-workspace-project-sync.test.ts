@@ -1021,6 +1021,24 @@ describe("ws workspace project sync", () => {
     expect(rt.activeThreadId.value).toBe("thread-keep");
   });
 
+  it("treats a reset without a scope as lane-local and requires its source lane", () => {
+    const rt = createRuntime();
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-keep";
+    const { handler, threadReset } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" });
+
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.activeThreadId.value).toBe("thread-keep");
+    expect(rt.messages.value).toHaveLength(1);
+  });
+
   it("clears stale local continuity when a sibling chat lane explicitly resets the shared session", () => {
     const rt = createRuntime();
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];

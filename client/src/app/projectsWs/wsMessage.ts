@@ -649,9 +649,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
   const handleSharedSessionReset = (payload: Record<string, unknown>): void => {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
-    const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "shared";
+    const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
     const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
-    if (resetScope === "lane" && sourceChatSessionId && sourceChatSessionId !== effectiveChatSessionId) {
+    if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {
       return;
     }
     const hasVisibleLocalContinuity =

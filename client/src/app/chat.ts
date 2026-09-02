@@ -396,6 +396,21 @@ export function createChatActions(ctx: AppContext) {
     }
   };
 
+  const resolveClearHistoryPayload = (rt: ProjectRuntime, payload: unknown): unknown => {
+    const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? { ...(payload as Record<string, unknown>) }
+      : {};
+    const requestedScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
+    if (requestedScope === "shared") {
+      return { ...payloadRecord, scope: "shared" };
+    }
+    return {
+      ...payloadRecord,
+      scope: "lane",
+      sourceChatSessionId: String(rt.chatSessionId ?? "").trim() || "main",
+    };
+  };
+
   const threadReset = (
     rt: ProjectRuntime,
     params: {
@@ -418,7 +433,7 @@ export function createChatActions(ctx: AppContext) {
     }
     if (params.clearBackendHistory) {
       rt.suppressNextClearHistoryResult = true;
-      rt.ws?.clearHistory(params.clearHistoryPayload);
+      rt.ws?.clearHistory(resolveClearHistoryPayload(rt, params.clearHistoryPayload));
     }
     recordChatClear("thread_reset", params.source ?? "unknown");
   };

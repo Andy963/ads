@@ -609,6 +609,11 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     interruptRuntime(activePlannerRuntime.value);
   };
 
+  const laneClearHistoryPayload = (rt: ProjectRuntime): { scope: "lane"; sourceChatSessionId: string } => ({
+    scope: "lane",
+    sourceChatSessionId: String(rt.chatSessionId ?? "").trim() || "main",
+  });
+
   const clearActiveChat = (): void => {
     const rt = activeRuntime.value;
     rt.queuedPrompts.value = [];
@@ -618,6 +623,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       warning: null,
       keepLatestTurn: false,
       clearBackendHistory: true,
+      clearHistoryPayload: laneClearHistoryPayload(rt),
       resetThreadId: true,
       source: "user_reset_thread",
     });
@@ -632,6 +638,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
       warning: null,
       keepLatestTurn: false,
       clearBackendHistory: true,
+      clearHistoryPayload: laneClearHistoryPayload(rt),
       resetThreadId: true,
       source: "user_clear_planner_context",
     });
