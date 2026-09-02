@@ -36,6 +36,10 @@ import {
   readAutoCompactConfig,
   resolveAutoCompactThresholdPercent,
 } from "./autoCompactConfig.js";
+import {
+  createProviderSessionFallbackEvent,
+  isMissingProviderSessionError,
+} from "./missingProviderSession.js";
 
 const logger = createLogger("CodexAppServerAdapter");
 
@@ -532,9 +536,44 @@ export class CodexAppServerAdapter implements AgentAdapter {
         : this.spawnEnv,
     };
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+    const savedThreadId = this.threadId;
+    let missingThreadRecovered = false;
+
+    const recoverMissingThread = (error: unknown): boolean => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !savedThreadId ||
+        missingThreadRecovered ||
+        this.threadId !== savedThreadId ||
+        !isMissingProviderSessionError(message)
+      ) {
+        return false;
+      }
+
+      logger.warn(
+        `[CodexAppServerAdapter] Thread ${savedThreadId} is missing; auto-starting a new thread. cause=${message}`,
+      );
+      this.threadId = null;
+      this.latestContextUsage = null;
+      missingThreadRecovered = true;
+      this.emitEvent(
+        createProviderSessionFallbackEvent({
+          agentName: "Codex app-server",
+          previousSessionId: savedThreadId,
+          message,
+        }),
+      );
+      return true;
+    };
 
     if (this.threadId) {
-      await this.maybeCompactThread(client, this.threadId, options?.signal);
+      try {
+        await this.maybeCompactThread(client, this.threadId, options?.signal);
+      } catch (error) {
+        if (!recoverMissingThread(error)) {
+          throw error;
+        }
+      }
     }
 
     const state: TurnState = {
@@ -753,31 +792,53 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }
     }
 
-    try {
-      let threadId = this.threadId;
-      if (!threadId) {
-        const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
-          "thread/start",
-          this.buildThreadStartParams(),
-          { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
-        );
-        const newId = startResult?.thread?.id;
-        if (typeof newId === "string" && newId.length > 0) {
-          threadId = newId;
-          this.threadId = newId;
-        } else if (state.threadIdFromStarted) {
-          threadId = state.threadIdFromStarted;
-          this.threadId = state.threadIdFromStarted;
-        } else {
-          throw new Error("codex app-server did not return a thread id");
-        }
+    const startThread = async (): Promise<string> => {
+      const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
+        "thread/start",
+        this.buildThreadStartParams(),
+        { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
+      );
+      const newId = startResult?.thread?.id;
+      if (typeof newId === "string" && newId.length > 0) {
+        this.threadId = newId;
+        return newId;
       }
+      if (state.threadIdFromStarted) {
+        this.threadId = state.threadIdFromStarted;
+        return state.threadIdFromStarted;
+      }
+      throw new Error("codex app-server did not return a thread id");
+    };
 
+    const startTurn = async (threadId: string): Promise<void> => {
       await client.request(
         "turn/start",
         this.buildTurnStartParams(threadId, userInput),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+    };
+
+    try {
+      let threadId = this.threadId;
+      if (!threadId) {
+        threadId = await startThread();
+      }
+
+      try {
+        await startTurn(threadId);
+      } catch (error) {
+        if (!recoverMissingThread(error)) {
+          throw error;
+        }
+
+        state.threadIdFromStarted = null;
+        state.turnId = null;
+        state.failed = false;
+        state.failureMessage = null;
+
+        threadId = await startThread();
+        await startTurn(threadId);
+      }
 
       await turnPromise;
 
@@ -1008,7 +1069,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
       );
       const firstError = await Promise.race([requestOutcome, completionOutcome]);
       if (firstError && !settled) {
-        requestStop(firstError);
+        if (isMissingProviderSessionError(firstError.message)) {
+          // A missing thread cannot have started a compaction turn, so it is
+          // safe to fail immediately and let sendOnce create a fresh thread.
+          finish(firstError);
+        } else {
+          requestStop(firstError);
+        }
       }
       await completion;
     } finally {
