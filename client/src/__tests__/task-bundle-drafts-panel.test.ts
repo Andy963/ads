@@ -72,6 +72,7 @@ describe("TaskBundleDraftPanel", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find('[data-testid="task-bundle-draft-row-spec"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="task-bundle-draft-row-prompt-only"]').text()).toContain("自包含任务");
 
     await wrapper.get('[data-testid="task-bundle-draft-d-nospec"]').trigger("click");
     await flushPromises();
