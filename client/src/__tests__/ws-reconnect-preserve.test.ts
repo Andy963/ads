@@ -1369,6 +1369,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     expect(lastWs).toBeTruthy();
     expect(lastWs!.clearHistory).toHaveBeenCalledTimes(1);
+    expect(lastWs!.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "main" });
     wrapper.unmount();
   });
 

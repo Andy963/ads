@@ -54,6 +54,7 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 - 会话文件健康判定：断线或重连时若会话文件存在则原生恢复，缺失时平滑降级并友好提示。
 - 新建聊天会话时，在线 WebSocket 通过原连接内协议切换 session；连接状态保持在线，离线时自动回退到完整重连。
 - 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；每轮消息中的 Plan、实时活动、Thought、Execute 与 Patch 卡片按稳定语义顺序展示，已完成的阶段 trace 会在历史重放时保留为可折叠 Thought 卡片。
+- Worker 与 Advisor 的清空操作默认只作用于发起操作的 chat lane；跨 lane 清理必须显式请求 shared scope，且 session reset 广播会校验来源 lane。
 
 ### 5. 多模态与文件联动
 - **多模态图片附件**：支持拖拽、粘贴与上传图片，MainChat 与任务创建表单均提供紧凑缩略图预览与大图查看器。
