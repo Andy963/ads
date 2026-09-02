@@ -7,6 +7,7 @@ export const PROMPT_ABORTED_MESSAGE = "已中断，输出可能不完整";
 export function handlePromptError(args: {
   error: unknown;
   aborted: boolean;
+  silent?: boolean;
   sessionLogger: WsPromptSessionLogger | null;
   logger: WsLogger;
   historyStore: HistoryStore;
@@ -15,6 +16,7 @@ export function handlePromptError(args: {
   logPrefix?: string;
 }): void {
   if (args.aborted) {
+    if (args.silent) return;
     const message = PROMPT_ABORTED_MESSAGE;
     args.historyStore.add(args.historyKey, {
       role: "status",

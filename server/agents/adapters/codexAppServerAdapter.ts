@@ -10,7 +10,7 @@ import type { AgentEvent } from "../../codex/events.js";
 import { mapThreadEventToAgentEvent, parseReconnectingMessage } from "../../codex/events.js";
 import type { SandboxMode } from "../../telegram/config.js";
 import { createLogger } from "../../utils/logger.js";
-import { createAbortError } from "../../utils/abort.js";
+import { createAbortError, createSilentAbortError } from "../../utils/abort.js";
 import {
   CodexAppServerDaemonRegistry,
   getSharedDaemonRegistry,
@@ -785,10 +785,18 @@ export class CodexAppServerAdapter implements AgentAdapter {
     );
 
     const closeUnsub = client.onClose((code) => {
-      const message = `codex app-server closed unexpectedly (exit=${code ?? "null"})`;
-      state.failed = true;
-      state.failureMessage = message;
-      turnFail(new Error(message));
+      if (client.isGracefullyClosed?.()) {
+        const message = "系统服务重启或主动关闭，执行已终止";
+        state.failed = true;
+        state.failureMessage = message;
+        turnFail(createSilentAbortError(message));
+      } else {
+        const message = `codex app-server closed unexpectedly (exit=${code ?? "null"})`;
+        state.failed = true;
+        state.failureMessage = message;
+        emit({ type: "turn.failed", error: { message } });
+        turnFail(new Error(message));
+      }
     });
     cleanupFns.push(closeUnsub);
 

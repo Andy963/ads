@@ -94,6 +94,9 @@ function contextModeNotice(contextMode: string): string {
 
 function replayedLaneStatus(kind: string, content: string): LaneStatus | null {
   if (kind === "error") {
+    if (content.includes("codex app-server closed unexpectedly")) {
+      return null;
+    }
     return { kind: "error", message: content };
   }
   if (kind !== "status") {
