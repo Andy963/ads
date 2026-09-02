@@ -5,6 +5,7 @@ import type {
   TaskRole,
   TaskRunApplyStatus,
   TaskRunCaptureStatus,
+  TaskRunCleanupStatus,
   TaskRunStatus,
   TaskStatus,
 } from "../types.js";
@@ -56,8 +57,7 @@ export function normalizeTaskStatus(value: unknown): TaskStatus {
 }
 
 export function normalizeTaskExecutionIsolation(value: unknown): TaskExecutionIsolation {
-  void value;
-  return "default";
+  return String(value ?? "").trim().toLowerCase() === "required" ? "required" : "default";
 }
 
 export function normalizeTaskModelParams(value: unknown): Record<string, unknown> | null {
@@ -104,6 +104,19 @@ export function normalizeTaskApplyStatus(value: unknown): TaskRunApplyStatus {
     case "blocked":
     case "failed":
     case "skipped":
+      return raw;
+    default:
+      return "pending";
+  }
+}
+
+export function normalizeTaskCleanupStatus(value: unknown): TaskRunCleanupStatus {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (raw) {
+    case "pending":
+    case "cleaned":
+    case "failed":
+    case "not_required":
       return raw;
     default:
       return "pending";

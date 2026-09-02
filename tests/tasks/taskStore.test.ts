@@ -39,7 +39,7 @@ describe("tasks/taskStore", () => {
     assert.equal(fetched.status, "pending");
   });
 
-  it("should discard deprecated bootstrap and isolation settings", () => {
+  it("should discard deprecated bootstrap settings and preserve isolation", () => {
     const store = new TaskStore();
     const task = store.createTask({
       title: "Legacy",
@@ -51,15 +51,44 @@ describe("tasks/taskStore", () => {
       },
     });
 
-    assert.equal(task.executionIsolation, "default");
+    assert.equal(task.executionIsolation, "required");
     assert.deepEqual(task.modelParams, { effort: "high" });
 
     const updated = store.updateTask(task.id, {
       executionIsolation: "required",
       modelParams: { bootstrap: { enabled: true, projectRef: "/tmp/project" } },
     });
-    assert.equal(updated.executionIsolation, "default");
+    assert.equal(updated.executionIsolation, "required");
     assert.equal(updated.modelParams, null);
+  });
+
+  it("should persist task-run worktree and cleanup metadata across updates", () => {
+    const store = new TaskStore();
+    const task = store.createTask({ title: "Run", prompt: "P" });
+    const run = store.createTaskRun({
+      taskId: task.id,
+      executionIsolation: "required",
+      workspaceRoot: "/tmp/workspace",
+      worktreeDir: "/tmp/worktree",
+      branchName: "ads/task/run",
+      baseHead: "base",
+      status: "running",
+      cleanupStatus: "pending",
+    });
+
+    const updated = store.updateTaskRun(run.id, {
+      endHead: "end",
+      status: "completed",
+      captureStatus: "ok",
+      cleanupStatus: "cleaned",
+      cleanupAt: 42,
+    });
+    assert.equal(updated.worktreeDir, "/tmp/worktree");
+    assert.equal(updated.branchName, "ads/task/run");
+    assert.equal(updated.baseHead, "base");
+    assert.equal(updated.endHead, "end");
+    assert.equal(updated.cleanupStatus, "cleaned");
+    assert.equal(updated.cleanupAt, 42);
   });
 
   it("should claim next pending task and mark running", () => {

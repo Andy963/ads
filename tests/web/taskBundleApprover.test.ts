@@ -225,7 +225,7 @@ describe("planner/taskBundleApprover", () => {
     assert.equal(deleteCalls, 0);
   });
 
-  it("ignores deprecated execution isolation from bundle inputs", () => {
+  it("uses required isolation for repository task bundle inputs", () => {
     const seenInputs: Array<Record<string, unknown>> = [];
     const workItem = createWorkItemWorkspace();
 
@@ -277,7 +277,7 @@ describe("planner/taskBundleApprover", () => {
     });
 
     assert.equal(seenInputs.length, 2);
-    assert.equal(seenInputs[0]?.executionIsolation, "default");
-    assert.equal(seenInputs[1]?.executionIsolation, "default");
+    assert.equal(seenInputs[0]?.executionIsolation, "required");
+    assert.equal(seenInputs[1]?.executionIsolation, "required");
   });
 });

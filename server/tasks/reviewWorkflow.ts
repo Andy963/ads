@@ -1,4 +1,4 @@
-import type { CreateTaskInput, ReviewerModelSelection, Task, TaskCategory } from "./types.js";
+import type { CreateTaskInput, ReviewerModelSelection, Task, TaskCategory, TaskRun } from "./types.js";
 import { defaultTaskReviewSummary } from "./reviewData.js";
 
 export type PullRequestReference = {
@@ -132,18 +132,30 @@ export function buildReviewTaskInput(args: {
   pullRequest: PullRequestReference;
   issueNumber?: number | null;
   reviewerModel: ReviewerModelSelection;
+  workerRun?: Pick<TaskRun, "id" | "branchName" | "baseHead" | "endHead" | "worktreeDir"> | null;
 }): CreateTaskInput {
   const issueSuffix = args.issueNumber == null ? "" : ` for Issue #${args.issueNumber}`;
   const pullRequestLabel = `PR #${args.pullRequest.number}`;
   const location = args.pullRequest.url ? ` (${args.pullRequest.url})` : "";
+  const run = args.workerRun;
+  const runMetadata = run
+    ? [
+        `Worker task run: ${run.id}`,
+        `Worker branch: ${run.branchName ?? "unknown"}`,
+        `Worker base head: ${run.baseHead ?? "unknown"}`,
+        `Worker end head: ${run.endHead ?? "unknown"}`,
+      ].join("\n")
+    : "Worker task run metadata is unavailable; rely on the pull request reference.";
   return {
     title: `review: audit ${pullRequestLabel}${issueSuffix}`,
     prompt: [
       "Audit the GitHub pull request below against the parent development task.",
       `Pull request: ${pullRequestLabel}${location}`,
       `Parent development task: ${args.source.id}`,
+      runMetadata,
       "",
       "Review requirements:",
+      "The reviewer receives a clean isolated checkout for inspection; do not modify or commit files in that checkout.",
       "1. Inspect the pull request diff and changed tests with GitHub CLI.",
       "2. Verify the implementation satisfies the parent task and does not introduce regressions.",
       "3. Run the relevant repository validation commands when available.",
@@ -162,7 +174,7 @@ export function buildReviewTaskInput(args: {
     parentTaskId: args.source.id,
     inheritContext: false,
     maxRetries: args.source.maxRetries,
-    executionIsolation: "default",
+    executionIsolation: "required",
     createdBy: "task-review-workflow",
     review: defaultTaskReviewSummary({
       required: true,
@@ -206,7 +218,7 @@ export function buildReworkTaskInput(args: {
     parentTaskId: args.reviewTask.id,
     inheritContext: false,
     maxRetries: args.reviewTask.maxRetries,
-    executionIsolation: "default",
+    executionIsolation: "required",
     createdBy: "task-review-workflow",
     review: defaultTaskReviewSummary({
       required: true,

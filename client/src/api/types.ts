@@ -55,14 +55,24 @@ export interface TaskReviewSummary {
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
 export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | "skipped";
+export type TaskExecutionIsolation = "default" | "required";
+export type TaskRunCleanupStatus = "pending" | "cleaned" | "failed" | "not_required";
 
 export interface TaskRun {
   id: string;
   taskId: string;
+  executionIsolation: TaskExecutionIsolation;
   workspaceRoot: string;
+  worktreeDir: string | null;
+  branchName: string | null;
+  baseHead: string | null;
+  endHead: string | null;
   status: TaskRunStatus;
   captureStatus: TaskRunCaptureStatus;
   applyStatus: TaskRunApplyStatus;
+  cleanupStatus: TaskRunCleanupStatus;
+  cleanupError: string | null;
+  cleanupAt: number | null;
   error: string | null;
   createdAt: number;
   startedAt: number | null;
@@ -102,6 +112,7 @@ export interface Task {
   completedAt?: number | null;
   archivedAt?: number | null;
   createdBy?: string | null;
+  executionIsolation?: TaskExecutionIsolation;
   attachments?: Attachment[];
   latestRun?: TaskRun | null;
   goalMode?: boolean;
@@ -150,6 +161,7 @@ export interface CreateTaskInput {
   model?: string;
   priority?: number;
   category?: TaskCategory;
+  executionIsolation?: TaskExecutionIsolation;
   maxRetries?: number;
   attachments?: string[];
   goalMode?: boolean;

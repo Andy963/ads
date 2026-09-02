@@ -142,6 +142,7 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
         model: z.string().optional(),
         priority: z.number().optional(),
         category: z.enum(["development", "review", "rework"]).optional(),
+        executionIsolation: z.enum(["default", "required"]).optional(),
         maxRetries: z.number().optional(),
         attachments: z.array(z.string().min(1)).optional(),
         goalMode: z.boolean().optional(),
@@ -172,7 +173,9 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
           priority: parsed.priority,
           category: parsed.category,
           maxRetries: parsed.maxRetries,
-          executionIsolation: "default",
+          executionIsolation:
+            parsed.executionIsolation
+            ?? "required",
           createdBy: "web",
           goalMode: Boolean(parsed.goalMode),
           goalObjective: parsed.goalObjective ?? null,
@@ -243,6 +246,7 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
         priority: z.number().finite().optional(),
         inheritContext: z.boolean().optional(),
         maxRetries: z.number().int().min(0).optional(),
+        executionIsolation: z.enum(["default", "required"]).optional(),
       })
       .passthrough();
     const result = schema.safeParse(body ?? {});
@@ -269,7 +273,9 @@ export async function handleTaskCollectionRoutes(ctx: ApiRouteContext, deps: Api
           inheritContext: parsed.inheritContext ?? source.inheritContext,
           parentTaskId: source.id,
           maxRetries: parsed.maxRetries ?? source.maxRetries,
-          executionIsolation: "default",
+          executionIsolation:
+            parsed.executionIsolation
+            ?? (source.executionIsolation === "required" || source.category ? "required" : "default"),
           createdBy: "web",
         },
         now,

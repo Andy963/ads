@@ -1027,6 +1027,34 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 29,
+    description: "Task runs - persist worktree cleanup lifecycle and errors",
+    up: (db) => {
+      const names = getTableColumnNames(db, "task_runs");
+      if (!names.has("cleanup_status")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN cleanup_status TEXT NOT NULL DEFAULT 'pending'`);
+      }
+      if (!names.has("cleanup_error")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN cleanup_error TEXT`);
+      }
+      if (!names.has("cleanup_at")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN cleanup_at INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE task_runs
+        SET cleanup_status = CASE
+          WHEN execution_isolation = 'required' THEN COALESCE(NULLIF(TRIM(cleanup_status), ''), 'pending')
+          ELSE 'not_required'
+        END
+        WHERE cleanup_status IS NULL OR TRIM(COALESCE(cleanup_status, '')) = '' OR execution_isolation != 'required';
+
+        CREATE INDEX IF NOT EXISTS idx_task_runs_cleanup_status
+          ON task_runs(cleanup_status, completed_at DESC, created_at DESC, id DESC);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

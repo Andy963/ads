@@ -67,11 +67,15 @@ function recordTaskWorkspacePatchArtifact(
   if (paths.length === 0) {
     reason = "no_changed_paths_recorded";
   } else {
+    const latestRun = ctx.taskStore.getLatestTaskRun(id);
+    const patchRoot = latestRun?.executionIsolation === "required"
+      ? String(latestRun.worktreeDir ?? "").trim()
+      : ctx.workspaceRoot;
+    if (!patchRoot) {
+      reason = "isolated_worktree_unavailable";
+    }
     try {
-      patch = buildWorkspacePatch(
-        ctx.workspaceRoot,
-        paths,
-      );
+      if (!reason) patch = buildWorkspacePatch(patchRoot, paths, { baseRef: latestRun?.baseHead ?? "" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reason = `patch_error:${message}`;
@@ -442,6 +446,7 @@ export function createTaskWorkflowFollowup(args: {
         pullRequest,
         issueNumber: findIssueNumberInTaskChain(task, (id) => ctx.taskStore.getTask(id)),
         reviewerModel,
+        workerRun: ctx.taskStore.getLatestTaskRun(task.id),
       }),
       Date.now(),
       { status: "pending" },
