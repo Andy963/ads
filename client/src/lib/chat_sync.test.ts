@@ -703,4 +703,17 @@ describe("chat_sync.normalizeTurnSemanticOrder", () => {
     const out = normalizeTurnSemanticOrder(raw);
     expect(out.map((m) => m.id)).toEqual(["u1", "p1", "live-step", "e1"]);
   });
+
+  it("keeps only the newest fixed live card when replay includes duplicates", () => {
+    const raw: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "Run task" }),
+      msg({ id: "live-step", role: "assistant", kind: "text", content: "old", streaming: true }),
+      msg({ id: "e1", role: "system", kind: "execute", content: "exec" }),
+      msg({ id: "live-step", role: "assistant", kind: "text", content: "new", streaming: true }),
+    ];
+
+    const out = normalizeTurnSemanticOrder(raw);
+    expect(out.map((m) => m.id)).toEqual(["u1", "live-step", "e1"]);
+    expect(out.find((m) => m.id === "live-step")?.content).toBe("new");
+  });
 });
