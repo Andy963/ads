@@ -394,6 +394,34 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     }
   };
 
+  const reviewTaskAction = async (input: {
+    taskId: string;
+    action: "force_approve" | "edit_rework" | "skip_review" | "abort";
+    feedback?: string;
+    reason?: string;
+    projectId?: string;
+  }): Promise<void> => {
+    apiError.value = null;
+    const pid = normalizeProjectId(input.projectId ?? activeProjectId.value);
+    try {
+      const res = await api.post<{ success: boolean; task?: Task; rootTask?: Task; reworkTask?: Task | null }>(
+        withWorkspaceQueryFor(pid, `/api/tasks/${input.taskId}/review-actions`),
+        {
+          action: input.action,
+          feedback: input.feedback,
+          reason: input.reason,
+          idempotencyKey: `ui-review:${input.taskId}:${input.action}:${Date.now()}`,
+        },
+      );
+      if (res?.rootTask) upsertTask(res.rootTask, getRuntime(pid));
+      if (res?.task) upsertTask(res.task, getRuntime(pid));
+      if (res?.reworkTask) upsertTask(res.reworkTask, getRuntime(pid));
+      await loadTasks(pid, { preserveSelection: true });
+    } catch (error) {
+      apiError.value = error instanceof Error ? error.message : String(error);
+    }
+  };
+
   const deleteTask = async (id: string): Promise<void> => {
     apiError.value = null;
     clearNotice();
@@ -818,6 +846,7 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     runSingleTask,
     cancelTask,
     retryTask,
+    reviewTaskAction,
     deleteTask,
     cancelDeleteTask,
     confirmDeleteTask,
