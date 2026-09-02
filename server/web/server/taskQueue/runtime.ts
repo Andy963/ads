@@ -12,9 +12,16 @@ import {
   buildReviewTaskInput,
   findIssueNumberInTaskChain,
   findPullRequestInTaskChain,
+  findRootTaskInChain,
+  findWorkerTaskInChain,
   isReviewWorkflowCategory,
+  mergeReviewSummary,
   parseReviewDecision,
+  reviewConclusion,
+  reviewSubjectForTask,
 } from "../../../tasks/reviewWorkflow.js";
+import type { TaskReviewSummary } from "../../../tasks/types.js";
+import { isTerminalReviewStatus } from "../../../tasks/reviewData.js";
 
 type ChangedPathsContext = { paths?: unknown };
 type TaskWorkspacePatchArtifact = {
@@ -95,63 +102,340 @@ function recordTaskWorkspacePatchArtifact(
   }
 }
 
+function uniqueTaskIds(ids: string[]): string[] {
+  return [...new Set(ids.map((id) => String(id ?? "").trim()).filter(Boolean))];
+}
+
+function persistReviewSummary(
+  ctx: TaskQueueContext,
+  subject: Task,
+  patch: Partial<TaskReviewSummary>,
+  relatedTaskIds: string[] = [],
+): TaskReviewSummary {
+  const root = ctx.taskStore.getRootTask(subject.id) ?? subject;
+  const summary = mergeReviewSummary(root, {
+    ...patch,
+    required: true,
+    rootTaskId: root.id,
+  });
+  const taskIds = uniqueTaskIds([root.id, subject.id, ...relatedTaskIds]);
+  for (const taskId of taskIds) {
+    ctx.taskStore.updateTaskReview(taskId, summary, Date.now());
+  }
+  return summary;
+}
+
+function emitReviewNotification(args: {
+  ctx: TaskQueueContext;
+  task: Task;
+  summary: TaskReviewSummary;
+  event: string;
+  message: string;
+  broadcastToSession: (sessionId: string, payload: unknown) => void;
+  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
+}): void {
+  const now = Date.now();
+  args.broadcastToSession(args.ctx.sessionId, {
+    type: "task:event",
+    event: "review:updated",
+    data: {
+      taskId: args.task.id,
+      rootTaskId: args.summary.rootTaskId,
+      event: args.event,
+      message: args.message,
+      review: args.summary,
+    },
+    ts: now,
+  });
+  args.recordToSessionHistories?.(args.ctx.sessionId, {
+    role: "status",
+    text: `[Code Review] ${args.message}`,
+    ts: now,
+    kind: "review",
+  });
+}
+
+function persistReviewError(args: {
+  ctx: TaskQueueContext;
+  subject: Task;
+  reason: string;
+  task: Task;
+  logger: Logger;
+  broadcastToSession: (sessionId: string, payload: unknown) => void;
+  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
+}): void {
+  const reviewTaskId = args.task.category === "review" ? args.task.id : undefined;
+  const summary = persistReviewSummary(args.ctx, args.subject, {
+    status: "error",
+    stateReason: args.reason,
+    controlState: "needs_intervention",
+    reviewedAt: Date.now(),
+    ...(reviewTaskId ? { reviewTaskId } : {}),
+  }, reviewTaskId ? [reviewTaskId] : []);
+  args.logger.warn(`[Web][TaskReview] ${args.reason} taskId=${args.subject.id}`);
+  emitReviewNotification({
+    ctx: args.ctx,
+    task: args.task,
+    summary,
+    event: "error",
+    message: args.reason,
+    broadcastToSession: args.broadcastToSession,
+    recordToSessionHistories: args.recordToSessionHistories,
+  });
+}
+
+export function markReviewTaskStarted(args: {
+  ctx: TaskQueueContext;
+  task: Task;
+  broadcastToSession: (sessionId: string, payload: unknown) => void;
+  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
+}): void {
+  if (args.task.category !== "review") return;
+  const subject = reviewSubjectForTask(args.task, (id) => args.ctx.taskStore.getTask(id));
+  if (!subject) return;
+  const root = args.ctx.taskStore.getRootTask(subject.id) ?? subject;
+  const currentReview = root.review;
+  if (currentReview?.required && isTerminalReviewStatus(currentReview.status)) return;
+  if (currentReview?.status === "in_review" && currentReview.reviewTaskId === args.task.id) return;
+  const summary = persistReviewSummary(args.ctx, subject, {
+    status: "in_review",
+    reviewTaskId: args.task.id,
+    reviewStartedAt: args.task.startedAt ?? Date.now(),
+    reviewerModelId: args.task.model,
+    reviewerAgentId: args.task.agentId,
+    stateReason: null,
+  }, [args.task.id]);
+  emitReviewNotification({
+    ctx: args.ctx,
+    task: subject,
+    summary,
+    event: "started",
+    message: `Review started with ${summary.reviewerModelDisplayName ?? args.task.model}.`,
+    broadcastToSession: args.broadcastToSession,
+    recordToSessionHistories: args.recordToSessionHistories,
+  });
+}
+
+export function markReviewTaskFailed(args: {
+  ctx: TaskQueueContext;
+  task: Task;
+  error: string;
+  logger: Logger;
+  broadcastToSession: (sessionId: string, payload: unknown) => void;
+  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
+}): void {
+  if (args.task.category !== "review") return;
+  const subject = reviewSubjectForTask(args.task, (id) => args.ctx.taskStore.getTask(id));
+  if (!subject) return;
+  const root = args.ctx.taskStore.getRootTask(subject.id) ?? subject;
+  if (root.review?.required && isTerminalReviewStatus(root.review.status)) return;
+  persistReviewError({ ...args, subject, reason: `Review execution failed: ${args.error}` });
+}
+
 export function createTaskWorkflowFollowup(args: {
   ctx: TaskQueueContext;
   task: Task;
   logger: Logger;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
+  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): void {
   const { ctx, task, logger } = args;
   try {
     if (task.category === "review") {
       const decision = parseReviewDecision(task.result ?? "");
-      if (decision?.status !== "rejected" || ctx.taskStore.findChildTask(task.id, "rework")) {
+      const subject = reviewSubjectForTask(task, (id) => ctx.taskStore.getTask(id));
+      if (!subject) {
+        logger.warn(`[Web][TaskReview] review task has no subject taskId=${task.id}`);
+        return;
+      }
+      const root = ctx.taskStore.getRootTask(subject.id) ?? subject;
+      if (root.review?.required && isTerminalReviewStatus(root.review.status)) return;
+      if (!decision) {
+        persistReviewError({
+          ctx,
+          subject,
+          task,
+          reason: "Reviewer output did not contain REVIEW_STATUS: approved or REVIEW_STATUS: rejected.",
+          logger,
+          broadcastToSession: args.broadcastToSession,
+          recordToSessionHistories: args.recordToSessionHistories,
+        });
         return;
       }
       const pullRequest = findPullRequestInTaskChain(task, (id) => ctx.taskStore.getTask(id));
       if (!pullRequest) {
-        logger.warn(`[Web][TaskReview] rejected review has no pull request reference taskId=${task.id}`);
+        persistReviewError({
+          ctx,
+          subject,
+          task,
+          reason: "Review completed without a pull request reference.",
+          logger,
+          broadcastToSession: args.broadcastToSession,
+          recordToSessionHistories: args.recordToSessionHistories,
+        });
         return;
       }
+      const base = persistReviewSummary(ctx, subject, {
+        status: decision.status,
+        reviewTaskId: task.id,
+        pullRequestNumber: pullRequest.number,
+        pullRequestUrl: pullRequest.url,
+        reviewerModelId: task.model,
+        reviewerAgentId: task.agentId,
+        reviewedAt: Date.now(),
+        conclusion: reviewConclusion(task.result ?? ""),
+        feedback: decision.feedback || null,
+        output: task.result ?? null,
+        stateReason: null,
+        controlState: ctx.taskStore.getReviewSettings().automationMode === "human_gated" ? "human_gated" : "automatic",
+      }, [task.id]);
+      if (decision.status === "approved") {
+        emitReviewNotification({
+          ctx,
+          task: subject,
+          summary: base,
+          event: "approved",
+          message: "Review approved.",
+          broadcastToSession: args.broadcastToSession,
+          recordToSessionHistories: args.recordToSessionHistories,
+        });
+        return;
+      }
+
+      const settings = ctx.taskStore.getReviewSettings();
+      const currentRound = root.review?.reworkRound ?? base.reworkRound;
+      const humanGated = settings.automationMode === "human_gated";
+      if (humanGated || currentRound >= settings.maxReworkRounds) {
+        const fused = persistReviewSummary(ctx, subject, {
+          status: "needs_human_intervention",
+          maxReworkRounds: settings.maxReworkRounds,
+          automationMode: settings.automationMode,
+          reworkRound: currentRound,
+          stateReason: humanGated
+            ? "Human-Gated mode requires an explicit decision after rejection."
+            : `Automatic rework fuse opened after ${settings.maxReworkRounds} rework rounds.`,
+          controlState: "needs_intervention",
+        }, [task.id]);
+        emitReviewNotification({
+          ctx,
+          task: subject,
+          summary: fused,
+          event: "needs_human_intervention",
+          message: fused.stateReason ?? "Human intervention is required.",
+          broadcastToSession: args.broadcastToSession,
+          recordToSessionHistories: args.recordToSessionHistories,
+        });
+        return;
+      }
+      const existingRework = ctx.taskStore.findChildTask(task.id, "rework");
+      if (existingRework) {
+        if (!base.reworkTaskIds.includes(existingRework.id)) {
+          const reworkRound = existingRework.review?.reworkRound ?? currentRound + 1;
+          const recovered = persistReviewSummary(ctx, subject, {
+            status: "rejected",
+            reworkRound,
+            reworkTaskIds: [...base.reworkTaskIds, existingRework.id],
+            stateReason: `Automatic rework round ${reworkRound} queued.`,
+            controlState: "automatic",
+          }, [task.id]);
+          emitReviewNotification({
+            ctx,
+            task: subject,
+            summary: recovered,
+            event: "rework_created",
+            message: `Review rejected; automatic rework round ${reworkRound}/${settings.maxReworkRounds} was queued.`,
+            broadcastToSession: args.broadcastToSession,
+            recordToSessionHistories: args.recordToSessionHistories,
+          });
+        }
+        return;
+      }
+      const worker = findWorkerTaskInChain(subject, (id) => ctx.taskStore.getTask(id));
       const rework = ctx.taskStore.createTask(
-        buildReworkTaskInput({ reviewTask: task, pullRequest, feedback: decision.feedback }),
+        buildReworkTaskInput({ reviewTask: task, workerTask: worker, pullRequest, feedback: decision.feedback }),
         Date.now(),
         { status: "pending" },
       );
-      recordTaskQueueMetric(ctx.metrics, "TASK_ADDED", {
-        ts: Date.now(),
-        taskId: rework.id,
-        reason: `rework_from:${task.id}`,
-      });
-      args.broadcastToSession(ctx.sessionId, {
-        type: "task:event",
-        event: "task:updated",
-        data: rework,
-        ts: Date.now(),
+      const updated = persistReviewSummary(ctx, subject, {
+        status: "rejected",
+        maxReworkRounds: settings.maxReworkRounds,
+        automationMode: settings.automationMode,
+        reworkRound: currentRound + 1,
+        reworkTaskIds: [...(base.reworkTaskIds ?? []), rework.id],
+        stateReason: `Automatic rework round ${currentRound + 1} queued.`,
+        controlState: "automatic",
+      }, [task.id]);
+      recordTaskQueueMetric(ctx.metrics, "TASK_ADDED", { ts: Date.now(), taskId: rework.id, reason: `rework_from:${task.id}` });
+      args.broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: rework, ts: Date.now() });
+      emitReviewNotification({
+        ctx,
+        task: subject,
+        summary: updated,
+        event: "rework_created",
+        message: `Review rejected; automatic rework round ${currentRound + 1}/${settings.maxReworkRounds} was queued.`,
+        broadcastToSession: args.broadcastToSession,
+        recordToSessionHistories: args.recordToSessionHistories,
       });
       ctx.taskQueue.notifyNewTask();
       return;
     }
 
-    if (!isReviewWorkflowCategory(task.category) || ctx.taskStore.findChildTask(task.id, "review")) {
+    if (!isReviewWorkflowCategory(task.category)) {
+      return;
+    }
+    const subject = reviewSubjectForTask(task, (id) => ctx.taskStore.getTask(id)) ?? task;
+    const root = findRootTaskInChain(subject, (id) => ctx.taskStore.getTask(id));
+    if (root.review?.controlState === "needs_intervention" || ["approved", "skipped", "needs_human_intervention"].includes(root.review?.status ?? "")) {
+      return;
+    }
+    const existingReview = ctx.taskStore.findChildTask(task.id, "review");
+    if (existingReview) {
+      if (root.review?.reviewTaskId !== existingReview.id) {
+        persistReviewSummary(ctx, subject, { reviewTaskId: existingReview.id });
+      }
       return;
     }
     const pullRequest = findPullRequestInTaskChain(task, (id) => ctx.taskStore.getTask(id));
     if (!pullRequest) {
+      persistReviewError({
+        ctx,
+        subject,
+        task,
+        reason: "Completed Worker task has no pull request reference.",
+        logger,
+        broadcastToSession: args.broadcastToSession,
+        recordToSessionHistories: args.recordToSessionHistories,
+      });
       return;
     }
     const reviewerModel = ctx.getReviewerModel();
     if (!reviewerModel) {
       const message = "Reviewer model is not configured. Select an enabled concrete Reviewer model before reviewing tasks.";
-      logger.warn(`[Web][TaskReview] ${message} taskId=${task.id}`);
-      args.broadcastToSession(ctx.sessionId, {
-        type: "task:event",
-        event: "task:error",
-        data: { taskId: task.id, error: message },
-        ts: Date.now(),
+      persistReviewError({
+        ctx,
+        subject,
+        task,
+        reason: message,
+        logger,
+        broadcastToSession: args.broadcastToSession,
+        recordToSessionHistories: args.recordToSessionHistories,
       });
       return;
     }
+    const settings = ctx.taskStore.getReviewSettings();
+    const pending = persistReviewSummary(ctx, subject, {
+      status: "pending_review",
+      maxReworkRounds: settings.maxReworkRounds,
+      automationMode: settings.automationMode,
+      pullRequestNumber: pullRequest.number,
+      pullRequestUrl: pullRequest.url,
+      reviewerModelConfigId: reviewerModel.modelConfigId ?? null,
+      reviewerModelId: reviewerModel.modelId ?? reviewerModel.model,
+      reviewerModelDisplayName: reviewerModel.displayName ?? reviewerModel.model,
+      reviewerAgentId: reviewerModel.agentId,
+      stateReason: null,
+      controlState: settings.automationMode === "human_gated" ? "human_gated" : "automatic",
+    });
     const review = ctx.taskStore.createTask(
       buildReviewTaskInput({
         source: task,
@@ -162,6 +446,7 @@ export function createTaskWorkflowFollowup(args: {
       Date.now(),
       { status: "pending" },
     );
+    const linked = persistReviewSummary(ctx, subject, { ...pending, reviewTaskId: review.id });
     recordTaskQueueMetric(ctx.metrics, "TASK_ADDED", {
       ts: Date.now(),
       taskId: review.id,
@@ -173,10 +458,36 @@ export function createTaskWorkflowFollowup(args: {
       data: review,
       ts: Date.now(),
     });
+    args.broadcastToSession(ctx.sessionId, { type: "task:event", event: "task:updated", data: subject, ts: Date.now() });
+    emitReviewNotification({
+      ctx,
+      task: subject,
+      summary: linked,
+      event: "queued",
+      message: `Review queued with ${linked.reviewerModelDisplayName ?? reviewerModel.model}.`,
+      broadcastToSession: args.broadcastToSession,
+      recordToSessionHistories: args.recordToSessionHistories,
+    });
     ctx.taskQueue.notifyNewTask();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`[Web][TaskReview] follow-up creation failed taskId=${task.id} err=${message}`);
+    if (isReviewWorkflowCategory(task.category)) {
+      const subject = reviewSubjectForTask(task, (id) => ctx.taskStore.getTask(id)) ?? task;
+      try {
+        persistReviewError({
+          ctx,
+          subject,
+          task,
+          reason: `Review follow-up creation failed: ${message}`,
+          logger,
+          broadcastToSession: args.broadcastToSession,
+          recordToSessionHistories: args.recordToSessionHistories,
+        });
+      } catch (persistError) {
+        logger.warn(`[Web][TaskReview] failed to persist follow-up error taskId=${task.id} err=${String(persistError)}`);
+      }
+    }
   }
 }
 
@@ -253,6 +564,12 @@ export function bindTaskQueueRuntime(args: {
       recordMetric: (name, event) => recordTaskQueueMetric(ctx.metrics, name, event),
       broadcast: (payload) => args.broadcastToSession(ctx.sessionId, payload),
     });
+    markReviewTaskStarted({
+      ctx,
+      task,
+      broadcastToSession: args.broadcastToSession,
+      recordToSessionHistories: args.recordToSessionHistories,
+    });
   });
   ctx.taskQueue.on("task:running", ({ task }) =>
     args.broadcastToSession(ctx.sessionId, {
@@ -321,6 +638,7 @@ export function bindTaskQueueRuntime(args: {
       task,
       logger: args.logger,
       broadcastToSession: args.broadcastToSession,
+      recordToSessionHistories: args.recordToSessionHistories,
     });
     if (task.result && task.result.trim()) {
       args.recordToSessionHistories(ctx.sessionId, {
@@ -329,10 +647,11 @@ export function bindTaskQueueRuntime(args: {
         ts: Date.now(),
       });
     }
+    const completedTask = ctx.taskStore.getTask(task.id) ?? task;
     args.broadcastToSession(ctx.sessionId, {
       type: "task:event",
       event: "task:completed",
-      data: task,
+      data: completedTask,
       ts: Date.now(),
     });
     try {
@@ -355,6 +674,14 @@ export function bindTaskQueueRuntime(args: {
     ctx.runController.maybePauseAfterDrain(ctx);
   });
   ctx.taskQueue.on("task:failed", ({ task, error }) => {
+    markReviewTaskFailed({
+      ctx,
+      task,
+      error,
+      logger: args.logger,
+      broadcastToSession: args.broadcastToSession,
+      recordToSessionHistories: args.recordToSessionHistories,
+    });
     args.recordToSessionHistories(ctx.sessionId, {
       role: "status",
       text: `[Task failed] ${error}`,

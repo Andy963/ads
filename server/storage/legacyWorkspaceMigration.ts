@@ -9,8 +9,10 @@ const TABLES = [
   "tasks", "task_plans", "task_messages", "task_contexts", "task_runs",
   "schedules", "schedule_runs", "attachments", "conversations",
   "conversation_messages", "review_snapshots", "review_queue_items", "review_artifacts",
+  "review_settings", "review_action_audits",
 ] as const;
-const MAX_SUPPORTED_SOURCE_SCHEMA_VERSION = 27;
+const OPTIONAL_TABLES = new Set(["review_settings", "review_action_audits"]);
+const MAX_SUPPORTED_SOURCE_SCHEMA_VERSION = 28;
 
 function quoteIdentifier(value: string): string {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) throw new Error("Invalid identifier: " + value);
@@ -43,6 +45,7 @@ function validateLegacySchema(db: DatabaseType, source: string): void {
   for (const table of TABLES) {
     const sourceColumns = columns(db, "legacy_db", table);
     if (sourceColumns.length === 0) {
+      if (OPTIONAL_TABLES.has(table)) continue;
       throw new Error(`Legacy workspace database is missing required table ${table}: ${source}`);
     }
     const targetColumns = new Set(columns(db, "main", table));

@@ -981,6 +981,52 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 28,
+    description: "Review lifecycle state, settings, and human action audit",
+    up: (db) => {
+      const taskColumns = getTableColumnNames(db, "tasks");
+      if (!taskColumns.has("review_data_json")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_data_json TEXT NOT NULL DEFAULT '{}'`);
+      }
+      db.exec(`
+        UPDATE tasks
+        SET review_data_json = COALESCE(review_data_json, '{}')
+        WHERE review_data_json IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_review_status
+          ON tasks(workspace_id, review_status, completed_at DESC, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS review_settings (
+          workspace_id TEXT PRIMARY KEY,
+          automation_mode TEXT NOT NULL DEFAULT 'auto_with_fuse',
+          max_rework_rounds INTEGER NOT NULL DEFAULT 2,
+          updated_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS review_action_audits (
+          workspace_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          root_task_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          reason TEXT,
+          actor_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(workspace_id, id),
+          UNIQUE(workspace_id, idempotency_key),
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(root_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_action_audits_task
+          ON review_action_audits(workspace_id, task_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_review_action_audits_root
+          ON review_action_audits(workspace_id, root_task_id, created_at DESC);
+      `);
+    },
+  },
   // 示例：未来的迁移
   // {
   //   version: 13,

@@ -15,6 +15,7 @@ export type TaskStoreStatements = {
   insertTaskStmt: SqliteStatement;
   getTaskStmt: SqliteStatement;
   findChildTaskStmt: SqliteStatement;
+  listChildTasksStmt: SqliteStatement;
   listTasksStmt: SqliteStatement;
   listTasksByStatusStmt: SqliteStatement;
   updateTaskStmt: SqliteStatement;
@@ -60,6 +61,11 @@ export type TaskStoreStatements = {
   getLatestTaskRunStmt: SqliteStatement;
   listTaskRunsStmt: SqliteStatement;
   updateTaskRunStmt: SqliteStatement;
+  getReviewSettingsStmt: SqliteStatement;
+  upsertReviewSettingsStmt: SqliteStatement;
+  insertReviewActionAuditStmt: SqliteStatement;
+  getReviewActionAuditByIdempotencyStmt: SqliteStatement;
+  listReviewActionAuditsStmt: SqliteStatement;
 };
 
 export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string): TaskStoreStatements {
@@ -99,12 +105,18 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         goal_token_budget,
         goal_status,
         goal_tokens_used,
-        goal_time_used_seconds
+        goal_time_used_seconds,
+        review_required,
+        review_status,
+        review_snapshot_id,
+        review_conclusion,
+        reviewed_at,
+        review_data_json
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `),
 
@@ -115,6 +127,12 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
        WHERE workspace_id = ? AND parent_task_id = ? AND category = ?
        ORDER BY created_at ASC, id ASC
        LIMIT 1`,
+    ),
+
+    listChildTasksStmt: scoped(
+      `SELECT * FROM tasks
+       WHERE workspace_id = ? AND parent_task_id = ?
+       ORDER BY created_at ASC, id ASC`,
     ),
 
     selectNextQueueOrderStmt: scoped(
@@ -183,7 +201,13 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         goal_token_budget = ?,
         goal_status = ?,
         goal_tokens_used = ?,
-        goal_time_used_seconds = ?
+        goal_time_used_seconds = ?,
+        review_required = ?,
+        review_status = ?,
+        review_snapshot_id = ?,
+        review_conclusion = ?,
+        reviewed_at = ?,
+        review_data_json = ?
       WHERE id = ? AND workspace_id = ?
     `, "suffix"),
 
@@ -398,5 +422,34 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         completed_at = ?
       WHERE id = ? AND workspace_id = ?
     `, "suffix"),
+
+    getReviewSettingsStmt: scoped(
+      `SELECT * FROM review_settings WHERE workspace_id = ? LIMIT 1`,
+    ),
+
+    upsertReviewSettingsStmt: scoped(`
+      INSERT INTO review_settings (workspace_id, automation_mode, max_rework_rounds, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(workspace_id) DO UPDATE SET
+        automation_mode = excluded.automation_mode,
+        max_rework_rounds = excluded.max_rework_rounds,
+        updated_at = excluded.updated_at
+    `),
+
+    insertReviewActionAuditStmt: scoped(`
+      INSERT INTO review_action_audits (
+        workspace_id, id, task_id, root_task_id, action, reason, actor_id, idempotency_key, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+
+    getReviewActionAuditByIdempotencyStmt: scoped(
+      `SELECT * FROM review_action_audits WHERE workspace_id = ? AND idempotency_key = ? LIMIT 1`,
+    ),
+
+    listReviewActionAuditsStmt: scoped(
+      `SELECT * FROM review_action_audits
+       WHERE workspace_id = ? AND root_task_id = ?
+       ORDER BY created_at ASC, id ASC`,
+    ),
   };
 }

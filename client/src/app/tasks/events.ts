@@ -1,4 +1,4 @@
-import type { Task, TaskEventPayload } from "../../api/types";
+import type { Task, TaskEventPayload, TaskReviewSummary } from "../../api/types";
 import type { ChatActions } from "../chat";
 import type { AppContext, ProjectRuntime } from "../controller";
 
@@ -31,6 +31,7 @@ export function createTaskEventActions(
   type CommandEvent = { taskId: string; command: string };
   type MessageDeltaEvent = { taskId: string; role: string; delta: string; source?: "chat" | "step" };
   type TaskFailedEvent = { task: Task; error: string };
+  type ReviewEvent = { taskId: string; rootTaskId?: string | null; event: string; message: string; review?: TaskReviewSummary };
 
   const asRecord = (value: unknown): Record<string, unknown> | null => {
     if (!value || typeof value !== "object") {
@@ -101,6 +102,17 @@ export function createTaskEventActions(
     };
   };
 
+  const parseReviewEvent = (value: unknown): ReviewEvent | null => {
+    const record = asRecord(value);
+    if (!record) return null;
+    const taskId = asTrimmedString(record.taskId);
+    const event = asTrimmedString(record.event);
+    const message = String(record.message ?? "").trim();
+    if (!taskId || !event || !message) return null;
+    const review = record.review && typeof record.review === "object" ? record.review as TaskReviewSummary : undefined;
+    return { taskId, rootTaskId: record.rootTaskId == null ? null : asTrimmedString(record.rootTaskId), event, message, review };
+  };
+
   const startTaskTerminalCleanup = (taskId: string, state: ProjectRuntime): void => {
     markTaskChatStarted(taskId, state);
     clearStepLive(state);
@@ -164,6 +176,33 @@ export function createTaskEventActions(
         const task = parseTask(payload.data);
         if (!task) return;
         upsertTask(task, state);
+        return;
+      }
+      case "review:updated": {
+        const data = parseReviewEvent(payload.data);
+        if (!data) return;
+        const rootTaskId = data.rootTaskId || data.taskId;
+        if (data.review) {
+          const matchingTasks = state.tasks.value.filter((task) =>
+            task.id === data.taskId
+            || task.id === rootTaskId
+            || task.review?.rootTaskId === rootTaskId,
+          );
+          for (const task of matchingTasks) {
+            upsertTask({ ...task, review: data.review }, state);
+          }
+        }
+        const messageId = `review:${rootTaskId}:${data.event}:${data.message}`;
+        if (!state.messages.value.some((item) => item.id === messageId)) {
+          pushMessageBeforeLive({
+            id: messageId,
+            role: "system",
+            kind: "text",
+            content: `[Code Review] ${data.message}`,
+            ts: Date.now(),
+          }, state);
+        }
+        state.laneStatus.value = { kind: "info", message: data.message };
         return;
       }
       case "command": {

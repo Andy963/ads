@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { Task, TaskGoalStatus } from "../api/types";
 import DraggableModal from "./DraggableModal.vue";
 
@@ -14,7 +14,60 @@ const emit = defineEmits<{
   (e: "goal-pause", taskId: string): void;
   (e: "goal-resume", taskId: string): void;
   (e: "goal-clear", taskId: string): void;
+  (e: "review-action", payload: { taskId: string; action: "force_approve" | "edit_rework" | "skip_review" | "abort"; feedback?: string; reason?: string }): void;
+  (e: "review-navigate", taskId: string): void;
 }>();
+
+const review = computed(() => props.task.review ?? null);
+const reviewStatusLabel = computed(() => {
+  switch (review.value?.status) {
+    case "pending_review": return "Pending Review";
+    case "in_review": return "In Review";
+    case "approved": return "Approved";
+    case "rejected": return "Rejected";
+    case "needs_human_intervention": return "Needs Human Intervention";
+    case "skipped": return "Skipped";
+    case "error": return "Review Error";
+    default: return "Not Required";
+  }
+});
+function chainCategoryLabel(category: string | undefined): string {
+  if (category === "review") return "Review";
+  if (category === "rework") return "Rework";
+  return "Development";
+}
+function chainStatusLabel(status: string): string {
+  if (status === "completed") return "Completed";
+  if (status === "running") return "Running";
+  if (status === "pending") return "Pending";
+  if (status === "cancelled") return "Cancelled";
+  if (status === "failed") return "Failed";
+  return status;
+}
+const reviewFeedback = ref("");
+const reviewActionPending = ref(false);
+const confirmingAbort = ref(false);
+const canReviewAction = computed(() => Boolean(review.value?.required)
+  && ["rejected", "needs_human_intervention", "error", "pending_review", "in_review"].includes(review.value?.status ?? ""));
+watch(review, (next) => {
+  reviewFeedback.value = next?.feedback ?? "";
+}, { immediate: true });
+function submitReviewAction(action: "force_approve" | "edit_rework" | "skip_review" | "abort"): void {
+  if (!canReviewAction.value || reviewActionPending.value) return;
+  if (action === "abort" && !confirmingAbort.value) {
+    confirmingAbort.value = true;
+    return;
+  }
+  if (action === "abort") confirmingAbort.value = false;
+  reviewActionPending.value = true;
+  emit("review-action", {
+    taskId: props.task.id,
+    action,
+    feedback: action === "edit_rework" ? reviewFeedback.value : undefined,
+    reason: action === "edit_rework" ? reviewFeedback.value : undefined,
+  });
+  window.setTimeout(() => { reviewActionPending.value = false; }, 500);
+}
 
 const goalEnabled = computed(() => Boolean(props.task.goalMode));
 const goalStatus = computed<TaskGoalStatus | null>(() => props.task.goalStatus ?? null);
@@ -166,6 +219,47 @@ function confirmClear(): void {
         </div>
       </div>
 
+      <div v-if="review?.required" class="reviewPanel" data-testid="task-detail-review-panel">
+        <div class="reviewPanelHeader">
+          <span class="reviewPanelTitle">Code Review</span>
+          <span class="reviewStatusBadge" :data-review-status="review.status">{{ reviewStatusLabel }}</span>
+        </div>
+        <div class="detailMetaGrid reviewMetaGrid">
+          <div class="detailMetaRow"><span class="detailMetaKey">State reason</span><span class="detailMetaValue preWrap">{{ review.stateReason || "—" }}</span></div>
+          <div v-if="review.pullRequestNumber" class="detailMetaRow"><span class="detailMetaKey">Pull request</span><a class="reviewPrLink" :href="review.pullRequestUrl ?? undefined" target="_blank" rel="noreferrer">PR #{{ review.pullRequestNumber }}</a></div>
+          <div class="detailMetaRow"><span class="detailMetaKey">Reviewer</span><span class="detailMetaValue">{{ review.reviewerModelDisplayName || review.reviewerModelId || "—" }} ({{ review.reviewerAgentId || "—" }})</span></div>
+          <div class="detailMetaRow"><span class="detailMetaKey">Started</span><span class="detailMetaValue detailMono">{{ review.reviewStartedAt ? new Date(review.reviewStartedAt).toLocaleString() : "—" }}</span></div>
+          <div class="detailMetaRow"><span class="detailMetaKey">Reviewed</span><span class="detailMetaValue detailMono">{{ review.reviewedAt ? new Date(review.reviewedAt).toLocaleString() : "—" }}</span></div>
+          <div class="detailMetaRow"><span class="detailMetaKey">Round</span><span class="detailMetaValue detailMono">{{ review.reworkRound }}/{{ review.maxReworkRounds }}</span></div>
+          <div class="detailMetaRow"><span class="detailMetaKey">Root task</span><button type="button" class="reviewTaskLink detailMono" @click="emit('review-navigate', review.rootTaskId || props.task.id)">{{ review.rootTaskId || props.task.id }}</button></div>
+          <div v-if="review.reviewTaskId" class="detailMetaRow"><span class="detailMetaKey">Review task</span><button type="button" class="reviewTaskLink detailMono" @click="emit('review-navigate', review.reviewTaskId)">{{ review.reviewTaskId }}</button></div>
+          <div v-if="review.reworkTaskIds.length" class="detailMetaRow"><span class="detailMetaKey">Rework tasks</span><span class="detailMetaValue detailMono">{{ review.reworkTaskIds.join(", ") }}</span></div>
+        </div>
+        <div v-if="props.task.reviewChain?.length" class="reviewChain" data-testid="task-detail-review-chain">
+          <div class="detailMetaKey">Related tasks</div>
+          <div class="reviewChainList">
+            <button
+              v-for="entry in props.task.reviewChain"
+              :key="entry.id"
+              type="button"
+              class="reviewTaskLink reviewChainItem"
+              @click="emit('review-navigate', entry.id)"
+            >{{ chainCategoryLabel(entry.category) }} · {{ entry.id }} · {{ chainStatusLabel(entry.status) }}</button>
+          </div>
+        </div>
+        <div v-if="review.conclusion" class="reviewTextBlock"><div class="detailMetaKey">Conclusion</div><div class="preWrap">{{ review.conclusion }}</div></div>
+        <div v-if="review.feedback" class="reviewTextBlock"><div class="detailMetaKey">Feedback</div><pre class="preWrap">{{ review.feedback }}</pre></div>
+        <div v-if="review.output" class="reviewTextBlock"><div class="detailMetaKey">Reviewer output</div><pre class="preWrap">{{ review.output }}</pre></div>
+        <div v-if="canReviewAction" class="reviewControls">
+          <button type="button" class="btnSecondary btnCompact" :disabled="reviewActionPending" data-testid="review-detail-force-approve" @click="submitReviewAction('force_approve')">Force Approve</button>
+          <textarea v-model="reviewFeedback" class="reviewFeedbackInput" rows="4" aria-label="Rework feedback" placeholder="Edit the rework instructions" />
+          <button type="button" class="btnSecondary btnCompact" :disabled="reviewActionPending || !reviewFeedback.trim()" data-testid="review-detail-edit-rework" @click="submitReviewAction('edit_rework')">Edit &amp; Rework</button>
+          <button type="button" class="btnSecondary btnCompact" :disabled="reviewActionPending" data-testid="review-detail-skip" @click="submitReviewAction('skip_review')">Skip Review</button>
+          <span v-if="!confirmingAbort"><button type="button" class="btnSecondary btnCompact danger" :disabled="reviewActionPending" data-testid="review-detail-abort" @click="submitReviewAction('abort')">Abort</button></span>
+          <span v-else class="reviewConfirm"><span>Abort chain?</span><button type="button" class="btnSecondary btnCompact" @click="confirmingAbort = false">Cancel</button><button type="button" class="btnSecondary btnCompact danger" @click="submitReviewAction('abort')">Confirm</button></span>
+        </div>
+      </div>
+
       <div class="detailSection">
         <div class="detailSectionTitle">任务描述</div>
         <pre class="detailMono preWrap" data-testid="task-detail-prompt">{{ props.task.prompt }}</pre>
@@ -296,6 +390,60 @@ function confirmClear(): void {
   min-width: 0;
   word-break: break-word;
 }
+
+.reviewPanel {
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(239, 246, 255, 0.72);
+}
+
+.reviewPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.reviewPanelTitle { font-size: 15px; font-weight: 900; color: #0f172a; }
+.reviewStatusBadge { border-radius: 999px; padding: 4px 9px; font-size: 11px; font-weight: 900; }
+.reviewStatusBadge[data-review-status="approved"] { background: #bbf7d0; color: #166534; }
+.reviewStatusBadge[data-review-status="rejected"], .reviewStatusBadge[data-review-status="error"] { background: #fecaca; color: #991b1b; }
+.reviewStatusBadge[data-review-status="needs_human_intervention"] { background: #fed7aa; color: #9a3412; }
+.reviewStatusBadge[data-review-status="in_review"] { background: #bfdbfe; color: #1d4ed8; }
+.reviewStatusBadge[data-review-status="pending_review"] { background: #e0e7ff; color: #4338ca; }
+.reviewStatusBadge[data-review-status="skipped"] { background: #e2e8f0; color: #475569; }
+.reviewMetaGrid { background: rgba(255, 255, 255, 0.6); }
+.reviewTextBlock { margin-top: 10px; color: #334155; font-size: 12px; }
+.reviewTextBlock pre { margin: 5px 0 0; font: inherit; }
+.reviewTaskLink {
+  border: 0;
+  padding: 0;
+  color: #2563eb;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+}
+.reviewTaskLink:hover { color: #1d4ed8; }
+.reviewChain {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+}
+.reviewChainList { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.reviewChainItem {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.reviewControls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 12px; }
+.reviewFeedbackInput { flex: 1 1 100%; min-width: 0; border: 1px solid rgba(100, 116, 139, 0.35); border-radius: 10px; padding: 8px; resize: vertical; font: inherit; color: #0f172a; background: #fff; }
+.reviewConfirm { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; }
 
 .detailMono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
