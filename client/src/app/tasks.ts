@@ -440,7 +440,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
 
   const sendMainPrompt = (content: string): void => {
     apiError.value = null;
-    if (activeRuntime.value.inputLocked.value) return;
     const text = String(content ?? "");
     const images = pendingImages.value.slice();
     pendingImages.value = [];
@@ -451,7 +450,6 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     apiError.value = null;
     const text = String(content ?? "");
     const planner = activePlannerRuntime.value;
-    if (planner.inputLocked.value) return;
     const images = planner.pendingImages.value.slice();
     planner.pendingImages.value = [];
     enqueuePrompt(text, images, planner);

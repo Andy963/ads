@@ -1071,11 +1071,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     });
     await settleUi(wrapper);
 
-    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_PENDING_RESEND_NOTICE);
-    expect(rt.laneStatus.value).toEqual({
-      kind: "info",
-      message: "后端已是全新上下文。为避免误导，旧的本地聊天历史已清空。",
-    });
+    expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["Hello"]);
+    expect(rt.laneStatus.value).toBeNull();
     expect(rt.inputLocked.value).toBe(false);
     wrapper.unmount();
   });
@@ -1184,7 +1181,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("locks the composer while restoring context and unlocks after history arrives", async () => {
+  it("queues composer input while restoring context and sends it after history arrives", async () => {
     const { wrapper, controller, rt } = await mountReconnectHarness();
 
     lastWs!.onOpen?.();
@@ -1195,8 +1192,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.inputLocked.value).toBe(true);
     expect(rt.laneStatus.value).toEqual({ kind: "progress", message: "正在恢复上下文…" });
 
-    controller.sendMainPrompt("must not be queued");
-    expect(rt.queuedPrompts.value).toEqual([]);
+    controller.sendMainPrompt("queue during restore");
+    expect(rt.queuedPrompts.value.map((prompt: any) => prompt.text)).toEqual(["queue during restore"]);
 
     lastWs!.onMessage?.({
       type: "history",
@@ -1209,10 +1206,40 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     });
     await settleUi(wrapper);
 
-    expect(rt.inputLocked.value).toBe(false);
-    expect(rt.laneStatus.value).toBeNull();
-    expect(rt.messages.value.map((item: any) => item.content)).toEqual(["previous question", "previous answer"]);
+    await vi.waitFor(() => {
+      expect(lastSentPromptPayload).toMatchObject({ text: "queue during restore" });
+    });
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.messages.value.map((item: any) => item.content)).toContain("previous question");
+    expect(rt.messages.value.map((item: any) => item.content)).toContain("previous answer");
     wrapper.unmount();
+  });
+
+  it("unlocks a missing bootstrap history frame after the watchdog timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+      rt.queuedPrompts.value = [
+        { id: "queued-1", clientMessageId: "queued-1", text: "send after timeout", images: [], createdAt: 1 },
+      ];
+
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({ type: "welcome", inFlight: false, contextMode: "thread_resumed", threadId: "thread-1" });
+      await settleUi(wrapper);
+
+      expect(rt.awaitingBootstrapHistory).toBe(true);
+      expect(rt.inputLocked.value).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await settleUi(wrapper);
+
+      expect(rt.awaitingBootstrapHistory).toBe(false);
+      expect(rt.inputLocked.value).toBe(false);
+      expect(lastSentPromptPayload).toMatchObject({ text: "send after timeout" });
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
@@ -1266,7 +1293,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("clears stale local chat continuity when welcome reports a fresh context with no thread", async () => {
+  it("preserves stale local chat continuity when welcome reports a fresh context with no thread", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const { wrapper, rt } = await mountReconnectHarness();
 
@@ -1282,12 +1309,11 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(rt.activeThreadId.value).toBeNull();
     const contents = rt.messages.value.map((m: any) => String(m.content ?? ""));
-    expect(contents.join("\n")).not.toContain("Old question");
-    expect(contents.join("\n")).not.toContain("Old answer");
+    expect(contents).toEqual(["Old question", "Old answer"]);
     wrapper.unmount();
   });
 
-  it("treats fresh welcome as authoritative even when an unexpected thread id is present", async () => {
+  it("preserves local history when fresh welcome includes an unexpected thread id", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const { wrapper, rt } = await mountReconnectHarness();
 
@@ -1303,8 +1329,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(rt.activeThreadId.value).toBeNull();
     const contents = rt.messages.value.map((m: any) => String(m.content ?? ""));
-    expect(contents.join("\n")).not.toContain("Old question");
-    expect(contents.join("\n")).not.toContain("Old answer");
+    expect(contents).toEqual(["Old question", "Old answer"]);
     wrapper.unmount();
   });
 

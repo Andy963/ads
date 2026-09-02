@@ -53,6 +53,8 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 - 原生恢复：直接按 CLI 底层 session 续接，不重复注入历史文本，保留完整的 Token 上下文与缓存状态。
 - 会话文件健康判定：断线或重连时若会话文件存在则原生恢复，缺失时平滑降级并友好提示。
 - 新建聊天会话时，在线 WebSocket 通过原连接内协议切换 session；连接状态保持在线，离线时自动回退到完整重连。
+- 重连或后端重启后，只要持久化历史存在就会发送历史快照；即使后端上下文暂时是 fresh，客户端也保留本地聊天记录，只有显式线程重置才会清空历史。
+- Bootstrap 等待期间提交的提示会进入持久 outbox，待历史同步完成后继续发送；若历史帧丢失，5 秒兜底会解除等待锁，避免 Composer 永久冻结。
 - 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；每轮消息中的 Plan、实时活动、Thought、Execute 与 Patch 卡片按稳定语义顺序展示，已完成的阶段 trace 会在历史重放时保留为可折叠 Thought 卡片。
 - Worker 与 Advisor 的清空操作默认只作用于发起操作的 chat lane；跨 lane 清理必须显式请求 shared scope，且 session reset 广播会校验来源 lane。
 

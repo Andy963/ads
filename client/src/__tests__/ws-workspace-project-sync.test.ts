@@ -763,7 +763,7 @@ describe("ws workspace project sync", () => {
     });
   });
 
-  it("treats fresh welcome as authoritative even when a thread id is unexpectedly present", () => {
+  it("preserves local history when a fresh welcome has an unexpected thread id", () => {
     const rt = createRuntime();
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "stale" }];
     rt.activeThreadId.value = "thread-stale";
@@ -782,13 +782,8 @@ describe("ws workspace project sync", () => {
       contextMode: "fresh",
     });
 
-    expect(threadReset).toHaveBeenCalledWith(
-      rt,
-      expect.objectContaining({
-        source: "welcome_fresh_context",
-        resetThreadId: true,
-      }),
-    );
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.messages.value.map((entry: any) => entry.content)).toEqual(["stale"]);
     expect(rt.activeThreadId.value).toBeNull();
   });
 
