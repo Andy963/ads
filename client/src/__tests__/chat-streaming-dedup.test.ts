@@ -3,6 +3,8 @@ import { ref } from "vue";
 
 import type { ChatItem, ProjectRuntime } from "../app/controller";
 import { createStreamingActions } from "../app/chatStreaming";
+import { findLastLiveIndex, isLiveMessageId } from "../app/chatLive";
+import { normalizeTurnSemanticOrder } from "../lib/chat_sync";
 
 function createHarness(initial: ChatItem[] = []) {
   const messages = ref<ChatItem[]>(initial);
@@ -16,11 +18,11 @@ function createHarness(initial: ChatItem[] = []) {
     liveActivityId: "live-activity",
     runtimeOrActive: () => runtime,
     setMessages: (items) => {
-      messages.value = items;
+      messages.value = normalizeTurnSemanticOrder(items);
     },
     dropEmptyAssistantPlaceholder: () => {},
-    findLastLiveIndex: () => -1,
-    isLiveMessageId: (id) => id === "live-step" || id === "live-activity",
+    findLastLiveIndex,
+    isLiveMessageId,
     randomId: (prefix) => `${prefix}-1`,
   });
   return { messages, runtime, streaming };
@@ -65,6 +67,7 @@ describe("chat streaming duplicate protection", () => {
     expect(liveSteps[0]?.content).toBe("[editing] Updating source file\n");
     expect(liveSteps[0]?.content).not.toContain("Inspecting workspace");
     expect(messages.value.find((message) => message.id === "exec-1")?.content).toBe("$ npm test\n");
+    expect(messages.value.map((message) => message.id)).toEqual(["u-1", "live-step", "exec-1"]);
   });
 
   it("does not replace a substantive snapshot with ignored analysis noise", () => {

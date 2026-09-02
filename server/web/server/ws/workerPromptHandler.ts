@@ -263,7 +263,10 @@ export function attachWorkerPromptHandler(args: {
       }
       lastReasoningText = next;
       if (delta) {
-        const payload = prev ? delta : `[analysis] ${delta}`;
+        // Keep every reasoning fragment classified as analysis. The client
+        // intentionally filters this lifecycle noise so it cannot replace a
+        // substantive live step or diverge from the completion thought.
+        const payload = `[analysis] ${delta}`;
         args.sendToChat({ type: "delta", delta: payload, source: "step" });
       }
       return;
