@@ -36,6 +36,10 @@ Web Console 将对话与任务流组织为三大工作区：
   - 输入框模型选择器严格联动：仅展示当前 Agent 兼容且已启用的模型，切换 Agent 时自动恢复对应兼容偏好。页面加载或模型列表刷新不会覆盖已有的自定义模型选择。
   - 所有模型配置持久化于全局 SQLite 状态库 (`state.db`)。
 
+### 2.1 流式回复增量
+
+WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多个 agent message、工具调用和 reasoning item 交错时，不会把其他 item 的完整快照重复追加到当前回复。前端还会忽略已接收的重复累计前缀，作为传输异常时的最后一道保护。
+
 ### 3. 全局规则系统 (Global Rules)
 - 跨项目、跨 Channel（Web Console / Telegram Bot）以及跨 Agent（Codex / Claude）统一生效的规则引擎。
 - 规则分为四种级别：`advisory`（建议）、`required`（必须遵守）、`approval_required`（需审批）、`blocked`（阻断）。

@@ -108,7 +108,7 @@ export function attachWorkerPromptHandler(args: {
   handleExploredEntry: (entry: ExploredEntry) => void;
   getStepTraceText: () => string;
 } {
-  let lastRespondingText = "";
+  const lastRespondingTextByItemId = new Map<string, string>();
   let lastReasoningText = "";
   let stepTraceText = "";
   const lastCommandOutputsByKey = new Map<string, string>();
@@ -178,7 +178,7 @@ export function attachWorkerPromptHandler(args: {
     if (raw.type === "turn.started") {
       logicalPlanId = null;
       latestPlan = null;
-      lastRespondingText = "";
+      lastRespondingTextByItemId.clear();
       lastReasoningText = "";
       stepTraceText = "";
     }
@@ -219,13 +219,16 @@ export function attachWorkerPromptHandler(args: {
     }
     if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
       const next = event.delta;
-      let delta = next;
-      if (lastRespondingText && next.startsWith(lastRespondingText)) {
-        delta = next.slice(lastRespondingText.length);
+      const rawItem = (raw as { item?: { id?: unknown } }).item;
+      const itemId = rawItem && typeof rawItem === "object" ? String(rawItem.id ?? "").trim() || "__unknown__" : "__unknown__";
+      const previous = lastRespondingTextByItemId.get(itemId) ?? "";
+      if (previous && !next.startsWith(previous)) {
+        // App-server agent-message updates are cumulative per item. A shorter or
+        // unrelated snapshot is a reset, not a new delta to append to the chat.
+        return;
       }
-      if (next.length >= lastRespondingText.length) {
-        lastRespondingText = next;
-      }
+      const delta = previous ? next.slice(previous.length) : next;
+      lastRespondingTextByItemId.set(itemId, next);
       if (delta) {
         args.sendToChat({ type: "delta", delta });
       }
