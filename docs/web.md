@@ -16,7 +16,7 @@ Web Console 将对话与任务流组织为三大工作区：
   - 集成 **Task Bundle Drafts（任务草稿箱）**：查看 Advisor 生成的结构化任务束，支持在线编辑子任务与一键审批入队。
 - **Advisor (规划 Lane)**：
   - 默认对话 Lane，用于方案讨论、代码架构设计与任务拆解。
-  - Task Bundle 可直接引用 GitHub Issue/PR URL，或只携带自包含的任务 prompt；不要求先创建本地 `docs/issue/` 与 `docs/spec/` 目录。
+  - Task Bundle 可直接引用 GitHub Issue/PR URL，或只携带自包含的任务 prompt；不要求先创建本地 `docs/issue/` 与 `docs/spec/` 目录，审批也不以这两个目录为前提。
   - 显式使用本地 `/draft` 快照时，仍可携带匹配的 `issueRef` / `specRef` 目录并在批准时固定内容；本地快照是兼容能力，不是 GitHub-native 流程的前置条件。
   - 支持输出 `ads-schedule` 定时指令或生成 Task Bundle 任务草稿。
   - 任务带有 `development`（开发）、`review`（审核）和 `rework`（返工）分类；待执行任务按 `priority` 降序、队列顺序升序领取。

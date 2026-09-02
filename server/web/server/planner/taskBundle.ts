@@ -208,8 +208,6 @@ export function formatTaskBundleSummaryMarkdown(
   lines.push("");
   if (issue && spec) {
     lines.push(`工作项：\`${issue}\` ↔ \`${spec}\``);
-  } else {
-    lines.push("⚠️ 未绑定成对的 issue/spec 目录，Worker 任务不会被批准执行");
   }
   for (let i = 0; i < normalized.length; i += 1) {
     const task = normalized[i]!;

@@ -293,7 +293,7 @@ describe("web/api/task-bundle-drafts", () => {
   });
 
 
-  it("approves paired drafts idempotently and can run the queue", async () => {
+  it("approves paired and prompt-only drafts idempotently and can run the queue", async () => {
     const auth = { userId: "u-1", username: "u" };
     const workspaceRoot = createWorkspaceRoot("ws-2");
 
@@ -514,6 +514,50 @@ describe("web/api/task-bundle-drafts", () => {
     assert.equal(setModeCalled, 1);
     assert.equal(resumeCalled, 1);
     assert.equal(promoteCalled, 1);
+
+    const promptOnlyDraft = upsertTaskBundleDraft({
+      authUserId: auth.userId,
+      workspaceRoot,
+      sourceChatSessionId: "planner",
+      sourceHistoryKey: "hk-prompt-only",
+      bundle: {
+        version: 1,
+        requestId: "r2-prompt-only",
+        tasks: [{ prompt: "p4" }],
+      },
+      now: 30,
+    });
+    const promptOnlyApproveRes = createRes();
+    const promptOnlyApproveUrl = new URL(
+      `http://localhost/api/task-bundle-drafts/${promptOnlyDraft.id}/approve?workspace=${encodeURIComponent(workspaceRoot)}`,
+    );
+    assert.equal(
+      await handleTaskBundleDraftRoutes(
+        {
+          req: createReq("POST", { runQueue: true }) as any,
+          res: promptOnlyApproveRes as any,
+          url: promptOnlyApproveUrl,
+          pathname: `/api/task-bundle-drafts/${promptOnlyDraft.id}/approve`,
+          auth,
+        } as any,
+        deps as any,
+      ),
+      true,
+    );
+    assert.equal(promptOnlyApproveRes.statusCode, 200);
+    const promptOnlyPayload = parseJson<{
+      success: boolean;
+      createdTaskIds: string[];
+      draft: { status: string; approvedTaskIds: string[] };
+    }>(promptOnlyApproveRes.body);
+    assert.equal(promptOnlyPayload.success, true);
+    assert.equal(promptOnlyPayload.createdTaskIds.length, 1);
+    assert.equal(promptOnlyPayload.draft.status, "approved");
+    assert.deepEqual(promptOnlyPayload.draft.approvedTaskIds, promptOnlyPayload.createdTaskIds);
+    assert.equal(tasksById.size, 4);
+    assert.equal(setModeCalled, 2);
+    assert.equal(resumeCalled, 2);
+    assert.equal(promoteCalled, 2);
   });
 
   it("approves drafts without acquiring the workspace lock", async () => {

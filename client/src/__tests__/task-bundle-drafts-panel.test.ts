@@ -50,9 +50,7 @@ describe("TaskBundleDraftPanel", () => {
     expect((wrapper.get('[data-testid="task-bundle-draft-approve"]').element as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("warns when a draft is not bound to any spec", async () => {
-    // The prompt only points at a spec section, so an unbound draft is not
-    // reviewable — the gap has to be visible before approval, not after.
+  it("allows prompt-only drafts without local work-item references", async () => {
     const { default: TaskBundleDraftPanel } = await import("../components/TaskBundleDraftPanel.vue");
 
     const draft: TaskBundleDraft = {
@@ -74,12 +72,15 @@ describe("TaskBundleDraftPanel", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find('[data-testid="task-bundle-draft-row-spec"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="task-bundle-draft-row-prompt-only"]').text()).toContain("自包含任务");
 
     await wrapper.get('[data-testid="task-bundle-draft-d-nospec"]').trigger("click");
     await flushPromises();
 
     expect(wrapper.find('[data-testid="task-bundle-draft-spec-ref"]').exists()).toBe(false);
-    expect(wrapper.get('[data-testid="task-bundle-draft-missing-spec"]').text()).toContain("未绑定成对的 issue/spec 目录");
+    expect(wrapper.find('[data-testid="task-bundle-draft-missing-spec"]').exists()).toBe(false);
+    expect((wrapper.get('[data-testid="task-bundle-draft-approve"]').element as HTMLButtonElement).disabled).toBe(false);
+    expect((wrapper.get('[data-testid="task-bundle-draft-approve-run"]').element as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows the bound spec filename in the draft list", async () => {

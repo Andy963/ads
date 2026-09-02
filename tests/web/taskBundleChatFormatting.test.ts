@@ -76,11 +76,9 @@ describe("planner task bundle chat formatting", () => {
     assert.ok(markdown.includes("docs/spec/feature"), "summary must name the spec");
   });
 
-  it("flags a bundle that is not bound to a paired work item", () => {
-    // A task saying "implement Stage 1" with no paired directories is
-    // unactionable, so the absence has to be loud rather than invisible.
+  it("does not add a local work-item warning to prompt-only bundles", () => {
     const markdown = formatTaskBundleSummaryMarkdown([{ title: "Stage 1", prompt: "Implement stage 1." }]);
-    assert.ok(markdown.includes("未绑定成对的 issue/spec 目录"), "missing work-item refs must be called out");
+    assert.ok(!markdown.includes("未绑定成对的 issue/spec 目录"), "prompt-only bundles must not require local work-item refs");
   });
 
   it("normalizes escaped newlines in task prompts", () => {
