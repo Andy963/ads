@@ -121,6 +121,12 @@ export interface ModelConfig {
   configJson?: Record<string, unknown> | null;
 }
 
+export interface ReviewerModelSelection {
+  modelConfigId: string | null;
+  modelId: string | null;
+  model: ModelConfig | null;
+}
+
 export type RuleSeverity = "advisory" | "required" | "approval_required" | "blocked";
 
 export interface RuleMatch {

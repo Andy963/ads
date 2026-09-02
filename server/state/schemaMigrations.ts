@@ -335,4 +335,17 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
     description: "Reserved legacy migration; obsolete secondary CLI model seeding removed",
     up: () => {},
   },
+  {
+    version: 11,
+    description: "Persist the explicitly selected reviewer model",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS reviewer_model_settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          model_config_id TEXT,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+    },
+  },
 ];

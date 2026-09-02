@@ -174,3 +174,9 @@ export interface ModelConfig {
   configJson?: Record<string, unknown> | null;
   updatedAt?: number | null;
 }
+
+export type ReviewerModelSelection = {
+  model: string;
+  agentId: string;
+  modelConfigId?: string;
+};

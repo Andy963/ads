@@ -50,26 +50,28 @@ describe("ModelManager", () => {
 
   it("lists every CLI as one row and creates a codex model from that row", async () => {
     const createdModel = makeModel("model-generated", "gpt-5.2", "openai", "codex", "gpt-5.2");
+    const initialModels = [
+      makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"),
+      {
+        id: "local-model",
+        displayName: "Local Model",
+        provider: "local",
+        isEnabled: true,
+        isDefault: false,
+        configJson: null,
+      } satisfies ModelConfig,
+    ];
     const api = {
-      get: vi
-        .fn()
-        .mockResolvedValueOnce([
-          makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"),
-          {
-            id: "local-model",
-            displayName: "Local Model",
-            provider: "local",
-            isEnabled: true,
-            isDefault: false,
-            configJson: null,
-          } satisfies ModelConfig,
-        ])
-        .mockResolvedValueOnce([makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"), createdModel]),
+      get: vi.fn().mockImplementation((path: string) => {
+        if (path === "/api/reviewer-model") return Promise.resolve({ modelConfigId: null, modelId: null, model: null });
+        return Promise.resolve(apiConfigResponses.shift() ?? [makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"), createdModel]);
+      }),
       post: vi.fn().mockResolvedValue(createdModel),
       patch: vi.fn(),
       put: vi.fn(),
       delete: vi.fn(),
     };
+    const apiConfigResponses: ModelConfig[][] = [initialModels];
 
     const wrapper = mount(ModelManager, {
       props: { api: api as any },
@@ -88,7 +90,8 @@ describe("ModelManager", () => {
     // A model only ever renders under its own CLI, and unknown CLIs are dropped.
     expect(groups[0]!.text()).not.toContain("Claude Sonnet");
     expect(groups[1]!.text()).toContain("Claude Sonnet");
-    expect(wrapper.text()).not.toContain("Local Model");
+    expect(groups[0]!.text()).not.toContain("Local Model");
+    expect(groups[1]!.text()).not.toContain("Local Model");
 
     // Adding starts from the CLI row, so the dialog never asks which CLI again.
     await wrapper.find('[data-testid="model-manager-add-codex"]').trigger("click");
@@ -141,7 +144,7 @@ describe("ModelManager", () => {
     expect(wrapper.findAll(".cliGroup")).toHaveLength(1);
     expect(wrapper.text()).toContain("模型");
     expect(wrapper.text()).toContain("Claude Sonnet");
-    expect(wrapper.text()).not.toContain("GPT 5.2");
+    expect(wrapper.find(".cliGroup").text()).not.toContain("GPT 5.2");
     expect(wrapper.find(".cliRow").exists()).toBe(false);
     expect(wrapper.find('[data-testid="model-manager-cli-claude"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="model-manager-add-claude"]').exists()).toBe(false);
@@ -172,7 +175,7 @@ describe("ModelManager", () => {
     expect(wrapper.text()).toContain("Claude Sonnet");
 
     await wrapper.find('[data-testid="model-manager-cli-codex"]').trigger("click");
-    expect(wrapper.text()).not.toContain("GPT 5.2");
+    expect(wrapper.findAll(".cliGroup")[0]!.text()).not.toContain("GPT 5.2");
     expect(wrapper.text()).toContain("Claude Sonnet");
     expect(wrapper.find('[data-testid="model-manager-cli-codex"]').attributes("aria-expanded")).toBe("false");
     // The CLI row itself stays visible when collapsed.
@@ -335,6 +338,42 @@ describe("ModelManager", () => {
     expect(api.patch).toHaveBeenLastCalledWith("/api/model-configs/gpt-5.2", { isDefault: true });
     expect(wrapper.emitted("changed")).toHaveLength(2);
     expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("selects and persists an enabled concrete reviewer model", async () => {
+    const reviewer = makeModel("reviewer-model", "GPT Reviewer", "openai", "codex", "gpt-5.6-sol");
+    const auto = makeModel("auto-model", "Auto", "openai", "codex", "auto");
+    const api = {
+      get: vi.fn().mockImplementation((path: string) => {
+        if (path === "/api/reviewer-model") {
+          return Promise.resolve({ modelConfigId: null, modelId: null, model: null });
+        }
+        return Promise.resolve([reviewer, auto]);
+      }),
+      post: vi.fn(),
+      patch: vi.fn().mockResolvedValue({ modelConfigId: reviewer.id, modelId: reviewer.modelId, model: reviewer }),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const select = wrapper.find('[data-testid="reviewer-model-select"]');
+    expect(select.exists()).toBe(true);
+    expect(select.findAll("option").map((option) => option.attributes("value"))).toEqual(["", reviewer.id]);
+    expect(select.text()).not.toContain("Auto");
+
+    await select.setValue(reviewer.id);
+    await settle(wrapper);
+
+    expect(api.patch).toHaveBeenCalledWith("/api/reviewer-model", { modelConfigId: reviewer.id });
+    expect(wrapper.find('[data-testid="reviewer-model-panel"]').text()).toContain("已配置");
 
     wrapper.unmount();
   });

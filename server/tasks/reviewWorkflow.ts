@@ -1,4 +1,4 @@
-import type { CreateTaskInput, Task, TaskCategory } from "./types.js";
+import type { CreateTaskInput, ReviewerModelSelection, Task, TaskCategory } from "./types.js";
 
 export type PullRequestReference = {
   number: number;
@@ -77,6 +77,7 @@ export function buildReviewTaskInput(args: {
   source: Task;
   pullRequest: PullRequestReference;
   issueNumber?: number | null;
+  reviewerModel: ReviewerModelSelection;
 }): CreateTaskInput {
   const issueSuffix = args.issueNumber == null ? "" : ` for Issue #${args.issueNumber}`;
   const pullRequestLabel = `PR #${args.pullRequest.number}`;
@@ -100,8 +101,8 @@ export function buildReviewTaskInput(args: {
       "REVIEW_STATUS: rejected",
       "When rejected, also include one REVIEW_FEEDBACK: line with the concrete fixes required.",
     ].join("\n"),
-    model: args.source.model,
-    agentId: args.source.agentId,
+    model: args.reviewerModel.model,
+    agentId: args.reviewerModel.agentId,
     category: "review",
     priority: 10,
     parentTaskId: args.source.id,
