@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { ArrowRight, Close, Delete, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
-import type { ModelConfig } from "../api/types";
+import type { ModelConfig, ReviewerModelSelection } from "../api/types";
 import { MODEL_AGENT_GROUPS, resolveModelAgentId, type AgentKind } from "../lib/model_agent";
 
 type ModelForm = {
@@ -42,6 +42,8 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
+const reviewerModelId = ref<string | null>(null);
+const reviewerSaving = ref(false);
 const expanded = reactive<Record<AgentKind, boolean>>({ codex: true, claude: true });
 
 const emptyForm = (agent: AgentKind = "codex"): ModelForm => ({
@@ -121,11 +123,23 @@ const visibleGroups = computed(() =>
   props.agent ? MODEL_AGENT_GROUPS.filter((group) => group.kind === props.agent) : MODEL_AGENT_GROUPS,
 );
 
+const reviewerModels = computed(() =>
+  modelConfigs.value.filter((model) => {
+    const modelId = String(model.modelId ?? model.id ?? "").trim();
+    return model.isEnabled && modelId && modelId.toLowerCase() !== "auto";
+  }),
+);
+
+const reviewerModelSelection = computed(() => {
+  const selected = reviewerModelId.value;
+  return selected && reviewerModels.value.some((model) => model.id === selected) ? selected : null;
+});
+
 function enabledCount(agent: AgentKind): number {
   return groupedModels.value[agent].filter((model) => model.isEnabled).length;
 }
 
-const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
+const busy = computed(() => saving.value || loading.value || reviewerSaving.value || busyRowId.value !== null);
 const isEditing = computed(() => Boolean(editingId.value));
 const managerTitle = computed(() => (props.agent ? "模型" : "模型管理"));
 // Each CLI scope keeps an enabled default; selecting a new default replaces only that CLI's default.
@@ -153,10 +167,29 @@ async function loadModelConfigs(): Promise<void> {
   selectedModelId.value = null;
   try {
     modelConfigs.value = await props.api.get<ModelConfig[]>("/api/model-configs");
+    const selection = await props.api.get<ReviewerModelSelection>("/api/reviewer-model");
+    reviewerModelId.value = selection.modelConfigId;
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     loading.value = false;
+  }
+}
+
+async function saveReviewerModel(event: Event): Promise<void> {
+  const modelConfigId = String((event.target as HTMLSelectElement | null)?.value ?? "").trim();
+  if (!modelConfigId || !reviewerModels.value.some((model) => model.id === modelConfigId) || reviewerSaving.value) return;
+  reviewerSaving.value = true;
+  error.value = null;
+  try {
+    const selection = await props.api.patch<ReviewerModelSelection>("/api/reviewer-model", { modelConfigId });
+    reviewerModelId.value = selection.modelConfigId;
+    statusMessage.value = "Reviewer 模型已保存";
+    emit("changed");
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    reviewerSaving.value = false;
   }
 }
 
@@ -354,6 +387,30 @@ defineExpose({
     </div>
 
     <div class="cliList">
+      <section class="reviewerModelPanel" data-testid="reviewer-model-panel">
+        <div class="reviewerModelHeading">
+          <div>
+            <div class="modelLabel">Reviewer 模型</div>
+            <div class="modelHelp">审核任务必须使用这里明确选择的模型，不会继承 Worker 模型。</div>
+          </div>
+          <span v-if="reviewerModelSelection" class="modelPill default">已配置</span>
+        </div>
+        <select
+          class="modelInput reviewerModelSelect"
+          :value="reviewerModelSelection ?? ''"
+          :disabled="busy || reviewerModels.length === 0"
+          data-testid="reviewer-model-select"
+          @change="saveReviewerModel"
+        >
+          <option value="" disabled>选择启用的 Reviewer 模型</option>
+          <option v-for="model in reviewerModels" :key="model.id" :value="model.id">
+            {{ modelLabel(model) }} ({{ model.modelId || model.id }})
+          </option>
+        </select>
+        <div v-if="reviewerModels.length === 0" class="modelHelp invalid">没有可用的启用模型，请先启用一个具体模型。</div>
+        <div v-else-if="!reviewerModelSelection" class="modelHelp invalid">尚未配置；审核任务不会自动继承 Worker 模型。</div>
+      </section>
+
       <section
         v-for="group in visibleGroups"
         :key="group.kind"
@@ -699,6 +756,28 @@ defineExpose({
   flex-direction: column;
   gap: 10px;
   padding: 14px 16px 18px;
+}
+
+.reviewerModelPanel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.24);
+  border-radius: 13px;
+  background: rgba(239, 246, 255, 0.64);
+}
+
+.reviewerModelHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reviewerModelSelect {
+  max-width: 520px;
 }
 
 .cliGroup {

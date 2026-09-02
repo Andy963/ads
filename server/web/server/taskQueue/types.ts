@@ -4,6 +4,7 @@ import type { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskRunController } from "../../taskRunController.js";
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { ReviewerModelSelection } from "../../../tasks/types.js";
 
 export type TaskQueueMetricName =
   | "TASK_ADDED"
@@ -38,4 +39,5 @@ export type TaskQueueContext = {
   runController: TaskRunController;
   getStatusOrchestrator: () => ReturnType<SessionManager["getOrCreate"]>;
   getTaskQueueOrchestrator: (task: { id: string; goalMode?: boolean }) => ReturnType<SessionManager["getOrCreate"]>;
+  getReviewerModel: () => ReviewerModelSelection | null;
 };

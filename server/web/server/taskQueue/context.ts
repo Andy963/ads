@@ -8,6 +8,8 @@ import { TaskQueue } from "../../../tasks/queue.js";
 import { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
 import { TaskRunController } from "../../taskRunController.js";
 import { deriveProjectSessionId } from "../projectSessionId.js";
+import { getStateDatabase } from "../../../state/database.js";
+import { createReviewerModelStore } from "../../../state/reviewerModelStore.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskQueueContext } from "./types.js";
 import {
@@ -61,6 +63,7 @@ export function createTaskQueueContext(args: {
     getLock,
   });
   const taskQueue = new TaskQueue({ store: taskStore, executor });
+  const reviewerModelStore = createReviewerModelStore(getStateDatabase());
 
   return {
     workspaceRoot,
@@ -76,5 +79,6 @@ export function createTaskQueueContext(args: {
     runController: new TaskRunController(),
     getStatusOrchestrator,
     getTaskQueueOrchestrator,
+    getReviewerModel: () => reviewerModelStore.getConfiguredReviewerModel(),
   };
 }

@@ -7,6 +7,7 @@ import path from "node:path";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createReviewerModelStore } from "../../server/state/reviewerModelStore.js";
 import { handleModelRoutes } from "../../server/web/server/api/routes/models.js";
 
 type FakeReq = {
@@ -63,11 +64,13 @@ describe("web/model-config routes", () => {
   let tmpDir: string;
   let db: DatabaseType;
   let modelStore: ReturnType<typeof createGlobalModelConfigStore>;
+  let reviewerModelStore: ReturnType<typeof createReviewerModelStore>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-model-config-routes-"));
     db = new DatabaseConstructor(path.join(tmpDir, "state.db"));
     modelStore = createGlobalModelConfigStore(db);
+    reviewerModelStore = createReviewerModelStore(db, modelStore);
   });
 
   afterEach(() => {
@@ -146,6 +149,88 @@ describe("web/model-config routes", () => {
     assert.equal(updated.isDefault, true);
     assert.deepEqual(updated.configJson, { temperature: 0.2 });
     assert.equal(typeof updated.updatedAt, "number");
+  });
+
+  it("reads and updates the explicit reviewer model without accepting disabled or auto models", async () => {
+    modelStore.upsertModelConfig({
+      id: "worker-model",
+      modelId: "gpt-5.6-luna",
+      displayName: "Worker",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: true,
+      configJson: { allowedAgents: ["codex"] },
+    });
+    modelStore.upsertModelConfig({
+      id: "reviewer-model",
+      modelId: "gpt-5.6-sol",
+      displayName: "Reviewer",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: false,
+      configJson: { allowedAgents: ["codex"] },
+    });
+
+    const getRes = createRes();
+    await handleModelRoutes({
+      req: createReq("GET") as any,
+      res: getRes as any,
+      url: new URL("http://localhost/api/reviewer-model"),
+      pathname: "/api/reviewer-model",
+    } as any, { modelStore, reviewerModelStore });
+    assert.equal(getRes.statusCode, 200);
+    assert.deepEqual(parseJson(getRes.body), { modelConfigId: null, modelId: null, model: null });
+
+    const patchRes = createRes();
+    await handleModelRoutes({
+      req: createReq("PATCH", { modelConfigId: "reviewer-model" }) as any,
+      res: patchRes as any,
+      url: new URL("http://localhost/api/reviewer-model"),
+      pathname: "/api/reviewer-model",
+    } as any, { modelStore, reviewerModelStore });
+    assert.equal(patchRes.statusCode, 200);
+    assert.deepEqual(parseJson(patchRes.body), {
+      modelConfigId: "reviewer-model",
+      modelId: "gpt-5.6-sol",
+      model: {
+        id: "reviewer-model",
+        modelId: "gpt-5.6-sol",
+        displayName: "Reviewer",
+        provider: "openai",
+        isEnabled: true,
+        isDefault: false,
+        configJson: { allowedAgents: ["codex"] },
+        updatedAt: parseJson<{ model: { updatedAt: number } }>(patchRes.body).model.updatedAt,
+      },
+    });
+
+    modelStore.upsertModelConfig({
+      id: "disabled-model",
+      modelId: "gpt-5.6-disabled",
+      displayName: "Disabled",
+      provider: "openai",
+      isEnabled: false,
+      isDefault: false,
+      configJson: null,
+    });
+    const invalidRes = createRes();
+    await handleModelRoutes({
+      req: createReq("PATCH", { modelConfigId: "disabled-model" }) as any,
+      res: invalidRes as any,
+      url: new URL("http://localhost/api/reviewer-model"),
+      pathname: "/api/reviewer-model",
+    } as any, { modelStore, reviewerModelStore });
+    assert.equal(invalidRes.statusCode, 400);
+
+    const aliasRes = createRes();
+    await handleModelRoutes({
+      req: createReq("PATCH", { modelId: "gpt-5.6-sol" }) as any,
+      res: aliasRes as any,
+      url: new URL("http://localhost/api/reviewer-model"),
+      pathname: "/api/reviewer-model",
+    } as any, { modelStore, reviewerModelStore });
+    assert.equal(aliasRes.statusCode, 200);
+    assert.equal(parseJson<{ modelConfigId: string }>(aliasRes.body).modelConfigId, "reviewer-model");
   });
 
   it("PATCH can update the agent model id without changing the row id", async () => {

@@ -44,10 +44,14 @@ describe("tasks/reviewWorkflow", () => {
       source,
       pullRequest: { number: 85, url: "https://github.com/acme/project/pull/85" },
       issueNumber: 80,
+      reviewerModel: { model: "gpt-5.6-sol", agentId: "codex" },
     });
     assert.equal(review.category, "review");
     assert.equal(review.priority, 10);
     assert.equal(review.parentTaskId, "development-1");
+    assert.equal(review.model, "gpt-5.6-sol");
+    assert.equal(review.agentId, "codex");
+    assert.notEqual(review.model, source.model);
     assert.match(review.prompt, /REVIEW_STATUS: approved/);
 
     const rework = buildReworkTaskInput({
@@ -94,6 +98,7 @@ describe("tasks/reviewWorkflow", () => {
         taskStore: store,
         taskQueue,
         metrics: createTaskQueueMetrics(),
+        getReviewerModel: () => ({ model: "gpt-5.6-sol", agentId: "codex" }),
       } as never;
       const source = store.createTask({
         id: "development-1",
@@ -145,6 +150,53 @@ describe("tasks/reviewWorkflow", () => {
       assert.match(rework.prompt, /Fix the race/);
       store.createTask({ id: "normal-pending", prompt: "Normal work", priority: 0 });
       assert.equal(store.claimNextPendingTask()?.id, rework.id);
+    } finally {
+      resetDatabaseForTests();
+      if (previousDatabasePath === undefined) delete process.env.ADS_DATABASE_PATH;
+      else process.env.ADS_DATABASE_PATH = previousDatabasePath;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inherit a worker model when the reviewer model is unset", () => {
+    const previousDatabasePath = process.env.ADS_DATABASE_PATH;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-review-unconfigured-"));
+    process.env.ADS_DATABASE_PATH = path.join(tmpDir, "tasks.db");
+    resetDatabaseForTests();
+    try {
+      const store = new TaskStore();
+      const broadcasts: unknown[] = [];
+      const ctx = {
+        sessionId: "review-session",
+        taskStore: store,
+        taskQueue: { notifyNewTask: () => undefined },
+        metrics: createTaskQueueMetrics(),
+        getReviewerModel: () => null,
+      } as never;
+      const source = store.createTask({
+        id: "development-1",
+        title: "Implement Issue #80",
+        prompt: "Create PR #85",
+        model: "gpt-5.6-luna",
+        agentId: "codex",
+      });
+      const completedSource = store.updateTask(source.id, { status: "completed", result: "Created PR #85" }, 2);
+
+      createTaskWorkflowFollowup({
+        ctx,
+        task: completedSource,
+        logger: { warn: () => undefined } as never,
+        broadcastToSession: (_sessionId, payload) => broadcasts.push(payload),
+      });
+
+      assert.equal(store.findChildTask(source.id, "review"), null);
+      assert.equal(broadcasts.length, 1);
+      assert.deepEqual((broadcasts[0] as { type: string; event: string; data: unknown }).data, {
+        taskId: source.id,
+        error: "Reviewer model is not configured. Select an enabled concrete Reviewer model before reviewing tasks.",
+      });
+      assert.equal((broadcasts[0] as { type: string }).type, "task:event");
+      assert.equal((broadcasts[0] as { event: string }).event, "task:error");
     } finally {
       resetDatabaseForTests();
       if (previousDatabasePath === undefined) delete process.env.ADS_DATABASE_PATH;

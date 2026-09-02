@@ -140,11 +140,24 @@ export function createTaskWorkflowFollowup(args: {
     if (!pullRequest) {
       return;
     }
+    const reviewerModel = ctx.getReviewerModel();
+    if (!reviewerModel) {
+      const message = "Reviewer model is not configured. Select an enabled concrete Reviewer model before reviewing tasks.";
+      logger.warn(`[Web][TaskReview] ${message} taskId=${task.id}`);
+      args.broadcastToSession(ctx.sessionId, {
+        type: "task:event",
+        event: "task:error",
+        data: { taskId: task.id, error: message },
+        ts: Date.now(),
+      });
+      return;
+    }
     const review = ctx.taskStore.createTask(
       buildReviewTaskInput({
         source: task,
         pullRequest,
         issueNumber: findIssueNumberInTaskChain(task, (id) => ctx.taskStore.getTask(id)),
+        reviewerModel,
       }),
       Date.now(),
       { status: "pending" },

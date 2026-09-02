@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { getStateDatabase } from "../../../../state/database.js";
 import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "../../../../state/globalModelConfigStore.js";
+import { createReviewerModelStore, type ReviewerModelStore } from "../../../../state/reviewerModelStore.js";
 import type { ModelConfig } from "../../../../tasks/types.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
@@ -41,6 +42,7 @@ type UpdateModelConfigInput = z.infer<typeof updateModelConfigSchema>;
 
 type ModelRouteDeps = {
   modelStore?: GlobalModelConfigStore;
+  reviewerModelStore?: ReviewerModelStore;
 };
 
 function normalizeString(value: unknown): string {
@@ -80,11 +82,58 @@ function buildModelConfigPayload(
 export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDeps = {}): Promise<boolean> {
   const { req, res, pathname } = ctx;
   const getModelStore = () => deps.modelStore ?? createGlobalModelConfigStore(getStateDatabase());
+  const getReviewerModelStore = () =>
+    deps.reviewerModelStore ?? createReviewerModelStore(getStateDatabase(), getModelStore());
 
   if (req.method === "GET" && pathname === "/api/models") {
     const modelStore = getModelStore();
     const configured = modelStore.listModelConfigs();
     sendJson(res, 200, configured.filter((model) => model.isEnabled));
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/reviewer-model") {
+    const configured = getReviewerModelStore().getConfiguredReviewerModel();
+    const modelStore = getModelStore();
+    const model = configured?.modelConfigId ? modelStore.getModelConfig(configured.modelConfigId) : null;
+    sendJson(res, 200, {
+      modelConfigId: configured?.modelConfigId ?? null,
+      modelId: configured?.model ?? null,
+      model: model ?? null,
+    });
+    return true;
+  }
+
+  if (req.method === "PATCH" && pathname === "/api/reviewer-model") {
+    const body = await readJsonBody(req);
+    const parsed = z
+      .object({
+        modelConfigId: z.string().trim().min(1).nullable().optional(),
+        modelId: z.string().trim().min(1).nullable().optional(),
+      })
+      .refine((value) => value.modelConfigId !== undefined || value.modelId !== undefined)
+      .safeParse(body ?? {});
+    if (!parsed.success) {
+      sendJson(res, 400, { error: "modelConfigId or modelId must be a non-empty string or null" });
+      return true;
+    }
+    try {
+      const modelStore = getModelStore();
+      const requestedId = parsed.data.modelConfigId ?? parsed.data.modelId;
+      const modelConfigId =
+        requestedId == null
+          ? null
+          : modelStore.getModelConfig(requestedId)?.id ?? modelStore.getModelConfigByAgentModelId(requestedId)?.id ?? requestedId;
+      const configured = getReviewerModelStore().setReviewerModel(modelConfigId);
+      const model = configured?.modelConfigId ? modelStore.getModelConfig(configured.modelConfigId) : null;
+      sendJson(res, 200, {
+        modelConfigId: configured?.modelConfigId ?? null,
+        modelId: configured?.model ?? null,
+        model: model ?? null,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return true;
   }
 
