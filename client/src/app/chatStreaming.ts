@@ -4,6 +4,13 @@ import type { ChatItem, ProjectRuntime } from "./controller";
 
 const LIVE_ACTIVITY_TTL_MS = 3000;
 
+function stripStreamingOverlap(current: string, incoming: string): string {
+  if (!current || !incoming) return incoming;
+  if (incoming === current) return "";
+  if (incoming.startsWith(current)) return incoming.slice(current.length);
+  return incoming;
+}
+
 function trimToLastLines(text: string, maxLines: number, maxChars = 2500): string {
   const normalized = String(text ?? "");
   const recent = normalized.length > maxChars ? normalized.slice(normalized.length - maxChars) : normalized;
@@ -78,7 +85,10 @@ export function createStreamingActions(params: {
     const existing = state.messages.value.slice();
     const streamIndex = findLastStreamingAssistantIndex(existing);
     if (streamIndex >= 0) {
-      existing[streamIndex]!.content += chunk;
+      const current = String(existing[streamIndex]!.content ?? "");
+      const nextChunk = stripStreamingOverlap(current, chunk);
+      if (!nextChunk) return;
+      existing[streamIndex]!.content = current + nextChunk;
       setMessages(existing.slice(), state);
       return;
     }

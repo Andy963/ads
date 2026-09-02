@@ -65,7 +65,35 @@ function commandEvent(args: {
   };
 }
 
+function respondingEvent(itemId: string, text: string) {
+  return {
+    phase: "responding",
+    title: "生成回复",
+    timestamp: Date.now(),
+    delta: text,
+    raw: {
+      type: "item.updated",
+      item: { type: "agent_message", id: itemId, text },
+    },
+  };
+}
+
 describe("web/server/ws/workerPromptHandler", () => {
+  it("slices cumulative responding text independently for each agent message item", () => {
+    const { emit, sent } = createHarness();
+
+    emit(respondingEvent("message-a", "First response"));
+    emit(respondingEvent("message-b", "Second response"));
+    emit(respondingEvent("message-a", "First response continued"));
+    emit(respondingEvent("message-b", "Second response continued"));
+    emit(respondingEvent("message-a", "First"));
+
+    const deltas = sent
+      .filter((payload) => (payload as { type?: unknown }).type === "delta")
+      .map((payload) => (payload as { delta?: unknown }).delta);
+    assert.deepEqual(deltas, ["First response", "Second response", " continued", " continued"]);
+  });
+
   it("forwards live agent command output without persisting replayable history", () => {
     const { emit, history, sent } = createHarness();
 
