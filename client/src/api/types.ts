@@ -9,6 +9,48 @@ export type TaskStatus =
   | "cancelled";
 
 export type TaskCategory = "development" | "review" | "rework";
+export type TaskReviewStatus =
+  | "none"
+  | "pending_review"
+  | "in_review"
+  | "approved"
+  | "rejected"
+  | "skipped"
+  | "needs_human_intervention"
+  | "error";
+export type ReviewAutomationMode = "auto_with_fuse" | "human_gated";
+export type ReviewControlState = "automatic" | "human_gated" | "needs_intervention";
+
+export interface ReviewSettings {
+  automationMode: ReviewAutomationMode;
+  maxReworkRounds: number;
+  updatedAt: number | null;
+}
+
+export interface TaskReviewSummary {
+  required: boolean;
+  status: TaskReviewStatus;
+  rootTaskId: string | null;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  reviewTaskId: string | null;
+  reviewerModelConfigId: string | null;
+  reviewerModelId: string | null;
+  reviewerModelDisplayName: string | null;
+  reviewerAgentId: string | null;
+  reviewStartedAt: number | null;
+  reviewedAt: number | null;
+  conclusion: string | null;
+  feedback: string | null;
+  output: string | null;
+  artifactId: string | null;
+  reworkRound: number;
+  maxReworkRounds: number;
+  automationMode: ReviewAutomationMode;
+  stateReason: string | null;
+  reworkTaskIds: string[];
+  controlState: ReviewControlState;
+}
 
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
@@ -68,6 +110,10 @@ export interface Task {
   goalStatus?: TaskGoalStatus | null;
   goalTokensUsed?: number | null;
   goalTimeUsedSeconds?: number | null;
+  review?: TaskReviewSummary;
+  rootTaskId?: string;
+  reviewChain?: Array<Pick<Task, "id" | "title" | "category" | "status"> & { review: TaskReviewSummary | null }>;
+  reviewAudits?: Array<{ id: string; taskId: string; rootTaskId: string; action: string; reason: string | null; actorId: string; createdAt: number }>;
 }
 
 export interface TaskMessage {
@@ -211,7 +257,8 @@ export type TaskEventPayload =
   | { event: "task:failed"; data: { task: Task; error: string } }
   | { event: "message"; data: { taskId: string; role: string; content: string } }
   | { event: "message:delta"; data: { taskId: string; role: string; delta: string; modelUsed?: string | null; source?: "chat" | "step" } }
-  | { event: "command"; data: { taskId: string; command: string } };
+  | { event: "command"; data: { taskId: string; command: string } }
+  | { event: "review:updated"; data: { taskId: string; rootTaskId?: string | null; event: string; message: string; review: TaskReviewSummary } };
 
 export type TaskBundleTask = {
   externalId?: string;

@@ -118,8 +118,13 @@ describe("storage/workspaces database", () => {
 
     process.env.ADS_DATABASE_PATH = sourcePath;
     resetDatabaseForTests();
-    getDatabase().prepare("INSERT INTO tasks (id, title, prompt, model, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    const legacyDb = getDatabase();
+    legacyDb.prepare("INSERT INTO tasks (id, title, prompt, model, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run("legacy-task", "Legacy", "Legacy prompt", "auto", "pending", 1);
+    legacyDb.prepare("INSERT INTO review_settings (workspace_id, automation_mode, max_rework_rounds, updated_at) VALUES (?, ?, ?, ?)")
+      .run("legacy-workspace", "human_gated", 1, 2);
+    legacyDb.prepare("INSERT INTO review_action_audits (workspace_id, id, task_id, root_task_id, action, reason, actor_id, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("legacy-workspace", "audit-1", "legacy-task", "legacy-task", "skip_review", "legacy", "user-1", "legacy-key", 3);
     resetDatabaseForTests();
     delete process.env.ADS_DATABASE_PATH;
 
@@ -131,6 +136,12 @@ describe("storage/workspaces database", () => {
     assert.equal(first.length, 1);
     assert.deepEqual(second, []);
     assert.equal(new TaskStore({ workspacePath: workspaceA }).getTask("legacy-task")?.title, "Legacy");
+    assert.deepEqual(new TaskStore({ workspacePath: workspaceA }).getReviewSettings(), {
+      automationMode: "human_gated",
+      maxReworkRounds: 1,
+      updatedAt: 2,
+    });
+    assert.equal(new TaskStore({ workspacePath: workspaceA }).listReviewActionAudits("legacy-task").length, 1);
     const after = fs.statSync(sourcePath);
     assert.equal(after.size, before.size);
     assert.equal(after.mtimeMs, before.mtimeMs);

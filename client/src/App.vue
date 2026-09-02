@@ -139,6 +139,7 @@ const {
   goalPause,
   goalResume,
   goalClear,
+  reviewTaskAction,
 } = createAppController();
 
 const modelManagerOpen = ref(false);
@@ -509,6 +510,15 @@ async function saveTaskAndRun(payload: { id: string; updates: Record<string, unk
   return await updateQueuedTaskAndRun(payload.id, payload.updates);
 }
 
+function onReviewAction(payload: {
+  taskId: string;
+  action: "force_approve" | "edit_rework" | "skip_review" | "abort";
+  feedback?: string;
+  reason?: string;
+}): void {
+  void reviewTaskAction({ ...payload, projectId: activeProjectId.value });
+}
+
 function openModelManager(): void {
   if (isMobile.value) {
     openMobileDrawer("models");
@@ -839,6 +849,7 @@ const plannerConnectionStatus = computed(() => {
                   @goal-pause="(id) => goalPause(id)"
                   @goal-resume="(id) => goalResume(id)"
                   @goal-clear="(id) => goalClear(id)"
+                  @review-action="onReviewAction"
                 />
               </div>
             </div>
@@ -1058,6 +1069,7 @@ const plannerConnectionStatus = computed(() => {
                 @goal-pause="(id) => goalPause(id)"
                 @goal-resume="(id) => goalResume(id)"
                 @goal-clear="(id) => goalClear(id)"
+                @review-action="onReviewAction"
               />
             </div>
           </section>

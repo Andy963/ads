@@ -12,6 +12,7 @@ import {
   normalizeTaskStatus,
   parseJson,
 } from "./normalize.js";
+import { parseTaskReviewSummary } from "../reviewData.js";
 
 function toNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" ? value : Number(value ?? fallback);
@@ -60,6 +61,13 @@ function toTaskCategory(value: unknown): TaskCategory {
 
 export function toTask(row: Record<string, unknown>): Task {
   const createdAt = toNumber(row.created_at);
+  const review = parseTaskReviewSummary(parseJson<Record<string, unknown>>(row.review_data_json), {
+    required: row.review_required,
+    status: row.review_status,
+    snapshotId: row.review_snapshot_id,
+    conclusion: row.review_conclusion,
+    reviewedAt: row.reviewed_at,
+  });
   return {
     id: String(row.id ?? ""),
     title: String(row.title ?? ""),
@@ -93,6 +101,7 @@ export function toTask(row: Record<string, unknown>): Task {
     goalStatus: toGoalStatus(row.goal_status),
     goalTokensUsed: toNullableNumber(row.goal_tokens_used),
     goalTimeUsedSeconds: toNullableNumber(row.goal_time_used_seconds),
+    review,
     latestRun: null,
   };
 }

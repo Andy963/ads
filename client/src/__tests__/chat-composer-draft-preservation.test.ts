@@ -83,4 +83,30 @@ describe("composer draft preservation on session reset", () => {
     expect(workerRt.composerDraft.value).toBe("Worker reset draft");
     expect(plannerRt.composerDraft.value).toBe("Planner reset draft");
   });
+
+  it("scopes worker and planner backend clears to their originating lanes", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      activateProject: vi.fn(async () => {}),
+    });
+    const tasks = createTaskActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      connectWs: vi.fn(async () => {}),
+      connectPlannerWs: vi.fn(async () => {}),
+    });
+
+    ctx.loggedIn.value = true;
+    projects.initializeProjects();
+
+    const workerRt = ctx.activeRuntime.value;
+    const plannerRt = ctx.activePlannerRuntime.value;
+    workerRt.ws = { clearHistory: vi.fn() } as any;
+    plannerRt.ws = { clearHistory: vi.fn() } as any;
+
+    tasks.clearActiveChat();
+    tasks.clearPlannerChat();
+
+    expect(workerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "main" });
+    expect(plannerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "planner" });
+  });
 });

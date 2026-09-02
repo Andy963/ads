@@ -6,6 +6,7 @@ import type { TaskStoreStatements } from "../storeStatements.js";
 import type { CreateTaskInput, CreateTaskRunInput, Task, TaskCategory, TaskFilter, TaskGoalStatus, TaskRun, TaskStatus } from "../types.js";
 
 import { toTask, toTaskRun } from "./mappers.js";
+import { defaultTaskReviewSummary, reviewSummaryJson } from "../reviewData.js";
 import {
   normalizeNullableString,
   normalizeTaskCaptureStatus,
@@ -99,6 +100,10 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
         ? null
         : normalizeNullableFiniteNumber(task.nextAttemptAt) ?? (existing?.nextAttemptAt ?? null);
     normalizeTaskGoalFields(task, existing);
+    task.review = defaultTaskReviewSummary({
+      ...(existing?.review ?? {}),
+      ...(task.review ?? {}),
+    });
 
     if (!String(task.title ?? "").trim()) {
       const prompt = String(task.prompt ?? "");
@@ -210,6 +215,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       goalStatus: null,
       goalTokensUsed: null,
       goalTimeUsedSeconds: null,
+      review: defaultTaskReviewSummary(input.review),
     };
     normalizeTaskWritableFields(task);
     applyTaskLifecycleFields(task, now);
@@ -246,6 +252,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       task.goalStatus ?? null,
       task.goalTokensUsed ?? null,
       task.goalTimeUsedSeconds ?? null,
+      task.review?.required ? 1 : 0,
+      task.review?.status ?? "none",
+      task.review?.artifactId ?? null,
+      task.review?.conclusion ?? null,
+      task.review?.reviewedAt ?? null,
+      reviewSummaryJson(task.review ?? defaultTaskReviewSummary()),
     );
 
     return task;
@@ -392,6 +404,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
       merged.goalStatus ?? null,
       merged.goalTokensUsed ?? null,
       merged.goalTimeUsedSeconds ?? null,
+      merged.review?.required ? 1 : 0,
+      merged.review?.status ?? "none",
+      merged.review?.artifactId ?? null,
+      merged.review?.conclusion ?? null,
+      merged.review?.reviewedAt ?? null,
+      reviewSummaryJson(merged.review ?? defaultTaskReviewSummary()),
       merged.id,
     );
 
@@ -403,6 +421,12 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     if (!parentId) return null;
     const row = stmts.findChildTaskStmt.get(parentId, category) as Record<string, unknown> | undefined;
     return row ? toTask(row) : null;
+  };
+
+  const listChildTasks = (parentTaskId: string): Task[] => {
+    const parentId = String(parentTaskId ?? "").trim();
+    if (!parentId) return [];
+    return (stmts.listChildTasksStmt.all(parentId) as Record<string, unknown>[]).map((row) => toTask(row));
   };
 
   const markPromptInjected = (taskId: string, now = Date.now()): boolean => {
@@ -744,6 +768,7 @@ export function createTaskStoreTaskOps(deps: { db: DatabaseType; stmts: TaskStor
     dequeueNextQueuedTask,
     getTask,
     findChildTask,
+    listChildTasks,
     listTasks,
     updateTask,
     markPromptInjected,

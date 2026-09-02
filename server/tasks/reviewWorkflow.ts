@@ -1,4 +1,5 @@
 import type { CreateTaskInput, ReviewerModelSelection, Task, TaskCategory } from "./types.js";
+import { defaultTaskReviewSummary } from "./reviewData.js";
 
 export type PullRequestReference = {
   number: number;
@@ -73,6 +74,59 @@ export function findIssueNumberInTaskChain(
   return null;
 }
 
+export function findRootTaskInChain(
+  task: Task,
+  getTask: (id: string) => Task | null,
+  maxDepth = 32,
+): Task {
+  let current = task;
+  const seen = new Set<string>();
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    const parentId = String(current.parentTaskId ?? "").trim();
+    if (!parentId || seen.has(parentId)) return current;
+    seen.add(current.id);
+    const parent = getTask(parentId);
+    if (!parent) return current;
+    current = parent;
+  }
+  return current;
+}
+
+export function findWorkerTaskInChain(
+  task: Task,
+  getTask: (id: string) => Task | null,
+): Task {
+  const root = findRootTaskInChain(task, getTask);
+  if (root.category === "development") return root;
+  let current: Task | null = task;
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.category === "development" || current.category === "rework") return current;
+    current = current.parentTaskId ? getTask(current.parentTaskId) : null;
+  }
+  return root;
+}
+
+export function reviewSubjectForTask(task: Task, getTask: (id: string) => Task | null): Task | null {
+  if (task.category === "review") {
+    return task.parentTaskId ? getTask(task.parentTaskId) : null;
+  }
+  return task.category === "development" || task.category === "rework" ? task : null;
+}
+
+export function reviewConclusion(result: string): string {
+  return String(result ?? "")
+    .replace(/^\s*REVIEW_STATUS\s*:\s*(?:approved|rejected)\s*$/gim, "")
+    .replace(/^\s*REVIEW_FEEDBACK\s*:\s*.*$/gim, "")
+    .trim()
+    .slice(0, 4000) || "Reviewer returned a machine-readable verdict.";
+}
+
+export function mergeReviewSummary(task: Task, patch: Partial<NonNullable<Task["review"]>>): NonNullable<Task["review"]> {
+  return defaultTaskReviewSummary({ ...(task.review ?? {}), ...patch });
+}
+
 export function buildReviewTaskInput(args: {
   source: Task;
   pullRequest: PullRequestReference;
@@ -110,6 +164,18 @@ export function buildReviewTaskInput(args: {
     maxRetries: args.source.maxRetries,
     executionIsolation: "default",
     createdBy: "task-review-workflow",
+    review: defaultTaskReviewSummary({
+      required: true,
+      rootTaskId: args.source.review?.rootTaskId ?? args.source.id,
+      pullRequestNumber: args.pullRequest.number,
+      pullRequestUrl: args.pullRequest.url,
+      reviewTaskId: undefined,
+      reviewerModelConfigId: args.reviewerModel.modelConfigId ?? null,
+      reviewerModelId: args.reviewerModel.modelId ?? args.reviewerModel.model,
+      reviewerModelDisplayName: args.reviewerModel.displayName ?? args.reviewerModel.model,
+      reviewerAgentId: args.reviewerModel.agentId,
+      maxReworkRounds: args.source.review?.maxReworkRounds ?? 2,
+    }),
   };
 }
 
@@ -117,6 +183,7 @@ export function buildReworkTaskInput(args: {
   reviewTask: Task;
   pullRequest: PullRequestReference;
   feedback: string;
+  workerTask?: Task | null;
 }): CreateTaskInput {
   const feedback = args.feedback.trim() || "Address the reviewer's rejected findings and update the pull request.";
   const location = args.pullRequest.url ? ` (${args.pullRequest.url})` : "";
@@ -132,8 +199,8 @@ export function buildReworkTaskInput(args: {
       "",
       "Run relevant tests, update the pull request, and report the resulting PR reference.",
     ].join("\n"),
-    model: args.reviewTask.model,
-    agentId: args.reviewTask.agentId,
+    model: args.workerTask?.model ?? args.reviewTask.model,
+    agentId: args.workerTask?.agentId ?? args.reviewTask.agentId,
     category: "rework",
     priority: 50,
     parentTaskId: args.reviewTask.id,
@@ -141,6 +208,15 @@ export function buildReworkTaskInput(args: {
     maxRetries: args.reviewTask.maxRetries,
     executionIsolation: "default",
     createdBy: "task-review-workflow",
+    review: defaultTaskReviewSummary({
+      required: true,
+      rootTaskId: args.reviewTask.review?.rootTaskId ?? args.workerTask?.review?.rootTaskId ?? args.reviewTask.parentTaskId,
+      pullRequestNumber: args.pullRequest.number,
+      pullRequestUrl: args.pullRequest.url,
+      maxReworkRounds: args.reviewTask.review?.maxReworkRounds ?? 2,
+      reworkRound: (args.reviewTask.review?.reworkRound ?? 0) + 1,
+      automationMode: args.reviewTask.review?.automationMode,
+    }),
   };
 }
 

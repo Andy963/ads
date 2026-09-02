@@ -101,6 +101,8 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
 describe("error placeholder cleanup", () => {
   beforeEach(() => {
     lastWs = null;
+    localStorage.clear();
+    sessionStorage.clear();
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
       if (url.includes("/api/task-queue/status"))

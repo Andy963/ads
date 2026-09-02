@@ -1,10 +1,31 @@
 import { z } from "zod";
 
 import type { ApiRouteContext, ApiSharedDeps } from "../../types.js";
+import type { Task } from "../../../../../tasks/types.js";
 import { sendJson } from "../../../http.js";
 import { notifyTaskTerminalViaTelegram } from "../../../../taskNotifications/telegramNotifier.js";
 import { pauseQueueInManualMode, startQueueInAllMode } from "../../../../taskQueue/control.js";
 import { buildTaskAttachments, readJsonBodyOrSendBadRequest, resolveTaskContextOrSendBadRequest } from "./shared.js";
+
+function collectTaskChain(
+  taskStore: {
+    getRootTask?: (id: string) => Task | null;
+    listChildTasks?: (id: string) => Task[];
+  },
+  task: Task,
+): Task[] {
+  const root = taskStore.getRootTask?.(task.id) ?? task;
+  const result: Task[] = [];
+  const seen = new Set<string>();
+  const visit = (current: Task): void => {
+    if (seen.has(current.id)) return;
+    seen.add(current.id);
+    result.push(current);
+    for (const child of taskStore.listChildTasks?.(current.id) ?? []) visit(child);
+  };
+  visit(root);
+  return result;
+}
 
 export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedDeps): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
@@ -25,8 +46,26 @@ export async function handleTaskByIdRoute(ctx: ApiRouteContext, deps: ApiSharedD
       return true;
     }
     const attachments = buildTaskAttachments({ taskId: task.id, url, deps, attachmentStore: taskCtx.attachmentStore });
+    const reviewStore = taskCtx.taskStore as typeof taskCtx.taskStore & {
+      getRootTask?: (id: string) => typeof task;
+      listChildTasks?: (id: string) => typeof task[];
+      listReviewActionAudits?: (id: string) => unknown[];
+    };
+    const rootTask = reviewStore.getRootTask?.(task.id) ?? task;
+    const chain = collectTaskChain(reviewStore, task);
+    const reviewChain = chain.map((entry) => ({
+      id: entry.id,
+      title: entry.title,
+      category: entry.category,
+      status: entry.status,
+      review: entry.review ?? null,
+    }));
     sendJson(res, 200, {
       ...task,
+      review: rootTask.review ?? task.review,
+      rootTaskId: rootTask.id,
+      reviewChain,
+      reviewAudits: reviewStore.listReviewActionAudits?.(rootTask.id) ?? [],
       latestRun: taskCtx.taskStore.getLatestTaskRun(task.id),
       attachments,
       messages: taskCtx.taskStore.getMessages(taskId),

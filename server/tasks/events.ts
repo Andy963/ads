@@ -1,4 +1,4 @@
-import type { Task } from "./types.js";
+import type { Task, TaskReviewSummary } from "./types.js";
 
 export type TaskQueueGoalUpdate = {
   status: string;
@@ -21,6 +21,7 @@ export type TaskQueueEventMap = {
   "command": { task: Task; command: string };
   "goal:status": { task: Task; goal: TaskQueueGoalUpdate };
   "goal:cleared": { task: Task };
+  "review:updated": { task: Task; event: string; message: string; review: TaskReviewSummary };
 };
 
 export type TaskQueueEventName = keyof TaskQueueEventMap;

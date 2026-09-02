@@ -60,6 +60,8 @@ export function createReviewerModelStore(
       model: modelId,
       agentId: resolveReviewerAgent(model, modelId),
       modelConfigId,
+      modelId,
+      displayName: model.displayName,
     };
   };
 
