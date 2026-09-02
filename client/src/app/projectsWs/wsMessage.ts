@@ -909,7 +909,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const serverThreadId = contextMode === "fresh" ? "" : rawServerThreadId;
       const prevThreadId = String(rt.activeThreadId.value ?? "").trim();
       const hasStaleLocalContinuity = Boolean(prevThreadId) || rt.messages.value.length > 0;
-      const welcomeInFlight = inFlight === true;
       if (handshakeReset) {
         resetTurnPatchSummary();
         threadReset(rt, {
@@ -919,16 +918,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           clearBackendHistory: false,
           resetThreadId: true,
           source: "welcome_reset",
-        });
-      } else if (contextMode === "fresh" && hasStaleLocalContinuity && !welcomeInFlight && !bootstrapHistory) {
-        resetTurnPatchSummary();
-        threadReset(rt, {
-          notice: "后端已是全新上下文。为避免误导，旧的本地聊天历史已清空。",
-          warning: null,
-          keepLatestTurn: false,
-          clearBackendHistory: false,
-          resetThreadId: true,
-          source: "welcome_fresh_context",
         });
       } else if (contextMode === "history_injection" && hasStaleLocalContinuity) {
         rt.threadWarning.value = HISTORY_INJECTION_NOTICE;

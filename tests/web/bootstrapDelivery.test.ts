@@ -5,7 +5,7 @@ import { HistoryStore } from "../../server/utils/historyStore.js";
 import { sendInitialBootstrapMessages } from "../../server/web/server/ws/bootstrapDelivery.js";
 
 describe("web/ws/bootstrapDelivery", () => {
-  it("does not replay stale history when the backend context is fresh", () => {
+  it("replays persisted history when the backend context is fresh", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery", maxEntriesPerSession: 20 });
     historyStore.add("history-1", { role: "user", text: "hello", ts: 1 });
@@ -35,15 +35,18 @@ describe("web/ws/bootstrapDelivery", () => {
       });
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
-      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, false);
+      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, true);
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
-      assert.equal(sent.length, 2);
+      assert.deepEqual(sent[2], {
+        type: "history",
+        items: [{ role: "user", text: "hello", ts: 1, kind: undefined }],
+      });
     } finally {
       historyStore.clear("history-1");
     }
   });
 
-  it("reports completed fresh-mode prompts without replaying stale history", () => {
+  it("replays completed fresh-mode prompts and reports their client ids", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({
       namespace: "test-bootstrap-delivery-fresh-completed",
@@ -83,10 +86,16 @@ describe("web/ws/bootstrapDelivery", () => {
       });
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
-      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, false);
+      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, true);
       assert.deepEqual((sent[0] as { completedClientMessageIds?: unknown }).completedClientMessageIds, ["prompt-1"]);
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
-      assert.equal(sent.length, 2);
+      assert.deepEqual(sent[2], {
+        type: "history",
+        items: [
+          { role: "user", text: "apply the change", ts: 1, kind: "client_message_id:prompt-1" },
+          { role: "ai", text: "Done.", ts: 2, kind: undefined },
+        ],
+      });
     } finally {
       historyStore.clear("history-1");
     }
@@ -271,7 +280,7 @@ describe("web/ws/bootstrapDelivery", () => {
     }
   });
 
-  it("does not replay fresh-mode generic status notices", () => {
+  it("sends an empty history marker when fresh history only contains generic status notices", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-fresh-generic-status", maxEntriesPerSession: 20 });
     historyStore.add("history-1", { role: "status", text: "已恢复后端上下文线程。", ts: 1, kind: "status" });
@@ -301,8 +310,9 @@ describe("web/ws/bootstrapDelivery", () => {
       });
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
+      assert.equal((sent[0] as { bootstrapHistory?: unknown }).bootstrapHistory, true);
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
-      assert.equal(sent.length, 2);
+      assert.deepEqual(sent[2], { type: "history", items: [] });
     } finally {
       historyStore.clear("history-1");
     }

@@ -542,7 +542,6 @@ export function createChatActions(ctx: AppContext) {
 
   const enqueuePrompt = (text: string, images: IncomingImage[], rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
-    if (state.inputLocked.value) return;
     const content = String(text ?? "").trim();
     const imgs = Array.isArray(images) ? images : [];
     if (!content && imgs.length === 0) return;
