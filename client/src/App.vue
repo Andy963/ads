@@ -6,17 +6,13 @@ const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0
 
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
-import TaskCreateForm from "./components/TaskCreateForm.vue";
-import TaskBoard from "./components/TaskBoard.vue";
 import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
-import TaskBundleDraftPanel from "./components/TaskBundleDraftPanel.vue";
 import ModelManager from "./components/ModelManager.vue";
 import GlobalRuleManager from "./components/GlobalRuleManager.vue";
 import SessionResumePicker from "./components/SessionResumePicker.vue";
 
 import { createAppController } from "./app/controller";
-import type { TaskBundle } from "./api/types";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { MODEL_AGENT_GROUPS, type AgentKind } from "./lib/model_agent";
@@ -55,26 +51,9 @@ const {
   connectWs,
   runtimeProjectInProgress,
   formatProjectBranch,
-  queueStatus,
   apiError,
   wsError,
-  tasks,
-  selectedId,
   apiAuthorized,
-  runBusyIds,
-  select,
-  updateQueuedTask,
-  updateQueuedTaskAndRun,
-  reorderPendingTasks,
-  runTaskQueue,
-  pauseTaskQueue,
-  createTask,
-  runSingleTask,
-  cancelTask,
-  retryTask,
-  deleteTask,
-  onTaskEvent,
-  openTaskCreateDialog,
   resumeTaskThread,
   listResumableSessions,
   resumePlannerThread,
@@ -87,10 +66,6 @@ const {
   queuedPrompts,
   pendingImages,
   agentBusy,
-  loadTaskBundleDrafts,
-  updateTaskBundleDraft,
-  deleteTaskBundleDraft,
-  approveTaskBundleDraft,
   sendMainPrompt,
   sendPlannerPrompt,
   setMainModelId,
@@ -108,11 +83,7 @@ const {
   removeQueuedPrompt,
   removePlannerQueuedPrompt,
   apiNotice,
-  taskCreateDialogOpen,
-  closeTaskCreateDialog,
   resolveActiveWorkspaceRoot,
-  submitTaskCreate,
-  submitTaskCreateAndRun,
   projectDialogOpen,
   projectDialogPath,
   projectDialogName,
@@ -132,15 +103,6 @@ const {
   switchConfirmOpen,
   cancelProjectSwitch,
   confirmProjectSwitch,
-  deleteConfirmOpen,
-  pendingDeleteTask,
-  cancelDeleteTask,
-  confirmDeleteTask,
-  deleteConfirmButtonEl,
-  goalPause,
-  goalResume,
-  goalClear,
-  reviewTaskAction,
 } = createAppController();
 
 const modelManagerOpen = ref(false);
@@ -150,7 +112,6 @@ type MobileDrawerSection = "projects" | "rules" | "models";
 type MobileContextActionId =
   | "resume"
   | "new-session"
-  | "create-task"
   | "create-rule"
   | "refresh-rules"
   | "create-model"
@@ -168,7 +129,6 @@ type MobileManagerHandle = {
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
 const mobileModelAgent = ref<AgentKind | null>(null);
-const mobileTaskTabActive = ref(false);
 const mobileContextMenuOpen = ref(false);
 const mobileGlobalRuleManagerRef = ref<MobileManagerHandle | null>(null);
 const mobileModelManagerRef = ref<MobileManagerHandle | null>(null);
@@ -177,12 +137,8 @@ const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "planner", label: "Advisor" },
   { id: "worker", label: "Worker" },
 ];
-const workspaceTabs = computed<Array<{ id: MobileWorkspaceTab; label: string }>>(() =>
-  isMobile.value ? [{ id: "tasks", label: "Task" }, ...chatLanes] : chatLanes,
-);
-const activeWorkspaceTab = computed<MobileWorkspaceTab>(() =>
-  mobileTaskTabActive.value ? "tasks" : activeChatLane.value,
-);
+const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
+const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
 
 const {
   activeChatLane,
@@ -193,9 +149,6 @@ const {
   plannerBusy,
   plannerInputLocked,
   plannerLaneStatus,
-  plannerDrafts,
-  plannerDraftsBusy,
-  plannerDraftsError,
   plannerComposerDraft,
   plannerAgents,
   plannerActiveAgentId,
@@ -233,8 +186,6 @@ const {
   activeProject,
   activeRuntime,
   activePlannerRuntime,
-  queueStatus,
-  tasks,
   queuedPrompts,
   pendingImages,
   agentBusy,
@@ -276,7 +227,6 @@ const mobileContextMenuTitle = computed(() => {
   if (mobileDrawerSection.value === "models") {
     return mobileModelAgent.value ? `${mobileContextTitle.value} 操作` : "Provider";
   }
-  if (mobileTaskTabActive.value) return "任务操作";
   return "项目操作";
 });
 
@@ -293,9 +243,6 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
     ];
-  }
-  if (mobileTaskTabActive.value) {
-    return [{ id: "create-task", label: "新增任务" }];
   }
   return [
     {
@@ -335,13 +282,8 @@ function toggleMobileDrawer(): void {
   else openMobileDrawer();
 }
 
-function selectWorkspaceTab(tab: MobileWorkspaceTab): void {
-  if (tab === "tasks") {
-    mobileTaskTabActive.value = true;
-  } else {
-    mobileTaskTabActive.value = false;
-    activeChatLane.value = tab;
-  }
+function selectWorkspaceTab(tab: ChatLane): void {
+  activeChatLane.value = tab;
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
 }
@@ -349,8 +291,7 @@ function selectWorkspaceTab(tab: MobileWorkspaceTab): void {
 function restoreMobileWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
   const tab = readMobileWorkspaceTab(projectId);
-  mobileTaskTabActive.value = tab === "tasks";
-  if (tab !== "tasks") activeChatLane.value = tab;
+  activeChatLane.value = tab;
 }
 
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
@@ -382,11 +323,6 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
   if (actionId === "new-session") {
     closeMobileDrawer();
     handleLaneNewSession();
-    return;
-  }
-  if (actionId === "create-task") {
-    closeMobileDrawer();
-    openTaskCreateDialog();
     return;
   }
   if (actionId === "create-rule") {
@@ -439,7 +375,6 @@ watch(isMobile, (mobile) => {
     restoreMobileWorkspaceTab();
     return;
   }
-  mobileTaskTabActive.value = false;
   closeMobileDrawer();
 });
 
@@ -483,43 +418,6 @@ const {
   reorderProjects,
   removeProject,
 });
-function refreshPlannerDrafts(): void {
-  void loadTaskBundleDrafts(activeProjectId.value);
-}
-
-function onApproveDraft(payload: { id: string; runQueue: boolean }): void {
-  void approveTaskBundleDraft(payload.id, { runQueue: payload.runQueue, projectId: activeProjectId.value });
-}
-
-function onUpdateDraft(payload: { id: string; bundle: TaskBundle }): void {
-  void updateTaskBundleDraft(payload.id, payload.bundle, activeProjectId.value);
-}
-
-function onDeleteDraft(id: string): void {
-  void deleteTaskBundleDraft(id, activeProjectId.value);
-}
-
-function openTaskCreateDialogHandler(): void {
-  openTaskCreateDialog();
-}
-
-async function saveTask(payload: { id: string; updates: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
-  return await updateQueuedTask(payload.id, payload.updates);
-}
-
-async function saveTaskAndRun(payload: { id: string; updates: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
-  return await updateQueuedTaskAndRun(payload.id, payload.updates);
-}
-
-function onReviewAction(payload: {
-  taskId: string;
-  action: "force_approve" | "edit_rework" | "skip_review" | "abort";
-  feedback?: string;
-  reason?: string;
-}): void {
-  void reviewTaskAction({ ...payload, projectId: activeProjectId.value });
-}
-
 function openModelManager(): void {
   if (isMobile.value) {
     openMobileDrawer("models");
@@ -552,9 +450,7 @@ async function onModelManagerChanged(): Promise<void> {
   }
 }
 
-const runningTaskCount = computed(() =>
-  tasks.value.filter((t) => t.status === "running" || t.status === "planning").length,
-);
+const runningTaskCount = computed(() => 0);
 
 const disconnectedStatusMessage = "连接已断开，正在重连…";
 
@@ -801,58 +697,6 @@ const plannerConnectionStatus = computed(() => {
                 </span>
               </span>
             </button>
-
-            <div v-if="!isMobile && p.expanded" class="projectTasks">
-              <div v-if="queueStatus && (!queueStatus.enabled || !queueStatus.ready)" class="error">
-                <div>任务队列未运行：{{ !queueStatus.enabled ? "TASK_QUEUE_ENABLED=false" : queueStatus.error || "agent not ready" }}</div>
-                <div style="margin-top: 6px; opacity: 0.85">
-                  任务会保持 pending；请在启动 web server 前配置模型 Key，并确保 `TASK_QUEUE_ENABLED=true`。
-                </div>
-              </div>
-              <div v-if="apiError" class="error">API: {{ apiError }}</div>
-              <div v-if="wsError" class="error">WS: {{ wsError }}</div>
-              <TaskBundleDraftPanel
-                v-if="plannerDrafts.length > 0 || plannerDraftsError"
-                :drafts="plannerDrafts"
-                :busy="plannerDraftsBusy"
-                :error="plannerDraftsError"
-                @refresh="refreshPlannerDrafts"
-                @approve="onApproveDraft"
-                @update="onUpdateDraft"
-                @delete="onDeleteDraft"
-              />
-
-                <TaskBoard
-                  class="taskBoard"
-                  :tasks="tasks"
-                  :api="api"
-                  :workspace-root="resolveActiveWorkspaceRoot()"
-                  :agents="workerAgents"
-                  :active-agent-id="workerActiveAgentId"
-                  :selected-id="selectedId"
-                  :queue-status="queueStatus"
-                  :can-run-single="apiAuthorized"
-                  :show-create-button="!isMobile"
-                  :update-task="saveTask"
-                  :update-task-and-run="saveTaskAndRun"
-                :run-busy-ids="runBusyIds"
-                @select="select"
-                @update="({ id, updates }) => updateQueuedTask(id, updates)"
-                @update-and-run="({ id, updates }) => updateQueuedTaskAndRun(id, updates)"
-                @reorder="(ids) => reorderPendingTasks(ids)"
-                @queueRun="runTaskQueue"
-                @queuePause="pauseTaskQueue"
-                  @runSingle="(id) => runSingleTask(id)"
-                  @cancel="cancelTask"
-                  @retry="retryTask"
-                  @delete="deleteTask"
-                  @create="openTaskCreateDialogHandler"
-                  @goal-pause="(id) => goalPause(id)"
-                  @goal-resume="(id) => goalResume(id)"
-                  @goal-clear="(id) => goalClear(id)"
-                  @review-action="onReviewAction"
-                />
-              </div>
             </div>
         </div>
       </aside>
@@ -890,13 +734,13 @@ const plannerConnectionStatus = computed(() => {
             :id="`lane-tab-${tab.id}`"
             :key="tab.id"
             type="button"
-            class="laneTab"
-            :class="{
-              active: activeWorkspaceTab === tab.id,
-              'laneTab--connected': isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
-              'laneTab--disconnected': tab.id !== 'tasks' && !isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
-            }"
-            role="tab"
+          class="laneTab"
+          :class="{
+            active: activeWorkspaceTab === tab.id,
+            'laneTab--connected': isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
+            'laneTab--disconnected': !isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
+          }"
+          role="tab"
             :aria-selected="activeWorkspaceTab === tab.id"
             :aria-controls="`lane-panel-${tab.id}`"
             :data-testid="`lane-tab-${tab.id}`"
@@ -1019,69 +863,6 @@ const plannerConnectionStatus = computed(() => {
               @removeQueued="removeQueuedPrompt"
             />
           </section>
-
-          <section
-            v-if="isMobile"
-            :id="'lane-panel-tasks'"
-            v-show="activeWorkspaceTab === 'tasks'"
-            class="lanePanel taskLanePanel"
-            role="tabpanel"
-            aria-labelledby="lane-tab-tasks"
-            data-testid="lane-panel-tasks"
-          >
-            <div class="mobileTaskWorkspace">
-              <div v-if="queueStatus && (!queueStatus.enabled || !queueStatus.ready)" class="error">
-                <div>任务队列未运行：{{ !queueStatus.enabled ? "TASK_QUEUE_ENABLED=false" : queueStatus.error || "agent not ready" }}</div>
-                <div style="margin-top: 6px; opacity: 0.85">
-                  任务会保持 pending；请在启动 web server 前配置模型 Key，并确保 `TASK_QUEUE_ENABLED=true`。
-                </div>
-              </div>
-              <div v-if="apiError" class="error">API: {{ apiError }}</div>
-              <div v-if="wsError" class="error">WS: {{ wsError }}</div>
-
-              <TaskBundleDraftPanel
-                v-if="plannerDrafts.length > 0 || plannerDraftsError"
-                :drafts="plannerDrafts"
-                :busy="plannerDraftsBusy"
-                :error="plannerDraftsError"
-                @refresh="refreshPlannerDrafts"
-                @approve="onApproveDraft"
-                @update="onUpdateDraft"
-                @delete="onDeleteDraft"
-              />
-
-              <TaskBoard
-                class="taskBoard"
-                :tasks="tasks"
-                :api="api"
-                :workspace-root="resolveActiveWorkspaceRoot()"
-                :agents="workerAgents"
-                :active-agent-id="workerActiveAgentId"
-                :selected-id="selectedId"
-                :queue-status="queueStatus"
-                :can-run-single="apiAuthorized"
-                :show-create-button="false"
-                :update-task="saveTask"
-                :update-task-and-run="saveTaskAndRun"
-                :run-busy-ids="runBusyIds"
-                @select="select"
-                @update="({ id, updates }) => updateQueuedTask(id, updates)"
-                @update-and-run="({ id, updates }) => updateQueuedTaskAndRun(id, updates)"
-                @reorder="(ids) => reorderPendingTasks(ids)"
-                @queueRun="runTaskQueue"
-                @queuePause="pauseTaskQueue"
-                @runSingle="(id) => runSingleTask(id)"
-                @cancel="cancelTask"
-                @retry="retryTask"
-                @delete="deleteTask"
-                @create="openTaskCreateDialogHandler"
-                @goal-pause="(id) => goalPause(id)"
-                @goal-resume="(id) => goalResume(id)"
-                @goal-clear="(id) => goalClear(id)"
-                @review-action="onReviewAction"
-              />
-            </div>
-          </section>
         </div>
       </section>
     </main>
@@ -1089,18 +870,6 @@ const plannerConnectionStatus = computed(() => {
     <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
-
-    <DraggableModal v-if="taskCreateDialogOpen" card-variant="large" @close="closeTaskCreateDialog">
-      <TaskCreateForm
-        :workspace-root="resolveActiveWorkspaceRoot() || ''"
-        :agents="workerAgents"
-        :active-agent-id="workerActiveAgentId"
-        @submit="submitTaskCreate"
-        @submit-and-run="submitTaskCreateAndRun"
-        @reset-thread="clearActiveChat"
-        @cancel="closeTaskCreateDialog"
-      />
-    </DraggableModal>
 
     <DraggableModal v-if="modelManagerOpen" card-variant="large" @close="closeModelManager">
       <ModelManager :api="api" @close="closeModelManager" @changed="onModelManagerChanged" />
@@ -1219,23 +988,6 @@ const plannerConnectionStatus = computed(() => {
         <div class="modalActions">
           <button type="button" class="btnSecondary" @click="cancelRemoveProject">Cancel</button>
           <button type="button" class="btnDanger" @click="confirmRemoveProject">Remove</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="deleteConfirmOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelDeleteTask">
-      <div class="modalCard">
-        <div class="modalTitle">删除任务？</div>
-        <div class="modalDesc">确定删除该任务吗？删除后无法恢复。</div>
-        <div v-if="pendingDeleteTask" class="modalPreview">
-          <div class="modalPreviewTitle">{{ pendingDeleteTask.title || pendingDeleteTask.id }}</div>
-          <div v-if="pendingDeleteTask.prompt && pendingDeleteTask.prompt.trim()" class="modalPreviewPrompt">
-            {{ pendingDeleteTask.prompt.length > 240 ? `${pendingDeleteTask.prompt.slice(0, 240)}…` : pendingDeleteTask.prompt }}
-          </div>
-        </div>
-        <div class="modalActions">
-          <button type="button" class="btnSecondary" @click="cancelDeleteTask">取消</button>
-          <button ref="deleteConfirmButtonEl" type="button" class="btnDanger" @click="confirmDeleteTask">删除</button>
         </div>
       </div>
     </div>

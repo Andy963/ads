@@ -12,7 +12,6 @@ import type {
   ResumableSession,
   WorkspaceState,
 } from "../controllerTypes";
-import type { TaskBundleDraft } from "../../api/types";
 import {
   buildModelIdStorageKey,
   buildReasoningEffortStorageKey,
@@ -22,7 +21,6 @@ import {
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
 
-import { listTaskBundleDrafts, removeTaskBundleDraft, upsertTaskBundleDraft } from "../taskBundleDraftsState";
 import { isReconnectNotice } from "./reconnectNotice";
 
 type Ref<T> = { value: T };
@@ -810,43 +808,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (id && rt.pendingAckClientMessageId === id) {
         rt.pendingAckClientMessageId = null;
         clearPendingPrompt(rt);
-      }
-      return;
-    }
-
-    if (type === "task_bundle_draft") {
-      const action = String((msg as { action?: unknown }).action ?? "upsert").trim().toLowerCase();
-      const rawDraft = (msg as { draft?: unknown }).draft;
-      const draft = isRecord(rawDraft) ? (rawDraft as TaskBundleDraft) : null;
-      const draftId = String(draft?.id ?? "").trim();
-      if (!draft || !draftId) {
-        return;
-      }
-
-      const existing = listTaskBundleDrafts(rt.taskBundleDrafts.value);
-      if (action === "delete") {
-        const next = removeTaskBundleDraft(existing, draftId);
-        if (next !== existing) {
-          rt.taskBundleDrafts.value = next;
-        }
-        return;
-      }
-
-      const next = upsertTaskBundleDraft(existing, draft, { mergeExisting: true });
-      if (next !== existing) {
-        rt.taskBundleDrafts.value = next;
-      }
-      return;
-    }
-
-    if (type === "task_bundle_auto_approved") {
-      const draftId = String((msg as { draftId?: unknown }).draftId ?? "").trim();
-      if (draftId) {
-        const existing = listTaskBundleDrafts(rt.taskBundleDrafts.value);
-        const next = removeTaskBundleDraft(existing, draftId);
-        if (next !== existing) {
-          rt.taskBundleDrafts.value = next;
-        }
       }
       return;
     }

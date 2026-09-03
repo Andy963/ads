@@ -25,11 +25,7 @@ type RuntimeShape = {
   resumableSessionsHidden: Ref<ResumableSessionsHiddenShape | null>;
   resumableSessionsNextCursor: Ref<string | null>;
 };
-type PlannerRuntimeShape = RuntimeShape & {
-  taskBundleDrafts: Ref<unknown[]>;
-  taskBundleDraftsBusy: Ref<boolean>;
-  taskBundleDraftsError: Ref<string | null>;
-};
+type PlannerRuntimeShape = RuntimeShape;
 
 function asRuntimeShape(value: unknown): RuntimeShape {
   return value as RuntimeShape;
@@ -54,8 +50,8 @@ export function useLaneRuntimeBridge(params: {
   activeProject: Ref<{ chatSessionId?: string } | null>;
   activeRuntime: Ref<unknown>;
   activePlannerRuntime: Ref<unknown>;
-  queueStatus: Ref<{ running?: boolean } | null>;
-  tasks: Ref<Array<{ status: string }>>;
+  queueStatus?: Ref<{ running?: boolean } | null>;
+  tasks?: Ref<Array<{ status: string }>>;
   queuedPrompts: Ref<Array<{ id: string; text: string; images: unknown[] }>>;
   pendingImages: Ref<unknown[]>;
   agentBusy: Ref<boolean>;
@@ -91,9 +87,6 @@ export function useLaneRuntimeBridge(params: {
   const plannerBusy = computed(() => plannerRuntime.value.busy.value);
   const plannerInputLocked = computed(() => plannerRuntime.value.inputLocked.value);
   const plannerLaneStatus = computed(() => plannerRuntime.value.laneStatus.value);
-  const plannerDrafts = computed(() => plannerRuntime.value.taskBundleDrafts.value);
-  const plannerDraftsBusy = computed(() => plannerRuntime.value.taskBundleDraftsBusy.value);
-  const plannerDraftsError = computed(() => plannerRuntime.value.taskBundleDraftsError.value);
   const plannerComposerDraft = computed({
     get: () => plannerRuntime.value.composerDraft.value,
     set: (value: string) => {
@@ -127,11 +120,7 @@ export function useLaneRuntimeBridge(params: {
   const resumableSessionsHidden = computed(() => workerRuntime.value.resumableSessionsHidden.value);
   const resumableSessionsNextCursor = computed(() => workerRuntime.value.resumableSessionsNextCursor.value);
 
-  const resumeThreadBlocked = computed(
-    () =>
-      Boolean(params.queueStatus.value?.running) ||
-      params.tasks.value.some((task) => task.status === "planning" || task.status === "running"),
-  );
+  const resumeThreadBlocked = computed(() => false);
 
   const activeLaneBusy = computed(() => {
     if (activeChatLane.value === "planner") return plannerBusy.value;
@@ -219,9 +208,6 @@ export function useLaneRuntimeBridge(params: {
     plannerBusy,
     plannerInputLocked,
     plannerLaneStatus,
-    plannerDrafts,
-    plannerDraftsBusy,
-    plannerDraftsError,
     plannerComposerDraft,
     plannerAgents,
     plannerActiveAgentId,

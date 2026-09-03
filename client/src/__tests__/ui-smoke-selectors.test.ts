@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mount, shallowMount } from "@vue/test-utils";
+import { mount } from "@vue/test-utils";
 
 vi.mock("../api/client", () => {
   class ApiClient {
@@ -18,7 +18,6 @@ vi.mock("../api/client", () => {
 });
 
 import LoginGate from "../components/LoginGate.vue";
-import TaskBoard from "../components/TaskBoard.vue";
 
 function nextTickDelay(): Promise<void> {
   return new Promise((resolve) => {
@@ -39,39 +38,6 @@ async function waitForLoginForm(wrapper: ReturnType<typeof mount>): Promise<void
 }
 
 describe("UI smoke selectors", () => {
-  it("exposes stable selectors for task create entry", () => {
-    const wrapper = shallowMount(TaskBoard, {
-      props: {
-        tasks: [],
-        agents: [],
-        selectedId: null,
-        queueStatus: null,
-        canRunSingle: true,
-        runBusyIds: new Set(),
-      },
-    });
-
-    expect(wrapper.find('[data-testid="task-board-create"]').exists()).toBe(true);
-    wrapper.unmount();
-  });
-
-  it("can hide the task create entry for the mobile project drawer", () => {
-    const wrapper = shallowMount(TaskBoard, {
-      props: {
-        tasks: [],
-        agents: [],
-        queueStatus: null,
-        canRunSingle: true,
-        runBusyIds: new Set(),
-        showCreateButton: false,
-      },
-    });
-
-    expect(wrapper.find('[data-testid="task-board-create"]').exists()).toBe(false);
-    expect(wrapper.find(".hint").exists()).toBe(false);
-    wrapper.unmount();
-  });
-
   it("exposes stable selectors for login flow", async () => {
     const wrapper = mount(LoginGate, { attachTo: document.body });
     try {

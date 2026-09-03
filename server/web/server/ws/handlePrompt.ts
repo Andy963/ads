@@ -8,21 +8,7 @@ import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runAgentTurn } from "../../../agents/turn.js";
-import {
-  PLANNER_DRAFT_SKILL_ID,
-  buildPlannerDraftSkillMissingMessage,
-  injectPlannerDraftSkill,
-  isPlannerDraftSkillAvailable,
-  parsePlannerDraftSlashCommand,
-} from "../planner/draftSlashCommand.js";
 import type { WsPromptHandlerDeps } from "./deps.js";
-import { handlePlannerPromptOutput } from "../planner/plannerPromptHandler.js";
-import {
-  enforceWriteAllowlist,
-  formatWriteGuardMessage,
-  resolvePlannerWriteRoots,
-  snapshotDirtyFiles,
-} from "../planner/specWriteGuard.js";
 import { processScheduleOutput } from "../planner/scheduleHandler.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
 import {
@@ -97,28 +83,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       });
     }
 
-    let inputToSend: Input = promptInput.input;
-    const isPlannerSession = deps.context.chatSessionId === "planner";
-    const isWorkerSession = deps.context.chatSessionId === "main" || deps.context.chatSessionId === "worker";
-    const shouldHandleTaskBundleDrafts = isPlannerSession || isWorkerSession;
-    const isPlannerDraftCommand = isPlannerSession && Boolean(parsePlannerDraftSlashCommand(inputToSend));
-    if (isPlannerDraftCommand) {
-      if (!isPlannerDraftSkillAvailable(deps.context.currentCwd)) {
-        const message = buildPlannerDraftSkillMissingMessage();
-        deps.observability.sessionLogger?.logError(message);
-        deps.observability.logger.warn(`[PlannerDraft] ${PLANNER_DRAFT_SKILL_ID} skill not found; refusing /draft`);
-        deps.history.historyStore.add(deps.context.historyKey, {
-          role: "status",
-          text: message,
-          ts: Date.now(),
-          kind: "error",
-        });
-        sendToChat({ type: "error", message });
-        cleanupAttachments();
-        return;
-      }
-      inputToSend = injectPlannerDraftSkill(inputToSend);
-    }
+    const inputToSend: Input = promptInput.input;
     const cleanupAfter = cleanupAttachments;
     const turnCwd = deps.context.currentCwd;
 
@@ -261,9 +226,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
 
-      const plannerWriteRoots = isPlannerSession ? resolvePlannerWriteRoots() : [];
-      const plannerDirtyBefore = isPlannerSession ? snapshotDirtyFiles(workspaceRoot) : null;
-
       promptRun.ensureActive();
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         streaming: true,
@@ -279,78 +241,27 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       });
       promptRun.ensureActive();
 
-      if (isPlannerSession) {
-        const guard = enforceWriteAllowlist({
-          workspaceRoot,
-          before: plannerDirtyBefore,
-          roots: plannerWriteRoots,
-          timestamp: Date.now(),
-        });
-        const guardMessage = formatWriteGuardMessage(guard, plannerWriteRoots);
-        if (guardMessage) {
-          deps.observability.logger.warn(
-            `[PlannerWriteGuard] reverted=${guard.reverted.length} flagged=${guard.flagged.length}`,
-          );
-          deps.history.historyStore.add(deps.context.historyKey, {
-            role: "status",
-            text: guardMessage,
-            ts: Date.now(),
-            kind: "error",
-          });
-          sendToChat({ type: "status", kind: "error", message: guardMessage, ts: Date.now() });
-        }
-      }
-
       const workspaceRootForAdr = workspaceRoot;
       const { outputToSend } = await processPromptOutputBlocks({
         rawResponse: result.response,
         workspaceRoot: workspaceRootForAdr,
       });
       promptRun.ensureActive();
-      let threadId = orchestrator.getThreadId();
-      let threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
+      const threadId = orchestrator.getThreadId();
+      const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
 
-      if (shouldHandleTaskBundleDrafts) {
-        const plannerHandled = await handlePlannerPromptOutput({
-          outputToSend,
-          userLogEntry,
-          requestId: deps.request.requestId,
-          clientMessageId: deps.request.clientMessageId,
-          authUserId: deps.context.authUserId,
-          chatSessionId: deps.context.chatSessionId,
-          historyKey: deps.context.historyKey,
-          workspaceRoot: workspaceRootForAdr,
-          orchestrator,
-          expectedThreadId,
-          logger: deps.observability.logger,
-          sendToChat,
-          ensureTaskContext: deps.tasks.ensureTaskContext,
-          promoteQueuedTasksToPending: deps.tasks.promoteQueuedTasksToPending,
-          broadcastToSession: deps.tasks.broadcastToSession,
-          scheduleCompiler: deps.scheduler.scheduleCompiler,
-          scheduler: deps.scheduler.scheduler,
-          scheduleSource: deps.context.chatSessionId || "worker",
-          draftCommand: isPlannerDraftCommand,
-          isActive: promptRun.isActive,
-        });
-        promptRun.ensureActive();
-        outputForChat = plannerHandled.outputForChat;
-        threadId = plannerHandled.threadId;
-        threadReset = plannerHandled.threadReset;
-      } else {
-        outputForChat = await processScheduleOutput({
-          outputForChat,
-          isDraftCommand: false,
-          workspaceRoot: workspaceRootForAdr,
-          scheduleCompiler: deps.scheduler.scheduleCompiler,
-          scheduler: deps.scheduler.scheduler,
-          logger: deps.observability.logger,
-          source: deps.context.chatSessionId || "worker",
-          isActive: promptRun.isActive,
-        });
-        promptRun.ensureActive();
-      }
+      outputForChat = await processScheduleOutput({
+        outputForChat,
+        isDraftCommand: false,
+        workspaceRoot: workspaceRootForAdr,
+        scheduleCompiler: deps.scheduler.scheduleCompiler,
+        scheduler: deps.scheduler.scheduler,
+        logger: deps.observability.logger,
+        source: deps.context.chatSessionId || "worker",
+        isActive: promptRun.isActive,
+      });
+      promptRun.ensureActive();
 
       promptRun.ensureActive();
       if (threadId) {

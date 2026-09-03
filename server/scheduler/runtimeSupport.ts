@@ -4,10 +4,8 @@ import path from "node:path";
 import type { Database as SqliteDatabase } from "better-sqlite3";
 import type { Runner, SqliteQueue } from "liteque";
 
-import { TaskStore } from "../tasks/store.js";
-import type { Task } from "../tasks/types.js";
-import { OrchestratorTaskExecutor } from "../tasks/executor.js";
 import type { Logger } from "../utils/logger.js";
+import type { SessionManager } from "../telegram/utils/sessionManager.js";
 import { resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom, resolveConfiguredDatabasePath } from "../workspace/detector.js";
 
@@ -33,6 +31,7 @@ export type SchedulerJobPayload = {
   scheduleId: string;
   externalId: string;
   runAt: number;
+  prompt?: string;
 };
 
 export function buildEffectiveTaskPrompt(payload: SchedulerJobPayload, schedule: StoredSchedule): string {
@@ -58,7 +57,9 @@ export function buildEffectiveTaskPrompt(payload: SchedulerJobPayload, schedule:
 export type SchedulerExecutionInput = {
   workspaceRoot: string;
   schedule: StoredSchedule;
-  task: Task;
+  payload: SchedulerJobPayload;
+  prompt: string;
+  task: { id: string; title: string; prompt: string };
   signal: AbortSignal;
 };
 
@@ -80,11 +81,10 @@ export type SchedulerWarningContext = {
 
 export type WorkspaceSchedulerState = {
   store: ScheduleStore;
-  taskStore: TaskStore;
   queue: SqliteQueue<SchedulerJobPayload>;
   queueRawDb: SqliteDatabase;
   runner: Runner<SchedulerJobPayload, SchedulerExecutionResult>;
-  executor: OrchestratorTaskExecutor;
+  sessionManager: SessionManager;
   runnerPromise: Promise<void> | null;
   lastTouchedAt: number;
 };

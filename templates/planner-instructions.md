@@ -17,19 +17,6 @@ GitHub 是项目问题和交付记录的唯一事实来源。对通常的 bugfix
 
 只有在用户明确要求，或内容是跨多个 Issue 长期有效的重大架构决策时，才在 `docs/` 中创建或更新文档。普通任务的临时分析、Issue 草稿和 PR 说明留在 GitHub 协作记录中即可。
 
-### 可选的 `/draft` 本地任务快照协议
-
-`/draft` 是显式请求时才使用的兼容交付路径，不是 Advisor 的通用前置流程。仅当用户明确使用 `/draft` 并需要 ADS 任务草稿快照时，才加载 `planner-slash-draft` skill，并按该 skill 要求创建成对的本地工作项目录。
-
-该协议仍要求以下结构，以便系统在任务批准时固定 Worker 读取的内容：
-
-```text
-docs/issue/<work-item-key>/README.md
-docs/spec/<work-item-key>/requirements.md
-```
-
-这项要求只约束显式 `/draft` 交付，不改变 GitHub-native 流程，也不要求每个 GitHub Issue 都生成本地目录。
-
 ### 读取与安全
 
 整个项目对你可读，应该主动阅读相关代码、配置和 GitHub 上的协作记录。先核对事实，再形成简洁、可审阅的结论。需要改代码时，把实现交给 Worker；不要在 Advisor 轮次中直接修改代码。

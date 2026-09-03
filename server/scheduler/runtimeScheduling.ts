@@ -1,25 +1,20 @@
-import type { Task } from "../tasks/types.js";
-
 import { computeNextCronRunAt } from "./cron.js";
 import {
   buildExternalId,
+  buildEffectiveTaskPrompt,
   normalizeQuestions,
-  type SchedulerJobPayload,
   type SchedulerWarningContext,
   type WorkspaceSchedulerState,
 } from "./runtimeSupport.js";
-import type { StoredSchedule } from "./store.js";
 
 type GetState = (workspaceRoot: string) => WorkspaceSchedulerState;
 type WarnScheduler = (context: SchedulerWarningContext, error: unknown) => void;
-type EnsureTaskForRun = (payload: SchedulerJobPayload, schedule: StoredSchedule, now: number) => Task;
 
 export async function triggerScheduleRun(args: {
   workspaceRoot: string;
   scheduleId: string;
   nowMs: number;
   getState: GetState;
-  ensureTaskForRun: EnsureTaskForRun;
   warnScheduler: WarnScheduler;
 }): Promise<void> {
   const state = args.getState(args.workspaceRoot);
@@ -38,15 +33,9 @@ export async function triggerScheduleRun(args: {
     if (!existingRun) {
       store.insertRun({ scheduleId: schedule.id, externalId, runAt, taskId: null, status: "queued" }, args.nowMs);
     }
-    args.ensureTaskForRun(
-      {
-        workspaceRoot: args.workspaceRoot,
-        scheduleId: schedule.id,
-        externalId,
-        runAt,
-      },
+    const prompt = buildEffectiveTaskPrompt(
+      { workspaceRoot: args.workspaceRoot, scheduleId: schedule.id, externalId, runAt },
       schedule,
-      args.nowMs,
     );
     await state.queue.enqueue(
       {
@@ -54,6 +43,7 @@ export async function triggerScheduleRun(args: {
         scheduleId: schedule.id,
         externalId,
         runAt,
+        prompt,
       },
       {
         numRetries: Math.max(0, schedule.spec.policy.maxRetries),

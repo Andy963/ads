@@ -25,7 +25,6 @@ function createRuntime(): any {
     workspacePath: { value: "" } satisfies Ref<string>,
     availableAgents: { value: [] } satisfies Ref<any[]>,
     activeAgentId: { value: "" } satisfies Ref<string>,
-    taskBundleDrafts: { value: [] } satisfies Ref<any[]>,
     queuedPrompts: { value: [] } satisfies Ref<string[]>,
     threadWarning: { value: null } satisfies Ref<string | null>,
     chatSessionId: "main",

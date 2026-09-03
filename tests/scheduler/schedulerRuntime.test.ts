@@ -258,9 +258,8 @@ describe("scheduler/runtime-liteque", () => {
     assert.equal(run?.status, "completed");
     assert.equal(run?.result, "done");
 
-    const task = new TaskStore({ workspacePath: tmpDir }).getTask(run?.taskId ?? "");
-    assert.ok(task);
-    assert.equal(task?.status, "completed");
+    const tasksInStore = new TaskStore({ workspacePath: tmpDir }).listTasks();
+    assert.equal(tasksInStore.length, 0);
   });
 
 
@@ -355,10 +354,10 @@ describe("scheduler/runtime-liteque", () => {
     assert.ok(seenPrompt.endsWith(compiledPrompt));
 
     const run = store.listRuns(schedule.id, { limit: 1 })[0];
-    assert.ok(run?.taskId);
-    const task = new TaskStore({ workspacePath: tmpDir }).getTask(run?.taskId ?? "");
-    assert.ok(task);
-    assert.equal(task?.prompt, seenPrompt);
+    assert.ok(run);
+    assert.equal(run?.status, "completed");
+    const tasksInStore = new TaskStore({ workspacePath: tmpDir }).listTasks();
+    assert.equal(tasksInStore.length, 0);
   });
 
   it("freezes the queued run prompt before execution even if the schedule spec changes later", async () => {
@@ -394,9 +393,11 @@ describe("scheduler/runtime-liteque", () => {
 
     const runAtIso = new Date(dueRunAt).toISOString();
     const externalId = `sch:${schedule.id}:${runAtIso}`;
-    const queuedTask = new TaskStore({ workspacePath: tmpDir }).getTask(externalId);
-    assert.ok(queuedTask);
-    assert.ok(queuedTask?.prompt.includes(originalCompiledPrompt));
+    const queuedRun = store.getRunByExternalId(externalId);
+    assert.ok(queuedRun);
+    assert.equal(queuedRun?.status, "queued");
+    const tasksInStore = new TaskStore({ workspacePath: tmpDir }).listTasks();
+    assert.equal(tasksInStore.length, 0);
 
     const queuedSchedule = store.getSchedule(schedule.id);
     assert.ok(queuedSchedule);
@@ -553,43 +554,34 @@ describe("scheduler/runtime-liteque", () => {
     runtime.registerWorkspace(tmpDir);
 
     const internal = runtime as unknown as {
-      getState: (workspaceRoot: string) => { taskStore: TaskStore };
-      states: Map<string, { taskStore: TaskStore }>;
+      getState: (workspaceRoot: string) => { store: ScheduleStore };
+      states: Map<string, { store: ScheduleStore }>;
     };
     const state = internal.getState(tmpDir);
 
-    const originalSaveContext = state.taskStore.saveContext.bind(state.taskStore);
-    state.taskStore.saveContext = ((taskId, context, savedAt) => {
-      void taskId;
-      void context;
-      void savedAt;
-      throw new Error("summary write failed");
-    }) as typeof state.taskStore.saveContext;
+    const originalUpdate = state.store.updateRunByExternalId.bind(state.store);
+    let failedOnce = false;
+    state.store.updateRunByExternalId = ((externalId, updates, now) => {
+      if (updates.status === "completed" && !failedOnce) {
+        failedOnce = true;
+        throw new Error("summary write failed");
+      }
+      return originalUpdate(externalId, updates, now);
+    }) as typeof state.store.updateRunByExternalId;
 
     try {
       runtime.start();
       await runtime.tickWorkspace(tmpDir);
-      await waitFor(() => store.listRuns(schedule.id, { limit: 1 })[0]?.status === "completed");
+      await waitFor(() => loggerSpy.warns.some((entry) => entry.message.includes("stage=mark-run-completed")));
     } finally {
-      state.taskStore.saveContext = originalSaveContext;
+      state.store.updateRunByExternalId = originalUpdate;
       runtime.stop();
     }
 
-    const run = store.listRuns(schedule.id, { limit: 1 })[0];
-    assert.ok(run);
-    assert.equal(run?.status, "completed");
-
-    const task = new TaskStore({ workspacePath: tmpDir }).getTask(run?.taskId ?? "");
-    assert.ok(task);
-    assert.equal(task?.status, "completed");
-    assert.equal(task?.result, "summary-ok");
-
-    const warning = loggerSpy.warns.find((entry) => entry.message.includes("stage=save-summary"));
+    const warning = loggerSpy.warns.find((entry) => entry.message.includes("stage=mark-run-completed"));
     assert.ok(warning);
     assert.ok(warning.message.includes(`workspaceRoot=${tmpDir}`));
     assert.ok(warning.message.includes(`scheduleId=${schedule.id}`));
-    assert.ok(warning.message.includes(`externalId=${run?.externalId}`));
-    assert.ok(warning.message.includes(`taskId=${run?.taskId}`));
     assert.ok(warning.message.includes("err=summary write failed"));
   });
 

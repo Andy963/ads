@@ -6,29 +6,17 @@ ADS Web Console 是一个轻量级、响应式且功能完备的 AI 辅助编程
 
 ## 核心功能与工作流
 
-### 1. 工作区与三 Tab 结构 (Workspace Tabs)
-Web Console 将对话与任务流组织为三大工作区：
-- **Task (任务区)**：
-  - 展示当前项目的待处理、运行中与已完成任务看板。
-  - 支持直接创建任务（支持多模态图片附件、语音输入与 Goal Mode 目标模式）。
-  - 支持任务拖拽排序、批量调整优先级、立即执行与删除。
-  - 任务编辑在列表刷新或保存失败时保持状态一致；保存失败会保留编辑内容以便重试，任务已消失时会清理编辑状态。
-  - 集成 **Task Bundle Drafts（任务草稿箱）**：查看 Advisor 生成的结构化任务束，支持在线编辑子任务与一键审批入队。
+### 1. 工作区与双 Lane 结构 (Workspace Dual-Lane)
+Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
 - **Advisor (规划 Lane)**：
-  - 默认对话 Lane，用于方案讨论、代码架构设计与任务拆解。
-  - Task Bundle 可直接引用 GitHub Issue/PR URL，或只携带自包含的任务 prompt；不要求先创建本地 `docs/issue/` 与 `docs/spec/` 目录，审批也不以这两个目录为前提。
-  - 显式使用本地 `/draft` 快照时，仍可携带匹配的 `issueRef` / `specRef` 目录并在批准时固定内容；本地快照是兼容能力，不是 GitHub-native 流程的前置条件。
-  - 支持输出 `ads-schedule` 定时指令或生成 Task Bundle 任务草稿。
-  - 任务带有 `development`（开发）、`review`（审核）和 `rework`（返工）分类；待执行任务按 `priority` 降序、队列顺序升序领取。
-  - 仓库变更任务使用显式 `executionIsolation: "required"` 合约：Worker 在 ADS 管理的临时目录下创建唯一、干净的任务分支后执行，任务完成、失败或取消都会移除 checkout；分支引用保留用于 PR 交接，任务 Run 保留 worktree、分支、基线/终点提交和清理状态用于审计。`default` 仅适用于明确选择共享 workspace 的非仓库任务。
-  - 开发或返工任务完成并在结果中报告 GitHub PR 后，队列会幂等创建 P10 审核任务。审核结果使用 `REVIEW_STATUS: approved|rejected` 标记；拒绝且包含反馈时自动创建 P50 返工任务。
-  - 任务卡片和详情会显示持久化的审核状态、PR、Reviewer 模型、审核结论、返工轮次与关联任务链。审核拒绝在 `Auto with Fuse` 模式下最多自动返工两轮，之后进入需人工处理；`Human-Gated` 模式下拒绝不会自动返工。
-  - 详情面板支持 Force Approve、Edit & Rework、Skip Review 和 Abort。人工操作通过 `POST /api/tasks/:id/review-actions` 写入带操作者、原因、时间和幂等键的审计记录；审核设置通过 `GET/PATCH /api/review-settings` 管理。
-  - 审核状态通过 REST 和 WebSocket `review:updated` 事件同步，并在刷新、重连和重复终态事件下保持一致；Reviewer 未配置、PR 缺失、输出格式错误或后续任务创建失败会持久化为可见的错误或人工介入状态。
+  - 默认规划 Lane，用于方案讨论、代码架构设计与任务拆解。
+  - 采用 GitHub-native 规范：在 GitHub Issues 中追踪需求、根因、范围与验收条件。
+  - 支持输出 `ads-schedule` 声明式定时任务指令，由 Scheduler 独立调度执行。
+  - 无本地文件写入守卫限制，全面支持通过 GitHub CLI (`gh`) 等工具维护协作记录。
 - **Worker (执行 Lane)**：
-  - 专注于代码执行、命令运行与文件修改的执行 Lane。
-  - 若任务带有本地 issue/spec 快照，执行时先读取批准时固定的内容；没有快照时直接以任务 prompt 及其 GitHub 引用作为执行依据。
-  - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出（最新命令预览）；阶段 trace 使用单个可变过程卡片，只显示最新的实质阶段快照，不把历史步骤累积到同一块；重复的 reasoning 生命周期噪声不会写入历史 thought，完成后保留的 Thought 也只包含紧凑的最新阶段快照；文件路径和变更明细由 Patch 卡片展示，自动收起长文本输出。
+  - 专注于代码执行、命令运行与文件修改的执行 Lane，支持直接对话交互。
+  - 配合 `worker-pr-lifecycle` 规范，在独立的 worktree 中完成编码、验证、测试与 PR 提交。
+  - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出；文件变更由 Patch 卡片展示。
   - Plan 卡片按单轮逻辑计划合并 provider 更新，并在任务完成与历史重连时保持唯一且状态一致。
 
 ### 2. Provider CLI 与全局模型配置 (Provider & Models)

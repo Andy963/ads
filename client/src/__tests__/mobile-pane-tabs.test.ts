@@ -2,14 +2,13 @@ import { describe, it, expect } from "vitest";
 import { readSfc } from "./readSfc";
 
 describe("mobile navigation shell", () => {
-  it("renders Task, Advisor, and Worker in one shared mobile workspace tab shell", async () => {
+  it("renders Advisor and Worker in one shared mobile workspace tab shell", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('const chatLanes: Array<{ id: ChatLane; label: string }> = [');
     expect(sfc).toContain('{ id: "planner", label: "Advisor" }');
     expect(sfc).toContain('{ id: "worker", label: "Worker" }');
-    expect(sfc).toContain('{ id: "tasks", label: "Task" }');
-    expect(sfc).toMatch(/isMobile\.value \? \[\{ id: "tasks", label: "Task" \}, \.\.\.chatLanes\]/);
-    expect(sfc).not.toContain('{ id: "reviewer", label: "Reviewer" }');
+    expect(sfc).not.toContain('{ id: "tasks", label: "Task" }');
+        expect(sfc).not.toContain('{ id: "reviewer", label: "Reviewer" }');
     expect(sfc).toMatch(/<div class="laneTabs"[^>]*role="tablist"[^>]*>/);
   });
 
@@ -17,7 +16,7 @@ describe("mobile navigation shell", () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'planner'"/);
     expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'worker'"/);
-    expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'tasks'"/);
+    expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'tasks'"/);
     expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'reviewer'"/);
     expect(sfc).toMatch(/:class="\{[\s\S]*active:\s*activeWorkspaceTab === tab.id/);
     expect(sfc).toMatch(/:aria-selected="activeWorkspaceTab === tab.id"/);
@@ -35,15 +34,15 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain(':data-testid="`mobile-drawer-model-${group.kind}`"');
     expect(sfc).toContain('class="mobileMainPanel"');
     expect(sfc).toContain(':show-add-button="false"');
-    expect(sfc).toContain('v-if="!isMobile && p.expanded"');
-    expect(sfc).toContain('class="lanePanel taskLanePanel"');
-    expect(sfc).toContain('class="mobileTaskWorkspace"');
+    // projectTasks removed
+    expect(sfc).not.toContain('class="lanePanel taskLanePanel"');
+    expect(sfc).not.toContain('class="mobileTaskWorkspace"');
     expect(sfc).toContain('v-if="mobileDrawerSection === \'rules\'"');
     expect(sfc).toContain(':agent="mobileModelAgent"');
     expect(sfc).toContain("flex-direction: column");
     expect(sfc).toContain('v-if="!isMobile && p.id === \'default\'"');
-    expect(sfc).toContain(':show-create-button="!isMobile"');
-    expect(sfc).toContain('id: "create-task"');
+    // create button removed
+    expect(sfc).not.toContain('id: "create-task"');
     expect(sfc).not.toContain("mobileDrawerSubitemArrow");
     expect(sfc).not.toContain("mobileDrawerManager");
     expect(sfc).not.toContain('mobilePane === "tasks"');

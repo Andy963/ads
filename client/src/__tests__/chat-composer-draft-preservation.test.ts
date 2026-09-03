@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createAppContext, type AppContext } from "../app/controller";
 import { createChatActions } from "../app/chat";
 import { createProjectActions } from "../app/projectsWs/projectActions";
-import { createTaskActions } from "../app/tasks";
+import { createLaneActions } from "../app/laneActions";
 
 describe("composer draft preservation on session reset", () => {
   it("preserves composerDraft text when clearChatState is executed", () => {
@@ -64,7 +64,7 @@ describe("composer draft preservation on session reset", () => {
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       activateProject: vi.fn(async () => {}),
     });
-    const tasks = createTaskActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+    const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
       connectPlannerWs: vi.fn(async () => {}),
     });
@@ -90,7 +90,7 @@ describe("composer draft preservation on session reset", () => {
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       activateProject: vi.fn(async () => {}),
     });
-    const tasks = createTaskActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+    const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
       connectPlannerWs: vi.fn(async () => {}),
     });

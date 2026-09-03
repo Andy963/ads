@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createAppContext, type AppContext } from "../app/controller";
 import { createChatActions } from "../app/chat";
 import { createProjectActions } from "../app/projectsWs/projectActions";
-import { createTaskActions } from "../app/tasks";
+import { createLaneActions } from "../app/laneActions";
 import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
 
 describe("session boundary divider and status feedback", () => {
@@ -249,7 +249,7 @@ describe("session boundary divider and status feedback", () => {
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       activateProject: vi.fn(async () => {}),
     });
-    const tasks = createTaskActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+    const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
       connectPlannerWs: vi.fn(async () => {}),
     });

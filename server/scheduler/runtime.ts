@@ -1,13 +1,11 @@
 import crypto from "node:crypto";
 
-import type { Task } from "../tasks/types.js";
 import { getErrorMessage } from "../utils/error.js";
 import { parseBooleanFlag, parsePositiveIntFlag } from "../utils/flags.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 
 import {
-  ensureTaskForRun as ensureTaskForRunHelper,
   handleScheduledJobComplete,
   handleScheduledJobError,
   runScheduledJob as runScheduledJobHelper,
@@ -20,16 +18,16 @@ import {
   hasQueuedSchedulerJobs,
 } from "./runtimeState.js";
 import {
+  buildEffectiveTaskPrompt,
+  hashTaskId,
   normalizeWorkspaceRoot,
   type SchedulerExecuteRun,
   type SchedulerExecutionInput,
   type SchedulerExecutionResult,
-  type SchedulerJobPayload,
   type SchedulerRuntimeLogger,
   type SchedulerWarningContext,
   type WorkspaceSchedulerState,
 } from "./runtimeSupport.js";
-import type { StoredSchedule } from "./store.js";
 
 const defaultLogger = createLogger("SchedulerRuntime");
 
@@ -252,7 +250,6 @@ export class SchedulerRuntime {
       scheduleId: options.scheduleId,
       nowMs: options.nowMs,
       getState: (workspaceRoot) => this.getState(workspaceRoot),
-      ensureTaskForRun: (payload, schedule, now) => this.ensureTaskForRun(payload, schedule, now),
       warnScheduler: (context, error) => this.warnScheduler(context, error),
     });
   }
@@ -281,18 +278,12 @@ export class SchedulerRuntime {
       });
   }
 
-  private ensureTaskForRun(payload: SchedulerJobPayload, schedule: StoredSchedule, now: number): Task {
-    return ensureTaskForRunHelper({
-      getState: (workspaceRoot) => this.getState(workspaceRoot),
-      payload,
-      schedule,
-      now,
-    });
-  }
-
   private async defaultExecuteRun(input: SchedulerExecutionInput): Promise<SchedulerExecutionResult> {
     const state = this.getState(input.workspaceRoot);
-    return await state.executor.execute(input.task, { signal: input.signal });
+    const effectivePrompt = input.prompt || buildEffectiveTaskPrompt(input.payload, input.schedule);
+    const orchestrator = state.sessionManager.getOrCreate(hashTaskId(input.payload.externalId), input.workspaceRoot, true);
+    const result = await orchestrator.send(effectivePrompt, { streaming: false, signal: input.signal });
+    return { resultSummary: result.response };
   }
 
   private warnScheduler(context: SchedulerWarningContext, error: unknown): void {

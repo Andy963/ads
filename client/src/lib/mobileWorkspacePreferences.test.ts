@@ -18,7 +18,7 @@ describe("mobileWorkspacePreferences", () => {
   });
 
   it("normalizes invalid values to Advisor", () => {
-    expect(normalizeMobileWorkspaceTab("tasks")).toBe("tasks");
+    expect(normalizeMobileWorkspaceTab("tasks")).toBe("planner");
     expect(normalizeMobileWorkspaceTab("planner")).toBe("planner");
     expect(normalizeMobileWorkspaceTab("worker")).toBe("worker");
     expect(normalizeMobileWorkspaceTab("invalid")).toBe("planner");
@@ -27,10 +27,10 @@ describe("mobileWorkspacePreferences", () => {
 
   it("reads and writes values independently for each project", () => {
     writeMobileWorkspaceTab("p1", "worker");
-    writeMobileWorkspaceTab("p2", "tasks");
+    writeMobileWorkspaceTab("p2", "planner");
 
     expect(readMobileWorkspaceTab("p1")).toBe("worker");
-    expect(readMobileWorkspaceTab("p2")).toBe("tasks");
+    expect(readMobileWorkspaceTab("p2")).toBe("planner");
     expect(readMobileWorkspaceTab("p3")).toBe("planner");
   });
 
