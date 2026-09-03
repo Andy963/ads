@@ -108,6 +108,7 @@ export function attachWorkerPromptHandler(args: {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
   getStepTraceText: () => string;
+  getThoughtText: () => string;
 } {
   const lastRespondingTextByItemId = new Map<string, string>();
   let lastReasoningText = "";
@@ -267,11 +268,9 @@ export function attachWorkerPromptHandler(args: {
       }
       lastReasoningText = next;
       if (delta) {
-        // Keep every reasoning fragment classified as analysis. The client
-        // intentionally filters this lifecycle noise so it cannot replace a
-        // substantive live step or diverge from the completion thought.
-        const payload = `[analysis] ${delta}`;
-        args.sendToChat({ type: "delta", delta: payload, source: "step" });
+        // Emit pure reasoning delta as structured thought event directly,
+        // avoiding smearing cognitive reasoning into generic step traces.
+        args.sendToChat({ type: "delta", delta, source: "thought" });
       }
       return;
     }
@@ -419,5 +418,6 @@ export function attachWorkerPromptHandler(args: {
     unsubscribe,
     handleExploredEntry,
     getStepTraceText: () => latestStepTraceText,
+    getThoughtText: () => lastReasoningText.trim(),
   };
 }

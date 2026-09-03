@@ -217,8 +217,8 @@ const liveStepHasMeaningfulBody = computed(() => liveStepOutlineAnalysis.value.h
 const liveStepOutlineItems = computed(() => {
   const titles = liveStepOutlineTitles.value;
   if (titles.length <= 3) return titles;
-  // Keep the collapsed outline within the 3-line clamp: 2 titles + a "+N more" line.
-  return titles.slice(0, 2);
+  // Follow the newest incoming tail rather than locking to the top 2 titles
+  return titles.slice(-2);
 });
 const liveStepOutlineHiddenCount = computed(() => Math.max(0, liveStepOutlineTitles.value.length - liveStepOutlineItems.value.length));
 const liveStepCollapsedTrivialOutline = computed(

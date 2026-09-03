@@ -398,11 +398,12 @@ function closeFilePreview(): void {
           </div>
         </div>
       </div>
-      <div v-else-if="m.kind === 'execute'" :class="['bubble', 'bubble--compact', 'execute-block']">
+      <div v-else-if="m.kind === 'execute'" :class="['bubble', 'bubble--compact', 'execute-block', { 'execute-block--running': m.streaming }]">
         <div class="execute-header">
           <div class="execute-left">
             <span class="prompt-tag">&gt;_</span>
             <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
+            <span v-if="m.streaming" class="executeSpinner" aria-label="Running..."></span>
           </div>
           <div class="execute-actions">
             <button class="msgCopyBtn executeCopyBtn" type="button" aria-label="复制命令输出" @click="emit('copyMessage', m)">
@@ -503,6 +504,7 @@ function closeFilePreview(): void {
         >
           <span class="prompt-tag">思考</span>
           <span class="thoughtCardSummary">{{ getThoughtSummary(m.content) }}</span>
+          <span v-if="m.streaming" class="thoughtSpinner" aria-label="Thinking..."></span>
           <span class="thoughtCardToggleText">{{ isThoughtExpanded(m.id) ? "收起" : "展开" }}</span>
         </button>
         <div v-if="isThoughtExpanded(m.id)" class="thoughtCardBody">
@@ -1329,5 +1331,35 @@ function closeFilePreview(): void {
   text-align: center;
   max-width: 90%;
   word-break: break-word;
+}
+
+.thoughtSpinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid rgba(139, 92, 246, 0.3);
+  border-top-color: #8b5cf6;
+  border-radius: 50%;
+  animation: actionSpin 0.8s linear infinite;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.executeSpinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid rgba(148, 163, 184, 0.4);
+  border-top-color: var(--accent, #0969da);
+  border-radius: 50%;
+  animation: actionSpin 0.8s linear infinite;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+@keyframes actionSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>
