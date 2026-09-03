@@ -89,14 +89,31 @@ export function handleBuiltinCommand(args: {
   logger: WsLogger;
   sessionLogger: WsSessionLogger;
   syncWorkspaceTemplates: () => void;
+  isCurrent?: () => boolean;
 }): {
   handled: boolean;
   currentCwd: string;
   orchestrator: WsOrchestrator;
 } {
+  const isCurrent = (): boolean => (args.isCurrent ? args.isCurrent() : true);
+  if (!isCurrent()) {
+    return {
+      handled: true,
+      currentCwd: args.currentCwd,
+      orchestrator: args.orchestrator,
+    };
+  }
+
   if (args.request.slash?.command === "pwd") {
     const output = `当前工作目录: ${args.currentCwd}`;
     args.sendToCommandScope({ type: "result", ok: true, output, kind: "status" });
+    if (!isCurrent()) {
+      return {
+        handled: true,
+        currentCwd: args.currentCwd,
+        orchestrator: args.orchestrator,
+      };
+    }
     args.sessionLogger?.logOutput(output);
     args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "status" });
     return {
@@ -117,6 +134,13 @@ export function handleBuiltinCommand(args: {
   if (!args.request.slash.body) {
     const output = "用法: /cd <path>";
     (args.sendToHistoryScope ?? args.sendToCommandScope)({ type: "result", ok: false, output });
+    if (!isCurrent()) {
+      return {
+        handled: true,
+        currentCwd: args.currentCwd,
+        orchestrator: args.orchestrator,
+      };
+    }
     args.sessionLogger?.logError(output);
     args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
     return {
@@ -128,9 +152,23 @@ export function handleBuiltinCommand(args: {
 
   const prevCwd = args.currentCwd;
   const result = args.state.directoryManager.setUserCwd(args.userId, args.request.slash.body);
+  if (!isCurrent()) {
+    return {
+      handled: true,
+      currentCwd: args.currentCwd,
+      orchestrator: args.orchestrator,
+    };
+  }
   if (!result.success) {
     const output = `错误: ${result.error}`;
     (args.sendToHistoryScope ?? args.sendToCommandScope)({ type: "result", ok: false, output });
+    if (!isCurrent()) {
+      return {
+        handled: true,
+        currentCwd: args.currentCwd,
+        orchestrator: args.orchestrator,
+      };
+    }
     args.sessionLogger?.logError(output);
     args.historyStore.add(args.historyKey, { role: "status", text: output, ts: Date.now(), kind: "error" });
     return {
@@ -141,6 +179,13 @@ export function handleBuiltinCommand(args: {
   }
 
   const currentCwd = args.state.directoryManager.getUserCwd(args.userId);
+  if (!isCurrent()) {
+    return {
+      handled: true,
+      currentCwd: args.currentCwd,
+      orchestrator: args.orchestrator,
+    };
+  }
   args.state.workspaceCache.set(args.state.cacheKey, currentCwd);
   args.state.cwdStore.set(String(args.userId), currentCwd);
   args.state.persistCwdStore(args.state.cwdStorePath, args.state.cwdStore);
@@ -151,6 +196,13 @@ export function handleBuiltinCommand(args: {
     args.logger.warn(`[Web] Failed to sync templates after cd: ${(error as Error).message}`);
   }
   const orchestrator = args.sessionManager.getOrCreate(args.userId, currentCwd, true);
+  if (!isCurrent()) {
+    return {
+      handled: true,
+      currentCwd: args.currentCwd,
+      orchestrator: args.orchestrator,
+    };
+  }
 
   let message = `已切换到: ${currentCwd}`;
   if (prevCwd !== currentCwd) {
@@ -160,12 +212,33 @@ export function handleBuiltinCommand(args: {
   }
   if (!args.request.isSilentCommandPayload) {
     args.sendToCommandScope({ type: "result", ok: true, output: message, kind: "status" });
+    if (!isCurrent()) {
+      return {
+        handled: true,
+        currentCwd,
+        orchestrator,
+      };
+    }
     args.sessionLogger?.logOutput(message);
     args.historyStore.add(args.historyKey, { role: "status", text: message, ts: Date.now(), kind: "status" });
   }
   if (args.transport.broadcastWorkspaceState) {
+    if (!isCurrent()) {
+      return {
+        handled: true,
+        currentCwd,
+        orchestrator,
+      };
+    }
     args.transport.broadcastWorkspaceState(currentCwd);
   } else {
+    if (!isCurrent()) {
+      return {
+        handled: true,
+        currentCwd,
+        orchestrator,
+      };
+    }
     args.transport.sendWorkspaceState(args.transport.ws, currentCwd);
   }
 

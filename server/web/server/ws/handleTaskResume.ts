@@ -7,7 +7,6 @@ import type {
 } from "./deps.js";
 import {
   buildHistoryStoreResumeTranscript,
-  loadTaskResumeConversationContext,
 } from "./taskResumeConversation.js";
 import { assertSessionResumable } from "./taskResumeProbe.js";
 import { sendTaskResumeHistorySnapshot } from "./taskResumeHistory.js";
@@ -129,14 +128,18 @@ export async function handleTaskResumeMessage(
   let orchestrator = deps.sessions.orchestrator;
   const resumeWorkspaceRoot = detectWorkspaceFrom(deps.context.currentCwd);
   const lock = deps.sessions.getWorkspaceLock(resumeWorkspaceRoot);
+  const isLaneCurrent = (): boolean => (deps.context.isLaneCurrent ? deps.context.isLaneCurrent() : true);
 
   await lock.runExclusive(async () => {
+    if (!isLaneCurrent()) return;
     const taskCtx = deps.tasks.ensureTaskContext(resumeWorkspaceRoot);
+    if (!isLaneCurrent()) return;
     const originalHistoryEntries = cloneHistoryEntries(
       deps.history.historyStore.get(deps.context.historyKey),
     );
 
     const sendError = (message: string) => {
+      if (!isLaneCurrent()) return;
       const payload = { type: "error", message };
       if (deps.transport.broadcastJson) {
         deps.transport.broadcastJson(payload);
@@ -147,6 +150,7 @@ export async function handleTaskResumeMessage(
 
     if (taskCtx.queueRunning || taskCtx.taskStore.getActiveTaskId()) {
       const message = "任务执行中，无法恢复上下文";
+      if (!isLaneCurrent()) return;
       commitTaskResumeError({
         historyStore: deps.history.historyStore,
         historyKey: deps.context.historyKey,
@@ -160,7 +164,8 @@ export async function handleTaskResumeMessage(
     const sendHistorySnapshot = (metadata?: {
       threadId?: string | null;
       contextMode?: "thread_resumed" | "history_injection";
-    }) =>
+    }) => {
+      if (!isLaneCurrent()) return;
       sendTaskResumeHistorySnapshot({
         historyStore: deps.history.historyStore,
         historyKey: deps.context.historyKey,
@@ -168,6 +173,7 @@ export async function handleTaskResumeMessage(
         threadId: metadata?.threadId,
         contextMode: metadata?.contextMode,
       });
+    };
     const activeAgentId = orchestrator.getActiveAgentId();
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
@@ -198,6 +204,7 @@ export async function handleTaskResumeMessage(
           sessionId: threadIdToResume,
           cwd: deps.context.currentCwd,
         });
+        if (!isLaneCurrent()) return;
 
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadIdToResume, activeAgentId);
         if (selection.source === "saved") {
@@ -210,6 +217,7 @@ export async function handleTaskResumeMessage(
 
         const status = orchestrator.status();
         if (!status.ready) {
+          if (!isLaneCurrent()) return;
           const message = status.error ?? "代理未启用";
           commitTaskResumeError({
             historyStore: deps.history.historyStore,
@@ -221,6 +229,7 @@ export async function handleTaskResumeMessage(
           return;
         }
 
+        if (!isLaneCurrent()) return;
         commitTaskResumeHistory({
           historyStore: deps.history.historyStore,
           historyKey: deps.context.historyKey,
@@ -236,6 +245,7 @@ export async function handleTaskResumeMessage(
         });
         return;
       } catch (error) {
+        if (!isLaneCurrent()) return;
         const message = error instanceof Error ? error.message : String(error);
         nativeResumeFailure = describeNativeResumeFailure(activeAgentId, message);
         deps.observability.logger.warn(
@@ -250,7 +260,14 @@ export async function handleTaskResumeMessage(
       }
     }
 
+    if (clearSavedResumeThreadAfterFallback) {
+      if (!isLaneCurrent()) return;
+      deps.sessions.sessionManager.clearSavedResumeThreadId(deps.context.userId);
+      clearSavedResumeThreadAfterFallback = false;
+    }
+
     const laneHistoryTranscript = buildHistoryStoreResumeTranscript(originalHistoryEntries);
+    if (!isLaneCurrent()) return;
     // Only set when a native resume was actually attempted, so the untried case
     // keeps its original wording.
     const degradePrefix = nativeResumeFailure ? `未能原生恢复（${nativeResumeFailure}），` : "";
@@ -259,16 +276,7 @@ export async function handleTaskResumeMessage(
           transcript: laneHistoryTranscript,
           statusText: `${degradePrefix}已从当前对话恢复上下文`,
         }
-      : (() => {
-          const taskResumeContext = loadTaskResumeConversationContext(taskCtx.taskStore);
-          if (!taskResumeContext) {
-            return null;
-          }
-          return {
-            transcript: taskResumeContext.transcript,
-            statusText: `${degradePrefix}已从最近任务恢复上下文：${String(taskResumeContext.task.title ?? taskResumeContext.task.id ?? "").trim()}`,
-          };
-        })();
+      : null;
 
     if (!resumeContext) {
       deps.observability.logger.warn(
@@ -289,15 +297,14 @@ export async function handleTaskResumeMessage(
     const { transcript, statusText } = resumeContext;
     const transcriptSource = laneHistoryTranscript ? "lane_history" : "recent_task";
 
-    if (clearSavedResumeThreadAfterFallback) {
-      deps.sessions.sessionManager.clearSavedResumeThreadId(deps.context.userId);
-    }
+    if (!isLaneCurrent()) return;
     deps.sessions.sessionManager.dropSession(deps.context.userId);
     orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, false);
     orchestrator.setWorkingDirectory(deps.context.currentCwd);
 
     const status = orchestrator.status();
     if (!status.ready) {
+      if (!isLaneCurrent()) return;
       const message = status.error ?? "代理未启用";
       commitTaskResumeError({
         historyStore: deps.history.historyStore,
@@ -309,6 +316,7 @@ export async function handleTaskResumeMessage(
       return;
     }
     try {
+      if (!isLaneCurrent()) return;
       const prompt = [
         "你正在帮助我恢复对话上下文。以下是最近保留的对话片段（仅用于恢复上下文，不要逐条复述）：",
         transcript,
@@ -318,6 +326,7 @@ export async function handleTaskResumeMessage(
         .filter(Boolean)
         .join("\n");
       await orchestrator.send(prompt, { streaming: false });
+      if (!isLaneCurrent()) return;
       const threadId = orchestrator.getThreadId();
       if (threadId) {
         const activeAgentId = orchestrator.getActiveAgentId();
@@ -334,6 +343,7 @@ export async function handleTaskResumeMessage(
         `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} degradedFrom=${nativeResumeFailure ? "native_resume" : "none"} savedThread=${threadId ?? "none"}`,
       );
     } catch (error) {
+      if (!isLaneCurrent()) return;
       const message = error instanceof Error ? error.message : String(error);
       deps.observability.logger.warn(
         `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=history_injection source=${transcriptSource} failed err=${truncateForLog(message)}`,
@@ -349,6 +359,7 @@ export async function handleTaskResumeMessage(
       return;
     }
 
+    if (!isLaneCurrent()) return;
     commitTaskResumeHistory({
       historyStore: deps.history.historyStore,
       historyKey: deps.context.historyKey,

@@ -26,6 +26,7 @@ import { handleRunRoutes } from "./routes/runs.js";
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
 import type { SyncEventStore } from "../sync/store.js";
+import type { WebLaneGenerationStore } from "../sync/laneGeneration.js";
 
 export function createApiRequestHandler(deps: {
   logger: Logger;
@@ -47,6 +48,7 @@ export function createApiRequestHandler(deps: {
   promptRunEpochs?: Map<string, number>;
   workerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
   plannerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
+  laneGenerationStore?: WebLaneGenerationStore;
 }): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
   const buildAttachmentRawUrl = (url: URL, attachmentId: string): string => {
     const workspaceParam = url.searchParams.get("workspace");
@@ -104,6 +106,7 @@ export function createApiRequestHandler(deps: {
         resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
         workerHistoryStore: deps.workerHistoryStore ?? { get: () => [] },
         plannerHistoryStore: deps.plannerHistoryStore ?? { get: () => [] },
+        laneGenerationStore: deps.laneGenerationStore,
       })
     ) return true;
     if (
@@ -112,6 +115,7 @@ export function createApiRequestHandler(deps: {
         resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
         interruptControllers: deps.interruptControllers,
         promptRunEpochs: deps.promptRunEpochs,
+        laneGenerationStore: deps.laneGenerationStore,
       })
     ) return true;
     if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;

@@ -256,6 +256,28 @@ export class SyncEventStore {
     }
   }
 
+  /** Remove replay rows and their truncation watermark when a lane is reset. */
+  clearLanes(args: { namespace: string; laneKeys: string[] }): void {
+    const namespace = String(args.namespace ?? "").trim();
+    const laneKeys = [...new Set(args.laneKeys.map((value) => String(value ?? "").trim()).filter(Boolean))];
+    if (!namespace || laneKeys.length === 0) return;
+
+    const placeholders = laneKeys.map(() => "?").join(", ");
+    try {
+      const clear = this.db.transaction(() => {
+        this.db
+          .prepare(`DELETE FROM sync_events WHERE namespace = ? AND lane_key IN (${placeholders})`)
+          .run(namespace, ...laneKeys);
+        this.db
+          .prepare(`DELETE FROM sync_lane_state WHERE namespace = ? AND lane_key IN (${placeholders})`)
+          .run(namespace, ...laneKeys);
+      });
+      clear();
+    } catch (error) {
+      logger.warn(`[SyncEventStore] Failed to clear lanes`, error);
+    }
+  }
+
   readAfter(args: {
     namespace: string;
     laneKey: string;

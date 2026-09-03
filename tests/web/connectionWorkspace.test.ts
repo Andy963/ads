@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { restoreConnectionWorkspace } from "../../server/web/server/ws/connectionWorkspace.js";
 
 describe("web/ws/connectionWorkspace", () => {
-  it("migrates legacy cwd keys and restores the preferred project cwd", () => {
+  it("restores the preferred project cwd without using legacy keys", () => {
     const persisted: Array<Array<[string, string]>> = [];
     const sessionManagerCalls: string[] = [];
     let currentCwd = "/workspace/root";
@@ -13,7 +13,6 @@ describe("web/ws/connectionWorkspace", () => {
 
     const result = restoreConnectionWorkspace({
       userId: 101,
-      legacyUserId: 1001,
       cacheKey: "user::session",
       preferredProjectCwd: "/workspace/project",
       directoryManager: {
@@ -40,9 +39,10 @@ describe("web/ws/connectionWorkspace", () => {
 
     assert.equal(result, "/workspace/project");
     assert.equal(cwdStore.get("101"), "/workspace/project");
+    assert.equal(cwdStore.get("1001"), "/workspace/legacy");
     assert.equal(workspaceCache.get("user::session"), "/workspace/project");
     assert.deepEqual(sessionManagerCalls, ["/workspace/project"]);
-    assert.equal(persisted.length, 3);
+    assert.equal(persisted.length, 2);
   });
 
   it("falls back to current cwd when preferred restoration fails", () => {
@@ -53,7 +53,6 @@ describe("web/ws/connectionWorkspace", () => {
 
     const result = restoreConnectionWorkspace({
       userId: 202,
-      legacyUserId: 2002,
       cacheKey: "user::session",
       preferredProjectCwd: null,
       directoryManager: {

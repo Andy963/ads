@@ -21,7 +21,6 @@ function persistCurrentCwd(args: {
 
 export function restoreConnectionWorkspace(args: {
   userId: number;
-  legacyUserId: number;
   cacheKey: string;
   preferredProjectCwd: string | null;
   directoryManager: DirectoryManager;
@@ -34,7 +33,6 @@ export function restoreConnectionWorkspace(args: {
 }): string {
   const {
     userId,
-    legacyUserId,
     cacheKey,
     preferredProjectCwd,
     directoryManager,
@@ -47,14 +45,6 @@ export function restoreConnectionWorkspace(args: {
   } = args;
 
   const userCwdKey = String(userId);
-  if (!cwdStore.has(userCwdKey)) {
-    const legacyCwd = cwdStore.get(String(legacyUserId));
-    if (legacyCwd && legacyCwd.trim()) {
-      cwdStore.set(userCwdKey, legacyCwd);
-      persistCwdStore(cwdStorePath, cwdStore);
-    }
-  }
-
   const savedState = sessionManager.getSavedState(userId);
   const cachedWorkspace = workspaceCache.get(cacheKey);
   const storedCwd = cwdStore.get(userCwdKey);

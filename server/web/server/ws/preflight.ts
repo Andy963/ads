@@ -55,12 +55,16 @@ export function preflightPersistAndAck(args: {
   broadcastPersistedHistory?: () => void;
   broadcastInFlight?: () => void;
   inFlight?: boolean;
+  isLaneCurrent?: () => boolean;
   traceWsDuplication: boolean;
   warn: (message: string) => void;
   sessionId: string;
   userId: number;
   onPersistedMessage?: (message: { clientMessageId: string; role: "user"; text: string }) => void;
 }): { enqueue: boolean } {
+  if (args.isLaneCurrent && !args.isLaneCurrent() && args.parsed.type !== "clear_history") {
+    return { enqueue: false };
+  }
   if (!args.clientMessageId) {
     return { enqueue: true };
   }
@@ -91,6 +95,9 @@ export function preflightPersistAndAck(args: {
       ts: args.receivedAt,
       kind: entryKind,
     });
+    if (args.isLaneCurrent && !args.isLaneCurrent()) {
+      return { enqueue: false };
+    }
     if (persistence === "failed") {
       args.warn(
         `[WebSocket][Persist] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} failed to persist prompt`,
@@ -142,6 +149,9 @@ export function preflightPersistAndAck(args: {
       ts: args.receivedAt,
       kind: entryKind,
     });
+    if (args.isLaneCurrent && !args.isLaneCurrent()) {
+      return { enqueue: false };
+    }
     if (persistence === "failed") {
       args.warn(
         `[WebSocket][Persist] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} failed to persist command`,

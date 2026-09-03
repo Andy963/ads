@@ -1,6 +1,7 @@
 import { sendJson } from "../../http.js";
 import type { ApiRouteContext } from "../types.js";
 import { resolveLaneRequest } from "../../sync/laneRequest.js";
+import type { WebLaneGenerationStore } from "../../sync/laneGeneration.js";
 import { abortInFlightHistory } from "../../ws/connectionRuntime.js";
 
 /**
@@ -23,6 +24,7 @@ export async function handleRunRoutes(
     resolveWorkspaceRoot: (url: URL) => string;
     interruptControllers: Map<string, AbortController>;
     promptRunEpochs?: Map<string, number>;
+    laneGenerationStore?: WebLaneGenerationStore;
   },
 ): Promise<boolean> {
   if (route.pathname !== "/api/runs/interrupt") {
@@ -38,6 +40,9 @@ export async function handleRunRoutes(
     authUserId: route.auth.userId,
     defaultWorkspaceRoot: deps.defaultWorkspaceRoot,
     resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
+    resolveGeneration: deps.laneGenerationStore
+      ? (namespace, logicalLaneKey) => deps.laneGenerationStore!.getGeneration(namespace, logicalLaneKey)
+      : undefined,
   });
   if (!resolved.ok) {
     sendJson(route.res, resolved.failure.status, { error: resolved.failure.error });

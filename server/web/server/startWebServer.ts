@@ -15,8 +15,6 @@ import { resolveStateDbPath, getStateDatabase } from "../../state/database.js";
 import { HistoryMaintenanceScheduler } from "../../state/historyMaintenance.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
-import { ThreadStorage } from "../../telegram/utils/threadStorage.js";
-import { prepareMigrationMarkerStatements } from "../../state/migrations.js";
 import { CliAgentAvailability } from "../../agents/health/agentAvailability.js";
 import { createTaskQueueManager } from "./taskQueue/manager.js";
 import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
@@ -30,11 +28,10 @@ import { resolveSharedConfig, resolveWebConfig } from "../../config.js";
 import { closeSharedDatabases } from "../../utils/shutdown.js";
 import { createWebSocketHub } from "./start/webSocketHub.js";
 import { SyncEventStore } from "./sync/store.js";
+import { WebLaneGenerationStore } from "./sync/laneGeneration.js";
 import { DirectoryManager } from "../../telegram/utils/directoryManager.js";
 import {
   createWebLaneResources,
-  WEB_PLANNER_NAMESPACE,
-  WEB_WORKER_NAMESPACE,
 } from "./start/webLaneResources.js";
 import { preferInMemoryThreadId } from "./ws/threadIds.js";
 import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
@@ -48,17 +45,9 @@ const adsStateDir = resolveAdsStateDir();
 const stateDbPath = resolveStateDbPath();
 const LEGACY_WEB_NAMESPACE = "web";
 function migrateLegacyWebLaneNamespaces(): void {
-  try {
-    // Best-effort: migrate legacy json stores into state.db under the legacy `web` namespace
-    // before copying into the new lane namespaces.
-    void new ThreadStorage({
-      namespace: LEGACY_WEB_NAMESPACE,
-      storagePath: path.join(adsStateDir, "web-threads.json"),
-      stateDbPath,
-    });
-  } catch {
-    // ignore
-  }
+  // Keep the raw legacy namespace available as an archive. Generation one
+  // reuses only the already-partitioned web-worker/web-planner keys; never copy
+  // an undifferentiated legacy thread id into either active lane.
   try {
     void new HistoryStore({
       storagePath: stateDbPath,
@@ -69,89 +58,6 @@ function migrateLegacyWebLaneNamespaces(): void {
     });
   } catch {
     // ignore
-  }
-
-  const db = getStateDatabase(stateDbPath);
-  const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
-  const marker = "web_lane_namespaces:v1";
-  let markerSet = false;
-  try {
-    const existing = getMigrationMarkerStmt.get(marker) as { value?: string } | undefined;
-    if (existing?.value) {
-      markerSet = true;
-    }
-  } catch {
-    // ignore
-  }
-
-  if (markerSet) {
-    try {
-      const existingLaneHistory = db
-        .prepare(
-          `SELECT 1 as one
-           FROM history_entries
-           WHERE namespace IN (?, ?)
-           LIMIT 1`,
-        )
-        .get(WEB_WORKER_NAMESPACE, WEB_PLANNER_NAMESPACE) as { one?: number } | undefined;
-      if (existingLaneHistory?.one) {
-        return;
-      }
-
-      const existingLegacyHistory = db
-        .prepare(
-          `SELECT 1 as one
-           FROM history_entries
-           WHERE namespace = ?
-           LIMIT 1`,
-        )
-        .get(LEGACY_WEB_NAMESPACE) as { one?: number } | undefined;
-      if (!existingLegacyHistory?.one) {
-        return;
-      }
-    } catch {
-      // If we cannot safely determine whether a backfill is needed, prefer to avoid duplicating history.
-      return;
-    }
-  }
-
-  const tx = db.transaction(() => {
-    const now = Date.now();
-
-    // Thread state: cannot partition by lane (user_hash is irreversible), so copy all.
-    for (const target of [WEB_WORKER_NAMESPACE, WEB_PLANNER_NAMESPACE]) {
-      db.prepare(
-        `INSERT OR IGNORE INTO thread_state (namespace, user_hash, thread_id, cwd, updated_at)
-         SELECT ?, user_hash, thread_id, cwd, updated_at
-         FROM thread_state
-         WHERE namespace = ?`,
-      ).run(target, LEGACY_WEB_NAMESPACE);
-    }
-
-    // History: partition by chatSessionId suffix.
-    db.prepare(
-      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
-       SELECT ?, session_id, role, text, ts, kind
-       FROM history_entries
-       WHERE namespace = ?
-         AND session_id LIKE '%::planner'`,
-    ).run(WEB_PLANNER_NAMESPACE, LEGACY_WEB_NAMESPACE);
-
-    db.prepare(
-      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
-       SELECT ?, session_id, role, text, ts, kind
-       FROM history_entries
-       WHERE namespace = ?
-          AND session_id NOT LIKE '%::planner'`,
-    ).run(WEB_WORKER_NAMESPACE, LEGACY_WEB_NAMESPACE);
-
-    setMigrationMarkerStmt.run(marker, "1", now);
-  });
-
-  try {
-    tx();
-  } catch (error) {
-    logger.warn(`[Web] Failed to migrate legacy web lane namespaces: ${(error as Error).message}`);
   }
 }
 
@@ -344,9 +250,10 @@ export async function startWebServer(): Promise<void> {
   const getWorkspaceLock = laneResources.worker.getWorkspaceLock;
   const getPlannerWorkspaceLock = laneResources.planner.getWorkspaceLock;
   const syncEventStore = new SyncEventStore({ stateDbPath });
+  const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
   const wsHub = createWebSocketHub({
-    workerHistoryStore: laneResources.worker.historyStore,
     syncEventStore,
+    laneGenerationStore,
   });
 
   const taskQueueManager = createTaskQueueManager({
@@ -358,7 +265,6 @@ export async function startWebServer(): Promise<void> {
     autoStart: webConfig.taskQueueAutoStart,
     logger,
     broadcastToSession: wsHub.broadcastToSession,
-    recordToSessionHistories: wsHub.recordToSessionHistories,
   });
 
   startTaskTerminalTelegramRetryLoop({ logger });
@@ -443,6 +349,7 @@ export async function startWebServer(): Promise<void> {
     promptRunEpochs,
     workerHistoryStore: laneResources.worker.historyStore,
     plannerHistoryStore: laneResources.planner.historyStore,
+    laneGenerationStore,
   });
 
   const server = createHttpServer({ handleApiRequest: apiHandler, logger });
@@ -485,6 +392,7 @@ export async function startWebServer(): Promise<void> {
       cwdStorePath,
       persistCwdStore,
       syncEventStore,
+      laneGenerationStore,
     },
     sessions: {
       workerSessionManager: sessionManager,

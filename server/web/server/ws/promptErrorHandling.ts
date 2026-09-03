@@ -13,8 +13,11 @@ export function handlePromptError(args: {
   historyStore: HistoryStore;
   historyKey: string;
   sendToChat: (payload: unknown) => void;
+  isCurrent?: () => boolean;
   logPrefix?: string;
 }): void {
+  if (args.isCurrent && !args.isCurrent()) return;
+
   if (args.aborted) {
     if (args.silent) return;
     const message = PROMPT_ABORTED_MESSAGE;

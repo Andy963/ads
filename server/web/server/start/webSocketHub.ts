@@ -8,6 +8,8 @@ import { WEB_WORKER_NAMESPACE } from "./webLaneResources.js";
 
 export type WebSocketClientMeta = {
   historyKey: string;
+  logicalHistoryKey?: string;
+  laneGeneration?: number;
   sessionId: string;
   chatSessionId: string;
   connectionId: string;
@@ -16,20 +18,17 @@ export type WebSocketClientMeta = {
   workspaceRoot?: string;
 };
 
-export type WebSocketHistoryEntry = { role: string; text: string; ts: number; kind?: string };
-
 export type WebSocketHub = {
   clients: Set<WebSocket>;
   clientMetaByWs: Map<WebSocket, WebSocketClientMeta>;
   safeSendText: (ws: WebSocket, text: string) => void;
   safeSendJson: (ws: WebSocket, payload: unknown) => void;
   broadcastToSession: (broadcastSessionId: string, payload: unknown) => void;
-  recordToSessionHistories: (broadcastSessionId: string, entry: WebSocketHistoryEntry) => void;
 };
 
 export function createWebSocketHub(args: {
-  workerHistoryStore: { add: (key: string, entry: WebSocketHistoryEntry) => void };
   syncEventStore: SyncEventStore;
+  laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
 }): WebSocketHub {
   const WS_READY_STATE_OPEN = 1;
   const clients: Set<WebSocket> = new Set();
@@ -61,6 +60,17 @@ export function createWebSocketHub(args: {
     return chat !== "planner";
   };
 
+  const isCurrentWorkerConnection = (meta: WebSocketClientMeta): boolean => {
+    const generationStore = args.laneGenerationStore;
+    const logicalHistoryKey = String(meta.logicalHistoryKey ?? "").trim();
+    const generation = Number(meta.laneGeneration);
+    if (!generationStore || !logicalHistoryKey || !Number.isFinite(generation) || generation < 1) {
+      return true;
+    }
+    const namespace = meta.chatSessionId === "planner" ? "web-planner" : WEB_WORKER_NAMESPACE;
+    return generationStore.getGeneration(namespace, logicalHistoryKey) === Math.floor(generation);
+  };
+
   const isWorkerBroadcastTarget = (
     broadcastSessionId: string,
     meta: { sessionId: string; chatSessionId: string; workspaceRoot?: string },
@@ -76,6 +86,9 @@ export function createWebSocketHub(args: {
   const closeBroadcastTargets = (broadcastSessionId: string): void => {
     for (const [ws, meta] of clientMetaByWs.entries()) {
       if (!isWorkerBroadcastTarget(broadcastSessionId, meta)) {
+        continue;
+      }
+      if (!isCurrentWorkerConnection(meta)) {
         continue;
       }
       try {
@@ -115,30 +128,10 @@ export function createWebSocketHub(args: {
       if (!isWorkerBroadcastTarget(broadcastSessionId, meta)) {
         continue;
       }
+      if (!isCurrentWorkerConnection(meta)) {
+        continue;
+      }
       safeSendText(ws, encoded);
-    }
-  };
-
-  const recordToSessionHistories = (broadcastSessionId: string, entry: WebSocketHistoryEntry): void => {
-    try {
-      args.workerHistoryStore.add(resolveSharedWorkerSyncLaneKey(broadcastSessionId), entry);
-    } catch {
-      // Keep per-user history delivery best-effort even if the shared snapshot write fails.
-    }
-    const written = new Set<string>();
-    for (const meta of clientMetaByWs.values()) {
-      if (!isWorkerBroadcastTarget(broadcastSessionId, meta)) {
-        continue;
-      }
-      if (written.has(meta.historyKey)) {
-        continue;
-      }
-      written.add(meta.historyKey);
-      try {
-        args.workerHistoryStore.add(meta.historyKey, entry);
-      } catch {
-        // ignore
-      }
     }
   };
 
@@ -148,6 +141,5 @@ export function createWebSocketHub(args: {
     safeSendText,
     safeSendJson,
     broadcastToSession,
-    recordToSessionHistories,
   };
 }

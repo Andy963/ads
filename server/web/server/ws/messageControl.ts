@@ -2,7 +2,13 @@ import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
-import type { WsLogger, WsPromptSessionLogger, WsTaskResumeHandlerDeps } from "./deps.js";
+import type {
+  WsLaneValidityCheck,
+  WsLogger,
+  WsPromptSessionLogger,
+  WsResetResult,
+  WsTaskResumeHandlerDeps,
+} from "./deps.js";
 import { invalidateWsPromptRun } from "./promptLifecycle.js";
 import { handleSessionListMessage } from "./handleSessionList.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
@@ -10,7 +16,10 @@ import type { WsMessage } from "./schema.js";
 
 type ClearHistoryScope = "lane" | "shared";
 
-function resolveClearHistoryScope(payload: unknown): ClearHistoryScope {
+function resolveClearHistoryScope(payload: unknown, chatSessionId: string): ClearHistoryScope {
+  if (String(chatSessionId ?? "").trim() === "planner") {
+    return "lane";
+  }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return "lane";
   }
@@ -44,20 +53,23 @@ export async function handleWsControlMessage(args: {
   historyStore: WsTaskResumeHandlerDeps["history"]["historyStore"];
   interruptControllers?: Map<string, AbortController>;
   promptRunEpochs?: Map<string, number>;
+  isLaneCurrent?: WsLaneValidityCheck;
   ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
   broadcastJson?: (payload: unknown) => void;
   broadcastSessionReset?: (payload: unknown) => void;
+  resetLaneState?: () => WsResetResult;
   resetSharedSessionState?: (options: {
     sourceChatSessionId: string;
-  }) => void;
+  }) => WsResetResult;
+  closeAfterReset?: () => void;
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }> {
   if (args.parsed.type === "clear_history") {
-    const scope = resolveClearHistoryScope(args.parsed.payload);
+    const scope = resolveClearHistoryScope(args.parsed.payload, args.chatSessionId);
     if (args.interruptControllers) {
       invalidateWsPromptRun({
         historyKey: args.historyKey,
@@ -68,19 +80,32 @@ export async function handleWsControlMessage(args: {
     args.logger.info(
       `[Web][continuity] reset source=clear_history scope=${scope} user=${args.userId} history=${args.historyKey}`,
     );
-    if (scope === "shared" && args.resetSharedSessionState) {
-      args.resetSharedSessionState({ sourceChatSessionId: args.chatSessionId });
-    } else {
-      args.historyStore.clear(args.historyKey);
-      args.sessionManager.reset(args.userId);
-    }
-    args.broadcastSessionReset?.({
+    const resetResult: WsResetResult = scope === "shared" && args.resetSharedSessionState
+      ? args.resetSharedSessionState({ sourceChatSessionId: args.chatSessionId })
+      : args.resetLaneState?.() ?? (() => {
+          args.historyStore.clear(args.historyKey);
+          args.sessionManager.reset(args.userId);
+          return undefined;
+        })();
+    const resetPayload: Record<string, unknown> = {
       type: "session_reset",
       source: "clear_history",
       sourceChatSessionId: args.chatSessionId,
       scope,
-    });
+    };
+    if (typeof resetResult === "number") {
+      resetPayload.laneGeneration = resetResult;
+    } else if (resetResult && typeof resetResult === "object") {
+      if (typeof resetResult.sourceGeneration === "number") {
+        resetPayload.laneGeneration = resetResult.sourceGeneration;
+      }
+      if (resetResult.laneGenerations && Object.keys(resetResult.laneGenerations).length > 0) {
+        resetPayload.laneGenerations = resetResult.laneGenerations;
+      }
+    }
+    args.broadcastSessionReset?.(resetPayload);
     args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
+    args.closeAfterReset?.();
     return { handled: true, orchestrator: args.orchestrator };
   }
 
@@ -103,6 +128,7 @@ export async function handleWsControlMessage(args: {
         userId: args.userId,
         historyKey: args.historyKey,
         currentCwd: args.currentCwd,
+        isLaneCurrent: args.isLaneCurrent,
       },
       sessions: {
         sessionManager: args.sessionManager,

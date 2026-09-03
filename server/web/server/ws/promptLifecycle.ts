@@ -4,8 +4,10 @@ export function beginWsPromptRun(args: {
   historyKey: string;
   interruptControllers: Map<string, AbortController>;
   promptRunEpochs?: Map<string, number>;
+  isCurrent?: () => boolean;
 }): {
   controller: AbortController;
+  isActive: () => boolean;
   ensureActive: () => void;
   cleanup: () => void;
 } {
@@ -16,10 +18,12 @@ export function beginWsPromptRun(args: {
   const isActive = (): boolean =>
     !controller.signal.aborted &&
     args.interruptControllers.get(args.historyKey) === controller &&
-    (args.promptRunEpochs ? args.promptRunEpochs.get(args.historyKey) === epoch : true);
+    (args.promptRunEpochs ? args.promptRunEpochs.get(args.historyKey) === epoch : true) &&
+    (args.isCurrent ? args.isCurrent() : true);
 
   return {
     controller,
+    isActive,
     ensureActive: () => {
       if (!isActive()) {
         throw createAbortError("WS prompt invalidated");

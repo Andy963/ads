@@ -23,6 +23,10 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
   let orchestrator = deps.sessions.orchestrator;
   let currentCwd = deps.context.currentCwd;
 
+  if (deps.context.isLaneCurrent && !deps.context.isLaneCurrent()) {
+    return { handled: true, orchestrator, currentCwd };
+  }
+
   if (deps.request.parsed.type === "set_agent") {
     orchestrator = handleSetAgentCommand({
       payload: deps.request.parsed.payload,
@@ -32,6 +36,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       orchestrator,
       sessionManager: deps.sessions.sessionManager,
       historyStore: deps.history.historyStore,
+      isLaneCurrent: deps.context.isLaneCurrent,
       agentAvailability: deps.agents.agentAvailability,
       sendToSession: sendToChat,
     });
@@ -49,10 +54,12 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
 
   const lock = deps.sessions.getWorkspaceLock(detectWorkspaceFrom(currentCwd));
   await lock.runExclusive(async () => {
+    if (deps.context.isLaneCurrent && !deps.context.isLaneCurrent()) return;
     const parsedCommand = parseCommandRequest({
       payload: deps.request.parsed.payload,
       sanitizeInput: deps.commands.sanitizeInput,
     });
+    if (deps.context.isLaneCurrent && !deps.context.isLaneCurrent()) return;
     if (!parsedCommand.ok) {
       deps.observability.sessionLogger?.logError(parsedCommand.message);
       deps.history.historyStore.add(deps.context.historyKey, {
@@ -69,15 +76,18 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
     const sendToCommandScope = (payload: unknown): void =>
       (commandRequest.shouldBroadcast ? sendToChat(payload) : sendToClient(payload));
 
+    if (deps.context.isLaneCurrent && !deps.context.isLaneCurrent()) return;
     if (!commandRequest.isSilentCommandPayload && commandRequest.normalizedSlash !== "cd") {
       logCommandInput({
         command: commandRequest.command,
         clientMessageId: deps.request.clientMessageId,
         historyKey: deps.context.historyKey,
         historyStore: deps.history.historyStore,
-        sessionLogger: deps.observability.sessionLogger,
+      sessionLogger: deps.observability.sessionLogger,
       });
     }
+
+    if (deps.context.isLaneCurrent && !deps.context.isLaneCurrent()) return;
 
     const builtinResult = handleBuiltinCommand({
       request: commandRequest,
@@ -98,12 +108,15 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
       syncWorkspaceTemplates: deps.commands.syncWorkspaceTemplates,
+      isCurrent: deps.context.isLaneCurrent,
     });
     currentCwd = builtinResult.currentCwd;
     orchestrator = builtinResult.orchestrator;
     if (builtinResult.handled) {
       return;
     }
+
+    if (deps.context.isLaneCurrent && !deps.context.isLaneCurrent()) return;
 
     if (isBlockedUserSlashCommand(commandRequest.normalizedSlash)) {
       return;
@@ -124,6 +137,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       },
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
+      isCurrent: deps.context.isLaneCurrent,
     });
   });
 

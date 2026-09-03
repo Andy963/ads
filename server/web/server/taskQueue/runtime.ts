@@ -136,7 +136,6 @@ function emitReviewNotification(args: {
   event: string;
   message: string;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
-  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): void {
   const now = Date.now();
   args.broadcastToSession(args.ctx.sessionId, {
@@ -151,12 +150,6 @@ function emitReviewNotification(args: {
     },
     ts: now,
   });
-  args.recordToSessionHistories?.(args.ctx.sessionId, {
-    role: "status",
-    text: `[Code Review] ${args.message}`,
-    ts: now,
-    kind: "review",
-  });
 }
 
 function persistReviewError(args: {
@@ -166,7 +159,6 @@ function persistReviewError(args: {
   task: Task;
   logger: Logger;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
-  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): void {
   const reviewTaskId = args.task.category === "review" ? args.task.id : undefined;
   const summary = persistReviewSummary(args.ctx, args.subject, {
@@ -184,7 +176,6 @@ function persistReviewError(args: {
     event: "error",
     message: args.reason,
     broadcastToSession: args.broadcastToSession,
-    recordToSessionHistories: args.recordToSessionHistories,
   });
 }
 
@@ -192,7 +183,6 @@ export function markReviewTaskStarted(args: {
   ctx: TaskQueueContext;
   task: Task;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
-  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): void {
   if (args.task.category !== "review") return;
   const subject = reviewSubjectForTask(args.task, (id) => args.ctx.taskStore.getTask(id));
@@ -216,7 +206,6 @@ export function markReviewTaskStarted(args: {
     event: "started",
     message: `Review started with ${summary.reviewerModelDisplayName ?? args.task.model}.`,
     broadcastToSession: args.broadcastToSession,
-    recordToSessionHistories: args.recordToSessionHistories,
   });
 }
 
@@ -226,7 +215,6 @@ export function markReviewTaskFailed(args: {
   error: string;
   logger: Logger;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
-  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): void {
   if (args.task.category !== "review") return;
   const subject = reviewSubjectForTask(args.task, (id) => args.ctx.taskStore.getTask(id));
@@ -241,7 +229,6 @@ export function createTaskWorkflowFollowup(args: {
   task: Task;
   logger: Logger;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
-  recordToSessionHistories?: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): void {
   const { ctx, task, logger } = args;
   try {
@@ -262,7 +249,6 @@ export function createTaskWorkflowFollowup(args: {
           reason: "Reviewer output did not contain REVIEW_STATUS: approved or REVIEW_STATUS: rejected.",
           logger,
           broadcastToSession: args.broadcastToSession,
-          recordToSessionHistories: args.recordToSessionHistories,
         });
         return;
       }
@@ -275,7 +261,6 @@ export function createTaskWorkflowFollowup(args: {
           reason: "Review completed without a pull request reference.",
           logger,
           broadcastToSession: args.broadcastToSession,
-          recordToSessionHistories: args.recordToSessionHistories,
         });
         return;
       }
@@ -301,7 +286,6 @@ export function createTaskWorkflowFollowup(args: {
           event: "approved",
           message: "Review approved.",
           broadcastToSession: args.broadcastToSession,
-          recordToSessionHistories: args.recordToSessionHistories,
         });
         return;
       }
@@ -327,7 +311,6 @@ export function createTaskWorkflowFollowup(args: {
           event: "needs_human_intervention",
           message: fused.stateReason ?? "Human intervention is required.",
           broadcastToSession: args.broadcastToSession,
-          recordToSessionHistories: args.recordToSessionHistories,
         });
         return;
       }
@@ -349,7 +332,6 @@ export function createTaskWorkflowFollowup(args: {
             event: "rework_created",
             message: `Review rejected; automatic rework round ${reworkRound}/${settings.maxReworkRounds} was queued.`,
             broadcastToSession: args.broadcastToSession,
-            recordToSessionHistories: args.recordToSessionHistories,
           });
         }
         return;
@@ -378,7 +360,6 @@ export function createTaskWorkflowFollowup(args: {
         event: "rework_created",
         message: `Review rejected; automatic rework round ${currentRound + 1}/${settings.maxReworkRounds} was queued.`,
         broadcastToSession: args.broadcastToSession,
-        recordToSessionHistories: args.recordToSessionHistories,
       });
       ctx.taskQueue.notifyNewTask();
       return;
@@ -408,7 +389,6 @@ export function createTaskWorkflowFollowup(args: {
         reason: "Completed Worker task has no pull request reference.",
         logger,
         broadcastToSession: args.broadcastToSession,
-        recordToSessionHistories: args.recordToSessionHistories,
       });
       return;
     }
@@ -422,7 +402,6 @@ export function createTaskWorkflowFollowup(args: {
         reason: message,
         logger,
         broadcastToSession: args.broadcastToSession,
-        recordToSessionHistories: args.recordToSessionHistories,
       });
       return;
     }
@@ -471,7 +450,6 @@ export function createTaskWorkflowFollowup(args: {
       event: "queued",
       message: `Review queued with ${linked.reviewerModelDisplayName ?? reviewerModel.model}.`,
       broadcastToSession: args.broadcastToSession,
-      recordToSessionHistories: args.recordToSessionHistories,
     });
     ctx.taskQueue.notifyNewTask();
   } catch (error) {
@@ -487,7 +465,6 @@ export function createTaskWorkflowFollowup(args: {
           reason: `Review follow-up creation failed: ${message}`,
           logger,
           broadcastToSession: args.broadcastToSession,
-          recordToSessionHistories: args.recordToSessionHistories,
         });
       } catch (persistError) {
         logger.warn(`[Web][TaskReview] failed to persist follow-up error taskId=${task.id} err=${String(persistError)}`);
@@ -537,10 +514,6 @@ export function bindTaskQueueRuntime(args: {
   logger: Logger;
   available: boolean;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
-  recordToSessionHistories: (
-    sessionId: string,
-    entry: { role: string; text: string; ts: number; kind?: string },
-  ) => void;
 }) {
   const { ctx } = args;
   const promote = () =>
@@ -565,7 +538,6 @@ export function bindTaskQueueRuntime(args: {
           throw error;
         }
       },
-      recordHistory: (entry) => args.recordToSessionHistories(ctx.sessionId, entry),
       recordMetric: (name, event) => recordTaskQueueMetric(ctx.metrics, name, event),
       broadcast: (payload) => args.broadcastToSession(ctx.sessionId, payload),
     });
@@ -573,7 +545,6 @@ export function bindTaskQueueRuntime(args: {
       ctx,
       task,
       broadcastToSession: args.broadcastToSession,
-      recordToSessionHistories: args.recordToSessionHistories,
     });
   });
   ctx.taskQueue.on("task:running", ({ task }) =>
@@ -607,12 +578,6 @@ export function bindTaskQueueRuntime(args: {
       data: { taskId: task.id, command },
       ts: Date.now(),
     });
-    args.recordToSessionHistories(ctx.sessionId, {
-      role: "status",
-      text: `$ ${command}`,
-      ts: Date.now(),
-      kind: "command",
-    });
   });
   ctx.taskQueue.on("goal:status", ({ task, goal }) => {
     args.broadcastToSession(ctx.sessionId, {
@@ -643,15 +608,7 @@ export function bindTaskQueueRuntime(args: {
       task,
       logger: args.logger,
       broadcastToSession: args.broadcastToSession,
-      recordToSessionHistories: args.recordToSessionHistories,
     });
-    if (task.result && task.result.trim()) {
-      args.recordToSessionHistories(ctx.sessionId, {
-        role: "ai",
-        text: task.result.trim(),
-        ts: Date.now(),
-      });
-    }
     const completedTask = ctx.taskStore.getTask(task.id) ?? task;
     args.broadcastToSession(ctx.sessionId, {
       type: "task:event",
@@ -685,13 +642,6 @@ export function bindTaskQueueRuntime(args: {
       error,
       logger: args.logger,
       broadcastToSession: args.broadcastToSession,
-      recordToSessionHistories: args.recordToSessionHistories,
-    });
-    args.recordToSessionHistories(ctx.sessionId, {
-      role: "status",
-      text: `[Task failed] ${error}`,
-      ts: Date.now(),
-      kind: "error",
     });
     args.broadcastToSession(ctx.sessionId, {
       type: "task:event",
@@ -723,12 +673,6 @@ export function bindTaskQueueRuntime(args: {
     }
   });
   ctx.taskQueue.on("task:cancelled", ({ task }) => {
-    args.recordToSessionHistories(ctx.sessionId, {
-      role: "status",
-      text: "[Cancelled]",
-      ts: Date.now(),
-      kind: "status",
-    });
     args.broadcastToSession(ctx.sessionId, {
       type: "task:event",
       event: "task:cancelled",

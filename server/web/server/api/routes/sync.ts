@@ -5,6 +5,8 @@ import { mergeSyncHistory } from "../../sync/history.js";
 import { buildHistoryBootstrapPayload } from "../../ws/bootstrapReplay.js";
 import { resolveLaneRequest } from "../../sync/laneRequest.js";
 import { resolveSharedWorkerSyncLaneKey, resolveSyncNamespace } from "../../sync/lane.js";
+import { WEB_WORKER_NAMESPACE } from "../../start/webLaneResources.js";
+import type { WebLaneGenerationStore } from "../../sync/laneGeneration.js";
 
 type SyncHistoryStore = {
   get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }>;
@@ -25,6 +27,7 @@ export async function handleSyncRoutes(
     resolveWorkspaceRoot: (url: URL) => string;
     workerHistoryStore: SyncHistoryStore;
     plannerHistoryStore: SyncHistoryStore;
+    laneGenerationStore?: WebLaneGenerationStore;
   },
 ): Promise<boolean> {
   if (route.pathname !== "/api/sync/events") {
@@ -40,31 +43,40 @@ export async function handleSyncRoutes(
     authUserId: route.auth.userId,
     defaultWorkspaceRoot: deps.defaultWorkspaceRoot,
     resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
+    resolveGeneration: deps.laneGenerationStore
+      ? (namespace, logicalLaneKey) => deps.laneGenerationStore!.getGeneration(namespace, logicalLaneKey)
+      : undefined,
   });
   if (!resolved.ok) {
     sendJson(route.res, resolved.failure.status, { error: resolved.failure.error });
     return true;
   }
-  const { sessionId, namespace, laneKey, laneKeys } = resolved.lane;
+  const { namespace, laneKey, laneKeys } = resolved.lane;
+  const channel = String(route.url.searchParams.get("channel") ?? "chat").trim().toLowerCase();
+  const isTaskChannel = channel === "task" || channel === "tasks";
+  if (isTaskChannel && namespace !== WEB_WORKER_NAMESPACE) {
+    sendJson(route.res, 403, { error: "task sync is only available to worker lanes" });
+    return true;
+  }
+  const effectiveNamespace = isTaskChannel ? WEB_WORKER_NAMESPACE : namespace;
+  const effectiveLaneKey = isTaskChannel
+    ? resolveSharedWorkerSyncLaneKey(resolved.lane.sessionId)
+    : laneKey;
+  const effectiveLaneKeys = isTaskChannel ? [effectiveLaneKey] : laneKeys;
 
   const afterSeq = parsePositiveInt(route.url.searchParams.get("afterSeq"), 0);
   const limit = parsePositiveInt(route.url.searchParams.get("limit"), 500);
   const result = deps.syncEventStore.readAfterLanes({
-    namespace,
-    laneKeys,
+    namespace: effectiveNamespace,
+    laneKeys: effectiveLaneKeys,
     afterSeq,
     limit,
   });
-  const historyStore = namespace === resolveSyncNamespace("planner")
+  const historyStore = effectiveNamespace === resolveSyncNamespace("planner")
     ? deps.plannerHistoryStore
     : deps.workerHistoryStore;
-  const snapshotHistory = namespace === resolveSyncNamespace("planner")
-    ? historyStore.get(laneKey)
-    : mergeSyncHistory([
-        historyStore.get(laneKey),
-        deps.workerHistoryStore.get(resolveSharedWorkerSyncLaneKey(sessionId)),
-      ]);
-  const snapshot = result.truncated
+  const snapshotHistory = isTaskChannel ? [] : mergeSyncHistory([historyStore.get(effectiveLaneKey)]);
+  const snapshot = !isTaskChannel && result.truncated
     ? buildHistoryBootstrapPayload(snapshotHistory) ?? { type: "history", items: [] }
     : null;
   sendJson(route.res, 200, {

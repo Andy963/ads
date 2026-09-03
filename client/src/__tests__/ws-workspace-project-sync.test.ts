@@ -1067,6 +1067,34 @@ describe("ws workspace project sync", () => {
     expect(rt.activeThreadId.value).toBeNull();
   });
 
+  it("ignores a shared reset delivered to the planner lane", () => {
+    const rt = createRuntime();
+    rt.chatSessionId = "planner";
+    rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "planner-thread";
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.queuedPrompts.value = ["queued"];
+    const { handler, threadReset, clearPendingPrompt, clearStepLive, finalizeCommandBlock } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "main", scope: "shared" });
+
+    expect(clearPendingPrompt).not.toHaveBeenCalled();
+    expect(clearStepLive).not.toHaveBeenCalled();
+    expect(finalizeCommandBlock).not.toHaveBeenCalled();
+    expect(threadReset).not.toHaveBeenCalled();
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.queuedPrompts.value).toEqual(["queued"]);
+    expect(rt.activeThreadId.value).toBe("planner-thread");
+    expect(rt.messages.value).toHaveLength(1);
+  });
+
   it("keeps result-driven thread resets local-only instead of clearing backend history again", () => {
     const rt = createRuntime();
     const { handler, threadReset } = createHandler({

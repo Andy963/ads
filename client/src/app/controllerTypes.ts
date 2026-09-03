@@ -148,6 +148,10 @@ export type ProjectRuntime = {
   needsChatSync: boolean;
   syncInProgress: boolean;
   syncGeneration: number;
+  laneGeneration?: number;
+  laneGenerationScope?: string;
+  lastConsumedResetGeneration?: number;
+  legacySessionResetConsumed?: boolean;
   apiError: Ref<string | null>;
   apiNotice: Ref<string | null>;
   wsError: Ref<string | null>;

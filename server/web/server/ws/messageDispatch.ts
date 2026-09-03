@@ -7,7 +7,9 @@ import type {
   WsCommandHandlerDeps,
   WsCommandRuntimeDeps,
   WsHistoryRuntimeDeps,
+  WsLaneValidityCheck,
   WsLogger,
+  WsResetResult,
   WsRequestDeps,
   WsSchedulerDeps,
   WsSessionRuntimeDeps,
@@ -40,6 +42,7 @@ export async function dispatchWsMessage(args: {
   getWorkspaceLock: WsSessionRuntimeDeps["getWorkspaceLock"];
   interruptControllers: Map<string, AbortController>;
   promptRunEpochs?: Map<string, number>;
+  isLaneCurrent?: WsLaneValidityCheck;
   historyStore: WsHistoryRuntimeDeps["historyStore"];
   tasks: WsTaskRuntimeDeps;
   scheduler: WsSchedulerDeps;
@@ -47,9 +50,11 @@ export async function dispatchWsMessage(args: {
   agents: WsCommandHandlerDeps["agents"];
   state: Omit<WsCommandHandlerDeps["state"], "cacheKey"> & {
     broadcastSessionReset?: (payload: unknown) => void;
+    resetLaneState?: () => WsResetResult;
     resetSharedSessionState?: (options: {
       sourceChatSessionId: string;
-    }) => void;
+    }) => WsResetResult;
+    closeAfterReset?: () => void;
   };
   registerSessionCacheBinding: () => void;
   broadcastJson: (payload: unknown) => void;
@@ -67,6 +72,9 @@ export async function dispatchWsMessage(args: {
   let currentCwd = args.currentCwd;
 
   try {
+    if (args.isLaneCurrent && !args.isLaneCurrent() && args.msg.parsed.type !== "clear_history") {
+      return { orchestrator, currentCwd };
+    }
     args.registerSessionCacheBinding();
     const parsed = args.msg.parsed;
     const requestId = args.msg.requestId;
@@ -90,15 +98,21 @@ export async function dispatchWsMessage(args: {
       historyStore: args.historyStore,
       interruptControllers: args.interruptControllers,
       promptRunEpochs: args.promptRunEpochs,
+      isLaneCurrent: args.isLaneCurrent,
       ensureTaskContext: args.tasks.ensureTaskContext as WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"],
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
       broadcastJson: args.broadcastJson,
       broadcastSessionReset: args.state.broadcastSessionReset,
+      resetLaneState: args.state.resetLaneState,
       resetSharedSessionState: args.state.resetSharedSessionState,
+      closeAfterReset: args.state.closeAfterReset,
       logger: args.logger,
     });
     if (control.handled) {
       return { orchestrator: control.orchestrator, currentCwd };
+    }
+    if (args.isLaneCurrent && !args.isLaneCurrent()) {
+      return { orchestrator, currentCwd };
     }
 
     const goalHandled = await handleGoalControlMessage({
@@ -108,8 +122,12 @@ export async function dispatchWsMessage(args: {
       sessionManager: args.sessionManager,
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
       logger: args.logger,
+      isLaneCurrent: args.isLaneCurrent,
     });
     if (goalHandled) {
+      return { orchestrator, currentCwd };
+    }
+    if (args.isLaneCurrent && !args.isLaneCurrent()) {
       return { orchestrator, currentCwd };
     }
 
@@ -139,6 +157,7 @@ export async function dispatchWsMessage(args: {
         userId: args.userId,
         historyKey: args.historyKey,
         currentCwd,
+        isLaneCurrent: args.isLaneCurrent,
       },
       sessions: {
         sessionManager: args.sessionManager,
@@ -155,6 +174,9 @@ export async function dispatchWsMessage(args: {
     });
     if (promptResult.handled) {
       return { orchestrator: promptResult.orchestrator, currentCwd };
+    }
+    if (args.isLaneCurrent && !args.isLaneCurrent()) {
+      return { orchestrator, currentCwd };
     }
 
     const commandResult = await handleCommandMessage({
@@ -174,12 +196,13 @@ export async function dispatchWsMessage(args: {
         sessionLogger,
         traceWsDuplication: args.traceWsDuplication,
       },
-      context: {
-        sessionId: args.sessionId,
-        userId: args.userId,
-        historyKey: args.historyKey,
-        currentCwd,
-      },
+        context: {
+          sessionId: args.sessionId,
+          userId: args.userId,
+          historyKey: args.historyKey,
+          currentCwd,
+          isLaneCurrent: args.isLaneCurrent,
+        },
       agents: args.agents,
       state: {
         directoryManager: args.state.directoryManager,

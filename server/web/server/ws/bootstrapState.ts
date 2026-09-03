@@ -9,6 +9,7 @@ type Orchestrator = ReturnType<SessionManager["getOrCreate"]>;
 
 export type WsBootstrapState = {
   threadId: string | null;
+  laneGeneration?: number;
   contextMode: ReturnType<SessionManager["getContextRestoreMode"]>;
   effectiveState: EffectiveState;
   agents: Array<{ id: string; name: string; ready: boolean; error?: string }>;
@@ -20,6 +21,7 @@ export function buildWsBootstrapState(args: {
   userId: number;
   agentAvailability: AgentAvailability;
   allowSavedThreadFallback?: boolean;
+  laneGeneration?: number;
 }): WsBootstrapState {
   const { sessionManager, orchestrator, userId, agentAvailability } = args;
   const activeAgentId = orchestrator.getActiveAgentId();
@@ -33,6 +35,7 @@ export function buildWsBootstrapState(args: {
       inMemoryThreadId: orchestrator.getThreadId(),
       savedThreadId,
     }),
+    ...(typeof args.laneGeneration === "number" ? { laneGeneration: args.laneGeneration } : {}),
     contextMode,
     effectiveState: sessionManager.getEffectiveState(userId),
     agents: orchestrator.listAgents().map((entry) => {
@@ -55,6 +58,7 @@ export function buildWelcomePayload(args: {
   bootstrapHistory: boolean;
   completedClientMessageIds: string[];
   latestSeq?: number;
+  taskLatestSeq?: number;
   state: WsBootstrapState;
 }): Record<string, unknown> {
   return {
@@ -67,6 +71,8 @@ export function buildWelcomePayload(args: {
     bootstrapHistory: args.bootstrapHistory,
     completedClientMessageIds: args.completedClientMessageIds,
     ...(typeof args.latestSeq === "number" ? { latestSeq: args.latestSeq } : {}),
+    ...(typeof args.taskLatestSeq === "number" ? { taskLatestSeq: args.taskLatestSeq } : {}),
+    ...(typeof args.state.laneGeneration === "number" ? { laneGeneration: args.state.laneGeneration } : {}),
     threadId: args.state.threadId,
     effectiveModel: args.state.effectiveState.model,
     effectiveModelReasoningEffort: args.state.effectiveState.modelReasoningEffort,

@@ -27,6 +27,7 @@ type WsMessage =
       chatSessionId?: string;
       workspace?: unknown;
       threadId?: string;
+      laneGeneration?: number;
       reset?: boolean;
       inFlight?: boolean;
       bootstrapHistory?: boolean;
@@ -42,6 +43,9 @@ type WsMessage =
       type: "session_reset";
       source?: string;
       sourceChatSessionId?: string;
+      scope?: "lane" | "shared";
+      laneGeneration?: number;
+      laneGenerations?: Record<string, number>;
     }
   | { type: "thread_reset" }
   | { type: "command"; detail?: string; command?: WsCommandPayload | null }

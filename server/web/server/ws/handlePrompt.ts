@@ -58,6 +58,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
   }
 
   const sendToChat = (payload: unknown): void => deps.transport.broadcastJson(payload);
+  const isLaneCurrent = (): boolean => (deps.context.isLaneCurrent ? deps.context.isLaneCurrent() : true);
 
   let orchestrator = deps.sessions.orchestrator;
 
@@ -65,9 +66,11 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
   const lock = deps.sessions.getWorkspaceLock(workspaceRoot);
 
   await lock.runExclusive(async () => {
+    if (!isLaneCurrent()) return;
     const imageDir = resolveWorkspaceStatePath(workspaceRoot, "temp", "web-images");
     const promptInput = buildPromptInput(deps.request.parsed.payload, imageDir);
     if (!promptInput.ok) {
+      if (!isLaneCurrent()) return;
       deps.observability.sessionLogger?.logError(promptInput.message);
       deps.history.historyStore.add(deps.context.historyKey, {
         role: "status",
@@ -81,6 +84,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const tempAttachments = promptInput.attachments || [];
     const cleanupAttachments = () => cleanupTempFiles(tempAttachments);
     const userLogEntry = buildUserLogEntry(promptInput.input, deps.context.currentCwd);
+    if (!isLaneCurrent()) {
+      cleanupAttachments();
+      return;
+    }
     deps.observability.sessionLogger?.logInput(userLogEntry);
     const historyBeforeCurrentPrompt = deps.history.historyStore.get(deps.context.historyKey).slice();
     if (!deps.request.clientMessageId) {
@@ -120,17 +127,24 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       historyKey: deps.context.historyKey,
       interruptControllers: deps.sessions.interruptControllers,
       promptRunEpochs: deps.sessions.promptRunEpochs,
+      isCurrent: deps.context.isLaneCurrent,
     });
     const controller = promptRun.controller;
     orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, turnCwd, true);
     orchestrator.setWorkingDirectory(turnCwd);
     try {
+      promptRun.ensureActive();
       applySessionOverrides({
         sessionManager: deps.sessions.sessionManager,
         userId: deps.context.userId,
         payload: deps.request.parsed.payload,
       });
     } catch (error) {
+      if (!isLaneCurrent()) {
+        promptRun.cleanup();
+        cleanupAfter();
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       deps.observability.sessionLogger?.logError(message);
       deps.observability.logger.warn(`[Prompt Override Error] ${message}`);
@@ -147,6 +161,11 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     }
     const status = orchestrator.status();
     if (!status.ready) {
+      if (!isLaneCurrent()) {
+        promptRun.cleanup();
+        cleanupAfter();
+        return;
+      }
       const message = status.error ?? "代理未启用，请配置凭证";
       deps.observability.sessionLogger?.logError(status.error ?? "代理未启用");
       deps.history.historyStore.add(deps.context.historyKey, {
@@ -170,6 +189,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       sessionLogger: deps.observability.sessionLogger,
       resolveAgentId: () => orchestrator.getActiveAgentId(),
       channel: "web",
+      isActive: promptRun.isActive,
       onSessionFallback: ({ previousSessionId, detail }) => {
         // This turn already ran without the old context; re-sending it now would
         // not put it back. Flag the *next* turn so the ADS history goes in then.
@@ -207,6 +227,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       // value directly can produce false positives if another connection/process updated storage.
       const expectedThreadId =
         preferInMemoryThreadId({ inMemoryThreadId: orchestrator.getThreadId(), savedThreadId }) ?? undefined;
+      promptRun.ensureActive();
       if (expectedThreadId && typeof deps.history.historyStore.linkAgentSession === "function") {
         deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
           agentId: activeAgentId,
@@ -217,6 +238,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
 
       let effectiveInput: Input = inputToSend;
       if (deps.sessions.sessionManager.needsHistoryInjection(deps.context.userId)) {
+        promptRun.ensureActive();
         const historyEntries = excludeCurrentClientMessage(
           historyBeforeCurrentPrompt,
           deps.request.clientMessageId,
@@ -236,12 +258,14 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
             ts: Date.now(),
           });
         }
+        promptRun.ensureActive();
         deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
 
       const plannerWriteRoots = isPlannerSession ? resolvePlannerWriteRoots() : [];
       const plannerDirtyBefore = isPlannerSession ? snapshotDirtyFiles(workspaceRoot) : null;
 
+      promptRun.ensureActive();
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         streaming: true,
         signal: controller.signal,
@@ -309,6 +333,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           scheduler: deps.scheduler.scheduler,
           scheduleSource: deps.context.chatSessionId || "worker",
           draftCommand: isPlannerDraftCommand,
+          isActive: promptRun.isActive,
         });
         promptRun.ensureActive();
         outputForChat = plannerHandled.outputForChat;
@@ -323,12 +348,14 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           scheduler: deps.scheduler.scheduler,
           logger: deps.observability.logger,
           source: deps.context.chatSessionId || "worker",
+          isActive: promptRun.isActive,
         });
         promptRun.ensureActive();
       }
 
       promptRun.ensureActive();
       if (threadId) {
+        promptRun.ensureActive();
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
         if (typeof deps.history.historyStore.linkAgentSession === "function") {
@@ -340,6 +367,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         }
       }
       const effectiveState = deps.sessions.sessionManager.getEffectiveState(deps.context.userId);
+      promptRun.ensureActive();
       if (deps.request.clientMessageId && typeof deps.history.historyStore.updatePromptExecutionMetadata === "function") {
         try {
           deps.history.historyStore.updatePromptExecutionMetadata(
@@ -369,12 +397,14 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         effectiveModelReasoningEffort: effectiveState.modelReasoningEffort,
         activeAgentId: effectiveState.activeAgentId,
       });
+      promptRun.ensureActive();
       if (deps.observability.sessionLogger) {
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
       const stepTraceText = getStepTraceText();
       if (stepTraceText && stepTraceText.trim() && hasSubstantiveStepTrace(stepTraceText)) {
+        promptRun.ensureActive();
         deps.history.historyStore.add(deps.context.historyKey, {
           role: "assistant",
           kind: "thought",
@@ -382,6 +412,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           ts: Date.now() - 1,
         });
       }
+      promptRun.ensureActive();
       const persistedAssistant = deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });
       if (persistedAssistant) {
         recordConversationMessage({
@@ -394,6 +425,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           agentId: orchestrator.getActiveAgentId?.(),
         });
       }
+      promptRun.ensureActive();
       if (threadReset) {
         deps.sessions.sessionManager.markHistoryInjection(deps.context.userId);
       }
@@ -422,6 +454,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         historyStore: deps.history.historyStore,
         historyKey: deps.context.historyKey,
         sendToChat,
+        isCurrent: deps.context.isLaneCurrent,
       });
     } finally {
       unsubscribe();

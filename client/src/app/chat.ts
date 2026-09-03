@@ -401,13 +401,14 @@ export function createChatActions(ctx: AppContext) {
       ? { ...(payload as Record<string, unknown>) }
       : {};
     const requestedScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
-    if (requestedScope === "shared") {
+    const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    if (requestedScope === "shared" && chatSessionId !== "planner") {
       return { ...payloadRecord, scope: "shared" };
     }
     return {
       ...payloadRecord,
       scope: "lane",
-      sourceChatSessionId: String(rt.chatSessionId ?? "").trim() || "main",
+      sourceChatSessionId: chatSessionId,
     };
   };
 

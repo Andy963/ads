@@ -6,9 +6,13 @@ export type ResolvedLaneRequest = {
   sessionId: string;
   chatSessionId: string;
   namespace: string;
-  /** The caller's own lane. Also the historyKey an in-flight run is registered under. */
+  /** The caller's current generation lane. Also the historyKey an in-flight run is registered under. */
   laneKey: string;
-  /** Every lane the caller may read from (own lane plus the shared worker lane). */
+  /** The stable lane key used to look up the persisted generation fence. */
+  logicalLaneKey?: string;
+  /** Current persisted generation for the lane. */
+  generation?: number;
+  /** Only the caller's current lane is readable. */
   laneKeys: string[];
 };
 
@@ -26,6 +30,7 @@ export function resolveLaneRequest(args: {
   authUserId: string;
   defaultWorkspaceRoot: string;
   resolveWorkspaceRoot: (url: URL) => string;
+  resolveGeneration?: (namespace: string, logicalLaneKey: string) => number;
 }): { ok: true; lane: ResolvedLaneRequest } | { ok: false; failure: LaneRequestFailure } {
   const requestedSessionId = String(args.url.searchParams.get("sessionId") ?? "").trim();
   const chatSessionId = String(args.url.searchParams.get("chatSessionId") ?? "main").trim() || "main";
@@ -52,14 +57,20 @@ export function resolveLaneRequest(args: {
   }
 
   const identity = { authUserId: args.authUserId, sessionId, chatSessionId };
+  const namespace = resolveSyncNamespace(chatSessionId);
+  const logicalLaneKey = resolveSyncLaneKey(identity);
+  const generation = args.resolveGeneration?.(namespace, logicalLaneKey);
+  const laneKey = resolveSyncLaneKey({ ...identity, generation });
   return {
     ok: true,
     lane: {
       sessionId,
       chatSessionId,
-      namespace: resolveSyncNamespace(chatSessionId),
-      laneKey: resolveSyncLaneKey(identity),
-      laneKeys: resolveSyncLaneKeys(identity),
+      namespace,
+      laneKey,
+      ...(logicalLaneKey !== laneKey ? { logicalLaneKey } : {}),
+      ...(typeof generation === "number" ? { generation } : {}),
+      laneKeys: resolveSyncLaneKeys({ ...identity, generation }),
     },
   };
 }

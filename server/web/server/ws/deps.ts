@@ -36,6 +36,9 @@ export type WsPromptSessionLogger = Exclude<WsSessionLogger, null> & {
 
 export type WsClientMeta = {
   historyKey: string;
+  /** Stable identity shared by every generation of one logical lane. */
+  logicalHistoryKey?: string;
+  laneGeneration?: number;
   sessionId: string;
   chatSessionId: string;
   connectionId: string;
@@ -45,6 +48,15 @@ export type WsClientMeta = {
 };
 
 export type WsOrchestrator = ReturnType<SessionManager["getOrCreate"]>;
+export type WsLaneValidityCheck = () => boolean;
+
+export type WsResetResult =
+  | number
+  | {
+      sourceGeneration?: number;
+      laneGenerations?: Record<string, number>;
+    }
+  | undefined;
 
 export type WsConfigDeps = {
   workspaceRoot: string;
@@ -84,6 +96,7 @@ export type WsStateDeps = {
   cwdStorePath: string;
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
   syncEventStore?: SyncEventStore;
+  laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
 };
 
 export type WsSessionDeps = {
@@ -151,6 +164,7 @@ export type WsConnectionContextDeps = {
   userId: number;
   historyKey: string;
   currentCwd: string;
+  isLaneCurrent?: WsLaneValidityCheck;
 };
 
 export type WsObservabilityDeps = {
@@ -189,6 +203,10 @@ export type WsCommandStateDeps = Pick<
 > & {
   directoryManager: DirectoryManager;
   cacheKey: string;
+  broadcastSessionReset?: (payload: unknown) => void;
+  resetLaneState?: () => WsResetResult;
+  resetSharedSessionState?: (options: { sourceChatSessionId: string }) => WsResetResult;
+  closeAfterReset?: () => void;
 };
 
 export type WsTaskResumeDeps = Pick<WsTaskDeps, "ensureTaskContext">;
@@ -210,7 +228,7 @@ export type WsCommandHandlerDeps = {
   request: Pick<WsRequestDeps, "parsed" | "clientMessageId">;
   transport: WsTransportDeps;
   observability: WsObservabilityDeps;
-  context: Pick<WsConnectionContextDeps, "sessionId" | "userId" | "historyKey" | "currentCwd">;
+  context: Pick<WsConnectionContextDeps, "sessionId" | "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">;
   agents: WsAgentDeps;
   state: WsCommandStateDeps;
   sessions: WsSessionRuntimeDeps;
@@ -222,7 +240,7 @@ export type WsTaskResumeHandlerDeps = {
   request: Pick<WsRequestDeps, "parsed">;
   transport: Pick<WsTransportDeps, "ws" | "safeJsonSend"> & Partial<Pick<WsTransportDeps, "broadcastJson">>;
   observability: Pick<WsObservabilityDeps, "logger">;
-  context: Pick<WsConnectionContextDeps, "userId" | "historyKey" | "currentCwd">;
+  context: Pick<WsConnectionContextDeps, "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">;
   sessions: Pick<WsSessionRuntimeDeps, "sessionManager" | "orchestrator" | "getWorkspaceLock">;
   history: WsHistoryRuntimeDeps;
   tasks: WsTaskResumeDeps;

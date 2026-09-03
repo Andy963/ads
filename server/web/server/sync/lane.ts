@@ -9,11 +9,13 @@ export function resolveSyncLaneKey(args: {
   authUserId: string;
   sessionId: string;
   chatSessionId: string;
+  generation?: number;
 }): string {
   return buildWsConnectionIdentity({
     authUserId: args.authUserId,
     sessionId: args.sessionId,
     chatSessionId: args.chatSessionId,
+    generation: args.generation,
     randomHex: () => "",
   }).historyKey;
 }
@@ -26,10 +28,7 @@ export function resolveSyncLaneKeys(args: {
   authUserId: string;
   sessionId: string;
   chatSessionId: string;
+  generation?: number;
 }): string[] {
-  const laneKeys = [resolveSyncLaneKey(args)];
-  if (resolveSyncNamespace(args.chatSessionId) === WEB_WORKER_NAMESPACE) {
-    laneKeys.push(resolveSharedWorkerSyncLaneKey(args.sessionId));
-  }
-  return laneKeys;
+  return [resolveSyncLaneKey(args)];
 }

@@ -24,7 +24,6 @@ export function createTaskQueueManager(deps: {
   autoStart: boolean;
   logger: Logger;
   broadcastToSession: (sessionId: string, payload: unknown) => void;
-  recordToSessionHistories: (sessionId: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
 }): {
   ensureTaskContext: (workspaceRootForContext: string) => TaskQueueContext;
   resolveTaskWorkspaceRoot: (url: URL) => string;
@@ -58,7 +57,6 @@ export function createTaskQueueManager(deps: {
       logger: deps.logger,
       available: deps.available,
       broadcastToSession: deps.broadcastToSession,
-      recordToSessionHistories: deps.recordToSessionHistories,
     });
 
     return ctx;

@@ -103,6 +103,7 @@ export function attachWorkerPromptHandler(args: {
   resolveAgentId?: () => string;
   channel?: string;
   ruleGate?: RuleEnforcementGate;
+  isActive?: () => boolean;
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
@@ -118,8 +119,10 @@ export function attachWorkerPromptHandler(args: {
   let exploredHeaderSent = false;
   let logicalPlanId: string | null = null;
   let latestPlan: PlanSnapshot | null = null;
+  const isActive = (): boolean => (args.isActive ? args.isActive() : true);
 
   const publishPlan = (snapshot: PlanSnapshot): void => {
+    if (!isActive()) return;
     latestPlan = snapshot;
     const ts = Date.now();
     args.sendToChat({ type: "plan", ...snapshot, ts });
@@ -172,6 +175,7 @@ export function attachWorkerPromptHandler(args: {
   };
 
   const unsubscribe = args.orchestrator.onEvent((event: AgentEvent) => {
+    if (!isActive()) return;
     args.sessionLogger?.logEvent(event);
     args.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
     const raw = event.raw as ThreadEvent;
@@ -402,6 +406,7 @@ export function attachWorkerPromptHandler(args: {
   });
 
   const handleExploredEntry = (entry: ExploredEntry) => {
+    if (!isActive()) return;
     args.sendToChat({
       type: "explored",
       header: !exploredHeaderSent,

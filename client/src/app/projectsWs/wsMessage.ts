@@ -159,6 +159,7 @@ export type WsMessageHandlerArgs = {
   applyResumeHistory: ChatActions["applyResumeHistory"];
   cancelPendingResume: ChatActions["cancelPendingResume"];
   clearPendingPrompt: ChatActions["clearPendingPrompt"];
+  consumeSessionReset?: (payload: Record<string, unknown>) => boolean;
   clearStepLive: ChatActions["clearStepLive"];
   commandKeyForWsEvent: ChatActions["commandKeyForWsEvent"];
   finalizeAssistant: ChatActions["finalizeAssistant"];
@@ -188,6 +189,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     applyResumeHistory,
     cancelPendingResume,
     clearPendingPrompt,
+    consumeSessionReset,
     clearStepLive,
     commandKeyForWsEvent,
     finalizeAssistant,
@@ -654,6 +656,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
     const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
+    if (resetScope === "shared" && effectiveChatSessionId === "planner") {
+      return;
+    }
     if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {
       return;
     }
@@ -1028,6 +1033,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "session_reset") {
+      if (consumeSessionReset && !consumeSessionReset(msg as Record<string, unknown>)) {
+        return;
+      }
       handleSharedSessionReset(msg as Record<string, unknown>);
       return;
     }

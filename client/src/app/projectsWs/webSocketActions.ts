@@ -28,7 +28,6 @@ const TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES = new Set([
   "explored",
   "plan",
   "agent",
-  "task:event",
 ]);
 const BOOTSTRAP_HISTORY_WATCHDOG_MS = 5000;
 
@@ -227,14 +226,58 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     return String(project.chatSessionId ?? "").trim() || "main";
   };
 
-  const syncCursorKey = (rt: ProjectRuntime): string | null => {
+  const syncCursorKey = (rt: ProjectRuntime, chatSessionIdOverride?: string): string | null => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
-    const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
     return sessionId ? `ads.syncCursor.${sessionId}.${chatSessionId}` : null;
   };
 
-  const readSyncCursor = (rt: ProjectRuntime): number => {
-    const key = syncCursorKey(rt);
+  const taskSyncCursorKey = (rt: ProjectRuntime): string | null => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    return sessionId ? `ads.taskSyncCursor.${sessionId}` : null;
+  };
+
+  const laneGenerationKey = (rt: ProjectRuntime, chatSessionIdOverride?: string): string | null => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
+    return sessionId ? `ads.laneGeneration.${sessionId}.${chatSessionId}` : null;
+  };
+
+  const laneGenerationScopeKey = (rt: ProjectRuntime, chatSessionIdOverride?: string): string => {
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
+    return `${sessionId}::${chatSessionId}`;
+  };
+
+  const readLaneGeneration = (rt: ProjectRuntime, chatSessionIdOverride?: string): number | null => {
+    const key = laneGenerationKey(rt, chatSessionIdOverride);
+    if (!key) return null;
+    try {
+      const value = Number(localStorage.getItem(key));
+      return Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeLaneGeneration = (rt: ProjectRuntime, generation: number, chatSessionIdOverride?: string): void => {
+    const key = laneGenerationKey(rt, chatSessionIdOverride);
+    if (!key) return;
+    try {
+      localStorage.setItem(key, String(Math.max(1, Math.floor(generation))));
+    } catch {
+      // ignore
+    }
+  };
+
+  const clearOutboxForGenerationChange = (rt: ProjectRuntime): void => {
+    rt.queuedPrompts.value = [];
+    rt.pendingAckClientMessageId = null;
+    clearPendingPrompt(rt);
+  };
+
+  const readSyncCursor = (rt: ProjectRuntime, chatSessionIdOverride?: string): number => {
+    const key = syncCursorKey(rt, chatSessionIdOverride);
     if (!key) return 0;
     try {
       const raw = sessionStorage.getItem(key);
@@ -247,8 +290,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  const writeSyncCursor = (rt: ProjectRuntime, seq: number): void => {
-    const key = syncCursorKey(rt);
+  const writeSyncCursor = (rt: ProjectRuntime, seq: number, chatSessionIdOverride?: string): void => {
+    const key = syncCursorKey(rt, chatSessionIdOverride);
     if (!key) return;
     try {
       const lastSeq = Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
@@ -262,9 +305,44 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  const syncEventsPath = (rt: ProjectRuntime, project: ProjectTab, afterSeq: number): string | null => {
+  const readTaskSyncCursor = (rt: ProjectRuntime): number => {
+    const key = taskSyncCursorKey(rt);
+    if (!key) return 0;
+    try {
+      const raw = sessionStorage.getItem(key);
+      if (!raw) return 0;
+      const parsed = JSON.parse(raw) as { lastSeq?: unknown };
+      const seq = Number(parsed.lastSeq);
+      return Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  const writeTaskSyncCursor = (rt: ProjectRuntime, seq: number): void => {
+    const key = taskSyncCursorKey(rt);
+    if (!key) return;
+    try {
+      const lastSeq = Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
+      if (lastSeq === 0) {
+        sessionStorage.removeItem(key);
+        return;
+      }
+      sessionStorage.setItem(key, JSON.stringify({ lastSeq, updatedAt: Date.now() }));
+    } catch {
+      // ignore
+    }
+  };
+
+  const syncEventsPath = (
+    rt: ProjectRuntime,
+    project: ProjectTab,
+    afterSeq: number,
+    channel: "chat" | "tasks" = "chat",
+    chatSessionIdOverride?: string,
+  ): string | null => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
-    const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
     if (!sessionId) return null;
     const params = new URLSearchParams({
       sessionId,
@@ -272,6 +350,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       afterSeq: String(Math.max(0, Math.floor(afterSeq))),
       limit: "500",
     });
+    if (channel === "tasks") params.set("channel", "tasks");
     const isDefaultProject = String(project.id ?? project.sessionId ?? "").trim() === "default";
     const workspaceRoot = isDefaultProject
       ? ""
@@ -322,6 +401,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.laneStatus ??= { value: null };
     rt.projectSessionId = String(project.sessionId ?? "").trim();
     rt.chatSessionId = chatSessionId;
+    const initialLaneGenerationScope = laneGenerationScopeKey(rt, chatSessionId);
+    if (rt.laneGenerationScope !== initialLaneGenerationScope) {
+      rt.laneGeneration = readLaneGeneration(rt, chatSessionId) ?? undefined;
+      rt.laneGenerationScope = initialLaneGenerationScope;
+      rt.lastConsumedResetGeneration = undefined;
+      rt.legacySessionResetConsumed = false;
+    }
     restoreReasoningEffort(rt);
     restoreModelId(rt);
     rt.syncGeneration += 1;
@@ -367,6 +453,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
     rt.projectSessionId = String(project.sessionId ?? "").trim();
     rt.chatSessionId = resolveChatSessionId(project, mode);
+    const finalLaneGenerationScope = laneGenerationScopeKey(rt, rt.chatSessionId);
+    if (rt.laneGenerationScope !== finalLaneGenerationScope) {
+      rt.laneGeneration = readLaneGeneration(rt, rt.chatSessionId) ?? undefined;
+      rt.laneGenerationScope = finalLaneGenerationScope;
+      rt.lastConsumedResetGeneration = undefined;
+      rt.legacySessionResetConsumed = false;
+    }
     restoreReasoningEffort(rt);
     restoreModelId(rt);
 
@@ -409,13 +502,28 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let bootstrapHistoryWatchdogTimer: number | null = null;
     let syncRetryTimer: number | null = null;
     let syncRetryAttempts = 0;
-    const sequencer = createSyncEventSequencer({
-      initialCursor: readSyncCursor(rt),
-      writeCursor: (seq) => writeSyncCursor(rt, seq),
+    let taskSyncRetryTimer: number | null = null;
+    let taskSyncRetryAttempts = 0;
+    let syncChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    let syncLaneEpoch = 0;
+    const createChatSequencer = (chatSessionId: string) =>
+      createSyncEventSequencer({
+        initialCursor: readSyncCursor(rt, chatSessionId),
+        writeCursor: (seq) => writeSyncCursor(rt, seq, chatSessionId),
+      });
+    let sequencer = createChatSequencer(syncChatSessionId);
+    const taskSequencer = createSyncEventSequencer({
+      initialCursor: readTaskSyncCursor(rt),
+      writeCursor: (seq) => writeTaskSyncCursor(rt, seq),
     });
+    let taskSyncInProgress = false;
+    let needsTaskEventSync = false;
 
-    const isCurrentSync = (): boolean =>
-      rt.ws === wsInstance && rt.syncGeneration === syncGeneration && rt.connected.value;
+    const isCurrentSync = (expectedLaneEpoch: number = syncLaneEpoch): boolean =>
+      rt.ws === wsInstance &&
+      rt.syncGeneration === syncGeneration &&
+      rt.connected.value &&
+      expectedLaneEpoch === syncLaneEpoch;
 
     const clearSyncRetryTimer = (): void => {
       if (syncRetryTimer === null) return;
@@ -478,6 +586,96 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       await bootstrapHistoryWait;
     };
 
+    const switchSyncChatLane = (chatSessionId: string): boolean => {
+      const nextChatSessionId = String(chatSessionId ?? "").trim() || "main";
+      if (nextChatSessionId === syncChatSessionId) return false;
+
+      syncLaneEpoch += 1;
+      syncChatSessionId = nextChatSessionId;
+      clearSyncRetryTimer();
+      syncRetryAttempts = 0;
+      sequencer.abortCatchUp();
+      sequencer = createChatSequencer(syncChatSessionId);
+      deferredBootstrapHistory = null;
+      bootstrapBoundarySeq = 0;
+      bootstrapReportedInFlight = null;
+      bootstrapHistoryExpected = false;
+      finishBootstrapHistoryWait();
+      bootstrapHistoryWait = null;
+      clearBootstrapHistoryWatchdog();
+      rt.needsChatSync = false;
+      rt.syncInProgress = false;
+      rt.awaitingBootstrapHistory = false;
+      return true;
+    };
+
+    const resetChatSyncForGeneration = (options?: { invalidateConnection?: boolean }): void => {
+      syncLaneEpoch += 1;
+      sequencer.abortCatchUp();
+      sequencer.resetCursor();
+      deferredBootstrapHistory = null;
+      bootstrapBoundarySeq = 0;
+      bootstrapReportedInFlight = null;
+      bootstrapHistoryExpected = false;
+      finishBootstrapHistoryWait();
+      bootstrapHistoryWait = null;
+      clearBootstrapHistoryWatchdog();
+      rt.needsChatSync = false;
+      rt.syncInProgress = false;
+      rt.awaitingBootstrapHistory = false;
+      if (options?.invalidateConnection) {
+        rt.syncGeneration += 1;
+      }
+    };
+
+    const consumeSessionReset = (payload: Record<string, unknown>): boolean => {
+      const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+      const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
+      const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
+      if (resetScope === "shared" && effectiveChatSessionId === "planner") {
+        return false;
+      }
+      if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {
+        return false;
+      }
+
+      const laneGenerations = payload.laneGenerations;
+      const generationFromMap =
+        laneGenerations && typeof laneGenerations === "object" && !Array.isArray(laneGenerations)
+          ? Number((laneGenerations as Record<string, unknown>)[effectiveChatSessionId])
+          : Number.NaN;
+      const generationValue = Number.isFinite(generationFromMap)
+        ? generationFromMap
+        : Number(payload.laneGeneration);
+      const hasGeneration = Number.isFinite(generationValue) && generationValue >= 1;
+
+      if (!hasGeneration) {
+        if (rt.legacySessionResetConsumed) return false;
+        rt.legacySessionResetConsumed = true;
+      } else {
+        const generation = Math.floor(generationValue);
+        const scopeKey = laneGenerationScopeKey(rt, effectiveChatSessionId);
+        const knownGeneration =
+          rt.laneGenerationScope === scopeKey
+            ? rt.laneGeneration ?? null
+            : readLaneGeneration(rt, effectiveChatSessionId);
+        if (knownGeneration !== null && generation < knownGeneration) {
+          return false;
+        }
+        const duplicate =
+          rt.laneGenerationScope === scopeKey && rt.lastConsumedResetGeneration === generation;
+        rt.laneGeneration = generation;
+        rt.laneGenerationScope = scopeKey;
+        writeLaneGeneration(rt, generation, effectiveChatSessionId);
+        if (duplicate) return false;
+        rt.lastConsumedResetGeneration = generation;
+      }
+
+      clearOutboxForGenerationChange(rt);
+      resetChatSyncForGeneration({ invalidateConnection: true });
+      return true;
+    };
+
     const showSyncRecoveryNotice = (): void => {
       rt.apiNotice.value = "同步记录窗口已过期，已从后端快照恢复。";
       if (rt.noticeTimer !== null) {
@@ -494,6 +692,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     };
 
     const applySyncPayload = (payload: Record<string, unknown>): void => {
+      if (payload.type === "task:event") {
+        return;
+      }
+      handleWsPayload?.(payload);
+    };
+
+    const applyTaskPayload = (payload: Record<string, unknown>): void => {
       if (payload.type === "task:event") {
         deps.onTaskEvent(
           {
@@ -524,37 +729,61 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     const scheduleSyncRetry = (): void => {
       if (!isCurrentSync() || syncRetryTimer !== null) return;
+      const retryLaneEpoch = syncLaneEpoch;
       const delayMs = Math.min(15_000, 800 * Math.pow(2, Math.min(6, syncRetryAttempts)));
       syncRetryAttempts += 1;
       syncRetryTimer = window.setTimeout(() => {
         syncRetryTimer = null;
-        if (!isCurrentSync() || !rt.needsChatSync) return;
+        if (!isCurrentSync(retryLaneEpoch) || !rt.needsChatSync) return;
         void syncChatEvents();
       }, delayMs);
     };
 
+    const clearTaskSyncRetryTimer = (): void => {
+      if (taskSyncRetryTimer === null) return;
+      try {
+        clearTimeout(taskSyncRetryTimer);
+      } catch {
+        // ignore
+      }
+      taskSyncRetryTimer = null;
+    };
+
+    const scheduleTaskSyncRetry = (): void => {
+      if (!isCurrentSync() || taskSyncRetryTimer !== null || !needsTaskEventSync) return;
+      const delayMs = Math.min(15_000, 800 * Math.pow(2, Math.min(6, taskSyncRetryAttempts)));
+      taskSyncRetryAttempts += 1;
+      taskSyncRetryTimer = window.setTimeout(() => {
+        taskSyncRetryTimer = null;
+        if (!isCurrentSync() || !needsTaskEventSync) return;
+        void syncTaskEvents();
+      }, delayMs);
+    };
+
     async function syncChatEvents(): Promise<void> {
-      if (rt.syncInProgress || !isCurrentSync()) return;
-      const path = syncEventsPath(rt, project, sequencer.getLastAppliedSeq());
+      const operationLaneEpoch = syncLaneEpoch;
+      const activeSequencer = sequencer;
+      if (rt.syncInProgress || !isCurrentSync(operationLaneEpoch)) return;
+      const path = syncEventsPath(rt, project, activeSequencer.getLastAppliedSeq(), "chat", syncChatSessionId);
       if (!path) return;
-      sequencer.beginCatchUp();
+      activeSequencer.beginCatchUp();
       rt.syncInProgress = true;
       try {
         let completed = false;
-        const catchUpStartSeq = sequencer.getLastAppliedSeq();
+        const catchUpStartSeq = activeSequencer.getLastAppliedSeq();
         let afterSeq = catchUpStartSeq;
         const catchUpPayloads: Record<string, unknown>[] = [];
         for (let page = 0; page < 20; page++) {
-          const pagePath = syncEventsPath(rt, project, afterSeq);
+          const pagePath = syncEventsPath(rt, project, afterSeq, "chat", syncChatSessionId);
           if (!pagePath) throw new Error("Sync path is unavailable");
           const response = await api.get<Partial<SyncEventsResponse>>(pagePath);
-          if (!isCurrentSync()) return;
+          if (!isCurrentSync(operationLaneEpoch)) return;
           if (response.truncated) {
             await waitForBootstrapHistory();
-            if (!isCurrentSync()) return;
+            if (!isCurrentSync(operationLaneEpoch)) return;
             const latestSeq = Number(response.latestSeq);
             const snapshot = response.snapshot;
-            sequencer.replaceWithSnapshot(
+            activeSequencer.replaceWithSnapshot(
               Number.isFinite(latestSeq) && latestSeq > 0 ? Math.floor(latestSeq) : 0,
               () => {
                 clearStepLive(rt);
@@ -604,7 +833,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
         if (!completed) throw new Error("Sync catch-up exceeded page limit");
         await waitForBootstrapHistory();
-        if (!isCurrentSync()) return;
+        if (!isCurrentSync(operationLaneEpoch)) return;
         rt.needsChatSync = false;
         const bootstrapHistory = deferredBootstrapHistory;
         deferredBootstrapHistory = null;
@@ -680,7 +909,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           const coveredByTerminalBootstrap =
             withinTerminalBootstrapBoundary &&
             TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES.has(type);
-          sequencer.applyCatchUp(payload, () => {
+          activeSequencer.applyCatchUp(payload, () => {
             if (replayTerminalPatch) {
               applySyncPayload({
                 ...payload,
@@ -692,7 +921,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             }
           });
         }
-        sequencer.completeCatchUp();
+        activeSequencer.completeCatchUp();
         syncRetryAttempts = 0;
         clearSyncRetryTimer();
         if (shouldSyncTasks && rt.needsTaskResync) {
@@ -702,14 +931,88 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           });
         }
       } catch {
-        if (rt.ws === wsInstance && rt.syncGeneration === syncGeneration) {
+        if (isCurrentSync(operationLaneEpoch)) {
           rt.needsChatSync = true;
           scheduleSyncRetry();
         }
       } finally {
-        if (rt.syncGeneration === syncGeneration) {
+        if (isCurrentSync(operationLaneEpoch)) {
           rt.syncInProgress = false;
         }
+      }
+    }
+
+    async function syncTaskEvents(): Promise<void> {
+      if (taskSyncInProgress || !isCurrentSync()) return;
+      const path = syncEventsPath(rt, project, taskSequencer.getLastAppliedSeq(), "tasks");
+      if (!path) return;
+      taskSyncInProgress = true;
+      taskSequencer.beginCatchUp();
+      try {
+        let completed = false;
+        let truncated = false;
+        let afterSeq = taskSequencer.getLastAppliedSeq();
+        const catchUpPayloads: Record<string, unknown>[] = [];
+        for (let page = 0; page < 20; page += 1) {
+          const pagePath = syncEventsPath(rt, project, afterSeq, "tasks");
+          if (!pagePath) throw new Error("Task sync path is unavailable");
+          const response = await api.get<Partial<SyncEventsResponse>>(pagePath);
+          if (!isCurrentSync()) return;
+          if (response.truncated) {
+            const latestSeq = Number(response.latestSeq);
+            taskSequencer.replaceWithSnapshot(
+              Number.isFinite(latestSeq) && latestSeq > 0 ? Math.floor(latestSeq) : 0,
+              () => {},
+            );
+            truncated = true;
+            completed = true;
+            break;
+          }
+          const events = Array.isArray(response.events) ? response.events : [];
+          for (const event of events) {
+            const seq = Number(event.seq);
+            if (!Number.isFinite(seq) || seq <= afterSeq) continue;
+            const eventTs = Number(event.ts);
+            const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+              ? {
+                  ...event.payload,
+                  ...(!Object.prototype.hasOwnProperty.call(event.payload, "ts") && Number.isFinite(eventTs) && eventTs > 0
+                    ? { ts: Math.floor(eventTs) }
+                    : {}),
+                  seq,
+                }
+              : { type: event.type, ...(Number.isFinite(eventTs) && eventTs > 0 ? { ts: Math.floor(eventTs) } : {}), seq };
+            catchUpPayloads.push(payload);
+            afterSeq = Math.floor(seq);
+          }
+          if (!response.hasMore) {
+            completed = true;
+            break;
+          }
+          if (events.length === 0) throw new Error("Task sync response hasMore without events");
+        }
+        if (!completed) throw new Error("Task sync catch-up exceeded page limit");
+        for (const payload of catchUpPayloads) {
+          taskSequencer.applyCatchUp(payload, () => applyTaskPayload(payload));
+        }
+        taskSequencer.completeCatchUp();
+        needsTaskEventSync = false;
+        taskSyncRetryAttempts = 0;
+        clearTaskSyncRetryTimer();
+        if (truncated && shouldSyncTasks) {
+          rt.needsTaskResync = false;
+          await deps.syncProjectState?.(pid);
+        }
+      } catch {
+        // Do not commit live events buffered during a failed request. Their
+        // cursor may be ahead of older offline events that the retry still
+        // needs to fetch.
+        taskSequencer.abortCatchUp();
+        needsTaskEventSync = true;
+        if (shouldSyncTasks) rt.needsTaskResync = true;
+        scheduleTaskSyncRetry();
+      } finally {
+        taskSyncInProgress = false;
       }
     }
 
@@ -745,6 +1048,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.needsChatSync = true;
       rt.connected.value = false;
       clearSyncRetryTimer();
+      clearTaskSyncRetryTimer();
       clearBootstrapHistoryWatchdog();
       finishBootstrapHistoryWait();
       clearStepLive(rt);
@@ -809,7 +1113,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       wsInstance.onTaskEvent = (payload) => {
         if (rt.ws !== wsInstance) return;
         const sequencedPayload = { type: "task:event", ...payload };
-        sequencer.observe(sequencedPayload, () => deps.onTaskEvent(payload, rt));
+        taskSequencer.observe(sequencedPayload, () => deps.onTaskEvent(payload, rt));
       };
     }
 
@@ -824,6 +1128,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       applyResumeHistory,
       cancelPendingResume,
       clearPendingPrompt,
+      consumeSessionReset,
       clearStepLive,
       commandKeyForWsEvent,
       finalizeAssistant,
@@ -853,17 +1158,73 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           finishBootstrapHistoryWait();
           return;
         }
+        if (
+          mode === "worker" &&
+          (rec.type === "goal:status" || rec.type === "goal:cleared")
+        ) {
+          taskSequencer.observe(rec, () => applyTaskPayload(rec));
+          return;
+        }
       }
-      sequencer.observe(msg, () => handleMessage(msg));
       if (msg && typeof msg === "object" && !Array.isArray(msg)) {
         const rec = msg as Record<string, unknown>;
         const latestSeq = Number(rec.latestSeq);
         if (rec.type === "welcome") {
+          const serverChatSessionId = String(rec.chatSessionId ?? "").trim();
+          if (serverChatSessionId) {
+            switchSyncChatLane(serverChatSessionId);
+          }
+          const serverLaneGeneration = Number(rec.laneGeneration);
+          const hasServerLaneGeneration = Number.isFinite(serverLaneGeneration) && serverLaneGeneration >= 1;
+          const welcomeChatSessionId = serverChatSessionId || syncChatSessionId;
+          const welcomeLaneGenerationScope = laneGenerationScopeKey(rt, welcomeChatSessionId);
+          const runtimeLaneGeneration =
+            rt.laneGenerationScope === welcomeLaneGenerationScope ? rt.laneGeneration ?? null : null;
+          const previousLaneGeneration = hasServerLaneGeneration
+            ? runtimeLaneGeneration ?? readLaneGeneration(rt, welcomeChatSessionId)
+            : null;
+          if (
+            hasServerLaneGeneration &&
+            previousLaneGeneration !== null &&
+            Math.floor(serverLaneGeneration) < previousLaneGeneration
+          ) {
+            try {
+              wsInstance.close();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          const generationChanged =
+            hasServerLaneGeneration &&
+            previousLaneGeneration !== null &&
+            previousLaneGeneration !== Math.floor(serverLaneGeneration);
+          if (hasServerLaneGeneration) {
+            rt.laneGeneration = Math.floor(serverLaneGeneration);
+            rt.laneGenerationScope = welcomeLaneGenerationScope;
+            writeLaneGeneration(rt, rt.laneGeneration, welcomeChatSessionId);
+          }
+          if (generationChanged) {
+            clearOutboxForGenerationChange(rt);
+            resetChatSyncForGeneration();
+            rt.lastConsumedResetGeneration = Math.floor(serverLaneGeneration);
+            const welcomeRecord = rec as Record<string, unknown> & { reset?: boolean };
+            welcomeRecord.reset = true;
+          }
           if (typeof rec.inFlight === "boolean") {
             bootstrapReportedInFlight = rec.inFlight;
           }
           if (Number.isFinite(latestSeq) && latestSeq > 0) {
             bootstrapBoundarySeq = Math.floor(latestSeq);
+          }
+          const taskLatestSeq = Number(rec.taskLatestSeq);
+          if (
+            shouldSyncTasks &&
+            Number.isFinite(taskLatestSeq) &&
+            taskLatestSeq > taskSequencer.getLastAppliedSeq()
+          ) {
+            needsTaskEventSync = true;
+            void syncTaskEvents();
           }
           if (Number.isFinite(latestSeq) && latestSeq > sequencer.getLastAppliedSeq()) {
             rt.needsChatSync = true;
@@ -873,12 +1234,21 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           } else {
             rt.needsChatSync = false;
           }
-          if (rec.bootstrapHistory === true || rt.awaitingBootstrapHistory || rt.inputLocked.value) {
-            armBootstrapHistoryWatchdog();
-          }
         } else if (rec.type === "history" && !rt.awaitingBootstrapHistory && !bootstrapHistoryExpected) {
           clearBootstrapHistoryWatchdog();
         }
+      }
+      sequencer.observe(msg, () => handleMessage(msg));
+      if (
+        msg &&
+        typeof msg === "object" &&
+        !Array.isArray(msg) &&
+        (msg as Record<string, unknown>).type === "welcome" &&
+        ((msg as Record<string, unknown>).bootstrapHistory === true ||
+          rt.awaitingBootstrapHistory ||
+          rt.inputLocked.value)
+      ) {
+        armBootstrapHistoryWatchdog();
       }
     };
 

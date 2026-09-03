@@ -384,4 +384,19 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       }
     },
   },
+  {
+    version: 13,
+    description: "Persist generation fences for isolated web lanes",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS web_lane_generations (
+          namespace TEXT NOT NULL,
+          lane_key TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK(generation >= 1),
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(namespace, lane_key)
+        );
+      `);
+    },
+  },
 ];

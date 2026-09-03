@@ -112,7 +112,12 @@ export async function processScheduleOutput(args: {
   source?: string;
   telegramChatId?: string | null;
   preferTelegramDelivery?: boolean;
+  isActive?: () => boolean;
 }): Promise<string> {
+  const isActive = (): boolean => (args.isActive ? args.isActive() : true);
+  if (!isActive()) {
+    return args.outputForChat;
+  }
   const scheduleBlocks = extractScheduleBlocks(args.outputForChat);
   if (scheduleBlocks.length === 0) {
     return args.outputForChat;
@@ -130,8 +135,14 @@ export async function processScheduleOutput(args: {
   const scheduleStripCandidates = new Set<string>();
   const scheduleSummaries: string[] = [];
   for (const instruction of scheduleBlocks) {
+    if (!isActive()) {
+      return args.outputForChat;
+    }
     try {
       const compiledRaw = await args.scheduleCompiler.compile({ workspaceRoot: args.workspaceRoot, instruction });
+      if (!isActive()) {
+        return args.outputForChat;
+      }
       const compiled = applyScheduleContext(compiledRaw, instruction, {
         telegramChatId: args.telegramChatId,
         preferTelegramDelivery: args.preferTelegramDelivery,
@@ -149,6 +160,9 @@ export async function processScheduleOutput(args: {
         } catch {
           // ignore
         }
+      }
+      if (!isActive()) {
+        return args.outputForChat;
       }
       const store = new ScheduleStore({ workspacePath: args.workspaceRoot });
       const schedule = store.createSchedule({ instruction, spec: compiled, enabled, nextRunAt }, Date.now());

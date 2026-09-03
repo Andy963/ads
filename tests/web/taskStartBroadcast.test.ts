@@ -24,7 +24,6 @@ async function waitFor(fn: () => boolean, timeoutMs = 2000): Promise<void> {
 describe("web/taskStartBroadcast", () => {
   it("broadcasts task:started before the user message (already injected)", () => {
     const events: Array<{ event?: string; data?: unknown }> = [];
-    const history: Array<{ role: string; text: string; ts: number; kind?: string }> = [];
     const metrics: Array<{ name: string; event?: { reason?: string } }> = [];
     const ts = Date.parse("2026-01-01T00:00:00.000Z");
 
@@ -32,7 +31,6 @@ describe("web/taskStartBroadcast", () => {
       task: { id: "t-1", prompt: "  Hello \n" },
       ts,
       markPromptInjected: () => false,
-      recordHistory: (entry) => history.push(entry),
       recordMetric: (name, event) => metrics.push({ name, event }),
       broadcast: (payload) => events.push(payload as { event?: string; data?: unknown }),
     });
@@ -42,10 +40,6 @@ describe("web/taskStartBroadcast", () => {
     assert.equal(events[1]?.event, "message");
     assert.deepEqual(events[1]?.data, { taskId: "t-1", role: "user", content: "Hello" });
 
-    assert.equal(history.length, 1);
-    assert.equal(history[0]?.role, "user");
-    assert.equal(history[0]?.text, "Hello");
-
     assert.equal(metrics.length, 1);
     assert.equal(metrics[0]?.name, "PROMPT_INJECTED");
     assert.equal(metrics[0]?.event?.reason, "already_marked");
@@ -53,7 +47,6 @@ describe("web/taskStartBroadcast", () => {
 
   it("broadcasts a placeholder when prompt is empty", () => {
     const events: Array<{ event?: string; data?: unknown }> = [];
-    const history: Array<{ role: string; text: string; ts: number; kind?: string }> = [];
     const metrics: Array<{ name: string; event?: { reason?: string } }> = [];
     const ts = Date.parse("2026-01-01T00:00:00.000Z");
 
@@ -61,7 +54,6 @@ describe("web/taskStartBroadcast", () => {
       task: { id: "t-1", title: "My task", prompt: "   " },
       ts,
       markPromptInjected: () => true,
-      recordHistory: (entry) => history.push(entry),
       recordMetric: (name, event) => metrics.push({ name, event }),
       broadcast: (payload) => events.push(payload as { event?: string; data?: unknown }),
     });
@@ -70,7 +62,6 @@ describe("web/taskStartBroadcast", () => {
     assert.equal(events[0]?.event, "task:started");
     assert.equal(events[1]?.event, "message");
     assert.deepEqual(events[1]?.data, { taskId: "t-1", role: "user", content: placeholder });
-    assert.equal(history[0]?.text, placeholder);
     assert.equal(metrics[0]?.event?.reason, "empty_prompt");
   });
 
@@ -84,7 +75,6 @@ describe("web/taskStartBroadcast", () => {
       markPromptInjected: () => {
         throw new Error("boom");
       },
-      recordHistory: () => {},
       recordMetric: (name, event) => metrics.push({ name, event }),
       broadcast: () => {},
     });
@@ -133,7 +123,6 @@ describe("web/taskStartBroadcast integration", () => {
     const ctx = { taskStore: store, taskQueue: queue, queueRunning: false };
 
     const broadcasted: Array<{ event: string; data: unknown }> = [];
-    const history: Array<{ role: string; text: string }> = [];
     const metrics: Array<{ name: string; reason?: string }> = [];
 
     queue.on("task:started", ({ task: started }) => {
@@ -142,7 +131,6 @@ describe("web/taskStartBroadcast integration", () => {
         task: started,
         ts,
         markPromptInjected: (taskId: string, now: number) => store.markPromptInjected(taskId, now),
-        recordHistory: (entry) => history.push({ role: entry.role, text: entry.text }),
         recordMetric: (name, event) => metrics.push({ name, reason: event?.reason }),
         broadcast: (payload) => {
           const msg = payload as { event?: string; data?: unknown };
@@ -167,7 +155,6 @@ describe("web/taskStartBroadcast integration", () => {
     assert.deepEqual(broadcasted[1]?.data, { taskId: task.id, role: "user", content: "P" });
     assert.equal(broadcasted[broadcasted.length - 1]?.event, "task:completed");
 
-    assert.equal(history[0]?.text, "P");
     assert.equal(metrics[0]?.name, "PROMPT_INJECTED");
     assert.equal(metrics[0]?.reason, "already_marked");
   });

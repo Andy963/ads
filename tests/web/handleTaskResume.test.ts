@@ -405,6 +405,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getSavedState: () => ({ cwd: "/mnt/d/code/ADS/ads" }),
           getSavedThreadId: () => undefined,
           getSavedResumeThreadId: () => undefined,
           getSandboxMode: () => "workspace-write",
@@ -554,7 +555,7 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(sent, [{ type: "error", message: "Claude credentials are missing" }]);
   });
 
-  it("clears a saved resume thread that no longer exists on disk and falls back to transcript restore", async () => {
+  it("clears a saved resume thread without importing an unrelated task transcript", async () => {
     process.env.ADS_CODEX_BIN = process.execPath;
 
     const sent: unknown[] = [];
@@ -607,6 +608,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getSavedState: () => ({ cwd: "/mnt/d/code/ADS/ads" }),
           getSavedThreadId: () => undefined,
           getSavedResumeThreadId: () => "saved-resume-thread",
           getSandboxMode: () => "workspace-write",
@@ -674,28 +676,20 @@ describe("web/ws/handleTaskResume", () => {
     });
 
     assert.equal(result.handled, true);
-    assert.equal(result.orchestrator, fallbackOrchestrator);
+    assert.equal(result.orchestrator, initialOrchestrator);
     // The rollout file for `saved-resume-thread` does not exist, so the probe is
     // definitive and the dead id is dropped instead of being retried forever.
     assert.equal(clearSavedResumeCalls, 1);
-    assert.deepEqual(dropSessionCalls, [{}]);
-    assert.deepEqual(getOrCreateCalls, [{ userId: 7, cwd: "/mnt/d/code/ADS/ads", resumeThread: false }]);
-    assert.deepEqual(saveThreadCalls, [{ userId: 7, threadId: "new-thread", agentId: "codex" }]);
+    assert.deepEqual(dropSessionCalls, []);
+    assert.deepEqual(getOrCreateCalls, []);
+    assert.deepEqual(saveThreadCalls, []);
     assert.deepEqual(sent.at(-1), {
-      type: "history",
-      threadId: "new-thread",
-      contextMode: "history_injection",
-      items: [
-        {
-          role: "status",
-          text: "未能原生恢复（会话文件已不存在），已从最近任务恢复上下文：Recent task",
-          ts: historyEntries[0]?.ts,
-        },
-      ],
+      type: "error",
+      message: "未能原生恢复（会话文件已不存在），且未找到可用于恢复的任务历史",
     });
   });
 
-  it("attempts native resume for claude and falls back when the transcript is gone", async () => {
+  it("attempts native resume for claude without importing an unrelated task transcript", async () => {
     const sent: unknown[] = [];
     const historyEntries: Array<{ role: string; text: string; ts: number }> = [];
     const dropSessionCalls: Array<{ clearSavedThread?: boolean }> = [];
@@ -816,26 +810,19 @@ describe("web/ws/handleTaskResume", () => {
     });
 
     assert.equal(result.handled, true);
-    assert.equal(result.orchestrator, fallbackOrchestrator);
+    assert.equal(result.orchestrator, initialOrchestrator);
     assert.equal(clearSavedResumeCalls, 0);
-    assert.deepEqual(dropSessionCalls, [{}]);
-    assert.deepEqual(getOrCreateCalls, [{ userId: 8, cwd: "/mnt/d/code/ADS/ads", resumeThread: false }]);
-    assert.deepEqual(saveThreadCalls, [{ userId: 8, threadId: "new-claude-session", agentId: "claude" }]);
+    assert.deepEqual(dropSessionCalls, []);
+    assert.deepEqual(getOrCreateCalls, []);
+    assert.deepEqual(saveThreadCalls, []);
     // Claude is no longer excluded from native resume; the attempt is made and
     // only fails because this synthetic session id has no transcript on disk.
-    assert.equal(warnings.length, 1);
+    assert.equal(warnings.length, 2);
     assert.match(warnings[0], /resumeThread failed thread=claude-current-thread/);
+    assert.match(warnings[1], /restore=unavailable/);
     assert.deepEqual(sent.at(-1), {
-      type: "history",
-      threadId: "new-claude-session",
-      contextMode: "history_injection",
-      items: [
-        {
-          role: "status",
-          text: "未能原生恢复（会话文件已不存在），已从最近任务恢复上下文：Recent Claude task",
-          ts: historyEntries[0]?.ts,
-        },
-      ],
+      type: "error",
+      message: "未能原生恢复（会话文件已不存在），且未找到可用于恢复的任务历史",
     });
   });
 

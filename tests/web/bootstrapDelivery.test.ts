@@ -513,7 +513,7 @@ describe("web/ws/bootstrapDelivery", () => {
     }
   });
 
-  it("merges shared worker history into the initial bootstrap snapshot", () => {
+  it("does not merge task history into the initial chat bootstrap snapshot", () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-shared", maxEntriesPerSession: 20 });
     historyStore.add("history-1", { role: "user", text: "queued task", ts: 1 });
@@ -540,12 +540,10 @@ describe("web/ws/bootstrapDelivery", () => {
         inFlight: false,
         historyStore,
         historyKey: "history-1",
-        additionalHistoryEntries: [{ role: "ai", text: "offline task result", ts: 2 }],
       });
 
       assert.deepEqual((sent[2] as { items?: unknown }).items, [
         { role: "user", text: "queued task", ts: 1, kind: undefined },
-        { role: "ai", text: "offline task result", ts: 2, kind: undefined },
       ]);
     } finally {
       historyStore.clear("history-1");

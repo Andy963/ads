@@ -41,7 +41,6 @@ describe("web/taskQueue manager", () => {
     autoStart?: boolean;
   }) {
     const broadcasts: unknown[] = [];
-    const histories: Array<{ sessionId: string; entry: { role: string; text: string; ts: number; kind?: string } }> = [];
     const manager = createTaskQueueManager({
       workspaceRoot: tmpDir,
       allowedDirs: options?.allowedDirs ?? [tmpDir],
@@ -61,11 +60,8 @@ describe("web/taskQueue manager", () => {
       broadcastToSession: (_sessionId, payload) => {
         broadcasts.push(payload);
       },
-      recordToSessionHistories: (sessionId, entry) => {
-        histories.push({ sessionId, entry });
-      },
     });
-    return { manager, broadcasts, histories };
+    return { manager, broadcasts };
   }
 
   it("resolves nested workspace paths to the shared workspace root", () => {

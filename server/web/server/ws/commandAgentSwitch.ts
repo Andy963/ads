@@ -20,9 +20,14 @@ export function handleSetAgentCommand(args: {
   orchestrator: WsOrchestrator;
   sessionManager: SessionManager;
   historyStore: Pick<HistoryStore, "add">;
+  isLaneCurrent?: () => boolean;
   agentAvailability: AgentAvailability;
   sendToSession: (payload: unknown) => void;
 }): WsOrchestrator {
+  const isLaneCurrent = (): boolean => args.isLaneCurrent ? args.isLaneCurrent() : true;
+  if (!isLaneCurrent()) {
+    return args.orchestrator;
+  }
   const agentId = readAgentId(args.payload);
 
   if (!agentId) {
@@ -33,6 +38,9 @@ export function handleSetAgentCommand(args: {
   }
 
   const switchResult = args.sessionManager.switchAgent(args.userId, agentId);
+  if (!isLaneCurrent()) {
+    return args.orchestrator;
+  }
   if (!switchResult.success) {
     args.sendToSession({ type: "error", message: switchResult.message });
     args.historyStore.add(args.historyKey, { role: "status", text: switchResult.message, ts: Date.now(), kind: "error" });
@@ -40,6 +48,9 @@ export function handleSetAgentCommand(args: {
   }
 
   const orchestrator = args.sessionManager.getOrCreate(args.userId, args.currentCwd, true);
+  if (!isLaneCurrent()) {
+    return args.orchestrator;
+  }
   const activeAgentId = orchestrator.getActiveAgentId();
   const agents = orchestrator.listAgents().map((entry) => {
     const merged = args.agentAvailability.mergeStatus(entry.metadata.id, entry.status);

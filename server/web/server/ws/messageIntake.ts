@@ -48,10 +48,14 @@ export function handleImmediateWsMessage(args: {
   parsed: WsMessage;
   receivedAt: number;
   abortInFlight: () => boolean;
+  isLaneCurrent?: () => boolean;
   sendJson: (payload: unknown) => void;
   broadcastJson?: (payload: unknown) => void;
   recordStatusError?: (message: string) => void;
 }): boolean {
+  if (args.isLaneCurrent && !args.isLaneCurrent()) {
+    return args.parsed.type === "ping" || args.parsed.type === "pong" || args.parsed.type === "interrupt";
+  }
   if (args.parsed.type === "ping") {
     args.sendJson({ type: "pong", ts: args.receivedAt });
     return true;

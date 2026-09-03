@@ -14,6 +14,9 @@ import { SessionManager } from "../../server/telegram/utils/sessionManager.js";
 import { DirectoryManager } from "../../server/telegram/utils/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
+import { resolveSyncLaneKey, resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
+import { WebLaneGenerationStore } from "../../server/web/server/sync/laneGeneration.js";
+import { SyncEventStore } from "../../server/web/server/sync/store.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -120,6 +123,8 @@ describe("web/server/ws/broadcast", () => {
   let plannerSessions: FakeSession[];
   let workerHistoryStore: HistoryStore;
   let plannerHistoryStore: HistoryStore;
+  let syncEventStore: SyncEventStore;
+  let laneGenerationStore: WebLaneGenerationStore;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -146,6 +151,8 @@ describe("web/server/ws/broadcast", () => {
     >();
     workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
+    syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
+    laneGenerationStore = new WebLaneGenerationStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
@@ -183,6 +190,8 @@ describe("web/server/ws/broadcast", () => {
         cwdStore: new Map(),
         cwdStorePath: process.env.ADS_STATE_DB_PATH,
         persistCwdStore: () => {},
+        syncEventStore,
+        laneGenerationStore,
       },
       sessions: {
         workerSessionManager: new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, {
@@ -343,7 +352,21 @@ describe("web/server/ws/broadcast", () => {
     const reset = await resetPromise;
     const result = await resultPromise;
     assert.equal(reset.type, "session_reset");
+    assert.equal(reset.seq, undefined);
     assert.equal(result.type, "result");
+    const resetLane = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "test-session",
+      chatSessionId: "main",
+    });
+    assert.equal(
+      syncEventStore.readAfter({
+        namespace: resolveSyncNamespace("main"),
+        laneKey: resetLane,
+        afterSeq: 0,
+      }).events.some((event) => event.type === "session_reset"),
+      false,
+    );
     assert.equal(workerSessions[0]?.resetCalls, 1);
     assert.equal(workerSessions[1]?.resetCalls, 0);
     assert.equal(plannerSessions.length, 0);
@@ -374,7 +397,67 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
-  it("resets disconnected custom worker lanes and clears tracked histories across the shared session", async () => {
+  it("does not allow the planner lane to reset any worker lane", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+    const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
+
+    const mainClient = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
+    const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
+    await waitForWsOpen(mainClient);
+    await waitForWsOpen(plannerClient);
+
+    const mainMessages: WsJson[] = [];
+    const mainHandler = (raw: RawData) => {
+      try {
+        mainMessages.push(JSON.parse(raw.toString("utf8")) as WsJson);
+      } catch {
+        // ignore
+      }
+    };
+    mainClient.on("message", mainHandler);
+
+    const resetPromise = waitForWsMessage(
+      plannerClient,
+      (msg) => msg.type === "session_reset" && msg.sourceChatSessionId === "planner" && msg.scope === "lane",
+      1500,
+    );
+    const resultPromise = waitForWsMessage(
+      plannerClient,
+      (msg) => msg.type === "result" && msg.kind === "clear_history" && msg.ok === true,
+      1500,
+    );
+
+    plannerClient.send(JSON.stringify({ type: "clear_history", payload: { scope: "shared" } }));
+
+    const reset = await resetPromise;
+    const result = await resultPromise;
+    assert.equal(reset.type, "session_reset");
+    assert.equal(result.type, "result");
+    assert.equal(workerSessions[0]?.resetCalls, 0);
+    assert.equal(plannerSessions[0]?.resetCalls, 1);
+    assert.equal(mainClient.readyState, WebSocket.OPEN);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      mainMessages.some((msg) => msg.type === "session_reset"),
+      false,
+    );
+
+    mainClient.off("message", mainHandler);
+    try {
+      mainClient.terminate();
+    } catch {
+      // ignore
+    }
+    try {
+      plannerClient.terminate();
+    } catch {
+      // ignore
+    }
+  });
+
+  it("resets disconnected worker lanes while keeping the planner lane isolated", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
     const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
@@ -387,9 +470,18 @@ describe("web/server/ws/broadcast", () => {
     await waitForWsOpen(plannerClient);
     await waitForWsOpen(customWorkerClient);
 
-    workerHistoryStore.add("test::test-session::main", { role: "user", text: "main stale", ts: Date.now() });
-    plannerHistoryStore.add("test::test-session::planner", { role: "user", text: "planner stale", ts: Date.now() });
-    workerHistoryStore.add("test::test-session::worker-custom", { role: "user", text: "custom stale", ts: Date.now() });
+    workerHistoryStore.add(
+      resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "main", generation: 1 }),
+      { role: "user", text: "main stale", ts: Date.now() },
+    );
+    plannerHistoryStore.add(
+      resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "planner", generation: 1 }),
+      { role: "user", text: "planner stale", ts: Date.now() },
+    );
+    workerHistoryStore.add(
+      resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "worker-custom", generation: 1 }),
+      { role: "user", text: "custom stale", ts: Date.now() },
+    );
 
     try {
       customWorkerClient.terminate();
@@ -409,17 +501,34 @@ describe("web/server/ws/broadcast", () => {
 
     assert.equal(workerSessions[0]?.resetCalls, 1);
     assert.equal(workerSessions[1]?.resetCalls, 1);
-    assert.equal(plannerSessions[0]?.resetCalls, 1);
-    assert.deepEqual(workerHistoryStore.get("test::test-session::main"), []);
-    assert.deepEqual(plannerHistoryStore.get("test::test-session::planner"), []);
-    assert.deepEqual(workerHistoryStore.get("test::test-session::worker-custom"), []);
+    assert.equal(plannerSessions[0]?.resetCalls, 0);
+    assert.deepEqual(
+      workerHistoryStore.get(
+        resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "main", generation: 1 }),
+      ),
+      [],
+    );
+    assert.equal(plannerSessions[0]?.threadId === null, false);
+    assert.equal(
+      plannerHistoryStore.get(
+        resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "planner", generation: 1 }),
+      )[0]?.text,
+      "planner stale",
+    );
+    assert.deepEqual(
+      workerHistoryStore.get(
+        resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "worker-custom", generation: 1 }),
+      ),
+      [],
+    );
 
     const reconnectedCustomWorkerClient = new WebSocket(url, customWorkerProtocols, { origin: "http://localhost" });
     const welcomePromise = waitForWsMessage(reconnectedCustomWorkerClient, (msg) => msg.type === "welcome", 1500);
     await waitForWsOpen(reconnectedCustomWorkerClient);
     const welcome = await welcomePromise;
     assert.equal(welcome.type, "welcome");
-    assert.equal(welcome.threadId, null);
+    assert.equal(welcome.laneGeneration, 2);
+    assert.equal(welcome.contextMode, "fresh");
 
     try {
       mainClient.terminate();
@@ -433,6 +542,45 @@ describe("web/server/ws/broadcast", () => {
     }
     try {
       reconnectedCustomWorkerClient.terminate();
+    } catch {
+      // ignore
+    }
+  });
+
+  it("clears the current generation when a stale connection requests a reset", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+    await waitForWsOpen(client);
+
+    const logicalLane = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "test-session",
+      chatSessionId: "main",
+    });
+    const currentLane = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "test-session",
+      chatSessionId: "main",
+      generation: 2,
+    });
+    workerHistoryStore.add(currentLane, { role: "user", text: "current generation", ts: Date.now() });
+    assert.equal(laneGenerationStore.bumpGeneration(resolveSyncNamespace("main"), logicalLane), 2);
+
+    const resultPromise = waitForWsMessage(
+      client,
+      (msg) => msg.type === "result" && msg.kind === "clear_history" && msg.ok === true,
+      1500,
+    );
+    client.send(JSON.stringify({ type: "clear_history" }));
+    const result = await resultPromise;
+
+    assert.equal(result.type, "result");
+    assert.equal(laneGenerationStore.getGeneration(resolveSyncNamespace("main"), logicalLane), 3);
+    assert.deepEqual(workerHistoryStore.get(currentLane), []);
+
+    try {
+      client.terminate();
     } catch {
       // ignore
     }

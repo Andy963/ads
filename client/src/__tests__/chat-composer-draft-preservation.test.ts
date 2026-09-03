@@ -109,4 +109,23 @@ describe("composer draft preservation on session reset", () => {
     expect(workerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "main" });
     expect(plannerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "planner" });
   });
+
+  it("downgrades a planner shared clear request to the planner lane", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const plannerRt = ctx.activePlannerRuntime.value;
+    plannerRt.ws = { clearHistory: vi.fn() } as any;
+
+    chat.threadReset(plannerRt, {
+      notice: "",
+      clearBackendHistory: true,
+      clearHistoryPayload: { scope: "shared" },
+      resetThreadId: true,
+    });
+
+    expect(plannerRt.ws?.clearHistory).toHaveBeenCalledWith({
+      scope: "lane",
+      sourceChatSessionId: "planner",
+    });
+  });
 });

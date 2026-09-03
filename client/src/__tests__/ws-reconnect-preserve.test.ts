@@ -134,6 +134,244 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("preserves visible history when reconnecting to the same lane generation", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 1,
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+    rt.messages.value = [{ id: "answer", role: "assistant", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-1";
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    await controller.connectWs("default");
+    await settleUi(wrapper);
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 1,
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value.map((message) => message.content)).toEqual(["keep me"]);
+    expect(rt.activeThreadId.value).toBe("thread-1");
+    expect(rt.threadWarning.value).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("clears stale UI, outbox, and cursor when a reconnect observes a newer lane generation", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 1,
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+    rt.messages.value = [{ id: "stale", role: "assistant", kind: "text", content: "stale" }];
+    rt.activeThreadId.value = "thread-1";
+    rt.pendingAckClientMessageId = "pending-1";
+    rt.queuedPrompts.value = [
+      { id: "queued-1", clientMessageId: "pending-1", text: "stale prompt", images: [], createdAt: 1 },
+    ];
+    seedOutboxPending("main", { clientMessageId: "pending-1", text: "stale prompt", createdAt: 1 });
+    sessionStorage.setItem("ads.syncCursor.default.main", JSON.stringify({ lastSeq: 7 }));
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    // A sibling tab may update the shared marker before this tab reconnects.
+    localStorage.setItem("ads.laneGeneration.default.main", "2");
+    await controller.connectWs("default");
+    await settleUi(wrapper);
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 2,
+      inFlight: false,
+      contextMode: "fresh",
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value).toEqual([]);
+    expect(rt.activeThreadId.value).toBeNull();
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(sessionStorage.getItem("ads.syncCursor.default.main")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("does not reset existing UI when the first welcome only establishes an unknown generation", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+    rt.messages.value = [{ id: "existing", role: "assistant", kind: "text", content: "keep me" }];
+    rt.activeThreadId.value = "thread-1";
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 9,
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+   expect(rt.messages.value.map((message) => message.content)).toEqual(["keep me"]);
+   expect(rt.activeThreadId.value).toBe("thread-1");
+   expect(rt.laneGeneration).toBe(9);
+   wrapper.unmount();
+ });
+
+  it("closes a stale connection whose welcome reports an older lane generation", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+    rt.messages.value = [{ id: "keep", role: "assistant", kind: "text", content: "keep me" }];
+    localStorage.setItem("ads.laneGeneration.default.main", "3");
+    rt.laneGeneration = 3;
+    rt.laneGenerationScope = "default::main";
+
+    const closeSpy = vi.spyOn(lastWs as any, "close");
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 2,
+      inFlight: false,
+      contextMode: "fresh",
+    });
+    await settleUi(wrapper);
+
+    expect(closeSpy).toHaveBeenCalled();
+    expect(rt.messages.value.map((m) => m.content)).toEqual(["keep me"]);
+    expect(localStorage.getItem("ads.laneGeneration.default.main")).toBe("3");
+    expect(rt.laneGeneration).toBe(3);
+    wrapper.unmount();
+  });
+
+  it("ignores duplicate session_reset with the same generation", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 1,
+      inFlight: false,
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "session_reset",
+      source: "clear_history",
+      sourceChatSessionId: "main",
+      scope: "lane",
+      laneGeneration: 2,
+    });
+    await settleUi(wrapper);
+    expect(rt.laneGeneration).toBe(2);
+
+    rt.messages.value = [{ id: "new-msg", role: "assistant", kind: "text", content: "generation 2 message" }];
+
+    lastWs!.onMessage?.({
+      type: "session_reset",
+      source: "clear_history",
+      sourceChatSessionId: "main",
+      scope: "lane",
+      laneGeneration: 2,
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value.map((m) => m.content)).toEqual(["generation 2 message"]);
+    wrapper.unmount();
+  });
+
+  it("isolates planner lane from shared worker session_reset", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+    const plannerRt = controller.getPlannerRuntime("default");
+
+    rt.messages.value = [{ id: "w1", role: "user", kind: "text", content: "worker msg" }];
+    plannerRt.messages.value = [{ id: "p1", role: "user", kind: "text", content: "planner msg" }];
+
+    lastWs!.onMessage?.({
+      type: "session_reset",
+      source: "clear_history",
+      sourceChatSessionId: "main",
+      scope: "shared",
+      laneGenerations: { main: 2 },
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value).toEqual([]);
+    expect(plannerRt.messages.value.map((m) => m.content)).toEqual(["planner msg"]);
+    wrapper.unmount();
+  });
+
+  it("drops stale in-flight HTTP sync responses that arrive after a generation reset", async () => {
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({
+        type: "welcome",
+        latestSeq: 10,
+        laneGeneration: 1,
+        inFlight: false,
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      lastWs!.onMessage?.({
+        type: "session_reset",
+        source: "clear_history",
+        sourceChatSessionId: "main",
+        scope: "lane",
+        laneGeneration: 2,
+      });
+      await settleUi(wrapper);
+
+      rt.messages.value = [{ id: "gen2", role: "assistant", kind: "text", content: "gen2 message" }];
+
+      resolveFetch?.({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            events: [
+              { seq: 1, type: "result", revision: 1, ts: 1, payload: { type: "result", ok: true, output: "stale gen1" } },
+            ],
+            latestSeq: 10,
+            minAvailableSeq: 1,
+            hasMore: false,
+            truncated: false,
+          }),
+      } as Response);
+      await settleUi(wrapper);
+
+      expect(rt.messages.value.map((m) => m.content)).toEqual(["gen2 message"]);
+      expect(sessionStorage.getItem("ads.syncCursor.default.main")).toBeNull();
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("catches up missed sync history events after reconnect", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn().mockResolvedValue({

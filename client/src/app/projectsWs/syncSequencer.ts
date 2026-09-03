@@ -68,12 +68,26 @@ export function createSyncEventSequencer(args: {
     buffering = false;
   };
 
+  const abortCatchUp = (): void => {
+    buffered.clear();
+    buffering = false;
+  };
+
+  const resetCursor = (): void => {
+    lastAppliedSeq = 0;
+    buffering = false;
+    buffered.clear();
+    args.writeCursor(0);
+  };
+
   return {
     observe,
     applyCatchUp,
     beginCatchUp,
     replaceWithSnapshot,
     completeCatchUp,
+    abortCatchUp,
+    resetCursor,
     getLastAppliedSeq: () => lastAppliedSeq,
     isBuffering: () => buffering,
   };

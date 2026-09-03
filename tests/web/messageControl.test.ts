@@ -80,7 +80,7 @@ describe("web/ws/messageControl", () => {
     });
   });
 
-  it("uses shared reset only when clear_history explicitly requests shared scope", async () => {
+  it("uses shared reset only when a worker lane explicitly requests shared scope", async () => {
     const sent: unknown[] = [];
     const broadcasted: unknown[] = [];
     const sharedResetOptions: Array<{ sourceChatSessionId: string }> = [];
@@ -89,7 +89,7 @@ describe("web/ws/messageControl", () => {
 
     const clearedHistory = await handleWsControlMessage({
       parsed: { type: "clear_history", payload: { scope: "shared" } },
-      chatSessionId: "planner",
+      chatSessionId: "main",
       userId: 7,
       historyKey: "history-1",
       currentCwd: "/tmp/project",
@@ -115,11 +115,61 @@ describe("web/ws/messageControl", () => {
     });
 
     assert.equal(clearedHistory.handled, true);
-    assert.deepEqual(sharedResetOptions, [{ sourceChatSessionId: "planner" }]);
+    assert.deepEqual(sharedResetOptions, [{ sourceChatSessionId: "main" }]);
     assert.equal(localHistoryClears, 0);
     assert.equal(localSessionResets, 0);
     assert.deepEqual(broadcasted, [
-      { type: "session_reset", source: "clear_history", sourceChatSessionId: "planner", scope: "shared" },
+      { type: "session_reset", source: "clear_history", sourceChatSessionId: "main", scope: "shared" },
+    ]);
+    assert.deepEqual(sent[0], {
+      type: "result",
+      ok: true,
+      output: "已清空历史缓存并重置会话",
+      kind: "clear_history",
+    });
+  });
+
+  it("downgrades a planner shared reset request to a planner-lane reset", async () => {
+    const sent: unknown[] = [];
+    const broadcasted: unknown[] = [];
+    let sharedResetCalls = 0;
+    let laneResetCalls = 0;
+
+    const clearedHistory = await handleWsControlMessage({
+      parsed: { type: "clear_history", payload: { scope: "shared" } },
+      chatSessionId: "planner",
+      userId: 7,
+      historyKey: "planner-history-1",
+      currentCwd: "/tmp/project",
+      sessionManager: { reset: () => {} } as any,
+      orchestrator: { id: "orch" } as any,
+      getWorkspaceLock: (() => null) as any,
+      historyStore: { clear: () => {} },
+      ensureTaskContext: (() => ({})) as any,
+      sendJson: (payload) => sent.push(payload),
+      broadcastSessionReset: (payload) => broadcasted.push(payload),
+      resetLaneState: () => {
+        laneResetCalls += 1;
+        return 2;
+      },
+      resetSharedSessionState: () => {
+        sharedResetCalls += 1;
+        return 99;
+      },
+      logger: { info: () => {}, warn: () => {} },
+    });
+
+    assert.equal(clearedHistory.handled, true);
+    assert.equal(sharedResetCalls, 0);
+    assert.equal(laneResetCalls, 1);
+    assert.deepEqual(broadcasted, [
+      {
+        type: "session_reset",
+        source: "clear_history",
+        sourceChatSessionId: "planner",
+        scope: "lane",
+        laneGeneration: 2,
+      },
     ]);
     assert.deepEqual(sent[0], {
       type: "result",

@@ -1,5 +1,3 @@
-export type TaskStartHistoryEntry = { role: string; text: string; ts: number; kind?: string };
-
 export type TaskStartMetricName = "PROMPT_INJECTED" | "INJECTION_SKIPPED";
 
 export type TaskStartMetricEvent = { ts?: number; taskId?: string; reason?: string };
@@ -12,7 +10,6 @@ export function broadcastTaskStart<TTask extends TaskStartTaskLike>(options: {
   task: TTask;
   ts: number;
   markPromptInjected: (taskId: string, now: number) => boolean;
-  recordHistory: (entry: TaskStartHistoryEntry) => void;
   recordMetric: (name: TaskStartMetricName, event?: TaskStartMetricEvent) => void;
   broadcast: TaskStartBroadcaster;
 }): void {
@@ -42,7 +39,6 @@ export function broadcastTaskStart<TTask extends TaskStartTaskLike>(options: {
     data: options.task,
     ts: options.ts,
   });
-  options.recordHistory({ role: "user", text: content, ts: options.ts, kind: "task" });
   options.broadcast({
     type: "task:event",
     event: "message",

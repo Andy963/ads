@@ -101,13 +101,7 @@ describe("web sync events", () => {
 
   it("persists project task events even when no WebSocket client is online", () => {
     const store = new SyncEventStore({ stateDbPath });
-    const histories: Array<{ key: string; text: string }> = [];
     const hub = createWebSocketHub({
-      workerHistoryStore: {
-        add: (key, entry) => {
-          histories.push({ key, text: entry.text });
-        },
-      },
       syncEventStore: store,
     });
     const sessionId = "project-session";
@@ -117,8 +111,6 @@ describe("web sync events", () => {
       event: "task:updated",
       data: { id: "task-1", status: "running" },
     });
-    hub.recordToSessionHistories(sessionId, { role: "ai", text: "offline task result", ts: 10 });
-
     const result = store.readAfter({
       namespace: WEB_WORKER_NAMESPACE,
       laneKey: resolveSharedWorkerSyncLaneKey(sessionId),
@@ -127,16 +119,38 @@ describe("web sync events", () => {
     assert.equal(result.events.length, 1);
     assert.equal(result.events[0]?.type, "task:event");
     assert.equal(result.events[0]?.payload.event, "task:updated");
-    assert.deepEqual(histories, [
-      { key: resolveSharedWorkerSyncLaneKey(sessionId), text: "offline task result" },
-    ]);
+  });
+
+  it("rejects worker task sync requests from the planner lane", async () => {
+    const workspaceRoot = path.join(tmpDir, "planner-task-sync-workspace");
+    fs.mkdirSync(workspaceRoot);
+    const res = createRes();
+    const handled = await handleSyncRoutes(
+      {
+        req: { method: "GET" } as any,
+        res: res as any,
+        url: new URL("http://localhost/api/sync/events?sessionId=default&chatSessionId=planner&channel=tasks"),
+        pathname: "/api/sync/events",
+        auth: { userId: "u-1", username: "admin" },
+      },
+      {
+        syncEventStore: new SyncEventStore({ stateDbPath }),
+        defaultWorkspaceRoot: workspaceRoot,
+        resolveWorkspaceRoot: () => workspaceRoot,
+        workerHistoryStore: { get: () => [] },
+        plannerHistoryStore: { get: () => [] },
+      },
+    );
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 403);
+    assert.match(res.body, /only available to worker lanes/);
   });
 
   it("closes affected clients without broadcasting when the sync log append fails", () => {
     const sent: string[] = [];
     const closed: Array<{ code: number; reason: string }> = [];
     const hub = createWebSocketHub({
-      workerHistoryStore: { add: () => {} },
       syncEventStore: { append: () => null } as unknown as SyncEventStore,
     });
     const ws = {
@@ -188,7 +202,7 @@ describe("web sync events", () => {
     assert.deepEqual(result.events.map((event) => event.payload.delta), ["B", "C"]);
   });
 
-  it("includes durable offline task output in a truncated worker snapshot", async () => {
+  it("keeps the task sync channel separate from chat snapshots", async () => {
     const workspaceRoot = path.join(tmpDir, "truncated-workspace");
     fs.mkdirSync(workspaceRoot);
     const sessionId = deriveProjectSessionId(workspaceRoot);
@@ -202,7 +216,7 @@ describe("web sync events", () => {
       {
         req: { method: "GET" } as any,
         res: res as any,
-        url: new URL("http://localhost/api/sync/events?sessionId=default&chatSessionId=main&afterSeq=0"),
+        url: new URL("http://localhost/api/sync/events?sessionId=default&chatSessionId=main&channel=tasks&afterSeq=0"),
         pathname: "/api/sync/events",
         auth: { userId: "u-1", username: "admin" },
       },
@@ -210,11 +224,7 @@ describe("web sync events", () => {
         syncEventStore: store,
         defaultWorkspaceRoot: workspaceRoot,
         resolveWorkspaceRoot: () => workspaceRoot,
-        workerHistoryStore: {
-          get: (key) => key === sharedLaneKey
-            ? [{ role: "ai", text: "offline task result", ts: 20 }]
-            : [],
-        },
+        workerHistoryStore: { get: () => [] },
         plannerHistoryStore: { get: () => [] },
       },
     );
@@ -223,9 +233,10 @@ describe("web sync events", () => {
     const payload = JSON.parse(res.body) as {
       truncated: boolean;
       snapshot?: { items?: Array<{ role?: string; text?: string }> };
+      events?: Array<{ type?: string; payload?: { type?: string; event?: string } }>;
     };
     assert.equal(payload.truncated, true);
-    assert.deepEqual(payload.snapshot?.items, [{ role: "ai", text: "offline task result", ts: 20 }]);
+    assert.equal(payload.snapshot, null);
   });
 
   it("keeps a burst of ephemeral decoration from evicting conversation state", () => {

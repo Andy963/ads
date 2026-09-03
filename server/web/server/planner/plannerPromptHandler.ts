@@ -62,6 +62,7 @@ type PlannerPromptHandlerArgs = {
   scheduler?: SchedulerRuntime;
   scheduleSource?: string;
   draftCommand: boolean;
+  isActive?: () => boolean;
 };
 
 function buildDefaultRequestId(requestId: string, clientMessageId: string | null): string | null {
@@ -93,9 +94,14 @@ function createPlannerDraftPassProcessor(args: {
   ensureTaskContext?: (workspaceRoot: string) => TaskQueueContext;
   promoteQueuedTasksToPending?: (ctx: TaskQueueContext) => void;
   broadcastToSession?: (sessionId: string, payload: unknown) => void;
+  isActive?: () => boolean;
 }) {
+  const isActive = (): boolean => (args.isActive ? args.isActive() : true);
   return async (pass: PlannerDraftPassArgs): Promise<PlannerDraftPassResult> => {
     const outputText = String(pass.outputText ?? "");
+    if (!isActive()) {
+      return { outputForChat: outputText };
+    }
     const blocks = extractTaskBundleJsonBlocks(outputText);
     const stripCandidates = new Set<string>();
     const summaryTasks: Array<{ title: string; prompt: string }> = [];
@@ -116,6 +122,9 @@ function createPlannerDraftPassProcessor(args: {
     }
 
     for (const block of invalidDraftBlockCount ? [] : blocks) {
+      if (!isActive()) {
+        return { outputForChat: outputText };
+      }
       const parsedBundle = parseTaskBundle(block);
       if (!parsedBundle.ok) {
         const error = `Task bundle rejected: ${parsedBundle.error}`;
@@ -163,6 +172,9 @@ function createPlannerDraftPassProcessor(args: {
         const requestId = String(normalized.requestId ?? "").trim();
 
         if (!originalRequestId && requestId) {
+          if (!isActive()) {
+            return { outputForChat: outputText };
+          }
           const existing = getTaskBundleDraftByRequestId({
             authUserId: args.authUserId,
             workspaceRoot: args.workspaceRootForDraft,
@@ -180,6 +192,9 @@ function createPlannerDraftPassProcessor(args: {
           }
         }
 
+        if (!isActive()) {
+          return { outputForChat: outputText };
+        }
         const draft = upsertTaskBundleDraft({
           authUserId: args.authUserId,
           workspaceRoot: args.workspaceRootForDraft,
@@ -215,6 +230,9 @@ function createPlannerDraftPassProcessor(args: {
             let taskTitles: string[] = [];
 
             await taskCtx.getLock().runExclusive(async () => {
+              if (!isActive()) {
+                return;
+              }
               ({ createdTaskIds, taskTitles } = materializeTaskBundleTasks({
                 draftId: draft.id,
                 bundleDefaults: normalized,
@@ -228,7 +246,9 @@ function createPlannerDraftPassProcessor(args: {
                 buildAttachmentUrl: (attachmentId) => buildWorkspaceAttachmentRawUrl(args.workspaceRootForDraft, attachmentId),
                 createTaskErrorPrefix: "Auto-approve: create task failed",
                 onTaskMaterialized: ({ task }) => {
+                  if (!isActive()) return;
                   broadcast(taskCtx.sessionId, { type: "task:event", event: "task:updated", data: task, ts: now });
+                  if (!isActive()) return;
                   try {
                     upsertTaskNotificationBinding({
                       authUserId: args.authUserId,
@@ -244,12 +264,18 @@ function createPlannerDraftPassProcessor(args: {
                 },
               }));
 
+              if (!isActive()) {
+                return;
+              }
               approveTaskBundleDraft({ authUserId: args.authUserId, draftId: draft.id, approvedTaskIds: createdTaskIds, now });
 
               startQueueInAllMode(taskCtx);
               promote(taskCtx);
             });
 
+            if (!isActive()) {
+              return { outputForChat: outputText };
+            }
             args.sendToChat({
               type: "task_bundle_auto_approved",
               draftId: draft.id,
@@ -258,6 +284,9 @@ function createPlannerDraftPassProcessor(args: {
             });
             args.logger.info(`[PlannerDraft] Auto-approved draft=${draft.id} tasks=${createdTaskIds.length}`);
           } catch (error) {
+            if (!isActive()) {
+              return { outputForChat: outputText };
+            }
             const message = error instanceof Error ? error.message : String(error);
             args.logger.warn(`[PlannerDraft] Auto-approve failed draft=${draft.id}: ${message}`);
             try {
@@ -268,6 +297,9 @@ function createPlannerDraftPassProcessor(args: {
             args.sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
           }
         } else {
+          if (!isActive()) {
+            return { outputForChat: outputText };
+          }
           args.sendToChat({ type: "task_bundle_draft", action: "upsert", draft });
         }
 
@@ -278,6 +310,9 @@ function createPlannerDraftPassProcessor(args: {
           summarySpecRef = summarySpecRef ?? (String(normalized.specRef ?? "").trim() || null);
         }
       } catch (error) {
+        if (!isActive()) {
+          return { outputForChat: outputText };
+        }
         const message = error instanceof Error ? error.message : String(error);
         args.logger.warn(`[PlannerDraft] Failed to persist bundle: ${message}`);
       }
@@ -320,6 +355,10 @@ export async function handlePlannerPromptOutput(args: PlannerPromptHandlerArgs):
   threadId: string | null;
   threadReset: boolean;
 }> {
+  const isActive = (): boolean => (args.isActive ? args.isActive() : true);
+  if (!isActive()) {
+    return { outputForChat: args.outputToSend, threadId: null, threadReset: false };
+  }
   let workspaceRootForDraft = args.workspaceRoot;
   try {
     workspaceRootForDraft = fs.realpathSync(workspaceRootForDraft);
@@ -340,6 +379,7 @@ export async function handlePlannerPromptOutput(args: PlannerPromptHandlerArgs):
     ensureTaskContext: args.ensureTaskContext,
     promoteQueuedTasksToPending: args.promoteQueuedTasksToPending,
     broadcastToSession: args.broadcastToSession,
+    isActive,
   });
 
   const firstPass = await processPlannerDraftOutput({
@@ -348,6 +388,9 @@ export async function handlePlannerPromptOutput(args: PlannerPromptHandlerArgs):
     disableAutoApprove: args.draftCommand,
     draftCommand: args.draftCommand,
   });
+  if (!isActive()) {
+    return { outputForChat: args.outputToSend, threadId: null, threadReset: false };
+  }
   let outputForChat = firstPass.outputForChat;
 
   const threadId = args.orchestrator.getThreadId();
@@ -361,7 +404,12 @@ export async function handlePlannerPromptOutput(args: PlannerPromptHandlerArgs):
     scheduler: args.scheduler,
     logger: args.logger,
     source: args.scheduleSource ?? "planner",
+    isActive,
   });
+
+  if (!isActive()) {
+    return { outputForChat: args.outputToSend, threadId: null, threadReset: false };
+  }
 
   return { outputForChat, threadId, threadReset };
 }

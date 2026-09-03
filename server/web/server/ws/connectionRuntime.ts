@@ -7,6 +7,8 @@ import { formatCloseReason } from "./utils.js";
 export function broadcastJsonToHistoryKey(args: {
   clientMetaByWs: Map<WebSocket, WsClientMeta>;
   historyKey: string;
+  logicalHistoryKey?: string;
+  laneGeneration?: number;
   payload: unknown;
   sendJson: (ws: WebSocket, payload: unknown) => void;
   excludeWs?: WebSocket;
@@ -16,6 +18,16 @@ export function broadcastJsonToHistoryKey(args: {
       continue;
     }
     if (meta.historyKey !== args.historyKey) {
+      continue;
+    }
+    if (args.logicalHistoryKey && meta.logicalHistoryKey && meta.logicalHistoryKey !== args.logicalHistoryKey) {
+      continue;
+    }
+    if (
+      typeof args.laneGeneration === "number" &&
+      typeof meta.laneGeneration === "number" &&
+      meta.laneGeneration !== args.laneGeneration
+    ) {
       continue;
     }
     args.sendJson(candidate, args.payload);
@@ -38,6 +50,42 @@ export function closeConnectionsForHistoryKey(args: {
       candidate.close(code, reason);
     } catch {
       // Best-effort: reconnect recovery only needs at least one close attempt.
+    }
+  }
+}
+
+export function closeConnectionsForLogicalLane(args: {
+  clientMetaByWs: Map<WebSocket, WsClientMeta>;
+  logicalHistoryKey: string;
+  authUserId?: string;
+  sessionId?: string;
+  chatSessionId?: string;
+  code?: number;
+  reason?: string;
+}): void {
+  const logicalHistoryKey = String(args.logicalHistoryKey ?? "").trim();
+  if (!logicalHistoryKey) {
+    return;
+  }
+  const code = args.code ?? 1012;
+  const reason = args.reason ?? "session reset";
+  for (const [candidate, meta] of args.clientMetaByWs.entries()) {
+    if ((meta.logicalHistoryKey ?? meta.historyKey) !== logicalHistoryKey) {
+      continue;
+    }
+    if (args.authUserId && meta.authUserId !== args.authUserId) {
+      continue;
+    }
+    if (args.sessionId && meta.sessionId !== args.sessionId) {
+      continue;
+    }
+    if (args.chatSessionId && meta.chatSessionId !== args.chatSessionId) {
+      continue;
+    }
+    try {
+      candidate.close(code, reason);
+    } catch {
+      // Best-effort: reconnect recovery only needs a close attempt.
     }
   }
 }

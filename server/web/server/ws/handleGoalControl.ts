@@ -29,10 +29,15 @@ export async function handleGoalControlMessage(args: {
   sessionManager: SessionManager;
   sendJson: (payload: unknown) => void;
   logger: Pick<WsLogger, "warn" | "info">;
+  isLaneCurrent?: () => boolean;
 }): Promise<boolean> {
+  const isLaneCurrent = (): boolean => args.isLaneCurrent ? args.isLaneCurrent() : true;
   const action = GOAL_MESSAGE_TYPES[args.parsed.type];
   if (!action) {
     return false;
+  }
+  if (!isLaneCurrent()) {
+    return true;
   }
 
   const taskId = extractTaskId(args.parsed.payload);
@@ -91,8 +96,14 @@ export async function handleGoalControlMessage(args: {
       }
       await goalAdapter.setGoal({ status: action === "pause" ? "paused" : "active" });
     }
+    if (!isLaneCurrent()) {
+      return true;
+    }
     args.sendJson({ type: "result", ok: true, kind: args.parsed.type, taskId });
   } catch (err) {
+    if (!isLaneCurrent()) {
+      return true;
+    }
     const message = err instanceof Error ? err.message : String(err);
     args.logger.warn(`[goal] ${action} failed taskId=${taskId} err=${message}`);
     args.sendJson({ type: "error", message: `goal ${action} failed: ${message}` });
