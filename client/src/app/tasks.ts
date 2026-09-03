@@ -471,6 +471,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const text = String(content ?? "");
     const images = pendingImages.value.slice();
     pendingImages.value = [];
+    if (text.trim().toLowerCase() === "/clear") {
+      clearActiveChat();
+      return;
+    }
     enqueueMainPrompt(text, images);
   };
 
@@ -480,6 +484,10 @@ export function createTaskActions(ctx: AppContext & ChatActions, deps: TaskDeps)
     const planner = activePlannerRuntime.value;
     const images = planner.pendingImages.value.slice();
     planner.pendingImages.value = [];
+    if (text.trim().toLowerCase() === "/clear") {
+      clearPlannerChat();
+      return;
+    }
     enqueuePrompt(text, images, planner);
   };
 

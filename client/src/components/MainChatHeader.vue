@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChatDotRound, Refresh } from "@element-plus/icons-vue";
+import { ChatDotRound, Delete, Refresh } from "@element-plus/icons-vue";
 
 type HeaderAction = { title: string; ariaLabel?: string; testId?: string };
 type HeaderResumeAction = { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
@@ -8,12 +8,14 @@ const props = defineProps<{
   title: string;
   busy: boolean;
   headerAction?: HeaderAction;
+  headerClearAction?: HeaderAction;
   headerResumeAction?: HeaderResumeAction;
   threadWarning?: string | null;
 }>();
 
 const emit = defineEmits<{
   (e: "newSession"): void;
+  (e: "clear"): void;
   (e: "resumeThread"): void;
 }>();
 </script>
@@ -53,6 +55,20 @@ const emit = defineEmits<{
       >
         <el-icon :size="16" aria-hidden="true">
           <ChatDotRound />
+        </el-icon>
+      </button>
+      <button
+        v-if="props.headerClearAction"
+        class="paneHeaderIconBtn"
+        type="button"
+        :title="props.headerClearAction.title || '清空会话'"
+        :aria-label="props.headerClearAction.ariaLabel || props.headerClearAction.title || '清空会话'"
+        :disabled="props.busy"
+        :data-testid="props.headerClearAction.testId || 'main-chat-header-clear'"
+        @click.stop="emit('clear')"
+      >
+        <el-icon :size="15" aria-hidden="true">
+          <Delete />
         </el-icon>
       </button>
     </div>

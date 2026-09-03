@@ -123,6 +123,25 @@ export function handleBuiltinCommand(args: {
     };
   }
 
+  if (args.request.slash?.command === "clear") {
+    args.historyStore.clear(args.historyKey);
+    const output = "已清空当前会话历史";
+    args.sendToCommandScope({ type: "result", ok: true, output, kind: "clear_history" });
+    if (!isCurrent()) {
+      return {
+        handled: true,
+        currentCwd: args.currentCwd,
+        orchestrator: args.orchestrator,
+      };
+    }
+    args.sessionLogger?.logOutput(output);
+    return {
+      handled: true,
+      currentCwd: args.currentCwd,
+      orchestrator: args.orchestrator,
+    };
+  }
+
   if (args.request.slash?.command !== "cd") {
     return {
       handled: false,

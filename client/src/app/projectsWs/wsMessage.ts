@@ -1201,6 +1201,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
           continue;
         }
+        if (kind === "session_divider" || (role === "status" && kind === "session_divider") || (role === "system" && kind === "divider")) {
+          restoredHistoryStatus = {
+            kind: "info",
+            message: "New session active: clean context (previous history is not included).",
+          };
+          next.push({
+            id: `h-div-${idx}`,
+            role: "system",
+            kind: "divider",
+            content: historyText || "Previous messages above are retained for review only and are NOT injected into model prompt context.",
+            ts: ts ?? undefined,
+          });
+          continue;
+        }
         if (role === "status") {
           restoredHistoryStatus = replayedLaneStatus(kind, historyText);
           continue;

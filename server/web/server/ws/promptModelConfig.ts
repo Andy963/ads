@@ -168,8 +168,10 @@ function collectUnansweredUserEntries(entries: HistoryInjectionEntry[]): Set<His
 }
 
 export function buildHistoryInjectionDetails(entries: HistoryInjectionEntry[]): HistoryInjectionDetails | null {
-  const unanswered = collectUnansweredUserEntries(entries);
-  const relevant = entries
+  const lastDividerIndex = entries.map((e) => e.kind).lastIndexOf("session_divider");
+  const effectiveEntries = lastDividerIndex >= 0 ? entries.slice(lastDividerIndex + 1) : entries;
+  const unanswered = collectUnansweredUserEntries(effectiveEntries);
+  const relevant = effectiveEntries
     .map((entry) => ({ entry, label: labelForHistoryInjectionEntry(entry) }))
     .filter((item): item is { entry: HistoryInjectionEntry; label: string } => Boolean(item.label));
   if (relevant.length === 0) {

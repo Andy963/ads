@@ -50,8 +50,10 @@ export function buildHistoryStoreResumeTranscript(
   entries: readonly HistoryEntry[],
   maxChars = TASK_RESUME_TRANSCRIPT_MAX_CHARS,
 ): string {
+  const lastDividerIndex = entries.map((e) => e.kind).lastIndexOf("session_divider");
+  const effectiveEntries = lastDividerIndex >= 0 ? entries.slice(lastDividerIndex + 1) : entries;
   const rawTranscript = buildResumeTranscriptLines(
-    entries
+    effectiveEntries
       .filter((entry) => entry.role === "user" || entry.role === "ai")
       .map((entry) => ({
         speaker: entry.role === "user" ? "User" : "Assistant",

@@ -338,7 +338,7 @@ function caretPath(open: boolean): string {
 
 function shouldShowMsgActions(m: RenderMessage): boolean {
   if (m.streaming && m.content.length === 0) return false;
-  if (m.kind === "patch" || m.kind === "thought") return false;
+  if (m.kind === "patch" || m.kind === "thought" || m.kind === "divider") return false;
   return true;
 }
 
@@ -507,6 +507,14 @@ function closeFilePreview(): void {
         </button>
         <div v-if="isThoughtExpanded(m.id)" class="thoughtCardBody">
           <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+        </div>
+      </div>
+      <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
+        <div class="sessionBoundaryLine">
+          <span class="sessionBoundaryTag">⚡ New Session Initialized</span>
+        </div>
+        <div class="sessionBoundaryNotice">
+          {{ m.content || "Previous messages above are retained for review only and are NOT injected into model prompt context." }}
         </div>
       </div>
       <div
@@ -1263,5 +1271,63 @@ function closeFilePreview(): void {
   to {
     width: 1.35em;
   }
+}
+
+.msg[data-kind="divider"] {
+  width: 100%;
+  margin: 18px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.sessionBoundaryDivider {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.sessionBoundaryLine {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sessionBoundaryLine::before,
+.sessionBoundaryLine::after {
+  content: "";
+  flex: 1;
+  border-bottom: 1px dashed var(--border, #cbd5e1);
+}
+
+.sessionBoundaryTag {
+  padding: 3px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 9999px;
+  margin: 0 12px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sessionBoundaryNotice {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted, #64748b);
+  text-align: center;
+  max-width: 90%;
+  word-break: break-word;
 }
 </style>
