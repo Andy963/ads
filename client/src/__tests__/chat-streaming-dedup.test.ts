@@ -79,6 +79,16 @@ describe("chat streaming duplicate protection", () => {
     expect(messages.value.find((message) => message.id === "live-step")?.content).toBe("[tool] Inspecting workspace\n");
   });
 
+  it("shows a provider reasoning summary as a live step", () => {
+    const { messages, runtime, streaming } = createHarness();
+
+    streaming.upsertStepLiveDelta("[analysis] Reasoning summary: Comparing adapters\n", runtime);
+
+    expect(messages.value.find((message) => message.id === "live-step")?.content).toBe(
+      "[analysis] Reasoning summary: Comparing adapters\n",
+    );
+  });
+
   it("promotes only the latest live snapshot when the turn completes", () => {
     const { messages, runtime, streaming } = createHarness([
       { id: "u-1", role: "user", kind: "text", content: "run the task" },

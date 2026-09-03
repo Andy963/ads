@@ -68,8 +68,12 @@ export function createStreamingActions(params: {
     const trimmed = normalized.trim();
     if (!trimmed) return true;
     const firstLine = trimmed.split("\n")[0]!.trim().toLowerCase();
-    if (firstLine.startsWith("[boot]") || firstLine.startsWith("[analysis]")) {
+    if (firstLine.startsWith("[boot]")) {
       return true;
+    }
+    if (firstLine.startsWith("[analysis]")) {
+      const analysisText = firstLine.slice("[analysis]".length).trim();
+      return !analysisText || analysisText === "开始处理请求" || /^reasoning$/i.test(analysisText);
     }
     return firstLine === "active" || firstLine === "thinking…" || firstLine === "thinking..." || firstLine === "working…";
   };

@@ -348,4 +348,40 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       `);
     },
   },
+  {
+    version: 12,
+    description: "Add Ultra reasoning effort to existing Codex model configs",
+    up: (db) => {
+      const rows = db
+        .prepare("SELECT id, config_json FROM model_configs WHERE config_json IS NOT NULL")
+        .all() as Array<{ id?: unknown; config_json?: unknown }>;
+      const update = db.prepare("UPDATE model_configs SET config_json = ?, updated_at = ? WHERE id = ?");
+      const now = Date.now();
+
+      for (const row of rows) {
+        if (typeof row.id !== "string" || typeof row.config_json !== "string") continue;
+        let config: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(row.config_json);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+          config = parsed as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+
+        const allowedAgents = Array.isArray(config.allowedAgents)
+          ? config.allowedAgents.map((agent) => String(agent).trim().toLowerCase())
+          : [];
+        if (!allowedAgents.includes("codex")) continue;
+
+        if (!Array.isArray(config.reasoningEfforts)) continue;
+        const efforts = config.reasoningEfforts.map((effort) => String(effort).trim().toLowerCase()).filter(Boolean);
+        if (efforts.length === 0) continue;
+        if (efforts.includes("ultra")) continue;
+
+        config.reasoningEfforts = [...efforts, "ultra"];
+        update.run(JSON.stringify(config), now, row.id);
+      }
+    },
+  },
 ];

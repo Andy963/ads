@@ -133,8 +133,10 @@ function translateItem(appItem: unknown): ThreadItem | null {
         text: typeof obj.text === "string" ? obj.text : "",
       } as ThreadItem;
     case "reasoning": {
+      const summary = Array.isArray(obj.summary) ? obj.summary : [];
       const content = Array.isArray(obj.content) ? obj.content : [];
-      const text = content.filter((part): part is string => typeof part === "string").join("\n");
+      const source = summary.length > 0 ? summary : content;
+      const text = source.filter((part): part is string => typeof part === "string").join("\n");
       return { type: "reasoning", id, text } as ThreadItem;
     }
     case "commandExecution":
@@ -177,11 +179,15 @@ function translateItem(appItem: unknown): ThreadItem | null {
         query: typeof obj.query === "string" ? obj.query : "",
       } as ThreadItem;
     case "plan":
-      // No exact equivalent — surface as agent_message so the UI gets the text.
       return {
-        type: "agent_message",
+        type: "plan",
         id,
         text: typeof obj.text === "string" ? obj.text : "",
+      } as ThreadItem;
+    case "contextCompaction":
+      return {
+        type: "context",
+        id,
       } as ThreadItem;
     default:
       return null;
@@ -611,6 +617,22 @@ export class CodexAppServerAdapter implements AgentAdapter {
       failed: false,
       failureMessage: null,
     };
+    const reasoningSummaryBuffers = new Map<string, string>();
+    const planDeltaBuffers = new Map<string, string>();
+
+    const appendDelta = (
+      buffers: Map<string, string>,
+      params: unknown,
+    ): { itemId: string; text: string } | null => {
+      if (!params || typeof params !== "object") return null;
+      const payload = params as Record<string, unknown>;
+      const itemId = typeof payload.itemId === "string" ? payload.itemId : "";
+      const delta = typeof payload.delta === "string" ? payload.delta : "";
+      if (!itemId || !delta) return null;
+      const text = `${buffers.get(itemId) ?? ""}${delta}`;
+      buffers.set(itemId, text);
+      return { itemId, text };
+    };
 
     const cleanupFns: Array<() => void> = [];
     const emit = (event: ThreadEvent) => {
@@ -694,6 +716,37 @@ export class CodexAppServerAdapter implements AgentAdapter {
         emit({
           type: "item.updated",
           item: { type: "todo_list", id: "codex-turn-plan", status: completed ? "completed" : "in_progress", items },
+        });
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("item/plan/delta", (params) => {
+        if (!belongsToThisTurn(params)) return;
+        const next = appendDelta(planDeltaBuffers, params);
+        if (!next) return;
+        emit({
+          type: "item.updated",
+          item: { type: "plan", id: next.itemId, text: next.text },
+        });
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("item/reasoning/summaryTextDelta", (params) => {
+        if (!belongsToThisTurn(params)) return;
+        const next = appendDelta(reasoningSummaryBuffers, params);
+        if (!next) return;
+        emit({
+          type: "item.updated",
+          item: { type: "reasoning", id: next.itemId, text: next.text, summary: true },
+        });
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("thread/compacted", (params) => {
+        if (!belongsToThisTurn(params)) return;
+        emit({
+          type: "item.completed",
+          item: { type: "context", id: "codex-context-compacted", text: "" },
         });
       }),
     );

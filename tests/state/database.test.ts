@@ -89,6 +89,48 @@ describe("state/database", () => {
     assert.strictEqual(info.needsMigration, false);
   });
 
+  it("adds Ultra only to existing Codex model configs during migration", () => {
+    const seedDb = getStateDatabase();
+    const rows = seedDb
+      .prepare(
+        `SELECT id, model_id, config_json
+         FROM model_configs
+         WHERE model_id IN (?, ?)`,
+      )
+      .all("gpt-5.5", "claude-opus-4.8") as Array<{
+      id: string;
+      model_id: string;
+      config_json: string;
+    }>;
+    const update = seedDb.prepare("UPDATE model_configs SET config_json = ? WHERE id = ?");
+    for (const row of rows) {
+      const config = JSON.parse(row.config_json) as { reasoningEfforts?: string[] };
+      config.reasoningEfforts = (config.reasoningEfforts ?? []).filter((effort) => effort !== "ultra");
+      update.run(JSON.stringify(config), row.id);
+    }
+    seedDb.exec("UPDATE schema_version SET version = 11 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const configs = db
+      .prepare(
+        `SELECT model_id, config_json
+         FROM model_configs
+         WHERE model_id IN (?, ?)
+         ORDER BY model_id`,
+      )
+      .all("gpt-5.5", "claude-opus-4.8") as Array<{ model_id: string; config_json: string }>;
+
+    assert.deepStrictEqual(
+      configs.map((row) => ({ modelId: row.model_id, reasoningEfforts: (JSON.parse(row.config_json) as { reasoningEfforts: string[] }).reasoningEfforts })),
+      [
+        { modelId: "claude-opus-4.8", reasoningEfforts: ["high", "xhigh", "max"] },
+        { modelId: "gpt-5.5", reasoningEfforts: ["high", "xhigh", "max", "ultra"] },
+      ],
+    );
+  });
+
   it("should upgrade legacy state databases without schema_version metadata", () => {
     const seedDb = getStateDatabase();
     seedDb.prepare(

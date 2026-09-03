@@ -1,9 +1,12 @@
 import type {
   CommandExecutionItem,
+  ContextItem,
   FileChangeItem,
   ItemCompletedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
+  PlanItem,
+  ReasoningItem,
   ToolCallItem,
   ThreadErrorEvent,
   ThreadEvent,
@@ -23,6 +26,7 @@ interface AgentMessageItem {
 export type AgentPhase =
   | "boot"
   | "analysis"
+  | "plan"
   | "context"
   | "editing"
   | "tool"
@@ -44,6 +48,7 @@ export interface AgentEvent {
   phase: AgentPhase;
   title: string;
   detail?: string;
+  detailVisible?: boolean;
   delta?: string;
   timestamp: number;
   raw: ThreadEvent;
@@ -63,11 +68,12 @@ type ItemEvent = ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent;
 const DEFAULT_DETAIL_LIMIT = 160;
 
 const NON_ACTIONABLE_ANALYSIS_TITLES = new Set(["开始处理请求"]);
-const STEP_TRACE_MARKER_REGEX = /\[(boot|analysis|context|editing|tool|connection)\]\s*/gi;
+const STEP_TRACE_MARKER_REGEX = /\[(boot|analysis|plan|context|editing|tool|connection)\]\s*/gi;
 
 export const STEP_TRACE_PHASES: ReadonlySet<string> = new Set([
   "boot",
   "analysis",
+  "plan",
   "context",
   "editing",
   "tool",
@@ -76,7 +82,7 @@ export const STEP_TRACE_PHASES: ReadonlySet<string> = new Set([
 
 export function isStepTracePhase(
   phase: unknown,
-): phase is "boot" | "analysis" | "context" | "editing" | "tool" | "connection" {
+): phase is "boot" | "analysis" | "plan" | "context" | "editing" | "tool" | "connection" {
   return typeof phase === "string" && STEP_TRACE_PHASES.has(phase);
 }
 
@@ -93,7 +99,7 @@ export function formatStepTraceLine(event: AgentEvent): string | null {
     return null;
   }
   const prefix = `[${phase}] `;
-  const detail = phase === "analysis" ? "" : String(event.detail ?? "").trim();
+  const detail = phase === "analysis" && !event.detailVisible ? "" : String(event.detail ?? "").trim();
   return detail ? `${prefix}${title}: ${detail}\n` : `${prefix}${title}\n`;
 }
 
@@ -217,6 +223,10 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
       return mapFileChange(event, item, timestamp);
     case "tool_call":
       return mapToolCall(event, item, timestamp);
+    case "plan":
+      return mapPlanItem(event, item, timestamp);
+    case "context":
+      return mapContextItem(event, item, timestamp);
     case "agent_message": {
       const msgItem = item as AgentMessageItem;
       if (event.type === "item.updated" && typeof msgItem.text === "string" && msgItem.text.trim()) {
@@ -243,15 +253,18 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
 
       return null;
     }
-    case "reasoning":
+    case "reasoning": {
+      const isSummary = (item as ReasoningItem & { summary?: unknown }).summary === true;
       return {
         phase: "analysis",
-        title: "Reasoning",
-        detail: undefined,
+        title: isSummary ? "Reasoning summary" : "Reasoning",
+        detail: isSummary ? truncate(item.text) : undefined,
+        detailVisible: isSummary,
         delta: String(item.text ?? ""),
         timestamp,
         raw: event,
       };
+    }
     case "web_search":
       return mapWebSearch(event, item, timestamp);
     case "todo_list": {
@@ -330,6 +343,28 @@ function mapWebSearch(event: ItemEvent, item: WebSearchItem, timestamp: number):
     phase: "tool",
     title,
     detail: truncate(item.query),
+    timestamp,
+    raw: event,
+  };
+}
+
+function mapPlanItem(event: ItemEvent, item: PlanItem, timestamp: number): AgentEvent {
+  const title = event.type === "item.completed" ? "Plan complete" : event.type === "item.started" ? "Plan started" : "Plan update";
+  return {
+    phase: "plan",
+    title,
+    detail: truncate(item.text),
+    timestamp,
+    raw: event,
+  };
+}
+
+function mapContextItem(event: ItemEvent, item: ContextItem, timestamp: number): AgentEvent {
+  const title = event.type === "item.completed" ? "Context ready" : event.type === "item.started" ? "Loading context" : "Context update";
+  return {
+    phase: "context",
+    title,
+    detail: truncate(item.text),
     timestamp,
     raw: event,
   };
