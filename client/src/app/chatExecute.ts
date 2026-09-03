@@ -137,16 +137,25 @@ export function createExecuteActions(params: {
       streaming: true,
     };
 
-    const existingIdx = existing.findIndex((m) => m.id === itemId);
+    // Eliminate redundant live-step announcer card if it only announced the command
+    const cleanedExisting = existing.filter((m) => {
+      if (m.id !== "live-step") return true;
+      const content = String(m.content ?? "").toLowerCase().trim();
+      return (
+        !content.startsWith("[command]") &&
+        !content.includes(normalizedCommand.toLowerCase())
+      );
+    });
+    const existingIdx = cleanedExisting.findIndex((m) => m.id === itemId);
     if (existingIdx >= 0) {
-      existing[existingIdx] = nextItem;
-      setMessages(normalizeTurnSemanticOrder(existing), state);
+      cleanedExisting[existingIdx] = nextItem;
+      setMessages(normalizeTurnSemanticOrder(cleanedExisting), state);
       return;
     }
 
-    const insertAt = findExecuteInsertIndex(existing);
+    const insertAt = findExecuteInsertIndex(cleanedExisting);
 
-    setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
+    setMessages([...cleanedExisting.slice(0, insertAt), nextItem, ...cleanedExisting.slice(insertAt)], state);
 
     if (state.executeOrder.length > maxTurnCommands) {
       const overflow = state.executeOrder.length - maxTurnCommands;

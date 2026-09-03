@@ -1143,6 +1143,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       upsertExecuteBlock,
       upsertLiveActivity,
       upsertStepLiveDelta,
+      upsertThoughtDelta: ctx.upsertThoughtDelta,
       upsertStreamingDelta,
       replaceStreamingText,
     });

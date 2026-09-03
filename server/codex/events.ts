@@ -114,6 +114,19 @@ export function hasSubstantiveStepTrace(text: unknown): boolean {
   return false;
 }
 
+export function isCommandTool(detail?: string): boolean {
+  if (!detail) return false;
+  const lower = detail.toLowerCase().trim();
+  return (
+    lower === "bash" ||
+    lower === "shell" ||
+    lower === "exec" ||
+    lower.endsWith(".bash") ||
+    lower.endsWith(".shell") ||
+    lower.endsWith(".exec")
+  );
+}
+
 const RECONNECTING_REGEX = /re-?connecting\.\.\.\s*(\d+)\/(\d+)/i;
 
 export function parseReconnectingMessage(message: string): { attempt: number; total: number } | null {

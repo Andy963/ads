@@ -35,7 +35,6 @@ import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
 import { beginWsPromptRun, isWsPromptAbort, isWsPromptSilentAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
-import { hasSubstantiveStepTrace } from "../../../codex/events.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -179,7 +178,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       cleanupAfter();
       return;
     }
-    const { unsubscribe, handleExploredEntry, getStepTraceText } = attachWorkerPromptHandler({
+    const { unsubscribe, handleExploredEntry, getThoughtText } = attachWorkerPromptHandler({
       orchestrator,
       turnCwd,
       historyKey: deps.context.historyKey,
@@ -402,13 +401,13 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
       }
-      const stepTraceText = getStepTraceText();
-      if (stepTraceText && stepTraceText.trim() && hasSubstantiveStepTrace(stepTraceText)) {
+      const thoughtText = getThoughtText();
+      if (thoughtText) {
         promptRun.ensureActive();
         deps.history.historyStore.add(deps.context.historyKey, {
           role: "assistant",
           kind: "thought",
-          text: stepTraceText.trim(),
+          text: thoughtText,
           ts: Date.now() - 1,
         });
       }

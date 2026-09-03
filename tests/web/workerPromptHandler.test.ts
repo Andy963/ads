@@ -182,6 +182,18 @@ describe("web/server/ws/workerPromptHandler", () => {
     emit(reasoningEvent("first reasoning"));
     emit(reasoningEvent("first reasoning plus follow-up"));
 
+    const thoughtDeltas = sent
+      .filter((payload) => {
+        const item = payload as { type?: unknown; source?: unknown };
+        return item.type === "delta" && item.source === "thought";
+      })
+      .map((payload) => (payload as { delta?: unknown }).delta);
+    assert.deepEqual(thoughtDeltas, [
+      "first reasoning",
+      " plus follow-up",
+    ]);
+    assert.equal(handler.getThoughtText(), "first reasoning plus follow-up");
+
     const stepDeltas = sent
       .filter((payload) => {
         const item = payload as { type?: unknown; source?: unknown };
@@ -190,8 +202,6 @@ describe("web/server/ws/workerPromptHandler", () => {
       .map((payload) => (payload as { delta?: unknown }).delta);
     assert.deepEqual(stepDeltas, [
       "[tool] Inspecting workspace: bash\n",
-      "[analysis] first reasoning",
-      "[analysis]  plus follow-up",
     ]);
     assert.equal(handler.getStepTraceText(), "[tool] Inspecting workspace: bash\n");
   });

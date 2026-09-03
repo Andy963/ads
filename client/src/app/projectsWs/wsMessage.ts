@@ -174,6 +174,7 @@ export type WsMessageHandlerArgs = {
   upsertExecuteBlock: ChatActions["upsertExecuteBlock"];
   upsertLiveActivity: ChatActions["upsertLiveActivity"];
   upsertStepLiveDelta: ChatActions["upsertStepLiveDelta"];
+  upsertThoughtDelta?: ChatActions["upsertThoughtDelta"];
   upsertStreamingDelta: ChatActions["upsertStreamingDelta"];
   replaceStreamingText: ChatActions["replaceStreamingText"];
 };
@@ -204,6 +205,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     upsertExecuteBlock,
     upsertLiveActivity,
     upsertStepLiveDelta,
+    upsertThoughtDelta,
     upsertStreamingDelta,
     replaceStreamingText,
   } = args;
@@ -1291,12 +1293,37 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
       const source = String(msg.source ?? "").trim();
-      if (source === "step") {
+      if (source === "thought" || source === "reasoning") {
+        upsertThoughtDelta?.(String(msg.delta ?? ""), rt);
+      } else if (source === "step") {
         const delta = String(msg.delta ?? "");
+        if (delta.trim().startsWith("[analysis]")) {
+          const cleanReasoning = delta.trim().slice("[analysis]".length).trim();
+          if (cleanReasoning && !shouldIgnoreStepDelta(delta)) {
+            upsertThoughtDelta?.(cleanReasoning, rt);
+            return;
+          }
+        }
         if (shouldIgnoreStepDelta(delta)) return;
         upsertStepLiveDelta(delta, rt);
       } else {
         upsertStreamingDelta(String(msg.delta ?? ""), rt);
+      }
+      return;
+    }
+
+    if (type === "thought") {
+      rt.busy.value = true;
+      rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
+      const delta = String(
+        (msg as { delta?: unknown }).delta ??
+          (msg as { content?: unknown }).content ??
+          (msg as { text?: unknown }).text ??
+          "",
+      );
+      if (delta) {
+        upsertThoughtDelta?.(delta, rt);
       }
       return;
     }

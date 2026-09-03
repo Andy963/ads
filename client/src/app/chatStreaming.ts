@@ -20,6 +20,18 @@ function trimLiveStepSnapshot(text: string, maxLines: number, maxChars = 2500): 
   return lines.slice(lines.length - maxLines).join("\n");
 }
 
+function isActionStepTrace(text: string): boolean {
+  const firstLine = text.trim().split("\n")[0]!.toLowerCase();
+  return (
+    firstLine.startsWith("[tool]") ||
+    firstLine.startsWith("[editing]") ||
+    firstLine.startsWith("[command]") ||
+    firstLine.startsWith("[boot]") ||
+    firstLine.startsWith("[context]") ||
+    firstLine.startsWith("[connection]")
+  );
+}
+
 export function createStreamingActions(params: {
   liveStepId: string;
   liveActivityId: string;
@@ -69,6 +81,10 @@ export function createStreamingActions(params: {
     if (!trimmed) return true;
     const firstLine = trimmed.split("\n")[0]!.trim().toLowerCase();
     if (firstLine.startsWith("[boot]")) {
+      return true;
+    }
+    // Command announcements are redundant with execute cards (Issue #129)
+    if (firstLine.startsWith("[command]")) {
       return true;
     }
     if (firstLine.startsWith("[analysis]")) {
@@ -137,6 +153,41 @@ export function createStreamingActions(params: {
       ts: Date.now(),
     };
     const insertAt = findAssistantInsertIndex(existing);
+    setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
+  };
+
+  const upsertThoughtDelta = (delta: string, rt?: ProjectRuntime): void => {
+    const state = runtimeOrActive(rt);
+    const chunk = String(delta ?? "");
+    if (!chunk) return;
+    dropEmptyAssistantPlaceholder(state);
+    const existing = state.messages.value.slice();
+
+    const thoughtIndex = existing.findIndex(
+      (m) => m.role === "assistant" && m.kind === "thought" && m.streaming,
+    );
+
+    if (thoughtIndex >= 0) {
+      const current = String(existing[thoughtIndex]!.content ?? "");
+      const nextChunk = stripStreamingOverlap(current, chunk);
+      if (!nextChunk) return;
+      existing[thoughtIndex] = {
+        ...existing[thoughtIndex]!,
+        content: current + nextChunk,
+      };
+      setMessages(existing.slice(), state);
+      return;
+    }
+
+    const nextItem: ChatItem = {
+      id: randomId("thought"),
+      role: "assistant",
+      kind: "thought",
+      content: chunk,
+      streaming: true,
+      ts: Date.now(),
+    };
+    const insertAt = findProcessInsertIndex(existing);
     setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
   };
 
@@ -212,20 +263,36 @@ export function createStreamingActions(params: {
     const stepMsg = existing.find((m) => m.id === liveStepId);
     const stepContent = trimLiveStepSnapshot(String(stepMsg?.content ?? "").trim(), 14).trim();
 
-    const next = existing.filter((m) => !isLiveMessageId(m.id));
-    if (stepContent && !shouldIgnoreStepDelta(stepContent)) {
-      const alreadyHas = next.some((m) => m.kind === "thought" && m.content === stepContent);
-      if (!alreadyHas) {
-        const thoughtItem: ChatItem = {
-          id: randomId("thought"),
-          role: "assistant",
-          kind: "thought",
-          content: stepContent,
-          streaming: false,
-          ts: stepMsg?.ts ?? Date.now(),
-        };
-        const insertAt = findProcessInsertIndex(next);
-        next.splice(insertAt, 0, thoughtItem);
+    let next = existing.filter((m) => !isLiveMessageId(m.id));
+
+    // Finalize any in-flight thought card
+    next = next.map((m) => {
+      if (m.kind === "thought" && m.streaming) {
+        return { ...m, streaming: false };
+      }
+      return m;
+    });
+
+    // Action step traces ([tool], [editing], [command], etc.) MUST NEVER be stored as thought.
+    // Only genuine reasoning text (e.g. from legacy producers that prefixed [analysis]) is preserved.
+    if (stepContent && !isActionStepTrace(stepContent) && !shouldIgnoreStepDelta(stepContent)) {
+      const cleanReasoning = stepContent.startsWith("[analysis]")
+        ? stepContent.slice("[analysis]".length).trim()
+        : stepContent;
+      if (cleanReasoning) {
+        const alreadyHas = next.some((m) => m.kind === "thought" && m.content.includes(cleanReasoning));
+        if (!alreadyHas) {
+          const thoughtItem: ChatItem = {
+            id: randomId("thought"),
+            role: "assistant",
+            kind: "thought",
+            content: cleanReasoning,
+            streaming: false,
+            ts: stepMsg?.ts ?? Date.now(),
+          };
+          const insertAt = findProcessInsertIndex(next);
+          next.splice(insertAt, 0, thoughtItem);
+        }
       }
     }
     if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;
@@ -236,6 +303,7 @@ export function createStreamingActions(params: {
     shouldIgnoreStepDelta,
     upsertStreamingDelta,
     replaceStreamingText,
+    upsertThoughtDelta,
     upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,

@@ -95,13 +95,27 @@ describe("chat streaming duplicate protection", () => {
       { id: "a-1", role: "assistant", kind: "text", content: "Done", streaming: true },
     ]);
 
+    streaming.upsertStepLiveDelta("[analysis] Inspecting workspace\n", runtime);
+    streaming.upsertStepLiveDelta("[analysis] Updating source file\n", runtime);
+    streaming.clearStepLive(runtime);
+
+    expect(messages.value.find((message) => message.id === "live-step")).toBeUndefined();
+    expect(messages.value.filter((message) => message.kind === "thought")).toHaveLength(1);
+    expect(messages.value.find((message) => message.kind === "thought")?.content).toBe("Updating source file");
+    expect(messages.value.some((message) => message.content.includes("Inspecting workspace"))).toBe(false);
+  });
+
+  it("does not store action traces like [editing] or [tool] as thought cards upon turn completion", () => {
+    const { messages, runtime, streaming } = createHarness([
+      { id: "u-1", role: "user", kind: "text", content: "run the task" },
+      { id: "a-1", role: "assistant", kind: "text", content: "Done", streaming: true },
+    ]);
+
     streaming.upsertStepLiveDelta("[tool] Inspecting workspace\n", runtime);
     streaming.upsertStepLiveDelta("[editing] Updating source file\n", runtime);
     streaming.clearStepLive(runtime);
 
     expect(messages.value.find((message) => message.id === "live-step")).toBeUndefined();
-    expect(messages.value.filter((message) => message.kind === "thought")).toHaveLength(1);
-    expect(messages.value.find((message) => message.kind === "thought")?.content).toBe("[editing] Updating source file");
-    expect(messages.value.some((message) => message.content.includes("Inspecting workspace"))).toBe(false);
+    expect(messages.value.filter((message) => message.kind === "thought")).toHaveLength(0);
   });
 });
