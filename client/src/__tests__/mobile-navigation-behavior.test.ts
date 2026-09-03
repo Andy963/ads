@@ -162,7 +162,7 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
@@ -171,7 +171,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="lane-panel-planner"]').isVisible()).toBe(true);
     expect(wrapper.find('[data-testid="lane-panel-worker"]').isVisible()).toBe(false);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
-    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
@@ -187,6 +187,11 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await settleUi(wrapper);
     expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBe("worker");
+    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
+    expect(wrapper.find('[data-testid="mobile-context-action-create-task"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);

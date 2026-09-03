@@ -298,7 +298,6 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
     return [{ id: "create-task", label: "新增任务" }];
   }
   return [
-    { id: "create-task", label: "新增任务" },
     {
       id: "resume",
       label: "恢复会话",
