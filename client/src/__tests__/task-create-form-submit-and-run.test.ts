@@ -56,10 +56,12 @@ describe("TaskCreateForm submit-and-run", () => {
 
     const emitted = wrapper.emitted("submit-and-run");
     expect(emitted).toBeTruthy();
-    expect(emitted?.[0]?.[0]).toEqual({
+    expect(emitted?.[0]?.[0]).toMatchObject({
       prompt: "Do something",
       priority: 0,
       maxRetries: 3,
+      category: "development",
+      executionIsolation: "required",
     });
 
     wrapper.unmount();

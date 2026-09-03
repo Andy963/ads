@@ -52,6 +52,28 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
+  it("offers the extended Codex reasoning efforts when a model has no override", () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [makeModel("gpt-5.6", "GPT-5.6", "openai")],
+        modelId: "gpt-5.6",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    expect(wrapper.find('[data-testid="chat-reasoning-effort"]').findAll("option").map((option) => option.attributes("value"))).toEqual([
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
+    wrapper.unmount();
+  });
+
   it("reads Codex reasoning efforts from the selected model config", () => {
     const model = makeModel("gpt-5.6-sol", "GPT-5.6", "openai");
     model.configJson = {

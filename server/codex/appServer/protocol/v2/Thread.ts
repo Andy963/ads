@@ -7,11 +7,22 @@
 import type { AbsolutePathBuf } from "../AbsolutePathBuf.js";
 import type { GitInfo } from "./GitInfo.js";
 import type { SessionSource } from "./SessionSource.js";
+import type { ThreadExtra } from "./ThreadExtra.js";
+import type { ThreadHistoryMode } from "./ThreadHistoryMode.js";
+import type { ThreadSection } from "./ThreadSection.js";
 import type { ThreadSource } from "./ThreadSource.js";
 import type { ThreadStatus } from "./ThreadStatus.js";
 import type { Turn } from "./Turn.js";
 
-export type Thread = { id: string,
+export type Thread = {
+/**
+ * Identifier for this thread. Codex-generated thread IDs are UUIDv7.
+ */
+id: string,
+/**
+ * Optional implementation-specific thread data.
+ */
+extra: ThreadExtra | null,
 /**
  * Session id shared by threads that belong to the same session tree.
  */
@@ -21,6 +32,10 @@ sessionId: string,
  */
 forkedFromId: string | null,
 /**
+ * The ID of the parent thread. This will only be set if this thread is a subagent.
+ */
+parentThreadId: string | null,
+/**
  * Usually the first user message in the thread, if available.
  */
 preview: string,
@@ -28,6 +43,22 @@ preview: string,
  * Whether the thread is ephemeral and should not be materialized on disk.
  */
 ephemeral: boolean,
+/**
+ * The independently persisted section selected for this thread, if any.
+ */
+section: ThreadSection | null,
+/**
+ * Unix timestamp in seconds when the thread entered its current section.
+ */
+sectionEnteredAt: number | null,
+/**
+ * Canonical project assignment owned by app-server, if any.
+ */
+projectId: string | null,
+/**
+ * Persisted thread history contract selected when this thread was created.
+ */
+historyMode: ThreadHistoryMode,
 /**
  * Model provider used for this thread (for example, 'openai').
  */
@@ -40,6 +71,10 @@ createdAt: number,
  * Unix timestamp (in seconds) when the thread was last updated.
  */
 updatedAt: number,
+/**
+ * Unix timestamp (in seconds) used for thread recency ordering.
+ */
+recencyAt: number | null,
 /**
  * Current runtime status for the thread.
  */
@@ -60,6 +95,11 @@ cliVersion: string,
  * Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
  */
 source: SessionSource,
+/**
+ * Whether the app server accepts direct turn input for this loaded thread.
+ * `None` means the capability is unavailable, such as for an unloaded stored thread.
+ */
+canAcceptDirectInput: boolean | null,
 /**
  * Optional analytics source classification for this thread.
  */

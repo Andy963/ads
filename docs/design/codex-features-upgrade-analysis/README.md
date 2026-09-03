@@ -2,7 +2,7 @@
 
 ## 1. 概述与背景 (Executive Summary & Background)
 
-随着 Codex 官方版本的持续迭代（当前运行环境已安装 `codex-cli 0.151.0`），Codex 已经从早期的单会话交互式 CLI，演进为具备目标预算控制、多代理协作（Multi-Agent v2）、Guardian 安全审查以及丰富 App-Server JSON-RPC v2 协议能力的智能编排中枢。
+随着 Codex 官方版本的持续迭代（当前运行环境已安装 `codex-cli 0.152.1`），Codex 已经从早期的单会话交互式 CLI，演进为具备目标预算控制、多代理协作（Multi-Agent v2）、Guardian 安全审查以及丰富 App-Server JSON-RPC v2 协议能力的智能编排中枢。
 
 与此同时，ADS 的 Codex 对接层（`server/codex/appServer`、`server/agents/adapters` 以及 `server/tasks`）主要基于较早期的协议结构构建，存在以下几处明显断层：
 - **协议绑定落后**：`server/codex/appServer/protocol/` 生成代码落后于 upstream 现行 schema，遗漏了大量 v2 请求、通知及数据结构。
@@ -12,6 +12,10 @@
 - **多代理层级不可见**：Codex 内部由 `spawn_agent` 派生的子代理调用链与协同过程，在 ADS 前端与任务面板中尚未得到结构化展示。
 
 本文档全面梳理 Codex 0.146.0 至 0.151.0+ 的核心演进特性，对照 ADS 现有架构进行差距分析，并提出可行的模块化升级方案与决策矩阵，供后续架构选型与迭代决策参考。
+
+### Phase 1 交付状态
+
+Phase 1 的低风险基础项已在 `codex-cli 0.152.1` 上落地：协议绑定由仓库脚本重新生成，推理档位默认包含 `max` 与 `ultra`，并将 App-Server 的计划、推理摘要及上下文压缩事件转换为统一的 live step trace。任务队列和追加聊天路径继续复用 `source: "step"` 分流，不会把阶段消息写入最终 assistant 回复。
 
 ---
 
@@ -251,4 +255,3 @@ export interface SubAgentCallNode {
 3. **阶段三（Phase 3）可视后续使用场景按需逐步推进**。
 
 待用户审阅本设计文档并明确所需特性后，即可针对选定阶段进行精准落地与测试验证。
-
