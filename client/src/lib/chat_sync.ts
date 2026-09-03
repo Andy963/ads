@@ -222,29 +222,114 @@ export function getSemanticCardRank(item: ChatItem): number {
   return 6;
 }
 
+type TurnBounds = { start: number; end: number };
+
+function getCurrentTurnBounds(messages: ChatItem[]): TurnBounds {
+  let start = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) return { start: 0, end: messages.length };
+
+  let end = messages.length;
+  for (let index = start + 1; index < messages.length; index += 1) {
+    if (messages[index]?.role === "user") {
+      end = index;
+      break;
+    }
+  }
+  return { start, end };
+}
+
+/**
+ * Return the insertion point for the current process/live card.
+ *
+ * A process card is a mutable status snapshot. It belongs after plan/thought
+ * cards and every other live card, but before execute, patch, or assistant
+ * output. Keeping this anchor explicit means live updates remain ordered even
+ * when the caller's setter does not perform semantic normalization.
+ */
+export function findProcessInsertIndex(messages: ChatItem[]): number {
+  const { start, end } = getCurrentTurnBounds(messages);
+  let insertAt = Math.min(end, start + 1);
+  for (let index = start + 1; index < end; index += 1) {
+    const item = messages[index]!;
+    if (isLiveMessageId(item.id) || item.kind === "plan" || item.kind === "thought") {
+      insertAt = index + 1;
+      continue;
+    }
+    return index;
+  }
+  return insertAt;
+}
+
+/**
+ * Return the insertion point for a command execution card in the current turn.
+ * Commands follow process/thought cards and earlier commands, while remaining
+ * before patches and the final assistant response.
+ */
+export function findExecuteInsertIndex(messages: ChatItem[]): number {
+  const { start, end } = getCurrentTurnBounds(messages);
+  let insertAt = Math.min(end, start + 1);
+  for (let index = start + 1; index < end; index += 1) {
+    const item = messages[index]!;
+    if (
+      isLiveMessageId(item.id) ||
+      item.kind === "plan" ||
+      item.kind === "thought" ||
+      item.kind === "execute"
+    ) {
+      insertAt = index + 1;
+      continue;
+    }
+    return index;
+  }
+  return insertAt;
+}
+
+/** Return the end of the current turn for a newly-created assistant stream. */
+export function findAssistantInsertIndex(messages: ChatItem[]): number {
+  return getCurrentTurnBounds(messages).end;
+}
+
 export function normalizeTurnSemanticOrder(messages: ChatItem[]): ChatItem[] {
   if (!Array.isArray(messages) || messages.length <= 1) {
     return Array.isArray(messages) ? messages : [];
   }
 
+  // A reconnect or a legacy producer can replay the same fixed live id more
+  // than once. Keep the newest snapshot so the renderer never receives
+  // duplicate Vue keys or two visible process cards.
+  const latestLiveIndex = new Map<string, number>();
+  for (let index = 0; index < messages.length; index += 1) {
+    const id = messages[index]!.id;
+    if (isLiveMessageId(id)) latestLiveIndex.set(id, index);
+  }
+  const deduplicated = latestLiveIndex.size === 0
+    ? messages
+    : messages.filter((item, index) => !isLiveMessageId(item.id) || latestLiveIndex.get(item.id) === index);
+
   const result: ChatItem[] = [];
   let turnStart = -1;
 
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i]!.role === "user") {
+  for (let i = 0; i < deduplicated.length; i++) {
+    if (deduplicated[i]!.role === "user") {
       if (turnStart >= 0) {
-        result.push(...sortSingleTurn(messages.slice(turnStart, i)));
+        result.push(...sortSingleTurn(deduplicated.slice(turnStart, i)));
       } else if (i > 0) {
-        result.push(...messages.slice(0, i));
+        result.push(...deduplicated.slice(0, i));
       }
       turnStart = i;
     }
   }
 
   if (turnStart >= 0) {
-    result.push(...sortSingleTurn(messages.slice(turnStart)));
+    result.push(...sortSingleTurn(deduplicated.slice(turnStart)));
   } else {
-    result.push(...sortSingleTurn(messages));
+    result.push(...sortSingleTurn(deduplicated));
   }
 
   return result;

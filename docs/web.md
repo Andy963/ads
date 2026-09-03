@@ -20,6 +20,7 @@ Web Console 将对话与任务流组织为三大工作区：
   - 显式使用本地 `/draft` 快照时，仍可携带匹配的 `issueRef` / `specRef` 目录并在批准时固定内容；本地快照是兼容能力，不是 GitHub-native 流程的前置条件。
   - 支持输出 `ads-schedule` 定时指令或生成 Task Bundle 任务草稿。
   - 任务带有 `development`（开发）、`review`（审核）和 `rework`（返工）分类；待执行任务按 `priority` 降序、队列顺序升序领取。
+  - 仓库变更任务使用显式 `executionIsolation: "required"` 合约：Worker 在 ADS 管理的临时目录下创建唯一、干净的任务分支后执行，任务完成、失败或取消都会移除 checkout；分支引用保留用于 PR 交接，任务 Run 保留 worktree、分支、基线/终点提交和清理状态用于审计。`default` 仅适用于明确选择共享 workspace 的非仓库任务。
   - 开发或返工任务完成并在结果中报告 GitHub PR 后，队列会幂等创建 P10 审核任务。审核结果使用 `REVIEW_STATUS: approved|rejected` 标记；拒绝且包含反馈时自动创建 P50 返工任务。
   - 任务卡片和详情会显示持久化的审核状态、PR、Reviewer 模型、审核结论、返工轮次与关联任务链。审核拒绝在 `Auto with Fuse` 模式下最多自动返工两轮，之后进入需人工处理；`Human-Gated` 模式下拒绝不会自动返工。
   - 详情面板支持 Force Approve、Edit & Rework、Skip Review 和 Abort。人工操作通过 `POST /api/tasks/:id/review-actions` 写入带操作者、原因、时间和幂等键的审计记录；审核设置通过 `GET/PATCH /api/review-settings` 管理。
@@ -58,7 +59,7 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 - 新建聊天会话时，在线 WebSocket 通过原连接内协议切换 session；连接状态保持在线，离线时自动回退到完整重连。
 - 重连或后端重启后，只要持久化历史存在就会发送历史快照；即使后端上下文暂时是 fresh，客户端也保留本地聊天记录，只有显式线程重置才会清空历史。
 - Bootstrap 等待期间提交的提示会进入持久 outbox，待历史同步完成后继续发送；若历史帧丢失，5 秒兜底会解除等待锁，避免 Composer 永久冻结。
-- 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；每轮消息中的 Plan、实时活动、Thought、Execute 与 Patch 卡片按稳定语义顺序展示，活动中的 live-step 只保留最新阶段快照，完成后该快照会作为可折叠 Thought 卡片保留在历史重放中。
+- 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；Advisor 每轮消息遵循固定卡片契约：`User -> Plan -> 当前 Process/Thought -> Execute（按命令顺序） -> Patch -> Final assistant`。该顺序由前端按当前轮重新归一化，不依赖 WebSocket 事件到达顺序，因此 command-before-process、process-before-command、重连 catch-up 与历史回放都会保持一致；活动中的 live-step 只保留最新阶段快照，完成后该快照会作为可折叠 Thought 卡片保留在历史重放中。
 - Worker 与 Advisor 的清空操作默认只作用于发起操作的 chat lane；跨 lane 清理必须显式请求 shared scope，且 session reset 广播会校验来源 lane。
 
 ### 5. 多模态与文件联动

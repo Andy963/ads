@@ -382,11 +382,14 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         status,
         capture_status,
         apply_status,
+        cleanup_status,
+        cleanup_error,
+        cleanup_at,
         error,
         created_at,
         started_at,
         completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
 
     getTaskRunStmt: scoped(`SELECT * FROM task_runs WHERE workspace_id = ? AND id = ? LIMIT 1`),
@@ -416,6 +419,9 @@ export function prepareTaskStoreStatements(db: DatabaseType, workspaceId: string
         status = ?,
         capture_status = ?,
         apply_status = ?,
+        cleanup_status = ?,
+        cleanup_error = ?,
+        cleanup_at = ?,
         error = ?,
         created_at = ?,
         started_at = ?,

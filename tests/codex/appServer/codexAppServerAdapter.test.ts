@@ -222,6 +222,49 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("bridges v2 plan, reasoning summary, and compaction notifications", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-v2-events" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "v2-events", registry });
+    const events: Array<{ phase: string; title: string; detail?: string }> = [];
+    adapter.onEvent((event) => events.push({ phase: event.phase, title: event.title, detail: event.detail }));
+
+    const sendPromise = adapter.send("exercise v2 events");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-v2-events", turn: { id: "turn-v2" } });
+    fake.notify("item/plan/delta", {
+      threadId: "thread-v2-events",
+      turnId: "turn-v2",
+      itemId: "plan-v2",
+      delta: "Inspect the workspace",
+    });
+    fake.notify("item/reasoning/summaryTextDelta", {
+      threadId: "thread-v2-events",
+      turnId: "turn-v2",
+      itemId: "reasoning-v2",
+      summaryIndex: 0,
+      delta: "Comparing the existing adapters",
+    });
+    fake.notify("thread/compacted", { threadId: "thread-v2-events", turnId: "turn-v2" });
+    fake.notify("turn/completed", { threadId: "thread-v2-events", turn: { id: "turn-v2" } });
+    await sendPromise;
+
+    assert(events.some((event) => event.phase === "plan" && event.detail === "Inspect the workspace"));
+    assert(
+      events.some(
+        (event) => event.phase === "analysis" && event.title === "Reasoning summary" && event.detail === "Comparing the existing adapters",
+      ),
+    );
+    assert(events.some((event) => event.phase === "context" && event.title === "Context ready"));
+
+    await registry.stopAll();
+  });
+
   it("reuses an existing threadId on a subsequent send", async () => {
     const fake = buildFakeServer({
       autoReplies: {

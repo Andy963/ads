@@ -527,7 +527,6 @@ export function createChatActions(ctx: AppContext) {
     randomId,
     maxExecutePreviewLines,
     maxTurnCommands,
-    isLiveMessageId,
   });
 
   const {
@@ -543,7 +542,6 @@ export function createChatActions(ctx: AppContext) {
     runtimeOrActive,
     setMessages,
     dropEmptyAssistantPlaceholder,
-    findLastLiveIndex,
     isLiveMessageId,
     randomId,
   });

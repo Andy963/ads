@@ -115,6 +115,44 @@ describe("mapThreadEventToAgentEvent", () => {
     assert.equal(completed.detail, undefined);
   });
 
+  it("maps provider plan items to visible plan traces", () => {
+    const mapped = mapThreadEventToAgentEvent(
+      {
+        type: "item.updated",
+        item: { type: "plan", id: "plan-1", text: "Inspect the workspace" },
+      } as any,
+      0,
+    );
+    assert(mapped);
+    assert.equal(mapped.phase, "plan");
+    assert.equal(formatStepTraceLine(mapped), "[plan] Plan update: Inspect the workspace\n");
+  });
+
+  it("maps context compaction items to context traces", () => {
+    const mapped = mapThreadEventToAgentEvent(
+      {
+        type: "item.completed",
+        item: { type: "context", id: "context-1", text: "" },
+      } as any,
+      0,
+    );
+    assert(mapped);
+    assert.equal(mapped.phase, "context");
+    assert.equal(formatStepTraceLine(mapped), "[context] Context ready\n");
+  });
+
+  it("keeps reasoning summaries visible while hiding generic reasoning noise", () => {
+    const mapped = mapThreadEventToAgentEvent(
+      {
+        type: "item.updated",
+        item: { type: "reasoning", id: "reasoning-1", text: "Comparing the two implementations", summary: true },
+      } as any,
+      0,
+    );
+    assert(mapped);
+    assert.equal(formatStepTraceLine(mapped), "[analysis] Reasoning summary: Comparing the two implementations\n");
+  });
+
   it("maps reconnect errors to connection phase", () => {
     const event = {
       type: "error" as const,

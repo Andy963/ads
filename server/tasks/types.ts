@@ -34,6 +34,7 @@ export type ReviewControlState = "automatic" | "human_gated" | "needs_interventi
 export type TaskRunStatus = "preparing" | "running" | "completed" | "failed" | "cancelled";
 export type TaskRunCaptureStatus = "pending" | "ok" | "failed" | "skipped";
 export type TaskRunApplyStatus = "pending" | "applied" | "blocked" | "failed" | "skipped";
+export type TaskRunCleanupStatus = "pending" | "cleaned" | "failed" | "not_required";
 
 export interface TaskContext {
   id?: number;
@@ -182,6 +183,9 @@ export interface TaskRun {
   status: TaskRunStatus;
   captureStatus: TaskRunCaptureStatus;
   applyStatus: TaskRunApplyStatus;
+  cleanupStatus: TaskRunCleanupStatus;
+  cleanupError: string | null;
+  cleanupAt: number | null;
   error: string | null;
   createdAt: number;
   startedAt: number | null;
@@ -200,6 +204,9 @@ export interface CreateTaskRunInput {
   status?: TaskRunStatus;
   captureStatus?: TaskRunCaptureStatus;
   applyStatus?: TaskRunApplyStatus;
+  cleanupStatus?: TaskRunCleanupStatus;
+  cleanupError?: string | null;
+  cleanupAt?: number | null;
   error?: string | null;
 }
 

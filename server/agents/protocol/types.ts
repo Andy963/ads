@@ -69,6 +69,20 @@ export interface ReasoningItem {
   [key: string]: unknown;
 }
 
+export interface PlanItem {
+  type: "plan";
+  id?: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+export interface ContextItem {
+  type: "context";
+  id?: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
 export interface ErrorItem {
   type: "error";
   id?: string;
@@ -84,6 +98,8 @@ export type ThreadItem =
   | TodoListItem
   | AgentMessageItem
   | ReasoningItem
+  | PlanItem
+  | ContextItem
   | ErrorItem;
 
 export type ThreadEventType =

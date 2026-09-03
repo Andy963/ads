@@ -1,4 +1,5 @@
 import type { ChatItem, ProjectRuntime } from "./controller";
+import { findExecuteInsertIndex, normalizeTurnSemanticOrder } from "../lib/chat_sync";
 
 function trimRightLine(line: string): string {
   return String(line ?? "").replace(/\s+$/, "");
@@ -32,7 +33,8 @@ export function createExecuteActions(params: {
   randomId: (prefix: string) => string;
   maxExecutePreviewLines: number;
   maxTurnCommands: number;
-  isLiveMessageId: (id: string) => boolean;
+  /** Retained for compatibility with callers that still provide this helper. */
+  isLiveMessageId?: (id: string) => boolean;
 }) {
   const {
     runtimeOrActive,
@@ -41,7 +43,6 @@ export function createExecuteActions(params: {
     dropEmptyAssistantPlaceholder,
     maxExecutePreviewLines,
     maxTurnCommands,
-    isLiveMessageId,
   } = params;
 
   const commandKeyForWsEvent = (command: string, id: string | null): string | null => {
@@ -139,33 +140,11 @@ export function createExecuteActions(params: {
     const existingIdx = existing.findIndex((m) => m.id === itemId);
     if (existingIdx >= 0) {
       existing[existingIdx] = nextItem;
-      setMessages(existing.slice(), state);
+      setMessages(normalizeTurnSemanticOrder(existing), state);
       return;
     }
 
-    let insertAt = existing.length;
-    for (let i = existing.length - 1; i >= 0; i--) {
-      const m = existing[i]!;
-      if (isLiveMessageId(m.id)) continue;
-      if (m.role === "assistant" && m.streaming) {
-        insertAt = i;
-        continue;
-      }
-      if (m.role === "user") {
-        insertAt = Math.max(insertAt, i + 1);
-        break;
-      }
-    }
-
-    let lastExecuteIdx = -1;
-    for (let i = insertAt - 1; i >= 0; i--) {
-      if (existing[i]!.role === "user") break;
-      if (existing[i]!.kind === "execute") {
-        lastExecuteIdx = i;
-        break;
-      }
-    }
-    if (lastExecuteIdx >= 0) insertAt = lastExecuteIdx + 1;
+    const insertAt = findExecuteInsertIndex(existing);
 
     setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
 

@@ -12,7 +12,7 @@ const TABLES = [
   "review_settings", "review_action_audits",
 ] as const;
 const OPTIONAL_TABLES = new Set(["review_settings", "review_action_audits"]);
-const MAX_SUPPORTED_SOURCE_SCHEMA_VERSION = 28;
+const MAX_SUPPORTED_SOURCE_SCHEMA_VERSION = 29;
 
 function quoteIdentifier(value: string): string {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) throw new Error("Invalid identifier: " + value);

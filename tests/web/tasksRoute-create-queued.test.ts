@@ -344,7 +344,7 @@ describe("web/api/tasks create", () => {
     assert.equal(createCalls, 0);
   });
 
-  it("ignores deprecated execution isolation in the create payload", async () => {
+  it("defaults repository task creation to required isolation", async () => {
     const req = createReq("POST", { prompt: "Hello", execution: { isolation: "required" } });
     const res = createRes();
     const url = new URL("http://localhost/api/tasks?workspace=/tmp/ws");
@@ -407,7 +407,7 @@ describe("web/api/tasks create", () => {
     const handled = await handleTaskRoutes(ctx, deps);
     assert.equal(handled, true);
     assert.equal(res.statusCode, 201);
-    assert.equal(createInput?.executionIsolation, "default");
+    assert.equal(createInput?.executionIsolation, "required");
   });
 
   it("returns 400 for invalid create payload", async () => {

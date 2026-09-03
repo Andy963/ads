@@ -113,4 +113,94 @@ describe("chat semantic card ordering (Issue #67)", () => {
     expect(firstExecuteIndex).toBeGreaterThan(planIndex); // execute after plan
     expect(items[planIndex]?.plan?.status).toBe("completed");
   });
+
+  it("keeps a process card above commands when the command arrives first", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const handler = createWsMessageHandler({
+      projects: ctx.projects,
+      pid: "default",
+      rt,
+      wsInstance: { sendPrompt: () => true } as any,
+      randomId: (p: string) => `${p}-mock`,
+      maxTurnCommands: 5,
+      updateProject: () => {},
+      ...chat,
+    });
+
+    chat.pushMessageBeforeLive({ id: "u-1", role: "user", kind: "text", content: "Inspect the build" }, rt);
+    handler({
+      type: "command",
+      command: { id: "cmd-1", command: "npm test", outputDelta: "$ npm test\nfirst line\n" },
+    });
+    handler({ type: "delta", source: "step", delta: "[tool] Inspecting the test output" });
+
+    const ids = rt.messages.value.map((item) => item.id);
+    expect(ids.indexOf("live-step")).toBeGreaterThan(ids.indexOf("u-1"));
+    expect(ids.indexOf("live-step")).toBeLessThan(ids.indexOf("exec:cmd-1:npm test"));
+    expect(rt.messages.value.filter((item) => item.id === "live-step")).toHaveLength(1);
+  });
+
+  it("keeps the process anchor stable when process arrives before commands and updates repeatedly", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const handler = createWsMessageHandler({
+      projects: ctx.projects,
+      pid: "default",
+      rt,
+      wsInstance: { sendPrompt: () => true } as any,
+      randomId: (p: string) => `${p}-mock`,
+      maxTurnCommands: 5,
+      updateProject: () => {},
+      ...chat,
+    });
+
+    chat.pushMessageBeforeLive({ id: "u-1", role: "user", kind: "text", content: "Run checks" }, rt);
+    handler({ type: "delta", source: "step", delta: "[tool] Inspecting" });
+    handler({ type: "command", command: { id: "cmd-1", command: "npm test", outputDelta: "first\n" } });
+    handler({ type: "delta", source: "step", delta: "[editing] Updating checks" });
+    handler({ type: "command", command: { id: "cmd-2", command: "git diff", outputDelta: "second\n" } });
+    handler({ type: "command", command: { id: "cmd-1", command: "npm test", outputDelta: "tail\n" } });
+
+    const messages = rt.messages.value;
+    const ids = messages.map((item) => item.id);
+    const liveIndex = ids.indexOf("live-step");
+    const firstExecuteIndex = messages.findIndex((item) => item.kind === "execute");
+    expect(messages.filter((item) => item.id === "live-step")).toHaveLength(1);
+    expect(messages.find((item) => item.id === "live-step")?.content).toBe("[editing] Updating checks");
+    expect(liveIndex).toBeLessThan(firstExecuteIndex);
+    expect(messages.filter((item) => item.kind === "execute").map((item) => item.command)).toEqual(["npm test", "git diff"]);
+    expect(messages.find((item) => item.command === "npm test")?.content).toContain("first");
+    expect(messages.find((item) => item.command === "npm test")?.content).toContain("tail");
+  });
+
+  it("reorders persisted history the same way as live events", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const handler = createWsMessageHandler({
+      projects: ctx.projects,
+      pid: "default",
+      rt,
+      wsInstance: { sendPrompt: () => true } as any,
+      randomId: (p: string) => `${p}-mock`,
+      maxTurnCommands: 5,
+      updateProject: () => {},
+      ...chat,
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "user", kind: "text", text: "Replay this turn" },
+        { role: "status", kind: "execute", text: "$ npm test\nall passed" },
+        { role: "thought", kind: "thought", text: "[tool] Inspecting" },
+        { role: "ai", kind: "text", text: "Done" },
+      ],
+    });
+
+    expect(rt.messages.value.map((item) => item.kind)).toEqual(["text", "thought", "execute", "text"]);
+  });
 });

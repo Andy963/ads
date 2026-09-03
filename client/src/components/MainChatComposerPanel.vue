@@ -17,7 +17,8 @@ type PendingImagePreview = {
   href: string;
 };
 
-const DEFAULT_REASONING_EFFORTS = ["medium", "high", "xhigh"] as const;
+const DEFAULT_CODEX_REASONING_EFFORTS = ["medium", "high", "xhigh", "max", "ultra"] as const;
+const DEFAULT_CLAUDE_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 const REASONING_EFFORT_LABELS: Record<string, string> = {
   off: "Off",
   none: "None",
@@ -220,16 +221,19 @@ const selectedModel = computed(() => {
 });
 
 const reasoningEffortOptions = computed(() => {
+  const fallback = selectedAgentId.value === "codex"
+    ? DEFAULT_CODEX_REASONING_EFFORTS
+    : DEFAULT_CLAUDE_REASONING_EFFORTS;
   const config = selectedModel.value?.configJson;
   const raw = config && typeof config === "object" && !Array.isArray(config)
     ? (config as Record<string, unknown>).reasoningEfforts
     : null;
-  if (!Array.isArray(raw)) return [...DEFAULT_REASONING_EFFORTS];
+  if (!Array.isArray(raw)) return [...fallback];
 
   const values = raw
     .map((entry) => String(entry ?? "").trim().toLowerCase())
     .filter((entry) => Boolean(REASONING_EFFORT_LABELS[entry]));
-  return values.length > 0 ? [...new Set(values)] : [...DEFAULT_REASONING_EFFORTS];
+  return values.length > 0 ? [...new Set(values)] : [...fallback];
 });
 
 const reasoningEffortValue = computed(() => {

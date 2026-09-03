@@ -70,6 +70,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     ingestCommand,
     upsertExecuteBlock,
     ingestCommandActivity,
+    setMessages,
   } = ctx;
 
   const restoreReasoningEffort = (rt: ProjectRuntime): void => {
@@ -558,7 +559,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
               () => {
                 clearStepLive(rt);
                 finalizeCommandBlock(rt);
-                rt.messages.value = [];
+                setMessages([], rt);
                 rt.recentCommands.value = [];
                 rt.seenCommandIds.clear();
                 rt.executePreviewByKey.clear();
@@ -717,7 +718,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       for (let i = items.length - 1; i >= 0; i--) {
         const item = items[i]!;
         if (item.role === "system" && item.kind === "text" && isReconnectNotice(String(item.content ?? ""))) {
-          rt.messages.value = [...items.slice(0, i), ...items.slice(i + 1)];
+          setMessages([...items.slice(0, i), ...items.slice(i + 1)], rt);
           return;
         }
       }

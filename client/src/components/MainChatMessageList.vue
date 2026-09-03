@@ -4,8 +4,9 @@ import { computed, ref, watch } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
 import type { ChatMessage, RenderMessage } from "./mainChat/types";
-import type { ChatPlan, ChatPlanItemStatus } from "../app/controllerTypes";
+import type { ChatItem, ChatPlan, ChatPlanItemStatus } from "../app/controllerTypes";
 import { PATCH_DIFF_FALLBACK_KEY, splitUnifiedDiffByPath } from "../lib/patchDiff";
+import { normalizeTurnSemanticOrder } from "../lib/chat_sync";
 import type { MarkdownFilePreviewLink } from "../lib/markdown";
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
@@ -225,16 +226,20 @@ watch(
 );
 
 const renderMessages = computed<RenderMessage[]>(() => {
+  // Keep the DOM contract defensive: history replay and test/integration
+  // callers may provide an arrival-ordered snapshot instead of going through
+  // the chat action setter. Rendering must still be deterministic.
+  const ordered = normalizeTurnSemanticOrder(props.messages as ChatItem[]) as ChatMessage[];
   let latestExecuteId: string | null = null;
-  for (let i = props.messages.length - 1; i >= 0; i--) {
-    const m = props.messages[i]!;
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    const m = ordered[i]!;
     if (m.kind === "execute") {
       latestExecuteId = m.id;
       break;
     }
   }
 
-  return props.messages.filter((m) => m.kind !== "command" && (m.kind !== "execute" || m.id === latestExecuteId));
+  return ordered.filter((m) => m.kind !== "command" && (m.kind !== "execute" || m.id === latestExecuteId));
 });
 
 function getCommands(content: string): string[] {

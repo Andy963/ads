@@ -11,6 +11,41 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 }
 
 describe("chat execute stacking and command collapse", () => {
+  it("renders the live process card before an arrival-ordered execute block", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          { id: "u-1", role: "user", kind: "text", content: "run checks" },
+          { id: "exec:1", role: "system", kind: "execute", content: "output", command: "npm test", streaming: true },
+          { id: "live-step", role: "assistant", kind: "text", content: "[tool] Inspecting", streaming: true },
+          { id: "a-1", role: "assistant", kind: "text", content: "done" },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    const ids = wrapper.findAll(".msg").map((item) => item.attributes("data-id"));
+    expect(ids).toEqual(["u-1", "live-step", "exec:1", "a-1"]);
+
+    wrapper.unmount();
+  });
+
   it("emits copy events from execute blocks", async () => {
     const wrapper = mount(MainChatMessageList, {
       props: {
