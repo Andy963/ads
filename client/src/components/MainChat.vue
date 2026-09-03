@@ -29,6 +29,7 @@ const props = defineProps<{
   runningTaskCount?: number;
   workspaceRoot?: string | null;
   headerAction?: { title: string; ariaLabel?: string; testId?: string };
+  headerClearAction?: { title: string; ariaLabel?: string; testId?: string };
   headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
@@ -340,9 +341,11 @@ onBeforeUnmount(() => {
       :title="title"
       :busy="busy"
       :header-action="headerAction"
+      :header-clear-action="headerClearAction"
       :header-resume-action="headerResumeAction"
       :thread-warning="threadWarning"
       @new-session="emit('newSession')"
+      @clear="emit('clear')"
       @resume-thread="emit('resumeThread')"
     />
     <div ref="listRef" class="chat" @scroll="handleScroll">

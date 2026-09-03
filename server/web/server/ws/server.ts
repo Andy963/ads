@@ -840,6 +840,27 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             registerSessionCacheBinding();
             orchestrator = sessionManager.getOrCreate(userId, currentCwd, true);
 
+            if (
+              previousLane.historyKey !== nextIdentity.historyKey &&
+              nextLaneNamespace === WEB_WORKER_NAMESPACE
+            ) {
+              const prevEntries = previousLane.historyStore.get(previousLane.historyKey);
+              const nextExistingEntries = nextLaneRes.historyStore.get(nextIdentity.historyKey);
+              if (prevEntries.length > 0 && nextExistingEntries.length === 0) {
+                for (const entry of prevEntries) {
+                  nextLaneRes.historyStore.add(nextIdentity.historyKey, entry);
+                }
+                if (prevEntries[prevEntries.length - 1]?.kind !== "session_divider") {
+                  nextLaneRes.historyStore.add(nextIdentity.historyKey, {
+                    role: "status",
+                    kind: "session_divider",
+                    text: "Previous messages above are retained for review only and are NOT injected into model prompt context.",
+                    ts: Date.now(),
+                  });
+                }
+              }
+            }
+
             const nextSyncLaneKeys = resolveSyncLaneKeys({
               authUserId,
               sessionId,

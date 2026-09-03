@@ -28,6 +28,7 @@ import {
 import {
   CirclePlus,
   ChatDotRound,
+  Delete,
   Document,
   MoreFilled,
   Setting,
@@ -219,6 +220,7 @@ const {
   activeLaneHasResume,
   activeLaneNewSessionBlocked,
   handleLaneNewSession,
+  handleLaneClearChat,
   handleLaneResumeThread,
   sessionPickerOpen,
   openSessionPicker,
@@ -236,6 +238,7 @@ const {
   queuedPrompts,
   pendingImages,
   agentBusy,
+  clearActiveChat,
   clearPlannerChat,
   startNewChatSession,
   resumePlannerThread,
@@ -923,6 +926,17 @@ const plannerConnectionStatus = computed(() => {
             @click.stop="handleLaneNewSession"
           >
             <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
+          </button>
+          <button
+            v-if="!isMobile"
+            class="laneTabIconBtn"
+            type="button"
+            title="清空会话"
+            :disabled="activeLaneBusy"
+            data-testid="lane-clear-chat"
+            @click.stop="handleLaneClearChat"
+          >
+            <el-icon :size="15" aria-hidden="true"><Delete /></el-icon>
           </button>
         </div>
 

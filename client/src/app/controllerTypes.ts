@@ -112,7 +112,7 @@ export type ChatPlan = {
 export type ChatItem = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought";
+  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought" | "divider";
   content: string;
   fullContent?: string;
   patch?: ChatPatch;

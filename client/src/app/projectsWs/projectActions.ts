@@ -421,7 +421,42 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     activeRuntime.value.ignoreNextHistory = false;
     activeRuntime.value.suppressNextClearHistoryResult = false;
 
-    clearChatState();
+    busy.value = false;
+    activeRuntime.value.inputLocked.value = false;
+    activeRuntime.value.pendingCdRequestedPath = null;
+    queuedPrompts.value = [];
+    pendingImages.value = [];
+    recentCommands.value = [];
+    activeRuntime.value.turnCommands = [];
+    activeRuntime.value.turnCommandCount = 0;
+    activeRuntime.value.executePreviewByKey?.clear?.();
+    activeRuntime.value.executeOrder = [];
+    activeRuntime.value.turnInFlight = false;
+    threadWarning.value = null;
+    activeThreadId.value = null;
+    ctx.clearStepLive();
+    ctx.finalizeCommandBlock();
+
+    const existingMessages = Array.isArray(activeRuntime.value.messages.value)
+      ? activeRuntime.value.messages.value
+      : [];
+    if (existingMessages.length > 0 && existingMessages[existingMessages.length - 1]?.kind !== "divider") {
+      ctx.setMessages([
+        ...existingMessages,
+        {
+          id: `divider:${newChatSessionId}`,
+          role: "system",
+          kind: "divider",
+          content: "Previous messages above are retained for review only and are NOT injected into model prompt context.",
+          ts: Date.now(),
+        },
+      ]);
+    }
+
+    activeRuntime.value.laneStatus.value = {
+      kind: "info",
+      message: "New session active: clean context (previous history is not included).",
+    };
 
     const currentWs = activeRuntime.value.ws as { switchChatSession?: (id: string) => boolean; close?: () => void } | null;
     if (activeRuntime.value.connected.value && typeof currentWs?.switchChatSession === "function") {
