@@ -5,12 +5,12 @@
    normalizeReasoningEffort,
  } from "../lib/chatPreferences";
  import { supportsAgentModel } from "../lib/model_agent";
- 
+
  import type { ModelConfig } from "../api/types";
  import type { AppContext } from "./controller";
  import type { ChatActions } from "./chat";
  import type { IncomingImage, ProjectRuntime } from "./controller";
- 
+
 export type LaneDeps = {
   connectWs: (projectId?: string) => Promise<void>;
   connectPlannerWs: (projectId?: string) => Promise<void>;
@@ -30,7 +30,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
    }
    rt.noticeTimer = null;
  }
- 
+
  export function createLaneActions(ctx: AppContext & ChatActions, deps: LaneDeps) {
    const {
      api,
@@ -53,7 +53,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     enqueueMainPrompt,
     enqueuePrompt,
    } = ctx;
- 
+
    const setNotice = (message: string, projectId: string = activeProjectId.value): void => {
      const pid = normalizeProjectId(projectId);
      const rt = getRuntime(pid);
@@ -64,14 +64,14 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        rt.apiNotice.value = null;
      }, 3000);
    };
- 
+
    const clearNotice = (projectId: string = activeProjectId.value): void => {
      const pid = normalizeProjectId(projectId);
      const rt = getRuntime(pid);
      rt.apiNotice.value = null;
      clearRuntimeNoticeTimer(rt);
    };
- 
+
    const resolveStorageSessionId = (rt: ProjectRuntime): string => {
      const projectSessionId = String(rt.projectSessionId ?? "").trim();
      if (projectSessionId) {
@@ -79,13 +79,13 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      }
      return String(activeProject.value?.sessionId ?? "").trim();
    };
- 
+
    const loadModels = async (): Promise<void> => {
      models.value = await api.get<ModelConfig[]>("/api/models");
- 
+
      const enabledModels = models.value.filter((m) => m.isEnabled);
      if (enabledModels.length === 0) return;
- 
+
      const ensureRuntimeModelId = (rt: ProjectRuntime): void => {
        const sessionId = resolveStorageSessionId(rt);
        if (!sessionId) return;
@@ -108,13 +108,13 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        } catch {
          // ignore
        }
- 
+
        const storedModelId = stored === null ? null : normalizeModelId(stored);
        let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
        if (candidate === "auto" || (knownIds.has(candidate) && !compatibleIds.has(candidate))) {
          candidate = fallbackModelId || "auto";
        }
- 
+
        rt.modelId.value = candidate;
        if (candidate !== "auto" && storedModelId !== candidate) {
          try {
@@ -124,11 +124,11 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
          }
        }
      };
- 
+
      ensureRuntimeModelId(activeRuntime.value);
      ensureRuntimeModelId(activePlannerRuntime.value);
    };
- 
+
    const sendMainPrompt = (content: string): void => {
      apiError.value = null;
      const text = String(content ?? "");
@@ -140,7 +140,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      }
      enqueueMainPrompt(text, images);
    };
- 
+
    const sendPlannerPrompt = (content: string): void => {
      apiError.value = null;
      const text = String(content ?? "");
@@ -153,7 +153,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      }
      enqueuePrompt(text, images, planner);
    };
- 
+
    const persistReasoningEffort = (rt: ProjectRuntime): void => {
      const sessionId = resolveStorageSessionId(rt);
      if (!sessionId) return;
@@ -165,7 +165,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        // ignore
      }
    };
- 
+
    const persistModelId = (rt: ProjectRuntime): void => {
      const sessionId = resolveStorageSessionId(rt);
      if (!sessionId) return;
@@ -177,35 +177,35 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        // ignore
      }
    };
- 
+
    const setMainModelReasoningEffort = (effort: string): void => {
      apiError.value = null;
      const rt = activeRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
      persistReasoningEffort(rt);
    };
- 
+
    const setMainModelId = (modelId: string): void => {
      apiError.value = null;
      const rt = activeRuntime.value;
      rt.modelId.value = normalizeModelId(modelId);
      persistModelId(rt);
    };
- 
+
    const setPlannerModelReasoningEffort = (effort: string): void => {
      apiError.value = null;
      const rt = activePlannerRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
      persistReasoningEffort(rt);
    };
- 
+
    const setPlannerModelId = (modelId: string): void => {
      apiError.value = null;
      const rt = activePlannerRuntime.value;
      rt.modelId.value = normalizeModelId(modelId);
      persistModelId(rt);
    };
- 
+
    const alignRuntimeModelForAgent = (rt: ProjectRuntime, agentId: string): void => {
      const nextAgentId = String(agentId ?? "").trim();
      if (!nextAgentId) return;
@@ -247,7 +247,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        }
      }
    };
- 
+
    const switchMainAgent = (agentId: string): void => {
      apiError.value = null;
      const next = String(agentId ?? "").trim();
@@ -258,7 +258,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      alignRuntimeModelForAgent(rt, next);
      rt.ws?.send?.("set_agent", { agentId: next });
    };
- 
+
    const switchPlannerAgent = (agentId: string): void => {
      apiError.value = null;
      const next = String(agentId ?? "").trim();
@@ -269,7 +269,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      alignRuntimeModelForAgent(rt, next);
      rt.ws?.send?.("set_agent", { agentId: next });
    };
- 
+
    const interruptRuntime = (rt: ProjectRuntime): void => {
      const ws = rt.ws as { interrupt?: () => boolean } | null;
      if (ws?.interrupt?.() === true) return;
@@ -283,20 +283,20 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        // Best-effort: user can retry or reconnect.
      });
    };
- 
+
    const interruptActive = (): void => {
      interruptRuntime(activeRuntime.value);
    };
- 
+
    const interruptPlanner = (): void => {
      interruptRuntime(activePlannerRuntime.value);
    };
- 
+
    const laneClearHistoryPayload = (rt: ProjectRuntime): { scope: "lane"; sourceChatSessionId: string } => ({
      scope: "lane",
      sourceChatSessionId: String(rt.chatSessionId ?? "").trim() || "main",
    });
- 
+
   const clearActiveChat = (): void => {
     const rt = activeRuntime.value;
     rt.queuedPrompts.value = [];
@@ -326,7 +326,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
       source: "user_clear_planner_context",
     });
   };
- 
+
   const resumeTaskThread = async (
     projectId: string = activeProjectId.value,
     options?: { sessionId?: string },
@@ -365,7 +365,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
       rt.laneStatus.value = { kind: "error", message: `恢复上下文失败：${msg}` };
     }
   };
- 
+
    const listResumableSessions = async (
      projectId: string = activeProjectId.value,
      options?: {
@@ -380,7 +380,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const rt = getRuntime(pid);
      rt.resumableSessionsBusy.value = true;
      rt.resumableSessionsError.value = null;
- 
+
      try {
        if (!rt.ws || !rt.connected.value) {
          await deps.connectWs(pid);
@@ -401,7 +401,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        rt.resumableSessionsBusy.value = false;
      }
    };
- 
+
   const resumePlannerThread = async (
     projectId: string = activeProjectId.value,
     options?: { sessionId?: string },
@@ -441,30 +441,30 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
       rt.laneStatus.value = { kind: "error", message: `恢复上下文失败：${msg}` };
     }
   };
- 
+
    const addPendingImages = (images: IncomingImage[]): void => {
      pendingImages.value.push(...images);
    };
- 
+
    const clearPendingImages = (): void => {
      pendingImages.value = [];
    };
- 
+
    const addPlannerPendingImages = (images: IncomingImage[]): void => {
      activePlannerRuntime.value.pendingImages.value.push(...images);
    };
- 
+
    const clearPlannerPendingImages = (): void => {
      activePlannerRuntime.value.pendingImages.value = [];
    };
- 
+
    const removePlannerQueuedPrompt = (promptId: string): void => {
      const id = String(promptId ?? "").trim();
      if (!id) return;
      const list = activePlannerRuntime.value.queuedPrompts.value;
      activePlannerRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
    };
- 
+
    return {
      setNotice,
      clearNotice,
@@ -491,5 +491,5 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      setPlannerModelId,
    };
  }
- 
+
  export type LaneActions = ReturnType<typeof createLaneActions>;
