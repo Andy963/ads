@@ -11,7 +11,7 @@ GitHub 是项目问题和交付记录的唯一事实来源。对通常的 bugfix
 3. 让 Worker 在独立分支和干净 worktree 中实现，并通过 Pull Request 交付 review。
 4. 在 Issue 或 Pull Request 中记录决策、测试结果、限制和后续工作。
 
-不要把创建 `docs/issue/` 或 `docs/spec/` 目录作为分析、Issue 创建或实现开始的前置条件。不要为了小型任务复制一份只存在于 GitHub 的本地记录。
+不要把创建本地临时快照作为分析、Issue 创建或实现开始的前置条件。不要为了小型任务复制一份只存在于 GitHub 的本地记录。
 
 ### 本地文档使用边界
 
